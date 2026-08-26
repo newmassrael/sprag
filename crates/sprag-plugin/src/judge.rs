@@ -461,6 +461,40 @@ pub fn asked_of_another(
     question: &str,
     within: Duration,
 ) -> Result<Judgement, Unheard> {
+    let (reply, took) = said_by_another(panes, run, argv, question, within)?;
+    verdict_in(&reply, question, took)
+}
+
+/// **SPAWN `argv`, HAND IT `question`, AND ANSWER WHAT IT SAID** — everything
+/// [`asked_of_another`] does except deciding what the words MEAN.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is its own function
+///
+/// The judge is not the only thing that will ever ask a second agent one question and read one
+/// reply. `context_review.scxml`'s `asking` state has been waiting for exactly this since it was
+/// written — its own prose says *"no second agent is wired"* — and register item 502 is the bill:
+/// its economic door has never been walked by a run because nothing can produce `ask.done`.
+///
+/// ⚠⚠ **THE SPLIT IS AT THE MEANING, WHICH IS WHERE THE TWO CALLERS DIFFER AND NOWHERE ELSE.** A
+/// judgement is a FIRST WORD (`YES`/`NO`) with an explanation under it; a review's answer is A
+/// LINE. Everything before that — an empty argv, a host with no lifecycle, a spawn that failed, a
+/// process that outran `within`, a run that ended underneath, a pane whose history was lost — is
+/// the same question with the same six answers, and [`Unheard`] already names them.
+///
+/// ⚠ **SO THIS IS A REFACTOR AND NOT A NEW BEHAVIOUR.** Every early return below stood in
+/// `asked_of_another` and returns the same variant it did; what moved is only where the boundary
+/// is drawn. The judge's own gates are what say so.
+///
+/// ⚠⚠ **IT HANDS BACK THE CLOCK TOO**, because the clock starts at the spawn and only this side of
+/// the split can see it — a caller that timed the call from outside would be timing its own
+/// bookkeeping as well ([`Judgement::took`] is what that number is for).
+pub(crate) fn said_by_another(
+    panes: &dyn PaneAccess,
+    run: &RunContext,
+    argv: &[String],
+    question: &str,
+    within: Duration,
+) -> Result<(String, Duration), Unheard> {
     if argv.is_empty() {
         return Err(Unheard::Unasked);
     }
@@ -504,6 +538,16 @@ pub fn asked_of_another(
     let Some(reply) = reply else {
         return Err(Unheard::Unaccountable);
     };
+    Ok((reply, began.elapsed()))
+}
+
+/// **WHAT A REPLY MEANS TO A JUDGE** — the half [`said_by_another`] deliberately does not decide.
+///
+/// `question` is the one that was asked, and it is needed here rather than only at the spawn: a
+/// checker that ECHOES its argv sends this run's own prompt back, and the echo has to be cut off
+/// what the judge is quoted as saying. `took` is the asking's own clock, handed over rather than
+/// re-taken — see [`said_by_another`].
+fn verdict_in(reply: &str, question: &str, took: Duration) -> Result<Judgement, Unheard> {
     // ⚠⚠ SPLIT ONCE, so the verdict and what follows it are read off the SAME reply at the same
     // moment. Taking the first word here and re-scanning the text for the rest would be two readers
     // of one string, free to disagree about where the word ended.
@@ -562,7 +606,7 @@ pub fn asked_of_another(
         holds,
         said: said.to_owned(),
         explained,
-        took: began.elapsed(),
+        took,
     })
 }
 
