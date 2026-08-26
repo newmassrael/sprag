@@ -125,13 +125,32 @@ fi
 # loud and already how everything else here is escaped.
 PIXEL_PATHS="crates/sprag-gui crates/sprag-grid"
 
-# Does the pushed range carry a change under PIXEL_PATHS?
+# ── What a change to a HOOK owes, and why it is this hook's business — register item 688.
+#
+# ⛔⛔⛔⛔⛔ A ROUND ADDED `ident-gate.sh` TO THE TWO HOOKS AND KILLED SEVENTEEN TESTS ONE CRATE OVER,
+# AND TWENTY-ONE CONSECUTIVE PUSHES CARRIED THE RED BEFORE ANYBODY READ CI. `sprag-gate` links the
+# real hooks into a throwaway repository and drives them (its own doc: linked, not copied, register
+# item 467), so it is the ONLY crate a hook change can break -- and the only crate this gate did not
+# run. Everything below it ran: validate-workspace, clippy, rustdoc, the pixel smoke. The one thing
+# that reads what was actually edited did not.
+#
+# ⚠⚠ IT IS THE SAME SHAPE AS `PIXEL_PATHS` ON PURPOSE. A push that changes what the GUI paints owes
+# a look at pixels; a push that changes a hook owes a run of the suite that drives hooks. Two paths,
+# one rule, one ref walk.
+HOOK_PATHS=".githooks"
+
+# Does the pushed range carry a change under the pathspecs given?
 #
 # Walks the refs read above. Anything it cannot resolve into a comparison — a brand-new remote
 # branch, a remote commit this clone does not have, an empty stdin from a manual invocation —
-# answers YES: the failure this guards is a paint change going unlooked-at, so the unknown case
+# answers YES: the failure this guards is a change going unlooked-at, so the unknown case
 # runs the gate rather than waiving it.
-pixel_smoke_is_owed() {
+#
+# ⚠⚠⚠ ONE WALK, TWO CALLERS — register item 213, and item 688 is why there are two. The ref walk is
+# the fiddly part (the deletion case, the unresolvable sha, the here-string's blank line) and a
+# second function shaped exactly like it is the duplication that item is about. What differs
+# between a paint gate and a hook gate is a list of paths, so a list of paths is the argument.
+pushed_range_touches() {
     local owed=1 saw_ref=1 local_ref local_sha remote_ref remote_sha
     while read -r local_ref local_sha remote_ref remote_sha; do
         # ⚠ A here-string always yields one line, so an EMPTY ref list arrives as a blank one.
@@ -155,13 +174,34 @@ pixel_smoke_is_owed() {
             owed=0
             continue
         fi
-        # shellcheck disable=SC2086  # PIXEL_PATHS is a deliberate list of pathspecs
-        if [ -n "$(git diff --name-only "$remote_sha" "$local_sha" -- $PIXEL_PATHS)" ]; then
+        if [ -n "$(git diff --name-only "$remote_sha" "$local_sha" -- "$@")" ]; then
             owed=0
         fi
     done <<<"$pushed_refs"
     [ "$saw_ref" -eq 0 ] || owed=0
     return "$owed"
+}
+
+# ⚠ The two callers, so the pathspec lists stay named where they are declared rather than being
+# spelled at the call sites — the same reason `PIXEL_PATHS` was a constant to begin with.
+# shellcheck disable=SC2086  # both lists are deliberate word-split pathspecs
+pixel_smoke_is_owed() { pushed_range_touches $PIXEL_PATHS; }
+# shellcheck disable=SC2086  # both lists are deliberate word-split pathspecs
+hook_suite_is_owed() { pushed_range_touches $HOOK_PATHS; }
+
+# ── The suite that DRIVES these hooks, run when this push changes one — register item 688.
+#
+# ⚠⚠⚠ IT REFUSES RATHER THAN SKIPS WHERE CARGO IS MISSING, `run_pixel_smoke`'s stance verbatim: a
+# gate that quietly steps aside on the machine that lacks its tools is absent exactly where nobody
+# notices. This one is cheap — the suite it runs finished in under a second on both CI platforms —
+# so there is no latency argument for waiving it either.
+run_hook_suite() {
+    echo "pre-push: this push changes a hook — cargo test -p sprag-gate ..." >&2
+    if ! cargo test -p sprag-gate; then
+        echo "pre-push: the hook suite failed — a hook that breaks the crate that drives it must \
+not be published; register item 688 is what this gate exists for" >&2
+        return 1
+    fi
 }
 
 # ── The content gates over what this push actually publishes.
@@ -410,6 +450,13 @@ if [ -f Cargo.toml ]; then
             echo "pre-push: rustdoc gate failed — fix the dead link before push" >&2
             exit 1
         fi
+    fi
+
+    # ⚠⚠ BEFORE THE PIXEL SMOKE, which builds three crates in release. This one is seconds, and a
+    # push that is going to be refused should be refused before the expensive gate agrees with it —
+    # the ordering argument the content gates above are already built on.
+    if hook_suite_is_owed; then
+        run_hook_suite || exit 1
     fi
 
     if pixel_smoke_is_owed; then

@@ -46,6 +46,64 @@ fn repo_root() -> PathBuf {
     [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()
 }
 
+/// **THE IDENTITY THIS REPOSITORY'S HOOKS ACCEPT**, read from the gate that enforces it —
+/// register item 688.
+///
+/// # ⚠⚠⚠⚠⚠ Seventeen of this file's tests died on a gate none of them is about
+///
+/// This sandbox committed as `gate@example.invalid`, and `c893e39` put
+/// `.githooks/ident-gate.sh` on `pre-commit` and `pre-push`. The hooks are LINKED in here
+/// ([`Sandbox::link_hooks`], register item 467) precisely so what runs is the real one — so the
+/// real one refused **every commit this suite makes**: `6 passed; 17 failed`, on both platforms,
+/// with twenty-seven refusals naming that address. It rode out on **twenty-one consecutive
+/// pushes** (2026-08-24 22:24 → 2026-08-26), because `pre-push` runs `validate-workspace`, clippy,
+/// rustdoc and the pixel smoke — **and nothing in this crate.**
+///
+/// # ⚠⚠ The two obvious repairs were weighed and refused, and the reasons are the point
+///
+/// * **Add the sandbox's address to the allowlist.** That file's own doc says *"an edit here is a
+///   statement about who may write history that the remote publishes"*, and the gate exists
+///   because commits once reached a PUBLIC repository under a wrong address — the repository had
+///   to be deleted and recreated. A real commit could then carry it.
+/// * **Teach the gate to stand down outside its own repository.** It reads as the cleaner fix and
+///   is the worse one: what runs here would be the real hook DISABLED, which is a weaker premise
+///   than a copy, and the gate would then be absent exactly where nobody is looking.
+///
+/// Both fail in the direction the ident gate exists to prevent. The sandbox committing as an
+/// accepted identity fails loudly instead — a red test, not a published commit.
+///
+/// # ⚠ Read rather than repeated
+///
+/// A literal copy of the address here is a second place to change, and this whole item is what a
+/// second place costs. The allowlist is parsed out of the gate, so a round that changes who may
+/// write history changes what this sandbox commits as in the same edit.
+fn allowed_ident_email() -> String {
+    let gate = repo_root().join(".githooks").join("ident-gate.sh");
+    let text = std::fs::read_to_string(&gate)
+        .unwrap_or_else(|why| panic!("read the ident gate at {}: {why}", gate.display()));
+    // ⚠ THE ASSIGNMENT, not the `${SPRAG_ALLOWED_IDENT_EMAILS[0]}` the refusal message prints two
+    // screens down — a plain search for the name would find the mention first.
+    let (_, list) = text.split_once("SPRAG_ALLOWED_IDENT_EMAILS=(").unwrap_or_else(|| {
+        panic!(
+            "{} declares no `SPRAG_ALLOWED_IDENT_EMAILS=(` list, so this sandbox cannot tell which \
+             identity the hooks it links will accept",
+            gate.display(),
+        )
+    });
+    let body = list.split_once(')').map_or(list, |(body, _)| body);
+    body.split('"')
+        .nth(1)
+        .filter(|email| !email.is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "{}'s allowlist is empty, so there is no identity this sandbox may commit as: \
+                 {body:?}",
+                gate.display(),
+            )
+        })
+        .to_owned()
+}
+
 /// Rust that `rustfmt --check` accepts unchanged.
 const FORMATTED: &str = "fn paint() {}\n";
 
@@ -114,7 +172,11 @@ impl Sandbox {
         sandbox.double("xvfb-run");
 
         sandbox.git(&["init", "-q", "."]);
-        sandbox.git(&["config", "user.email", "gate@example.invalid"]);
+        // ⚠⚠⚠⚠⚠ AN IDENTITY THE LINKED HOOKS ACCEPT — register item 688, and see
+        // `allowed_ident_email` for why this is read from the gate rather than spelled here, and
+        // why the two easier repairs were refused. The name stays obviously this suite's; only the
+        // ADDRESS is load-bearing, because `ident_email_of` cuts on the angle brackets.
+        sandbox.git(&["config", "user.email", &allowed_ident_email()]);
         sandbox.git(&["config", "user.name", "sprag-gate"]);
         // ⚠ This project sets `core.hooksPath` — without pinning it back the sandbox's own commits
         // would run the REAL hooks against the REAL store, which is the developer's tree.
@@ -299,6 +361,11 @@ fn reached_the_pixel_smoke(told: &str) -> bool {
     told.contains("this push paints")
         || told.contains("needs xvfb-run")
         || told.contains("needs the lavapipe")
+}
+
+/// Whether the push gate reached the suite that DRIVES these hooks — register item 688.
+fn reached_the_hook_suite(told: &str) -> bool {
+    told.contains("this push changes a hook")
 }
 
 // ─── pre-commit ────────────────────────────────────────────────────────────────────────────────
@@ -713,6 +780,68 @@ fn a_push_whose_range_paints_owes_the_pixel_smoke() {
         reached_the_pixel_smoke(&told),
         "this push changes what the GUI paints and the smoke is the only gate that looks at \
          pixels: {told}",
+    );
+    sandbox.done();
+}
+
+/// ⛔⛔⛔⛔⛔ **A PUSH THAT CHANGES A HOOK OWES THE SUITE THAT DRIVES HOOKS** — register item 688,
+/// and the gate that was missing when that item was written.
+///
+/// # What it cost to not have this
+///
+/// `c893e39` put `.githooks/ident-gate.sh` on `pre-commit` and `pre-push`. This crate links the
+/// real hooks into a throwaway repository and drives them, so the new gate refused **every commit
+/// this suite makes**: `6 passed; 17 failed`, on both CI platforms. **Twenty-one consecutive
+/// pushes carried that red** (2026-08-24 22:24 → 2026-08-26) because `pre-push` ran
+/// `validate-workspace`, clippy, rustdoc and the pixel smoke — and nothing that reads a hook.
+///
+/// ⚠⚠⚠ **THE GATE ITSELF WAS NOT THE PROBLEM AND ITS OWN SELFTEST SAID SO.** `ident-gate.sh` has
+/// thirteen `--selftest` arms and its commit message recorded *"a mutation reds five of them"*. It
+/// measured itself correctly and could not measure what it did ONE CRATE OVER. **A gate that
+/// passes its own selftest is evidence it is right, not evidence the tree is green.**
+#[test]
+fn a_push_that_changes_a_hook_owes_the_suite_that_drives_hooks() {
+    let sandbox = Sandbox::new("push-hook");
+    sandbox.write("crates/sprag-host/base.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/base.rs"]);
+    let base = sandbox.commit("base");
+
+    sandbox.write(".githooks/some-gate.sh", "#!/bin/sh\nexit 0\n");
+    sandbox.git(&["add", ".githooks/some-gate.sh"]);
+    let head = sandbox.commit("a change under .githooks");
+
+    let run = sandbox.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        reached_the_hook_suite(&told),
+        "⛔⛔⛔ THIS PUSH EDITS A HOOK, and the only crate that can tell whether a hook still works \
+         is the one that drives it. Publishing without running it is what put a red on twenty-one \
+         pushes: {told}",
+    );
+    sandbox.done();
+}
+
+/// ⚠⚠⚠ **THE CONTROL, AND WITHOUT IT THE ARM ABOVE IS SATISFIED BY A GATE THAT ALWAYS RUNS.** A
+/// push that touches no hook must NOT owe the suite — otherwise every push in this repository pays
+/// for it, which is the cost that makes a gate get waived, and a waived gate is the state item 688
+/// is about wearing different clothes.
+#[test]
+fn a_push_that_changes_no_hook_passes_without_owing_the_hook_suite() {
+    let sandbox = Sandbox::new("push-no-hook");
+    sandbox.write("crates/sprag-host/base.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/base.rs"]);
+    let base = sandbox.commit("base");
+
+    sandbox.write("crates/sprag-host/more.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/more.rs"]);
+    let head = sandbox.commit("a change that is not a hook");
+
+    let run = sandbox.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        !reached_the_hook_suite(&told),
+        "⚠⚠⚠ THE CONTROL: nothing under `.githooks` changed here, so the hook suite is not owed. A \
+         gate that ran on every push would make the arm above pass while measuring nothing: {told}",
     );
     sandbox.done();
 }

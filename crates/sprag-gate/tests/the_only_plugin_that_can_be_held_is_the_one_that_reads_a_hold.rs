@@ -60,6 +60,27 @@ const READERS: &[&str] = &[
     // module, which `Source::product` drops. Listing it would have made the staleness check below
     // red on a file that genuinely does not ask.
     "crates/sprag-plugin/src/outer.rs",
+    // ⚠⚠⚠⚠⚠ **NOT A PLUGIN, AND THE ESCAPE IS UNTOUCHED** — register item 699, added 2026-08-26
+    // with the reason this gate's own refusal asks for.
+    //
+    // This is the daemon's RUN DIRECTORY, not a plugin: it ships no `Plugin`, is handed no
+    // `RunContext`, and has no turn to park. `RunHandle::held` answers *is a person holding this
+    // run* so the daemon can publish that order into the run's row — and the reason it had to be
+    // built is that NOTHING read the flag at all. `RunOrder::Hold` was stored into an `AtomicBool`
+    // that no line in any process ever loaded, so `hold-run` answered *"it parks at its next
+    // pass"* and parked nothing, in every repository, for as long as the verb has existed.
+    //
+    // ⚠⚠ **WHAT THIS GATE IS PROTECTING IS NOT MOVED BY IT.** The escape in `sprag-host/src/wire.rs`
+    // says `abandoned` costs no wire number because only `ai_loop` can produce it. Producing it
+    // needs a plugin that ACTS on a hold, which is still `outer.rs` alone: this file only carries
+    // the order to the row, and the driver that reads the row hands it to the same one plugin. No
+    // second plugin gained a reader, no `plugin` word an old client can send gained a new verdict,
+    // and the value-space pin is unmoved.
+    //
+    // ⚠ The needle really does match here, so the staleness check below stays honest: the two
+    // handles delegate with `self.orders.held()` and the row projection asks `record.run.held()`,
+    // all in product code rather than under `#[cfg(test)]`.
+    "crates/sprag-host/src/runs.rs",
 ];
 
 /// The crate this gate lives in, skipped from the population.
