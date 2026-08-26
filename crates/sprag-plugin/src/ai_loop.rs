@@ -8687,6 +8687,122 @@ mod tests {
     /// the same reader `OuterLoop::signalling` uses — so a `<param>` that stopped being evaluated,
     /// a word outside the space, and an `<onentry>` that never fired all land here as a failure.
     ///
+    /// ⚠⚠⚠⚠⚠ **EVERY WORD A DRIVEN STATE ANSWERS ABOUT BEING ASKED FOR AN ACCOUNT** — register
+    /// item 470, stage 3, and this gate exists for the same reason as the one below it: a mutation
+    /// went GREEN.
+    ///
+    /// # ⚠⚠⚠⚠ What was unwatched, and why nothing noticed
+    ///
+    /// `AiLoop::ask_for_an_account` chose between granting an account window and twenty ways of
+    /// refusing one from a twenty-eight-arm state match. That moved into the document as
+    /// `account.ask`'s `can` argument — and then flipping `service_down` to say `within` was green
+    /// across the whole suite, because **`ask_for_an_account` is only ever called when one of the
+    /// RUN's own ceilings falls due**, and no gate trips a ceiling while the machine is waiting an
+    /// outage out. The word was carried across from the old match and never proven.
+    ///
+    /// # ⚠⚠ It asks the DOCUMENT the way the driver does, and reads the HOST's record
+    ///
+    /// `OuterLoop::asked_of_this_account` raises `account` and takes what this host was handed.
+    /// Raising the same event against a machine driven to each state measures the same thing
+    /// without needing a live pane and a real ceiling — and it is the running document that
+    /// answers, not this test's reading of the file.
+    ///
+    /// ⚠ **THE STATES WITH NO WORD ARE PART OF THE CLAIM.** Five words cover the fifteen states a
+    /// driver drives; the endings answer nothing here because a finished machine is told apart by
+    /// having PUBLISHED one, and `None` is what `ask_for_an_account` turns into *this driver has no
+    /// answer for what it is looking at* rather than a guess.
+    #[test]
+    fn every_driven_state_says_whether_its_agent_can_be_asked_for_an_account() {
+        /// A turn that ended because the peer's SERVICE was not answering — `working`'s own first
+        /// `turn.blocked` guard, and the only road to `service_down`.
+        const BLOCKED_BY_SERVICE: &str = r#"{"service": true, "judged": false}"#;
+
+        let started_at = |events: &[(AiLoopEvent, &str)]| {
+            let (mut engine, host, _lua, _session) = started();
+            for (event, data) in events {
+                carried(&mut engine, &host, *event, data);
+            }
+            (engine, host)
+        };
+
+        for (route, state, can) in [
+            // ⚠ NOTHING RAISED AT ALL: the loop never got its pane, so its agent was never asked
+            // anything and has nothing to account for.
+            (vec![], AiLoopState::Idle, crate::act::Accounts::NeverAsked),
+            (
+                vec![(AiLoopEvent::Start, ""), (AiLoopEvent::PromptSent, "")],
+                AiLoopState::Working,
+                crate::act::Accounts::Within,
+            ),
+            // ⚠⚠ SOMEBODY ELSE HAS THE PANE. Asking here would answer their dialog or type under
+            // their hand, which is the one thing this driver must never do.
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnInterrupted, ""),
+                ],
+                AiLoopState::AwaitingHuman,
+                crate::act::Accounts::NotOurs,
+            ),
+            // ⚠⚠ THE AGENT THAT DID THE WORK IS BEING REPLACED and its successor has done none of
+            // it, so there is nobody to ask where the run got to.
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnDone, TURN),
+                    (AiLoopEvent::Judge, DONE),
+                ],
+                AiLoopState::Reflecting,
+                crate::act::Accounts::BetweenSessions,
+            ),
+            // ⭐⭐ THE ONE THE GREEN MUTATION WAS ABOUT. Typing here is ALLOWED — nobody's hand is in
+            // the pane — and it would still buy nothing, because the answer has to come back from
+            // the same service that just refused a turn.
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnBlocked, BLOCKED_BY_SERVICE),
+                ],
+                AiLoopState::ServiceDown,
+                crate::act::Accounts::ServiceDown,
+            ),
+        ] {
+            let (mut engine, host) = started_at(&route);
+            // ⚠⚠⚠ THE ACTIVE SET AND NOT `get_current_state`, because this document has REGIONS:
+            // the flattening call answers the parallel ROOT for a machine that has not left `idle`,
+            // which is `probe_parallel.scxml`'s measured finding and the reason `OuterLoop::state`
+            // filters to the work region by name. A fixture keyed on the flattened value would have
+            // been asserting about `running` while believing it asked about `idle`.
+            let active = engine.get_active_states();
+            assert!(
+                active.contains(&state),
+                "⚠⚠⚠ THE FIXTURE: this route is written to reach {state:?} and the word below is \
+                 that state's. active = {active:?}, refused acts: {:?}",
+                host.refused(),
+            );
+            assert_eq!(
+                host.taken(crate::act::Act::Account),
+                None,
+                "⚠⚠⚠⚠ THE CONTROL: nothing has answered this question before it is asked. An act \
+                 already waiting would mean the reading below belongs to some earlier pass",
+            );
+
+            carried(&mut engine, &host, AiLoopEvent::Account, "");
+            assert_eq!(
+                host.taken(crate::act::Act::Account),
+                Some(crate::act::Asked::Account { can }),
+                "⚠⚠⚠⚠⚠ {state:?} ANSWERS THE WRONG THING ABOUT BEING ASKED FOR AN ACCOUNT. Each \
+                 word names something true about the PANE that makes the question askable or not — \
+                 nobody was ever asked anything, somebody else's hand is in it, the agent is being \
+                 replaced, the service is not answering — and a caller reading the run's journal \
+                 gets that reason instead of a blank report",
+            );
+        }
+    }
+
     /// ⭐ **ALL SEVEN, and the last three cost one intermediate state each.** `converged` is reached
     /// through `closing` (a banked turn with the order STANDING DOWN), `exhausted` through
     /// `stopping` (the document's own `max_turns` spent), and `abandoned` from `held` in the ORDERS
