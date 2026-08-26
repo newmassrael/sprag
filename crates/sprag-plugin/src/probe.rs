@@ -689,8 +689,14 @@ mod tests {
     /// ⚠⚠ **TWO OF THE THREE ARE NOW SHUT ON THIS ANSWER** (2026-08-26): `ready_within()` went
     /// first as `within`, and `expecting()` followed as the `awaits`/`stills` pair — both riding
     /// the `pass.do` act that is already raised once per pass. `consenting()` is the one left, and
-    /// it is the one this measurement does NOT cover: its value is a LIST OF OBJECTS, which a
-    /// `<param>` cannot carry, so it needs an answer of its own rather than this one repeated.
+    /// it is the one this measurement does NOT cover: its value is a LIST OF OBJECTS rather than a
+    /// number, so it needed an answer of its own.
+    ///
+    /// ⚠⚠⚠ **AND THE SENTENCE THAT STOOD HERE SAID A `<param>` CANNOT CARRY ONE, WHICH WAS A GUESS
+    /// AND IS REFUTED.** See `a_clause_list_crossing_as_an_argument` below, written the next round
+    /// to ask rather than assume: the list crosses as JSON, a repeated name keeps every value in
+    /// order, and indexing selects two levels deep. ⇒ **This module's own rule caught its own
+    /// author: a road called shut by reading is a road nobody measured.**
     ///
     /// * **zero is a real answer, not an absence.** `await_person_ms = 0` means NOBODY IS
     ///   EXPECTED; `handback_still_ms = 0` means a person who takes the pane KEEPS it. Both are
@@ -788,6 +794,223 @@ mod tests {
              instructions, and a crossing that folds them cannot carry `await_person_ms` or \
              `handback_still_ms` at all. Both read {:?}",
             got("zeroed"),
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **CAN A LIST OF OBJECTS CROSS AS A `<param>`, AND IF NOT, CAN A REPEATED NAME CARRY
+    /// THE PARTS?** — the question register item 470's LAST datamodel back door turns on.
+    ///
+    /// # What is being decided
+    ///
+    /// `consenting()` is the one reader left that goes behind the machine's back, and the answer
+    /// that shut the other three does not reach it. `may_answer` is not a number: it is an ARRAY OF
+    /// OBJECTS, each `{asked, answer}`, which `OuterLoop::consents_in` walks with typed getters two
+    /// levels deep. A host act's arguments arrive as `HashMap<String, Vec<String>>`.
+    ///
+    /// ⚠⚠ **A NO WOULD HAVE BEEN THE USEFUL ANSWER TOO**, and it is the answer this case was
+    /// written expecting. It is not what was measured.
+    ///
+    /// # ⭐⭐⭐ MEASURED 2026-08-26: **YES, THREE WAYS OVER**
+    ///
+    /// * **the whole list crosses as JSON** — `[{"answer":"yes","asked":"…"},{…}]`, which a driver
+    ///   can walk back. The road `service_needle`, `within` and `awaits`/`stills` took is open for
+    ///   `may_answer` too.
+    /// * **a repeated `<param>` name keeps every value, in document order** — so a fixed number of
+    ///   clause slots could cross with no structure crossing at all. A fallback, measured.
+    /// * **indexing selects, two levels deep** — `clauses[0]` is the FIRST element (0-based, though
+    ///   the engine underneath is Lua) and `clauses[1].asked` arrives as its own bare string.
+    ///
+    /// ⚠ **WHAT THIS DOES NOT DECIDE**, stated rather than assumed: walking that JSON back means a
+    /// `serde_json` parse in the driver, and this crate's manifest admits `serde_json` for
+    /// *perception of an external program* rather than for its own types. Whether an SCXML engine's
+    /// `<param>` counts as that is the CARRIER round's decision, on the record, not this probe's.
+    ///
+    /// ⚠ The value is PLANTED rather than authored in the document, as the exact
+    /// `ScriptValue::Array(Object)` shape `consents_in` reads — so what is measured is the crossing
+    /// and not how a Lua-backed `ecmascript` datamodel parses an array literal.
+    #[test]
+    fn a_clause_list_crossing_as_an_argument() {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        type Seen = Vec<(String, HashMap<String, Vec<String>>)>;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut engine = Engine::new(ProbeSendTypePolicy::new(lua));
+        let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Vec::new()));
+        engine.register_event_processor("x-sprag-host", {
+            let seen = Arc::clone(&seen);
+            move |request| {
+                seen.lock()
+                    .expect("the record")
+                    .push((request.event_name.clone(), request.params.clone()));
+                vec![sce_rust_runtime::host_processor::HostSendResponse {
+                    event_name: request.event_name,
+                    event_data: String::new(),
+                }]
+            }
+        });
+        engine.initialize();
+
+        let session = engine
+            .policy()
+            .session_id
+            .clone()
+            .expect("a script datamodel opens a script session");
+        let clause = |asked: &str, answer: &str| {
+            let mut fields = HashMap::new();
+            fields.insert("asked".to_owned(), ScriptValue::String(asked.to_owned()));
+            fields.insert("answer".to_owned(), ScriptValue::String(answer.to_owned()));
+            ScriptValue::Object(fields)
+        };
+        engine
+            .policy()
+            .script_engine
+            .set_variable(
+                &session,
+                "clauses",
+                ScriptValue::Array(vec![
+                    clause("trust the files in this folder", "yes"),
+                    clause("run without asking again", "no"),
+                ]),
+            )
+            .expect("the datamodel takes the shape its own reader walks");
+
+        // ⚠⚠⚠ THE FIXTURE'S OWN CONTROL, BEFORE A SINGLE SEND. If the plant did not round-trip as
+        // an Array of Objects, every reading below would be about a variable holding something
+        // else — and `consents_in` is the definition of the shape that has to cross.
+        let planted = engine
+            .policy()
+            .script_engine
+            .get_variable(&session, "clauses")
+            .expect("the planted variable is readable");
+        assert!(
+            matches!(&planted, ScriptValue::Array(items)
+                if items.len() == 2
+                    && items.iter().all(|it| matches!(it, ScriptValue::Object(_)))),
+            "⚠⚠⚠⚠⚠ THE PLANT DID NOT SURVIVE THE DATAMODEL, so this probe answers nothing about \
+             `<param>`: {planted:?}",
+        );
+
+        engine.process_event(ProbeSendTypeEvent::ProbeEnter);
+        engine.process_event(ProbeSendTypeEvent::ProbeTake);
+        for _ in 0..8 {
+            engine.tick();
+        }
+        engine.process_event(ProbeSendTypeEvent::ProbeList);
+        for _ in 0..8 {
+            engine.tick();
+        }
+        engine.process_event(ProbeSendTypeEvent::ProbeDeep);
+        for _ in 0..8 {
+            engine.tick();
+        }
+
+        let after: Seen = seen.lock().expect("the record").clone();
+        let only = |named: &str| {
+            let hits: Vec<&(String, HashMap<String, Vec<String>>)> =
+                after.iter().filter(|(it, _)| it == named).collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "⚠⚠⚠ THE CONTROL: `{named}` must have reached this host exactly once, or nothing \
+                 read off it is about a crossing. Saw {after:?}",
+            );
+            hits[0].1.clone()
+        };
+
+        // ── THE SEND ARRIVED AT ALL: a plain string in the same send ──
+        let listing = only("carried.list");
+        assert_eq!(
+            listing.get("word").map(Vec::as_slice),
+            Some(["plain".to_owned()].as_slice()),
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, SO THIS PROBE ANSWERS NOTHING. A `listed` that reads empty \
+             below would then mean *this send did not arrive*, which is a fact about the fixture \
+             and not about structures. Got {listing:?}",
+        );
+
+        // ── ⭐ THE ANSWER: THE LIST CROSSES, AND IT CROSSES WITH ITS CONTENT ──
+        //
+        // ⭐ MEASURED 2026-08-26: `listed` arrives as JSON —
+        // `[{"answer":"yes","asked":"trust the files in this folder"},{…}]`. So the door
+        // `consenting()` holds open CAN be shut by the same carrier the other three used, with a
+        // parse on the driver side rather than a typed getter.
+        //
+        // ⚠⚠ ASSERTED AS STRUCTURE AND NOT AS BYTES. The measured spelling puts `answer` before
+        // `asked`, which is the serialiser's ordering to choose and not a promise; a gate pinned to
+        // the exact string would go red for a harmless change. What the road needs is that both
+        // clauses ARRIVE and are TELLABLE APART, which is what this reads.
+        let listed = listing
+            .get("listed")
+            .and_then(|values| values.first())
+            .cloned()
+            .unwrap_or_default();
+        let held: serde_json::Value = serde_json::from_str(&listed).unwrap_or_else(|why| {
+            panic!(
+                "⚠⚠⚠⚠⚠ **A LIST OF OBJECTS DID NOT CROSS WITH ITS CONTENT, WHICH SHUTS THIS ROAD \
+                 FOR `may_answer`.** A handle (`table: 0x…`), an empty string or anything else a \
+                 driver cannot walk back means the last back door cannot be shut the way the other \
+                 three were, and item 470 needs a different shape for it. Got {listed:?}: {why}",
+            )
+        });
+        let asked: Vec<String> = held
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|it| it.get("asked").and_then(serde_json::Value::as_str))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            asked,
+            vec![
+                "trust the files in this folder".to_owned(),
+                "run without asking again".to_owned(),
+            ],
+            "⚠⚠⚠⚠⚠ **BOTH CLAUSES MUST ARRIVE, IN THE CALLER'S OWN ORDER.** `Consents` is a list \
+             of INDEPENDENT clauses and `covers` takes the first that resolves, so a crossing that \
+             dropped one, merged them, or reordered them would change which dialog a run answers. \
+             Got {held:?}",
+        );
+
+        // ── ⭐ AND THE FALLBACK IS REAL TOO: A REPEATED NAME KEEPS EVERY VALUE, IN ORDER ──
+        assert_eq!(
+            listing.get("twice").map(Vec::len),
+            Some(2),
+            "⚠⚠⚠⚠ A REPEATED `<param>` NAME MUST KEEP EVERY VALUE. `Params` is a vector per name \
+             and says so in a comment; this is the measurement behind it, and it is the shape a \
+             carrier would fall back to if the serialisation above were ever lost. Got {listing:?}",
+        );
+        assert_eq!(
+            listing.get("twice").and_then(|values| values.first()),
+            Some(&"plain".to_owned()),
+            "⚠⚠⚠ AND IN THE ORDER THE DOCUMENT WROTE THEM, which is the whole of what a vector \
+             adds over a set: clause ORDER decides which one `covers` takes. Got {listing:?}",
+        );
+
+        // ── ⭐ AND INDEXING SELECTS, TWO LEVELS DEEP ──
+        //
+        // ⭐ MEASURED 2026-08-26: `clauses[0]` is the FIRST element and `clauses[1]` the second, so
+        // this pairing presents the array 0-based even though the engine underneath is Lua — and
+        // `clauses[1].asked` arrives as its own bare string rather than as JSON. A document can
+        // therefore carry named parts as well as the whole.
+        let deep = only("carried.deep");
+        let at = |name: &str| deep.get(name).and_then(|values| values.first()).cloned();
+        assert_ne!(
+            at("at_zero"),
+            at("at_one"),
+            "⚠⚠⚠⚠ INDEXING MUST SELECT RATHER THAN HAND BACK THE WHOLE. If both bases read the \
+             same, a document could not name one clause — it could only ever send all of them, and \
+             the fallback shape above is the only road left. Got {deep:?}",
+        );
+        assert_eq!(
+            at("field"),
+            Some("run without asking again".to_owned()),
+            "⚠⚠⚠⚠⚠ A FIELD TWO LEVELS DOWN MUST ARRIVE AS ITS OWN VALUE, unquoted and unwrapped. \
+             This is what says the crossing understands the structure rather than stringifying \
+             whatever it is handed. Got {deep:?}",
         );
     }
 

@@ -127,6 +127,38 @@
     <data id="negated" expr="-1"/>
     <!-- ⚠ NO `expr`, so this is nil in the datamodel's own language. -->
     <data id="blanked"/>
+    <!--
+      ⚠⚠⚠⚠⚠ WHAT A LIST OF OBJECTS LOOKS LIKE WHEN IT CROSSES AS A `<param>`.
+
+      Register item 470's stage 2 has ONE datamodel back door left, and the
+      answer above does not reach it. `consenting()` reads `may_answer`, which
+      is not a number: it is an ARRAY OF OBJECTS, each `{asked, answer}`, and
+      `OuterLoop::consents_in` walks it with typed getters two levels deep. A
+      host act's arguments arrive as `HashMap<String, Vec<String>>`, so the
+      question is what a structure becomes on the way across, and it has three
+      candidate answers this file measures rather than reasons about:
+
+        * IT SERIALISES into something a driver could parse back.
+        * IT FLATTENS into a handle with no content (`table: 0x...`), an empty
+          string, or nothing at all, which shuts the road for this shape.
+        * INDEXING works, so a document could carry the parts separately.
+
+      ⚠⚠ AND A FOURTH QUESTION BESIDE THEM, which is the fallback that does not
+      depend on serialisation at all: SCE's params map keeps a VECTOR per name,
+      so a repeated `<param name="x">` may arrive as several values in the
+      order the document wrote them. If it does, a fixed number of clause slots
+      can cross without any structure crossing.
+
+      ⚠ NO `expr` HERE. The value is PLANTED BY THE GATE, as the exact
+      `ScriptValue::Array(Object)` shape `consents_in` reads, so what is
+      measured is the crossing rather than how this engine parses an
+      ECMAScript array literal it is not written in. See `edged`'s
+      `probe.list` and `probe.deep`.
+    -->
+    <data id="clauses"/>
+    <!-- ⚠ THE CONTROL FOR THE REPEATED NAME: a plain string, so a `twice` that
+         arrives with one value can be told from one that arrives with none. -->
+    <data id="clause_word" expr="'plain'"/>
   </datamodel>
 
   <!--
@@ -285,6 +317,52 @@
         <param name="zeroed" expr="zeroed"/>
         <param name="negated" expr="negated"/>
         <param name="blanked" expr="blanked"/>
+      </send>
+    </transition>
+    <!--
+      ⚠⚠⚠⚠⚠ THE SIXTH QUESTION: can a LIST OF OBJECTS cross, and if not, can a
+      REPEATED NAME carry the parts? See the `clauses` entry in the datamodel
+      above for why the answer decides item 470's last back door.
+
+      ⚠⚠ TWO SENDS RATHER THAN ONE, AND THAT IS ISOLATION RATHER THAN TIDINESS.
+      The indexing expressions below could RAISE — this datamodel is declared
+      `ecmascript` and the engine underneath is Lua, whose tables are 1 based —
+      and a raise while evaluating one `<param>` could take the whole send with
+      it. Asked in the same send, a failure there would read as *a list cannot
+      cross*, which is a different answer entirely. ⚠ MEASURED 2026-08-26: the
+      raise did not happen and this pairing indexes from ZERO, so the isolation
+      bought nothing this time. It stays, because what it insures against is
+      the next question asked here rather than this one.
+    -->
+    <transition event="probe.list">
+      <send type="x-sprag-host" event="carried.list">
+        <param name="listed" expr="clauses"/>
+        <!-- ⚠ THE CONTROL: a plain string in the SAME send, so `listed`
+             arriving empty can be told from the send never arriving. -->
+        <param name="word" expr="clause_word"/>
+        <!-- ⚠⚠ THE SAME NAME TWICE, WITH TWO DIFFERENT VALUES. If both arrive
+             in this order, a document can carry N clause slots without any
+             structure crossing at all. -->
+        <param name="twice" expr="clause_word"/>
+        <param name="twice" expr="carried"/>
+      </send>
+    </transition>
+    <!--
+      ⚠ BOTH BASES ARE ASKED FOR so the answer is not confounded by which one
+      this pairing indexes from, and NEITHER indexes through a value that could
+      be nil: the gate plants TWO clauses, so `clauses[1]` holds an object
+      whichever way round the base is. `clauses[0].asked` was not asked for
+      because under a 1 based table it would index into nil, which raises
+      rather than answering. ⚠ MEASURED 2026-08-26: `clauses[0]` is the FIRST
+      element, so this pairing is 0 based and that expression would have been
+      safe. The gate reads the two bases as DIFFERENT rather than pinning
+      which is which, because that is the engine's to choose.
+    -->
+    <transition event="probe.deep">
+      <send type="x-sprag-host" event="carried.deep">
+        <param name="at_zero" expr="clauses[0]"/>
+        <param name="at_one" expr="clauses[1]"/>
+        <param name="field" expr="clauses[1].asked"/>
       </send>
     </transition>
     <!--
