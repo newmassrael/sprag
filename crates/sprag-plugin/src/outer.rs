@@ -1903,9 +1903,20 @@ impl crate::review::Asked for AskingAnother<'_> {
     /// it met. Register item 556 is the same shape one surface over.
     fn ask(&self, question: &str) -> Option<String> {
         let asks = self.asks?;
-        crate::judge::said_by_another(self.panes, self.run, &asks.argv, question, asks.within)
-            .ok()
-            .map(|(said, _took)| said)
+        // ⚠ NO DIRECTORY — register item 710, and a decision rather than an oversight. What this
+        // peer reviews is the run's own CONTEXT, rendered into the question it is handed; there is
+        // no repository it would open. The milestone check is the asker with something to read, and
+        // it is the one that names a directory.
+        crate::judge::said_by_another(
+            self.panes,
+            self.run,
+            &asks.argv,
+            None,
+            question,
+            asks.within,
+        )
+        .ok()
+        .map(|(said, _took)| said)
     }
 }
 
@@ -7954,14 +7965,37 @@ impl OuterLoop {
         // `barrier_says` exists as one function.
         let produced = self.turn_produced(panes);
         let shown = produced.evidence();
-        let question = self.check_question(&produced);
+        // ⛔⛔⛔⛔⛔ **WHERE THIS RUN'S WORK IS — register item 710, and the fact the checker had no
+        // way to learn.** A run drives one pane and the work is in a repository; the pane's BIRTH
+        // directory is the only thing in this process that says which, and item 684 is why it is the
+        // birth one rather than `/proc/<pid>/cwd` (a live read goes blind the moment the child
+        // exits, and answered `$HOME` for a restarted pane).
+        //
+        // ⚠⚠ READ ONCE and used twice — for the spawn and for the sentence in the question. Reading
+        // it again inside `check_question` would be two readers of one fact, free to disagree about
+        // whether the checker was told where it is standing and where it actually stands.
+        //
+        // ⚠ [`None`] is a surface that cannot say (`PaneAccess::origin`), and it degrades to exactly
+        // what this did before 710: a pane with no directory, and a question that does not claim
+        // otherwise. That is a loss rather than a fix, and it is named where the capability is.
+        let standing_in = panes
+            .origin()
+            .and_then(|origin| origin.pane_start_dir(self.driving.pane));
+        let question = self.check_question(&produced, standing_in.as_deref());
         // ⚠⚠⚠⚠⚠ **COUNTED HERE AND NOWHERE ELSE** — register item 601. This is the one place a
         // claim is really put to an independent process: past the `said` guard and past the empty
         // argv, so the tally counts CHECKS ASKED rather than judging edges walked. A counter one
         // level out would include every run whose author declared no checker, and `asked: 0` is the
         // very thing that separates *nobody was meant to check this* from *the checker is broken*.
         self.checks.asked = self.checks.asked.saturating_add(1);
-        match crate::judge::asked_of_another(panes, run, &argv, &question, CHECK_WITHIN) {
+        match crate::judge::asked_of_another(
+            panes,
+            run,
+            &argv,
+            standing_in.as_deref(),
+            &question,
+            CHECK_WITHIN,
+        ) {
             // ⚠⚠ THE WORDS TRAVEL WITH BOTH VERDICTS, not only the refusal. A reader deciding what
             // an AGREEMENT is worth needs them for the same reason register item 428 needs the
             // verdict at all — and publishing them on one arm would tell the two apart by the
@@ -8059,14 +8093,46 @@ impl OuterLoop {
     /// go through, which is item 428's shape exactly (*"a fixture that bypasses the product's own
     /// door passes even when the door is nailed shut"*). The gates take the same two steps the
     /// product takes.
-    fn check_question(&self, produced: &Produced) -> String {
+    fn check_question(&self, produced: &Produced, standing_in: Option<&std::path::Path>) -> String {
         let milestone = self.text_of(MILESTONE).unwrap_or_default();
+        // ⛔⛔⛔⛔⛔ **WHERE THE WORK IS, AND THAT IT MAY BE OPENED — register item 710.** Until this
+        // sentence existed the checker was handed prose and nothing else, so *judge the work, not
+        // the claim* was an instruction it had no way to follow: the only work in front of it WAS
+        // the claim, written out. Measured 2026-08-26, a live checker answered YES about a
+        // repository it was not standing in and had not been told the name of.
+        //
+        // ⚠ Written only when the directory is KNOWN. A sentence saying *the work is in the
+        // directory you are in* is a claim about this process's own spawn, and a surface that cannot
+        // say where a pane was born (see `PaneAccess::origin`) must not have one put in its mouth.
+        let where_it_is = standing_in.map_or_else(String::new, |dir| {
+            format!(
+                "The work is in {}, and that is the directory you are running in — OPEN THE FILES \
+                 THERE and judge what is on disk. What you are shown below is an account of the \
+                 work, not the work.\n\n",
+                dir.display(),
+            )
+        });
+        // ⚠⚠⚠⚠ **AND WHAT THE RUN SAYS TO CONSULT — the second half of 710.** A checker standing in
+        // the right tree still has to know what to read: `judge.rs` never carried the brief's
+        // `reference` at all, so the one field whose whole purpose is *what the next reader must
+        // know* reached every party in this run except the one being asked to verify it.
+        //
+        // ⚠ It is the RUN's own field and not the agent's account of its turn — a person wrote it
+        // into the brief — so it does not breach this prompt's rule that the claimant's say-so must
+        // not enter the verdict.
+        let consult = self
+            .text_of(REFERENCE)
+            .filter(|text| !text.trim().is_empty())
+            .map_or_else(String::new, |text| {
+                format!("What this run says to consult while judging:\n{text}\n\n")
+            });
         format!(
-            "An AI agent was asked to reach this checkpoint:\n\n{milestone}\n\nBelow is what it \
-             produced while working on it. Decide whether the checkpoint was actually reached — \
-             judge the work, not the claim.\n\nAnswer YES or NO as your FIRST WORD. Then give ONE \
-             short sentence saying why. If what you were shown is empty or does not let you judge, \
-             say that in the sentence rather than guessing.\n\nWhat it produced:\n{}\n",
+            "An AI agent was asked to reach this checkpoint:\n\n{milestone}\n\n{where_it_is}\
+             {consult}Below is what it produced while working on it. Decide whether the checkpoint \
+             was actually reached — judge the work, not the claim.\n\nAnswer YES or NO as your \
+             FIRST WORD. Then give ONE short sentence saying why. If what you were shown is empty \
+             or does not let you judge, say that in the sentence rather than guessing.\n\nWhat it \
+             produced:\n{}\n",
             produced.text(),
         )
     }
@@ -13485,7 +13551,10 @@ mod tests {
         // be a door only this gate goes through, which is item 428's shape; clippy caught one being
         // written and it is gone.
         let artifact = loops.turn_produced(&stated);
-        let question = loops.check_question(&artifact);
+        // ⚠ NO DIRECTORY HERE, because what this gate is about is the four sentences the prompt owes
+        // whatever it was shown. The directory and the reference have their own gate
+        // (`a_checker_is_put_where_the_work_is_and_told_what_to_consult`).
+        let question = loops.check_question(&artifact, None);
 
         // ── THE PROMPT NO LONGER FORBIDS THE THING THE PRODUCT KEEPS ──
         assert!(
@@ -13548,6 +13617,237 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// A directory THIS GATE OWNS, standing where a run's repository would be.
+    ///
+    /// Named per label and per thread so two gates cannot see each other's files, and emptied on
+    /// creation so a previous run's cannot be inherited either.
+    fn a_directory_this_gate_owns(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sprag-checker-{}-{label}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory this gate owns");
+        dir
+    }
+
+    /// A pane running `cat` — [`quiet_pane`]'s peer — BORN IN `dir`, which is the fact register item
+    /// 710's gate is built on: a run's repository is the directory its driven pane was pointed at.
+    fn pane_born_in(dir: &std::path::Path) -> (Arc<Mutex<Workspace>>, PaneId) {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            command.cwd(dir);
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 8)
+                .expect("spawn pane")
+        };
+        (workspace, pane)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE CHECKER IS PUT WHERE THE WORK IS, AND IT IS TOLD WHAT TO CONSULT** — register
+    /// item 710, and the reason a milestone claim could not be verified by anything except its own
+    /// text.
+    ///
+    /// # The defect, measured on a live run before this gate existed
+    ///
+    /// `judge::said_by_another` spawned its checker through a door whose documentation said a pane
+    /// with no directory *takes the daemon's*. It does not — it lands in **`$HOME`**
+    /// (`readlink /proc/389877/cwd` → `/home/coin`, 2026-08-26, against a daemon in
+    /// `/home/coin/sprag`). And nothing put the run's `reference` in the prompt either: the word
+    /// appeared **zero times** in `judge.rs`. So the process asked *did this land* stood in a
+    /// directory holding none of the work, holding no pointer to it, and could only answer off the
+    /// account it was shown.
+    ///
+    /// ⚠⚠ **THE ANSWER IT GAVE WAS RIGHT, AND THAT IS THE SHARPER HALF.** The work had landed and
+    /// the checker said YES. But a verdict obtainable only from the claimant's own account is not an
+    /// independent check — it is register item 428's defect wearing the remedy's clothes, and green
+    /// from it is not information.
+    ///
+    /// # ⚠⚠⚠ Why the verdict itself is made unobtainable without a read
+    ///
+    /// The checker is `/bin/sh verdict.sh`, and BOTH halves of what it needs exist only in the
+    /// repository and are named RELATIVELY: the script is found only from that directory, and the
+    /// script's own `cat EVIDENCE.md` is readable only from it. **The word `YES` is in that file.**
+    /// So this gate cannot pass on a checker that was merely started — the verdict is the read.
+    ///
+    /// ⚠ And the token the file carries is asserted ABSENT from the question, so the one other way
+    /// a reply could contain it — the checker echoing this run's own prompt, which `verdict_in`
+    /// exists to cut — cannot be what made this green.
+    ///
+    /// # ⚠⚠⚠ The premises, asserted INSIDE, because each one alone would make this vacuous
+    ///
+    /// * **The spawning process is somewhere else**, and so is `$HOME`. `$HOME` is the REAL fallback
+    ///   here, so a repository that happened to be it would make *inherited* and *chosen* the same
+    ///   answer — R25's rule, and the reason the directory is a third place.
+    /// * **The files are really there, and really not in the control's directory.**
+    /// * **The product's own door answers where the pane was born**, so the run's repository is a
+    ///   fact read rather than one this gate handed to itself.
+    #[test]
+    fn a_checker_is_put_where_the_work_is_and_told_what_to_consult() {
+        /// The word a process can obtain only by opening a file in the run's repository — and the
+        /// verdict, so that reading and agreeing are one act.
+        const TOKEN: &str = "checker-opened-the-repository";
+        /// What the run says to consult. Deliberately unlike anything else in the prompt, so its
+        /// presence cannot be an accident of the milestone text.
+        const CONSULT: &str = "the register's entry 710 and the two doors it names";
+        /// The checker: a program found by RELATIVE path, reading a file by RELATIVE path.
+        const READS_THE_REPOSITORY: &str = "/bin/sh verdict.sh";
+
+        let repo = a_directory_this_gate_owns("repo");
+        let elsewhere = a_directory_this_gate_owns("elsewhere");
+        std::fs::write(repo.join("verdict.sh"), "cat EVIDENCE.md\n").expect("the gate's checker");
+        std::fs::write(repo.join("EVIDENCE.md"), format!("YES {TOKEN}\n")).expect("the evidence");
+
+        // ── THE PREMISES ────────────────────────────────────────────────────────────────────────
+        let here = std::env::current_dir().expect("this process has a directory");
+        assert_ne!(
+            here, repo,
+            "⚠⚠ THE PREMISE: the process doing the spawning must be somewhere else, or a checker \
+             that INHERITED a directory and one that was POINTED at it are the same answer",
+        );
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        assert_ne!(
+            home.as_deref(),
+            Some(repo.as_path()),
+            "⚠⚠⚠ AND SO MUST `$HOME`, which is the real fallback this item measured: expecting the \
+             directory a broken build already produces is the vacuous shape item 280 names",
+        );
+        assert!(
+            repo.join("verdict.sh").exists() && repo.join("EVIDENCE.md").exists(),
+            "⚠ THE PREMISE: the two files have to be on disk in {}, or every read below is about \
+             nothing",
+            repo.display(),
+        );
+        assert!(
+            !elsewhere.join("verdict.sh").exists() && !elsewhere.join("EVIDENCE.md").exists(),
+            "⚠ AND NOT IN THE CONTROL'S DIRECTORY, or the control proves nothing",
+        );
+
+        let brief = |check: &str| Brief {
+            north_star: "the checker reads the repository it is judging".to_string(),
+            milestone: "reach it".to_string(),
+            reference: CONSULT.to_string(),
+            closing_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            milestone_check: Some(check.to_string()),
+            service: None,
+            max_turns: Some(Counted::Of(40)),
+            reflect_every: Some(99),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        };
+        let run = RunContext::uncancellable();
+
+        // ── ARM (a): THE RUN'S OWN REPOSITORY ───────────────────────────────────────────────────
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = pane_born_in(&repo);
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(20))
+            .expect("the document's four authored strings");
+        assert_eq!(
+            loops.brief(&brief(READS_THE_REPOSITORY)),
+            Briefed::Took,
+            "the parts must be held",
+        );
+        let born_in = access
+            .origin()
+            .expect("this surface records where a pane was born")
+            .pane_start_dir(pane)
+            .expect("the driving pane has a birth directory");
+        assert_eq!(
+            born_in, repo,
+            "⚠⚠⚠ THE PREMISE THE WHOLE ITEM RESTS ON: the run's repository is read off the pane it \
+             drives, through the product's own door. A gate that handed itself the directory would \
+             be measuring its own variable",
+        );
+
+        // ── (c) THE QUESTION SAYS WHERE THE WORK IS AND WHAT TO CONSULT ─────────────────────────
+        let question = loops.check_question(
+            &loops.turn_produced(&Stating {
+                said: Some("I moved the paragraph.".to_string()),
+                said_seq: 1,
+            }),
+            Some(repo.as_path()),
+        );
+        assert!(
+            question.contains(&repo.display().to_string()),
+            "⛔⛔⛔ THE CHECKER HAS TO BE TOLD WHERE THE WORK IS. *Judge the work, not the claim* is \
+             an instruction it cannot follow when the only work in front of it IS the claim, \
+             written out: {question:?}",
+        );
+        assert!(
+            question.contains(CONSULT),
+            "⛔⛔⛔ AND WHAT TO CONSULT — the second half of item 710. `reference` is the run's field \
+             for *what the next reader must know*, and it appeared ZERO times in the checker's \
+             whole path, so it reached every party in the run except the one verifying it: \
+             {question:?}",
+        );
+        assert!(
+            !question.contains(TOKEN),
+            "⚠⚠⚠⚠ AND THE VERDICT CANNOT COME FROM THE PROMPT. The question travels as the last \
+             argv, so a checker that echoed it would hand this run its own words back — the reading \
+             `verdict_in` exists to cut. The token must be obtainable only by opening the file",
+        );
+
+        // ── (a)+(b) THE CHECK ITSELF: IT STOOD THERE, AND IT READ ───────────────────────────────
+        let (verdict, explained, _shown) =
+            loops.checked(&access, &run, Heard::Said(Evidence::Pane));
+        assert_eq!(
+            verdict,
+            Checked::Passed,
+            "⛔⛔⛔⛔⛔ ARM (a), AND THE WHOLE ITEM: the verdict is inside a file in the run's \
+             repository, reachable only by a process standing in it. A checker spawned with no \
+             directory lands in `$HOME` and gets nothing — which is where every milestone claim in \
+             this system was being verified from",
+        );
+        assert!(
+            explained.is_some_and(|said| said.contains(TOKEN)),
+            "⚠⚠⚠⚠ ARM (b): AND THE FILE WAS REALLY READ. A verdict alone could come from a checker \
+             that merely started; this word exists in one file in one directory, and the milestone's \
+             own path is what produced it",
+        );
+
+        // ── THE CONTROL: THE SAME CHECKER, A PANE BORN SOMEWHERE ELSE ───────────────────────────
+        let other_lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (other_workspace, other_pane) = pane_born_in(&elsewhere);
+        let other_access = WorkspacePaneAccess::new(Arc::clone(&other_workspace));
+        let mut other_loops = bounded_at(other_lua, other_pane, Duration::from_secs(20))
+            .expect("the document's four authored strings");
+        assert_eq!(
+            other_loops.brief(&brief(READS_THE_REPOSITORY)),
+            Briefed::Took,
+            "the parts must be held",
+        );
+        let (control, _why, _shown) =
+            other_loops.checked(&other_access, &run, Heard::Said(Evidence::Pane));
+        assert_eq!(
+            control,
+            Checked::Silent,
+            "⚠⚠⚠⚠⚠ THE CONTROL, AND IT IS WHAT MAKES THE ARM ABOVE A MEASUREMENT: the same checker, \
+             pointed at a directory holding neither file, must not reach a verdict. A build that \
+             ignored the directory would pass both arms and prove nothing",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+        other_access
+            .lifecycle()
+            .expect("lifecycle")
+            .close(other_pane);
+    }
+
     /// ⚠⚠⚠⚠⚠ **THE INDEPENDENT CHECK IS SHOWN THE WORK, AND ON A FROZEN PANE THE WORK IS WHAT THE
     /// AGENT SAID** — register item 428's artifact, read through item 441's seam.
     ///
@@ -13585,10 +13885,13 @@ mod tests {
         loops.pump(&access, &run).expect("idle to priming");
 
         let worked = "I read the file and rewrote the stale section.\nMILESTONE REACHED";
-        let question = loops.check_question(&loops.turn_produced(&Stating {
-            said: Some(worked.to_string()),
-            said_seq: 1,
-        }));
+        let question = loops.check_question(
+            &loops.turn_produced(&Stating {
+                said: Some(worked.to_string()),
+                said_seq: 1,
+            }),
+            None,
+        );
         assert!(
             question.contains("I read the file and rewrote the stale section."),
             "⚠⚠⚠⚠⚠ THE CHECKER MUST BE SHOWN THE WORK. Off a frozen pane this artifact is EMPTY, and \
@@ -13598,10 +13901,13 @@ mod tests {
         );
 
         // ── THE CONTROL: nothing stated this turn, and the pane is the only road there is. ──
-        let painted = loops.check_question(&loops.turn_produced(&Stating {
-            said: Some(worked.to_string()),
-            said_seq: 0,
-        }));
+        let painted = loops.check_question(
+            &loops.turn_produced(&Stating {
+                said: Some(worked.to_string()),
+                said_seq: 0,
+            }),
+            None,
+        );
         assert!(
             !painted.contains("I read the file and rewrote the stale section."),
             "⚠⚠⚠ A STATEMENT FROM BEFORE THIS QUESTION IS NOT THIS TURN'S WORK, and handing it to a \

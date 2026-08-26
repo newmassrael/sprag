@@ -135,8 +135,8 @@ use crate::wire::{
     PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_HANDS_SLOT,
     PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL,
     RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SESSION_SLOT, SHIFT_FIELD,
-    SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY,
-    STOP_JOB_ACTION, STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY, STOP_JOB_REACH_KEY,
+    SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_CWD_KEY, SPAWN_NAME_KEY, SPAWN_ROWS_KEY,
+    SPLIT_PANE_KEY, STOP_JOB_ACTION, STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY, STOP_JOB_REACH_KEY,
     STOP_JOB_SIGNAL_KEY, STOP_JOB_STOP_KEY, SUPER_FIELD, agent_slot_for, hands_of, lines_since_at,
     mux_action_path, pane_input_path, raw_output_of, recent_input_has, refusal, unknown_action,
     unknown_slot,
@@ -1178,21 +1178,48 @@ impl sprag_plugin::PaneChanges for RemotePaneAccess {
 /// already destroyed the session it was preserving. So the daemon publishes the whole act
 /// ([`RESPAWN_ACTION`]) and this forwards it.
 impl PaneLifecycle for RemotePaneAccess {
-    /// Open a pane running `argv` at `cols` x `rows`.
+    /// Open a pane running `argv` at `cols` x `rows`, **in `cwd` when one is named**.
     ///
-    /// ⚠ No working directory and no environment, which is what this door has always meant — the
-    /// in-process one says the same, and `respawn` is the caller that has an opinion about both and
-    /// reads them off the pane rather than being told.
+    /// # ⚠⚠⚠⚠ The directory needed no new address — register item 710
+    ///
+    /// [`SPAWN_CWD_KEY`] has been in [`SPAWN_ACTION`]'s grammar, optional, since the verb was
+    /// published: a person opening a pane by hand has always been able to say where. **This door
+    /// simply never sent it**, so a plugin that had an opinion about a directory could not express
+    /// it over a wire that was ready to carry it — and the checker that most needed one landed in
+    /// `$HOME`. Sending an argument the schema already declares moves no protocol number.
+    ///
+    /// ⚠ No environment: `respawn` is the caller that has an opinion about that, and the daemon
+    /// reads it off the pane rather than being told.
+    ///
+    /// ⚠⚠ A path this build cannot spell as UTF-8 is REFUSED rather than lossily converted. A
+    /// laundered path is a different directory, and a checker in a different directory is exactly
+    /// the defect item 710 is: better a birth that says why than a pane pointed somewhere nobody
+    /// asked for.
     ///
     /// # Errors
     ///
-    /// [`PaneError::Spawn`] when the daemon refuses the birth, when it does not serve the verb, or
-    /// when the wire fails — each carrying the sentence that names it.
-    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, PaneError> {
-        self.born(
-            mux_action_path(SPAWN_ACTION),
-            json!({ SPAWN_CMD_KEY: argv, SPAWN_COLS_KEY: cols, SPAWN_ROWS_KEY: rows }),
-        )
+    /// [`PaneError::Spawn`] when the daemon refuses the birth, when it does not serve the verb,
+    /// when the wire fails, or when `cwd` is not UTF-8 — each carrying the sentence that names it.
+    fn spawn_in(
+        &self,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PaneId, PaneError> {
+        let mut args = json!({
+            SPAWN_CMD_KEY: argv, SPAWN_COLS_KEY: cols, SPAWN_ROWS_KEY: rows
+        });
+        if let Some(cwd) = cwd {
+            let Some(text) = cwd.to_str() else {
+                return Err(PaneError::Spawn(format!(
+                    "the working directory {} cannot be sent over this wire, which carries text",
+                    cwd.display()
+                )));
+            };
+            args[SPAWN_CWD_KEY] = json!(text);
+        }
+        self.born(mux_action_path(SPAWN_ACTION), args)
     }
 
     /// Replace `id` with a fresh pane running the same thing in the same place — see this impl's own

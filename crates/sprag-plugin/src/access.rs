@@ -782,6 +782,22 @@ pub trait PaneAccess {
         None
     }
 
+    /// The pane *origin* surface — WHERE a pane was pointed when it was born — if this
+    /// implementation records it. `None` by default, on the same terms as the sub-surfaces around
+    /// it: only a consumer that must put a second process in the same place as the work asks for it.
+    ///
+    /// ⚠⚠ A `None` here is *"this surface cannot say where that pane's work is"*, and a consumer
+    /// must degrade by saying so rather than by picking a directory — see [`PaneOrigin`] and
+    /// register item 710, which is what picking one silently cost.
+    ///
+    /// ⚠ A surface that reaches its panes over a SOCKET keeps the `None` today: the birth directory
+    /// has no address on that wire, so the answer would have to be invented. Named here rather than
+    /// left to be discovered, because the consumer that wants it is the one supervisor this
+    /// workspace is moving OUT of the daemon.
+    fn origin(&self) -> Option<&dyn PaneOrigin> {
+        None
+    }
+
     /// The pane's *echo trail* — what has recently been WRITTEN INTO it — if this host records
     /// one. `None` by default, on the same terms as the other three sub-surfaces: only a consumer
     /// that must tell a pane's own echo from what the program said asks for it.
@@ -1557,18 +1573,89 @@ pub trait PaneSupervision {
     fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation>;
 }
 
+/// **WHERE A PANE WAS POINTED** — the directory it was born in, which is the honest answer to
+/// *whose work is this pane doing*. Reached via [`PaneAccess::origin`].
+///
+/// # ⛔⛔⛔⛔⛔ Why a supervisor needs it — register item 710
+///
+/// A run drives one pane, and the work is in a repository. Nothing else a supervisor holds says
+/// WHICH: a run id is a number, a brief is prose a person wrote, and a pane id addresses a pane
+/// rather than describing it. So when that supervisor spawns a second process to CHECK the work —
+/// the independent milestone checker item 428 exists for — it had nothing to point that process at,
+/// and a pane spawned with no directory lands in `$HOME` (see [`PaneLifecycle::spawn_in`]).
+/// Measured 2026-08-26: a live checker answered YES about a repository it could not open a file in.
+///
+/// ⚠⚠ **IT IS THE BIRTH DIRECTORY AND NOT THE LIVE ONE**, deliberately. A pane's process can `cd`
+/// anywhere, and `/proc/<pid>/cwd` answers `None` the moment the child exits — item 684 is the bill
+/// for reading the live one, where a restarted pane came back pointed at `$HOME` because the pane
+/// whose cwd was being read had already gone. The birth directory is a fact about the pane that
+/// nothing later can take away, which is the property a supervisor needs.
+///
+/// # Why the absence is an answer
+///
+/// `None` from [`pane_start_dir`](Self::pane_start_dir) is *this surface does not know*, never
+/// *`$HOME`*: a caller that read it as a directory would put the checker back exactly where 710
+/// found it, and with a sentence claiming it had been pointed somewhere.
+pub trait PaneOrigin {
+    /// The directory pane `id` was spawned in, or `None` for a pane this surface does not hold.
+    fn pane_start_dir(&self, id: PaneId) -> Option<std::path::PathBuf>;
+}
+
 /// Pane *lifecycle* control: spawn and close panes. The capability a plugin
 /// needs to orchestrate one-shot tools across turns (each turn a fresh pane).
 /// Reached via [`PaneAccess::lifecycle`] so it does not fatten the read/inject
 /// surface every plugin depends on.
 pub trait PaneLifecycle {
-    /// Spawn a pane running `argv` (`[program, args…]`) at `cols × rows`,
-    /// returning its [`PaneId`].
+    /// **SPAWN A PANE RUNNING `argv` (`[program, args…]`) AT `cols × rows`, IN `cwd` WHEN ONE IS
+    /// NAMED** — returning its [`PaneId`].
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the directory is ON this door — register item 710
+    ///
+    /// This trait used to offer only [`spawn`](Self::spawn), and its documentation said a plugin
+    /// with no opinion about a directory *takes the daemon's*. **That sentence was false and it cost
+    /// a whole capability.** A pane spawned with no directory falls through to
+    /// `sprag_terminal::CommandBuilder`'s default, which is **`$HOME`** — not the daemon's cwd, not
+    /// the caller's. Measured 2026-08-26 on a live checker (`readlink /proc/389877/cwd` →
+    /// `/home/coin`, against a daemon in `/home/coin/sprag`).
+    ///
+    /// What that broke is the one caller who most needs a directory: the independent milestone
+    /// checker ([`crate::judge`]). A process asked *did this land* in a directory that holds none of
+    /// the work can only answer off the TEXT it was shown — which is a verdict resting on the
+    /// working agent's own account, the exact thing an independent check exists to replace.
+    ///
+    /// ⚠⚠ **SO A DIRECTORY IS SOMETHING EVERY IMPLEMENTOR HAS TO ANSWER FOR**, which is why this is
+    /// the required method and `spawn` is the provided one. An implementation that quietly dropped
+    /// the argument would put the caller back where 710 found it, with nothing anywhere saying so.
+    ///
+    /// ⚠ [`None`] is *no opinion*, and it is a real answer rather than a missing one: a one-shot
+    /// tool that reads nothing off the filesystem has no directory to be pointed at.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError::Spawn`] when `argv` is empty, when the pane cannot start, or — for a surface
+    /// that reaches the pane over a wire — when the daemon refuses the birth.
+    fn spawn_in(
+        &self,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PaneId, PaneError>;
+
+    /// Spawn a pane running `argv` at `cols × rows` **with no opinion about where** —
+    /// [`spawn_in`](Self::spawn_in) with no directory.
+    ///
+    /// ⚠⚠⚠ It does NOT mean *the daemon's directory*. This door's own documentation claimed that
+    /// for as long as it existed, and register item 710 measured it false: the pane lands in
+    /// **`$HOME`**. A caller that wants the pane to be able to READ something has to name the
+    /// directory, and [`spawn_in`](Self::spawn_in) is where.
     ///
     /// # Errors
     ///
     /// [`PaneError::Spawn`] when `argv` is empty or the pane cannot start.
-    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, PaneError>;
+    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, PaneError> {
+        self.spawn_in(argv, None, cols, rows)
+    }
 
     /// Close (reap) the pane with `id`, returning whether it existed. The
     /// pane's blocking teardown runs outside any shared lock.
@@ -1879,6 +1966,13 @@ impl PaneAccess for WorkspacePaneAccess {
     fn changes(&self) -> Option<&dyn PaneChanges> {
         Some(self)
     }
+
+    /// ⚠ ANSWERED UNCONDITIONALLY, on [`changes`](PaneAccess::changes)'s terms: a birth directory is
+    /// recorded by the workspace for every pane it spawns, so there is no host configuration this
+    /// could be missing.
+    fn origin(&self) -> Option<&dyn PaneOrigin> {
+        Some(self)
+    }
 }
 
 impl WorkspacePaneAccess {
@@ -2038,6 +2132,15 @@ impl PaneRawCapture for WorkspacePaneAccess {
     }
 }
 
+impl PaneOrigin for WorkspacePaneAccess {
+    /// ⚠ THE PANE'S OWN RECORD, taken under the workspace lock and copied out — the same read
+    /// [`respawn`](PaneLifecycle::respawn) makes when it puts a replacement in the same place, so
+    /// *where this pane belongs* has ONE answer in this process rather than two.
+    fn pane_start_dir(&self, id: PaneId) -> Option<std::path::PathBuf> {
+        Some(lock(&self.workspace).pane(id)?.start_dir().to_path_buf())
+    }
+}
+
 impl PaneChanges for WorkspacePaneAccess {
     fn pane_revision(&self, id: PaneId) -> Option<u64> {
         Some(self.handle(id)?.revision().now())
@@ -2058,14 +2161,20 @@ impl PaneChanges for WorkspacePaneAccess {
 }
 
 impl WorkspacePaneAccess {
-    /// Spawn `argv` at `cols × rows`, in `cwd` when one is given — the body both
-    /// [`spawn`](PaneLifecycle::spawn) and [`respawn`](PaneLifecycle::respawn) are, so a replacement
-    /// pane is wired to the daemon's hooks exactly as a first one is.
+    /// Spawn `argv` at `cols × rows`, in `cwd` when one is given and carrying `env` — the body all
+    /// three of [`spawn`](PaneLifecycle::spawn), [`spawn_in`](PaneLifecycle::spawn_in) and
+    /// [`respawn`](PaneLifecycle::respawn) are, so a replacement pane is wired to the daemon's hooks
+    /// exactly as a first one is.
     ///
     /// ⚠ ONE BODY AND NOT TWO, for the reason this crate keeps re-deriving: the interesting content
     /// here is the three opaque birth hooks, and a second copy of them is a second place for a
     /// plugin-spawned pane to stop feeding the reaper.
-    fn spawn_in(
+    ///
+    /// ⚠⚠ NAMED APART FROM THE TRAIT DOOR IT SERVES ([`PaneLifecycle::spawn_in`]) because it takes
+    /// one more thing: an ENVIRONMENT, which only `respawn` has an opinion about. Two methods with
+    /// one name on one type would resolve by inherent-first and differ only in arity, which is a
+    /// reading nobody should have to do at a call site.
+    fn spawn_with(
         &self,
         argv: &[String],
         cwd: Option<&std::path::Path>,
@@ -2123,16 +2232,24 @@ impl WorkspacePaneAccess {
 }
 
 impl PaneLifecycle for WorkspacePaneAccess {
-    fn spawn(&self, argv: &[String], cols: u16, rows: u16) -> Result<PaneId, PaneError> {
-        // ⚠ NO WORKING DIRECTORY AND NO ENVIRONMENT, which is what this door has always meant: a
-        // plugin spawning a one-shot tool has no opinion about either, and takes the daemon's.
-        // `respawn` is the caller that does have one, and it reads both off the pane rather than being
-        // told.
-        self.spawn_in(argv, None, &[], cols, rows)
+    fn spawn_in(
+        &self,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PaneId, PaneError> {
+        // ⚠ THE DIRECTORY THE CALLER NAMED, AND NO ENVIRONMENT. `respawn` is the caller that has an
+        // opinion about the environment too, and it reads it off the pane rather than being told.
+        //
+        // ⛔⛔ A `None` here is NOT the daemon's directory — this door's documentation said so for
+        // as long as it existed and register item 710 measured it false: the pane lands in `$HOME`,
+        // which is why the trait now makes the directory something a caller states.
+        self.spawn_with(argv, cwd, &[], cols, rows)
     }
 
     fn respawn(&self, id: PaneId) -> Result<PaneId, PaneError> {
-        // ⚠⚠ READ, THEN RELEASE, THEN SPAWN. `spawn_in` takes the workspace lock itself, and this
+        // ⚠⚠ READ, THEN RELEASE, THEN SPAWN. `spawn_with` takes the workspace lock itself, and this
         // crate's standing rule is that no lock is held across a syscall — a pty spawn most of all.
         let (argv, env, cwd, (cols, rows)) = {
             let guard = lock(&self.workspace);
@@ -2164,7 +2281,7 @@ impl PaneLifecycle for WorkspacePaneAccess {
                 id.0
             )));
         }
-        let fresh = self.spawn_in(&argv, Some(cwd.as_path()), &env, cols, rows)?;
+        let fresh = self.spawn_with(&argv, Some(cwd.as_path()), &env, cols, rows)?;
         // ⚠⚠⚠ THE SEAT'S OWN DECLARATIONS FOLLOW IT, under ONE lock and BEFORE the close: what the
         // caller called this pane, who asked for it, what it may spend and whether it is a remote
         // workspace. `hand_seat_over` is one operation rather than four calls here for the reason it
@@ -2984,6 +3101,125 @@ mod tests {
         assert!(life.close(id), "close reports the pane existed");
         assert!(lock(&workspace).pane(id).is_none(), "pane should be gone");
         assert!(!life.close(id), "closing again reports absence");
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PANE STANDS WHERE THE CALLER SAID, AND A PANE WITH NO OPINION STANDS IN `$HOME`
+    /// RATHER THAN THE DAEMON'S DIRECTORY** — register item 710, and the sentence this door's own
+    /// documentation carried until it was measured.
+    ///
+    /// # The false sentence, and what it cost
+    ///
+    /// [`PaneLifecycle::spawn`] said *a plugin spawning a one-shot tool has no opinion about either,
+    /// and takes the daemon's*. It does not. `sprag_terminal::CommandBuilder::start_dir` answers
+    /// `$HOME` for a builder nobody told, deliberately (item 417 argues the default). So the
+    /// independent milestone checker — the one caller in this system whose job is to VERIFY somebody
+    /// else's work — was started in a directory holding none of it, and two watchers reading that
+    /// comment got the mechanism wrong on the night it was found.
+    ///
+    /// # ⚠⚠⚠ Why BOTH arms, and why the second is the whole finding
+    ///
+    /// A build that pointed every pane at the caller's directory would pass arm (a) and destroy the
+    /// default item 417 decided. A build that ignored the caller entirely would pass arm (b). ⚠ And
+    /// arm (b) asserts the directory is NOT this process's, which is what makes *takes the daemon's*
+    /// false rather than merely unproven: this test process is the one doing the spawning.
+    ///
+    /// ⚠⚠ The directory is READ FROM THE KERNEL through the pane's own live cwd
+    /// (`PanePty::cwd` — `/proc/<pid>/cwd`), not from what the builder was handed, so a
+    /// `CommandBuilder` that recorded a directory and never passed it to the spawn is red here.
+    /// Polled, because a child that has not finished starting has no cwd yet.
+    #[test]
+    fn a_spawned_pane_stands_where_the_caller_said_and_not_where_the_daemon_is() {
+        /// A peer that stays alive, so the kernel still has a cwd to answer with.
+        fn argv() -> Vec<String> {
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "exec cat".to_string(),
+            ]
+        }
+        /// Where the OS says that pane's child is, once it has one.
+        fn stands_in(workspace: &Arc<Mutex<Workspace>>, id: PaneId) -> Option<std::path::PathBuf> {
+            let start = std::time::Instant::now();
+            loop {
+                let answer = lock(workspace).pane(id)?.pty().cwd();
+                if answer.is_some() || start.elapsed() > std::time::Duration::from_secs(5) {
+                    return answer;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+
+        let named = std::env::temp_dir().join(format!(
+            "sprag-spawn-in-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::create_dir_all(&named).expect("a directory this gate owns");
+        let named = named.canonicalize().expect("the kernel's spelling of it");
+        let here = std::env::current_dir()
+            .expect("this process has a directory")
+            .canonicalize()
+            .expect("the kernel's spelling of it");
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .and_then(|home| home.canonicalize().ok())
+            .expect("this gate needs a home to compare against");
+        assert_ne!(
+            named, here,
+            "⚠⚠ THE PREMISE: the directory asked for must not be the one this process is in, or \
+             *inherited* and *chosen* are the same answer",
+        );
+        assert_ne!(
+            named, home,
+            "⚠ AND NOT `$HOME` EITHER, which is the real fallback — expecting the directory a \
+             broken build already produces asserts nothing",
+        );
+        assert_ne!(
+            here, home,
+            "⚠⚠⚠ AND THE TWO CANDIDATE FALLBACKS MUST DIFFER, or arm (b) cannot tell *the daemon's* \
+             from `$HOME` and the false sentence stays unmeasured. Run this from the repository \
+             rather than from a home directory",
+        );
+
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let life = access.lifecycle().expect("this surface spawns panes");
+
+        // ── ARM (a): THE CALLER NAMES A DIRECTORY ───────────────────────────────────────────────
+        let pointed = life
+            .spawn_in(&argv(), Some(named.as_path()), 20, 4)
+            .expect("spawn");
+        assert_eq!(
+            stands_in(&workspace, pointed).as_deref(),
+            Some(named.as_path()),
+            "⛔⛔⛔⛔⛔ ARM (a), AND THE WHOLE ITEM: a caller that has an opinion about where a pane \
+             belongs has to be able to say so. Without it the independent checker was verifying \
+             milestones from a directory holding none of the work",
+        );
+
+        // ── ARM (b): NO OPINION — AND IT IS NOT THIS PROCESS'S DIRECTORY ────────────────────────
+        let unopinionated = life.spawn(&argv(), 20, 4).expect("spawn");
+        let landed = stands_in(&workspace, unopinionated);
+        assert_ne!(
+            landed.as_deref(),
+            Some(here.as_path()),
+            "⛔⛔⛔⛔ ARM (b), AND THE FALSE SENTENCE MADE CONCRETE: this door's documentation said a \
+             pane with no directory *takes the daemon's*, and the daemon here is THIS process. Two \
+             watchers read that comment and got the mechanism wrong",
+        );
+        assert_eq!(
+            landed.as_deref(),
+            Some(home.as_path()),
+            "⚠⚠⚠ AND IT IS `$HOME`, which is `CommandBuilder::start_dir`'s DECIDED default (item \
+             417) rather than an accident — so this arm holds the default in place while arm (a) \
+             adds the way to state the other one",
+        );
+
+        assert!(
+            life.close(pointed) && life.close(unopinionated),
+            "both close"
+        );
+        let _ = std::fs::remove_dir_all(&named);
     }
 
     /// ⚠⚠⚠ **A REPLACEMENT PANE IS THE SAME COMMAND IN THE SAME WORLD** —

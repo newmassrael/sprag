@@ -413,10 +413,15 @@ pub fn judges(
     if criterion.trim().is_empty() {
         return Err(Unheard::Unasked);
     }
+    // ⚠ NO DIRECTORY, and that is a decision rather than an omission — register item 710. What this
+    // judge is asked about is a DIALOG that is already rendered into the question: the whole of the
+    // evidence is the text, there is nothing on a filesystem for it to open, and pointing it at a
+    // repository would suggest otherwise. The milestone check is the caller with something to read.
     asked_of_another(
         panes,
         run,
         &spec.argv,
+        None,
         &render(criterion, question),
         spec.within,
     )
@@ -458,10 +463,11 @@ pub fn asked_of_another(
     panes: &dyn PaneAccess,
     run: &RunContext,
     argv: &[String],
+    cwd: Option<&std::path::Path>,
     question: &str,
     within: Duration,
 ) -> Result<Judgement, Unheard> {
-    let (reply, took) = said_by_another(panes, run, argv, question, within)?;
+    let (reply, took) = said_by_another(panes, run, argv, cwd, question, within)?;
     verdict_in(&reply, question, took)
 }
 
@@ -492,6 +498,7 @@ pub(crate) fn said_by_another(
     panes: &dyn PaneAccess,
     run: &RunContext,
     argv: &[String],
+    cwd: Option<&std::path::Path>,
     question: &str,
     within: Duration,
 ) -> Result<(String, Duration), Unheard> {
@@ -505,7 +512,22 @@ pub(crate) fn said_by_another(
     argv.push(question.to_owned());
 
     let began = Instant::now();
-    let pane = match life.spawn(&argv, JudgeSpec::PANE.0, JudgeSpec::PANE.1) {
+    // ⛔⛔⛔⛔⛔ **IN THE DIRECTORY THE CALLER NAMED, AND THAT IS REGISTER ITEM 710.** This used to
+    // call `spawn`, whose documentation said a pane with no directory *takes the daemon's*. It does
+    // not: it lands in `$HOME`. So the one process in this system whose job is to VERIFY somebody
+    // else's work was started where none of that work is — measured 2026-08-26, a checker at
+    // `/home/coin` answering about a repository at `/home/coin/scxml-core-engine`, whose files it
+    // could not have opened had it tried.
+    //
+    // ⚠⚠ The answer it gave was RIGHT, and that is the sharper half of the finding: it read the
+    // text it was shown and agreed, correctly. **A verdict that could only come from the claimant's
+    // own account is not an independent check** — it is item 428's defect wearing the remedy's
+    // clothes. Pointing the process at the work is what makes reading possible; what it reads is
+    // then between it and the question.
+    //
+    // ⚠ `None` stays honest: a caller with nothing on disk to point at (a dialog judge) says so, and
+    // the pane lands wherever a pane with no opinion lands.
+    let pane = match life.spawn_in(&argv, cwd, JudgeSpec::PANE.0, JudgeSpec::PANE.1) {
         Ok(pane) => pane,
         // ⚠ THE SPAWN'S OWN SENTENCE, not a word this function invents: item 593 suspected a cwd
         // the checker could not read and had no way to confirm it, because the one thing that knew
