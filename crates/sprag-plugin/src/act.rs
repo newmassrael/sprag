@@ -157,6 +157,34 @@ pub enum Act {
     /// ([`Serving::published`]), not by naming seven states here. Only the fifteen states a driver
     /// actually drives declare this.
     Account,
+    /// `arrival.note` — which of the run's own readings belongs on the arrow this pass just drew.
+    ///
+    /// Argument: `note` — which reading, from the closed space [`Notes`] names.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It is the ARROW's word, and it is the last of item 470's copies
+    ///
+    /// Register item 470, stage 3. `OuterLoop::pumping` chose it from a `match` over all
+    /// twenty-eight states: six naming a reading and twenty-two written out to say *this arrow
+    /// needs no word*. `Because` exists for doors an arrow cannot tell apart — a state reached from
+    /// several places, for reasons that disagree about the remedy — so which reading applies is a
+    /// property of the DOOR, and a door is a thing the document has and the driver does not.
+    ///
+    /// # ⚠⚠⚠⚠ Why one of the six is declared on an EDGE and the other five on `In(…)`
+    ///
+    /// Five of them are answered by WHERE THE PASS ARRIVED: every door into `reflecting`,
+    /// `stopping`, `closing` and `restarting` wants that state's own reading, and `disputing` has
+    /// exactly one door. Those are `In(…)` questions, asked the way `pass.do` is asked.
+    ///
+    /// ⚠⚠ **`working` is not**, and it is the arm the old match needed an `if from ==` for.
+    /// `working` is entered from four states and only a JUDGEMENT has a reading behind it; the
+    /// other three doors would be handed a value belonging to some earlier turn. So the two
+    /// `judging -> working` edges declare it **on themselves**, which is the document saying *this
+    /// door* rather than the driver reconstructing which door it must have been.
+    ///
+    /// ⚠ The READING stays with the driver: a ceiling, a reflect reason, a done reason, a restart
+    /// reason and a judgement are five different Rust values it latched as it went. The document
+    /// says WHICH of them the arrow wants.
+    Note,
 }
 
 impl Act {
@@ -164,7 +192,7 @@ impl Act {
     ///
     /// ⚠ The one list. [`Act::of`] reads it rather than spelling a second `match`, so an act added
     /// to the enum is served the moment it names itself.
-    pub const ALL: [Self; 4] = [Self::Say, Self::Pass, Self::End, Self::Account];
+    pub const ALL: [Self; 5] = [Self::Say, Self::Pass, Self::End, Self::Account, Self::Note];
 
     /// The name a document calls this act by — its own `<send event="…">`.
     #[must_use]
@@ -174,6 +202,7 @@ impl Act {
             Self::Pass => "pass.do",
             Self::End => "end.publish",
             Self::Account => "account.ask",
+            Self::Note => "arrival.note",
         }
     }
 
@@ -584,6 +613,73 @@ impl Accounts {
     }
 }
 
+/// **WHICH OF THE RUN'S OWN READINGS BELONGS ON THIS ARROW** — [`Act::Note`]'s `note` argument.
+///
+/// # ⚠⚠⚠⚠⚠ What this space replaced, and what a `Because` is for
+///
+/// Register item 470, stage 3, the last of the seven. `OuterLoop::pumping` chose it from a `match`
+/// over all twenty-eight states: six naming a reading and twenty-two written out to say *this arrow
+/// needs no word*. A `Because` exists **only for doors an arrow cannot tell apart** — a state
+/// reached from several places for reasons that disagree about the remedy — so a one-doored state
+/// answers nothing and is right to, because `From --Event--> To` is already the whole story.
+///
+/// ⚠⚠ **THE READING STAYS WITH THE DRIVER, AND THAT IS THE LINE.** A ceiling, a reflect reason, a
+/// done reason, a restart reason and a judgement are five different Rust values the driver latched
+/// as it went. What moves is *which of them this arrow wants*, which is a property of the door.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Notes {
+    /// `reflected` — why the run stopped to reflect.
+    Reflected,
+    /// `stopped` — which ceiling sent the machine to `stopping`.
+    ///
+    /// ⚠⚠ Four ceilings arrive on two edges, and a reader could otherwise tell them apart only by
+    /// whether the Driver's own note PRECEDED the arrow — i.e. by the absence of a key.
+    Stopped,
+    /// `closed` — which of the two runs through one transition this was.
+    ///
+    /// ⚠ A many-doored state whose doors are not `<transition>`s at all but two returns in the
+    /// driver's own `reflect`, which is why counting the document's edges would not have found it.
+    Closed,
+    /// `restarted` — which of three disagreeing reasons bought the replacement.
+    Restarted,
+    /// `judged` — what the judgement that opened this turn saw.
+    ///
+    /// ⚠⚠⚠ The one word declared on EDGES rather than by arrival: `working` is entered from four
+    /// states and only a judgement has a reading behind it, so the other three doors would be
+    /// handed a value belonging to some earlier turn. `disputing` carries the same word by arrival
+    /// instead, because exactly one edge reaches it and that edge comes from `judging`.
+    Judged,
+}
+
+impl Notes {
+    /// Every reading an arrival may ask for.
+    pub const ALL: [Self; 5] = [
+        Self::Reflected,
+        Self::Stopped,
+        Self::Closed,
+        Self::Restarted,
+        Self::Judged,
+    ];
+
+    /// The word a document names this reading with.
+    #[must_use]
+    pub const fn named(self) -> &'static str {
+        match self {
+            Self::Reflected => "reflected",
+            Self::Stopped => "stopped",
+            Self::Closed => "closed",
+            Self::Restarted => "restarted",
+            Self::Judged => "judged",
+        }
+    }
+
+    /// Which reading `word` names, or [`None`] for a word this space does not hold.
+    #[must_use]
+    pub fn of(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|note| note.named() == word)
+    }
+}
+
 /// **ONE ACT THE DOCUMENT ASKED FOR, WITH THE ARGUMENTS IT SENT.**
 ///
 /// ⚠ A variant per act rather than one struct with every act's arguments on it: the two acts share
@@ -615,6 +711,11 @@ pub enum Asked {
         /// Which answer, and where it is a refusal, which one.
         can: Accounts,
     },
+    /// [`Act::Note`] — which reading this arrow wants.
+    Note {
+        /// The reading.
+        note: Notes,
+    },
 }
 
 impl Asked {
@@ -629,6 +730,7 @@ impl Asked {
             Self::Pass { .. } => Act::Pass,
             Self::End { .. } => Act::End,
             Self::Account { .. } => Act::Account,
+            Self::Note { .. } => Act::Note,
         }
     }
 }
@@ -813,6 +915,13 @@ struct Book {
     /// immediately before reading this: the answer is about the state the machine is in AT THE
     /// MOMENT OF ASKING, and a slot left full would answer a later ask with an earlier state's word.
     accounting: Option<Asked>,
+    /// The arrival act ([`Act::Note`]) nothing has read yet.
+    ///
+    /// ⚠ TAKEN, because it is about the ARROW this pass drew and nothing else: a slot left full
+    /// would put an earlier arrival's reading on a later arrow. Declared two ways — by arrival on a
+    /// targetless transition, and on the two `judging -> working` edges — and both write here, so
+    /// the take is what keeps them from accumulating.
+    noting: Option<Asked>,
     /// Every act this host would not perform, in the order they were asked for.
     refused: Vec<Refused>,
 }
@@ -828,6 +937,7 @@ impl Book {
             Act::Pass => &mut self.passing,
             Act::End => &mut self.ending,
             Act::Account => &mut self.accounting,
+            Act::Note => &mut self.noting,
         }
     }
 }
@@ -1047,6 +1157,19 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
             };
             Ok(Asked::Account { can })
         }
+        // ⚠ NO EMPTY CHECK OF ITS OWN, for `does`'s reason: `Notes::of("")` answers [`None`].
+        Act::Note => {
+            let said = argument(params, act, "note")?;
+            let Some(note) = Notes::of(&said) else {
+                return Err(Refused::Unreadable {
+                    act,
+                    argument: "note",
+                    said,
+                    holds: Notes::ALL.map(Notes::named).to_vec(),
+                });
+            };
+            Ok(Asked::Note { note })
+        }
     }
 }
 
@@ -1070,7 +1193,9 @@ mod tests {
 
     use sce_rust_runtime::{IScriptEngine, ScriptValue};
 
-    use super::{Accounts, Act, Asked, Asks, Does, Publishes, Refused, Serving, Signals, read};
+    use super::{
+        Accounts, Act, Asked, Asks, Does, Notes, Publishes, Refused, Serving, Signals, read,
+    };
     use crate::sm::probe_send_type_sm::ProbeSendTypePolicy;
 
     /// The act `probe_send_type.scxml` addresses to this host — a name [`Act`] does not serve.
@@ -1386,6 +1511,41 @@ mod tests {
             "⚠⚠⚠⚠ AN ACCOUNT ANSWER THAT EVALUATED TO NOTHING IS REFUSED BY THE SPACE ITSELF, on \
              `does`'s terms: the empty string is not one of the five, and a default here would \
              grant or refuse a window on a state nobody decided about",
+        );
+
+        // ⚠⚠⚠⚠⚠ AND THE FIFTH ACT'S SPACE — register item 470, stage 3, the last match. `note` is
+        // what replaced `pumping`'s twenty-eight-arm arrival match, and a word this door cannot
+        // read back is an arrow rendered between doors a reader cannot then tell apart.
+        assert_eq!(
+            Notes::ALL.len(),
+            5,
+            "⚠⚠⚠ the space this walk asserts over decides how many times it asserts, so its size \
+             is pinned beside it: a variant dropped from `ALL` would shrink the control with it",
+        );
+        for note in Notes::ALL {
+            assert_eq!(
+                match asking(Act::Note, &[("note", note.named())])
+                    .expect("every word this space holds is one an arrival may declare")
+                {
+                    Asked::Note { note } => note,
+                    other => panic!("`arrival.note` is what was asked for: {other:?}"),
+                },
+                note,
+                "⚠⚠⚠⚠ `{}` is in `Notes::ALL` and this door does not read it back as itself",
+                note.named(),
+            );
+        }
+        assert_eq!(
+            asking(Act::Note, &[("note", "")]),
+            Err(Refused::Unreadable {
+                act: Act::Note,
+                argument: "note",
+                said: String::new(),
+                holds: Notes::ALL.map(Notes::named).to_vec(),
+            }),
+            "⚠⚠⚠⚠ AN ARRIVAL WORD THAT EVALUATED TO NOTHING IS REFUSED BY THE SPACE ITSELF, on \
+             `does`'s terms: the empty string is not one of the five, and a default here would put \
+             some other door's reading on this arrow",
         );
 
         assert_eq!(

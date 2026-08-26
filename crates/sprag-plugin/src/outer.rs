@@ -4448,6 +4448,34 @@ impl OuterLoop {
         }
     }
 
+    /// **ASK THE DOCUMENT WHICH READING THE ARROW THIS PASS DREW WANTS**, and take the answer —
+    /// register item 470, stage 3, the last of the seven.
+    ///
+    /// [`None`] where the arrival declared nothing, which is the common and correct case: a
+    /// `Because` exists only for doors an arrow cannot tell apart, so a one-doored state answers
+    /// nothing because `From --Event--> To` is already the whole story.
+    ///
+    /// ⚠⚠ TWO WAYS IN, AND THE SLOT IS WHY THEY DO NOT COLLIDE. Five of the six words are answered
+    /// by ARRIVAL, on a targetless `<transition event="arrived">` guarded by `In(…)`; the sixth
+    /// rides the two `judging -> working` EDGES, because `working` is entered from four states and
+    /// only a judgement has a reading behind it. An edge's word is written during the transition
+    /// itself and is already waiting here by the time this raise happens; the raise then matches no
+    /// `In('working')` arm, so what is taken is the edge's.
+    ///
+    /// ⚠ Called only where the machine MOVED. An arrival act read on a pass that went nowhere would
+    /// put an earlier arrow's reading on a later one.
+    pub fn asked_of_this_arrival(&mut self) -> Option<crate::act::Notes> {
+        let from = self.state();
+        self.machine.process_event(AiLoopEvent::Arrived);
+        if self.state() != from {
+            self.note_edge(from, AiLoopEvent::Arrived);
+        }
+        match self.serving.taken(crate::act::Act::Note) {
+            Some(crate::act::Asked::Note { note }) => Some(note),
+            _ => None,
+        }
+    }
+
     /// [`walk`](Self::walk) for an event that carries `_event.data`.
     ///
     /// ⚠⚠ Separate because `process_event` carries NO data at all — it is `raise_external(event,
@@ -5523,74 +5551,29 @@ impl OuterLoop {
         let because = if from == to {
             None
         } else {
-            match to {
-                AiLoopState::Reflecting => self.reflecting_because().map(Because::Reflected),
-                // ⚠⚠⚠ FOUR CEILINGS ARRIVE ON TWO EDGES and a reader could tell them apart only by
-                // whether the Driver's own `note_to_itself` line PRECEDED the arrow — i.e. by the
-                // ABSENCE of a key, which is the reading this workspace has burned wire numbers
-                // over. Register item 265; the document assigns the word on both doors.
-                AiLoopState::Stopping => self.stopping_because().map(Because::Stopped),
-                // ⚠⚠⚠ ONE TRANSITION AND TWO RUNS — a many-doored state whose doors are not
-                // `<transition>`s but `return`s in [`Self::reflect`], which is why counting the
-                // document's edges would not have found it. Register item 267.
-                AiLoopState::Closing => self.closing_because().map(Because::Closed),
-                // ⚠⚠⚠ SIX TRANSITIONS AND THREE DECISIONS — *replacing has paid for itself*, *there
-                // was no room*, and *neither question could be asked* — which disagree about the
-                // remedy and rendered one arrow between them. Register item 445; the document
-                // assigns the word on all six doors.
-                AiLoopState::Restarting => self.restarting_because().map(Because::Restarted),
-                // ⚠⚠⚠⚠ TWO DOORS ONTO `working` AND THEY MEAN OPPOSITE THINGS — an unreadable turn
-                // and an ordinary one — and this is the ONE arm keyed on where the pass came FROM.
-                // `working` is entered from four states and only a judgement has a reading behind
-                // it; the other three would be handed a value belonging to some earlier turn, which
-                // is the staleness `saw`'s own doc refuses. Register item 423.
-                AiLoopState::Working if from == AiLoopState::Judging => {
-                    self.saw.map(Because::Judged)
+            // ⚠⚠⚠⚠⚠ **TWENTY-EIGHT ARMS STOOD HERE AND ALL TWENTY-EIGHT ARE GONE** — register
+            // item 470, stage 3, the LAST of the seven. Six named a reading and twenty-two were
+            // written out to say *this arrow needs no word*, which was never a decision: a
+            // `Because` exists only for doors an arrow cannot tell apart, so a one-doored state
+            // answers nothing because `From --Event--> To` is already the whole story. Twenty-two
+            // states saying *nothing to add* is the DEFAULT, and it needed twenty-two arms only
+            // because the question was keyed on a state's name.
+            //
+            // ⚠⚠ THE READINGS STAY HERE and are five different values this driver latched as it
+            // went. What the document decides is WHICH of them this arrow wants — including the
+            // one the old match needed an `if from ==` for, which the two `judging -> working`
+            // edges now declare on themselves.
+            match self.asked_of_this_arrival() {
+                Some(crate::act::Notes::Reflected) => {
+                    self.reflecting_because().map(Because::Reflected)
                 }
-                // ⚠⚠⚠⚠⚠ AND THE REFUSED TURN CARRIES THE SAME READING, which is a fix inside a fix:
-                // moving the refusing edge off `working` (register item 448) would otherwise have
-                // taken the sentence *the agent said the marker and an independent process shown
-                // the same disagreed* off the walk with it, because the arm above is keyed on the
-                // state a refusal no longer lands in. It needs no `if`: ONE edge reaches
-                // `disputing`, it comes from `judging`, and the reading it carries is that
-                // judgement's own.
-                AiLoopState::Disputing => self.saw.map(Because::Judged),
-                AiLoopState::Idle
-                | AiLoopState::Priming
-                | AiLoopState::Working
-                | AiLoopState::Judging
-                | AiLoopState::Screening
-                // ⚠ ONE DOOR, so the arrow already says everything a `Because` could: `working`
-                // is the only state that reaches it, and it reaches it for one reason.
-                | AiLoopState::ServiceDown
-                | AiLoopState::Redirecting
-                | AiLoopState::AwaitingHuman
-                | AiLoopState::Reviewing
-                | AiLoopState::Resuming
-                | AiLoopState::Converged
-                | AiLoopState::Exhausted
-                | AiLoopState::Failed
-                | AiLoopState::Cancelled
-                // ⚠⚠ MANY-DOORED AND STILL `None`, which is the arm worth a line. Every state that
-                // touches the peer's pane can reach `peer_gone`, so this ending has more doors than
-                // `stopping` has — but the FROM state is already in the walk's own arrow
-                // (`Working --PeerGone--> PeerGone`), and it is the whole of what distinguishes
-                // them. `Because` exists for doors the arrow cannot tell apart.
-                | AiLoopState::PeerGone
-                // ⚠⚠ ONE-DOORED, WHICH IS THE OPPOSITE ARGUMENT TO `peer_gone`'s ABOVE AND THE SAME
-                // ANSWER — register item 534. `abandoned` is reached by exactly one transition, from
-                // exactly one state, for exactly one reason, and the document's own note says the
-                // structure is what guarantees it. `Because` exists for doors the arrow cannot tell
-                // apart, and `Held --Abandon--> Abandoned` is the whole story.
-                | AiLoopState::Abandoned
-                // ⚠ A structural state has no door to distinguish, and an order is not an ending.
-                | AiLoopState::Running
-                | AiLoopState::Work
-                | AiLoopState::Orders
-                | AiLoopState::Standing
-                | AiLoopState::StandingDown
-                | AiLoopState::Held
-                | AiLoopState::Blocked => None,
+                Some(crate::act::Notes::Stopped) => self.stopping_because().map(Because::Stopped),
+                Some(crate::act::Notes::Closed) => self.closing_because().map(Because::Closed),
+                Some(crate::act::Notes::Restarted) => {
+                    self.restarting_because().map(Because::Restarted)
+                }
+                Some(crate::act::Notes::Judged) => self.saw.map(Because::Judged),
+                None => None,
             }
         };
         Ok(Pumped::Moved {

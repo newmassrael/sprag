@@ -2055,6 +2055,63 @@
     </send>
   </transition>
 
+  <!--
+    ⚠⚠⚠⚠⚠ WHICH OF THE RUN'S OWN READINGS BELONGS ON THE ARROW JUST DRAWN?
+
+    `OuterLoop::pumping` chose that from a `match` over all twenty eight states:
+    six naming a reading and twenty two written out to say `this arrow needs no
+    word`. It was the last of the driver's copies of this topology.
+
+    ⚠⚠ A `Because` EXISTS ONLY FOR DOORS AN ARROW CANNOT TELL APART. A state
+    reached from several places, for reasons that disagree about the remedy,
+    renders one arrow between them; a one doored state answers NOTHING and is
+    right to, because the walk's own arrow (from state, event, to state) is
+    already the whole story. So the states missing from this table are not an
+    oversight, they are the answer.
+
+    ⚠ THE READING ITSELF STAYS WITH THE DRIVER — a ceiling, a reflect reason, a
+    done reason, a restart reason and a judgement are five different values it
+    latched as it went. What is decided here is WHICH of them the arrow wants.
+  -->
+  <transition event="arrived" cond="In('reflecting')">
+    <send type="x-sprag-host" event="arrival.note">
+      <param name="note" expr="'reflected'"/>
+    </send>
+  </transition>
+  <transition event="arrived" cond="In('stopping')">
+    <!-- ⚠ FOUR CEILINGS ARRIVE ON TWO EDGES, and a reader could otherwise tell
+         them apart only by whether the driver's own note PRECEDED the arrow,
+         which is reading the ABSENCE of a key. -->
+    <send type="x-sprag-host" event="arrival.note">
+      <param name="note" expr="'stopped'"/>
+    </send>
+  </transition>
+  <transition event="arrived" cond="In('closing')">
+    <!-- ⚠ ONE TRANSITION AND TWO RUNS: this state's doors are not transitions
+         at all but two returns in the driver's own `reflect`, which is why
+         counting this file's edges would never have found it. -->
+    <send type="x-sprag-host" event="arrival.note">
+      <param name="note" expr="'closed'"/>
+    </send>
+  </transition>
+  <transition event="arrived" cond="In('restarting')">
+    <!-- ⚠ ELEVEN DOORS AND THREE DECISIONS: replacing has paid for itself,
+         there was no room, and neither question could be asked. They disagree
+         about the remedy and render one arrow between them. -->
+    <send type="x-sprag-host" event="arrival.note">
+      <param name="note" expr="'restarted'"/>
+    </send>
+  </transition>
+  <transition event="arrived" cond="In('disputing')">
+    <!-- ⚠⚠ THE JUDGEMENT'S OWN READING, carried by ARRIVAL rather than by the
+         edge, and it needs no guard: exactly one transition reaches this state
+         and it comes from `judging`. The state next door cannot say the same,
+         which is why `working` declares this word on its edges instead. -->
+    <send type="x-sprag-host" event="arrival.note">
+      <param name="note" expr="'judged'"/>
+    </send>
+  </transition>
+
   <state id="idle">
     <!--
       ⚠⚠⚠ THE TEMPLATE, FILLED IN BY SOMEBODY WHO DID NOT EDIT THIS FILE.
@@ -3314,17 +3371,31 @@
       sentence today; the day one of them owes a different one, the document
       says so and nothing out there has to be taught the difference.
     -->
+    <!--
+      ⚠⚠⚠⚠ THESE TWO DECLARE `judged` ON THEMSELVES, WHICH NO `In(...)` COULD.
+      `working` is entered from four states and only a JUDGEMENT has a reading
+      behind it; the other three doors would be handed a value belonging to some
+      earlier turn. So the word rides the EDGE, which is this document saying
+      `this door` rather than a driver reconstructing which door it must have
+      been from the state it came from.
+    -->
     <transition event="judge" cond="_event.data.unheard" target="working">
       <assign location="reflect_reason" expr="'unreadable'"/>
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="turn_prompt"/>
         <param name="asks" expr="'work'"/>
       </send>
+      <send type="x-sprag-host" event="arrival.note">
+        <param name="note" expr="'judged'"/>
+      </send>
     </transition>
     <transition event="judge" target="working">
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="turn_prompt"/>
         <param name="asks" expr="'work'"/>
+      </send>
+      <send type="x-sprag-host" event="arrival.note">
+        <param name="note" expr="'judged'"/>
       </send>
     </transition>
     <transition event="fail" target="failed"/>

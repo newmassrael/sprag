@@ -139,38 +139,47 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     // ⚠⚠ THE FOURTH WAS `is_final` ITSELF — *is it final* is the first question this comment lists,
     // and it is no longer asked here at all: `OuterLoop::finished` asks the engine. What remains in
     // this row is the other three.
-    ("abandoned", 1),
-    ("awaiting_human", 3),
-    ("blocked", 1),
-    ("cancelled", 2),
-    ("closing", 1),
-    ("converged", 4),
-    ("disputing", 1),
-    ("exhausted", 6),
-    ("failed", 4),
-    ("held", 1),
-    ("idle", 2),
-    ("judging", 7),
-    ("orders", 1),
-    ("peer_gone", 1),
-    ("priming", 2),
-    ("redirecting", 1),
-    ("reflecting", 1),
-    ("restarting", 1),
-    ("resuming", 1),
-    ("reviewing", 1),
-    ("running", 1),
-    ("screening", 1),
-    ("service_down", 1),
-    ("standing", 1),
+    ("abandoned", 0),
+    ("awaiting_human", 2),
+    ("blocked", 0),
+    ("cancelled", 1),
+    ("closing", 0),
+    ("converged", 3),
+    ("disputing", 0),
+    ("exhausted", 5),
+    ("failed", 3),
+    ("held", 0),
+    ("idle", 1),
+    // ⚠⚠⚠⚠⚠ **THESE TWO FELL BY TWO WHILE EVERY OTHER ROW FELL BY ONE** — 2026-08-26, the seventh
+    // and last match. The uniform fall is the signature of a match GOING, and this one had an arm
+    // the other six did not: `Working if from == AiLoopState::Judging`, keyed on where the pass
+    // came FROM. That `if` named `judging` a second time and `working` a second time, so retiring
+    // the match took two mentions from each of them and one from everybody else.
+    // ⚠ Recorded because the round that wrote these pins PREDICTED a flat one and the gate said
+    // otherwise: *"28/28 delta = 1"* is a signature, not a law, and the exception is a `match` arm
+    // carrying a guard.
+    ("judging", 5),
+    ("orders", 0),
+    ("peer_gone", 0),
+    ("priming", 1),
+    ("redirecting", 0),
+    ("reflecting", 0),
+    ("restarting", 0),
+    ("resuming", 0),
+    ("reviewing", 0),
+    ("running", 0),
+    ("screening", 0),
+    ("service_down", 0),
+    ("standing", 0),
     // ⚠ NINE since 2026-08-22, and the ninth is a READER rather than a decision — register item
     // 605. `OuterLoop::standing_down` answers *has the machine heard a stand-down*, which nothing
     // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
     // `cond` moved out of the document to get it, and the reader decides nothing.
-    ("standing_down", 2),
-    ("stopping", 1),
-    ("work", 2),
-    ("working", 3),
+    ("standing_down", 1),
+    ("stopping", 0),
+    ("work", 1),
+    // ⚠ The other row that fell by TWO — see `judging` above.
+    ("working", 1),
 ];
 
 /// How many acts `ai_loop.scxml` declares for itself — one per `<onentry>`.
@@ -308,9 +317,20 @@ const DECLARED_ACTS: usize = 18;
 /// ⚠ [`DECLARED_ACTS`] does NOT move for this one: a `<transition>` is not an `<onentry>`, so the
 /// block count is blind to it exactly as it was blind to every act that moved in stage 2.
 ///
+/// ⭐⭐⭐⭐⭐ **AND THE THIRTY-FIFTH THROUGH FORTY-FIRST ARE THE ARROW'S OWN WORD** — 2026-08-26, the
+/// seventh and last of stage 3's matches. 34 → **41**. `OuterLoop::pumping` chose which of the
+/// run's readings belonged on the arrow it had just drawn from a `match` over all twenty-eight
+/// states; five arrivals now declare it on a targetless `<transition event="arrived">`, and the two
+/// `judging -> working` EDGES declare it on themselves.
+///
+/// ⚠⚠ **THE TWO EDGE-DECLARED ONES ARE THE POINT.** `working` is entered from four states and only
+/// a judgement has a reading behind it, so no `In(…)` could answer it — the old match needed an
+/// `if from == AiLoopState::Judging` for exactly that. An edge saying *this door* is the document
+/// holding a fact the driver was reconstructing.
+///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 34;
+const SERVED_ACTS: usize = 41;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);
@@ -337,10 +357,27 @@ fn the_measurement_reaches_the_loop_it_is_judging() {
          the wrong file answers about the wrong file",
         states.len(),
     );
+    // ⚠⚠⚠⚠⚠ **THIS WAS `sites.len() > 50` AND THE FLOOR ROTTED, WHICH IS THIS ITEM'S OWN LESSON
+    // ARRIVING FROM THE OTHER SIDE** — 2026-08-26, stage 3's last match. The number was written
+    // when the walk found 250 sites and it read as *the walk found the loop at all*; by the round
+    // that retired the seventh match the debt was genuinely down to 24, and a control calibrated
+    // against the DEFECT went red for the defect being fixed. A ceiling rots because the debt
+    // shrinks under it; a floor rots for exactly the same reason, upwards.
+    //
+    // ⚠⚠ SO IT IS ANCHORED TO THE PIN INSTEAD OF TO A REMEMBERED SIZE. The pins are what the walk
+    // is measured against, so an empty or misdirected walk cannot satisfy this while any pin is
+    // nonzero — and it needs no maintenance as the debt falls.
+    //
+    // ⚠ **THE RESIDUE, STATED RATHER THAN HIDDEN: when the pins reach ZERO this control goes
+    // blind**, and zero is the item's declared goal (`converged`, `exhausted` and `failed` at 0
+    // would mean the loop's endings are the document's alone). On that day a walk that found
+    // nothing and a driver that names nothing read the same here, and something else has to stand
+    // in — the document-side numbers above, which grow where this one shrinks.
+    let pinned: usize = DRIVER_ARMS.iter().map(|(_, arms)| *arms).sum();
     assert!(
-        sites.len() > 50,
-        "the driver keys behaviour on this document's states in dozens of places and this walk \
-         found only {}: the ratchet is measuring nothing and would be green forever",
+        pinned > 0 && sites.len() == pinned,
+        "this walk found {} state-keyed site(s) and the pin accounts for {pinned}: a probe pointed \
+         at nothing, or at the wrong tree, reads as clean in every equality below it",
         sites.len(),
     );
 

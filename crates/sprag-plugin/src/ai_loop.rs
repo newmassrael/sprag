@@ -8450,6 +8450,18 @@ mod tests {
         engine.raise_external(event, data, "");
         engine.step();
         let _performed = host.taken(crate::act::Act::Say);
+        // ⚠⚠⚠⚠⚠ **AND THE ARRIVAL'S WORD, WHICH THIS HELPER LEARNED TO DRAIN THE HARD WAY** —
+        // register item 470, stage 3. The two `judging -> working` edges declare `arrival.note`
+        // beside their prompt, and a slot nobody empties is an OVERRUN the moment the same edge is
+        // taken twice: `error.execution`, and the run ends `failed`. Four gates went red at once
+        // saying `left: Failed, right: Working` on the SECOND judgement, which is exactly that
+        // shape.
+        //
+        // ⚠⚠ IT IS THE DRIVER'S BEHAVIOUR AND NOT AN INDULGENCE. `OuterLoop::pumping` takes this
+        // slot on every pass that moved, so a fixture that drives the machine by hand and never
+        // empties it is testing a shape the product cannot produce — which is this workspace's own
+        // recorded failure mode for hand fixtures, met from the other side.
+        let _noted = host.taken(crate::act::Act::Note);
     }
 
     /// ⚠⚠⚠ **HOW THE MACHINE TELLS ITS DRIVER WHAT TO DO — asked of the ENGINE, because the
