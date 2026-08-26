@@ -1456,6 +1456,10 @@ mod tests {
             // state home, which is the home of whoever ran the suite. See
             // [`AiLoopSpec::review_ledger`], where that used to happen with no way to say no.
             review_ledger: None,
+            // ⚠⚠ AND NOBODY IS ASKED. A stand-in that acquired an asker would spawn a second
+            // process on every session replacement these gates walk through — the judge's argument
+            // one field over, and register item 502's own reason for making this declinable.
+            review_asks: None,
         }
     }
 

@@ -921,6 +921,21 @@ pub struct AiLoopSpec {
     /// blocked turn to `screening` as before. A run that did not ask for a second agent must not
     /// acquire one, so this crate names no model of its own.
     pub judge: Option<crate::judge::JudgeSpec>,
+    /// **WHO ANSWERS THE CONTEXT REVIEW'S `asking`**, or [`None`] for a run that asked for nobody.
+    ///
+    /// # ⚠⚠⚠ It is [`judge`](Self::judge)'s twin, in shape and in argument
+    ///
+    /// The AUTHOR writes what is asked and what counts as an answer — `context_review.scxml`'s
+    /// `ask` and `carry_marker`. The CALLER supplies this: which agent answers, at what price.
+    /// Neither implies the other, which is why they are not one argument.
+    ///
+    /// ⚠⚠ **AN ARGV SPEC RATHER THAN A CLOSURE, AND THE TYPE IS WHY.** This struct derives
+    /// `PartialEq + Eq + Debug`, none of which an `Arc<dyn Fn>` can have — so a caller's asker has
+    /// to be something DESCRIBABLE. The judge reached the same place first and for the same reason.
+    ///
+    /// ⚠ [`None`] costs exactly nothing: no pane spawned, no model asked, every review answering
+    /// `ask.none` as it did before this field existed — which is register item 502's whole subject.
+    pub review_asks: Option<crate::judge::JudgeSpec>,
     /// **THE STATE DIRECTORY THIS RUN'S REVIEWS KEEP THEIR COUNTS IN**, or [`None`] to keep none.
     ///
     /// # ⚠⚠⚠⚠⚠ A BINDING, which is why it is here and not on the [`Brief`]
@@ -972,6 +987,9 @@ impl AiLoopSpec {
             // would have every loop built from it write a directory its caller never named. The
             // daemon says so — see [`Self::review_ledger`], where the guess used to live.
             review_ledger: None,
+            // ⚠ AND NOBODY IS ASKED, on `judge`'s terms exactly: a run that did not ask for a
+            // second agent must not acquire one, so the default names no model.
+            review_asks: None,
         }
     }
 }
@@ -1857,6 +1875,37 @@ impl Because {
             Self::Restarted(reason) => reason.noted(),
             Self::Judged(heard) => heard.noted(),
         }
+    }
+}
+
+/// **THE LOOP REACHING A SECOND AGENT FOR ITS CONTEXT REVIEW** — [`crate::review::Asked`]'s one
+/// implementation, and the seam that keeps panes out of the arithmetic.
+///
+/// ⚠⚠ It borrows rather than owns, because it lives for exactly one review: the pane access and the
+/// run are the pass's, and an asker that outlived them would be holding a run that had ended.
+///
+/// ⚠ A [`None`] `asks` answers nothing, which is what every run did before register item 502 —
+/// the field's own doc holds why that costs nothing.
+struct AskingAnother<'a> {
+    panes: &'a dyn PaneAccess,
+    run: &'a RunContext,
+    asks: Option<&'a crate::judge::JudgeSpec>,
+}
+
+impl crate::review::Asked for AskingAnother<'_> {
+    /// ⚠⚠⚠ **EVERY SILENCE IS [`None`]** and the caller decides what nothing means —
+    /// `judge::said_by_another`'s rule, inherited whole. A spawn that failed, a bound that expired,
+    /// a run that ended underneath and a pane whose history was lost are six different facts with
+    /// six different remedies, and none of them is a line for the next session to carry.
+    ///
+    /// ⚠ The reason is DROPPED here rather than reported, and that is this seam's stated residue:
+    /// `context_review.scxml` has one `ask.none` edge, so the document cannot yet say WHICH silence
+    /// it met. Register item 556 is the same shape one surface over.
+    fn ask(&self, question: &str) -> Option<String> {
+        let asks = self.asks?;
+        crate::judge::said_by_another(self.panes, self.run, &asks.argv, question, asks.within)
+            .ok()
+            .map(|(said, _took)| said)
     }
 }
 
@@ -3116,6 +3165,11 @@ pub struct OuterLoop {
     /// thing about a review that is not the document's, and [`crate::review`]'s own `ledger_path`
     /// holds why this crate must not go looking for it in the environment.
     review_ledger: Option<std::path::PathBuf>,
+    /// **WHO ANSWERS THE CONTEXT REVIEW'S `asking`** — [`AiLoopSpec::review_asks`]'s value.
+    ///
+    /// ⚠ Carried for `review_ledger`'s reason exactly: it is the caller's half of a two-halves
+    /// contract whose other half is the document's, so there is nowhere to re-read it from.
+    review_asks: Option<crate::judge::JudgeSpec>,
     /// **WHEN THIS RUN STARTED WAITING FOR A PERSON**, or [`None`] when it is not waiting.
     ///
     /// ⚠⚠ [`attend`](Self::attend) is the only reader AND the only writer, which is what keeps it
@@ -3522,6 +3576,7 @@ impl OuterLoop {
             shows_the_prompt: spec.shows_the_prompt,
             judge: spec.judge.clone(),
             review_ledger: spec.review_ledger.clone(),
+            review_asks: spec.review_asks.clone(),
             claimed: None,
             awaiting: None,
             outage: None,
@@ -5663,7 +5718,7 @@ impl OuterLoop {
             // ⚠⚠⚠ AND BEFORE THE REPLACEMENT, WHAT THE CLOSED SESSIONS DID — see `reviewing`, and
             // [`crate::review::ContextReview`] for why this is a machine driven here rather than an
             // `<invoke>` of the document's.
-            Does::Review => self.review(),
+            Does::Review => self.review(panes, run),
             Does::Replace => self.replace(panes)?,
             Does::Resume => self.resume(panes, run)?,
 
@@ -7109,7 +7164,7 @@ impl OuterLoop {
     /// naming has learned the same thing as far as the loop is concerned: there is no line to brief
     /// the next session with. None of them is a reason to stop a run that was working — see
     /// `reviewing`, which deliberately has no edge to `failed`.
-    fn review(&mut self) -> Raise {
+    fn review(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Raise {
         // ⚠⚠ THE DIRECTORY IS THE RUN'S, HANDED DOWN — never resolved from this process's
         // environment. A run that named none keeps no counts, which is what makes every gate below
         // safe to walk through `reviewing` without appending to somebody's home directory.
@@ -7118,9 +7173,17 @@ impl OuterLoop {
         else {
             return AiLoopEvent::ReviewNone.into();
         };
+        // ⚠⚠⚠⚠⚠ **AND WHO ANSWERS ITS `asking`** — register item 502. The review owns the words
+        // (the document's `ask`, its `carry_marker`); this owns the REACHING, because spawning a
+        // second agent needs a pane and a run and neither belongs in the arithmetic module.
+        let asking = AskingAnother {
+            panes,
+            run,
+            asks: self.review_asks.as_ref(),
+        };
         // ⚠ The CLOSED sessions only. The one being driven has not ended, and counting a transcript
         // that is still being written would report a habit that is halfway through happening.
-        match review.run(&self.ended).ending {
+        match review.run(&asking, &self.ended).ending {
             crate::review::Ending::Carried(line) if !line.trim().is_empty() => Raise::carrying(
                 AiLoopEvent::ReviewDone,
                 // ⚠ THE TERMINATOR IS THE DRIVER'S because the slot's contract is the document's:
@@ -9263,6 +9326,9 @@ mod tests {
             // `ambient-home-guard` had been failing on. A gate that WANTS the counts names a
             // directory of its own; none of these does.
             review_ledger: None,
+            // ⚠ AND NO ASKER, for the same reason as the judge above: a driver gate that acquired
+            // one would spawn a second agent on every session replacement it walks through.
+            review_asks: None,
         }
     }
 
@@ -10548,7 +10614,12 @@ mod tests {
             // session reviews `nothing`, which is the majority reading and the one that must STILL
             // be kept — see `review.rs`'s own gate for why an unkept `nothing` makes *did this get
             // better?* unanswerable.
-            let _ = loops.review();
+            // ⚠ The pane access is handed in because the review may now ASK — this spec names no
+            // asker, so nothing is spawned and the walk is exactly what it was.
+            let _ = loops.review(
+                &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+                &RunContext::uncancellable(),
+            );
             WorkspacePaneAccess::new(Arc::clone(&workspace))
                 .lifecycle()
                 .expect("lifecycle")

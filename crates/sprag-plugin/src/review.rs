@@ -392,6 +392,70 @@ fn ledger_path(named: &str, state: Option<&std::path::Path>) -> Option<std::path
 /// ⚠⚠ WHAT THE `<invoke>` WOULD HAVE GIVEN AND THIS OWES A GATE INSTEAD: the parent cancelling the
 /// child by leaving the state. Here the caller owns this value, so dropping it is that cancellation
 /// — enforced by ownership rather than by the engine, which is weaker until something holds it.
+/// **WHAT A REPLY CARRIES**, read the way the document says to read it — the text after `marker` on
+/// the line that holds it, or [`None`] when no line does.
+///
+/// # ⚠⚠⚠ Why a marker and not the whole reply
+///
+/// `context_review.scxml` authors `carry_marker` (`INSTEAD:`) and its own prose says an answer that
+/// carries none is `ask.none`, *"for the reason a judged dialog answers `false` on silence: the
+/// failure of this mechanism must be its own absence, never a line invented to fill the slot."* A
+/// model that thought about it and had nothing is told to answer `NOTHING TO CARRY`, which carries
+/// no marker and so arrives here as [`None`] — the same answer as a model that never replied, and
+/// deliberately so: both mean *there is nothing for the next session to be told*.
+///
+/// ⚠⚠ **AND IT IS WHAT MAKES A CHECKER'S ECHO HARMLESS.** A `/bin/echo` asker prints the whole
+/// question back, and the question contains the template — but not the marker, which only an ANSWER
+/// supplies. `judge::asked_of_another` cuts an echo off by matching the question's first line; this
+/// needs no such rule because the marker is the answer's own.
+///
+/// ⚠ The FIRST marked line wins. A reply with several is a model that ignored *"in ONE line"*, and
+/// taking the first is the same discipline `judge`'s first-word rule keeps.
+fn line_after(reply: &str, marker: &str) -> Option<String> {
+    if marker.is_empty() {
+        return None;
+    }
+    reply
+        .lines()
+        .find_map(|line| line.split_once(marker))
+        .map(|(_, rest)| rest.trim().to_owned())
+        .filter(|carried| !carried.is_empty())
+}
+
+/// **WHO ANSWERS `context_review.scxml`'s `asking`** — one question, one line back, or nothing.
+///
+/// # ⚠⚠⚠⚠⚠ Why the review takes an ASKER rather than a pane and an argv
+///
+/// The document decides WHAT is asked (its `ask` template) and WHAT COUNTS as an answer (its
+/// `carry_marker`). Who is on the other end, and how they are reached, is the caller's — the same
+/// two-halves split [`crate::outer::AiLoopSpec::judge`] already draws for a judged dialog, and for
+/// the same reason: rules with nobody to ask change nothing, and an asker with no rules is asked
+/// nothing.
+///
+/// ⚠⚠ **AND IT KEEPS PANES OUT OF THIS MODULE.** Reaching a second agent means spawning one, which
+/// needs a [`crate::access::PaneAccess`] and a [`crate::run::RunContext`] — both of which the
+/// LOOP has and a review does not. Threading them through here would put process plumbing inside
+/// the arithmetic this module exists to keep separate from the machine.
+///
+/// ⚠ **SILENCE IS NEVER A LINE.** Every failure — nobody wired, a spawn that failed, a bound that
+/// expired, a reply with no `carry_marker` — is [`None`], and the document answers `ask.none`. A
+/// review that invented a line would be worse than one that carries none, which is what
+/// `context_review.scxml`'s own `asking` prose says.
+pub trait Asked {
+    /// Put `question` to whoever this is, and answer the one line they gave back.
+    fn ask(&self, question: &str) -> Option<String>;
+}
+
+/// **NOBODY IS WIRED** — the answer every review gave before an asker could be supplied, kept as a
+/// value so *"this run asked nobody"* is something a caller SAYS rather than a default it inherits.
+pub struct NobodyAsked;
+
+impl Asked for NobodyAsked {
+    fn ask(&self, _question: &str) -> Option<String> {
+        None
+    }
+}
+
 pub struct ContextReview {
     machine: Engine<ContextReviewPolicy>,
     script: Arc<dyn IScriptEngine>,
@@ -500,7 +564,7 @@ impl ContextReview {
     ///
     /// ⚠ `asking` is answered `ask.none` — a second agent is not wired here yet, and a review that
     /// invented a line would be worse than one that carries none. The counts still land.
-    pub fn run(&mut self, ended: &[std::path::PathBuf]) -> Review {
+    pub fn run(&mut self, asked: &dyn Asked, ended: &[std::path::PathBuf]) -> Review {
         let look_back = self.number("look_back", 3) as usize;
         let limit = self.number("repeat_limit", 8);
 
@@ -565,9 +629,36 @@ impl ContextReview {
                         );
                     }
                 }
+                // ⚠⚠⚠⚠⚠ **THE ASKING, WIRED AT LAST** — register item 502. This arm answered
+                // `ask.none` unconditionally since the document was written, which is why
+                // `Ending::Carried` was unreachable from the product and why the `review.done`
+                // guard's economic door had never been walked by a run.
+                //
+                // ⚠⚠ **EVERY WORD PUT TO THE SECOND AGENT IS THE DOCUMENT'S.** The template is its
+                // `ask`, the candidates are the ones ARITHMETIC already chose, and what counts as
+                // an answer is its `carry_marker`. This driver renders and reads; it writes nothing
+                // a model sees, which is the rule `context_review.scxml` states at that `<data>`.
+                //
+                // ⚠ `gave_up_at` STAYS SET UNTIL AN ANSWER ARRIVES, so a review that asked and got
+                // nothing still reports `asking` as where it stopped — the reading that tells it
+                // from *nothing was repeated enough to name*.
                 ContextReviewState::Asking => {
                     gave_up_at = Some("asking");
-                    self.raise(ContextReviewEvent::AskNone, &Value::Null);
+                    let marker = self.text("carry_marker");
+                    let carry = self
+                        .asking_about(&sessions)
+                        .and_then(|question| asked.ask(&question))
+                        .and_then(|said| line_after(&said, &marker));
+                    match carry {
+                        Some(carry) if !carry.is_empty() => {
+                            gave_up_at = None;
+                            self.raise(
+                                ContextReviewEvent::AskDone,
+                                &serde_json::json!({ "carry": carry }),
+                            );
+                        }
+                        _ => self.raise(ContextReviewEvent::AskNone, &Value::Null),
+                    }
                 }
                 ContextReviewState::Writing => {
                     // The ADVICE, to the path the author named — empty by default, and then this
@@ -612,6 +703,31 @@ impl ContextReview {
         self.machine.raise_external(event, &data.to_string(), "");
     }
 
+    /// **THE QUESTION THIS REVIEW PUTS TO A SECOND AGENT**, or [`None`] when there is nothing to
+    /// ask about — the document's own `ask`, with the candidates arithmetic already chose under it.
+    ///
+    /// ⚠⚠ **THE TEMPLATE IS THE AUTHOR'S AND THIS ADDS NO WORDS OF ITS OWN TO IT.** What is
+    /// appended is the CANDIDATES — the acts and their counts, which are measurements rather than
+    /// prose. `context_review.scxml` says at that `<data>` that the driver must never be the thing
+    /// that writes words into a prompt, and a template this function paraphrased would be exactly
+    /// that.
+    ///
+    /// ⚠ [`None`] where the author deleted the template or nothing was repeated: both mean *there
+    /// is no question*, and asking anyway would put a bare list in front of a model with no
+    /// instruction attached.
+    fn asking_about(&self, sessions: &[Reviewed]) -> Option<String> {
+        let ask = self.text("ask");
+        if ask.trim().is_empty() {
+            return None;
+        }
+        let candidates: Vec<String> = sessions
+            .iter()
+            .flat_map(|session| session.counted.repeated.iter())
+            .map(|repeat| format!("{} times: {}", repeat.times, repeat.act))
+            .collect();
+        (!candidates.is_empty()).then(|| format!("{ask}\n\n{}", candidates.join("\n")))
+    }
+
     /// **KEEP THE COUNTS**, whatever the ending was — see `ledger_into`.
     ///
     /// ⚠ A failure to write is not a failure of the review. The counts are for a later comparison,
@@ -642,7 +758,7 @@ mod ledger_tests {
 
     use sce_rust_runtime::{IScriptEngine, ScriptValue};
 
-    use super::{ContextReview, Ending, ledger_path};
+    use super::{ContextReview, Ending, NobodyAsked, ledger_path};
 
     /// ⚠⚠⚠ **A REVIEW THAT FOUND NOTHING STILL LEAVES ITS COUNTS BEHIND** — the one property that
     /// makes *did this get better?* a question with an answer.
@@ -678,7 +794,7 @@ mod ledger_tests {
 
         // A run that has closed no sessions — the honest state of every run's FIRST review, since
         // `ended` is written by the replacement this state runs before.
-        let answered = review.run(&[]);
+        let answered = review.run(&NobodyAsked, &[]);
 
         assert_eq!(
             (answered.ending.clone(), answered.gave_up_at),
@@ -714,7 +830,7 @@ mod ledger_tests {
 
         // ⚠ APPENDED, not truncated: the second review must not erase the first, which is the
         // whole arrangement — a file with only the newest reading answers no comparison at all.
-        review.run(&[]);
+        review.run(&NobodyAsked, &[]);
         let kept = std::fs::read_to_string(&into).expect("the ledger is still there");
         assert_eq!(
             kept.lines().count(),
@@ -787,7 +903,7 @@ mod ledger_tests {
             .join("\n");
         std::fs::write(&record, rows).expect("the gate writes its own record");
 
-        let answered = review.run(std::slice::from_ref(&record));
+        let answered = review.run(&NobodyAsked, std::slice::from_ref(&record));
 
         // ── THE CONTROL: THE HABIT WAS ACTUALLY FOUND ──
         //
@@ -812,13 +928,112 @@ mod ledger_tests {
              `restarting` through `review.done` until the asking is built. Got {answered:?}",
         );
 
-        // ── ⚠⚠ AND THE DAY THAT CHANGES, THIS IS WHERE IT IS SAID ──
+        // ── ⚠⚠ AND SILENCE IS NEVER A LINE ──
         assert!(
             !matches!(answered.ending, Ending::Carried(_)),
-            "⭐ THE ASKING HAS BEEN BUILT — which is good news and a DEBT FALLING DUE. Register \
-             item 502 is now payable: take a run to `restarting` through `review.done`, and mutate \
-             the guard's `20` multiplier to prove a RUN reddens where only the guard's text does \
-             today. Then delete this assertion and say so in the ledger",
+            "⚠⚠⚠⚠⚠ `NobodyAsked` CARRIED SOMETHING, which is the one thing an asker that answers \
+             nothing must never do. A review that invented a line would hand the next session an \
+             instruction no model ever gave it — see `Asked`'s own doc, and `context_review.scxml`'s \
+             `asking`, which says the failure of this mechanism must be its own absence",
+        );
+
+        let _ = std::fs::remove_file(&record);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND WHEN SOMEBODY IS ASKED, THE REVIEW CARRIES WHAT THEY SAID** — register item
+    /// 502's step ①, and the first time `Ending::Carried` has been reachable from the product.
+    ///
+    /// # ⚠⚠⚠⚠ What this is the other half of
+    ///
+    /// Its neighbour above pins the NOBODY path: an unasked review carries nothing, whatever it
+    /// counted. This pins the other, and the pair is what says the asker is a SEAM rather than a
+    /// switch that turns the review off — the same shape `judge`'s two gates hold one door over.
+    ///
+    /// ⚠⚠ **THE ANSWER IS READ THE DOCUMENT'S WAY.** `context_review.scxml` authors
+    /// `carry_marker` (`INSTEAD:`) and its prose says a reply carrying none is `ask.none`. That
+    /// `<data>` was, at the round it was written, *"the only one of sixty-one that nothing
+    /// consults"* — this is what consults it, so the stand-in below answers WITH the marker and the
+    /// assertion is that the text AFTER it is what travels.
+    ///
+    /// ⚠ The stand-in is a plain `Asked`, not a spawned process: what is being measured here is the
+    /// review's half of the contract. The LOOP's half — reaching a real agent through
+    /// `judge::said_by_another` — is `OuterLoop`'s `AskingAnother`, and it is gated where panes are.
+    #[test]
+    fn a_review_whose_asker_answers_carries_that_line() {
+        /// An asker that replies the way the document asks a model to: one line, opened with the
+        /// marker. ⚠ It also SEES the question, so the assertion below can say the review really
+        /// put its candidates to somebody rather than asking an empty prompt.
+        struct SaidInstead {
+            asked: std::sync::Mutex<Option<String>>,
+        }
+        impl super::Asked for SaidInstead {
+            fn ask(&self, question: &str) -> Option<String> {
+                *self.asked.lock().expect("the record") = Some(question.to_owned());
+                Some("INSTEAD: wait for the build to finish rather than polling it".to_owned())
+            }
+        }
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut review =
+            ContextReview::new(Arc::clone(&lua), None).expect("the document opens a session");
+
+        let record = std::env::temp_dir()
+            .join("sprag-review-gate")
+            .join("a_review_whose_asker_answers_carries_that_line.jsonl");
+        std::fs::create_dir_all(record.parent().expect("a parent")).expect("the gate's own dir");
+        let rows: String = (0..10)
+            .map(|turn| {
+                serde_json::json!({
+                    "type": "assistant",
+                    "message": {
+                        "id": format!("msg_{turn}"),
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Bash",
+                            "input": { "command": "cargo test --workspace" },
+                        }],
+                    },
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&record, rows).expect("the gate writes its own record");
+
+        let asker = SaidInstead {
+            asked: std::sync::Mutex::new(None),
+        };
+        let answered = review.run(&asker, std::slice::from_ref(&record));
+
+        // ── ⭐ THE ENDING THAT HAD NEVER BEEN REACHED ──
+        assert_eq!(
+            answered.ending,
+            Ending::Carried("wait for the build to finish rather than polling it".to_owned()),
+            "⚠⚠⚠⚠⚠ **THE REVIEW MUST CARRY WHAT THE ASKER SAID, WITH THE MARKER STRIPPED.** This \
+             is the ending `AiLoopEvent::ReviewDone` is built from, and until an asker could be \
+             supplied nothing in the product could reach it — register item 502. Got {answered:?}",
+        );
+        assert_eq!(
+            answered.gave_up_at, None,
+            "⚠⚠ AND A REVIEW THAT GOT ITS ANSWER GAVE UP NOWHERE. `gave_up_at` is what tells the \
+             three early exits apart, so a carried review still reporting one would make *where \
+             did this stop* unanswerable for the case that did not stop",
+        );
+
+        // ── ⚠⚠ AND IT ASKED ABOUT THE CANDIDATES, IN THE DOCUMENT'S OWN WORDS ──
+        let asked = asker.asked.lock().expect("the record").clone();
+        let asked = asked.expect("⚠⚠⚠ THE CONTROL: the review must have asked at all");
+        assert!(
+            asked.contains("cargo test --workspace") && asked.contains("10 times"),
+            "⚠⚠⚠⚠ THE QUESTION MUST CARRY THE CANDIDATE ARITHMETIC ALREADY CHOSE, with its count. \
+             A model asked to name a habit without being told which one is being asked to choose \
+             the candidates, which `context_review.scxml` says is never the model's job: {asked:?}",
+        );
+        assert!(
+            asked.contains("In ONE line"),
+            "⚠⚠⚠⚠⚠ AND THE INSTRUCTION MUST BE THE DOCUMENT'S OWN `ask`, not words this driver \
+             wrote. The `<data>` says so at its declaration — *the driver must never be the thing \
+             that writes words into a prompt*: {asked:?}",
         );
 
         let _ = std::fs::remove_file(&record);
@@ -860,7 +1075,7 @@ mod ledger_tests {
              this gate would be quietly measuring nothing. Got {bare:?}",
         );
 
-        let answered = review.run(&[]);
+        let answered = review.run(&NobodyAsked, &[]);
         assert_eq!(
             answered.ending,
             Ending::Nothing,
@@ -895,7 +1110,7 @@ mod ledger_tests {
         let mut review = ContextReview::new(Arc::clone(&lua), Some(state.clone()))
             .expect("the document opens a session");
 
-        review.run(&[]);
+        review.run(&NobodyAsked, &[]);
 
         // ⚠ The document's own file name, under the caller's directory — neither half invented
         // here. A driver that joined its own name would land somewhere this assertion is not.
@@ -962,7 +1177,7 @@ mod ledger_tests {
         let record = home.join("3f4ffa52-what-the-agent-filed.jsonl");
         std::fs::write(&record, WRITTEN).expect("a closed session's record");
 
-        let answered = review.run(std::slice::from_ref(&record));
+        let answered = review.run(&NobodyAsked, std::slice::from_ref(&record));
         let _ = std::fs::remove_dir_all(&home);
 
         assert_eq!(
