@@ -520,67 +520,20 @@ impl AiLoop {
         note
     }
 
-    /// Whether `state` is one of the document's seven finals.
-    ///
-    /// ⚠ EXHAUSTIVE, so an eighth final added to the document lands here as a variant that no
-    /// longer compiles rather than as a run that pumps a finished machine forever. ⚠⚠ The last two
-    /// arrived that way: `peer_gone` broke this match on the compile that added it to the file, and
-    /// `abandoned` broke it and eight others (register item 534).
-    const fn is_final(state: AiLoopState) -> bool {
-        match state {
-            AiLoopState::Converged
-            | AiLoopState::Exhausted
-            | AiLoopState::Failed
-            | AiLoopState::Cancelled
-            | AiLoopState::PeerGone
-            // ⚠⚠ AN ORDER'S ENDING IS STILL AN ENDING, and this is the only final the document
-            // reaches from the `orders` region rather than from the work. `Self::state` reads the
-            // WORK region, so what puts this variant in front of this function is the parallel
-            // completing — see the document's own note beside `<final id="abandoned"/>`.
-            | AiLoopState::Abandoned
-            | AiLoopState::Blocked => true,
-            AiLoopState::Idle
-            | AiLoopState::Priming
-            | AiLoopState::Working
-            | AiLoopState::Judging
-            | AiLoopState::Screening
-            // ⚠⚠⚠ WAITING OUT AN OUTAGE IS NOT AN ENDING, WHICH IS THE WHOLE POINT OF THE STATE.
-            // It sits beside `screening` rather than beside `blocked` because the run is alive,
-            // its session is intact, and the only thing between it and `working` is time.
-            | AiLoopState::ServiceDown
-            | AiLoopState::Redirecting
-            // ⚠⚠⚠ A REFUSAL IS NOT AN ENDING EITHER, AND IT IS THE STATE THAT MOST LOOKS LIKE ONE:
-            // the run reached its milestone, said so, and was told no. What it actually is, is a
-            // prompt being composed — the run leaves for `working` on the very next pass, carrying
-            // the turn the refusal bought it. Register item 448.
-            | AiLoopState::Disputing
-            | AiLoopState::AwaitingHuman
-            | AiLoopState::Reflecting
-            | AiLoopState::Reviewing
-            | AiLoopState::Restarting
-            | AiLoopState::Resuming
-            | AiLoopState::Closing
-            | AiLoopState::Stopping
-            // ⚠⚠⚠ THE ONES THE REGIONS ADDED, AND NONE OF THEM IS AN ENDING. Some are structural —
-            // the parallel root, the two region roots — and the rest are ORDERS a person gave. They
-            // are here because the match is exhaustive on purpose, and the compiler is what made
-            // them arrive rather than a reader noticing later: `Held` reached every one of these
-            // arms as a build error the moment the document gained it, which is the arrangement
-            // working.
-            //
-            // ⚠⚠ A DRIVER SHOULD NEVER SEE ANY OF THEM. `OuterLoop::state` reads the WORK region by
-            // name, so what it answers is always one of the thirteen above it. Answering `false`
-            // here is the honest reading of the question asked (*is this an ending*) rather than a
-            // guess: a run that somehow reported `Standing` has a reader bug, and treating it as
-            // finished would end somebody's run over it.
-            | AiLoopState::Running
-            | AiLoopState::Work
-            | AiLoopState::Orders
-            | AiLoopState::Standing
-            | AiLoopState::StandingDown
-            | AiLoopState::Held => false,
-        }
-    }
+    // ⚠⚠⚠⚠⚠ **`is_final` STOOD HERE AND IT IS GONE** — register item 470, stage 3. It named all
+    // twenty-eight states of the document in one exhaustive `match` to answer *is this an ending*,
+    // which is the THIRD place that sentence was said: the document's own `<final>` elements say
+    // it, `OuterLoop::pumping` asks the engine, and this said it again in Rust off a state name.
+    // `OuterLoop::finished` is the one reader now, and its doc carries the arrangement the answer
+    // rests on.
+    //
+    // ⚠⚠ THE COMPILER RATCHET THIS TRADED AWAY, stated rather than hidden: the match was
+    // exhaustive, so an eighth final broke this build. Nothing breaks now — a new `<final>` is
+    // answered correctly by the engine the moment the document gains it, which is the point, and
+    // the price is that a final placed INSIDE the `<parallel>` would be silently mis-answered.
+    // That is what `finished`'s doc names and what
+    // `every_ending_this_document_declares_sits_outside_the_parallel` measures, in this file's own
+    // proving module.
 
     /// What the loop was asking about when it stopped, as a verdict's [`Unanswered`].
     ///
@@ -830,9 +783,9 @@ impl AiLoop {
             | AiLoopState::Closing
             | AiLoopState::Stopping
             // ⚠⚠ THE REGIONS' STATES REACH HERE ONLY IF SOMETHING IS WRONG, and `Continue` is the
-            // right answer to being wrong: this method is called for a state `is_final` called
-            // final, none of these is, and a driver that ended somebody's run on a structural
-            // state would be turning a reader bug into a lost run.
+            // right answer to being wrong: this method is called for a state the ENGINE called
+            // final (`OuterLoop::finished`), none of these is one, and a driver that ended
+            // somebody's run on a structural state would be turning a reader bug into a lost run.
             | AiLoopState::Running
             | AiLoopState::Work
             | AiLoopState::Orders
@@ -1115,7 +1068,16 @@ impl Plugin for AiLoop {
                         witnessed,
                     },
                 );
-                if Self::is_final(to) {
+                // ⚠⚠⚠⚠⚠ **WHETHER THAT ARRIVAL WAS AN ENDING IS THE DOCUMENT'S TO SAY** — register
+                // item 470, stage 3, and this line is where the last copy of the answer stood. The
+                // engine holds the `<final>` elements, so `finished` is the question asked of the
+                // thing that knows; `to` is still what the ending is REPORTED as, which is a
+                // different question and the one `ended` answers.
+                //
+                // ⚠⚠ ASKED OF THE MACHINE RATHER THAN OF `to`, and the two cannot drift: every
+                // `Pumped::Moved` reads `to` immediately after its own last raise, and nothing
+                // between there and here advances the machine — `took_screening` above is a take.
+                if self.inner.finished() {
                     self.ended(to, spent, note)
                 } else {
                     Ok(Step::new(Cost::Bytes(spent), Verdict::Continue).noting(note))
@@ -8103,7 +8065,7 @@ mod tests {
                 if loops.state() == AiLoopState::Priming && before == AiLoopState::Resuming {
                     replaced += 1;
                 }
-                if replaced == sessions || AiLoop::is_final(loops.state()) {
+                if replaced == sessions || loops.inner.finished() {
                     break;
                 }
             }
@@ -8612,6 +8574,84 @@ mod tests {
         }
     }
 
+    /// ⚠⚠⚠⚠⚠ **EVERY ENDING THIS DOCUMENT DECLARES SITS OUTSIDE THE `<parallel>`** — the
+    /// arrangement [`OuterLoop::finished`] rests on, measured here rather than assumed there.
+    ///
+    /// # ⚠⚠⚠⚠ What this replaces, and why it is deliberately not the same ratchet
+    ///
+    /// `AiLoop::is_final` answered *is this an ending* until register item 470's stage 3, by naming
+    /// all twenty-eight states in one exhaustive `match`. That match was a COMPILE-TIME ratchet: an
+    /// eighth `<final>` added to the document broke the build, which is how `peer_gone` and
+    /// `abandoned` both arrived. Removing it — the sentence was already said by the document's
+    /// `<final>` elements and by `pumping`'s check, so the copy was the third telling — buys that a
+    /// new ending is answered CORRECTLY the moment the document gains one, and costs that ratchet.
+    ///
+    /// ⚠⚠ **THE FAILURE MODE THE TRADE OPENS IS THE ONE THIS TEST HOLDS.** A `<final>` placed
+    /// INSIDE the parallel still parses, still reads as an ending to anybody skimming the file, and
+    /// turns `is_in_final_state` into *did EVERY region complete* — so a run that had plainly ended
+    /// would be pumped for ever, silently, with nothing failing to build. The document states the
+    /// arrangement beside itself; this measures that the statement is still true.
+    ///
+    /// ⚠ **AND THE LIVE HALF IS HERE TOO**, because a structural read alone would be a second copy
+    /// of the same reasoning: the machine is driven to a real ending and asked.
+    #[test]
+    fn every_ending_this_document_declares_sits_outside_the_parallel() {
+        /// The `id` of every `<final>` declared in `text`.
+        fn finals(text: &str) -> Vec<&str> {
+            const OPENS: &str = "<final id=\"";
+            text.match_indices(OPENS)
+                .filter_map(|(at, _)| text[at + OPENS.len()..].split('"').next())
+                .collect()
+        }
+
+        let document = crate::outer::DOCUMENT;
+        let (regions, endings) = document.split_once("</parallel>").expect(
+            "`ai_loop.scxml` runs its work and orders regions in a `<parallel>` and this read \
+             found no end to one: a probe pointed at nothing must never read as clean",
+        );
+
+        let misplaced = finals(regions);
+        assert!(
+            misplaced.is_empty(),
+            "⚠⚠⚠⚠⚠ AN ENDING WAS DECLARED INSIDE THE `<parallel>`: {misplaced:?}. \
+             `OuterLoop::finished` asks the engine whether the MACHINE is finished, and a final \
+             inside a region makes that question *did every region complete* — which the orders \
+             region never does. The run would end and the driver would pump it for ever. Move the \
+             `<final>` out, beside the other endings, where a transition into it exits every region",
+        );
+
+        let declared = finals(endings);
+        assert!(
+            declared.len() >= 7,
+            "this document has had seven endings since register item 534 and this read found \
+             {declared:?}: a walk that stopped finding them is measuring nothing",
+        );
+
+        // ⚠⚠⚠⚠ THE LIVE HALF — the control first, on the state the run spends its life in, then
+        // the ending. Both readings come off ONE machine driven the way a run drives it, so what
+        // is measured is the engine's answer and not this test's opinion of the file.
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+        assert!(
+            !engine.is_in_final_state(),
+            "⚠⚠⚠ THE CONTROL FAILED — `working` is where a run spends its turns, and a reader that \
+             called it finished would end every run on its first pass",
+        );
+        carried(&mut engine, &host, AiLoopEvent::PeerGone, "");
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::PeerGone,
+            "the fixture: this event is what reaches an ending from `working`",
+        );
+        assert!(
+            engine.is_in_final_state(),
+            "⚠⚠⚠⚠⚠ THE ENGINE DOES NOT CALL THIS DOCUMENT'S ENDING AN ENDING, so the one reader of \
+             that fact answers `false` for a run that is over — which is the arrangement above \
+             having been broken, seen from the other side",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **A PEER THAT WENT SILENT AND A PEER THAT IS GONE ARE TWO WORDS AND TWO
     /// DESTINATIONS** — register item 458's edge, and the document's own answer to *is this
     /// recoverable*.
@@ -8632,8 +8672,10 @@ mod tests {
     /// than asserted about, because it is the sentence the whole design rests on.
     #[test]
     fn a_peer_that_went_silent_is_recoverable_where_a_peer_that_is_gone_is_not() {
-        /// Reach `working` the way a run does, then raise `left` and say where it went.
-        fn from_working(left: AiLoopEvent) -> AiLoopState {
+        /// Reach `working` the way a run does, raise `left`, and say where it went **and whether
+        /// the engine calls that an ending** — the second half read off the same machine, in the
+        /// same breath, because a reading taken later is a second authority on one fact.
+        fn from_working(left: AiLoopEvent) -> (AiLoopState, bool) {
             let (mut engine, host, _lua, _session) = started();
             carried(&mut engine, &host, AiLoopEvent::Start, "");
             carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
@@ -8643,11 +8685,14 @@ mod tests {
                 "the fixture: both events below are raised from `working` and nowhere else",
             );
             carried(&mut engine, &host, left, "");
-            engine.get_current_state()
+            (engine.get_current_state(), engine.is_in_final_state())
         }
 
+        let silent = from_working(AiLoopEvent::PeerSilent);
+        let gone = from_working(AiLoopEvent::PeerGone);
+
         assert_eq!(
-            from_working(AiLoopEvent::PeerSilent),
+            silent.0,
             AiLoopState::AwaitingHuman,
             "⚠⚠⚠⚠⚠ NOTHING IS SPEAKING FOR THE PANE AND THE REMEDY IS A PERSON. That state already \
              notifies one and already ends the run if none comes, on the caller's own \
@@ -8658,18 +8703,27 @@ mod tests {
 
         // ⚠⚠⚠⚠ THE CONTROL, AND IT IS THE POINT: the same state, the same driver, the other word.
         assert_eq!(
-            from_working(AiLoopEvent::PeerGone),
+            gone.0,
             AiLoopState::PeerGone,
             "⚠⚠⚠ THE CONTROL FAILED — a gone process cannot come back, so its run ENDS, and if \
              both words landed in the same place the driver would have no way to say which it \
              found. Two facts, two destinations",
         );
+        // ⚠⚠⚠⚠⚠ AND THE DIFFERENCE IS ASKED OF THE ENGINE, which is the only thing that knows —
+        // register item 470, stage 3. This used to read a Rust list of finals (`AiLoop::is_final`),
+        // i.e. it checked one copy of the document against another copy of the document; now it
+        // drives the real machine and asks it, so a `<final>` moved INSIDE the `<parallel>` fails
+        // here rather than being answered by a list that never noticed.
         assert!(
-            !AiLoop::is_final(AiLoopState::AwaitingHuman)
-                && AiLoop::is_final(AiLoopState::PeerGone),
+            !silent.1 && gone.1,
             "⚠⚠⚠⚠ and the difference has to be the one that matters: silence PAUSES a run and a \
              dead peer ENDS one. A `peer.silent` that reached a final state would turn a reporter \
-             somebody rebuilt into a lost run",
+             somebody rebuilt into a lost run. Measured: silence -> {:?} (final: {}), gone -> \
+             {:?} (final: {})",
+            silent.0,
+            silent.1,
+            gone.0,
+            gone.1,
         );
 
         // ── THE RECOVERY: the peer speaks again, and the run has lost nothing ──

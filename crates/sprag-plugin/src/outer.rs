@@ -4090,6 +4090,32 @@ impl OuterLoop {
         in_work.unwrap_or(flattened)
     }
 
+    /// **WHETHER THIS MACHINE HAS REACHED ONE OF THE DOCUMENT'S ENDINGS** — the engine's answer,
+    /// off the `<final>` elements the document declares, and the only reader of that fact.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a reader and not a list of finals
+    ///
+    /// `AiLoop::is_final` answered this until register item 470's stage 3 by naming all twenty-eight
+    /// states of the document in one exhaustive `match` — **the third place *is this an ending* was
+    /// said**, after the document's own `<final>` elements and after `pumping`'s own check, which
+    /// has asked the engine since the pass table went. A
+    /// copy is only ever as new as the round that last edited it, and this one was keyed on ids
+    /// written in a file the driver does not parse.
+    ///
+    /// ⚠⚠ **IT ANSWERS CORRECTLY ONLY BECAUSE OF HOW THE DOCUMENT IS ARRANGED**, which is a fact
+    /// this reader DEPENDS on rather than one it establishes: `ai_loop.scxml` keeps its finals
+    /// OUTSIDE the `<parallel>`, so a transition into one exits every region and the machine as a
+    /// whole is finished. A final placed inside the parallel would make this ask *did the parallel
+    /// complete* — a different question, which nothing here wants answered. The document states the
+    /// arrangement where the arrangement is; `AiLoop`'s own proving module measures it.
+    ///
+    /// ⚠ [`state`](Self::state) cannot answer this and must not be asked to: it filters to the WORK
+    /// region by name, and an ending is not in that region at all.
+    #[must_use]
+    pub fn finished(&self) -> bool {
+        self.machine.is_in_final_state()
+    }
+
     /// **WHAT THE LAST PUMP SAW BEHIND THE EVENT IT RAISED** — see [`Noticed`].
     ///
     /// [`None`] while the loop is driving a turn nothing has interrupted, which is every pump of a

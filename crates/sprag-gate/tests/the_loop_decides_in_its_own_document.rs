@@ -86,14 +86,28 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// rather than linked: this crate takes no dependencies by charter, so the type is not one it can
 /// reach.
 ///
-/// ⚠⚠ **THE UNIFORM FALL IS WHAT SAYS A MATCH WENT, AND IT SAID IT TWICE IN ONE DAY.** Read the two
-/// entries together before concluding anything from a third: a round that moves every row by a
-/// flat one has retired a match, and a round that moves none may still have moved an act.
+/// ⭐⭐⭐⭐⭐ **AND A THIRD TIME, THE SAME DAY, FOR `AiLoop::is_final`** — the match that answered *is
+/// this state an ending* by naming all twenty-eight of them, seven `true` and twenty-one `false`.
+/// It was the THIRD telling of one sentence: `ai_loop.scxml` declares seven `<final>` elements,
+/// `pumping` has asked the engine since the entry above, and this said it again in Rust off a state
+/// name. `OuterLoop::finished` — `is_in_final_state`, and nothing else — is the one reader now.
 ///
-/// ⚠ **FIVE MATCHES LEFT**, and four of them are in `ai_loop.rs` rather than here: is this state
-/// final, which verdict does an ending publish, which pane would a ceiling signal, may a ceiling
-/// account for it. The fifth is `pumping`'s neighbour — the `because` match, which is keyed on
-/// where a pass ARRIVED rather than on what it does.
+/// ⚠⚠ **WHAT THAT TRADE COST IS NAMED RATHER THAN HIDDEN**: the match was exhaustive, so an eighth
+/// `<final>` used to break the BUILD, and that is how `peer_gone` and `abandoned` both arrived.
+/// Nothing breaks now — the engine answers a new ending correctly the moment the document gains
+/// one — and the failure mode this opens is a final placed INSIDE the `<parallel>`, which parses,
+/// reads as an ending, and turns the question into *did every region complete*.
+/// `every_ending_this_document_declares_sits_outside_the_parallel` is the gate that holds it, in
+/// `sprag-plugin`'s own proving module, with the live half beside the structural one.
+///
+/// ⚠⚠ **THE UNIFORM FALL IS WHAT SAYS A MATCH WENT, AND IT HAS NOW SAID IT THREE TIMES IN ONE DAY.**
+/// Read the entries together before concluding anything from a fourth: a round that moves every row
+/// by a flat one has retired a match, and a round that moves none may still have moved an act.
+///
+/// ⚠ **FOUR MATCHES LEFT**, and three of them are in `ai_loop.rs` rather than here: which verdict
+/// does an ending publish, which pane would a ceiling signal, may a ceiling account for it. The
+/// fourth is `pumping`'s neighbour — the `because` match, which is keyed on where a pass ARRIVED
+/// rather than on what it does.
 ///
 /// ⚠⚠⚠⚠⚠ **AND A ROW HOLDING STILL IS NOT AN ACT STAYING PUT** — measured 2026-08-25 R75, the
 /// round after the one above. `priming`'s act moved into the document and **not one row here
@@ -106,51 +120,57 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// direction: a decision coming BACK.
 const DRIVER_ARMS: &[(&str, usize)] = &[
     // ⚠⚠⚠⚠ ADDED 2026-08-21 BY ITEM 534, AND THE PIN WAS RAISED WITH ITS OWN REASON RATHER THAN
-    // BECAUSE A GATE ASKED. Every one is an EFFECT arm in an exhaustive match — is it final, which
+    // BECAUSE A GATE ASKED. Every one was an EFFECT arm in an exhaustive match — is it final, which
     // verdict does it publish, does it owe a prompt, may a ceiling account for it — and every one of
-    // them exists because the match has no wildcard, which is what made this new final land as
-    // compile errors instead of as silent defaults.
+    // them existed because the match has no wildcard, which is what made this new final land as
+    // compile errors instead of as silent defaults. ⚠ Two of those four questions have since left
+    // Rust entirely (*owes a prompt* on 2026-08-26 with `Owed::on`, *is it final* the same day with
+    // `AiLoop::is_final`), which is why the number below is not the one this note was written at.
     //
     // ⚠⚠⚠ IT IS EXACTLY `peer_gone`'s AND `held`'s NUMBER, which is the useful fact here: a seventh
     // ending costs this workspace what the sixth did, so the price of a new final is known and flat
     // rather than growing. What would be a REGRESSION is one more arm appearing later — a decision
     // about being abandoned taken in Rust — and that is what this row catches.
     //
-    // ⚠ It came down 8 -> 7 on 2026-08-25 and 7 -> 6 -> 5 on 2026-08-26, and NOT because anything
-    // about being abandoned changed any of the three times: each was one of the seven matches that
-    // cost every state an arm being deleted. See this constant's own note above.
-    ("abandoned", 5),
-    ("awaiting_human", 7),
-    ("blocked", 5),
-    ("cancelled", 6),
-    ("closing", 5),
-    ("converged", 8),
-    ("disputing", 5),
-    ("exhausted", 10),
-    ("failed", 8),
-    ("held", 5),
-    ("idle", 6),
-    ("judging", 11),
-    ("orders", 5),
-    ("peer_gone", 5),
-    ("priming", 6),
-    ("redirecting", 5),
-    ("reflecting", 5),
-    ("restarting", 5),
-    ("resuming", 5),
-    ("reviewing", 5),
-    ("running", 5),
-    ("screening", 5),
-    ("service_down", 5),
-    ("standing", 5),
+    // ⚠ It came down 8 -> 7 on 2026-08-25 and 7 -> 6 -> 5 -> 4 on 2026-08-26, and NOT because
+    // anything about being abandoned changed any of the four times: each was one of the seven
+    // matches that cost every state an arm being deleted. See this constant's own note above.
+    //
+    // ⚠⚠ THE FOURTH WAS `is_final` ITSELF — *is it final* is the first question this comment lists,
+    // and it is no longer asked here at all: `OuterLoop::finished` asks the engine. What remains in
+    // this row is the other three.
+    ("abandoned", 4),
+    ("awaiting_human", 6),
+    ("blocked", 4),
+    ("cancelled", 5),
+    ("closing", 4),
+    ("converged", 7),
+    ("disputing", 4),
+    ("exhausted", 9),
+    ("failed", 7),
+    ("held", 4),
+    ("idle", 5),
+    ("judging", 10),
+    ("orders", 4),
+    ("peer_gone", 4),
+    ("priming", 5),
+    ("redirecting", 4),
+    ("reflecting", 4),
+    ("restarting", 4),
+    ("resuming", 4),
+    ("reviewing", 4),
+    ("running", 4),
+    ("screening", 4),
+    ("service_down", 4),
+    ("standing", 4),
     // ⚠ NINE since 2026-08-22, and the ninth is a READER rather than a decision — register item
     // 605. `OuterLoop::standing_down` answers *has the machine heard a stand-down*, which nothing
     // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
     // `cond` moved out of the document to get it, and the reader decides nothing.
-    ("standing_down", 6),
-    ("stopping", 5),
-    ("work", 6),
-    ("working", 7),
+    ("standing_down", 5),
+    ("stopping", 4),
+    ("work", 5),
+    ("working", 6),
 ];
 
 /// How many acts `ai_loop.scxml` declares for itself — one per `<onentry>`.
@@ -243,6 +263,15 @@ const DECLARED_ACTS: usize = 11;
 /// ⚠ **SO THIS NUMBER IS NO LONGER ONLY ABOUT SENTENCES.** A reader expecting it to count prompts
 /// is reading an older comment: it counts what the document asks this host to DO, and since stage 3
 /// most of that is passes.
+///
+/// ⚠⚠⚠⚠⚠ **AND IT DID NOT MOVE FOR THE THIRD MATCH, WHICH IS THIS NUMBER'S OTHER BLINDNESS** —
+/// measured 2026-08-26, the round that deleted `AiLoop::is_final`. Twenty-eight arms left the
+/// driver and nothing was added here, because that decision did not move to an ACT at all: the
+/// document was already answering it STRUCTURALLY, with the seven `<final>` elements it has always
+/// declared, and what changed is that the driver finally asks the engine instead of keeping a copy.
+/// ⚠ So a stage-3 round can be real with this number flat. [`DRIVER_ARMS`]'s uniform fall is what
+/// sees that one, exactly as this number is what sees an act moving while those rows hold still —
+/// each is blind where the other looks, which is the division of labour the header claims.
 ///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
