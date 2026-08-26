@@ -2879,13 +2879,16 @@ fn ai_loop_refusal(why: &sprag_plugin::NotStarted) -> String {
              it, is not the one this driver was written for"
                 .to_owned()
         }
-        sprag_plugin::NotStarted::Unbuilt(sprag_plugin::AiLoopState::Exhausted) => {
+        // ⚠⚠⚠⚠⚠ TWO ARMS STOOD HERE UNTIL 2026-08-26 R100, and both read a STATE NAME back out of
+        // the refusal to choose a sentence — `Unbuilt(AiLoopState::Exhausted)` for this one, and a
+        // general `Unbuilt(state)` beside it that NOTHING EVER BUILT. That was register item 470's
+        // defect at one remove: `sprag-host` deciding from `ai_loop.scxml`'s vocabulary, in Rust,
+        // for a variant only ever constructed one way. The word carries no payload now, so the
+        // compiler is what says this arm exists.
+        sprag_plugin::NotStarted::NoTurns => {
             "`max_turns` must be at least 1: a loop allowed no turns judges itself exhausted \
              before its agent has answered anything"
                 .to_owned()
-        }
-        sprag_plugin::NotStarted::Unbuilt(state) => {
-            format!("a loop briefed this way reaches {state:?}, which this build does not drive")
         }
         sprag_plugin::NotStarted::Brief(sprag_plugin::Briefed::NotHeld { part, held }) => {
             format!(

@@ -175,12 +175,37 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     ("closing", 0),
     ("converged", 0),
     ("disputing", 0),
-    // ⚠ BOTH ARE SENTINELS RATHER THAN DECISIONS, which is why this row does not go to zero with
-    // the rest: `NotStarted::Unbuilt(AiLoopState::Exhausted)` is a caller's error VALUE, and
-    // `plugins.rs` renders its sentence. Neither is a per-state choice about how to drive a run.
-    ("exhausted", 2),
+    // ⚠⚠⚠⚠⚠ **THE TWO SENTINELS WENT ON 2026-08-26 R100, AND A RECORDED DECISION HAD TO BE
+    // REVERSED TO DO IT.** `NotStarted::Unbuilt(AiLoopState)` carried the state a bad brief would
+    // reach, and its own note said why: *"the variant stays a STATE rather than becoming a sentence
+    // about turn budgets … the next state this build does not serve gets the same treatment."*
+    //
+    // ⚠⚠ **THE PREMISE IS GONE.** Since stage 3 the driver holds no list of states: one it cannot
+    // drive is one the DOCUMENT answers nothing for, found at RUN time and reported as
+    // `PaneError::Undrivable`. So no construction-time refusal for an unserved state can arise, the
+    // one arm left was about a NUMBER, and the general `Unbuilt(state)` arm in `sprag-host` was
+    // prose nothing could ever select. It is `NotStarted::NoTurns` now — no payload, so the
+    // compiler is what says every caller answers it.
+    ("exhausted", 0),
     ("failed", 0),
     ("held", 0),
+    // ⚠⚠⚠⚠ **DECIDED 2026-08-26 R100: A COPY, AND RETIRABLE — BUT NOT WITH WHAT THIS DRIVER CAN
+    // READ TODAY.** `OuterLoop::brief` refuses with `Briefed::TooLate(at)` unless the machine is in
+    // `idle`, which is the document's own `brief` transition said a second time in Rust: an author
+    // who made a second state briefable would still be refused out here.
+    //
+    // ⚠⚠ THE MOVE IS *raise it and ask whether the machine took it*, and the blocker was MEASURED
+    // rather than argued (R100, by disabling the guard and running
+    // `a_brief_that_arrives_after_the_run_started_is_refused_and_says_where_it_was`): a late brief
+    // then comes back as **`NotHeld { part: "north_star", held: Some(<the OLD north star>) }`**.
+    // ⇒ **The read-back cannot tell *refused* from *the old values are legitimately still there*,
+    // because they are the same bytes.** Deleting the guard does not move a decision into the
+    // document; it turns a true refusal into a false diagnosis pointing at the wrong file.
+    //
+    // ⚠ THE READER THAT WOULD FIX IT IS NAMED: the case is *dequeued, no transition matched*, which
+    // SCE reports as `discarded_external_events` — and `OuterLoop::unseen` is NOT it (its own doc
+    // says it answers about an event never dequeued because the machine had STOPPED). A round that
+    // retires this row builds that reader first, or files an upstream STOP if the pin has no count.
     ("idle", 1),
     // ⚠⚠⚠⚠⚠ **AND THE LAST TOPOLOGY COPY IN `pumping` WENT WITH THEM** — 2026-08-26 R98. Three
     // lines asked `from == AiLoopState::Judging` to decide whether a pass reports its verdict, its
@@ -206,6 +231,20 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     // 605. `OuterLoop::standing_down` answers *has the machine heard a stand-down*, which nothing
     // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
     // `cond` moved out of the document to get it, and the reader decides nothing.
+    //
+    // ⚠⚠⚠⚠⚠ **DECIDED 2026-08-26 R100: EXEMPT BY KIND, WITH THE ROW BELOW.** Both name a REGION
+    // ROOT to answer *which of the active states is the one I mean* — `standing_down` in the orders
+    // region, `work` in `OuterLoop::state`'s upward walk. A parallel configuration holds several
+    // active states at once and the generated policy publishes `get_parent` and nothing else, so
+    // the region's id is the ONLY handle there is. **No behaviour is chosen from either name**, and
+    // there is no act a document could declare that would answer *you are in the work region* —
+    // the question is about the arrangement, not about the run.
+    //
+    // ⚠⚠ SO THIS PIN CANNOT HONESTLY REACH ZERO, and saying so is the decision rather than a
+    // failure to finish: two of the twenty-eight rows are readers of the topology and the item is
+    // about DECISIONS in the driver. ⇒ **The floor is 2 + whatever `idle` becomes.** A round that
+    // drives it lower is deleting a reader, which is deleting the only way this driver can tell
+    // which region it is looking at.
     ("standing_down", 1),
     ("stopping", 0),
     ("work", 1),

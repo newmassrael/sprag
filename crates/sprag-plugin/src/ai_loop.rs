@@ -71,18 +71,28 @@ pub enum NotStarted {
     ///
     /// ⚠ [`Briefed::Took`] is not representable here: this arm is only built from the other two.
     Brief(Briefed),
-    /// ⚠⚠ **THE BRIEF WOULD TAKE THE RUN THROUGH A STATE THIS BUILD DOES NOT DRIVE**, and which.
-    ///
-    /// ⚠⚠⚠ ONE ARM REACHES THIS NOW AND IT IS `exhausted`: a brief that allows no turn at all can
-    /// only end there, which is a run nobody wanted rather than a state nobody wrote. **The arm this
-    /// variant was built for is gone** — `reflecting` was refused because the session-replace
-    /// lifecycle behind it did not exist, and it does.
+    /// ⚠⚠ **THE BRIEF ALLOWS NO TURN AT ALL**, so the run could only judge itself `exhausted`
+    /// before its agent has answered anything.
     ///
     /// Refusing here rather than mid-run is the difference between something the caller can act on
-    /// before anything happens and a run that prompts a live agent and then stops somewhere with no
-    /// answer for it. The variant stays a STATE rather than becoming a sentence about turn budgets
-    /// for that reason: the next state this build does not serve gets the same treatment.
-    Unbuilt(AiLoopState),
+    /// before anything happens and a run that prompts a live agent and then stops with no answer
+    /// for it. ⚠ A DECLINED budget is not a budget of zero — see the reader at the refusal.
+    ///
+    /// # ⚠⚠⚠⚠⚠ This was `Unbuilt(AiLoopState)` until 2026-08-26 R100, and the reversal is measured
+    ///
+    /// It carried the state a bad brief would reach, and its own note said why: *"the variant stays
+    /// a STATE rather than becoming a sentence about turn budgets … the next state this build does
+    /// not serve gets the same treatment."* **That premise is gone.** Since stage 3, this driver
+    /// holds no list of states at all: a state it cannot drive is one the DOCUMENT answers nothing
+    /// for, discovered at RUN time and reported as [`crate::access::PaneError::Undrivable`] naming
+    /// the missing `In('…')` arm. Nothing can reach a construction-time refusal for an unserved
+    /// state any more, so the one arm left was never about a state — it is about a NUMBER.
+    ///
+    /// ⚠⚠ **AND CARRYING THE STATE COST TWO COPIES OF THE TOPOLOGY**: this construction and the
+    /// `match` in `sprag-host` that read the state back to choose a sentence. A word with no
+    /// payload puts the sentence where the refusal is decided and lets the compiler check that
+    /// every caller answers it — which is what the state match was standing in for.
+    NoTurns,
     /// ⚠⚠ **THE LOOP'S STANDING INSTRUCTIONS ARE NOT ONES THIS BUILD CAN CARRY OUT**, and which.
     ///
     /// The rules live in the document's authored half and reach the datamodel either from the file
@@ -233,7 +243,7 @@ impl AiLoop {
         match inner.turn_budget() {
             Some(crate::outer::Counted::Never) => {}
             Some(crate::outer::Counted::Of(turns)) if turns >= 1 => {}
-            _ => return Err(NotStarted::Unbuilt(AiLoopState::Exhausted)),
+            _ => return Err(NotStarted::NoTurns),
         }
         // ⚠⚠ ASKED AFTER THE BRIEF, because the brief may REPLACE the rules — so validating first
         // would be validating a document the run is not going to use. A caller's own rules are
@@ -4296,8 +4306,11 @@ mod tests {
         assert_eq!(
             AiLoop::new(engine(), pane, &brief_for(0), &standin_spec())
                 .expect_err("a loop allowed no turns judges itself exhausted before it starts"),
-            NotStarted::Unbuilt(AiLoopState::Exhausted),
-            "the refusal must name the STATE, so the sentence a caller reads can name the knob",
+            NotStarted::NoTurns,
+            "⚠⚠ THE REFUSAL MUST NAME THE KNOB, and it is a NUMBER rather than a state. It carried \
+             `AiLoopState::Exhausted` until R100, which cost two copies of the topology — this \
+             construction and a `match` in `sprag-host` reading the state back to pick a sentence \
+             — for a variant only ever built one way",
         );
 
         assert_eq!(
