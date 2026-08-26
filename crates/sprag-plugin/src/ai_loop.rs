@@ -8734,8 +8734,29 @@ mod tests {
 
         // ── THE TEMPLATE'S OWN VALUE FIRST: declared, and empty, which declines the behaviour ──
         carried(&mut engine, &host, AiLoopEvent::Pass, "");
+        // ⚠⚠⚠ MEASURED RATHER THAN GUESSED: an empty list has no element to say whether it is a
+        // list or a map, so how this pairing renders `may_answer`'s shipped `[]` is the engine's
+        // answer and not something to assume. What must hold is that it is one of the two spellings
+        // `OuterLoop::answers_of` reads as *this document approves nothing*.
+        //
+        // ⚠ TAKEN ONCE. `Serving::taken` REMOVES the act from its slot, so a second call answers
+        // `None` and would read as the document never asking.
+        let shipped = host.taken(crate::act::Act::Pass);
+        let shipped_clauses = match &shipped {
+            Some(crate::act::Asked::Pass { answers, .. }) => answers.clone().unwrap_or_default(),
+            other => {
+                panic!("⚠⚠ THE FIXTURE: a `watch` pass must have been asked for. Got {other:?}")
+            }
+        };
+        assert!(
+            matches!(shipped_clauses.as_str(), "[]" | "{}"),
+            "⚠⚠⚠⚠⚠ AN EMPTY CLAUSE LIST MUST CROSS AS SOMETHING `answers_of` READS AS *APPROVES \
+             NOTHING*. Anything else and an unbriefed run would arrive with the barrier holding \
+             whatever it had rather than the document's own answer — and those two differ by \
+             whether a caller's approvals can be silently kept alive. Got {shipped_clauses:?}",
+        );
         assert_eq!(
-            host.taken(crate::act::Act::Pass),
+            shipped,
             Some(crate::act::Asked::Pass {
                 does: crate::act::Does::Watch,
                 needle: Some(String::new()),
@@ -8751,6 +8772,13 @@ mod tests {
                 // document to say the number it authors is the number it waits.
                 awaits: Some("3600000".to_owned()),
                 stills: Some("15000".to_owned()),
+                // ⚠⚠⚠⚠ AND THE LAST BACK DOOR'S ARGUMENT: `may_answer`, which the template ships
+                // EMPTY — this loop approves nothing until a caller or a KIND document says so.
+                //
+                // ⚠⚠ THE ONE SPELLING PINNED BY BYTES ANYWHERE HERE, and only because an EMPTY
+                // list has no keys and therefore no ordering to be fragile about. The briefed half
+                // below carries words, and it is read STRUCTURALLY for exactly that reason.
+                answers: Some(shipped_clauses),
             }),
             "⚠⚠⚠⚠⚠ THE `watch` PASS MUST CARRY A NEEDLE, and an unbriefed document's is the EMPTY \
              one it ships. `None` here is the `<param>` being gone — the driver would then be back \
@@ -8775,6 +8803,10 @@ mod tests {
         // both assertions with one value.
         let patience = 7654;
         let stillness = 321;
+        // ⚠⚠ AND THE CLAUSE LIST, WHICH THE TEMPLATE SHIPS EMPTY — so a briefed one is the ONLY
+        // way this argument can hold words at all, and reading them back off the act is what says
+        // the list crossed rather than merely the `<param>` existing.
+        let approved = serde_json::json!([{ "asked": "trust the files here", "answer": "yes" }]);
         let (mut engine, host, _lua, _session) = started();
         carried(
             &mut engine,
@@ -8790,30 +8822,72 @@ mod tests {
                 "ready_timeout_ms": bound,
                 "await_person_ms": patience,
                 "handback_still_ms": stillness,
+                "may_answer": approved,
             })
             .to_string(),
         );
         carried(&mut engine, &host, AiLoopEvent::Start, "");
         carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
         carried(&mut engine, &host, AiLoopEvent::Pass, "");
+        let briefed = host.taken(crate::act::Act::Pass);
+        // ⚠⚠⚠⚠⚠ **DESTRUCTURED RATHER THAN COMPARED WHOLE, AND EXHAUSTIVELY (no `..`)** — so an
+        // argument added to this act without an assertion here still does not compile, which is
+        // what the struct literal above buys. The reason the equality could not stay is `answers`:
+        // it carries WORDS now, and the crossing alphabetises the keys of every object it renders.
+        // **That ordering is the serialiser's to choose, so pinning these bytes would be a gate
+        // that goes red for a harmless change** — the trap register item 470 keeps paying for.
+        let Some(crate::act::Asked::Pass {
+            does,
+            needle,
+            within,
+            awaits,
+            stills,
+            answers,
+        }) = briefed
+        else {
+            panic!(
+                "⚠⚠ THE FIXTURE: a briefed `watch` pass must have been asked for. Got {briefed:?}"
+            )
+        };
         assert_eq!(
-            host.taken(crate::act::Act::Pass),
-            Some(crate::act::Asked::Pass {
-                does: crate::act::Does::Watch,
-                needle: Some(outage.to_owned()),
-                // ⚠ A BRIEFED BOUND REACHES THE SAME ACT, and this brief sets one: the two
-                // arguments are carried together and a reader of either must see the other move.
-                within: Some(bound.to_string()),
-                // ⚠⚠ AND A BRIEFED PERSON REACHES IT TOO, WHICH IS THE HALF THAT MATTERS MOST HERE:
-                // a caller's patience is the number `awaiting_human` waits out, and until this act
-                // carried it the only way it reached the barrier was a read no reader of
-                // `ai_loop.scxml` could have found.
-                awaits: Some(patience.to_string()),
-                stills: Some(stillness.to_string()),
-            }),
+            (does, needle, within, awaits, stills),
+            (
+                crate::act::Does::Watch,
+                Some(outage.to_owned()),
+                // ⚠ A BRIEFED BOUND REACHES THE SAME ACT, and this brief sets one: the arguments
+                // are carried together and a reader of one must see the others move.
+                Some(bound.to_string()),
+                // ⚠⚠ AND A BRIEFED PERSON REACHES IT TOO: a caller's patience is the number
+                // `awaiting_human` waits out, and until this act carried it the only way it reached
+                // the barrier was a read no reader of `ai_loop.scxml` could have found.
+                Some(patience.to_string()),
+                Some(stillness.to_string()),
+            ),
             "⚠⚠⚠⚠ A BRIEFED NEEDLE MUST REACH THE PASS THAT WOULD MEET IT. If this reads the empty \
              string, the `<param>` is a literal rather than the datamodel's value and every \
              adopting repository's own words would be dropped on the floor",
+        );
+
+        // ── ⭐ AND THE CLAUSE LIST REACHES IT WITH ITS WORDS ──
+        //
+        // This is the argument a round wrote off as uncarryable. Read as STRUCTURE: what must hold
+        // is that the caller's clause ARRIVED, with both of its strings — a crossing that handed
+        // over a handle, an empty string or `[]` would leave a run approving nothing while its
+        // caller's brief plainly approved something, and the run would look configured.
+        let said = answers.unwrap_or_default();
+        let held: serde_json::Value = serde_json::from_str(&said).unwrap_or_else(|why| {
+            panic!(
+                "⚠⚠⚠⚠⚠ THE BRIEFED CLAUSE LIST DID NOT CROSS AS SOMETHING THIS DRIVER CAN WALK. \
+                 `OuterLoop::answers_of` parses exactly this string, so whatever it could not read \
+                 leaves the barrier holding what it had — and a caller's approvals never arrive. \
+                 Got {said:?}: {why}",
+            )
+        });
+        assert_eq!(
+            held, approved,
+            "⚠⚠⚠⚠⚠ THE CALLER'S OWN CLAUSE MUST BE WHAT THE ACT CARRIES, whole. Compared as \
+             PARSED VALUES rather than as text, so this says the clause survived and says nothing \
+             about which order the crossing writes an object's keys in",
         );
     }
 

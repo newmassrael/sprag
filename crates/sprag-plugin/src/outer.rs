@@ -1879,6 +1879,14 @@ struct Asking {
     within: Option<Duration>,
     /// Who this document expects at its pane, from the pass's two halves read as one decision.
     expected: Option<crate::readiness::Attended>,
+    /// **WHAT THIS RUN MAY ANSWER FOR ITSELF**, and the ONE argument here whose absence is
+    /// two-levels deep rather than one.
+    ///
+    /// ⚠⚠ The outer [`None`] is *this driver could not read what the document sent* — the barrier
+    /// keeps whatever it had. The inner one is *the document declares NO clauses*, which is a
+    /// decision and CLEARS the barrier. Folding them would make an unreadable list silently
+    /// disarm a run's approvals, and a run that answers nothing stops at the first dialog.
+    answering: Option<Option<crate::consent::Consents>>,
 }
 
 /// **WHAT ONE PASS OF THE DRIVER DID** — and, when it could not, exactly what it was asked for.
@@ -4455,8 +4463,19 @@ impl OuterLoop {
     /// handback for later would be deciding half a contract. [`Self::expected_of`] is the one
     /// reading, and [`Self::seed_expecting`]'s construction copy goes through the same decision.
     ///
+    /// ⚠⚠⚠⚠⚠ **AND WHAT THE RUN MAY ANSWER FOR ITSELF** — register item 470, stage 2's LAST
+    /// datamodel back door. `consenting()` was read at the top of every pass, so nothing in
+    /// `ai_loop.scxml` said that the approvals it authors are the approvals its barrier acts on.
+    ///
+    /// ⚠⚠ **A ROUND WROTE THAT THIS ONE COULD NOT RIDE HERE, AND THE MEASUREMENT REFUTED IT.**
+    /// `may_answer` is a list of objects rather than a number, and *"a `<param>` carries one value"*
+    /// was reasoned rather than asked. `probe_send_type.scxml`'s
+    /// `a_clause_list_crossing_as_an_argument` asked: the list crosses as JSON. ⇒ *a road called
+    /// shut by reading is a road nobody measured.*
+    ///
     /// ⚠ Parsed here rather than handed back raw, so the answers cannot be swapped by a caller:
-    /// one is a sentence, one is a duration, and one is a contract about a person.
+    /// one is a sentence, one is a duration, one is a contract about a person, and one is a list of
+    /// approvals whose absence has two levels.
     fn asked_of_this_pass(&mut self) -> Option<Asking> {
         let from = self.state();
         self.machine.process_event(AiLoopEvent::Pass);
@@ -4470,11 +4489,13 @@ impl OuterLoop {
                 within,
                 awaits,
                 stills,
+                answers,
             }) => Some(Asking {
                 does,
                 needle,
                 within: Self::bound_of(within.as_deref()),
                 expected: Self::expected_of(awaits.as_deref(), stills.as_deref()),
+                answering: Self::answers_of(answers.as_deref()),
             }),
             _ => None,
         }
@@ -4702,6 +4723,19 @@ impl OuterLoop {
     /// legitimate thing for a document to say and the shipped placeholder's own value. Only a shape
     /// nobody can read is an error, because guessing at it is how a run types into a dialog its
     /// author never authorised.
+    ///
+    /// # ⚠⚠⚠⚠⚠ IT IS NO LONGER READ ON EVERY PASS, and that was register item 470's LAST back door
+    ///
+    /// `pumping` opened with `if let Ok(clauses) = self.consenting()`, which fetched `may_answer`
+    /// out of the script session at the top of every pass — *behind the machine's back*, because
+    /// nothing in `ai_loop.scxml` said the approvals it authors are the approvals its barrier acts
+    /// on. Every `pass.do` now carries them as `answers`, and `answers_of` is the one reader of
+    /// what arrives.
+    ///
+    /// ⚠⚠ **THE TWO CALLERS LEFT ARE NOT THAT DOOR.** [`brief`](Self::brief) reads this ONCE, to
+    /// echo an author's clauses back when the caller named none — the outbound half, without which
+    /// the unconditional `<assign>` would delete them. And the loop's public accessor exists so the
+    /// CARRYING can be gated. Neither is a per-pass decision taken where the document cannot see.
     pub fn consenting(&self) -> Result<Option<crate::consent::Consents>, NotScreenable> {
         Self::consents_in(&self.script, &self.session)
     }
@@ -5251,22 +5285,19 @@ impl OuterLoop {
         if self.machine.is_in_final_state() {
             return Ok(Pumped::Ended(from));
         }
-        // ⚠ WHAT THE BARRIER MAY ANSWER, re-read at the top of every pass from the document that
-        // owns it. An unreadable list leaves the barrier with what it had: `brief` already refused
-        // that document, loudly, and a pump is not the place to discover it.
-        if let Ok(clauses) = self.consenting() {
-            self.driving.ready.answering(clauses);
-        }
-        // ⚠⚠⚠⚠⚠ THE OTHER TWO CONTRACTS — HOW LONG IT MAY WAIT, AND WHO IS EXPECTED AT THE PANE —
-        // ARE SEEDED BELOW RATHER THAN HERE, because neither comes from a read any more: the
-        // document HANDS both over on the `pass.do` act, so neither can be known until that act has
-        // been asked for. See `Self::asked_of_this_pass`.
+        // ⚠⚠⚠⚠⚠ **NOTHING IS READ OUT OF THE DATAMODEL HERE ANY MORE, AND THAT IS THE WHOLE OF
+        // REGISTER ITEM 470's STAGE 2.** All FOUR of the barrier's contracts — how long it may
+        // wait, who is expected, what it may answer, and what an outage looks like — are HANDED
+        // OVER by the document on the `pass.do` act, so none of them can be known until that act
+        // has been asked for. They are seeded below, together, before any act runs.
         //
-        // ⚠⚠ WHO IS EXPECTED WAS THE LAST ONE STANDING HERE, and it stood at the funnel rather than
-        // in `attend` because THREE acts consult it (the person's wait, the handback, and
-        // `awaiting_human`'s own arm). That reason survives the move intact: seeded once per pass
-        // before any act runs, all three still read one value, and now it is one the DOCUMENT said
-        // rather than one this driver went and fetched.
+        // ⚠⚠ WHAT WAS AT THIS FUNNEL AND WHY IT COULD LEAVE IT. Both reads stood here rather than
+        // in the arm that used them because SEVERAL acts consult each — three for the person (the
+        // wait, the handback, and `awaiting_human`'s own arm), and the barrier's own `reached` for
+        // the clauses — and a value refreshed in one arm would leave the others on a copy taken
+        // earlier. That reason survives the move intact: seeded once per pass before any act runs,
+        // every reader still sees one value, and now it is one the DOCUMENT said rather than one
+        // this driver went and fetched.
         //
         // ⚠ Nothing between here and there touches the barrier, so the move changes only where the
         // values come from. A pass that gets no act at all returns without seeding, which is right:
@@ -5310,6 +5341,7 @@ impl OuterLoop {
             needle,
             within,
             expected,
+            answering,
         } = asking;
         // ⚠⚠ THE BARRIER'S BOUND, SEEDED THE MOMENT THE DOCUMENT HAS SAID IT AND BEFORE ANY ACT IS
         // PERFORMED — it waits until here only because it arrives with the act rather than out of
@@ -5325,6 +5357,15 @@ impl OuterLoop {
         // the act below runs, which is what lets `attend` and the handback read one value.
         if let Some(expected) = expected {
             self.driving.ready.expecting(expected);
+        }
+        // ⚠⚠⚠⚠ AND WHAT IT MAY ANSWER — the LAST of the four, and the one whose absence has two
+        // levels. A list this driver could not read leaves the barrier with what it had (`brief`
+        // already refused that document, loudly, and a pump is not the place to discover it); a
+        // document declaring NO clauses clears it, which is a run that answers nothing and stops
+        // at the first dialog. Folding those would let a parse failure disarm a caller's approvals
+        // while the run still looked configured. See [`Self::answers_of`].
+        if let Some(clauses) = answering {
+            self.driving.ready.answering(clauses);
         }
         let raised: Raise = match does {
             // Nothing has happened yet. Starting the loop is the caller's act — but the transition
@@ -7306,6 +7347,58 @@ impl OuterLoop {
     // ⚠⚠ `expected_by` BELOW SURVIVES AND IS NOT THE SAME DOOR — `ready_within_at`'s distinction
     // exactly: it seeds the barrier at CONSTRUCTION, before any pass has run and so before any act
     // could have arrived. That seed is a placeholder the first pump replaces.
+
+    /// **WHAT THE DOCUMENT SAYS THIS RUN MAY ANSWER**, from the list a `pass.do` carried — the
+    /// outer [`None`] for a document this cannot read, the inner one for a document declaring NO
+    /// clauses.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the two levels are not one
+    ///
+    /// This is [`turn_bound`](Self::turn_bound)'s nesting and the same argument, applied where the
+    /// consequence is sharper. *Unreadable* leaves the barrier holding what it had; *no clauses*
+    /// CLEARS it, which is a run that answers nothing and stops at the first dialog it meets. A
+    /// reader that folded them would let a list this driver failed to parse silently disarm every
+    /// approval a caller gave — and the run would come up looking configured.
+    ///
+    /// ⚠⚠ **IT IS A `serde_json` PARSE, AND THAT IS THE SAME SEAM RATHER THAN A NEW ONE.**
+    /// [`brief`](Self::brief) already builds this exact list WITH `serde_json::json!` to send it
+    /// into the document — `Consents::WIRE_KEY`, one object per clause, `asked` and `answer`. This
+    /// walks the engine's answer back out. Nothing of this crate's is being serialised that was not
+    /// already, and the manifest's rule (`serde_json` is for perceiving a foreign program's output,
+    /// not for this crate's own wire) is satisfied in the direction that matters: the SCXML engine
+    /// is the foreign program and this is its output.
+    ///
+    /// ⚠ **STRUCTURE, NEVER BYTES.** The measured spelling alphabetises the keys — `answer` before
+    /// `asked` — which is the serialiser's ordering to choose. Nothing here may depend on it.
+    fn answers_of(said: Option<&str>) -> Option<Option<crate::consent::Consents>> {
+        let held: serde_json::Value = serde_json::from_str(said?).ok()?;
+        // ⚠⚠⚠ AN EMPTY LIST HAS TWO SPELLINGS AND BOTH MEAN THE SAME THING. The template ships
+        // `may_answer` as `[]`, and an empty table has no element to say whether it is a list or a
+        // map — so whichever way this engine renders it, *the document approves nothing* is the
+        // reading. Anything else that is not an array is a document this driver cannot read.
+        let items = match &held {
+            serde_json::Value::Array(items) => items.as_slice(),
+            serde_json::Value::Object(fields) if fields.is_empty() => [].as_slice(),
+            _ => return None,
+        };
+        let mut clauses = Vec::with_capacity(items.len());
+        for item in items {
+            let text_of = |key: &str| item.get(key).and_then(serde_json::Value::as_str);
+            let (Some(asked), Some(answer)) = (
+                text_of(crate::consent::Consent::ASKED_KEY),
+                text_of(crate::consent::Consent::ANSWER_KEY),
+            ) else {
+                return None;
+            };
+            // ⚠ A clause whose words this product does not serve is UNREADABLE rather than skipped:
+            // a list quietly one clause shorter is a run that stops at a dialog its caller approved.
+            clauses.push(crate::consent::Consent::parse(
+                asked.to_owned(),
+                answer.to_owned(),
+            )?);
+        }
+        Some(crate::consent::Consents::of(clauses))
+    }
 
     /// **WHO THE DOCUMENT SAYS IS AT THIS PANE**, from the two numbers a `pass.do` carried —
     /// [`None`] where either was missing or spelled in a way [`Self::millis_of`] cannot read,
@@ -11323,6 +11416,118 @@ mod tests {
              here is the `<param>` gone from the twelve `pass.do` sends, or the driver having \
              stopped applying what they carry — and the run would then wait out the AUTHOR's hour \
              for a caller who asked for seven seconds, without a word anywhere saying so",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE PASS HANDS THE BARRIER WHAT THIS RUN MAY ANSWER, AND THE DRIVER NO LONGER GOES
+    /// AND FETCHES IT** — register item 470, stage 2's FOURTH and last datamodel back door.
+    ///
+    /// # ⚠⚠⚠⚠ What this replaced
+    ///
+    /// `pumping` opened with `if let Ok(clauses) = self.consenting()`, which read `may_answer`
+    /// straight out of the script session at the top of every pass. Nothing in `ai_loop.scxml` said
+    /// that the approvals it authors are the approvals its barrier acts on — and this is the
+    /// contract whose silent loss is worst: a run comes up LOOKING configured and stops at the
+    /// first dialog its caller had plainly approved.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE READING BEFORE THE PUMP**, on the R95 gate's terms one field over.
+    /// The barrier is SEEDED at construction from the document's shipped `[]` — which is *approve
+    /// nothing*, i.e. [`None`] — and the clause is planted afterwards. Without the control, a gate
+    /// that only read after the pump could be satisfied by a seed that had never been replaced.
+    ///
+    /// ⚠ And the SECOND claim below is about the reader's two levels, asked directly because no
+    /// staged run reaches it: *unreadable* must not fold into *approves nothing*. See
+    /// [`OuterLoop::answers_of`].
+    #[test]
+    fn the_pass_hands_the_barrier_what_this_document_lets_it_answer() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+
+        // ⚠ NOT THE SHIPPED VALUE: the template ships `may_answer` as `[]`, so any clause at all is
+        // one the document did not start with.
+        let asked = "trust the files in this folder";
+        let clause = {
+            let mut fields = std::collections::HashMap::new();
+            fields.insert("asked".to_owned(), ScriptValue::String(asked.to_owned()));
+            fields.insert("answer".to_owned(), ScriptValue::String("yes".to_owned()));
+            ScriptValue::Object(fields)
+        };
+        loops
+            .script
+            .set_variable(
+                &loops.session,
+                crate::consent::Consents::WIRE_KEY,
+                ScriptValue::Array(vec![clause]),
+            )
+            .expect("the document's own clause list is writable");
+
+        assert!(
+            loops.driving.ready.may_answer().is_none(),
+            "⚠⚠⚠ THE CONTROL: the barrier must still be holding the SEED it was built with, which \
+             is the template's own empty list — *this run answers nothing*. If it already held the \
+             clause written above, the claim below would be satisfied by a value that never \
+             crossed an act at all. Got {:?}",
+            loops.driving.ready.may_answer(),
+        );
+
+        let run = RunContext::uncancellable();
+        let primed = loops
+            .pump(&access, &run)
+            .expect("the pane must be readable");
+        assert!(
+            matches!(
+                primed,
+                Pumped::Moved {
+                    to: AiLoopState::Priming,
+                    ..
+                }
+            ),
+            "the fixture: one pass out of `idle` is what asks the document for an act, and an act \
+             is what carries the clauses. Got {primed:?}",
+        );
+
+        let held: Vec<String> = loops
+            .driving
+            .ready
+            .may_answer()
+            .map(|held| {
+                held.clauses()
+                    .iter()
+                    .map(|clause| clause.asked().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            held,
+            vec![asked.to_owned()],
+            "⚠⚠⚠⚠⚠ THE PASS MUST HAND THE BARRIER THIS DOCUMENT'S OWN APPROVALS. An empty answer \
+             here is the `<param>` gone from the twelve `pass.do` sends, or the driver having \
+             stopped applying what they carry — and the run would then meet a dialog its caller \
+             approved, answer nothing, and stop, with no word anywhere saying why",
+        );
+
+        // ── ⚠⚠⚠ AND THE READER'S TWO LEVELS, ASKED DIRECTLY ──
+        //
+        // No staged run reaches this: a document whose list this driver cannot parse is one `brief`
+        // already refused, loudly. But the FOLD is what would be silent — an unreadable list read
+        // as *approves nothing* would disarm every clause a caller gave, on every pass, while the
+        // run still looked configured. So the distinction is asserted at its own door.
+        assert_eq!(
+            OuterLoop::answers_of(Some("not a clause list at all")),
+            None,
+            "⚠⚠⚠⚠⚠ AN UNREADABLE LIST MUST LEAVE THE BARRIER HOLDING WHAT IT HAD. `Some(None)` \
+             here is the fold: it CLEARS a caller's approvals because this driver could not read a \
+             string, which is the difference between a run that stops and a run that carries on",
+        );
+        assert_eq!(
+            OuterLoop::answers_of(Some("[]")),
+            Some(None),
+            "⚠⚠ AND THE OTHER LEVEL IS A REAL DECISION, not the same absence: a document that \
+             declares NO clauses is saying *answer nothing*, and it must CLEAR the barrier rather \
+             than leave a previous pass's clauses standing",
         );
     }
 

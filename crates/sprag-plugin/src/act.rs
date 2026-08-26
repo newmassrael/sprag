@@ -769,6 +769,27 @@ pub enum Asked {
         /// this pane KEEPS it (`Handback::Never`), which is a variant of the contract that would be
         /// unsayable from the file that owns the decision if zero were refused.
         stills: Option<String>,
+        /// **WHAT THIS RUN MAY ANSWER FOR ITSELF AT A DIALOG**, as the document holds it —
+        /// `may_answer`, a LIST rather than a scalar.
+        ///
+        /// # ⚠⚠⚠⚠⚠ Why a list can ride here at all, which was measured rather than assumed
+        ///
+        /// Register item 470's LAST datamodel back door, and a round wrote that this one *"cannot
+        /// repeat the move"* because a `<param>` carries one value. `probe_send_type.scxml`'s
+        /// `a_clause_list_crossing_as_an_argument` asked instead: **the list crosses as JSON**, a
+        /// repeated name keeps every value in document order, and indexing selects two levels down.
+        /// The sentence that said otherwise was a guess.
+        ///
+        /// ⚠⚠ **THE REPEATED-NAME SHAPE WAS REFUSED ON A REASON, NOT A PREFERENCE**: `<param>` is
+        /// not executable content, so `<foreach>` cannot appear inside a `<send>` and a document
+        /// cannot emit a VARIABLE number of them. A caller's clause list has any length, so fixed
+        /// slots could not carry it — and pairing two parallel lists by position would make the
+        /// index a second authority on which answer belongs to which question.
+        ///
+        /// ⚠ RAW, for the other arguments' reason and one of its own: the reading has THREE answers
+        /// where theirs have two — unreadable, *no clauses*, and clauses — and which is which is a
+        /// decision the driver owns.
+        answers: Option<String>,
     },
     /// [`Act::End`] — publish this ending.
     End {
@@ -1200,6 +1221,7 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
                 within: optional("within"),
                 awaits: optional("awaits"),
                 stills: optional("stills"),
+                answers: optional("answers"),
             })
         }
         // ⚠ NO EMPTY CHECK OF ITS OWN, for `pass.do`'s reason: `Publishes::of("")` answers [`None`]

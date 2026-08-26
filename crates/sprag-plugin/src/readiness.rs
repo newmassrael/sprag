@@ -1138,6 +1138,23 @@ impl Readiness {
         self.attended
     }
 
+    /// **WHAT THIS RUN MAY ANSWER FOR ITSELF** — [`attended`](Self::attended)'s twin, read back for
+    /// its reason exactly.
+    ///
+    /// ⚠⚠ It exists because the other three contracts this barrier holds could be READ BACK and
+    /// this one could not: `answering` had a writer and no reader, so *what the
+    /// document said this run may answer* was a fact nothing outside `reached` could observe. **A
+    /// contract a caller declared and nobody can ask about is one that can be silently dropped** —
+    /// a run would come up looking configured and stop at the first dialog, which is a failure a
+    /// live run has already paid for once.
+    ///
+    /// ⚠ [`None`] is a run that answers NOTHING, which is a real declaration and the default: it is
+    /// what the template ships and what every unbriefed run has.
+    #[must_use]
+    pub const fn may_answer(&self) -> Option<&Consents> {
+        self.consent.as_ref()
+    }
+
     /// **TELL THE BARRIER WHO IS EXPECTED NOW** — for a caller whose declaration lives somewhere
     /// that can change after this barrier was built.
     ///

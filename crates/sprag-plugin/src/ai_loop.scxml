@@ -1947,6 +1947,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'ready'"/>
     </send>
   </transition>
@@ -1959,6 +1960,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'sent'"/>
     </send>
   </transition>
@@ -1971,6 +1973,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'watch'"/>
       <!--
         ⚠⚠⚠⚠⚠ WHAT AN OUTAGE LOOKS LIKE, DECLARED WHERE IT WOULD BE MET.
@@ -1996,6 +1999,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'judge'"/>
     </send>
   </transition>
@@ -2004,6 +2008,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'screen'"/>
     </send>
   </transition>
@@ -2012,6 +2017,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'wait'"/>
     </send>
   </transition>
@@ -2024,6 +2030,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'reflect'"/>
     </send>
   </transition>
@@ -2032,6 +2039,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'review'"/>
     </send>
   </transition>
@@ -2040,6 +2048,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'replace'"/>
     </send>
   </transition>
@@ -2048,6 +2057,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'resume'"/>
     </send>
   </transition>
@@ -2056,6 +2066,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'attend'"/>
     </send>
   </transition>
@@ -2064,6 +2075,7 @@
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
       <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
       <param name="does" expr="'redirect'"/>
     </send>
   </transition>
