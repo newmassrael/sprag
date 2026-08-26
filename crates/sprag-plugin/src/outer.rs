@@ -4410,14 +4410,33 @@ impl OuterLoop {
     /// outage looks like on that same `pass.do` and this hands both back together. It used to be
     /// fetched out of the script session by a private reader, which no reading of `ai_loop.scxml`
     /// could have revealed.
-    fn asked_of_this_pass(&mut self) -> Option<(crate::act::Does, Option<String>)> {
+    /// ⚠⚠⚠⚠⚠ **AND THE BARRIER'S BOUND RIDES IT TOO** — register item 470, stage 2's other half.
+    /// `ready_timeout_ms` was read out of the script session before every pass, which is the
+    /// register's *behind the machine's back*: nothing in `ai_loop.scxml` said the bound came from
+    /// there.
+    ///
+    /// ⚠⚠ **IT IS ON THIS ACT AND NOT ONE OF ITS OWN, WHICH WAS MEASURED RATHER THAN PREFERRED.**
+    /// A `ready.set` on its own unguarded transition worked — gate green, mutation red — and cost a
+    /// SECOND MACROSTEP ON EVERY PASS. Two full sweeps then put a stand-in timing test red while
+    /// the same sweep on the unchanged tree was clean three times running. This act is already
+    /// raised once per pass, so the bound travels free here.
+    ///
+    /// ⚠ Parsed here rather than handed back raw, so the two optional answers this returns cannot
+    /// be swapped by a caller: one is a sentence and the other is a duration.
+    fn asked_of_this_pass(
+        &mut self,
+    ) -> Option<(crate::act::Does, Option<String>, Option<Duration>)> {
         let from = self.state();
         self.machine.process_event(AiLoopEvent::Pass);
         if self.state() != from {
             self.note_edge(from, AiLoopEvent::Pass);
         }
         match self.serving.taken(crate::act::Act::Pass) {
-            Some(crate::act::Asked::Pass { does, needle }) => Some((does, needle)),
+            Some(crate::act::Asked::Pass {
+                does,
+                needle,
+                within,
+            }) => Some((does, needle, Self::bound_of(within.as_deref()))),
             _ => None,
         }
     }
@@ -5208,13 +5227,14 @@ impl OuterLoop {
         if let Ok(clauses) = self.consenting() {
             self.driving.ready.answering(clauses);
         }
-        // ⚠⚠ AND HOW LONG IT MAY WAIT, the third of the barrier's contracts to come from the file
-        // rather than from a construction argument. It is re-read here for the other two's reason
-        // and for one of its own: `restarting` builds a fresh barrier from this one, so a bound
-        // taken at construction would outlive every session the run replaces.
-        if let Some(within) = self.ready_within() {
-            self.driving.ready.waiting(within);
-        }
+        // ⚠⚠ THE THIRD CONTRACT — HOW LONG IT MAY WAIT — IS SEEDED BELOW RATHER THAN HERE, because
+        // it no longer comes from a read at all: the document HANDS it over on the `pass.do` act,
+        // so it cannot be known until that act has been asked for. See `Self::asked_of_this_pass`.
+        //
+        // ⚠ Nothing between here and there touches the barrier, so the move changes only where the
+        // value comes from. A pass that gets no act at all returns without seeding, which is right:
+        // that pass is reporting a run that is stopping.
+        //
         // ⚠⚠⚠ TAKEN BEFORE THE ACT, so what this pass reports is what it ARRIVED AT rather than
         // what it happens to be holding — see [`Pumped::Moved`]'s `found`, which is register item
         // 240's answer and the reason this snapshot is at the funnel rather than in any one state.
@@ -5240,7 +5260,7 @@ impl OuterLoop {
         // `pass.do` this host will not perform is refused on `error.execution`, and this document
         // answers that by ending the run `failed` — inside the very raise that asked for it. A
         // reader of the reading taken at the top of the pass would call that ending `Unbuilt`.
-        let Some((does, needle)) = self.asked_of_this_pass() else {
+        let Some((does, needle, within)) = self.asked_of_this_pass() else {
             let landed = self.state();
             return Ok(if self.machine.is_in_final_state() {
                 Pumped::Ended(landed)
@@ -5248,6 +5268,14 @@ impl OuterLoop {
                 Pumped::Unbuilt(landed)
             });
         };
+        // ⚠⚠ THE BARRIER'S BOUND, SEEDED THE MOMENT THE DOCUMENT HAS SAID IT AND BEFORE ANY ACT IS
+        // PERFORMED — the other two contracts are seeded at the funnel above, and this one waits
+        // only because it arrives with the act rather than out of the datamodel. It is re-seeded on
+        // EVERY pass for their reason and one of its own: `restarting` builds a fresh barrier from
+        // this one, so a bound taken at construction would outlive every session the run replaces.
+        if let Some(within) = within {
+            self.driving.ready.waiting(within);
+        }
         let raised: Raise = match does {
             // Nothing has happened yet. Starting the loop is the caller's act — but the transition
             // it causes DELIVERS THE START PROMPT, so the pane has to be ready first.
@@ -7089,21 +7117,43 @@ impl OuterLoop {
         self.authored_count("max_turns")
     }
 
-    /// **HOW LONG THIS DOCUMENT SAYS THE BARRIER MAY WAIT**, read at the moment of the look —
-    /// [`None`] for a document holding nothing this can read.
+    // ⚠⚠⚠⚠⚠ **`ready_within` STOOD HERE AND IT IS GONE** — register item 470, stage 2's other
+    // half. It read `ready_timeout_ms` out of the script session before every pass, which is the
+    // register's *behind the machine's back*: nothing in `ai_loop.scxml` said the barrier's bound
+    // came from there. Every `pass.do` now carries it, and `Self::bound_of` is the one reader.
+    //
+    // ⚠⚠ `ready_within_at` BELOW SURVIVES AND IS NOT THE SAME DOOR: it seeds the barrier at
+    // CONSTRUCTION, before any pass has run and so before any act could have arrived. That seed is
+    // a placeholder the first pump replaces, which is what makes it a seed rather than a read.
+
+    /// **THE BOUND A DOCUMENT'S `<param>` SAYS**, or [`None`] for one this cannot read as a wait.
     ///
-    /// ⚠⚠⚠ ZERO IS A BOUND OF ZERO HERE, and deliberately not *the substrate's default*. The wire
-    /// key has always meant exactly this number, `Readiness` has always taken it verbatim, and a
-    /// caller sending `ready_timeout_ms: 0` has always got one look. Reading it as *decline* would
-    /// silently change what that request does — a value's meaning changing under a caller, which
-    /// is the direction R370 registered as earning a wire bump. **The document never needs a
-    /// spelling for `decline`**, because a `<data>` always holds a number and the ABSENCE this key
-    /// once had lives on the wire, where it now means *the document decides*.
-    fn ready_within(&self) -> Option<Duration> {
-        Self::ready_within_at(&self.script, &self.session)
+    /// ⚠⚠ **THE READING IS THE ONE `ready_within` ALWAYS HAD, MOVED RATHER THAN REWRITTEN.** An
+    /// integer or a double is accepted; a negative is refused; anything else — including the
+    /// document's own nil, which crosses as an empty string — answers [`None`], which leaves the
+    /// barrier holding what it had. `probe.rs` measured that zero, a negative and nil survive the
+    /// crossing as three distinct readings before this was written.
+    ///
+    /// ⚠⚠⚠ **ZERO IS A BOUND OF ZERO HERE, and deliberately not *the substrate's default*.** The
+    /// wire key has always meant exactly this number, `Readiness` has always taken it verbatim, and
+    /// a caller sending `ready_timeout_ms: 0` has always got one look. Reading it as *decline*
+    /// would silently change what that request does — a value's meaning changing under a caller,
+    /// which is the direction R370 registered as earning a wire bump.
+    fn bound_of(said: Option<&str>) -> Option<Duration> {
+        let said = said?;
+        // ⚠ THE INTEGER PATH FIRST so a whole number keeps its exact value, then the double path
+        // the typed reader had. Both refuse a negative, which is behaviour a caller may rely on.
+        let ms = said.parse::<i64>().map_or_else(
+            |_| match said.parse::<f64>() {
+                Ok(held) if held >= 0.0 => Some(held as u64),
+                _ => None,
+            },
+            |held| (held >= 0).then(|| held.unsigned_abs()),
+        )?;
+        Some(Duration::from_millis(ms))
     }
 
-    /// [`ready_within`](Self::ready_within)'s reading, separated from the loop that holds the
+    /// The SEED of the barrier's bound, separated from the loop that holds the
     /// engine so construction can seed the barrier before there is a `self` —
     /// [`Self::seed_expecting`]'s shape.
     fn ready_within_at(script: &Arc<dyn IScriptEngine>, session: &str) -> Option<Duration> {
@@ -7164,7 +7214,7 @@ impl OuterLoop {
     /// [`attend`](Self::attend), which ENDS the run rather than parking it.
     ///
     /// ⚠⚠ ZERO IS NOT A BOUND OF ZERO HERE, which is the opposite reading to
-    /// [`ready_within`](Self::ready_within)'s and for a reason that key does not have: a hold whose
+    /// [`bound_of`](Self::bound_of)'s and for a reason that key does not have: a hold whose
     /// ceiling is zero is a `cancel` that took the scenic route, and this document already has a
     /// word for cancelling. It answers `None` so [`brief`](Self::brief) can refuse it, on
     /// `Attended::of`'s precedent one contract over.

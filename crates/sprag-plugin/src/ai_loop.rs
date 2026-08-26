@@ -7511,24 +7511,29 @@ mod tests {
              a room its agent is still working in: {:?}",
             outcome.stopped,
         );
-        // ⚠⚠⚠⚠⚠ **AND WHICH ARM ANSWERED IS PINNED, BECAUSE IT IS THE ONE WITH NO DOCUMENT BEHIND
-        // IT** — register item 470, stage 3. `AiLoop::driving` asks the ending what a stop would
-        // reach (`Signals`), and this run never reaches an ending at all: the Driver sees the flag
-        // at its loop top and ends the run from OUTSIDE, so the document is still mid-work and has
-        // published nothing. What answers here is the fold *no ending yet means there IS a pane*.
+        // ⚠⚠⚠⚠⚠ **AND WHAT THE LOOP SAYS A STOP MUST REACH, WHICHEVER WAY THE RACE FELL** —
+        // register item 470, stage 3. `AiLoop::driving` asks the ending (`Signals`), and a
+        // cancelled run can arrive at that question by TWO roads: the Driver sees the flag at its
+        // loop top and ends the run from OUTSIDE with the document still mid-work (`None`), or the
+        // pass in flight pumps the machine into `cancelled` first (`Some(Pane)`). **Both say there
+        // is a pane to reach, which is the claim.**
         //
-        // ⚠⚠ MEASURED RATHER THAN ASSUMED — this assertion began life as a probe that expected the
-        // opposite, and the document's own `cancelled` ending turned out never to be entered on
-        // this path. So the arm the twenty-eight-arm match used to reach through `AiLoopState::…`
-        // is now reached through `None`, and a reader who folded `None` in with
-        // `Signals::Nothing` would leave a live model running after a cancel. This is what would
-        // go red for that.
-        assert_eq!(
+        // ⚠⚠ **THIS WAS AN `assert_eq!(…, None)` AND IT WAS A FLAKY GATE OF MY OWN MAKING.** It was
+        // written from ONE observation of the first road and read as an invariant; a later run took
+        // the second and it went red saying *the fixture moved* about a fixture that had not. An
+        // equality over a value the fixture does not control is a gate that fails for being right.
+        //
+        // ⚠ What must never be true is the third reading. `Signals::Nothing` here would be the loop
+        // reporting nothing to stop while its agent is mid-turn — a live model left running after a
+        // cancel, which is exactly what folding `None` in with `Nothing` would produce and what the
+        // Linux assertion below then catches as `Stopped::Nothing`.
+        assert_ne!(
             loops.inner.signalling(),
-            None,
-            "⚠⚠⚠⚠ THE FIXTURE MOVED: this run is supposed to be cancelled MID-WORK, with the \
-             document nowhere near an ending. If it published one, the assertion above is no \
-             longer measuring the `None` fold and the fold has lost its only eye",
+            Some(crate::act::Signals::Nothing),
+            "⚠⚠⚠⚠⚠ THE LOOP SAYS A CANCEL HAS NOTHING TO REACH WHILE ITS AGENT IS MID-TURN. Every \
+             road into this question — no ending published yet, or the document's own `cancelled` \
+             — answers that there IS a pane, and this is the one answer that would leave somebody's \
+             model spending tokens on a question nothing is waiting for",
         );
         if cfg!(target_os = "linux") {
             assert!(
@@ -8722,6 +8727,10 @@ mod tests {
             Some(crate::act::Asked::Pass {
                 does: crate::act::Does::Watch,
                 needle: Some(String::new()),
+                // ⚠⚠ AND THE BARRIER'S BOUND RIDES THE SAME ACT — register item 470, stage 2's
+                // other half. This is `ready_timeout_ms`'s shipped value, carried rather than
+                // fetched. `None` would be the `<param>` gone from all twelve `pass.do` sends.
+                within: Some("180000".to_owned()),
             }),
             "⚠⚠⚠⚠⚠ THE `watch` PASS MUST CARRY A NEEDLE, and an unbriefed document's is the EMPTY \
              one it ships. `None` here is the `<param>` being gone — the driver would then be back \
@@ -8737,6 +8746,9 @@ mod tests {
         // needle and reported it as the briefed one being dropped — a true failure with a false
         // diagnosis, which is worse than a red.
         let outage = "API Error: 529 Overloaded";
+        // ⚠ DELIBERATELY NOT THE SHIPPED 180000, so the assertion below cannot be satisfied by the
+        // document's own default standing in for a value the brief was supposed to replace.
+        let bound = 4321;
         let (mut engine, host, _lua, _session) = started();
         carried(
             &mut engine,
@@ -8749,6 +8761,7 @@ mod tests {
                 "max_turns": 3,
                 "reflect_every": 9,
                 "service_needle": outage,
+                "ready_timeout_ms": bound,
             })
             .to_string(),
         );
@@ -8760,6 +8773,9 @@ mod tests {
             Some(crate::act::Asked::Pass {
                 does: crate::act::Does::Watch,
                 needle: Some(outage.to_owned()),
+                // ⚠ A BRIEFED BOUND REACHES THE SAME ACT, and this brief sets one: the two
+                // arguments are carried together and a reader of either must see the other move.
+                within: Some(bound.to_string()),
             }),
             "⚠⚠⚠⚠ A BRIEFED NEEDLE MUST REACH THE PASS THAT WOULD MEET IT. If this reads the empty \
              string, the `<param>` is a literal rather than the datamodel's value and every \

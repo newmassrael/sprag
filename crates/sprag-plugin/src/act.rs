@@ -714,6 +714,28 @@ pub enum Asked {
         /// them. An empty string is also a real answer — the template ships one, and it declines
         /// the whole behaviour.
         needle: Option<String>,
+        /// **HOW LONG THE READINESS BARRIER MAY WAIT**, in milliseconds, exactly as the document
+        /// wrote it.
+        ///
+        /// # ⚠⚠⚠⚠⚠ Why it rides THIS act rather than one of its own
+        ///
+        /// Register item 470, stage 2's other half. The driver read `ready_timeout_ms` out of the
+        /// script session before every pass — *behind the machine's back* — so nothing in
+        /// `ai_loop.scxml` said the barrier's bound came from there.
+        ///
+        /// ⚠⚠ **AN ACT OF ITS OWN WAS BUILT, MEASURED AND REJECTED.** A `ready.set` on its own
+        /// unguarded transition read beautifully and cost a **second macrostep on every pass**,
+        /// which is real work in a driver racing a live pane: two full sweeps put a stand-in timing
+        /// test red where the same sweep on the unchanged tree was clean three times running. This
+        /// act is already raised once per pass, so carrying the bound here costs nothing.
+        ///
+        /// ⚠ The price, stated: `pass.do` has twelve transitions and the `<param>` appears on each.
+        /// Repetitive in the document, free at run time — the right way round.
+        ///
+        /// ⚠⚠ RAW, for `needle`'s reason: the reading has nuance the driver owns (an integer or a
+        /// double is accepted, a negative refused, nil means *no bound of its own*), and folding it
+        /// in here would move a DECISION rather than an argument.
+        within: Option<String>,
     },
     /// [`Act::End`] — publish this ending.
     End {
@@ -1134,12 +1156,11 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
             // only where the pass could MEET an outage — `watch` — so a document that declared one
             // on `judge` or `attend` would be saying something nothing reads. What must never be
             // optional is the word that says WHAT the pass is; this qualifies one of its answers.
+            let optional = |name: &str| params.get(name).and_then(|values| values.first()).cloned();
             Ok(Asked::Pass {
                 does,
-                needle: params
-                    .get("needle")
-                    .and_then(|values| values.first())
-                    .cloned(),
+                needle: optional("needle"),
+                within: optional("within"),
             })
         }
         // ⚠ NO EMPTY CHECK OF ITS OWN, for `pass.do`'s reason: `Publishes::of("")` answers [`None`]

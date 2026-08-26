@@ -1920,6 +1920,7 @@
          transition it causes DELIVERS the start prompt — so the peer has to be
          ready before that sentence can mean anything. -->
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'ready'"/>
     </send>
   </transition>
@@ -1929,6 +1930,7 @@
        arms of the match; saying it once is what the move found. -->
   <transition event="pass" cond="In('priming') || In('disputing')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'sent'"/>
     </send>
   </transition>
@@ -1938,6 +1940,7 @@
   <transition event="pass"
               cond="In('working') || In('closing') || In('stopping')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'watch'"/>
       <!--
         ⚠⚠⚠⚠⚠ WHAT AN OUTAGE LOOKS LIKE, DECLARED WHERE IT WOULD BE MET.
@@ -1960,16 +1963,19 @@
   </transition>
   <transition event="pass" cond="In('judging')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'judge'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('screening')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'screen'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('service_down')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'wait'"/>
     </send>
   </transition>
@@ -1979,31 +1985,37 @@
        makes the same distinction one layer over. -->
   <transition event="pass" cond="In('reflecting')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'reflect'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('reviewing')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'review'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('restarting')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'replace'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('resuming')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'resume'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('awaiting_human')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'attend'"/>
     </send>
   </transition>
   <transition event="pass" cond="In('redirecting')">
     <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
       <param name="does" expr="'redirect'"/>
     </send>
   </transition>
