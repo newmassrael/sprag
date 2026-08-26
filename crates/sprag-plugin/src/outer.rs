@@ -4116,6 +4116,32 @@ impl OuterLoop {
         self.machine.is_in_final_state()
     }
 
+    /// **WHICH ENDING THIS RUN PUBLISHED**, as its own document declares it — or [`None`] for a run
+    /// that has not reached one.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the driver asks instead of reading the state's name
+    ///
+    /// Register item 470, stage 3. `AiLoop::ended` chose a verdict from a `match` over all
+    /// twenty-eight states of `ai_loop.scxml` — seven arms naming an ending and twenty-one written
+    /// out to keep the match exhaustive — which is a second copy of the topology keyed on ids this
+    /// driver does not parse. Each `<final>` now declares its own word on its `<onentry>`, and this
+    /// is where it arrives.
+    ///
+    /// ⚠⚠ **READ AND NEVER TAKEN**, unlike the other two acts, because an ending is entered once
+    /// and asked about on every pass that follows: `pumping` (named rather than linked, because it
+    /// is private and a public doc that links a private item does not build here) answers
+    /// `Pumped::Ended` at the top of each one. A taker would answer the first caller and leave
+    /// every later one with [`None`] on a run that had not changed.
+    ///
+    /// ⚠ [`finished`](Self::finished) and this answer two different questions and both are needed:
+    /// the engine says the machine is OVER, and the document says what to call it. A run that is
+    /// finished with nothing here is a `<final>` that declared no act, which is a document defect
+    /// and is reported rather than guessed at.
+    #[must_use]
+    pub fn published(&self) -> Option<crate::act::Publishes> {
+        self.serving.published()
+    }
+
     /// **WHAT THE LAST PUMP SAW BEHIND THE EVENT IT RAISED** — see [`Noticed`].
     ///
     /// [`None`] while the loop is driving a turn nothing has interrupted, which is every pump of a

@@ -139,38 +139,38 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     // ⚠⚠ THE FOURTH WAS `is_final` ITSELF — *is it final* is the first question this comment lists,
     // and it is no longer asked here at all: `OuterLoop::finished` asks the engine. What remains in
     // this row is the other three.
-    ("abandoned", 4),
-    ("awaiting_human", 6),
-    ("blocked", 4),
-    ("cancelled", 5),
-    ("closing", 4),
-    ("converged", 7),
-    ("disputing", 4),
-    ("exhausted", 9),
-    ("failed", 7),
-    ("held", 4),
-    ("idle", 5),
-    ("judging", 10),
-    ("orders", 4),
-    ("peer_gone", 4),
-    ("priming", 5),
-    ("redirecting", 4),
-    ("reflecting", 4),
-    ("restarting", 4),
-    ("resuming", 4),
-    ("reviewing", 4),
-    ("running", 4),
-    ("screening", 4),
-    ("service_down", 4),
-    ("standing", 4),
+    ("abandoned", 3),
+    ("awaiting_human", 5),
+    ("blocked", 3),
+    ("cancelled", 4),
+    ("closing", 3),
+    ("converged", 6),
+    ("disputing", 3),
+    ("exhausted", 8),
+    ("failed", 6),
+    ("held", 3),
+    ("idle", 4),
+    ("judging", 9),
+    ("orders", 3),
+    ("peer_gone", 3),
+    ("priming", 4),
+    ("redirecting", 3),
+    ("reflecting", 3),
+    ("restarting", 3),
+    ("resuming", 3),
+    ("reviewing", 3),
+    ("running", 3),
+    ("screening", 3),
+    ("service_down", 3),
+    ("standing", 3),
     // ⚠ NINE since 2026-08-22, and the ninth is a READER rather than a decision — register item
     // 605. `OuterLoop::standing_down` answers *has the machine heard a stand-down*, which nothing
     // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
     // `cond` moved out of the document to get it, and the reader decides nothing.
-    ("standing_down", 5),
-    ("stopping", 4),
-    ("work", 5),
-    ("working", 6),
+    ("standing_down", 4),
+    ("stopping", 3),
+    ("work", 4),
+    ("working", 5),
 ];
 
 /// How many acts `ai_loop.scxml` declares for itself — one per `<onentry>`.
@@ -188,8 +188,18 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
 /// a block CONTAINS, so a counter of blocks is blind to item 470's stage 2 by construction. Two
 /// separate rounds have now confirmed that from the other side, which is worth more than the
 /// reasoning — this number stays because it is the side that catches an act being DELETED, and it
-/// will keep reading 11 through every act that moves.
-const DECLARED_ACTS: usize = 11;
+/// held at 11 through every act that moved.
+///
+/// ⭐⭐⭐⭐⭐ **AND THEN IT MOVED, 11 → 18, FOR THE FIRST TIME SINCE IT WAS PINNED** — 2026-08-26, the
+/// fourth match of stage 3. The prediction above is not broken by this and is confirmed by it: the
+/// seven new blocks are on the seven `<final>` elements, which had **no `<onentry>` at all** before
+/// this round. That is what this number was written to see — a block that did not exist coming into
+/// existence — as against an act moving INTO a block that was already there, which is what it is
+/// blind to and what the two entries above measured it being blind to.
+///
+/// ⚠ So the two numbers moved TOGETHER here (`SERVED_ACTS` 22 → 29, this 11 → 18) and that
+/// agreement is itself the reading: seven acts arrived in seven new blocks, one each.
+const DECLARED_ACTS: usize = 18;
 
 /// How many acts `ai_loop.scxml` asks THIS HOST to perform — one per `<send type="x-sprag-host">`.
 ///
@@ -273,9 +283,20 @@ const DECLARED_ACTS: usize = 11;
 /// sees that one, exactly as this number is what sees an act moving while those rows hold still —
 /// each is blind where the other looks, which is the division of labour the header claims.
 ///
+/// ⭐⭐⭐⭐⭐ **AND THE TWENTY-THIRD THROUGH TWENTY-NINTH ARE THE SEVEN ENDINGS** — 2026-08-26, the
+/// fourth match of stage 3. 22 → **29**. Every `<final>` in `ai_loop.scxml` now declares
+/// `<send type="x-sprag-host" event="end.publish">` with the word it publishes, which is what
+/// `AiLoop::ended` decided from a twenty-eight-arm state match until this round.
+///
+/// ⚠⚠ **AN ENDING'S ENTRY IS A DIFFERENT REGIME FROM EVERY OTHER ACT HERE, and it was PROBED before
+/// it was used**: entering a top-level `<final>` completes the machine, so no further macrostep is
+/// owed and no reply can be delivered. `probe.rs` measured that the handler is nevertheless called
+/// with its `<param>`, with the control on the edge INTO the ending so a dead handler could not
+/// read as a NO.
+///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 22;
+const SERVED_ACTS: usize = 29;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

@@ -4448,11 +4448,62 @@
 
   </parallel>
 
-  <final id="converged"/>
-  <final id="exhausted"/>
-  <final id="failed"/>
-  <final id="cancelled"/>
-  <final id="blocked"/>
+  <!--
+    ⚠⚠⚠⚠⚠ EVERY ENDING BELOW SAYS WHICH WORD IT PUBLISHES, on its own entry.
+
+    Register item 470, stage 3. `AiLoop::ended` chose the verdict from a `match`
+    over all twenty eight states of this file: seven arms naming an ending and
+    twenty one written out to say *not an ending* so the match stayed exhaustive
+    without a wildcard. It was a second copy of this document's topology, decided
+    in Rust, keyed on ids nothing over there parses.
+
+    ⚠⚠ THE WORD MOVES AND THE PAYLOAD DOES NOT, which is the line item 470 draws.
+    Which ceiling fell, what question was left on the pane, which pane the dead
+    peer had: those are facts about the RUN, latched by the driver as it went,
+    and it stays the only thing that holds them. What it stops doing is deciding
+    which of the seven this is from a state's NAME.
+
+    ⚠⚠⚠ AN ENTRY CAN CARRY THIS AND NOTHING ELSE CAN. An ending is arrived at,
+    never pumped, so there is no later moment to ask at; and `probe.rs` measured
+    that a top level `<final>`'s onentry does reach the host with its `<param>`,
+    even though entering one COMPLETES the machine and no reply can be delivered.
+    That measurement is what opened this road; it is not assumed here.
+  -->
+  <final id="converged">
+    <onentry>
+      <send type="x-sprag-host" event="end.publish">
+        <param name="publishes" expr="'converged'"/>
+      </send>
+    </onentry>
+  </final>
+  <final id="exhausted">
+    <onentry>
+      <send type="x-sprag-host" event="end.publish">
+        <param name="publishes" expr="'exhausted'"/>
+      </send>
+    </onentry>
+  </final>
+  <final id="failed">
+    <onentry>
+      <send type="x-sprag-host" event="end.publish">
+        <param name="publishes" expr="'failed'"/>
+      </send>
+    </onentry>
+  </final>
+  <final id="cancelled">
+    <onentry>
+      <send type="x-sprag-host" event="end.publish">
+        <param name="publishes" expr="'cancelled'"/>
+      </send>
+    </onentry>
+  </final>
+  <final id="blocked">
+    <onentry>
+      <send type="x-sprag-host" event="end.publish">
+        <param name="publishes" expr="'blocked'"/>
+      </send>
+    </onentry>
+  </final>
   <!--
     ⚠⚠⚠⚠ THE PROGRAM THIS RUN WAS DRIVING HAS EXITED.
 
@@ -4490,7 +4541,13 @@
     the turn that nobody is left to end (`Over::PeerGone`). Both raise this
     event, and a reader of the walk sees which state it came from.
   -->
-  <final id="peer_gone"/>
+  <final id="peer_gone">
+    <onentry>
+      <send type="x-sprag-host" event="end.publish">
+        <param name="publishes" expr="'peer_gone'"/>
+      </send>
+    </onentry>
+  </final>
   <!--
     ⚠⚠⚠⚠ SOMEBODY HELD THIS RUN AND DID NOT COME BACK.
 
@@ -4519,5 +4576,11 @@
     it needs no guard, and a reader of the walk cannot be told anything but the
     truth about how the run got here.
   -->
-  <final id="abandoned"/>
+  <final id="abandoned">
+    <onentry>
+      <send type="x-sprag-host" event="end.publish">
+        <param name="publishes" expr="'abandoned'"/>
+      </send>
+    </onentry>
+  </final>
 </scxml>

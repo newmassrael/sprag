@@ -44,6 +44,7 @@ use sprag_terminal::PaneId;
 use crate::sm::ai_loop::AiLoopPolicy;
 
 use crate::access::{PaneAccess, PaneError};
+use crate::act::Publishes;
 use crate::consent::Unanswered;
 use crate::driver::Ceiling;
 use crate::outer::{
@@ -585,16 +586,63 @@ impl AiLoop {
         }
     }
 
-    /// The verdict for a machine that has reached one of its five final states.
+    /// **ASK THE DOCUMENT WHAT IT PUBLISHED AND BUILD THE VERDICT FOR IT** — the one door into
+    /// [`Self::ended`], and the only place `state` and the published word meet.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a finished machine that published nothing is REPORTED, never guessed
+    ///
+    /// Register item 470, stage 3. Until this round the verdict came off `state`'s own name, so
+    /// this case could not arise: every state had an arm, including the twenty-one that are not
+    /// endings at all. Now the ENGINE says the machine is over and the DOCUMENT says what to call
+    /// it, and a `<final>` that declares no `end.publish` is a gap between those two answers.
+    ///
+    /// ⚠⚠ That gap is exactly the silence [`crate::act`] exists to end — *an act that quietly does
+    /// nothing is indistinguishable from one that worked* — so it ends the run with the state's own
+    /// name in the sentence, which is what sends a reader to the `<final>` that is missing its
+    /// block. Defaulting to any of the seven words would publish some other ending's verdict for a
+    /// run that reached this one.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError::Undrivable`] for an ending the document did not publish, and for whatever
+    /// [`Self::ended`] itself refuses.
+    fn ending(&self, state: AiLoopState, spent: u64, note: String) -> Result<Step, PaneError> {
+        let Some(publishes) = self.inner.published() else {
+            return Err(PaneError::Undrivable(format!(
+                "the machine is finished and its document published no ending: {state:?} declares \
+                 no `<send type=\"x-sprag-host\" event=\"end.publish\">` on its entry, or the word \
+                 it carried was refused. The run is over and nothing here can say what to call it, \
+                 and naming one of the seven would report some other ending's verdict. The pass \
+                 that ended the run: {note}"
+            )));
+        };
+        self.ended(publishes, spent, note)
+    }
+
+    /// The verdict for a run whose document has published an ending — see [`Publishes`].
+    ///
+    /// # ⚠⚠⚠⚠⚠ The WORD is the document's and the PAYLOAD is this run's, which is item 470's line
+    ///
+    /// Register item 470, stage 3, fourth match. This chose the verdict from a `match` over all
+    /// twenty-eight states of `ai_loop.scxml` — seven arms naming an ending and twenty-one written
+    /// out to say *not an ending* so the match stayed exhaustive without a wildcard — which is a
+    /// second copy of the topology, decided in Rust, keyed on ids nothing here parses. Every
+    /// `<final>` now declares its own word on its `<onentry>` and [`OuterLoop::published`] is where
+    /// it arrives.
+    ///
+    /// ⚠⚠ What did NOT move, and must not: which ceiling fell, what question was left on the pane,
+    /// which pane the dead peer had. Those are facts about the RUN, latched by the driver as it
+    /// went, and building a verdict out of them is an EFFECT. The match below is over a vocabulary
+    /// of seven outcomes rather than over a topology of twenty-eight states.
     ///
     /// # Errors
     ///
     /// [`PaneError::Undrivable`] for the document's `failed`, carrying the clause the driver
     /// recorded when it raised `fail`.
-    fn ended(&self, state: AiLoopState, spent: u64, mut note: String) -> Result<Step, PaneError> {
-        let verdict = match state {
+    fn ended(&self, publishes: Publishes, spent: u64, mut note: String) -> Result<Step, PaneError> {
+        let verdict = match publishes {
             // The agent said the word, `closing` got its report, and the report landed.
-            AiLoopState::Converged => Verdict::Converged,
+            Publishes::Converged => Verdict::Converged,
             // ⚠⚠ THE DOCUMENT'S OWN BUDGET, which no guardrail can see: `max_turns` counts the
             // inner agent's turns and one of those is many steps of this loop. See
             // [`Ceiling::Turns`].
@@ -630,7 +678,7 @@ impl AiLoop {
             // `stopping`'s own comment (*"the same ending, reported against a different ceiling"*),
             // and both lines are true. ⚠ A reader is not left to guess between them: the Driver's
             // `note_to_itself` sits between the two, saying which ceiling fell due and when.
-            AiLoopState::Exhausted => {
+            Publishes::Exhausted => {
                 if let Some(unfinished) = self.left_behind() {
                     note.push_str(&unfinished);
                 }
@@ -646,7 +694,7 @@ impl AiLoop {
             // back (item 447). `blocked` is the honest verdict for all three: the run stopped and a
             // person is what it needs. What is NOT honest is `asking()`'s `Unanswered::unreadable`
             // standing in for the other two, so the note carries what the verdict cannot.
-            AiLoopState::Blocked => {
+            Publishes::Blocked => {
                 if let Some(unfinished) = self.left_behind() {
                     note.push_str(&unfinished);
                 }
@@ -662,7 +710,7 @@ impl AiLoop {
             // sharper version of their reason. A held run stopped mid-goal by definition — the
             // hold is *between turns* — so whatever the last judged turn left behind is the whole
             // of what the person who let go needs to read before deciding whether to start again.
-            AiLoopState::Abandoned => {
+            Publishes::Abandoned => {
                 if let Some(unfinished) = self.left_behind() {
                     note.push_str(&unfinished);
                 }
@@ -675,7 +723,7 @@ impl AiLoop {
             // with the word for whichever it was. Reporting `Continue` here is therefore not a
             // stall: it hands the ending to the one authority that can tell a person's stop from a
             // clock running out, which is a distinction this plugin cannot make and must not guess.
-            AiLoopState::Cancelled => Verdict::Continue,
+            Publishes::Cancelled => Verdict::Continue,
             // ⚠⚠⚠⚠⚠ THE DOCUMENT'S OWN CONTENT FAILED, AND THAT IS THE FIRST THING TO SAY —
             // register item 505. Asked before the notice below because the two are different
             // authorities and only one of them can be right about this run: `fault` is written by
@@ -693,7 +741,7 @@ impl AiLoop {
             // the journal's last line was `Working --TurnDone--> Judging` and the state the guard
             // failed in appeared nowhere. So the line travels IN the sentence, which is the one
             // channel a failed run has.
-            AiLoopState::Failed => {
+            Publishes::Failed => {
                 // ⚠⚠⚠⚠ INSIDE THIS ARM AND NOT BESIDE IT, and item 470's ratchet is what said so:
                 // a guarded second `AiLoopState::Failed` arm is a twelfth state-keyed site in the
                 // driver, and the gate counted it the moment it existed. It is the right answer
@@ -760,38 +808,21 @@ impl AiLoop {
             // [`Self::driving`] asks the loop every time instead of holding a copy. The notice is
             // still set on the typing route, because it is the only evidence that the prompt this
             // transition owed was never sent.
-            AiLoopState::PeerGone => Verdict::PeerGone(self.inner.pane()),
-            AiLoopState::Idle
-            | AiLoopState::Priming
-            | AiLoopState::Working
-            | AiLoopState::Judging
-            | AiLoopState::Screening
-            // ⚠⚠ `Continue` IS THE WHOLE FIX RESTATED. A run waiting out its peer's service has
-            // not ended and must not be reported as having ended — the round that built this
-            // state exists because an outage was reaching a caller as `blocked`.
-            | AiLoopState::ServiceDown
-            | AiLoopState::Redirecting
-            // ⚠⚠ AND SO IS A RUN BEING TOLD ITS CLAIM WAS REFUSED — register item 448. A refusal is
-            // the one non-ending that most resembles one, and a `Verdict` here would report a run
-            // about to take another turn as finished.
-            | AiLoopState::Disputing
-            | AiLoopState::AwaitingHuman
-            | AiLoopState::Reflecting
-            | AiLoopState::Reviewing
-            | AiLoopState::Restarting
-            | AiLoopState::Resuming
-            | AiLoopState::Closing
-            | AiLoopState::Stopping
-            // ⚠⚠ THE REGIONS' STATES REACH HERE ONLY IF SOMETHING IS WRONG, and `Continue` is the
-            // right answer to being wrong: this method is called for a state the ENGINE called
-            // final (`OuterLoop::finished`), none of these is one, and a driver that ended
-            // somebody's run on a structural state would be turning a reader bug into a lost run.
-            | AiLoopState::Running
-            | AiLoopState::Work
-            | AiLoopState::Orders
-            | AiLoopState::Standing
-            | AiLoopState::StandingDown
-            | AiLoopState::Held => Verdict::Continue,
+            Publishes::PeerGone => Verdict::PeerGone(self.inner.pane()),
+            // ⚠⚠⚠⚠⚠ **TWENTY-ONE ARMS STOOD BELOW THIS ONE AND ALL TWENTY-ONE ARE GONE** — register
+            // item 470, stage 3, fourth match. They named every state of `ai_loop.scxml` that is
+            // NOT an ending — the thirteen the work region drives, the regions and orders — written
+            // out to say `Continue` so the match stayed exhaustive without a wildcard. Not one of
+            // them was a decision: they answered *what verdict does a state that is not an ending
+            // publish*, which is a question this function is never asked any more.
+            //
+            // ⚠⚠ THEY WERE NOT DEAD CODE EITHER, AND THAT IS WHY THIS IS A REAL MOVE RATHER THAN A
+            // DELETION. They were the cost of keying the answer on a STATE: any state at all could
+            // be named here, so every state had to be. Keyed on [`Publishes`] the question cannot
+            // be asked about a non-ending — there is no word for one — so the arms do not need
+            // answering, they need not to exist. The reader bug they guarded against is now caught
+            // one level out, where the caller finds a finished machine whose document published
+            // nothing and reports that rather than guessing.
         };
         // ⚠⚠⚠⚠⚠ AND WHAT NOTHING ANSWERED REACHES A PERSON HERE — register item 505's residue, on
         // the one channel that survives the run. The document's `error.execution` edge covers the
@@ -1078,13 +1109,13 @@ impl Plugin for AiLoop {
                 // `Pumped::Moved` reads `to` immediately after its own last raise, and nothing
                 // between there and here advances the machine — `took_screening` above is a take.
                 if self.inner.finished() {
-                    self.ended(to, spent, note)
+                    self.ending(to, spent, note)
                 } else {
                     Ok(Step::new(Cost::Bytes(spent), Verdict::Continue).noting(note))
                 }
             }
             Pumped::Ended(state) => {
-                self.ended(state, 0, format!("the loop is already in {state:?}"))
+                self.ending(state, 0, format!("the loop is already in {state:?}"))
             }
             Pumped::Unbuilt(state) => self.unbuilt(state),
             // ⚠⚠⚠ THE PANE IS NOT THIS LOOP'S TO TYPE INTO, before a byte has been sent. Three of

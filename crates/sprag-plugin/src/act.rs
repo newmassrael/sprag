@@ -111,6 +111,30 @@ pub enum Act {
     /// carrying on, because a pass that silently did nothing is the silence this whole module
     /// exists to end.
     Pass,
+    /// `end.publish` — this ending publishes this word to whoever is running the loop.
+    ///
+    /// Argument: `publishes` — which ending, from the closed space [`Publishes`] names.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why an ENDING declares an act at all, when nothing is left to do
+    ///
+    /// Register item 470, stage 3. `AiLoop::ended` mapped each of the loop's seven endings to a
+    /// `Verdict` with a `match` over all twenty-eight states — the same second copy of the topology
+    /// as every other match this stage has retired, and keyed on ids written in a file the driver
+    /// does not parse. The EFFECT (building a verdict, reading the run's own ceilings and panes for
+    /// its payload) stays here; what moves is the DECISION *which word does this ending publish*.
+    ///
+    /// # ⚠⚠⚠⚠ Why this one is READ rather than TAKEN, unlike the other two
+    ///
+    /// An ending is entered ONCE and asked about MANY TIMES. `OuterLoop::pumping` answers
+    /// `Pumped::Ended` at the top of every pass after the machine completes, and each of those
+    /// passes needs the same word — so a slot emptied by the first reader would leave every later
+    /// one with nothing, on a run that has not changed. The other two acts are performed once and
+    /// must be taken; this one is a FACT ABOUT THE RUN and is read, on `Serving::refused`'s terms.
+    ///
+    /// ⚠ Which is also why no `Overrun` can arise from it in a real run: one ending is entered, so
+    /// the slot is written once. A document declaring a second would be refused exactly as the
+    /// other acts are, which is the arrangement rather than an exception to it.
+    End,
 }
 
 impl Act {
@@ -118,7 +142,7 @@ impl Act {
     ///
     /// ⚠ The one list. [`Act::of`] reads it rather than spelling a second `match`, so an act added
     /// to the enum is served the moment it names itself.
-    pub const ALL: [Self; 2] = [Self::Say, Self::Pass];
+    pub const ALL: [Self; 3] = [Self::Say, Self::Pass, Self::End];
 
     /// The name a document calls this act by — its own `<send event="…">`.
     #[must_use]
@@ -126,6 +150,7 @@ impl Act {
         match self {
             Self::Say => "prompt.say",
             Self::Pass => "pass.do",
+            Self::End => "end.publish",
         }
     }
 
@@ -313,6 +338,89 @@ impl Does {
     }
 }
 
+/// **WHICH ENDING A FINISHED RUN PUBLISHES** — [`Act::End`]'s `publishes` argument.
+///
+/// # ⚠⚠⚠⚠⚠ What this space replaced
+///
+/// Register item 470, stage 3. `AiLoop::ended` chose a `Verdict` from a `match` over all
+/// twenty-eight states of `ai_loop.scxml`: seven arms naming an ending and twenty-one written out
+/// to say *not an ending* so the match stayed exhaustive without a wildcard. Every ending now says
+/// its own word on its own `<onentry>`, and the driver matches over THIS space — a vocabulary of
+/// seven outcomes, not a copy of a topology.
+///
+/// # ⚠⚠⚠⚠ The word moves and the PAYLOAD does not, which is the line item 470 draws
+///
+/// A verdict's payload is a fact about the RUN, not about the document: which ceiling fell
+/// (`Exhausted`), what question was left on the pane (`Blocked`), which pane the dead peer had
+/// (`PeerGone`). The driver latched those as it went and is the only thing that holds them, so it
+/// keeps building them. What it stops doing is deciding, from a state's NAME, which of the seven
+/// this is.
+///
+/// ⚠⚠ **THE SPACE IS CLOSED AND A WORD OUTSIDE IT IS REFUSED**, for [`Asks`]'s and [`Does`]'s
+/// reason exactly: the match this replaced was exhaustive on purpose, a document cannot be made to
+/// fail to compile, and a refusal is what stands in the compiler's place.
+///
+/// ⚠ **IT IS ONE WORD PER ENDING HERE, unlike [`Does`]**, and that is a property of this document
+/// rather than a rule: the seven endings are seven different things to tell a caller. If two ever
+/// published the same word, this space would shrink and the finals would not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Publishes {
+    /// `converged` — the agent said the word, and the report landed.
+    Converged,
+    /// `exhausted` — a budget ran out. WHICH budget is the run's own fact and stays with the driver.
+    Exhausted,
+    /// `failed` — the document's own content raised an error, and this document stops on that.
+    Failed,
+    /// `cancelled` — the run was ended from outside.
+    ///
+    /// ⚠ The driver still answers this one `Verdict::Continue`, deliberately: only the Driver can
+    /// tell a person's stop from a deadline, and that is an EFFECT decision rather than the word.
+    Cancelled,
+    /// `blocked` — the run stopped and a person is what it needs.
+    Blocked,
+    /// `peer_gone` — the program this run was driving has exited.
+    PeerGone,
+    /// `abandoned` — a person held the loop and did not come back inside its own bound.
+    ///
+    /// ⚠⚠ The one ending the `orders` region reaches on its own, which is why it is here rather
+    /// than folded into [`Self::Blocked`]: both mean *a person is what this run needs*, and only
+    /// this one means a person was already there and left.
+    Abandoned,
+}
+
+impl Publishes {
+    /// Every ending this host publishes a word for.
+    pub const ALL: [Self; 7] = [
+        Self::Converged,
+        Self::Exhausted,
+        Self::Failed,
+        Self::Cancelled,
+        Self::Blocked,
+        Self::PeerGone,
+        Self::Abandoned,
+    ];
+
+    /// The word a document publishes this ending as.
+    #[must_use]
+    pub const fn named(self) -> &'static str {
+        match self {
+            Self::Converged => "converged",
+            Self::Exhausted => "exhausted",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Blocked => "blocked",
+            Self::PeerGone => "peer_gone",
+            Self::Abandoned => "abandoned",
+        }
+    }
+
+    /// Which ending `word` publishes, or [`None`] for a word this space does not hold.
+    #[must_use]
+    pub fn of(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|ends| ends.named() == word)
+    }
+}
+
 /// **ONE ACT THE DOCUMENT ASKED FOR, WITH THE ARGUMENTS IT SENT.**
 ///
 /// ⚠ A variant per act rather than one struct with every act's arguments on it: the two acts share
@@ -332,6 +440,11 @@ pub enum Asked {
         /// Which effect the pass is for.
         does: Does,
     },
+    /// [`Act::End`] — publish this ending.
+    End {
+        /// Which ending the run reached, as the document publishes it.
+        publishes: Publishes,
+    },
 }
 
 impl Asked {
@@ -344,6 +457,7 @@ impl Asked {
         match self {
             Self::Say { .. } => Act::Say,
             Self::Pass { .. } => Act::Pass,
+            Self::End { .. } => Act::End,
         }
     }
 }
@@ -515,6 +629,13 @@ struct Book {
     saying: Option<Asked>,
     /// The pass act ([`Act::Pass`]) nothing has carried out yet.
     passing: Option<Asked>,
+    /// The ending act ([`Act::End`]) — the word this run's ending publishes.
+    ///
+    /// ⚠⚠⚠ NEVER EMPTIED, unlike the two above, and it is not a slot in the same sense. An ending
+    /// is entered once and asked about on every pass that follows it, because `OuterLoop::pumping`
+    /// answers `Pumped::Ended` at the top of each one. A reader that took this would leave every
+    /// later pass with nothing on a run whose ending had not changed. See `Serving::published`.
+    ending: Option<Asked>,
     /// Every act this host would not perform, in the order they were asked for.
     refused: Vec<Refused>,
 }
@@ -528,6 +649,7 @@ impl Book {
         match act {
             Act::Say => &mut self.saying,
             Act::Pass => &mut self.passing,
+            Act::End => &mut self.ending,
         }
     }
 }
@@ -604,6 +726,26 @@ impl Serving {
             .take()
     }
 
+    /// **WHICH ENDING THIS RUN PUBLISHED**, or [`None`] for a run that has not reached one.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Read rather than taken, which is the whole reason this is not [`Self::taken`]
+    ///
+    /// An ending is entered ONCE and asked about MANY TIMES: `OuterLoop::pumping` answers
+    /// `Pumped::Ended` at the top of every pass after the machine completes, and each of those
+    /// passes builds the same verdict. Taking would hand the FIRST reader the word and every later
+    /// one [`None`] — on a run whose ending had not changed — which is the shape that would look
+    /// like an ending the document forgot to declare.
+    ///
+    /// ⚠⚠ It is therefore a FACT ABOUT THE RUN rather than work waiting to be done, and it is kept
+    /// on [`Self::refused`]'s terms: nothing is served by forgetting it.
+    #[must_use]
+    pub fn published(&self) -> Option<Publishes> {
+        match self.0.lock().unwrap_or_else(PoisonError::into_inner).ending {
+            Some(Asked::End { publishes }) => Some(publishes),
+            _ => None,
+        }
+    }
+
     /// **EVERY ACT THIS HOST WOULD NOT PERFORM**, in the order they were asked for.
     ///
     /// ⚠ Read rather than taken: a refusal is a fact about the document, and a run that met one has
@@ -668,6 +810,21 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
             };
             Ok(Asked::Pass { does })
         }
+        // ⚠ NO EMPTY CHECK OF ITS OWN, for `pass.do`'s reason: `Publishes::of("")` answers [`None`]
+        // already, so an argument that evaluated to nothing is refused below with the space it
+        // missed printed beside it.
+        Act::End => {
+            let said = argument(params, act, "publishes")?;
+            let Some(publishes) = Publishes::of(&said) else {
+                return Err(Refused::Unreadable {
+                    act,
+                    argument: "publishes",
+                    said,
+                    holds: Publishes::ALL.map(Publishes::named).to_vec(),
+                });
+            };
+            Ok(Asked::End { publishes })
+        }
     }
 }
 
@@ -691,7 +848,7 @@ mod tests {
 
     use sce_rust_runtime::{IScriptEngine, ScriptValue};
 
-    use super::{Act, Asked, Asks, Does, Refused, Serving, read};
+    use super::{Act, Asked, Asks, Does, Publishes, Refused, Serving, read};
     use crate::sm::probe_send_type_sm::ProbeSendTypePolicy;
 
     /// The act `probe_send_type.scxml` addresses to this host — a name [`Act`] does not serve.
@@ -913,6 +1070,49 @@ mod tests {
                 does.named(),
             );
         }
+        // ⚠⚠⚠⚠⚠ AND THE SAME OF THE THIRD ACT'S SPACE — register item 470, stage 3, the fourth
+        // match. `publishes` is what replaced `AiLoop::ended`'s twenty-eight-arm state match, and it
+        // is the most load-bearing of the three: a word this door cannot read back is an ENDING the
+        // run reached and could not report, on a machine that is already over and has no pass left
+        // to notice.
+        //
+        // ⚠⚠ THE COUNT IS PINNED BESIDE THE WALK, and that is not belt-and-braces. A loop over
+        // `ALL` decides how many times it asserts from the very list it is checking, so a variant
+        // dropped from `ALL` shrinks the control with the space and this reads green over a word
+        // nobody can publish any more. The seven are the document's seven `<final>` elements, and
+        // that is the number this must not lose quietly.
+        assert_eq!(
+            Publishes::ALL.len(),
+            7,
+            "⚠⚠⚠⚠⚠ `ai_loop.scxml` declares SEVEN `<final>` elements and this space must hold a \
+             word for each. A space that shrank while the document did not is an ending that \
+             reaches this door and is refused, which the machine has no pass left to hear",
+        );
+        for publishes in Publishes::ALL {
+            assert_eq!(
+                match asking(Act::End, &[("publishes", publishes.named())])
+                    .expect("every word this space holds is one an ending may declare")
+                {
+                    Asked::End { publishes } => publishes,
+                    other => panic!("`end.publish` is what was asked for: {other:?}"),
+                },
+                publishes,
+                "⚠⚠⚠⚠ `{}` is in `Publishes::ALL` and this door does not read it back as itself",
+                publishes.named(),
+            );
+        }
+        assert_eq!(
+            asking(Act::End, &[("publishes", "")]),
+            Err(Refused::Unreadable {
+                act: Act::End,
+                argument: "publishes",
+                said: String::new(),
+                holds: Publishes::ALL.map(Publishes::named).to_vec(),
+            }),
+            "⚠⚠⚠⚠ AN ENDING WHOSE WORD EVALUATED TO NOTHING IS REFUSED BY THE SPACE ITSELF, on \
+             `does`'s terms exactly: the empty string is not one of the seven, and a default here \
+             would report some other ending's verdict for it",
+        );
         assert_eq!(
             asking(Act::Pass, &[]),
             Err(Refused::Missing {
