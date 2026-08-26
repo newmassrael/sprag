@@ -8407,6 +8407,18 @@ mod tests {
     /// ⚠ `false` and never `0` or `""`: this datamodel is Lua, where both of those are TRUE.
     const ORDINARY: &str = r#"{"done": false, "checked": false, "explained": false, "unheard": false, "stop_short": false}"#;
 
+    /// **THE SAME PAYLOAD WITH THE AGENT SAYING THE WORD** — [`ORDINARY`]'s five keys with `done`
+    /// true, which is the only difference between a turn that banks and one that closes the run.
+    ///
+    /// ⚠ Spelled out beside its sibling rather than built from it: what a fixture sends the machine
+    /// is the thing under test, and a payload assembled by string surgery is one a reader cannot
+    /// check against `OuterLoop::pump`'s own by eye.
+    const DONE: &str = r#"{"done": true, "checked": false, "explained": false, "unheard": false, "stop_short": false}"#;
+
+    /// **THE SAME PAYLOAD SAYING ONE OF THE RUN'S OWN CEILINGS FELL DUE** — `judging`'s FIRST arm,
+    /// which asks the agent for an account rather than for more work.
+    const STOP_SHORT: &str = r#"{"done": false, "checked": false, "explained": false, "unheard": false, "stop_short": true}"#;
+
     /// Raise a DATA-CARRYING event the way the driver does, then step.
     ///
     /// # ⚠⚠⚠⚠⚠ Why fifteen fixtures changed to this in register item 505's round
@@ -8675,13 +8687,120 @@ mod tests {
     /// the same reader `OuterLoop::signalling` uses — so a `<param>` that stopped being evaluated,
     /// a word outside the space, and an `<onentry>` that never fired all land here as a failure.
     ///
-    /// ⚠ **FOUR OF SEVEN, NAMED RATHER THAN ROUNDED UP.** `converged` and `exhausted` need a judged
-    /// turn and a spent budget to reach, and `abandoned` needs a hold to expire in the orders
-    /// region; none is one or two events from `working`, so they stay uncovered and stay in the
-    /// register. This gate covers the four that are: `failed`, `cancelled`, `peer_gone` and
-    /// `blocked`.
+    /// ⭐ **ALL SEVEN, and the last three cost one intermediate state each.** `converged` is reached
+    /// through `closing` (a banked turn with the order STANDING DOWN), `exhausted` through
+    /// `stopping` (the document's own `max_turns` spent), and `abandoned` from `held` in the ORDERS
+    /// region — which is two events from a started machine and never touches `working` at all.
+    /// ⚠ That last one is why this gate is not named for `working`: three of the seven are reached
+    /// from somewhere else, and a name claiming otherwise would be the gate lying about its own
+    /// coverage.
     #[test]
-    fn the_endings_a_run_reaches_from_working_say_what_a_stop_must_still_reach() {
+    fn every_ending_says_what_a_stop_must_still_reach() {
+        // ── THE THREE THAT NEED AN INTERMEDIATE STATE, each driven the way a run reaches it ──
+        //
+        // ⚠⚠ `abandoned` NEVER ENTERS `working`. It is the one ending the ORDERS region reaches on
+        // its own: a person holds the loop and does not come back inside the document's bound. So
+        // it is driven from `standing`, and the fixture asserts it got there.
+        let held = |engine: &mut Engine<AiLoopPolicy>, host: &crate::act::Serving| {
+            carried(engine, host, AiLoopEvent::Start, "");
+            carried(engine, host, AiLoopEvent::PromptSent, "");
+            carried(engine, host, AiLoopEvent::Hold, "");
+            let active = engine.get_active_states();
+            assert!(
+                active.contains(&AiLoopState::Held),
+                "⚠⚠⚠ THE FIXTURE: `abandon` is raised from `held` and nowhere else. active = \
+                 {active:?}",
+            );
+        };
+        // ⚠ A BANKED TURN WITH THE ORDER STANDING DOWN is what reaches `closing`, and `closing`'s
+        // own completed turn is what converges. Both halves are the document's, not this test's.
+        let closing = |engine: &mut Engine<AiLoopPolicy>, host: &crate::act::Serving| {
+            carried(engine, host, AiLoopEvent::Start, "");
+            carried(engine, host, AiLoopEvent::PromptSent, "");
+            carried(engine, host, AiLoopEvent::TurnDone, TURN);
+            carried(engine, host, AiLoopEvent::StandDown, "");
+            carried(engine, host, AiLoopEvent::Judge, DONE);
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Closing,
+                "⚠⚠⚠ THE FIXTURE: only a done judgement under a standing-down order reaches \
+                 `closing`, and `converged` is only reachable through it",
+            );
+        };
+        // ⚠⚠ ONE JUDGEMENT CARRYING `stop_short`, which is the document's own FIRST arm out of
+        // `judging` — *a ceiling of the run's fell due, so ask for an account*. It is the edge a
+        // real run takes to `stopping`, and it is one event rather than a whole spent budget.
+        //
+        // ⚠ THE LONG ROUTE WAS TRIED FIRST AND REFUSED ITSELF: judging ordinary turns until
+        // `max_turns` runs out walks through `reflecting` (`reflect_every`), and driving that with
+        // `reflect.none` reached `failed` with NO refused act — the document's own content raising
+        // `error.execution` on a path a real reflection would have prepared. The fixture said so
+        // rather than measuring `exhausted` on a machine that never got there, which is the
+        // fixture working; this route avoids the question instead of pretending to answer it.
+        let stopping = |engine: &mut Engine<AiLoopPolicy>, host: &crate::act::Serving| {
+            carried(engine, host, AiLoopEvent::Start, "");
+            carried(engine, host, AiLoopEvent::PromptSent, "");
+            carried(engine, host, AiLoopEvent::TurnDone, TURN);
+            carried(engine, host, AiLoopEvent::Judge, STOP_SHORT);
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Stopping,
+                "⚠⚠⚠ THE FIXTURE: a judgement carrying `stop_short` is what asks for an account, \
+                 and `exhausted` is only reachable through the state it reaches",
+            );
+        };
+
+        for (reach, route, publishes, signals) in [
+            (
+                Some(&held as &dyn Fn(&mut Engine<AiLoopPolicy>, &crate::act::Serving)),
+                vec![AiLoopEvent::Abandon],
+                crate::act::Publishes::Abandoned,
+                // ⚠⚠ THE ARM WHERE THE FAIL-SAFE DOES REAL WORK: a hold PARKS the loop and leaves
+                // the turn its agent is in the middle of alone, so the last thing anybody knows is
+                // that it was working — and nobody has looked since.
+                crate::act::Signals::Pane,
+            ),
+            (
+                Some(&closing as &dyn Fn(&mut Engine<AiLoopPolicy>, &crate::act::Serving)),
+                vec![AiLoopEvent::TurnDone],
+                crate::act::Publishes::Converged,
+                crate::act::Signals::Nothing,
+            ),
+            (
+                Some(&stopping as &dyn Fn(&mut Engine<AiLoopPolicy>, &crate::act::Serving)),
+                vec![AiLoopEvent::TurnDone],
+                crate::act::Publishes::Exhausted,
+                crate::act::Signals::Nothing,
+            ),
+        ] {
+            let (mut engine, host, _lua, _session) = started();
+            reach.expect("each row above carries its own route")(&mut engine, &host);
+            assert_eq!(
+                host.signalling(),
+                None,
+                "⚠⚠⚠⚠ THE CONTROL: nothing has been published before the ending is entered",
+            );
+            for event in route {
+                carried(&mut engine, &host, event, "");
+            }
+            assert!(
+                engine.is_in_final_state(),
+                "the fixture: this route must reach an ending. Saw {:?}",
+                engine.get_current_state(),
+            );
+            assert_eq!(
+                host.published(),
+                Some(publishes),
+                "⚠⚠⚠ the ending this route reaches must publish its own word",
+            );
+            assert_eq!(
+                host.signalling(),
+                Some(signals),
+                "⚠⚠⚠⚠⚠ `{publishes:?}` SAYS THE WRONG THING ABOUT WHAT A STOP MUST REACH",
+            );
+        }
+
+        // ── AND THE FOUR THAT ARE ONE OR TWO EVENTS FROM `working` ──
         for (route, publishes, signals) in [
             (
                 vec![AiLoopEvent::Fail],
