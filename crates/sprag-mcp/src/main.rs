@@ -3402,7 +3402,7 @@ fn reporter_caveats(
     pane: u64,
     daemon: Option<&str>,
     indent: &str,
-    trouble: &std::path::Path,
+    trouble: &MuteWitness<'_>,
 ) -> String {
     // ADDITIVE, and the condition is the AUTHORITY rather than the state: a scraped verdict has no
     // reporter to be mute or foreign, so a pane whose state was read off its screen reads exactly
@@ -3414,12 +3414,41 @@ fn reporter_caveats(
         "{indent}`{source}` REPORTED this state; it was not read off the screen, and a report \
          outranks the screen.\n"
     );
-    if let Some(said) = reporter_mute(pane, trouble) {
-        out.push_str(&format!(
+    // ⚠⚠⚠⚠ ATTRIBUTED BEFORE IT IS ACTED ON — register item 711, and the four answers are
+    // `sprag_host::MuteWord`'s so this mouth and the CLI cannot come to disagree about WHEN a
+    // reporter is mute. A breadcrumb is filed under a pane NUMBER and the next daemon's counter
+    // reissues that number; on 2026-08-26 one from 14:02 was read against a live pane 4 born at
+    // 22:57 and a healthy reporter was taken off its hook.
+    match trouble.word_from(pane) {
+        sprag_host::MuteWord::Speaking => {}
+        sprag_host::MuteWord::Mute { said } => out.push_str(&format!(
             "{indent}⚠ THAT REPORTER IS MUTE: its last attempt failed — {said}. The state above is \
              the last thing it MANAGED to say rather than what is true now, so read_pane is the \
              better witness until this clears.\n",
-        ));
+        )),
+        // ⚠⚠ STATED, NOT SWALLOWED: nothing prunes these (item 700's stated residue), so a caller
+        // told only *not mute* would meet the file itself later and read it the way the watcher did.
+        sprag_host::MuteWord::Inherited {
+            said,
+            left_in,
+            asking,
+        } => out.push_str(&format!(
+            "{indent}A mute breadcrumb sits under this pane's NUMBER and is not this reporter's: it \
+             was left in generation {left_in} and the daemon holding this pane is {asking}, so its \
+             subject is a pane that no longer exists. It said {said:?}. The state above stands.\n",
+        )),
+        sprag_host::MuteWord::Unattributed { said, silent } => out.push_str(&format!(
+            "{indent}A mute breadcrumb sits under this pane's NUMBER and cannot be attributed — \
+             {} — so it is not acted on. It said {said:?}.\n",
+            match silent {
+                sprag_host::MuteSilence::Breadcrumb =>
+                    "it names no generation, so it predates this check or its reporter had lost the \
+                     variable naming one",
+                sprag_host::MuteSilence::Reader =>
+                    "that daemon does not say which generation it is, so there is nothing to \
+                     compare it against",
+            },
+        )),
     }
     let named = host_sock().map_or_else(
         || "the daemon this server reached".to_owned(),
@@ -3463,24 +3492,14 @@ fn reporter_caveats(
     out
 }
 
-/// THE HOOK'S OWN ACCOUNT OF WHY IT LAST FAILED TO DELIVER, or `None` when it is speaking.
+/// **WHERE A HOOK LEAVES WORD THAT IT COULD NOT DELIVER, AND WHOSE WORD IT WOULD HAVE TO BE** —
+/// [`sprag_host::MuteReader`], named by the caller and never inherited.
 ///
-/// One reader would not need a function; there are two, and they sit at opposite ends of the cost
-/// scale — [`reporter_caveats`] spends a sentence on it and [`reporter_flags`] spends a word. Both
-/// must agree about WHEN a reporter is mute, so the condition is written once. Two spellings of
-/// "the breadcrumb is there" is exactly how a listing comes to disagree with the tool it sends its
-/// reader to.
+/// # ⛔⛔⛔⛔⛔ Why the DIRECTORY is a parameter, and it cost two gates to learn (item 700)
 ///
-/// ⚠ Read off the FILESYSTEM rather than asked of the daemon, exactly as the CLI reads it and for
-/// the same reason: the condition being reported is that the hook could not reach the daemon, so
-/// the daemon is the one party that cannot know.
-/// **WHERE A HOOK LEAVES WORD THAT IT COULD NOT DELIVER** — named by the caller, never inherited.
-///
-/// # ⛔⛔⛔⛔⛔ Why this is a parameter, and it cost two gates to learn
-///
-/// [`reporter_mute`] reads a REAL FILE keyed on a pane id, and two gates built a `PaneInfo` with
-/// `id: 3` and asked `reporter_flags(.., 7, ..)`. On a clean runner nothing answers and both were
-/// green for as long as they had existed; on the machine this loop runs on,
+/// The reader behind this reads a REAL FILE keyed on a pane id, and two gates built a `PaneInfo`
+/// with `id: 3` and asked `reporter_flags(.., 7, ..)`. On a clean runner nothing answers and both
+/// were green for as long as they had existed; on the machine this loop runs on,
 /// `~/.local/state/sprag/hook-mute.3` and `hook-mute.7` exist — real breadcrumbs from real panes
 /// that lost a hook — so the product truthfully added `mute` and both gates went red. **107 such
 /// files were on this host**, so which fixture ids collide is a fact about the day's history.
@@ -3495,18 +3514,26 @@ fn reporter_caveats(
 /// eventually, so it lowers the probability without touching the mechanism — and a gate that is
 /// usually right is the thing this repository keeps paying for.
 ///
-/// ⚠⚠⚠ **AND IT IS REQUIRED RATHER THAN AN `Option` THAT FALLS BACK.** A default spelled *the real
-/// one* is inherited by every caller that forgets, which is the arrangement being repaired — so the
-/// one production caller says [`sprag_host::durability::state_dir`] out loud and a fixture that says
-/// nothing does not compile.
-/// Whether a hook left word that it could not deliver, looked for under `at`.
-fn reporter_mute(pane: u64, at: &std::path::Path) -> Option<String> {
-    let said = std::fs::read_to_string(at.join(format!("hook-mute.{pane}"))).ok()?;
-    // An empty breadcrumb is still a failed delivery — the file's EXISTENCE is the message, and its
-    // text is only the hook's account of the failure. Kept as `Some("")` rather than filtered out,
-    // so a hook that manages to write nothing does not read as a hook that succeeded.
-    Some(said.trim().to_owned())
-}
+/// # ⛔⛔⛔⛔⛔ Why the GENERATION rides with it, and why the pair is one parameter (item 711)
+///
+/// The directory answers *whose HOST's history*. It cannot answer *whose PANE*, and the file's name
+/// is a pane number that the next daemon's counter hands out again from one. Measured on this host
+/// 2026-08-26: `hook-mute.4` (14:02) and `hook-mute.6` (13:37) named numbers a daemon born at 22:47
+/// had given to live panes, and a watcher read one as a live mute and called `release-agent` on a
+/// healthy reporter. **The number was right and its subject was gone.**
+///
+/// So the two facts travel as ONE argument, because the failure mode is a call site that supplies
+/// only the first: a directory with no generation reads every earlier occupant's word as live, which
+/// is precisely the bug. The four answers and the parsing are
+/// [`sprag_host::MuteWord`]'s — shared with the CLI, so the two mouths cannot come to disagree about
+/// WHEN a reporter is mute. Two spellings of *"the breadcrumb is there"* is exactly how a listing
+/// comes to disagree with the tool it sends its reader to.
+///
+/// ⚠ Read off the FILESYSTEM rather than asked of the daemon, exactly as the CLI reads it and for
+/// the same reason: the condition being reported is that the hook could not reach the daemon, so the
+/// daemon is the one party that cannot know. The GENERATION is the mirror image — only the daemon can
+/// state it — which is why it is carried in rather than looked up.
+type MuteWitness<'a> = sprag_host::MuteReader<'a>;
 
 /// WHAT A SCANNER MUST NOT MISS ABOUT A REPORTED ROW, as tokens on the row itself — register item
 /// 475, and the listing-sized answer to the question [`reporter_caveats`] answers at length.
@@ -3548,7 +3575,7 @@ fn reporter_flags(
     id: u64,
     number: usize,
     daemon: Option<&str>,
-    trouble: &std::path::Path,
+    trouble: &MuteWitness<'_>,
 ) -> String {
     // The AUTHORITY is the condition, not the state: a scraped verdict has no reporter to be mute
     // or foreign, so a row read off a screen looks exactly as it did before this existed.
@@ -3556,7 +3583,12 @@ fn reporter_flags(
         return String::new();
     }
     let mut flags = Vec::new();
-    if reporter_mute(id, trouble).is_some() {
+    // ⚠⚠⚠⚠ ONE WORD, AND ONLY FOR A BREADCRUMB THIS PANE'S OWN REPORTER LEFT — register item 711. A
+    // row is where a scanner spends the least attention, so the three arms that are NOT this
+    // reporter's word are silent here and the sentence is left to `reporter_caveats`: a listing that
+    // marked `mute` on an eight-hour-old breadcrumb under a reissued number is what sent a watcher to
+    // `release-agent` against a healthy reporter.
+    if matches!(trouble.word_from(id), sprag_host::MuteWord::Mute { .. }) {
         flags.push("mute");
     }
     match sprag_host::wire::reporter_image(agent.build.as_deref(), daemon) {
@@ -3608,7 +3640,12 @@ fn tool_list_panes() -> Result<String, String> {
     // separately, because the event between two calls is precisely the daemon restart the
     // comparison exists to detect.
     let (panes, daemon) = query_panes_and_daemon()?;
-    Ok(render_pane_list(&panes, own_pane(), daemon.as_deref()))
+    Ok(render_pane_list(
+        &panes,
+        own_pane(),
+        daemon.build.as_deref(),
+        daemon.generation.as_deref(),
+    ))
 }
 
 /// `list_windows` — the session's windows in the order the user arranged them, each with its panes.
@@ -4287,10 +4324,17 @@ fn tool_list_sessions() -> Result<String, String> {
 /// have to make a second call to repair it, and it must be repaired with the same words it learned
 /// them in. One rendering, so the two can never come to describe the same panes differently.
 ///
-/// `daemon` is which build the daemon that SERVED these rows says it is — a property of the
-/// connection rather than of any row, which is why it rides beside the rows instead of inside them.
-/// [`reporter_flags`] is its one reader. `None` is *it did not say*, never *it matches*.
-fn render_pane_list(panes: &[PaneInfo], here: Option<u64>, daemon: Option<&str>) -> String {
+/// `daemon` is which build the daemon that SERVED these rows says it is, and `generation` WHICH RUN
+/// of that build — both properties of the connection rather than of any row, which is why they ride
+/// beside the rows instead of inside them. `None` is *it did not say*, never *it matches*.
+/// [`reporter_flags`] reads the first; the second dates the pane NUMBERS these rows are addressed by
+/// and so decides whether a mute breadcrumb filed under one of them is this pane's (item 711).
+fn render_pane_list(
+    panes: &[PaneInfo],
+    here: Option<u64>,
+    daemon: Option<&str>,
+    generation: Option<&str>,
+) -> String {
     if panes.is_empty() {
         return "This sprag terminal has no panes.".to_owned();
     }
@@ -4302,9 +4346,11 @@ fn render_pane_list(panes: &[PaneInfo], here: Option<u64>, daemon: Option<&str>)
         "{} pane(s) in this window (list_windows for the session's others):\n",
         panes.len()
     );
-    // ⚠ THE ONE PLACE A LISTING NAMES THE REAL DIRECTORY — see `reporter_mute`. Derived once for
-    // the whole listing rather than per row: every row asks about the same host.
-    let trouble = sprag_host::durability::state_dir();
+    // ⚠ THE ONE PLACE A LISTING NAMES THE REAL DIRECTORY — see [`MuteWitness`]. Derived once for
+    // the whole listing rather than per row: every row asks about the same host, and about the same
+    // daemon, so the generation the numbers came from is one answer for all of them.
+    let state_dir = sprag_host::durability::state_dir();
+    let trouble = MuteWitness::new(&state_dir, generation);
     for (index, pane) in panes.iter().enumerate() {
         out.push_str(&pane_summary(
             numbered(index),
@@ -4324,14 +4370,16 @@ fn render_pane_list(panes: &[PaneInfo], here: Option<u64>, daemon: Option<&str>)
 /// invisible-state lines (mouse / focus) are unit-testable without a live host.
 ///
 /// `daemon` is the answering daemon's own build, passed down from [`render_pane_list`] for
-/// [`reporter_flags`] — see there for why a row cannot carry it.
+/// [`reporter_flags`] — see there for why a row cannot carry it. `trouble` is where a mute breadcrumb
+/// is looked for and whose it would have to be, passed down for the same reason and never inherited
+/// ([`MuteWitness`]).
 fn pane_summary(
     number: usize,
     pane: &PaneInfo,
     panes: &[PaneInfo],
     here: Option<u64>,
     daemon: Option<&str>,
-    trouble: &std::path::Path,
+    trouble: &MuteWitness<'_>,
 ) -> String {
     let title = if pane.title.is_empty() {
         "(none)".to_owned()
@@ -5776,7 +5824,12 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
         named
             .as_ref()
             .map(|(name, landed)| (name.as_str(), *landed)),
-        &render_pane_list(&panes, Some(opener), daemon.as_deref()),
+        &render_pane_list(
+            &panes,
+            Some(opener),
+            daemon.build.as_deref(),
+            daemon.generation.as_deref(),
+        ),
     ))
 }
 
@@ -6126,7 +6179,12 @@ fn tool_rename_pane(args: &Value) -> Result<String, String> {
 /// again, or to believe a person's work survived when it did not.
 fn relisted(here: Option<u64>) -> String {
     match query_panes_and_daemon() {
-        Ok((panes, daemon)) => render_pane_list(&panes, here, daemon.as_deref()),
+        Ok((panes, daemon)) => render_pane_list(
+            &panes,
+            here,
+            daemon.build.as_deref(),
+            daemon.generation.as_deref(),
+        ),
         Err(why) => format!("(could not re-list the panes: {why} — call list_panes)"),
     }
 }
@@ -7264,7 +7322,7 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
     // and a person's reading pane are the reason a session has more than one window at all.
     // ⚠ The daemon that ANSWERED, taken with the rows in one call — the other half of every
     // reporter's build below ([`reporter_caveats`]), and meaningless if fetched separately.
-    let (selected, daemon): (Vec<PaneRef>, Option<String>) =
+    let (selected, daemon): (Vec<PaneRef>, DaemonSaid) =
         match resolve_optional_pane_ref_and_daemon(args)? {
             Some((pane, daemon)) => (vec![pane], daemon),
             None => {
@@ -7287,6 +7345,11 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
             }
         };
     let mut out = String::new();
+    // ⚠ THE DIRECTORY AND THE GENERATION, BOUND ONCE for the whole answer — see [`MuteWitness`] for
+    // why neither may be inherited and why a caller holding one of them judges an old breadcrumb
+    // wrongly in a different way for each.
+    let state_dir = sprag_host::durability::state_dir();
+    let trouble = MuteWitness::new(&state_dir, daemon.generation.as_deref());
     for pane in selected {
         match &pane.info.agent {
             Some(agent) => {
@@ -7306,9 +7369,9 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
                 out.push_str(&reporter_caveats(
                     agent,
                     pane.id(),
-                    daemon.as_deref(),
+                    daemon.build.as_deref(),
                     "    ",
-                    &sprag_host::durability::state_dir(),
+                    &trouble,
                 ));
             }
             None => out.push_str(&format!(
@@ -7703,12 +7766,16 @@ fn tool_agent_explain(args: &Value) -> Result<String, String> {
     // ⚠⚠⚠⚠⚠ AND WHETHER THE REPORTER THAT PRODUCED IT CAN STILL SPEAK, AND IS THIS DAEMON'S CODE.
     // A caller reaches for `explain` when a verdict looks wrong, and for a REPORTED verdict those
     // two are the whole of the explanation — the rule branch above has nothing to offer it.
+    // ⚠ The generation rides with the directory ([`MuteWitness`]): a breadcrumb filed under this
+    // pane's NUMBER by an earlier daemon is not this reporter's word, and reading it as one is what
+    // register item 711 measures.
+    let state_dir = sprag_host::durability::state_dir();
     out.push_str(&reporter_caveats(
         agent,
         pane.id(),
-        daemon.as_deref(),
+        daemon.build.as_deref(),
         "",
-        &sprag_host::durability::state_dir(),
+        &MuteWitness::new(&state_dir, daemon.generation.as_deref()),
     ));
     out.push_str(&format!(
         "The state has changed {} time(s) since this pane was first seen (seq={}), so a repeat read \
@@ -7872,7 +7939,7 @@ fn resolve_pane_ref(args: &Value) -> Result<PaneRef, String> {
 /// pane — see [`reporter_caveats`]. It reaches through the same body as every other resolution, so
 /// a pane one window over is answered about here too; the daemon is taken from the FIRST listing,
 /// which both branches below make and which is the one connection the resolution began on.
-fn resolve_pane_ref_and_daemon(args: &Value) -> Result<(PaneRef, Option<String>), String> {
+fn resolve_pane_ref_and_daemon(args: &Value) -> Result<(PaneRef, DaemonSaid), String> {
     resolve_pane_ref_at_from_a_daemon(args, SelectAsk::PANE_KEY)
 }
 
@@ -7888,7 +7955,7 @@ fn resolve_pane_ref_at(args: &Value, key: &str) -> Result<PaneRef, String> {
 fn resolve_pane_ref_at_from_a_daemon(
     args: &Value,
     key: &str,
-) -> Result<(PaneRef, Option<String>), String> {
+) -> Result<(PaneRef, DaemonSaid), String> {
     let target = pane_target_at(args, key)?;
     let (here, daemon) = query_panes_and_daemon()?;
     match resolve_in(&here, &target) {
@@ -7942,7 +8009,7 @@ fn resolve_optional_pane_ref(args: &Value) -> Result<Option<PaneRef>, String> {
 /// and this surface's whole reason for the build key is that an absence is never agreement.
 fn resolve_optional_pane_ref_and_daemon(
     args: &Value,
-) -> Result<Option<(PaneRef, Option<String>)>, String> {
+) -> Result<Option<(PaneRef, DaemonSaid)>, String> {
     match args.get(SelectAsk::PANE_KEY) {
         None | Some(Value::Null) => Ok(None),
         Some(_) => resolve_pane_ref_and_daemon(args).map(Some),
@@ -8127,7 +8194,7 @@ fn query_panes() -> Result<Vec<PaneInfo>, String> {
 /// daemon holding that row — and it comes back from the SAME call for the reason
 /// [`host_call_answered`] gives: a build fetched on a second connection is a second moment, and the
 /// event in between is precisely the daemon restart the comparison exists to detect.
-fn query_panes_and_daemon() -> Result<(Vec<PaneInfo>, Option<String>), String> {
+fn query_panes_and_daemon() -> Result<(Vec<PaneInfo>, DaemonSaid), String> {
     let answered = host_call_answered(
         "scene/query",
         windowed_params(mux_action_path(PANES_SLOT), None),
@@ -8136,7 +8203,17 @@ fn query_panes_and_daemon() -> Result<(Vec<PaneInfo>, Option<String>), String> {
         .value
         .as_array()
         .ok_or("the host pane list was not an array")?;
-    Ok((array.iter().map(parse_pane_info).collect(), answered.build))
+    Ok((
+        array.iter().map(parse_pane_info).collect(),
+        // ⚠ THE GENERATION TRAVELS WITH THE BUILD for the build's reason, one axis over: the build
+        // dates the code that produced these rows and the generation dates the NUMBERS they are
+        // addressed by, and a number outlives the process that issued it while coming to mean
+        // something else afterwards.
+        DaemonSaid {
+            build: answered.build,
+            generation: answered.generation,
+        },
+    ))
 }
 
 /// Why the daemon's agent manifests are not the ones the user's `config.toml` declares, as a line to
@@ -8291,6 +8368,29 @@ fn mcp_client_id() -> String {
     format!("mcp-{}", std::process::id())
 }
 
+/// **WHAT THE ANSWERING DAEMON SAID ABOUT ITSELF** — the pair every surface here compares a row
+/// against, carried as one value so no caller can thread one half and forget the other.
+///
+/// # ⚠⚠⚠⚠ Why two `Option<String>`s are one struct
+///
+/// They answer different questions about the same process and were added a round apart. `build`
+/// dates the CODE behind a row ([`reporter_caveats`]'s comparison, register item 474). `generation`
+/// dates the pane NUMBERS the rows are addressed by, which is what decides whether a breadcrumb
+/// filed under one of those numbers belongs to the pane holding it now (register item 711). Two
+/// positional `Option<String>`s threaded through five resolvers is the class of mix-up this
+/// repository keeps filing — and the failure would be silent, because either value renders as
+/// *did not say*.
+///
+/// ⚠ [`None`] in EITHER field is *this daemon did not say*, never *it matches* — the rule
+/// [`sprag_rpc::BUILD_FIELD`] states and [`sprag_rpc::GENERATION_FIELD`] inherits.
+#[derive(Clone, Debug, Default)]
+struct DaemonSaid {
+    /// Which build it says it is.
+    build: Option<String>,
+    /// Which run of that build it says it is.
+    generation: Option<String>,
+}
+
 /// One daemon answer, with the identity of the daemon that gave it.
 ///
 /// A pair rather than two calls, because the second half is only meaningful about the connection
@@ -8301,6 +8401,12 @@ struct Answered {
     /// Which build that daemon says it is, or [`None`] for one predating
     /// [`sprag_rpc::BUILD_FIELD`]. **NEVER *"it matches"*** — that field's own rule.
     build: Option<String>,
+    /// Which RUN of that build it says it is, or [`None`] for one predating
+    /// [`sprag_rpc::GENERATION_FIELD`] — same rule, and this is the half that dates the pane NUMBERS
+    /// in `value`. A mute breadcrumb is filed under one of those numbers and the next daemon's
+    /// counter reissues it, so without this a reader answers about whoever held the number before
+    /// (register item 711).
+    generation: Option<String>,
 }
 
 /// The whole of the transport: every form above differs only in how much of the answer and of a
@@ -8350,6 +8456,11 @@ fn host_call_unscoped_answered(
         Ok(answer) => Ok(Answered {
             value: answer,
             build: conn.daemon_build().map(str::to_owned),
+            // ⚠ AND WHICH RUN OF IT, off the SAME connection and for the same reason: a generation
+            // fetched on a second connection could belong to a different process at the same path,
+            // and the event in between is exactly the restart that reissues the pane numbers this
+            // answer is addressed by.
+            generation: conn.daemon_generation().map(str::to_owned),
         }),
         // TWO library sentences before this surface writes anything: the daemon does not have that
         // address at all (a skew), or it HAS it, refused, and said why (R325). An agent gets the
@@ -8541,6 +8652,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a directory this gate owns");
         dir
+    }
+
+    /// **THE GENERATION THESE GATES' PANES BELONG TO** — the second half of a breadcrumb's subject,
+    /// which the fixtures here have to SUPPLY rather than inherit.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the directory was not enough, and why these gates were blind to it (item 711)
+    ///
+    /// [`nobody_left_word`] fixed *whose HOST*. It cannot fix *whose PANE*: a breadcrumb is filed
+    /// under a pane NUMBER and the next daemon's counter reissues that number from one, so a reader
+    /// holding only a directory answers about whoever held the number before. Measured on this host
+    /// 2026-08-26 — `hook-mute.4` from 14:02 read against a live pane 4 born at 22:57, and a healthy
+    /// reporter taken off its hook.
+    ///
+    /// ⚠⚠ **AND THAT IS EXACTLY WHY THE TWO GATES ABOVE COULD NOT SEE IT.** They write a breadcrumb
+    /// under a fixture id and read it back in one breath, and **a fixture id is never reused** — so
+    /// the hazard (one number, two occupants, separated in time) is outside what a single-lifetime
+    /// fixture can express, and the only generation present is the right one. The gate that CAN
+    /// express it needs two daemon lifetimes and lives in `sprag-host`'s `cli` suite
+    /// (`a_pane_that_inherits_a_dead_panes_number_is_not_taken_off_its_hook`). What this constant
+    /// buys here is that these gates keep measuring what they always measured: the fixture MAKES the
+    /// identity, so a breadcrumb it wrote is attributable and the `mute` flag is still reachable.
+    const FIXTURE_GENERATION: &str = "gate.0";
+
+    /// A reader standing in `dir`, asking about panes of [`FIXTURE_GENERATION`].
+    ///
+    /// Spelled once so no gate below can name a directory and leave the generation to chance — which
+    /// is the whole reason the two travel as one value ([`MuteWitness`]).
+    fn looking_in(dir: &std::path::Path) -> MuteWitness<'_> {
+        MuteWitness::new(dir, Some(FIXTURE_GENERATION))
     }
 
     /// The measured permission dialog, as a blocked run carries it.
@@ -10874,7 +11014,8 @@ mod tests {
             name: None,
             ..opened(0)
         }];
-        let quiet = nobody_left_word("opened-by");
+        let dir = nobody_left_word("opened-by");
+        let quiet = looking_in(&dir);
         assert!(
             pane_summary(1, &opened(3), &listing, None, None, &quiet)
                 .contains("      opened by: pane 1\n"),
@@ -10915,7 +11056,8 @@ mod tests {
             images: vec![],
             agent: None,
         };
-        let quiet = nobody_left_word("mouse-focus");
+        let dir = nobody_left_word("mouse-focus");
+        let quiet = looking_in(&dir);
         let summary = pane_summary(1, &tracking, &[], None, None, &quiet);
         assert!(
             summary.contains("mouse: tracking clicks + drag + motion"),
@@ -11030,7 +11172,8 @@ mod tests {
         // mute half reads a FILE and dodged by picking an id it hoped nobody owned — which is why
         // the two gates below, built on `3` and `7`, lost instead. A directory this gate OWNS says
         // *the build half alone* truthfully, for every id, on every host.
-        let no_word = nobody_left_word("build-caveats");
+        let dir = nobody_left_word("build-caveats");
+        let no_word = looking_in(&dir);
         let said = |agent: &AgentInfo, daemon: Option<&str>| {
             reporter_caveats(agent, 0, daemon, "  ", &no_word)
         };
@@ -11129,7 +11272,8 @@ mod tests {
         // ⚠⚠⚠⚠⚠ THE ENVIRONMENT THIS GATE MEANS, NAMED — see `nobody_left_word`. This fixture's
         // `id: 3` collides with a real `hook-mute.3` on the machine this loop runs on, and while
         // that directory was inherited the gate was asserting that host's history.
-        let no_word = nobody_left_word("sibling-agent");
+        let dir = nobody_left_word("sibling-agent");
+        let no_word = looking_in(&dir);
         let summary = pane_summary(1, &claimed, &[], None, None, &no_word);
         assert!(
             summary.contains("agent: state=blocked name=claude rule=dialog-choice-list seq=4"),
@@ -11214,7 +11358,8 @@ mod tests {
         // ⚠⚠ `7` IS A REAL PANE ID SOMEWHERE, and while this directory was inherited that is what
         // this gate measured — `hook-mute.7` exists on the machine this loop runs on. See
         // `nobody_left_word`.
-        let no_word = nobody_left_word("four-build-answers");
+        let dir = nobody_left_word("four-build-answers");
+        let no_word = looking_in(&dir);
         let flags =
             |agent: &AgentInfo, daemon: Option<&str>| reporter_flags(agent, 7, 2, daemon, &no_word);
 
@@ -11275,9 +11420,24 @@ mod tests {
     ///
     /// ⚠⚠ THE CONTROL IS ITS OWN DIRECTORY, not a different id. An arm that proved `mute` by
     /// picking an id this host happens to own would be the defect under repair, inverted.
+    ///
+    /// # ⚠⚠⚠ The breadcrumb is written through the PRODUCT's writer, and it has to be (item 711)
+    ///
+    /// A breadcrumb now names the generation it was left in, and a reader that cannot attribute one
+    /// does not act on it. So a fixture that hand-spelled the file's bytes would be asserting its own
+    /// guess at a format: it would have gone GREEN here before the reader learned to attribute
+    /// anything and RED the moment the writer's shape moved, which is the wrong way round. Written
+    /// through [`sprag_host::note_mute`] with the same generation [`looking_in`] asks about — the
+    /// fixture MAKES the identity, because there is no daemon here to mint one.
+    ///
+    /// ⚠ What this gate therefore still cannot see, stated rather than left implicit: a fixture id is
+    /// never reused, so *one number, two occupants* is inexpressible here. That claim belongs to
+    /// `sprag-host`'s `a_pane_that_inherits_a_dead_panes_number_is_not_taken_off_its_hook`, which
+    /// spends two daemon lifetimes on it.
     #[test]
     fn a_reporter_that_left_word_is_flagged_mute() {
-        let left_word = nobody_left_word("left-word");
+        let dir = nobody_left_word("left-word");
+        let left_word = looking_in(&dir);
         let agent = AgentInfo {
             state: "working".to_owned(),
             name: Some("claude".to_owned()),
@@ -11296,18 +11456,34 @@ mod tests {
              not mute — without this the arm below would pass against a flag that is always on",
         );
 
-        // ── THE ARM: the hook could not deliver, and said so where the product looks ──
-        std::fs::write(
-            left_word.join("hook-mute.42"),
-            "the daemon refused the report: no pane 42 on this host",
-        )
-        .expect("a breadcrumb this gate owns");
+        // ── THE ARM: the hook could not deliver, and said so where the product looks — through the
+        //    product's own writer, naming the generation this gate's reader asks about.
+        sprag_host::note_mute(
+            &dir,
+            42,
+            Some(FIXTURE_GENERATION),
+            Some("the daemon refused the report: no pane 42 on this host"),
+        );
         let flagged = reporter_flags(&agent, 42, 1, Some(sprag_host::wire::BUILD), &left_word);
         assert!(
             flagged.contains("mute"),
             "⛔⛔ A REPORT OUTRANKS THE SCREEN AND NEVER EXPIRES, so a row whose reporter has stopped \
              being able to deliver is the one row a reader must not trust — item 344. The listing \
              has to say so: {flagged:?}",
+        );
+
+        // ── AND THE SAME FILE, ASKED ABOUT BY A LATER GENERATION, IS NOT THIS ROW'S WORD ──
+        //    The listing is where a scanner spends the least attention, so this arm is about SILENCE:
+        //    the sentence explaining an inherited breadcrumb belongs to `reporter_caveats`, and a
+        //    `mute` token here is what sent a watcher to `release-agent` against a healthy reporter.
+        let later = MuteWitness::new(&dir, Some("gate.1"));
+        let inherited = reporter_flags(&agent, 42, 1, Some(sprag_host::wire::BUILD), &later);
+        assert!(
+            !inherited.contains("mute"),
+            "⛔⛔⛔⛔⛔ ITEM 711: the number is reissued by the next daemon's counter and nothing \
+             prunes this file, so the SAME breadcrumb is met again under a pane that has never lost a \
+             hook. Key the read on the number alone — which is what shipped — and every row that \
+             inherits a number is declared mute: {inherited:?}",
         );
     }
 

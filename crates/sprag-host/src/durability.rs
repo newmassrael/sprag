@@ -155,8 +155,9 @@ pub fn load_runs(path: &Path) -> Option<crate::runs::RunLog> {
 ///
 /// ⚠ The `sprag` binary is its own crate, so it cannot see the `pub(crate)` derivation below — and
 /// a second copy of six lines is how two artifacts end up in two directories. This is the one
-/// derivation, published rather than duplicated. See [`crate::hooks::hook_trouble_path`], the first
-/// caller that needed it from out there.
+/// derivation, published rather than duplicated. Its first caller from out there was the hook's mute
+/// breadcrumb, and that caller now NAMES it at the call site ([`crate::hooks::note_mute`]) rather
+/// than reaching a wrapper that derived it — register item 700's ruling.
 #[must_use]
 pub fn state_dir() -> PathBuf {
     sprag_state_dir()
@@ -172,6 +173,61 @@ pub(crate) fn sprag_state_dir() -> PathBuf {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("sprag")
+}
+
+/// Point `XDG_STATE_HOME` at `home` for the duration of `body`, then restore the environment.
+///
+/// # ⛔⛔⛔⛔⛔ Why this exists: three tests owned one process-global and none of them held it
+///
+/// [`sprag_state_dir`] reads an environment variable, so a test that wants to know where a durable
+/// artifact lands has to set one — and **`cargo test` runs a crate's unit tests as parallel THREADS
+/// of one process**, so "set one" means every other test in the binary. Three did it, each with a
+/// `SAFETY: single-threaded test` comment that was **false**, and the interference has two faces:
+///
+/// * a test that WRITES through this (the GUI window size) had its directory replaced mid-flight by
+///   a sibling's `/state` and failed `PermissionDenied` on a path it never chose;
+/// * a test that ASSERTS a path against `/state` read `~/.local/state` instead, because a sibling
+///   whose own `prior` was `None` had already run its `remove_var`.
+///
+/// Both were reproduced deliberately on 2026-08-27 — `--test-threads=3` over exactly those three
+/// names is enough — so this is not a flake: it is deterministic given an interleaving, and which
+/// face shows depends only on who wins. It surfaced in a sweep whose diff touched none of the three,
+/// which is the ordinary way a latent race is found: **something else changed the timing.**
+///
+/// ⚠ The MUTEX is what makes the `unsafe` sound, and it is the same arrangement
+/// [`crate::config::with_config`] already holds one variable over — the reasoning is written there
+/// too, and this is that lesson arriving at the second variable rather than a new idea.
+///
+/// ⚠⚠ It is a lock and not a repair of the underlying shape, stated rather than hidden: the honest
+/// fix is that a durable path takes the directory it means as an ARGUMENT instead of reading an
+/// ambient one (register item 700's ruling, one layer down), and until it does, every test asking
+/// *where does this land* must mutate a global. What the lock buys is that only one may do so at a
+/// time, which is exactly the claim those three comments were already making.
+///
+/// ⚠ Directories are the CALLER's: some of these tests want a real writable directory and some want
+/// a path that resolves and nothing more, and creating one here would make the second kind lie.
+#[cfg(test)]
+pub(crate) fn with_state_home<T>(home: impl AsRef<std::ffi::OsStr>, body: impl FnOnce() -> T) -> T {
+    use std::sync::{Mutex, OnceLock};
+    static ENV: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = ENV
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let previous = std::env::var_os("XDG_STATE_HOME");
+    // SAFETY: serialised by the mutex above, and every test in this crate that reads or writes
+    // XDG_STATE_HOME goes through this function, so no other thread is touching the environment
+    // while `body` runs on this one.
+    unsafe { std::env::set_var("XDG_STATE_HOME", home) };
+    let out = body();
+    unsafe {
+        match previous {
+            Some(value) => std::env::set_var("XDG_STATE_HOME", value),
+            None => std::env::remove_var("XDG_STATE_HOME"),
+        }
+    }
+    out
 }
 
 /// The identity a daemon's durable artifacts are keyed on: its socket's file stem
@@ -445,43 +501,36 @@ mod tests {
     #[test]
     fn a_window_size_round_trips_and_a_zero_is_refused() {
         let home = std::env::temp_dir().join(format!("sprag-gui-window-{}", std::process::id()));
-        let prior = std::env::var_os("XDG_STATE_HOME");
-        // SAFETY: single-threaded test; no other thread reads the environment concurrently.
-        unsafe { std::env::set_var("XDG_STATE_HOME", &home) };
-
-        assert_eq!(
-            load_gui_window(),
-            None,
-            "nothing has been remembered yet, and the fallback is the CLIENT's to choose",
-        );
-        assert!(
-            save_gui_window_if_changed((1600, 700)).expect("the state dir is writable"),
-            "the first save of a size writes it",
-        );
-        assert_eq!(load_gui_window(), Some((1600, 700)), "and it comes back");
-        assert!(
-            !save_gui_window_if_changed((1600, 700)).expect("the state dir is writable"),
-            "the same size again writes nothing — a drag is a stream of these",
-        );
-
-        // A zero in either axis: written here deliberately, because what is being asserted is that
-        // a stored one cannot reach a window.
-        for zero in [(0, 700), (1600, 0)] {
-            save_gui_window_if_changed(zero).expect("the state dir is writable");
+        // ⚠ THROUGH THE LOCK — see [`with_state_home`]. This body WRITES through `state_dir()`, and
+        // a sibling test pointing the same global at `/state` mid-flight is what made it fail
+        // `PermissionDenied` on a directory it never chose.
+        with_state_home(&home, || {
             assert_eq!(
                 load_gui_window(),
                 None,
-                "{zero:?} is a window nothing can be painted in, so it must not be restored",
+                "nothing has been remembered yet, and the fallback is the CLIENT's to choose",
             );
-        }
+            assert!(
+                save_gui_window_if_changed((1600, 700)).expect("the state dir is writable"),
+                "the first save of a size writes it",
+            );
+            assert_eq!(load_gui_window(), Some((1600, 700)), "and it comes back");
+            assert!(
+                !save_gui_window_if_changed((1600, 700)).expect("the state dir is writable"),
+                "the same size again writes nothing — a drag is a stream of these",
+            );
 
-        // SAFETY: as above.
-        unsafe {
-            match prior {
-                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-                None => std::env::remove_var("XDG_STATE_HOME"),
+            // A zero in either axis: written here deliberately, because what is being asserted is
+            // that a stored one cannot reach a window.
+            for zero in [(0, 700), (1600, 0)] {
+                save_gui_window_if_changed(zero).expect("the state dir is writable");
+                assert_eq!(
+                    load_gui_window(),
+                    None,
+                    "{zero:?} is a window nothing can be painted in, so it must not be restored",
+                );
             }
-        }
+        });
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -511,21 +560,16 @@ mod tests {
     /// the socket's stem — so a reboot (which wipes the runtime dir) leaves it standing.
     #[test]
     fn snapshot_path_is_keyed_on_the_socket_stem_under_the_state_dir() {
-        // Save and restore the prior value so this test does not leak env state into others.
-        let prior = std::env::var_os("XDG_STATE_HOME");
-        // SAFETY: single-threaded test; no other thread reads the environment concurrently.
-        unsafe { std::env::set_var("XDG_STATE_HOME", "/state") };
-        let path = snapshot_path(Path::new("/run/user/1000/sprag-host.sock"));
-        assert_eq!(path, Path::new("/state/sprag/sprag-host.snapshot.json"));
-        // A second daemon on its own socket gets its own snapshot.
-        let other = snapshot_path(Path::new("/tmp/sp99.sock"));
-        assert_eq!(other, Path::new("/state/sprag/sp99.snapshot.json"));
-        unsafe {
-            match prior {
-                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-                None => std::env::remove_var("XDG_STATE_HOME"),
-            }
-        }
+        // ⚠ THROUGH THE LOCK — see [`with_state_home`]. `/state` is a path that resolves and is
+        // never written, and this assertion read `~/.local/state` instead when a sibling test's
+        // restore removed the variable while this one was running.
+        with_state_home("/state", || {
+            let path = snapshot_path(Path::new("/run/user/1000/sprag-host.sock"));
+            assert_eq!(path, Path::new("/state/sprag/sprag-host.snapshot.json"));
+            // A second daemon on its own socket gets its own snapshot.
+            let other = snapshot_path(Path::new("/tmp/sp99.sock"));
+            assert_eq!(other, Path::new("/state/sprag/sp99.snapshot.json"));
+        });
     }
 
     /// A save then load round-trips the snapshot, and the temp is renamed away (not left as

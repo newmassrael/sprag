@@ -399,30 +399,27 @@ mod tests {
     /// daemon are found together and a second daemon on its own socket keeps its own.
     #[test]
     fn history_dir_is_a_sibling_of_the_snapshot_keyed_on_the_socket() {
-        let prior = std::env::var_os("XDG_STATE_HOME");
-        // SAFETY: single-threaded test; no other thread reads the environment concurrently.
-        unsafe { std::env::set_var("XDG_STATE_HOME", "/state") };
-        let socket = Path::new("/run/user/1000/sprag-host.sock");
-        assert_eq!(
-            history_dir(socket),
-            Path::new("/state/sprag/sprag-host.history"),
-        );
-        assert_eq!(
-            crate::snapshot_path(socket).parent(),
-            history_dir(socket).parent(),
-            "the snapshot and the history live in one directory",
-        );
-        assert_eq!(
-            history_dir(Path::new("/tmp/sp99.sock")),
-            Path::new("/state/sprag/sp99.history"),
-            "a second daemon keeps its own history",
-        );
-        unsafe {
-            match prior {
-                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-                None => std::env::remove_var("XDG_STATE_HOME"),
-            }
-        }
+        // ⚠ THROUGH THE LOCK — see [`crate::durability::with_state_home`]. This is the test that
+        // reproduced the second face of that race on 2026-08-27: it read
+        // `~/.local/state/sprag/sprag-host.history` because a sibling in another module restored the
+        // same process-global by REMOVING it while this assertion was running.
+        crate::durability::with_state_home("/state", || {
+            let socket = Path::new("/run/user/1000/sprag-host.sock");
+            assert_eq!(
+                history_dir(socket),
+                Path::new("/state/sprag/sprag-host.history"),
+            );
+            assert_eq!(
+                crate::snapshot_path(socket).parent(),
+                history_dir(socket).parent(),
+                "the snapshot and the history live in one directory",
+            );
+            assert_eq!(
+                history_dir(Path::new("/tmp/sp99.sock")),
+                Path::new("/state/sprag/sp99.history"),
+                "a second daemon keeps its own history",
+            );
+        });
     }
 
     /// The write-if-changed dedup: the first step writes every pane, an unchanged capture writes

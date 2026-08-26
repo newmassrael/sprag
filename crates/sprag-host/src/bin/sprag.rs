@@ -3601,8 +3601,8 @@ fn hook(args: Vec<String>) -> io::Result<()> {
 }
 
 /// **LEAVE WORD THAT THIS PANE'S REPORTER IS MUTE, OR TAKE THE WORD BACK** — see
-/// [`hooks::hook_trouble_path`] for what an hour of silence cost and why the file's EXISTENCE is
-/// the message.
+/// [`hooks::note_mute`] for what an hour of silence cost, why the file's EXISTENCE is the message,
+/// and why it now names the generation it was left in.
 ///
 /// ⚠⚠⚠ ONLY REACHED ONCE [`sprag_host::PANE_ENV_VAR`] HAS RESOLVED, which is the line the swallow
 /// rule already drew and did not use: a session with nothing to do with sprag never gets this far,
@@ -3612,22 +3612,29 @@ fn hook(args: Vec<String>) -> io::Result<()> {
 /// ⚠ Its own failures are swallowed exactly as the report's are. A hook that could not report AND
 /// could not say so is where this started, but a hook that PANICS because a state directory is
 /// read-only would be worse than the silence — it runs in the agent's critical path.
+///
+/// ⚠⚠⚠⚠ **THE WORD NAMES ITS OWN SUBJECT** — register item 711. The file is keyed on a pane NUMBER
+/// and the next generation's counter hands that number out again, so a breadcrumb with no generation
+/// in it is read against whoever inherits the number: measured on this host, `hook-mute.4` from
+/// 14:02 against a live pane 4 whose child started at 22:57. The generation comes out of the pane's
+/// own environment ([`sprag_host::PANE_GENERATION_ENV_VAR`]) rather than off the wire, because this
+/// path exists for the case where the daemon cannot be reached at all.
+///
+/// ⚠ `None` there is *this reporter cannot say which generation it belongs to*, which a reader
+/// treats as unattributable rather than as a match. It reaches that only in a pane born without the
+/// variable, which no daemon serving a socket produces.
 fn note_hook_trouble(pane: u64, trouble: Option<&str>) {
-    let path = sprag_host::hooks::hook_trouble_path(pane);
-    match trouble {
-        // ⚠ REMOVED ON SUCCESS, so the file never outlives the condition. A breadcrumb that stayed
-        // would make every pane look mute for ever after one refused report, which is the same
-        // defect as the stale `working` this exists to expose — one layer out.
-        None => {
-            let _ = std::fs::remove_file(&path);
-        }
-        Some(said) => {
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let _ = std::fs::write(&path, said);
-        }
-    }
+    sprag_host::hooks::note_mute(
+        // ⚠ The one production caller says the directory OUT LOUD — item 700's ruling, now on the
+        // writing side as well as the reading one.
+        &sprag_host::durability::state_dir(),
+        pane,
+        std::env::var(sprag_host::PANE_GENERATION_ENV_VAR)
+            .ok()
+            .filter(|generation| !generation.is_empty())
+            .as_deref(),
+        trouble,
+    );
 }
 
 /// How long [`deliver_hook`] waits for the daemon's answer before abandoning the report.
@@ -6136,6 +6143,18 @@ fn agent(args: Vec<String>) -> io::Result<()> {
     // CONNECTION rather than from `sprag_host::wire::BUILD`, because this binary is not the daemon:
     // the client is rebuilt every round and the daemon is whatever was started.
     let daemon_build = conn.daemon_build().map(str::to_owned);
+    // ⚠⚠⚠⚠ AND WHICH RUN OF IT, taken at the same moment and for a different question — register
+    // item 711. The build dates the CODE behind these rows; the generation dates their NUMBERS, and
+    // the mute breadcrumb below is filed under a number this daemon's counter reissued from one. A
+    // breadcrumb from a daemon that is gone was read as a live mute here on 2026-08-26 and a healthy
+    // reporter was taken off its hook.
+    let daemon_generation = conn.daemon_generation().map(str::to_owned);
+    // ⚠ THE DIRECTORY AND THE GENERATION TRAVEL TOGETHER (`hooks::MuteReader`), because a reader
+    // holding one of them judges an old breadcrumb wrongly in a different way for each: the wrong
+    // directory answers about another host's history (item 700) and the missing generation answers
+    // about another daemon's (item 711).
+    let state_dir = sprag_host::durability::state_dir();
+    let mute = sprag_host::hooks::MuteReader::new(&state_dir, daemon_generation.as_deref());
     // The listing is read in the RESOLVED pane's window, so `sprag agent buildout` answers about a
     // pane one window over — where a sibling agent most often is, since an agent's work pane and a
     // person's reading pane are why a session has more than one window.
@@ -6198,20 +6217,52 @@ fn agent(args: Vec<String>) -> io::Result<()> {
                     // end its turn. Measured 2026-08-16: an hour of `working` against a pane whose
                     // screen had said `MILESTONE REACHED` the whole time, and the only sentence
                     // that explained it was written where nothing reads. See
-                    // `sprag_host::hooks::hook_trouble_path`.
+                    // `sprag_host::hooks::note_mute`.
                     //
                     // ⚠ Read off the filesystem rather than asked of the daemon ON PURPOSE: the
                     // condition being reported is precisely that the hook could not reach the
                     // daemon, so the daemon is the one party that cannot know.
-                    if let Ok(said) =
-                        std::fs::read_to_string(sprag_host::hooks::hook_trouble_path(id))
-                    {
-                        println!(
-                            "    ⚠ THAT REPORTER IS MUTE: its last attempt failed — {}. So the \
+                    //
+                    // ⚠⚠⚠⚠ AND ATTRIBUTED BEFORE IT IS ACTED ON — register item 711. This used to
+                    // print on the file's mere existence, and the file is keyed on a pane NUMBER
+                    // that the next daemon's counter reissues: on 2026-08-26 a breadcrumb from 14:02
+                    // was printed against a live pane 4 whose child had started at 22:57, and a
+                    // watcher believing it called `release-agent` on a healthy reporter.
+                    match mute.word_from(id) {
+                        sprag_host::MuteWord::Speaking => {}
+                        sprag_host::MuteWord::Mute { said } => println!(
+                            "    ⚠ THAT REPORTER IS MUTE: its last attempt failed — {said}. So the \
                              state above is the last thing it MANAGED to say, not what is true \
                              now; the screen is the better witness until this clears.",
-                            said.trim(),
-                        );
+                        ),
+                        // ⚠⚠ SAID, NOT SWALLOWED. Nothing prunes these (item 700's stated residue),
+                        // so the file will be met again — and a reader told only *no mute* would go
+                        // on to find it by hand and read it exactly as the watcher did.
+                        sprag_host::MuteWord::Inherited {
+                            said,
+                            left_in,
+                            asking,
+                        } => println!(
+                            "    A mute breadcrumb sits under this pane's NUMBER and is not this \
+                             reporter's: it was left in generation {left_in} and this daemon is \
+                             {asking}, so its subject is a pane that no longer exists. It said \
+                             {said:?}. The state above stands.",
+                        ),
+                        sprag_host::MuteWord::Unattributed { said, silent } => println!(
+                            "    A mute breadcrumb sits under this pane's NUMBER and cannot be \
+                             attributed — {} — so it is not acted on. It said {said:?}. A pane \
+                             number is reissued by the next daemon's counter, and a breadcrumb with \
+                             no generation beside it could belong to any earlier holder of this \
+                             number.",
+                            match silent {
+                                sprag_host::MuteSilence::Breadcrumb =>
+                                    "it names no generation, so it predates this check or was \
+                                     written by a reporter whose environment had lost it",
+                                sprag_host::MuteSilence::Reader =>
+                                    "this daemon does not say which generation it is, so there is \
+                                     nothing to compare it against",
+                            },
+                        ),
                     }
                     // ⚠⚠⚠⚠⚠ AND WHETHER THAT REPORTER IS THIS DAEMON'S IMAGE — register item 473,
                     // the QUIET half of the same hazard the sentence above covers loudly. A hook

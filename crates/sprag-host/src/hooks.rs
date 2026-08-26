@@ -806,9 +806,237 @@ pub const AGENT_TIMEOUT_SECS: u64 = 5;
 /// on failure and REMOVED on success, so a file that is there means *this pane's reporter is
 /// currently mute* — a health fact about the reporter, never a state of the agent. Nothing here may
 /// ever be read as an agent's state: that is what the refused report was for.
+///
+/// # ⛔⛔⛔⛔⛔ Why the SENTENCE ABOVE was not enough, and what its gap cost (register item 711)
+///
+/// *"Written on failure and REMOVED on success"* is literally true and was still not the whole
+/// story, because it describes only the hook's own lifetime. **Nobody removes it when the PANE dies,
+/// and nobody removes it when the daemon's generation changes** — and the name it is filed under is
+/// a pane NUMBER, which the next generation's counter hands out again from one.
+///
+/// Measured on this host 2026-08-26: fifteen of these in one state directory with mtimes from 12:39
+/// to 22:45, of which `hook-mute.4` (14:02) and `hook-mute.6` (13:37) named numbers that a daemon
+/// born at 22:47 had given to LIVE panes whose children started at 22:57. Their contents said what
+/// had gone wrong — fourteen *the daemon refused the report: no pane N on this host*, one *could not
+/// reach the daemon* — and said nothing about WHOSE failure it was. A watcher read one of them as a
+/// live mute and took a healthy reporter off its hook.
+///
+/// ⚠⚠ **THE FIX IS NOT A LONGER NUMBER, AND NOT A SWEEPER.** Any key made of numbers is reissued
+/// eventually, so a wider one lowers the odds and leaves the mechanism; and a cleaner somebody has
+/// to remember to run is a rule, not a mechanism. What was missing is a SUBJECT: the breadcrumb now
+/// names the generation it was left in ([`crate::PANE_GENERATION_ENV_VAR`]), and a reader that
+/// cannot attribute it to the pane it is asking about does not act on it ([`MuteReader`]).
+///
+/// # ⚠⚠ Why this takes the directory and no longer offers an AMBIENT one
+///
+/// It used to be `hook_trouble_path(pane)`, deriving [`crate::durability::state_dir`] itself, and
+/// that door is register item 700's defect waiting for its next caller: *a default spelled the real
+/// one is inherited by every caller that forgets*. The one production writer and the two production
+/// readers each say which directory they mean out loud, so the ambient spelling had no callers left
+/// — and removing it makes the mistake unrepresentable rather than merely unused.
+///
+/// The ONE spelling of the name, which [`note_mute`] and [`MuteReader::word_from`] both reach
+/// through: two literals for one file name is how a writer comes to file a fact where its reader does
+/// not look, and that failure is silent in the direction that matters — a reader finding nothing
+/// reports a healthy reporter.
+fn mute_path(dir: &std::path::Path, pane: u64) -> PathBuf {
+    dir.join(format!("hook-mute.{pane}"))
+}
+
+/// The first line of a mute breadcrumb, naming the generation the word was left in — see
+/// [`mute_path`] for the eight-hour-old breadcrumb that made a subject necessary.
+///
+/// ⚠ A PREFIXED LINE rather than a bare one, so that a file written before this existed is
+/// recognisable as one instead of being misparsed: the two sentences a hook writes both begin *the
+/// daemon refused* or *could not reach*, so no legacy breadcrumb can be mistaken for a stamped one.
+/// [`MuteWord::Unattributed`] is where that recognition lands.
+///
+/// ⚠ Plain text, and the sentence stays on its own lines below it: the census that measured item 711
+/// was a person reading these files with `cat`, and a format that costs a parser to read by hand
+/// would have cost that census instead.
+const MUTE_GENERATION_PREFIX: &str = "generation ";
+
+/// **WHAT A HOOK WRITES WHEN IT COULD NOT DELIVER** — the breadcrumb's text, subject first.
+///
+/// `generation` is what the reporter read out of [`crate::PANE_GENERATION_ENV_VAR`], and `None` is
+/// *this reporter could not say which generation it belongs to* — never *any generation*. A hook
+/// whose environment lost the variable writes a breadcrumb nobody can attribute, and
+/// [`MuteReader`] treats it as exactly that.
 #[must_use]
-pub fn hook_trouble_path(pane: u64) -> PathBuf {
-    crate::durability::state_dir().join(format!("hook-mute.{pane}"))
+pub fn mute_note(generation: Option<&str>, said: &str) -> String {
+    match generation {
+        Some(generation) => format!("{MUTE_GENERATION_PREFIX}{generation}\n{said}"),
+        None => said.to_owned(),
+    }
+}
+
+/// **LEAVE WORD THAT A PANE'S REPORTER IS MUTE, OR TAKE THE WORD BACK** — the whole of what a hook
+/// does to the filesystem, in the one place both the writing and the reading of this fact are
+/// decided.
+///
+/// `dir` is NAMED BY THE CALLER rather than derived here, which is register item 700's ruling
+/// arriving on the writing side: a default spelled *the real one* is inherited by every caller that
+/// forgets, and a fixture that silently wrote into a developer's live state directory is how two
+/// gates came to assert this host's history. The one production caller says
+/// [`crate::durability::state_dir`] out loud.
+///
+/// `said` of `None` means the report LANDED, and takes the breadcrumb back.
+///
+/// ⚠ Every failure here is swallowed, exactly as the report's are: this runs in an agent's critical
+/// path, and a hook that panics because a state directory is read-only would be worse than the
+/// silence it is trying to end.
+pub fn note_mute(dir: &std::path::Path, pane: u64, generation: Option<&str>, said: Option<&str>) {
+    let path = mute_path(dir, pane);
+    match said {
+        // ⚠ REMOVED ON SUCCESS, so the file never outlives the CONDITION. That it also outlives its
+        // SUBJECT is the half this rule never covered, and the subject stamped in below is what
+        // makes the difference legible to a reader — see [`mute_path`].
+        None => {
+            let _ = std::fs::remove_file(&path);
+        }
+        Some(said) => {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(&path, mute_note(generation, said));
+        }
+    }
+}
+
+/// **WHOSE WORD A BREADCRUMB WOULD HAVE TO BE FOR IT TO MEAN ANYTHING** — the verdict
+/// [`MuteReader`] returns, and the reason a reader can no longer act on a file's mere existence.
+///
+/// Four answers rather than a `bool`, on the same grounds
+/// [`crate::wire::reporter_image`] has four: the interesting cases are
+/// the ones where the two halves do not simply agree, and collapsing *cannot say* into either
+/// direction is how a surface comes to state something it was never told.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MuteWord {
+    /// No breadcrumb: this pane's reporter is delivering.
+    Speaking,
+    /// A breadcrumb left in the generation being asked about — **this reporter is mute**, and `said`
+    /// is its own account of the last failure.
+    Mute { said: String },
+    /// A breadcrumb left under this NUMBER by an EARLIER generation: its subject is a pane that no
+    /// longer exists, so it says nothing about the pane now holding the number.
+    ///
+    /// ⚠ Carried rather than discarded, and reported rather than ignored in silence. Nothing prunes
+    /// these (register item 700's stated residue), so a reader that is told one is here can say so —
+    /// which is the sentence that would have saved the thirty minutes item 712 measures — while
+    /// still not acting on it.
+    Inherited {
+        /// The failing reporter's account, kept so a reader can see it is old news rather than
+        /// wonder what it said.
+        said: String,
+        /// The generation that left it.
+        left_in: String,
+        /// The generation the reader is asking about.
+        asking: String,
+    },
+    /// A breadcrumb whose subject cannot be established, because one of the two halves did not say
+    /// which generation it means.
+    ///
+    /// ⚠⚠ **NOT ACTED ON, and that direction is chosen rather than fallen into.** The alternative —
+    /// treating *cannot attribute* as *is this pane's* — is precisely the reading that demoted a
+    /// healthy reporter, and the class it would rescue is a breadcrumb written by an image older
+    /// than this change. That image is the one measured to be lying, and the hook and the reader
+    /// ship in ONE binary (the hook is hardlinked to `target/debug/sprag`), so the window in which a
+    /// new reader meets an old hook's word is a stale build directory and not a supported pair.
+    /// ⚠ The residue, stated rather than hidden: for that window, a real mute goes unreported.
+    Unattributed {
+        /// The failing reporter's account.
+        said: String,
+        /// Which half could not name a generation, so a reader can say which and a person can fix
+        /// the right end.
+        silent: MuteSilence,
+    },
+}
+
+/// WHICH HALF OF AN ATTRIBUTION WAS MISSING — [`MuteWord::Unattributed`]'s reason.
+///
+/// Kept apart for [`crate::wire::ReporterImage`]'s reason: *who* was
+/// silent is the difference between an old breadcrumb and an old daemon, which are two different
+/// things to go and fix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MuteSilence {
+    /// The breadcrumb carries no generation — written by a reporter from before the stamp existed,
+    /// or by one whose environment had lost [`crate::PANE_GENERATION_ENV_VAR`].
+    Breadcrumb,
+    /// The READER could not learn which generation the pane belongs to — a daemon predating
+    /// [`crate::wire::GENERATION_FIELD`], answering the handshake without it.
+    Reader,
+}
+
+/// **WHERE A READER LOOKS FOR MUTE BREADCRUMBS, AND WHOSE THEY WOULD HAVE TO BE** — the pair a
+/// breadcrumb cannot be judged without, so that no call site can name one and forget the other.
+///
+/// # ⚠⚠⚠⚠⚠ Why the two facts are ONE parameter
+///
+/// They arrived one at a time and each arrival was a defect being paid off. Register item 700 made
+/// the DIRECTORY explicit, because a reader that inherited an ambient one was asserting the host's
+/// history — two gates went red on a developer's machine and green on CI from the same commit.
+/// Register item 711 is the same shape one axis over: a reader that knows the directory but not the
+/// GENERATION is asserting the host's history in TIME, and the ambient value it inherits is *whoever
+/// holds this number now*.
+///
+/// A struct rather than two arguments because the failure mode is a call site that supplies one: a
+/// directory with no generation reads every earlier occupant's word as live, which is the bug, and a
+/// generation with no directory does not compile into anything useful. Bundled, the compiler asks
+/// for both.
+///
+/// ⚠ `generation` is `None` for *the reader cannot say* — a daemon predating
+/// [`crate::wire::GENERATION_FIELD`]. It is never *any generation will do*; see
+/// [`MuteWord::Unattributed`].
+#[derive(Clone, Copy, Debug)]
+pub struct MuteReader<'a> {
+    dir: &'a std::path::Path,
+    generation: Option<&'a str>,
+}
+
+impl<'a> MuteReader<'a> {
+    /// A reader standing in `dir`, asking about panes of `generation`.
+    #[must_use]
+    pub fn new(dir: &'a std::path::Path, generation: Option<&'a str>) -> Self {
+        Self { dir, generation }
+    }
+
+    /// **WHAT THIS PANE'S REPORTER LAST MANAGED TO SAY ABOUT ITS OWN HEALTH**, judged against whose
+    /// word it would have to be.
+    ///
+    /// ⚠ Read off the FILESYSTEM rather than asked of the daemon, and that is not an accident of
+    /// implementation: the condition being reported is that the hook could not reach the daemon, so
+    /// the daemon is the one party that cannot know. The GENERATION is the opposite — a fact only the
+    /// daemon can state — which is why this takes it as an argument instead of going to look.
+    #[must_use]
+    pub fn word_from(&self, pane: u64) -> MuteWord {
+        let Ok(raw) = std::fs::read_to_string(mute_path(self.dir, pane)) else {
+            return MuteWord::Speaking;
+        };
+        let (left_in, said) = match raw.split_once('\n') {
+            Some((first, rest)) => match first.strip_prefix(MUTE_GENERATION_PREFIX) {
+                Some(left_in) => (Some(left_in.trim().to_owned()), rest),
+                None => (None, raw.as_str()),
+            },
+            None => (None, raw.as_str()),
+        };
+        // An empty breadcrumb is still a failed delivery — the file's EXISTENCE is the message and
+        // its text is only the hook's account of the failure, so nothing here filters on the text.
+        let said = said.trim().to_owned();
+        match (left_in, self.generation) {
+            (Some(left_in), Some(asking)) if left_in == asking => MuteWord::Mute { said },
+            (Some(left_in), Some(asking)) => MuteWord::Inherited {
+                said,
+                left_in,
+                asking: asking.to_owned(),
+            },
+            (None, _) => MuteWord::Unattributed {
+                said,
+                silent: MuteSilence::Breadcrumb,
+            },
+            (Some(_), None) => MuteWord::Unattributed {
+                said,
+                silent: MuteSilence::Reader,
+            },
+        }
+    }
 }
 
 /// A reporter's own clock, in nanoseconds since boot.

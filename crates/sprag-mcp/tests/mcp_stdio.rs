@@ -167,11 +167,29 @@ fn state_home() -> PathBuf {
 /// is how the agent runs it. Its exit status is deliberately not judged: a hook swallows every
 /// failure and always exits 0, on purpose, so what a caller learns from it is the report that landed
 /// or the word it left behind.
-fn run_hook(sock: &Path, state: &Path, pane: u64) {
+///
+/// # ⚠⚠⚠⚠ `belonging_to` is NOT optional decoration — register item 711
+///
+/// A hook that cannot deliver files a breadcrumb under a pane NUMBER, and the next daemon's counter
+/// reissues that number from one. So the breadcrumb now names the generation it was left in, and a
+/// reader that cannot attribute one **does not act on it**. A fixture that leaves this out therefore
+/// stages an UNATTRIBUTABLE breadcrumb, which is the one thing the mute surfaces are required to
+/// ignore — and the two gates below, whose whole subject is that surface saying `MUTE`, went red
+/// exactly that way the first time the check landed.
+///
+/// ⚠ It is passed here because a test cannot be a CHILD of the pane, which is how a real reporter
+/// inherits [`sprag_host::PANE_GENERATION_ENV_VAR`]. The VALUE must be the answering daemon's own
+/// ([`daemon_generation`]) — inventing one would stage the *inherited* case instead, which is a
+/// different claim and belongs to `sprag-host`'s two-generation gate.
+fn run_hook(sock: &Path, state: &Path, pane: u64, belonging_to: Option<&str>) {
     let mut child = Command::new(sprag_cli_bin())
         .args(["hook", "claude"])
         .env(SOCK_ENV, sock)
         .env(PANE_ENV_VAR, pane.to_string())
+        .env(
+            sprag_host::PANE_GENERATION_ENV_VAR,
+            belonging_to.unwrap_or_default(),
+        )
         .env("XDG_STATE_HOME", state)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -320,6 +338,18 @@ fn mux_invoke(sock: &Path, action: &str, args: Value) -> Value {
         json!({ "path": mux_action_path(action), "args": args }),
     )
     .unwrap_or_else(|error| panic!("{action}: {error}"))
+}
+
+/// WHICH RUN of its build the daemon at `sock` says it is, off its own handshake.
+///
+/// The reader's half of the comparison register item 711 is about: a mute breadcrumb is filed under
+/// a pane number, and only this says whose numbers those are. Read from the daemon rather than
+/// invented so that a fixture staging a LIVE mute stages a live one — see [`run_hook`].
+fn daemon_generation(sock: &Path) -> Option<String> {
+    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    conn.handshake("mcp-it-generation")
+        .expect("the daemon answers the handshake");
+    conn.daemon_generation().map(str::to_owned)
 }
 
 /// Divide `pane` and spawn a new one into the half it opens, returning the new pane's id.
@@ -1476,7 +1506,11 @@ fn an_agent_is_told_whether_the_reporter_it_believes_is_mute_or_another_build() 
     );
 
     // ── The reporter the whole key was written for, running for real. ──
-    run_hook(&sock, &state, 0);
+    //    ⚠ It belongs to THIS daemon's generation, read off the daemon rather than invented — see
+    //    [`run_hook`]. Arm 4 below stages a LIVE mute, and a breadcrumb naming any other generation
+    //    would stage an INHERITED one, which the mute surfaces are required to ignore.
+    let generation = daemon_generation(&sock);
+    run_hook(&sock, &state, 0, generation.as_deref());
     let own = server.wait_for_tool("agent_state", json!({ "pane": 1 }), "source=hook:claude");
 
     // ── ARM 1: the reporter IS this daemon's image, and BOTH agent tools say so. ──
@@ -1557,11 +1591,14 @@ fn an_agent_is_told_whether_the_reporter_it_believes_is_mute_or_another_build() 
          {unsaid}",
     );
 
-    // ── ARM 4: the LOUD half, staged by a hook that really cannot deliver. ──
+    // ── ARM 4: the LOUD half, staged by a hook that really cannot deliver — for the pane it is
+    //    actually in, in the generation that pane belongs to. That second half is what makes this a
+    //    LIVE mute rather than an inherited breadcrumb (item 711).
     run_hook(
         Path::new("/nonexistent/sprag-there-is-no-daemon.sock"),
         &state,
         0,
+        generation.as_deref(),
     );
     let mute = server.wait_for_tool("agent_state", json!({ "pane": 1 }), "MUTE");
     assert!(
@@ -1645,7 +1682,9 @@ fn an_agent_reading_the_listing_alone_cannot_believe_a_stale_report() {
     );
 
     // ── ARM 1: the real reporter, this daemon's own image. SILENCE IS THE ANSWER. ──
-    run_hook(&sock, &state, 0);
+    //    ⚠ In this daemon's own generation, read off it — see [`run_hook`] and arm 4.
+    let generation = daemon_generation(&sock);
+    run_hook(&sock, &state, 0, generation.as_deref());
     let live = server.wait_for_tool("list_panes", json!({}), "source=hook:claude");
     assert!(
         !live.contains('⚠'),
@@ -1706,11 +1745,14 @@ fn an_agent_reading_the_listing_alone_cannot_believe_a_stale_report() {
          {unsaid}"
     );
 
-    // ── ARM 4: the LOUD half, staged by a hook that really cannot deliver. ──
+    // ── ARM 4: the LOUD half, staged by a hook that really cannot deliver — in the generation the
+    //    pane belongs to, which is what makes it a LIVE mute rather than an inherited number's word
+    //    (item 711).
     run_hook(
         Path::new("/nonexistent/sprag-there-is-no-daemon.sock"),
         &state,
         0,
+        generation.as_deref(),
     );
     let mute = server.wait_for_tool("list_panes", json!({}), "⚠ mute");
     assert!(

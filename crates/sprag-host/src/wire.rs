@@ -3758,7 +3758,12 @@ pub use sprag_rpc::{INVALID_PARAMS, PROTOCOL_FIELD, PROTOCOL_PARAM, WIRE_PROTOCO
 /// question are reached by one spelling. Its no-bump argument is its own and is narrower: an added
 /// REQUEST key is one of this wire's named bump causes, and it escapes only because nothing waits
 /// on this one.
-pub use sprag_rpc::{BUILD, BUILD_FIELD, CLIENT_BUILD_PARAM};
+/// ⚠⚠⚠⚠ AND [`GENERATION_FIELD`], WHICH RUN of that build is answering — the identity a pane
+/// NUMBER needs before it can be read after the fact. Re-exported beside the build for the reason
+/// the two travel on one reply: they answer *which code* and *which process*, and register item 711
+/// is what the second costs when nothing carries it — a mute breadcrumb filed under `4` read against
+/// a later daemon's live pane 4.
+pub use sprag_rpc::{BUILD, BUILD_FIELD, CLIENT_BUILD_PARAM, GENERATION_FIELD, generation};
 
 /// The mux control external query slot: every session's name, plus which one an unscoped
 /// request acts on — how a client discovers what it can address with [`SESSION_PARAM`].

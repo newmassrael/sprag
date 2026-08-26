@@ -1685,6 +1685,34 @@ fn history_limit_source() -> HistoryLimitSource {
 /// Singular, and distinct from the GUI's `SPRAG_GUI_PANES` (a pane COUNT read at start-up).
 pub const PANE_ENV_VAR: &str = "SPRAG_PANE";
 
+/// **WHICH RUN OF THE DAEMON THIS PANE BELONGS TO** — the half of a pane's identity the number
+/// above cannot carry, published at the same birth and read by anything that files a fact under
+/// that number for somebody to read later.
+///
+/// # ⚠⚠⚠⚠⚠ Why an id alone was not an identity, and what the gap cost (register item 711)
+///
+/// [`PANE_ENV_VAR`]'s own doc states the invariant and its limit in one breath: *"ids are never
+/// reused, so it can never come to mean a DIFFERENT pane"*. That is true within one daemon and
+/// FALSE across two — the counter starts over with the process — and a fact written to disk under a
+/// pane number outlives the process that issued it.
+///
+/// Measured 2026-08-26: fifteen `hook-mute.<pane>` breadcrumbs, written between 12:39 and 22:45,
+/// survived a `kill-server --purge` at 22:45 and a daemon born at 22:47. Two of them named `4` and
+/// `6`, which that daemon had handed to LIVE panes whose children started at 22:57 — eight and nine
+/// hours after the word was left. A watcher read one as a live mute and called `release-agent` on a
+/// healthy reporter. **The number was right and its subject was gone.**
+///
+/// ⚠⚠ **A REPORTER MUST BE ABLE TO STAMP THIS WITHOUT ASKING THE DAEMON.** The breadcrumb this
+/// exists for is written precisely when a hook could not reach the daemon
+/// ([`crate::hooks::note_mute`]), so a generation it had to fetch would be unavailable in
+/// the one case that needs it most. The environment is a BIRTH-TIME snapshot and needs nobody to be
+/// reachable, which is the same reason the id and the address travel this way.
+///
+/// ⚠ A process that outlives its pane keeps this too, and that is the point: it then names a
+/// generation nobody is running, so what it wrote can be recognised as an earlier occupant's rather
+/// than mistaken for the current one's.
+pub const PANE_GENERATION_ENV_VAR: &str = "SPRAG_PANE_GENERATION";
+
 /// **THE VARIABLES THAT TELL AN AGENT IT IS NESTED INSIDE ANOTHER ONE**, blanked at every pane's
 /// birth — see [`pane_env_source`].
 ///
@@ -1753,10 +1781,20 @@ pub fn pane_env_source(socket: &std::path::Path) -> PaneEnvSource {
     // every pane pay for a question whose answer cannot change.
     let socket = socket.to_string_lossy().into_owned();
     let address_var = sprag_rpc::HOST_SOCKET.path_env;
+    // ⚠⚠ Resolved ONCE here for the socket path's reason and one of its own: the generation is a
+    // fact about THIS PROCESS, so asking per birth would be asking a question whose answer cannot
+    // change — and a per-birth mint would make it a fact about the pane instead, which is not what
+    // dates a number the counter reissues.
+    let generation = sprag_rpc::generation().to_owned();
     Arc::new(move |id: PaneId| {
         let mut env = vec![
             (PANE_ENV_VAR.to_owned(), id.0.to_string()),
             (address_var.to_owned(), socket.clone()),
+            // ⚠⚠⚠ AND WHICH RUN OF THE DAEMON MINTED THAT NUMBER — see
+            // [`PANE_GENERATION_ENV_VAR`]. Without it the pair above is an ADDRESS and not an
+            // IDENTITY, and anything filing a fact under the number for later reading files it
+            // against whoever inherits the number next (register item 711).
+            (PANE_GENERATION_ENV_VAR.to_owned(), generation.clone()),
         ];
         // ⚠⚠⚠ A PANE IS A FRESH TERMINAL, NOT A SUB-TASK OF WHOEVER STARTED THE DAEMON — see
         // [`NESTED_AGENT_MARKERS`], and the live measurement in its doc.
@@ -3916,14 +3954,26 @@ mod tests {
             Some("/run/sprag/host.sock"),
             "the address travels under the variable a client already overrides",
         );
+        // ⚠⚠⚠ AND WHICH RUN OF THE DAEMON GAVE OUT THAT NUMBER — register item 711. Asserted
+        // against `sprag_rpc::generation()` rather than a shape (`contains('.')`, non-empty): a
+        // shape check passes on a value minted per birth, and a per-birth value is exactly what
+        // would NOT let a reader recognise an earlier occupant's word.
+        assert_eq!(
+            pane_7.get(PANE_GENERATION_ENV_VAR).map(String::as_str),
+            Some(sprag_rpc::generation()),
+            "a pane number is only an identity beside the generation that issued it — the hook that \
+             files `hook-mute.<pane>` cannot reach the daemon by definition, so it has to read this \
+             out of its own environment",
+        );
         assert_eq!(
             pane_7.len(),
-            2 + NESTED_AGENT_MARKERS.len(),
-            "and nothing else is published: the rendezvous pair, and the nesting markers this \
-             birth BLANKS — see `NESTED_AGENT_MARKERS`. ⚠ This count used to be 2 and the third \
-             thing a pane is born with is not decoration: a daemon started inside an agent session \
-             handed every pane that session's markers, and the agent in it then wrote no \
-             transcript at all",
+            3 + NESTED_AGENT_MARKERS.len(),
+            "and nothing else is published: the rendezvous TRIPLE — which pane, which endpoint, \
+             which run of the daemon — and the nesting markers this birth BLANKS (see \
+             `NESTED_AGENT_MARKERS`). ⚠ This count has been 2 and then 3, and neither addition was \
+             decoration: a daemon started inside an agent session handed every pane that session's \
+             markers and the agent wrote no transcript at all, and a pane number with no generation \
+             beside it let a breadcrumb from 14:02 be read against a pane born at 22:57",
         );
 
         // The identity moves with the pane while the address does not: one source serves every pane.
@@ -3934,6 +3984,13 @@ mod tests {
         assert_eq!(
             published(8).get(sprag_rpc::HOST_SOCKET.path_env),
             pane_7.get(sprag_rpc::HOST_SOCKET.path_env),
+        );
+        // ⚠ AND THE GENERATION DOES NOT MOVE WITH THE PANE, which is the other half of the same
+        // sentence: it dates the DAEMON, so every pane in one process carries the same value and a
+        // reader comparing a breadcrumb needs only one answer per connection.
+        assert_eq!(
+            published(8).get(PANE_GENERATION_ENV_VAR),
+            pane_7.get(PANE_GENERATION_ENV_VAR),
         );
     }
 

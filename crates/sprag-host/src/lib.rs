@@ -125,11 +125,14 @@ pub use history::{
     history_image_bytes, history_limit, history_limits, load_pane_history, purge_histories,
     save_histories_if_changed,
 };
-pub use hooks::{HookError, Outcome, Plan, Target, plan_install, plan_uninstall, report_for};
+pub use hooks::{
+    HookError, MuteReader, MuteSilence, MuteWord, Outcome, Plan, Target, note_mute, plan_install,
+    plan_uninstall, report_for,
+};
 pub use host::{
-    Host, HostClient, NESTED_AGENT_MARKERS, PANE_ENV_VAR, PaneAgent, PaneClipboardQuery,
-    PaneClipboardWrite, PaneFind, PaneFrame, PaneMatch, PaneNotification, PaneScrollFacts,
-    pane_args_source, pane_env_source, pane_identity_source,
+    Host, HostClient, NESTED_AGENT_MARKERS, PANE_ENV_VAR, PANE_GENERATION_ENV_VAR, PaneAgent,
+    PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneFrame, PaneMatch, PaneNotification,
+    PaneScrollFacts, pane_args_source, pane_env_source, pane_identity_source,
 };
 pub use job::JobWatch;
 pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};

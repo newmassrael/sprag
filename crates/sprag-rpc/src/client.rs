@@ -1188,6 +1188,49 @@ pub const WIRE_PROTOCOL: u32 = 43;
 /// built later does not.
 pub const BUILD: &str = env!("SPRAG_BUILD");
 
+/// **WHICH RUNNING PROCESS THIS IS** — the identity [`BUILD`] above cannot carry, minted once on
+/// first ask and constant for the life of the process.
+///
+/// # ⚠⚠⚠⚠⚠ Why an IMAGE's identity is not a GENERATION's, measured (register item 711)
+///
+/// [`BUILD`] answers *which code*. It cannot answer *which run of it*, and two runs of one image
+/// are not interchangeable to anything that outlives one of them. A daemon's pane ids are minted
+/// from a counter that starts over with the process, so `pane 4` means a different pane in each
+/// generation while spelling the same number — and the never-reused invariant a pane id carries
+/// (`sprag_host::PANE_ENV_VAR`) holds only WITHIN one.
+///
+/// Measured 2026-08-26: fifteen `hook-mute.<pane>` breadcrumbs keyed on nothing but that number
+/// outlived the daemon that gave the numbers out, and two of them — `hook-mute.4` and
+/// `hook-mute.6`, written eight and nine hours earlier — landed on the LIVE panes 4 and 6 of a
+/// daemon born at 22:47. A watcher read one as a live mute and took a healthy reporter off its
+/// hook. **The number was right and the subject was gone**, and nothing anywhere could tell those
+/// apart. So a fact filed under a pane number and read later must name the generation that number
+/// came from; the pair is the identity, and this is the half a number cannot supply.
+///
+/// ⚠⚠ **PID AND START TIME, not either alone.** A pid is reused after a wrap and a clock can be
+/// stepped, so each is defeatable and the pair is not: two processes sharing a pid cannot share the
+/// instant one of them started. This is the identity of a PROCESS — the classic pair — and not a
+/// counter, because nothing durable may be asked to remember a generation across a reboot.
+///
+/// ⚠ Nanoseconds since the epoch, and this is the one use a wall clock is right for: it is compared
+/// for EQUALITY only, never ordered. [`crate::HOST_SOCKET`]'s neighbours order things and reject the
+/// wall clock for it (`sprag_host::hooks::report_seq` states that argument); an identity is stamped
+/// once and travels with what it stamps, so a step cannot rewrite a value already written down.
+///
+/// ⚠ A clock the platform refuses degrades to the pid alone rather than to a panic: an identity
+/// with one weak half is still better than a fact with no subject, which is what item 711 was.
+#[must_use]
+pub fn generation() -> &'static str {
+    static GENERATION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    GENERATION.get_or_init(|| {
+        let pid = std::process::id();
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(since) => format!("{pid}.{}", since.as_nanos()),
+            Err(_) => format!("{pid}"),
+        }
+    })
+}
+
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
 /// must carry belongs at the one seam that builds them all, never at each call site.
@@ -1213,6 +1256,32 @@ pub const PROTOCOL_FIELD: &str = "protocol";
 /// true and the key earns a number**, exactly as version 10 spells out for `ended`: the difference
 /// between *"this daemon cannot say"* and the cheapest answer is the whole fact.
 pub const BUILD_FIELD: &str = "build";
+
+/// The [`CLIENT_HELLO_METHOD`] REPLY key carrying the daemon's own [`generation`] — WHICH RUN of
+/// that build is answering.
+///
+/// # ⚠⚠⚠⚠ What it is for, and why the hello is where it belongs
+///
+/// A pane id is unique and never reused — WITHIN one generation. Anything filed under a pane number
+/// and read after the daemon that issued it has gone is therefore a fact about a subject that no
+/// longer exists, and register item 711 is what that cost: a mute breadcrumb keyed on `4` was read
+/// against the live pane 4 of a later daemon and a healthy reporter was taken off its hook. The
+/// reader needs to know which generation the numbers it is holding came from, and a client learns
+/// that at exactly the moment it learns which build it is talking to.
+///
+/// ⚠ The generation of the DAEMON is the generation of every live pane it holds: a pane cannot
+/// outlive the process that owns its pseudoterminal, and a pane a restore brings back is born from
+/// the restoring daemon. So one answer per connection serves every pane in it, which is why this
+/// rides on the handshake rather than on each pane row.
+///
+/// # ⚠⚠⚠⚠ An ABSENT key here means "this daemon cannot say", NEVER "it matches"
+///
+/// [`BUILD_FIELD`]'s rule, and it is what lets an added ANSWER key skip a [`WIRE_PROTOCOL`] bump: a
+/// daemon predating this answers as it always did, and a client learns nothing rather than something
+/// false. The reader in this repository honours that — a breadcrumb it cannot attribute is not
+/// treated as attributed (`sprag_host::hooks::MuteWord::Unattributed`) — and the moment a surface
+/// renders the absence as agreement this key earns the number after all.
+pub const GENERATION_FIELD: &str = "generation";
 
 /// The JSON-RPC method a connection sends ONCE to announce which CLIENT it belongs to
 /// (R-PR67 Stage 1) — `params: { "client": "<opaque client id>" }`.
@@ -1686,6 +1755,12 @@ pub struct HostConn {
     /// daemon is*. Neither is *"it matches"* — see [`BUILD_FIELD`], which is the sentence that keeps
     /// this key off [`WIRE_PROTOCOL`]'s ledger.
     daemon_build: Option<String>,
+    /// WHICH RUN of that build it said it is, read from the same reply's [`GENERATION_FIELD`] — the
+    /// field above answers *which code*, this one *which process*, and only the second can date a
+    /// pane number (register item 711).
+    ///
+    /// Both `None`s mean *this connection cannot say*, on the field above's terms.
+    daemon_generation: Option<String>,
     /// WHERE this connection was dialled, when it was dialled by path — so a holder that meets a
     /// dead connection can ask whether the DAEMON died or only this connection did.
     ///
@@ -1770,6 +1845,7 @@ impl HostConn {
             read_deadline: None,
             pending: VecDeque::new(),
             daemon_build: None,
+            daemon_generation: None,
             socket: None,
         })
     }
@@ -1925,6 +2001,13 @@ impl HostConn {
             .get(BUILD_FIELD)
             .and_then(Value::as_str)
             .map(str::to_owned);
+        // ⚠ AND WHICH RUN OF THAT BUILD ([`GENERATION_FIELD`]), taken on the same terms and at the
+        // same moment: a reader holding pane numbers needs to know whose numbers they are, and the
+        // refused reply is exactly when somebody asks.
+        self.daemon_generation = reply
+            .get(GENERATION_FIELD)
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         match reply.get(PROTOCOL_FIELD).and_then(Value::as_u64) {
             Some(daemon) if daemon == u64::from(WIRE_PROTOCOL) => Ok(()),
             Some(daemon) => Err(protocol_mismatch(&daemon.to_string())),
@@ -1940,6 +2023,18 @@ impl HostConn {
     #[must_use]
     pub fn daemon_build(&self) -> Option<&str> {
         self.daemon_build.as_deref()
+    }
+
+    /// WHICH RUN of that build the daemon on the other end said it is, or `None` when this
+    /// connection cannot say — see [`GENERATION_FIELD`], and note that `None` is *it did not say*
+    /// rather than *it matches*.
+    ///
+    /// Answers `None` before [`handshake`](Self::handshake) has run, for
+    /// [`daemon_build`](Self::daemon_build)'s reason: a connection that has not asked has not been
+    /// told.
+    #[must_use]
+    pub fn daemon_generation(&self) -> Option<&str> {
+        self.daemon_generation.as_deref()
     }
 
     /// A clone of the underlying stream usable ONLY to cancel a blocked

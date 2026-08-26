@@ -8244,6 +8244,231 @@ fn a_blocked_pane_says_what_its_agent_asked_a_person_for() {
     );
 }
 
+/// A state home two daemon GENERATIONS share, removed when the test ends.
+///
+/// [`isolated_state_home`] derives one from a socket, which is right for every gate that has a
+/// single daemon and wrong for the one below: its whole subject is a file that OUTLIVES the daemon
+/// that wrote it, so both generations must look in the same directory or there is nothing to
+/// outlive. Kept as a guard rather than removed at the end because a failed assertion unwinds, and a
+/// gate that leaks a directory tree on the way out is what `sprag-gate`'s ambient-home check exists
+/// to catch.
+struct SharedStateHome(PathBuf);
+impl Drop for SharedStateHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Which generation the daemon on `sock` says it is, off its own handshake — the READER's half of
+/// the comparison item 711 is about.
+fn handshake_generation(sock: &Path) -> Option<String> {
+    let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.handshake("cli-it-generation")
+        .expect("the daemon answers the handshake");
+    conn.daemon_generation().map(str::to_owned)
+}
+
+/// The value of `key=` in a `BORN gen=… pane=…` line a pane's own child printed.
+fn born_field(printed: &str, key: &str) -> String {
+    printed
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix(key))
+        .unwrap_or_else(|| panic!("the pane never printed {key}…: {printed:?}"))
+        .to_owned()
+}
+
+/// ⛔⛔⛔⛔⛔ **A PANE THAT INHERITS A DEAD PANE'S NUMBER IS NOT TAKEN OFF ITS HOOK** — register item
+/// 711, driven end to end through the doors the product uses: a real hook process leaves the word, a
+/// real purge takes the panes, a real second daemon reissues the number, and a real `sprag agent`
+/// reads it.
+///
+/// # ⛔⛔⛔ The failure this reproduces, measured before it was written
+///
+/// A mute breadcrumb is filed under a pane NUMBER, and a pane number is unique and never reused —
+/// WITHIN one daemon. The counter starts over with the process, and nothing removes the file when a
+/// pane dies or when a generation changes. On 2026-08-26 this host held fifteen of them with mtimes
+/// from 12:39 to 22:45; `hook-mute.4` (14:02) and `hook-mute.6` (13:37) named numbers that a daemon
+/// born at 22:47 had given to LIVE panes whose children started at 22:57. A watcher read one as a
+/// live mute and called `release-agent` on a healthy reporter — **the number was right and its
+/// subject was gone**.
+///
+/// # ⚠⚠⚠⚠⚠ Why this gate needs TWO GENERATIONS, and why the two gates that already read this file
+/// could not have caught it
+///
+/// `a_reporter_that_left_word_is_flagged_mute` and its neighbours write a breadcrumb under a fixture
+/// id and read it back in the same breath. **A fixture id is never reused**, so the whole hazard —
+/// one number, two occupants, separated in time — is outside anything a single-lifetime fixture can
+/// express. It is register item 686's shape (*"a scope that cannot disagree with itself is always
+/// green"*) on the TIME axis, and the second axis is genuinely required here: a fixture with one
+/// generation asserts nothing about attribution, because the only generation there is is the right
+/// one.
+///
+/// So both premises are asserted INSIDE the gate rather than assumed:
+///
+/// * the breadcrumb is really on disk, with the generation that left it, and it really survives the
+///   purge — which is the residue item 700 named and did not fix;
+/// * the number is really reissued, read off the SECOND generation's pane printing its own id;
+/// * and the two generations really differ.
+///
+/// # ⚠⚠⚠ The control is generation ONE reading the same file, and it is what stops this passing
+/// vacuously
+///
+/// A build whose reader never says `mute` at all passes the fix half of this gate perfectly. So the
+/// first generation — the one that actually left the word — must be told its reporter is mute off the
+/// very same file, one command before the purge.
+///
+/// ⚠ The generation reaches the hook process in this test's `envs` because a test cannot be a CHILD
+/// of the pane, which is how a real reporter inherits it. The VALUE is not invented: it is read off
+/// the pane's own child, which printed what the daemon published to it, and it is asserted equal to
+/// what the daemon says on its handshake — so the environment half and the wire half are pinned to
+/// one fact here, and `pane_env_source`'s own gate covers the publication.
+#[test]
+fn a_pane_that_inherits_a_dead_panes_number_is_not_taken_off_its_hook() {
+    let shared = SharedStateHome(scratch_state_home());
+    let home = shared.0.display().to_string();
+    let xdg = [("XDG_STATE_HOME", home.as_str())];
+    // A boot pane whose child SAYS what it was born with, so the generation the hook stamps and the
+    // number it is filed under both come from the product rather than from this file.
+    let announce = [
+        "sh",
+        "-c",
+        "printf 'BORN gen=%s pane=%s\\n' \"$SPRAG_PANE_GENERATION\" \"$SPRAG_PANE\"; exec cat",
+    ];
+
+    // ── 1. GENERATION ONE, and the two halves of its identity are ONE fact.
+    let (first, first_sock) = spawn_host_with(&announce, &xdg);
+    let born = wait_for_pane_text(&first_sock, "BORN ");
+    let gen_one = born_field(&born, "gen=");
+    assert_eq!(
+        born_field(&born, "pane="),
+        "0",
+        "the boot pane is number 0, which is the number this gate reissues: {born:?}",
+    );
+    assert_eq!(
+        handshake_generation(&first_sock).as_deref(),
+        Some(gen_one.as_str()),
+        "⚠⚠⚠⚠⚠ THE WRITER'S HALF AND THE READER'S HALF MUST BE THE SAME FACT. The hook reads the \
+         generation out of its pane's ENVIRONMENT (it is written when the daemon cannot be reached, \
+         so it cannot ask) and a reader learns it from the HANDSHAKE. Two values that merely look \
+         alike would make every comparison below answer `Inherited` for a live pane — the inverse of \
+         the bug, and just as wrong",
+    );
+
+    // ── 2. THE HOOK CANNOT DELIVER AND LEAVES WORD, under the number it was born with. Cause (ii)
+    //       of the census — `hook-mute.47` was exactly this, written in the same second as the purge.
+    let nowhere = shared.0.join("nobody-serves-this.sock");
+    let left_word = sprag_stdin(
+        &first_sock,
+        &["hook", "claude"],
+        &[
+            ("SPRAG_PANE", "0"),
+            ("SPRAG_PANE_GENERATION", gen_one.as_str()),
+            ("SPRAG_HOST_RPC_SOCK", nowhere.to_str().expect("utf-8 path")),
+            ("XDG_STATE_HOME", home.as_str()),
+        ],
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#,
+    );
+    assert!(
+        left_word.ok,
+        "a hook always exits 0, whatever it could not do: {}",
+        left_word.stderr,
+    );
+    let breadcrumb = shared.0.join("sprag").join("hook-mute.0");
+    let written = std::fs::read_to_string(&breadcrumb).unwrap_or_else(|why| {
+        panic!(
+            "⚠ THE PREMISE: the hook must actually have left word at {} — without a file on disk \
+             every assertion below is vacuous ({why})",
+            breadcrumb.display(),
+        )
+    });
+    assert!(
+        written.starts_with(&format!("generation {gen_one}\n")),
+        "⚠⚠⚠ AND IT NAMES ITS OWN SUBJECT. A breadcrumb that says only what went wrong is the defect: \
+         it is filed under a number the next counter reissues, so there is nothing to compare and \
+         the reader answers about whoever holds the number next. Got {written:?}",
+    );
+    assert!(
+        written.contains("could not reach the daemon"),
+        "and the hook's own account of the failure is still in it: {written:?}",
+    );
+
+    // ── 3. THE CONTROL. Generation ONE reads the very same file and IS told its reporter is mute.
+    //       Without this arm a build whose reader never says `mute` passes step 6 perfectly.
+    assert!(
+        sprag_env(
+            &first_sock,
+            &["report-agent", "working", "--pane", "0"],
+            &xdg
+        )
+        .ok,
+        "a reported verdict is what makes the reporter's health worth printing",
+    );
+    let live = sprag_env(&first_sock, &["agent", "0"], &xdg).stdout;
+    assert!(
+        live.contains("THAT REPORTER IS MUTE"),
+        "⚠⚠⚠⚠⚠ THE CONTROL: this breadcrumb IS this generation's, so it must be acted on. A gate \
+         whose reader is silent about every breadcrumb would pass the fix below while reporting \
+         nothing at all: {live}",
+    );
+
+    // ── 4. THE PANES GO, exactly as the measured night's `kill-server --purge` took them — and the
+    //       breadcrumb does NOT go with them, which is the residue that makes this reachable.
+    assert!(
+        sprag_env(&first_sock, &["kill-server", "--purge"], &xdg).ok,
+        "the first generation ends the way the measured one did",
+    );
+    drop(first);
+    assert!(
+        breadcrumb.exists(),
+        "⚠⚠ THE PREMISE THAT MAKES THIS BUG REACHABLE AT ALL: a purge destroys the snapshot and \
+         every pane's history and leaves this file standing. Nothing prunes it — item 700 says so in \
+         its own residue — so the next generation meets it under a number it has just reissued",
+    );
+
+    // ── 5. GENERATION TWO, in the same state home, reissuing the number from one.
+    let (_second, second_sock) = spawn_host_with(&announce, &xdg);
+    let reborn = wait_for_pane_text(&second_sock, "BORN ");
+    let gen_two = born_field(&reborn, "gen=");
+    assert_ne!(
+        gen_one, gen_two,
+        "⚠ THE PREMISE: two generations. One process cannot exhibit this hazard, which is why a \
+         single-lifetime fixture is vacuous here: {reborn:?}",
+    );
+    assert_eq!(
+        born_field(&reborn, "pane="),
+        "0",
+        "⚠⚠⚠ THE OTHER PREMISE, AND THE ONE A FIXTURE ID CANNOT SUPPLY: the number really is \
+         reissued. `0` here and `0` above are two different panes, eight hours apart on the disk that \
+         produced this item: {reborn:?}",
+    );
+
+    // ── 6. THE FIX. The new pane's reporter is healthy, and the word under its number is not its.
+    assert!(
+        sprag_env(
+            &second_sock,
+            &["report-agent", "working", "--pane", "0"],
+            &xdg
+        )
+        .ok,
+        "the new occupant reports too",
+    );
+    let inherited = sprag_env(&second_sock, &["agent", "0"], &xdg).stdout;
+    assert!(
+        !inherited.contains("THAT REPORTER IS MUTE"),
+        "⛔⛔⛔⛔⛔ THE WHOLE ITEM. This pane's reporter has never failed once; the breadcrumb under \
+         its number belongs to a pane that died eight hours ago in the measured case. Key the read on \
+         the number alone — which is what shipped — and a healthy reporter is declared mute, which is \
+         what sent a watcher to `release-agent` against it: {inherited}",
+    );
+    assert!(
+        inherited.contains(&gen_one) && inherited.contains(&gen_two),
+        "⚠⚠ AND IT SAYS WHOSE WORD IT WAS RATHER THAN SAYING NOTHING. Nothing prunes these files, so \
+         a reader told only *not mute* meets the file itself later and reads it the way the watcher \
+         did — naming both generations is what makes the thirty minutes item 712 measures cost \
+         nothing: {inherited}",
+    );
+}
+
 /// A daemon that is UP but wedged cannot stall a REQUEST VERB either — it says so and exits.
 ///
 /// The hook path below has been bounded since R273 because an agent waits for it. Every other verb
@@ -9671,7 +9896,7 @@ fn sprag_no_sock(args: &[&str], envs: &[(&str, &str)]) -> CliRun {
     cmd.args(args).env_remove("SPRAG_HOST_RPC_SOCK");
     // ⚠⚠⚠⚠⚠ **THIS HELPER IS THE ONE THAT WRITES, PRECISELY BECAUSE IT REACHES NO DAEMON.** A
     // reporter that cannot reach one leaves a breadcrumb at
-    // `$XDG_STATE_HOME/sprag/hook-mute.<pane>` (`hooks::hook_trouble_path`) — *"the daemon is by
+    // `$XDG_STATE_HOME/sprag/hook-mute.<pane>` (`hooks::note_mute`) — *"the daemon is by
     // definition unreachable when this is written"* — so the very condition these gates construct
     // is the condition that files something. With no state home of its own that landed in the
     // runner's real `~/.local/state`, and it was the last residue CI's `ambient-home-guard`

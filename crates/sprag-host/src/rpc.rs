@@ -46,11 +46,11 @@ use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
     AttachAsk, AttachFault, BUILD, BUILD_FIELD, CLIENT_ATTACH_METHOD, CLIENT_BUILD_PARAM,
     CLIENT_HELLO_METHOD, CLIENT_MESSAGES_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD, EVENTS_WAIT_METHOD, GOTO_PANE_PARAM,
-    GOTO_PARAM, GOTO_SESSION_PARAM, GOTO_WINDOW_PARAM, INVALID_PARAMS, LAST_PARAM, MESSAGE_FIELD,
-    NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANE_WAIT_REVISION_METHOD, PATTERN_PARAM,
-    PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, STEP_PARAM, SUBSCRIPTION_PARAM,
-    TREE_SLOT, UNATTACHED_PARAM, WIRE_PROTOCOL,
+    EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD, EVENTS_WAIT_METHOD, GENERATION_FIELD,
+    GOTO_PANE_PARAM, GOTO_PARAM, GOTO_SESSION_PARAM, GOTO_WINDOW_PARAM, INVALID_PARAMS, LAST_PARAM,
+    MESSAGE_FIELD, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANE_WAIT_REVISION_METHOD,
+    PATTERN_PARAM, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, STEP_PARAM,
+    SUBSCRIPTION_PARAM, TREE_SLOT, UNATTACHED_PARAM, WIRE_PROTOCOL,
 };
 use serde_json::Value;
 use sprag_terminal::{OrderStep, SessionInfo};
@@ -1333,7 +1333,17 @@ fn handle_hello(state: &HostState, conn: ConnId, request: &Request) -> Option<St
                 serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "result": { PROTOCOL_FIELD: WIRE_PROTOCOL, BUILD_FIELD: BUILD },
+                    // ⚠⚠⚠⚠ AND WHICH RUN OF THAT BUILD ([`GENERATION_FIELD`]). The build dates the
+                    // CODE; only this dates the PANE NUMBERS this daemon is about to hand out, and
+                    // a number is what every breadcrumb filed for later reading is keyed on. A
+                    // daemon's own generation is every live pane's: a pane cannot outlive the
+                    // process owning its pseudoterminal, so one answer per connection serves them
+                    // all — which is why it rides here and not on each pane row.
+                    "result": {
+                        PROTOCOL_FIELD: WIRE_PROTOCOL,
+                        BUILD_FIELD: BUILD,
+                        GENERATION_FIELD: crate::wire::generation(),
+                    },
                 })
                 .to_string(),
             )
