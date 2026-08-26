@@ -421,6 +421,71 @@ impl Publishes {
     }
 }
 
+/// **WHAT A STOP WOULD STILL HAVE TO REACH AT AN ENDING** — [`Act::End`]'s `signals` argument.
+///
+/// # ⚠⚠⚠⚠⚠ What this space replaced, and why the answer is an ENDING's to give
+///
+/// Register item 470, stage 3. `AiLoop::driving` answered *which pane would a stop have to signal*
+/// with a `match` over all twenty-eight states: **three arms answering `None` and twenty-five
+/// answering the pane**. All three of the three are ENDINGS — `converged`, `exhausted`, `peer_gone`
+/// — so the twenty-five were not a decision at all, they were one fact (*a run in flight has a
+/// pane*) written out twenty-five times to keep the match exhaustive.
+///
+/// So the question is only ever asked about an ending, and it rides the act an ending already
+/// declares rather than needing one of its own — the way `prompt.say` carries `text` AND `asks`.
+///
+/// # ⚠⚠⚠⚠ Why a word and not a boolean, when there are two of them
+///
+/// [`Asks`]'s reason, and it is sharper here. The question is not *is a model busy* but **what
+/// would a stop have to reach**, and the answers name things: the pane this run is driving, or
+/// nothing. A third answer is expressible in that vocabulary and is not in a flag's — an ending
+/// whose stop belongs somewhere other than the pane the loop is driving. A boolean would have to be
+/// re-read as a different question the day that arrives.
+///
+/// ⚠⚠ **AND THE DIRECTION THAT FAILS SAFE IS [`Self::Pane`]**, which is why this space is closed
+/// and a word outside it is refused rather than defaulted: a needless interrupt costs a peer one
+/// keystroke it was waiting at anyway, and a missed one leaves a model spending somebody's tokens
+/// on a question nothing is waiting for. A default of `Nothing` would buy the second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signals {
+    /// `pane` — the pane this loop is driving, which a stop must reach.
+    ///
+    /// ⚠ The pane is read off the loop at the moment of asking and never carried here: a run
+    /// REPLACES its inner session as it goes, so a pane id travelling in a `<param>` would name a
+    /// closed pane. What the document decides is *whether there is one to reach*; which one it is
+    /// is the driver's own moving fact.
+    Pane,
+    /// `nothing` — no model can be mid-turn at this ending, so a stop has nothing to reach.
+    ///
+    /// ⚠⚠ Declared by exactly three of the seven endings, and each has its own argument. Two are
+    /// arguments that the peer is AT REST because a turn completed (`converged`, `exhausted`); the
+    /// third is the one case where the product has LOOKED — `peer_gone` is only reached because the
+    /// pane's child was seen to have exited.
+    Nothing,
+}
+
+impl Signals {
+    /// Every answer an ending may give about what a stop would reach.
+    pub const ALL: [Self; 2] = [Self::Pane, Self::Nothing];
+
+    /// The word a document says this answer with.
+    #[must_use]
+    pub const fn named(self) -> &'static str {
+        match self {
+            Self::Pane => "pane",
+            Self::Nothing => "nothing",
+        }
+    }
+
+    /// What `word` says a stop would reach, or [`None`] for a word this space does not hold.
+    #[must_use]
+    pub fn of(word: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|signals| signals.named() == word)
+    }
+}
+
 /// **ONE ACT THE DOCUMENT ASKED FOR, WITH THE ARGUMENTS IT SENT.**
 ///
 /// ⚠ A variant per act rather than one struct with every act's arguments on it: the two acts share
@@ -444,6 +509,8 @@ pub enum Asked {
     End {
         /// Which ending the run reached, as the document publishes it.
         publishes: Publishes,
+        /// What a stop would still have to reach at this ending.
+        signals: Signals,
     },
 }
 
@@ -741,7 +808,25 @@ impl Serving {
     #[must_use]
     pub fn published(&self) -> Option<Publishes> {
         match self.0.lock().unwrap_or_else(PoisonError::into_inner).ending {
-            Some(Asked::End { publishes }) => Some(publishes),
+            Some(Asked::End { publishes, .. }) => Some(publishes),
+            _ => None,
+        }
+    }
+
+    /// **WHAT A STOP WOULD STILL HAVE TO REACH**, or [`None`] for a run that has not ended.
+    ///
+    /// ⚠⚠ [`None`] IS NOT [`Signals::Nothing`] AND THE CALLER MUST NOT FOLD THEM. This answers
+    /// nothing at all while the run is in flight — which is exactly when a stop most certainly does
+    /// have a pane to reach — so a reader that treated an absent answer as *nothing to signal*
+    /// would leave a live model running after a cancel. See [`Signals`] for the direction that
+    /// fails safe.
+    ///
+    /// ⚠ Read rather than taken, for [`Self::published`]'s reason: it rides the same act, and that
+    /// act is a fact about the run rather than work waiting to be done.
+    #[must_use]
+    pub fn signalling(&self) -> Option<Signals> {
+        match self.0.lock().unwrap_or_else(PoisonError::into_inner).ending {
+            Some(Asked::End { signals, .. }) => Some(signals),
             _ => None,
         }
     }
@@ -823,7 +908,19 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
                     holds: Publishes::ALL.map(Publishes::named).to_vec(),
                 });
             };
-            Ok(Asked::End { publishes })
+            // ⚠⚠ REQUIRED, not defaulted, and the direction is why: the safe answer is `pane`, so a
+            // default would be safe and a MISSING one would be silent. An ending that forgot to say
+            // is a document defect and must arrive as one — see [`Signals`].
+            let said = argument(params, act, "signals")?;
+            let Some(signals) = Signals::of(&said) else {
+                return Err(Refused::Unreadable {
+                    act,
+                    argument: "signals",
+                    said,
+                    holds: Signals::ALL.map(Signals::named).to_vec(),
+                });
+            };
+            Ok(Asked::End { publishes, signals })
         }
     }
 }
@@ -848,7 +945,7 @@ mod tests {
 
     use sce_rust_runtime::{IScriptEngine, ScriptValue};
 
-    use super::{Act, Asked, Asks, Does, Publishes, Refused, Serving, read};
+    use super::{Act, Asked, Asks, Does, Publishes, Refused, Serving, Signals, read};
     use crate::sm::probe_send_type_sm::ProbeSendTypePolicy;
 
     /// The act `probe_send_type.scxml` addresses to this host — a name [`Act`] does not serve.
@@ -1090,10 +1187,13 @@ mod tests {
         );
         for publishes in Publishes::ALL {
             assert_eq!(
-                match asking(Act::End, &[("publishes", publishes.named())])
-                    .expect("every word this space holds is one an ending may declare")
+                match asking(
+                    Act::End,
+                    &[("publishes", publishes.named()), ("signals", "pane")]
+                )
+                .expect("every word this space holds is one an ending may declare")
                 {
-                    Asked::End { publishes } => publishes,
+                    Asked::End { publishes, .. } => publishes,
                     other => panic!("`end.publish` is what was asked for: {other:?}"),
                 },
                 publishes,
@@ -1101,6 +1201,44 @@ mod tests {
                 publishes.named(),
             );
         }
+
+        // ⚠⚠⚠⚠⚠ AND THE SECOND ARGUMENT OF THAT SAME ACT — register item 470, stage 3, the fifth
+        // match. `signals` is what replaced `AiLoop::driving`'s twenty-eight-arm state match, and a
+        // word this door cannot read back is an ending whose stop reaches NOTHING because the
+        // refusal left the driver with no answer at all.
+        assert_eq!(
+            Signals::ALL.len(),
+            2,
+            "⚠⚠⚠ the space this walk asserts over decides how many times it asserts, so its size is \
+             pinned beside it: a variant dropped from `ALL` would shrink the control with the space",
+        );
+        for signals in Signals::ALL {
+            assert_eq!(
+                match asking(
+                    Act::End,
+                    &[("publishes", "converged"), ("signals", signals.named())]
+                )
+                .expect("every word this space holds is one an ending may declare")
+                {
+                    Asked::End { signals, .. } => signals,
+                    other => panic!("`end.publish` is what was asked for: {other:?}"),
+                },
+                signals,
+                "⚠⚠⚠⚠ `{}` is in `Signals::ALL` and this door does not read it back as itself",
+                signals.named(),
+            );
+        }
+        assert_eq!(
+            asking(Act::End, &[("publishes", "converged")]),
+            Err(Refused::Missing {
+                act: Act::End,
+                argument: "signals",
+            }),
+            "⚠⚠⚠⚠⚠ AN OMITTED `signals` MUST NOT DEFAULT, and the direction is exactly why this is \
+             worth a line: the SAFE answer is `pane`, so a default would be safe and a missing one \
+             would be SILENT. An ending that forgot to say is a document defect and has to arrive \
+             as one",
+        );
         assert_eq!(
             asking(Act::End, &[("publishes", "")]),
             Err(Refused::Unreadable {

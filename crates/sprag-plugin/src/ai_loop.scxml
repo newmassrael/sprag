@@ -4469,10 +4469,27 @@
     even though entering one COMPLETES the machine and no reply can be delivered.
     That measurement is what opened this road; it is not assumed here.
   -->
+  <!--
+    ⚠⚠⚠⚠⚠ AND EACH ONE ALSO SAYS WHAT A STOP WOULD STILL HAVE TO REACH.
+
+    `AiLoop::driving` answered that with a `match` over all twenty eight states:
+    THREE arms answering `nothing` and TWENTY FIVE answering the pane. All three
+    of the three are endings, so the twenty five were never a decision — they
+    were one fact, `a run in flight has a pane`, written out twenty five times to
+    keep the match exhaustive.
+
+    ⚠⚠ THE DIRECTION FAILS SAFE TOWARDS `pane`, and that is why the argument is
+    required rather than defaulted: a needless interrupt costs a peer one
+    keystroke it was waiting at anyway, and a missed one leaves a model spending
+    somebody's tokens on a question nothing is waiting for. An ending that forgot
+    to say must arrive as a refusal, not as a safe guess.
+  -->
   <final id="converged">
     <onentry>
       <send type="x-sprag-host" event="end.publish">
         <param name="publishes" expr="'converged'"/>
+        <!-- The closing report's turn ENDED, so the peer is at rest. -->
+        <param name="signals" expr="'nothing'"/>
       </send>
     </onentry>
   </final>
@@ -4480,6 +4497,17 @@
     <onentry>
       <send type="x-sprag-host" event="end.publish">
         <param name="publishes" expr="'exhausted'"/>
+        <!--
+          ⚠⚠⚠ RE DERIVED SINCE `stopping`, NOT CARRIED OVER. This has three
+          doors now and none of them leaves a model spending tokens:
+          `turn.done` is the account written and the peer at rest;
+          `turn.blocked` is the peer parked at a dialog, waiting rather than
+          producing; `turn.interrupted` is a person who has already taken the
+          pane, and signalling underneath them is the one thing this driver
+          must never do. The other three doors out of `stopping` land in
+          endings that DO answer the pane.
+        -->
+        <param name="signals" expr="'nothing'"/>
       </send>
     </onentry>
   </final>
@@ -4487,6 +4515,9 @@
     <onentry>
       <send type="x-sprag-host" event="end.publish">
         <param name="publishes" expr="'failed'"/>
+        <!-- Says nothing about what the peer is doing; an unknown answer must
+             fail towards stopping. -->
+        <param name="signals" expr="'pane'"/>
       </send>
     </onentry>
   </final>
@@ -4494,6 +4525,14 @@
     <onentry>
       <send type="x-sprag-host" event="end.publish">
         <param name="publishes" expr="'cancelled'"/>
+        <!--
+          ⚠⚠⚠⚠ THE ENDING THIS WHOLE QUESTION EXISTS TO SERVE, and the obvious
+          rule `answer nothing once the document is finished` gets it exactly
+          wrong. This is reached because `watch` saw the run end WHILE THE AGENT
+          WAS MID TURN, so by the time anybody asks what to stop, the document
+          is finished and the agent is not.
+        -->
+        <param name="signals" expr="'pane'"/>
       </send>
     </onentry>
   </final>
@@ -4501,6 +4540,7 @@
     <onentry>
       <send type="x-sprag-host" event="end.publish">
         <param name="publishes" expr="'blocked'"/>
+        <param name="signals" expr="'pane'"/>
       </send>
     </onentry>
   </final>
@@ -4545,6 +4585,14 @@
     <onentry>
       <send type="x-sprag-host" event="end.publish">
         <param name="publishes" expr="'peer_gone'"/>
+        <!--
+          ⚠⚠⚠ THIS ONE ANSWERS ON EVIDENCE RATHER THAN ON THE FAIL SAFE. The
+          other two `nothing` endings are arguments that no model CAN be mid
+          turn; this is the one case where the product has LOOKED — the state is
+          only reached because `pane_eof` said the pane's child has exited. There
+          is no job left to signal.
+        -->
+        <param name="signals" expr="'nothing'"/>
       </send>
     </onentry>
   </final>
@@ -4580,6 +4628,15 @@
     <onentry>
       <send type="x-sprag-host" event="end.publish">
         <param name="publishes" expr="'abandoned'"/>
+        <!--
+          ⚠⚠⚠⚠ THE ARM WHERE THE FAIL SAFE DIRECTION DOES REAL WORK. The obvious
+          reading is that hours of holding means nothing can be mid turn, and
+          this document's own `HOLD_TAKES_EFFECT` refuses it: a hold PARKS THE
+          LOOP and deliberately leaves the turn its agent is in the middle of
+          alone. The last thing anybody knows about that peer is that it was
+          working, and nobody has looked since.
+        -->
+        <param name="signals" expr="'pane'"/>
       </send>
     </onentry>
   </final>

@@ -1166,78 +1166,20 @@ impl Plugin for AiLoop {
     /// held here would name a closed pane, and this method's whole reason is what happens to the one
     /// that is still occupied.
     fn driving(&self) -> Option<PaneId> {
-        match self.inner.state() {
-            // ⚠ NO MODEL IS MID-TURN BY CONSTRUCTION in either, and signalling a pane this run has
-            // finished with would interrupt whatever a person started in it next.
-            //
-            // `converged` is entered when the closing report's turn ended, so the peer is at rest.
-            //
-            // ⚠⚠⚠ `exhausted` USED TO BE THE SAME ONE-LINE CLAIM — *"entered when a judged turn
-            // did"* — AND SINCE `stopping` IT HAS THREE DOORS, so the claim is re-derived rather
-            // than carried over. The stopping turn can end three ways and none of them leaves a
-            // model spending tokens: `turn.done` is the account written and the peer at rest;
-            // `turn.blocked` is the peer PARKED AT A DIALOG, waiting for input rather than
-            // producing; `turn.interrupted` is a person who has already taken the pane, and
-            // signalling underneath them is the one thing this driver must never do. The other
-            // three doors out of `stopping` are `fail`, `cancel` and `peer.gone`; the first two
-            // land in states below that DO answer the pane, and the third is beside this arm for a
-            // reason of its own.
-            //
-            // ⚠⚠⚠ `peer_gone` ANSWERS `None` ON EVIDENCE RATHER THAN ON THE FAIL-SAFE. Every other
-            // `None` here is an argument that no model can be mid-turn; this one is the one case
-            // where the product has LOOKED — the state is only reached because `pane_eof` said the
-            // pane's child has exited, which is the same reading the refusal at the door stands on.
-            // There is no job left to signal, and `Stopped::Nothing` is the true sentence.
-            AiLoopState::Converged | AiLoopState::Exhausted | AiLoopState::PeerGone => None,
-            // Everything else, and `cancelled` above all — see the paragraph above. `failed` and
-            // `blocked` join it because neither says anything about what the peer is doing, and an
-            // unknown answer must fail towards stopping.
-            AiLoopState::Cancelled
-            | AiLoopState::Failed
-            | AiLoopState::Blocked
-            // ⚠⚠⚠⚠ `abandoned` ANSWERS THE PANE, AND IT IS THE ARM WHERE THE FAIL-SAFE DIRECTION
-            // IS DOING REAL WORK — register item 534. The obvious reading is that hours of holding
-            // means nothing can be mid-turn; the document's own `HOLD_TAKES_EFFECT` refuses it. A
-            // hold PARKS THE LOOP and deliberately leaves the turn its agent is in the middle of
-            // alone, so the last thing this driver knows about that peer is that it was working —
-            // and it has not looked since. An unknown answer must fail towards stopping.
-            | AiLoopState::Abandoned
-            | AiLoopState::Idle
-            | AiLoopState::Priming
-            | AiLoopState::Working
-            | AiLoopState::Judging
-            | AiLoopState::Screening
-            // ⚠⚠ THE PANE IS ANSWERED HERE EVEN THOUGH NO MODEL IS SPENDING ANYTHING, and the
-            // question this method asks is why: not *is a model busy* but **which pane would a
-            // stop have to reach**. A run cancelled while waiting out an outage still owns its
-            // session, and the wait itself is this driver's — so there is a pane to stop.
-            | AiLoopState::ServiceDown
-            | AiLoopState::Redirecting
-            // ⚠⚠ AND A REFUSAL BEING COMPOSED HAS A PANE FOR THE SAME REASON — item 448. The peer
-            // is at rest between two turns, and the sentence about to be typed at it is this
-            // driver's own act, so a cancel here has something to reach.
-            | AiLoopState::Disputing
-            | AiLoopState::AwaitingHuman
-            | AiLoopState::Reflecting
-            | AiLoopState::Reviewing
-            | AiLoopState::Restarting
-            | AiLoopState::Resuming
-            | AiLoopState::Closing
-            // ⚠ `stopping` IS A TURN LIKE ANY OTHER while it is running: the agent is writing the
-            // account, and a run cancelled or timed out underneath it must stop that model exactly
-            // as it stops one mid-work. The cost of asking for a last report is a last turn, and
-            // this is what bounds it.
-            | AiLoopState::Stopping
-            // ⚠⚠ A RUN REPORTING ONE OF THESE IS A RUN WHOSE READER IS WRONG, and the safe answer
-            // is still the pane: this asks WHICH PANE a stop would have to reach, and a run in
-            // flight has one whatever state a misreading named. Answering `None` would leave a live
-            // model running after a cancel.
-            | AiLoopState::Running
-            | AiLoopState::Work
-            | AiLoopState::Orders
-            | AiLoopState::Standing
-            | AiLoopState::StandingDown
-            | AiLoopState::Held => Some(self.inner.pane()),
+        // ⚠⚠⚠⚠⚠ **TWENTY-EIGHT ARMS STOOD HERE AND ALL TWENTY-EIGHT ARE GONE** — register item 470,
+        // stage 3. Three of them answered `None` and **twenty-five answered the pane**; all three
+        // of the three are ENDINGS, so the twenty-five were never a decision — they were one fact,
+        // *a run in flight has a pane*, written out twenty-five times to keep the match exhaustive.
+        // Every ending now says it for itself, on the act it already declares.
+        //
+        // ⚠⚠ `None` FROM `signalling` IS A RUN THAT HAS NOT ENDED, and it must reach the pane arm:
+        // that is exactly when a stop most certainly does have something to reach. Folding it in
+        // with `Signals::Nothing` would leave a live model running after a cancel — which is the
+        // failure this whole method exists to prevent, so the fold is spelled out rather than left
+        // to a reader of `_`.
+        match self.inner.signalling() {
+            Some(crate::act::Signals::Nothing) => None,
+            Some(crate::act::Signals::Pane) | None => Some(self.inner.pane()),
         }
     }
 
@@ -7575,6 +7517,25 @@ mod tests {
             "⚠⚠⚠ the loop ended without reaching for the job at all, which is its door closing on \
              a room its agent is still working in: {:?}",
             outcome.stopped,
+        );
+        // ⚠⚠⚠⚠⚠ **AND WHICH ARM ANSWERED IS PINNED, BECAUSE IT IS THE ONE WITH NO DOCUMENT BEHIND
+        // IT** — register item 470, stage 3. `AiLoop::driving` asks the ending what a stop would
+        // reach (`Signals`), and this run never reaches an ending at all: the Driver sees the flag
+        // at its loop top and ends the run from OUTSIDE, so the document is still mid-work and has
+        // published nothing. What answers here is the fold *no ending yet means there IS a pane*.
+        //
+        // ⚠⚠ MEASURED RATHER THAN ASSUMED — this assertion began life as a probe that expected the
+        // opposite, and the document's own `cancelled` ending turned out never to be entered on
+        // this path. So the arm the twenty-eight-arm match used to reach through `AiLoopState::…`
+        // is now reached through `None`, and a reader who folded `None` in with
+        // `Signals::Nothing` would leave a live model running after a cancel. This is what would
+        // go red for that.
+        assert_eq!(
+            loops.inner.signalling(),
+            None,
+            "⚠⚠⚠⚠ THE FIXTURE MOVED: this run is supposed to be cancelled MID-WORK, with the \
+             document nowhere near an ending. If it published one, the assertion above is no \
+             longer measuring the `None` fold and the fold has lost its only eye",
         );
         if cfg!(target_os = "linux") {
             assert!(

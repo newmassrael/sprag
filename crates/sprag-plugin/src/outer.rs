@@ -4142,6 +4142,21 @@ impl OuterLoop {
         self.serving.published()
     }
 
+    /// **WHAT A STOP WOULD STILL HAVE TO REACH**, as this run's ending declares it — or [`None`]
+    /// for a run that has not reached one.
+    ///
+    /// ⚠⚠ [`None`] IS NOT `Signals::Nothing`, and a caller that folds them leaves a live model
+    /// running after a cancel: a run in flight is exactly the case where a stop most certainly does
+    /// have a pane to reach. See [`crate::act::Signals`] for the direction that fails safe.
+    ///
+    /// ⚠ It rides the ending's own act beside [`published`](Self::published) rather than having one
+    /// of its own, because it is only ever asked about an ending — the twenty-five non-ending arms
+    /// this replaced all answered the same thing.
+    #[must_use]
+    pub fn signalling(&self) -> Option<crate::act::Signals> {
+        self.serving.signalling()
+    }
+
     /// **WHAT THE LAST PUMP SAW BEHIND THE EVENT IT RAISED** — see [`Noticed`].
     ///
     /// [`None`] while the loop is driving a turn nothing has interrupted, which is every pump of a
