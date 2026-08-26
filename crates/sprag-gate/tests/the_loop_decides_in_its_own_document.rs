@@ -189,24 +189,23 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     ("exhausted", 0),
     ("failed", 0),
     ("held", 0),
-    // ⚠⚠⚠⚠ **DECIDED 2026-08-26 R100: A COPY, AND RETIRABLE — BUT NOT WITH WHAT THIS DRIVER CAN
-    // READ TODAY.** `OuterLoop::brief` refuses with `Briefed::TooLate(at)` unless the machine is in
-    // `idle`, which is the document's own `brief` transition said a second time in Rust: an author
-    // who made a second state briefable would still be refused out here.
+    // ⚠⚠⚠⚠⚠ **RETIRED 2026-08-26 R101, AND R100's BLOCKER WAS REAL RATHER THAN AN EXCUSE.**
+    // `OuterLoop::brief` refused with `Briefed::TooLate(at)` unless the machine was in `idle` — the
+    // document's own `brief` transition said a second time in Rust, so an author who made a second
+    // state briefable would still have been refused out here.
     //
-    // ⚠⚠ THE MOVE IS *raise it and ask whether the machine took it*, and the blocker was MEASURED
-    // rather than argued (R100, by disabling the guard and running
-    // `a_brief_that_arrives_after_the_run_started_is_refused_and_says_where_it_was`): a late brief
-    // then comes back as **`NotHeld { part: "north_star", held: Some(<the OLD north star>) }`**.
-    // ⇒ **The read-back cannot tell *refused* from *the old values are legitimately still there*,
-    // because they are the same bytes.** Deleting the guard does not move a decision into the
-    // document; it turns a true refusal into a false diagnosis pointing at the wrong file.
+    // ⚠⚠ THE STRAIGHT DELETION WAS MEASURED AND REJECTED (R100): with the guard off, a late brief
+    // came back as `NotHeld { part: "north_star", held: Some(<the OLD north star>) }` and the driver
+    // then raised `fail` — a healthy run ended over a refusal, wearing a diagnosis that points at
+    // the wrong file. **The read-back cannot tell *refused* from *the old values are legitimately
+    // still there*: they are the same bytes.**
     //
-    // ⚠ THE READER THAT WOULD FIX IT IS NAMED: the case is *dequeued, no transition matched*, which
-    // SCE reports as `discarded_external_events` — and `OuterLoop::unseen` is NOT it (its own doc
-    // says it answers about an event never dequeued because the machine had STOPPED). A round that
-    // retires this row builds that reader first, or files an upstream STOP if the pin has no count.
-    ("idle", 1),
+    // ⚠ SO THE MACHINE IS ASKED INSTEAD. The pinned SCE rev publishes
+    // `discarded_external_events()` and `last_discarded_event()`, and `OuterLoop::discarded` reads
+    // BOTH — a delta over-reports (a macrostep may discard something else), a name alone is sticky
+    // from an earlier discard. Together they say *this raise, refused*. The set of states that
+    // accept a brief is the DOCUMENT's now.
+    ("idle", 0),
     // ⚠⚠⚠⚠⚠ **AND THE LAST TOPOLOGY COPY IN `pumping` WENT WITH THEM** — 2026-08-26 R98. Three
     // lines asked `from == AiLoopState::Judging` to decide whether a pass reports its verdict, its
     // reason and its instrument: one question, asked three times, keyed on the name of a state
@@ -242,9 +241,15 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     //
     // ⚠⚠ SO THIS PIN CANNOT HONESTLY REACH ZERO, and saying so is the decision rather than a
     // failure to finish: two of the twenty-eight rows are readers of the topology and the item is
-    // about DECISIONS in the driver. ⇒ **The floor is 2 + whatever `idle` becomes.** A round that
-    // drives it lower is deleting a reader, which is deleting the only way this driver can tell
-    // which region it is looking at.
+    // about DECISIONS in the driver. ⇒ **The floor is 2, and 2026-08-26 R101 REACHED IT.** A round
+    // that drives it lower is deleting a reader, which is deleting the only way this driver can
+    // tell which region it is looking at.
+    //
+    // ⚠⚠⚠⚠⚠ **AND THE WALK-CONTROL ABOVE IS WHY THE FLOOR MUST NOT BE DRIVEN TO ZERO EVEN IF
+    // SOMEBODY FOUND A WAY.** `the_measurement_reaches_the_loop_it_is_judging` asserts
+    // `pinned > 0 && sites.len() == pinned` — at zero, a walk that found NOTHING and a driver that
+    // names nothing read exactly alike, and every equality below it is satisfied by the measurement
+    // having failed. These two rows are what keeps that control alive.
     ("standing_down", 1),
     ("stopping", 0),
     ("work", 1),

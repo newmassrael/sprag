@@ -3624,10 +3624,12 @@ impl OuterLoop {
     /// ⚠⚠ THE ANSWER IS READ BACK OUT OF THE DATAMODEL rather than inferred from having sent the
     /// event — see [`Briefed::NotHeld`].
     pub fn brief(&mut self, brief: &Brief) -> Briefed {
+        // ⚠⚠⚠⚠⚠ **READ BEFORE THE RAISE, AND NO LONGER COMPARED TO A STATE NAME** — register item
+        // 470, stage 3's last copy. `if at != AiLoopState::Idle` stood here: the document's own
+        // `brief` transition, written a second time in Rust, so an author who ever made a second
+        // state briefable would still have been refused out here. What decides now is whether the
+        // MACHINE took the event; see the raise below.
         let at = self.state();
-        if at != AiLoopState::Idle {
-            return Briefed::TooLate(at);
-        }
         // ⚠ Built by the JSON writer rather than by `format!`. A north star is a person's prose:
         // it holds quotes, newlines and non-ASCII, and a hand-spliced payload would either lose
         // the brief or end the object early — the second of which reaches the datamodel as a
@@ -3896,9 +3898,23 @@ impl OuterLoop {
                     .collect::<Vec<_>>()
             }),
         });
+        // ⚠⚠ THE COUNT IS TAKEN BEFORE THE RAISE so what is read after it is a DELTA. The engine's
+        // counter is cumulative over the run, and an absolute reading would call every brief after
+        // the first refused one late.
+        let ignored = self.machine.discarded_external_events();
         self.machine
             .raise_external(AiLoopEvent::Brief, &payload.to_string(), "");
         self.machine.step();
+        // ⚠⚠⚠⚠⚠ **THE MACHINE'S OWN ANSWER ABOUT WHETHER IT TOOK THE BRIEF**, and it has to be
+        // asked HERE — before the read-back below. A discarded brief assigns nothing, so
+        // `held_as_briefed` finds the values the run was ALREADY briefed with and reports them as
+        // a part that did not hold; the driver would then raise `fail` and end a healthy run over
+        // a refusal. **Measured 2026-08-26 (R100): a late brief came back as
+        // `NotHeld { part: "north_star", held: Some(<the OLD north star>) }`** — a true refusal
+        // wearing a false diagnosis, pointing the reader at the wrong file.
+        if self.discarded(ignored) {
+            return Briefed::TooLate(at);
+        }
 
         let held = self.held_as_briefed(brief, rules.as_ref(), (turns, reflect));
         if held != Briefed::Took {
@@ -4377,6 +4393,45 @@ impl OuterLoop {
     #[must_use]
     pub fn unseen(&self) -> Option<AiLoopEvent> {
         self.machine.last_unseen_event()
+    }
+
+    /// **DID THE MACHINE TAKE THE EVENT JUST RAISED, OR DEQUEUE IT AND ANSWER NOTHING?** —
+    /// `ignored` is [`Engine::discarded_external_events`] read immediately BEFORE that raise, so
+    /// this brackets one raise and names no event: what identifies it is the bracket.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is a different question from [`unseen`](Self::unseen)
+    ///
+    /// They are two of the three outcomes that reading the configuration cannot tell apart, and
+    /// they have different remedies. `unseen` answers *the machine had STOPPED, so the event was
+    /// never dequeued* — a run that is over. This answers *it was dequeued and no transition in any
+    /// active state matched it* — a run that is fine and a caller who asked at the wrong moment.
+    /// Reading one for the other sends a person to the wrong file, which is the whole reason
+    /// register item 605 exists.
+    ///
+    /// ⚠⚠ **A DELTA AND NOT AN ABSOLUTE.** The engine's counter is cumulative over the run, so an
+    /// absolute reading would call every raise after the first refused one refused too.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It was `delta && last_discarded_event() == Some(event)`, and the name went
+    ///
+    /// The second half read beautifully — *a macrostep might discard something ELSE and inflate the
+    /// delta* — and **no mutation could turn it red**: dropping it left the whole `sprag-plugin`
+    /// suite green. Measured rather than argued away: **`ai_loop.scxml` contains ZERO `<raise>`
+    /// elements**, so nothing can enter the external queue during the macrostep this delta spans.
+    /// The conjunct was unreachable with this document, which makes it the *prose nothing can ever
+    /// select* this register refuses elsewhere.
+    ///
+    /// ⚠ **THE RESIDUE, STATED RATHER THAN HIDDEN**: this is exact because the delta brackets ONE
+    /// raise into an empty queue. A future caller that raises while other events are pending must
+    /// re-derive it — and the name is what it would add back, with a fixture that can stage a
+    /// second discard inside one macrostep.
+    ///
+    /// ⚠ This exists so the DOCUMENT decides which states answer an event. A driver that instead
+    /// checked the state first is item 470's defect: the set of states that accept an event is
+    /// topology, and the topology is the file's.
+    ///
+    /// [`Engine::discarded_external_events`]: sce_rust_runtime::Engine::discarded_external_events
+    fn discarded(&self, ignored: u32) -> bool {
+        self.machine.discarded_external_events() != ignored
     }
 
     /// **RAISE `event` AND RECORD THE EDGE IT TOOK** — the ONE seam every in-pass raise goes
