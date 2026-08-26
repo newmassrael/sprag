@@ -404,6 +404,73 @@ pub fn announced_sends(scxml: &str) -> usize {
         .count()
 }
 
+/// The three elements of SCXML that can CONTAIN a state, and so the only ones whose nesting can
+/// change what a state's parent is. Everything else — `<transition>`, `<onentry>`, `<data>`,
+/// `<send>` — is tracked by nobody here because it holds no states.
+const NESTING: [&str; 3] = ["parallel", "state", "final"];
+
+/// **THE IDS A `<parallel>` HOLDS DIRECTLY** — the document's REGIONS, in document order.
+///
+/// # ⚠⚠⚠⚠⚠ Why a gate needs this, measured rather than argued
+///
+/// Item 470's floor rests on an exemption: two sites in the driver name a state and neither one
+/// DECIDES anything, so they stay. The ground recorded for BOTH of them on 2026-08-26 was *it names
+/// a region root — a parallel configuration holds several states at once and the region's id is the
+/// only handle the generated policy offers*.
+///
+/// **Half of that was wrong, and only the document could say so.** `work` is a direct child of
+/// `<parallel id="running">` and the sentence is true of it. `standing_down` is a LEAF inside the
+/// `orders` region — its parent is `orders`, not the parallel — so whatever its exemption stands
+/// on, it is not that sentence. Two exemptions were recorded as one because prose cannot tell a
+/// region root from a state inside a region, and this can.
+///
+/// ⚠ A region root is not the same question as *is this state active*: it is about the ARRANGEMENT,
+/// which is exactly why no act a document could declare answers it.
+#[must_use]
+pub fn region_roots(scxml: &str) -> Vec<String> {
+    let scxml = uncommented(scxml);
+    let mut roots: Vec<String> = Vec::new();
+    // What this walk is currently inside, innermost last. Only [`NESTING`] pushes.
+    let mut open: Vec<&str> = Vec::new();
+    for (at, _) in scxml.match_indices('<') {
+        let rest = &scxml[at + 1..];
+        if let Some(shut) = rest.strip_prefix('/') {
+            // ⚠ A close pops only for a tag this walk PUSHED. `</onentry>` closes nothing here, and
+            // popping for it would hand the next state the wrong parent.
+            if NESTING.into_iter().any(|kind| {
+                shut.strip_prefix(kind)
+                    .is_some_and(|after| after.starts_with('>'))
+            }) {
+                open.pop();
+            }
+            continue;
+        }
+        let Some(kind) = NESTING.into_iter().find(|kind| rest.starts_with(*kind)) else {
+            continue;
+        };
+        let after = &rest[kind.len()..];
+        // ⚠ The name has to END here, or `<send>` would be read as a `<state>` whose name ran on.
+        if !after.starts_with(char::is_whitespace) && !after.starts_with('>') {
+            continue;
+        }
+        let Some(end) = after.find('>') else {
+            continue;
+        };
+        if open.last() == Some(&"parallel")
+            && let Some(id) = attribute(after, "id")
+            && !roots.contains(&id)
+        {
+            roots.push(id);
+        }
+        // ⚠ `<state id="standing_down"/>` opens nothing: a self-closing tag is its own close, and a
+        // walk that pushed it would put every later sibling one level too deep.
+        if !after[..end].ends_with('/') {
+            open.push(kind);
+        }
+    }
+    roots
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,6 +505,54 @@ mod tests {
         );
         assert_eq!(variant_of("awaiting_human"), "AwaitingHuman");
         assert_eq!(variant_of("work"), "Work");
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A REGION ROOT IS NOT ANY STATE INSIDE A REGION**, and the whole worth of this
+    /// reader is telling those two apart — item 470's floor rests on the difference, and a round
+    /// that recorded one exemption for both got it wrong in prose because nothing could check.
+    ///
+    /// Three shapes in one document, and only ONE of them is a region:
+    ///
+    /// * `work` and `orders` — direct children of the `<parallel>`. **Regions.**
+    /// * `standing_down` — a self-closing LEAF inside `orders`. Not a region, and its self-closing
+    ///   tag must not push, or `idle` below it would read one level too deep.
+    /// * `idle` — inside `work`, and `converged` — outside the parallel entirely. Neither.
+    #[test]
+    fn a_region_root_is_a_parallels_own_child_and_nothing_deeper() {
+        let doc = r#"<scxml initial="running">
+  <state id="lonely"/>
+  <parallel id="running">
+    <state id="work" initial="idle">
+      <onentry><send event="pass"/></onentry>
+      <state id="idle"/>
+    </state>
+    <state id="orders" initial="standing">
+      <state id="standing"/>
+      <state id="standing_down"/>
+    </state>
+  </parallel>
+  <final id="converged"/>
+</scxml>"#;
+        assert_eq!(
+            region_roots(doc),
+            ["work", "orders"],
+            "only the parallel's OWN children are regions",
+        );
+        // ⚠ The control the claim above is worth nothing without: every one of these IS a state of
+        // the document, so a reader that answered *every state* would satisfy the line above too.
+        for inside in [
+            "standing_down",
+            "standing",
+            "idle",
+            "lonely",
+            "converged",
+            "running",
+        ] {
+            assert!(
+                !region_roots(doc).iter().any(|root| root == inside),
+                "`{inside}` is not a region root and this reader must not say it is",
+            );
+        }
     }
 
     /// ⚠⚠⚠ A tag that merely CONTAINS the word is not the tag — `<stateful id="x"/>` is not a

@@ -42,8 +42,8 @@
 //! is a decision somebody makes rather than a side effect of creating a file.*
 
 use sprag_gate::loop_shape::{
-    DOCUMENT, HOST_TYPE, StateKeyed, announced_sends, declared_acts, document_states, served_acts,
-    state_keyed, tally,
+    DOCUMENT, HOST_TYPE, StateKeyed, announced_sends, declared_acts, document_states, region_roots,
+    served_acts, state_keyed, tally,
 };
 use sprag_gate::sources::{rust_sources, workspace_root};
 
@@ -482,6 +482,184 @@ fn the_measurement_reaches_the_loop_it_is_judging() {
         files.contains("crates/sprag-plugin/src/outer.rs"),
         "the loop's driver is where item 470 measured the defect and the walk must reach it: {files:?}",
     );
+}
+
+/// **ONE SITE ITEM 470 DOES NOT ASK TO LEAVE, AND THE GROUND IT STANDS ON.**
+struct Exempt {
+    /// The document's own id for the state the driver names.
+    state: &'static str,
+    /// Whether that id is a REGION ROOT — a direct child of the document's `<parallel>`.
+    ///
+    /// ⚠⚠⚠ It is a field rather than a sentence because the two exemptions below were recorded as
+    /// ONE on 2026-08-26 and the shared sentence was true of only one of them. A `bool` the
+    /// document answers cannot be wrong in silence.
+    region_root: bool,
+    /// Why this one survives a pin whose declared goal is zero — in the terms its own kind needs.
+    ground: &'static str,
+}
+
+/// **THE FLOOR: the sites that are READERS, not decisions, and why each is one.**
+///
+/// # ⚠⚠⚠⚠⚠ Item 470's stated close condition — *the pin at zero* — is unreachable
+///
+/// That is a finding rather than a shortfall, and it is recorded here rather than in prose because
+/// prose is what got it wrong. Two sites in `outer.rs` name a state of this document and neither
+/// chooses any behaviour from the name; a round that drives them out is deleting the only way this
+/// driver can say WHICH active state it means.
+///
+/// ⚠⚠ **AND THEY ARE EXEMPT FOR TWO DIFFERENT REASONS, WHICH ONE SENTENCE HID.** The register
+/// recorded *both name a REGION ROOT* — measured false for `standing_down`, whose parent is
+/// `orders` and not the parallel. See [`region_roots`], written for this.
+///
+/// ⇒ The close condition this file proposes, on the record: **470 is closed when no DECISION in the
+/// driver is keyed on a state name — floor 2, both readers, each standing on its own ground.**
+/// Restating the item's goal is the owner's; what this gate does is make the floor LOAD-BEARING, so
+/// a round that sinks under it argues with a red instead of editing a comment.
+const EXEMPT_READERS: &[Exempt] = &[
+    Exempt {
+        state: "standing_down",
+        // ⚠⚠⚠⚠⚠ MEASURED FALSE 2026-08-26 R107, against the register's own recorded ground.
+        // `<state id="standing_down"/>` is a self-closing LEAF inside `<state id="orders">`, which
+        // is the region. So *the region's id is the only handle* is not this site's defence.
+        region_root: false,
+        ground: "a state of the SIBLING region, asked at an arbitrary later moment rather than on \
+                 entry: `judging` needs to know whether a stand-down has been heard when the turn \
+                 it is in the middle of ends. An `<onentry>` publishes ONCE and the driver would \
+                 have to latch it, which is the second copy of state this item is about. The \
+                 document-side alternative was written and removed — a datamodel mirror of this \
+                 state, which left executable content in a template owing an `error.execution` \
+                 edge. `OuterLoop::standing_down` answers it from outside with nothing added here.",
+    },
+    Exempt {
+        state: "work",
+        // ⚠ MEASURED TRUE the same round: a direct child of `<parallel id="running">`.
+        region_root: true,
+        ground: "the REGION ROOT itself. `OuterLoop::state` walks each active state upwards to \
+                 this id to find the deepest member OF THE WORK REGION, because a parallel \
+                 configuration holds several at once and the generated policy publishes \
+                 `get_parent` and nothing else. There is no act a document could declare that \
+                 answers *you are in the work region*: the question is about the arrangement, not \
+                 about the run.",
+    },
+];
+
+/// ⚠⚠⚠⚠⚠ **THE FLOOR IS TWO READERS, AND THE PIN MAY NOT SINK UNDER IT** — item 470's close
+/// condition, made load-bearing.
+///
+/// # What every other gate in this file cannot say
+///
+/// [`DRIVER_ARMS`] is refused from both sides — but only against ITSELF. A round that deletes
+/// `OuterLoop::standing_down` and writes `("standing_down", 0)` in the same commit is green
+/// everywhere above: measured falls to 1, the pin falls to 1, the equality holds, and the walk
+/// control's `pinned > 0` is still satisfied. **The floor was a comment, and a comment cannot
+/// refuse anything.**
+///
+/// ⚠⚠ So the pin's SUM is held against this list rather than against a remembered number, and the
+/// list is where the argument lives. Lowering the floor means deleting a row whose `ground` says
+/// what would be lost — which is the round arguing with a red, in the register's words, instead of
+/// editing a comment nobody is measured against.
+///
+/// ⚠ **AND EVERY OTHER ROW MUST BE ZERO**, which is the item's whole sentence stated positively:
+/// the only Rust in this workspace that names a state of this document is the two readers. A third
+/// nonzero row is a decision the driver took back, whatever `DRIVER_ARMS` was edited to say.
+#[test]
+fn the_floor_is_two_readers_and_the_pin_may_not_sink_under_them() {
+    let (states, sites) = measured();
+    let counted = tally(&sites, &states);
+    let pinned: usize = DRIVER_ARMS.iter().map(|(_, arms)| *arms).sum();
+
+    let exempt: std::collections::BTreeSet<&str> =
+        EXEMPT_READERS.iter().map(|reader| reader.state).collect();
+    let where_at = |state: &str| -> Vec<String> {
+        sites
+            .iter()
+            .filter(|site| site.state == state)
+            .map(|site| format!("{}:{}", site.file, site.line))
+            .collect()
+    };
+
+    assert_eq!(
+        pinned,
+        EXEMPT_READERS.len(),
+        "⚠⚠⚠⚠⚠ THE PIN AND THE FLOOR DISAGREE. Item 470's floor is the {} reader(s) listed in \
+         `EXEMPT_READERS` and the pin accounts for {pinned}. BELOW means a reader was deleted and \
+         the pin followed it down — which every other gate here reads as the debt being PAID, \
+         because they compare the pin only with itself. Say what was lost, or put it back. ABOVE \
+         means a decision came back and owes a row here with its ground. Sites: {:?}",
+        EXEMPT_READERS.len(),
+        sites
+            .iter()
+            .map(|site| format!("{}:{} {}", site.file, site.line, site.state))
+            .collect::<Vec<_>>(),
+    );
+
+    for reader in EXEMPT_READERS {
+        assert_eq!(
+            counted.get(reader.state).copied().unwrap_or_default(),
+            1,
+            "⚠⚠⚠ `{}` IS THE FLOOR AND IT IS NOT THERE (or there is more than one of it). It \
+             survives on: {}\n  measured at {:?}",
+            reader.state,
+            reader.ground,
+            where_at(reader.state),
+        );
+    }
+
+    let decided: Vec<String> = counted
+        .iter()
+        .filter(|(state, arms)| **arms > 0 && !exempt.contains(state.as_str()))
+        .map(|(state, arms)| format!("  {state}: {arms}  {:?}", where_at(state)))
+        .collect();
+    assert!(
+        decided.is_empty(),
+        "⚠⚠⚠⚠⚠ ITEM 470's SENTENCE, STATED POSITIVELY: the only Rust that may name a state of \
+         `{DOCUMENT}` is the readers in `EXEMPT_READERS`. These name one and are not on that \
+         list:\n{}\nIf it is a reader, add it there WITH ITS GROUND. If it decides anything, the \
+         document is where that goes.",
+        decided.join("\n"),
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **EACH EXEMPT READER STANDS ON THE GROUND THE REGISTER RECORDED — asked of the DOCUMENT**.
+///
+/// # What this catches that the gate above cannot
+///
+/// The floor holds two sites and they are kept for two different reasons. On 2026-08-26 the
+/// register recorded ONE reason for both — *it names a region root* — and this gate is what
+/// measures that claim instead of believing it. `work` is a direct child of `<parallel>`;
+/// `standing_down` is a leaf inside the `orders` region, so the sentence was false of it and
+/// nothing could say so.
+///
+/// ⚠⚠ It matters beyond the bookkeeping. *It names a region root* is the STRONGEST of the two
+/// grounds — there is no act a document could declare that answers it — so a site wearing it
+/// wrongly is a site whose exemption looks unarguable and is not. The weaker ground has to be
+/// visible to be argued with.
+///
+/// ⚠ And the claim ages from the document's side too: the day `ai_loop.scxml` stops holding a
+/// `<parallel>`, or `work` stops being its child, `OuterLoop::state`'s upward walk answers nothing
+/// and its exemption evaporates. This is red on that day rather than silent.
+#[test]
+fn each_exempt_reader_stands_on_the_ground_the_register_recorded() {
+    let regions = region_roots(&document());
+
+    assert!(
+        !regions.is_empty(),
+        "⚠⚠⚠ A PROBE POINTED AT NOTHING MUST NOT READ AS CLEAN: `{DOCUMENT}` declares no region at \
+         all by this walk, and then every claim below is satisfied by the reading having failed",
+    );
+
+    for reader in EXEMPT_READERS {
+        let is_root = regions.iter().any(|root| root == reader.state);
+        assert_eq!(
+            is_root, reader.region_root,
+            "⚠⚠⚠⚠⚠ `{}`: the register says region_root={} and `{DOCUMENT}` says {is_root}. The \
+             regions it declares are {regions:?}. A ground recorded for the wrong KIND of site is \
+             how one sentence came to cover two exemptions — the stronger of which (*no act can \
+             answer which region I am in*) cannot be claimed by a state that merely lives inside \
+             one. This reader survives on: {}",
+            reader.state, reader.region_root, reader.ground,
+        );
+    }
 }
 
 /// ⚠⚠⚠⚠ The pin names the DOCUMENT's states, so a state added there cannot slip in unpinned.
