@@ -250,7 +250,55 @@
     <transition event="carried.standing">
       <assign location="standing_landed" expr="standing_landed + 1"/>
     </transition>
+    <!--
+      ⚠⚠⚠⚠⚠ THE EDGE CARRIES THE CONTROL, and it has to be HERE rather than
+      anywhere earlier. The question below is whether a FINAL can ask; a
+      control that fires in an earlier macrostep would only say the handler
+      once worked. This one is declared on a TARGETED transition, the shape
+      proven green two measurements above, and it is executed in the SAME
+      macrostep that enters the ending. So if the handler stops being called
+      at all in this regime, the control goes with the question, and if only
+      the question goes, finals are what cannot ask.
+    -->
+    <transition event="probe.end" target="ended">
+      <send type="x-sprag-host" event="carried.leaving">
+        <param name="word" expr="carried"/>
+      </send>
+    </transition>
   </state>
+
+  <!--
+    ⚠⚠⚠⚠⚠ THE FOURTH QUESTION, AND REGISTER ITEM 470's STAGE 3 TURNS ON IT:
+    can a `<final>` declare a host act on its ENTRY, and does it reach the host
+    carrying its argument?
+
+    `AiLoop::ended` maps each of this loop's seven endings to a `Verdict` with a
+    28 arm state match, and that is one of the topology copies stage 3 exists to
+    remove. The only road that does not put the answer back in Rust is the
+    document declaring, at the ending itself, which word it publishes.
+
+    ⚠⚠ AN ENDING IS NOT AN ORDINARY ENTRY AND THAT IS THE WHOLE QUESTION.
+    Entering a top level `<final>` COMPLETES the machine, so anything the engine
+    does after the entry block is a different regime from every act this crate
+    already ships: no further macrostep is owed, the reply event has nowhere to
+    be delivered, and an engine that tears the session down on completion would
+    drop the send on the floor.
+
+    ⚠⚠⚠ THE DOCUMENT CANNOT BE THE WITNESS HERE, and that is a property of the
+    question rather than a gap in this file. Every other measurement in this
+    document reads a counter the document itself keeps, which needs a
+    transition to hear the reply; a completed machine has no transitions left.
+    So the gate over THIS one reads the handler's own record, and the reply is
+    expected to go nowhere. What is being asked is only whether the HANDLER IS
+    CALLED, with its argument, at all.
+  -->
+  <final id="ended">
+    <onentry>
+      <send type="x-sprag-host" event="carried.final">
+        <param name="word" expr="carried"/>
+      </send>
+    </onentry>
+  </final>
 
   <!--
     ⚠⚠ THE OTHER HALF, and it is a separate question rather than the same one

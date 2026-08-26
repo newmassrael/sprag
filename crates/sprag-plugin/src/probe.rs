@@ -602,6 +602,78 @@ mod tests {
              what a pass is for is asking a question, and a question whose answer the machine \
              cannot route on is half a question",
         );
+
+        // ── THE FOURTH SHAPE: the same act on a top-level `<final>`'s ENTRY ──
+        //
+        // ⚠⚠⚠⚠⚠ REGISTER ITEM 470's STAGE 3, THIRD MATCH. `AiLoop::ended` maps each of the loop's
+        // seven endings to a `Verdict` with a twenty-eight-arm state match. The only road that
+        // does not put that answer straight back into Rust is the DOCUMENT declaring, at the
+        // ending itself, which word it publishes — and an ending's entry is the one place that can
+        // say it, because by the time the driver asks, the machine is already there.
+        //
+        // ⚠⚠ AN ENDING IS A DIFFERENT REGIME FROM EVERY ACT THIS CRATE SHIPS, which is why none of
+        // the three shapes above stands in for it: entering a top-level `<final>` COMPLETES the
+        // machine. No further macrostep is owed, the reply has nowhere to be delivered, and an
+        // engine that tore the session down on completion would drop the send unsent.
+        //
+        // ⚠ SO THE DOCUMENT IS NOT THE WITNESS HERE — it has no transitions left to hear anything
+        // with. The handler's own record is, and the reply is expected to go nowhere. What is
+        // being asked is only whether the handler is CALLED, carrying its argument.
+        let ending_before = seen.lock().expect("the record").len();
+        engine.process_event(ProbeSendTypeEvent::ProbeEnd);
+        for _ in 0..8 {
+            engine.tick();
+        }
+        let after_ending: Seen = seen.lock().expect("the record").clone();
+        assert!(
+            engine.is_in_final_state(),
+            "⚠⚠⚠ THE FIXTURE: `probe.end` must actually complete this machine, or what is measured \
+             below is an ordinary state entry wearing a final's name — the whole question is what \
+             happens in the regime where the machine is OVER. Saw {:?}",
+            engine.get_current_state(),
+        );
+        // ⚠⚠⚠⚠⚠ THE CONTROL, AND IT IS DECLARED IN THE SAME MACROSTEP AS THE QUESTION. The first
+        // draft asserted only that the record had GROWN, and that was not a control at all: the
+        // ending's own act was the only send in this step, so the control and the question were
+        // one measurement wearing two names — a control that shares its failure with the defect,
+        // which this workspace has already paid to learn. The edge into the ending now carries an
+        // act of the shape proven green two measurements above, so *the handler stopped being
+        // called* and *a final cannot ask* land on different assertions.
+        let leaving: Vec<&(String, HashMap<String, Vec<String>>)> = after_ending
+            .iter()
+            .filter(|(named, _)| named == "carried.leaving")
+            .collect();
+        assert_eq!(
+            leaving.len(),
+            1,
+            "⚠⚠⚠⚠ THE CONTROL FAILED — a TARGETED transition's act, the shape measured green two \
+             assertions above, did not reach this host in the macrostep that ends the machine. So \
+             nothing below is about finals: what this run found is that the handler stops being \
+             called once an ending is in the transition's target, which is a wider finding and a \
+             different one. Saw {after_ending:?}, record was {ending_before} long before",
+        );
+        let ending: Vec<&(String, HashMap<String, Vec<String>>)> = after_ending
+            .iter()
+            .filter(|(named, _)| named == "carried.final")
+            .collect();
+        assert_eq!(
+            ending.len(),
+            1,
+            "⚠⚠⚠⚠⚠ AN ENDING'S ENTRY ACT DID NOT REACH THIS HOST. With all three shapes above \
+             green this is a fact about FINALS alone, and it closes the road item 470's stage 3 \
+             would take for `AiLoop::ended`: which `Verdict` an ending publishes cannot become the \
+             document's to say by this route, and that match stays in Rust with this measurement \
+             beside it in the register. Saw {after_ending:?}",
+        );
+        assert_eq!(
+            ending[0].1.get("word").map(Vec::as_slice),
+            Some([composed.as_str().to_owned()].as_slice()),
+            "⚠⚠⚠⚠⚠ THE ENDING'S ACT REACHED THIS HOST WITH NO ARGUMENTS — the narrowest NO, and it \
+             still closes the road: the act must carry WHICH word the ending publishes, so an act \
+             that cannot carry an argument moves the question's name into the document and leaves \
+             the driver's state match deciding the answer. Got {:?}",
+            ending[0].1,
+        );
     }
 
     /// ⚠⚠⚠⚠⚠ **ONE HOST ACT PRODUCES TWO EVENTS, IN THE ORDER IT NAMED THEM** — consuming SCE
