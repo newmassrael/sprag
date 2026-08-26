@@ -698,6 +698,22 @@ pub enum Asked {
     Pass {
         /// Which effect the pass is for.
         does: Does,
+        /// **WHAT THE SCREEN SAYS WHEN THE PEER'S SERVICE FAILED**, where this pass is one that
+        /// could meet it — see [`Does::Watch`].
+        ///
+        /// # ⚠⚠⚠⚠⚠ Why the document HANDS this over instead of the driver FETCHING it
+        ///
+        /// Register item 470, stage 2's other half. The driver used to read `service_needle`
+        /// straight out of the script session with a private `text_of` — *behind the machine's
+        /// back*, in the register's own words. Nothing in `ai_loop.scxml` said the value was
+        /// consulted, so a reader of the document could not tell that a blocked turn is matched
+        /// against it at all. It now rides the `watch` pass, where the matching happens.
+        ///
+        /// ⚠⚠ [`None`] IS A REAL ANSWER AND NOT A MISSING ONE: only the passes that WATCH a turn
+        /// can meet an outage, so every other `pass.do` declares no needle and this is `None` for
+        /// them. An empty string is also a real answer — the template ships one, and it declines
+        /// the whole behaviour.
+        needle: Option<String>,
     },
     /// [`Act::End`] — publish this ending.
     End {
@@ -1114,7 +1130,17 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
                     holds: Does::ALL.map(Does::named).to_vec(),
                 });
             };
-            Ok(Asked::Pass { does })
+            // ⚠⚠⚠ OPTIONAL, AND THAT IS NOT A WEAKER RULE THAN `does`'s. A needle is meaningful
+            // only where the pass could MEET an outage — `watch` — so a document that declared one
+            // on `judge` or `attend` would be saying something nothing reads. What must never be
+            // optional is the word that says WHAT the pass is; this qualifies one of its answers.
+            Ok(Asked::Pass {
+                does,
+                needle: params
+                    .get("needle")
+                    .and_then(|values| values.first())
+                    .cloned(),
+            })
         }
         // ⚠ NO EMPTY CHECK OF ITS OWN, for `pass.do`'s reason: `Publishes::of("")` answers [`None`]
         // already, so an argument that evaluated to nothing is refused below with the space it
@@ -1409,7 +1435,7 @@ mod tests {
                 match asking(Act::Pass, &[("does", does.named())])
                     .expect("every word this space holds is one a state may declare")
                 {
-                    Asked::Pass { does } => does,
+                    Asked::Pass { does, .. } => does,
                     other => panic!("`pass.do` is what was asked for: {other:?}"),
                 },
                 does,

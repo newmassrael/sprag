@@ -8687,6 +8687,86 @@ mod tests {
     /// the same reader `OuterLoop::signalling` uses — so a `<param>` that stopped being evaluated,
     /// a word outside the space, and an `<onentry>` that never fired all land here as a failure.
     ///
+    /// ⚠⚠⚠⚠⚠ **THE PASS THAT WATCHES A TURN IS HANDED WHAT AN OUTAGE LOOKS LIKE** — register item
+    /// 470, stage 2's other half: *the document TELLS instead of the driver FETCHING*.
+    ///
+    /// # ⚠⚠⚠⚠ What this replaced, and why nothing could have seen it
+    ///
+    /// `OuterLoop::service_failed` read `service_needle` out of the script session with a private
+    /// `text_of` — the register's *behind the machine's back*. Nothing in `ai_loop.scxml` said the
+    /// value was consulted, so a reader of the document could not tell that a blocked turn is
+    /// matched against it at all. It now rides `pass.do` where `does` is `watch`.
+    ///
+    /// # ⚠⚠⚠ `None` AND `Some("")` ARE DIFFERENT ANSWERS, and that is the whole assertion
+    ///
+    /// The template ships an EMPTY needle, which declines the behaviour — so `Some("")` is the
+    /// correct reading for an unbriefed loop and is what a caller's own words replace. `None` means
+    /// the document declared no `<param>` at all, which is the move being undone. **Measured
+    /// 2026-08-26: deleting that `<param>` left the entire `sprag-plugin` suite GREEN**, which is
+    /// why this test exists rather than being assumed covered.
+    #[test]
+    fn the_pass_that_watches_a_turn_is_told_what_an_outage_looks_like() {
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Working,
+            "⚠⚠ THE FIXTURE: `watch` is the pass this state asks for, and the needle rides it",
+        );
+
+        // ── THE TEMPLATE'S OWN VALUE FIRST: declared, and empty, which declines the behaviour ──
+        carried(&mut engine, &host, AiLoopEvent::Pass, "");
+        assert_eq!(
+            host.taken(crate::act::Act::Pass),
+            Some(crate::act::Asked::Pass {
+                does: crate::act::Does::Watch,
+                needle: Some(String::new()),
+            }),
+            "⚠⚠⚠⚠⚠ THE `watch` PASS MUST CARRY A NEEDLE, and an unbriefed document's is the EMPTY \
+             one it ships. `None` here is the `<param>` being gone — the driver would then be back \
+             to fetching `service_needle` out of the datamodel, which no reading of the document \
+             could reveal",
+        );
+
+        // ── AND A CALLER'S OWN WORDS REACH THE SAME PASS ──
+        //
+        // ⚠⚠ A SECOND MACHINE, BRIEFED BEFORE IT STARTS, and the first draft got this wrong: the
+        // `brief` transition belongs to `idle`, so a brief raised at `working` is an event nothing
+        // handles and every `<assign>` in it is skipped. The gate then read the template's empty
+        // needle and reported it as the briefed one being dropped — a true failure with a false
+        // diagnosis, which is worse than a red.
+        let outage = "API Error: 529 Overloaded";
+        let (mut engine, host, _lua, _session) = started();
+        carried(
+            &mut engine,
+            &host,
+            AiLoopEvent::Brief,
+            &serde_json::json!({
+                "north_star": "n",
+                "milestone": "m",
+                "reference": "r",
+                "max_turns": 3,
+                "reflect_every": 9,
+                "service_needle": outage,
+            })
+            .to_string(),
+        );
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+        carried(&mut engine, &host, AiLoopEvent::Pass, "");
+        assert_eq!(
+            host.taken(crate::act::Act::Pass),
+            Some(crate::act::Asked::Pass {
+                does: crate::act::Does::Watch,
+                needle: Some(outage.to_owned()),
+            }),
+            "⚠⚠⚠⚠ A BRIEFED NEEDLE MUST REACH THE PASS THAT WOULD MEET IT. If this reads the empty \
+             string, the `<param>` is a literal rather than the datamodel's value and every \
+             adopting repository's own words would be dropped on the floor",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **EVERY WORD A DRIVEN STATE ANSWERS ABOUT BEING ASKED FOR AN ACCOUNT** — register
     /// item 470, stage 3, and this gate exists for the same reason as the one below it: a mutation
     /// went GREEN.

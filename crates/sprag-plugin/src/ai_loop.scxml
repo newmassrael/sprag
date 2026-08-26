@@ -1939,6 +1939,23 @@
               cond="In('working') || In('closing') || In('stopping')">
     <send type="x-sprag-host" event="pass.do">
       <param name="does" expr="'watch'"/>
+      <!--
+        ⚠⚠⚠⚠⚠ WHAT AN OUTAGE LOOKS LIKE, DECLARED WHERE IT WOULD BE MET.
+
+        The driver used to fetch `service_needle` out of the script session with
+        a private reader, which register item 470 named as going BEHIND THE
+        MACHINE'S BACK: nothing in this file said the value was consulted, so a
+        reader of the document could not tell that a blocked turn is matched
+        against it at all.
+
+        ⚠⚠ IT RIDES THE `watch` PASS AND NO OTHER, because watching a turn is
+        the only pass that can MEET an outage. A needle on `judge` or `attend`
+        would be this document saying something nothing reads.
+
+        ⚠ The template ships an EMPTY value, which declines the whole behaviour;
+        an adopting repository quotes the words its own peer prints.
+      -->
+      <param name="needle" expr="service_needle"/>
     </send>
   </transition>
   <transition event="pass" cond="In('judging')">

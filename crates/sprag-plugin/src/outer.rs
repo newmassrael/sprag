@@ -4405,14 +4405,19 @@ impl OuterLoop {
     /// `pass` transition. It is answered [`None`] — i.e. `Unbuilt`, which stops the run — rather
     /// than performed: a pass is not a moment to speak at the peer, and every road that is one
     /// takes the sentence in [`advance`](Self::advance) instead.
-    fn asked_of_this_pass(&mut self) -> Option<crate::act::Does> {
+    /// ⚠⚠ **THE NEEDLE TRAVELS WITH THE WORD** — register item 470, stage 2's other half. The pass
+    /// that WATCHES a turn is the one that can meet an outage, so the document declares what an
+    /// outage looks like on that same `pass.do` and this hands both back together. It used to be
+    /// fetched out of the script session by a private reader, which no reading of `ai_loop.scxml`
+    /// could have revealed.
+    fn asked_of_this_pass(&mut self) -> Option<(crate::act::Does, Option<String>)> {
         let from = self.state();
         self.machine.process_event(AiLoopEvent::Pass);
         if self.state() != from {
             self.note_edge(from, AiLoopEvent::Pass);
         }
         match self.serving.taken(crate::act::Act::Pass) {
-            Some(crate::act::Asked::Pass { does }) => Some(does),
+            Some(crate::act::Asked::Pass { does, needle }) => Some((does, needle)),
             _ => None,
         }
     }
@@ -5235,7 +5240,7 @@ impl OuterLoop {
         // `pass.do` this host will not perform is refused on `error.execution`, and this document
         // answers that by ending the run `failed` — inside the very raise that asked for it. A
         // reader of the reading taken at the top of the pass would call that ending `Unbuilt`.
-        let Some(does) = self.asked_of_this_pass() else {
+        let Some((does, needle)) = self.asked_of_this_pass() else {
             let landed = self.state();
             return Ok(if self.machine.is_in_final_state() {
                 Pumped::Ended(landed)
@@ -5333,7 +5338,7 @@ impl OuterLoop {
                         // model call — 4-6 seconds, measured — spent to arrive at the wrong state.
                         // The document routes on this above `judged` for the same reason; doing it
                         // in the other order here would pay for the judgement anyway.
-                        let service = self.service_failed(panes);
+                        let service = self.service_failed(panes, needle.as_deref());
                         let rule = if service {
                             None
                         } else {
@@ -6026,8 +6031,16 @@ impl OuterLoop {
     ///
     /// ⚠ An UNDECLARED peer keeps the screen too: `peer::of` answering `None` means *this build
     /// knows nothing about that program*, which is not a licence to skip a channel it might have.
-    fn service_failed(&self, panes: &dyn PaneAccess) -> bool {
-        let Some(needle) = self.text_of(SERVICE_NEEDLE).filter(|it| !it.is_empty()) else {
+    /// ⚠⚠⚠⚠⚠ **THE NEEDLE IS HANDED IN, NOT FETCHED** — register item 470, stage 2's other half.
+    /// This read `service_needle` out of the script session directly, which the register named as
+    /// the driver going *behind the machine's back*: nothing in `ai_loop.scxml` said the value was
+    /// consulted, so a reader of the document could not tell that a blocked turn is matched against
+    /// it. It now arrives as a `<param>` on the `watch` pass, declared where the matching happens.
+    ///
+    /// ⚠ [`None`] and the empty string are the same answer — *this document declines the
+    /// behaviour* — and both are the template's shipped value rather than a fault.
+    fn service_failed(&self, panes: &dyn PaneAccess, needle: Option<&str>) -> bool {
+        let Some(needle) = needle.filter(|it| !it.is_empty()) else {
             return false;
         };
         // THE PEER'S OWN ACCOUNT FIRST. `noticed` is replaced on every report rather than carried,
@@ -6037,12 +6050,12 @@ impl OuterLoop {
             .supervision()
             .and_then(|seen| seen.pane_agent_state(self.driving.pane))
             .and_then(|seen| seen.noticed);
-        if stated.is_some_and(|said| said.contains(&needle)) {
+        if stated.is_some_and(|said| said.contains(needle)) {
             return true;
         }
         panes
             .pane_collapsed(self.driving.pane)
-            .is_some_and(|screen| screen.contains(&needle))
+            .is_some_and(|screen| screen.contains(needle))
     }
 
     /// **WAIT OUT THE PEER'S SERVICE** — `service_down`'s whole effect.
@@ -17035,7 +17048,8 @@ mod tests {
 
         // ⚠⚠⚠ THE CONTROL: nothing is briefed, so the template's empty needle stands.
         assert!(
-            !loops.service_failed(&access),
+            // ⚠ THE TEMPLATE'S OWN SHIPPED VALUE, handed in the way the `watch` pass hands it.
+            !loops.service_failed(&access, Some("")),
             "⚠⚠⚠⚠ AN EMPTY NEEDLE MUST MATCH NOTHING. `contains` answers true for the empty \
              string, so a driver that did not check would send every blocked turn of every \
              unbriefed run into the wait: {screen:?}",
@@ -17067,7 +17081,7 @@ mod tests {
         );
 
         assert!(
-            loops.service_failed(&access),
+            loops.service_failed(&access, Some(&outage.needle)),
             "⚠⚠⚠ the briefed loop must recognise its peer's own words on the screen: needle \
              {:?} against {screen:?}",
             outage.needle,
@@ -17174,7 +17188,7 @@ mod tests {
              {blank:?}",
         );
         assert!(
-            !loops.service_failed(&access),
+            !loops.service_failed(&access, Some(&outage.needle)),
             "⚠ and with nobody saying anything, nothing is wrong yet",
         );
 
@@ -17184,7 +17198,7 @@ mod tests {
             outage.needle,
         ));
         assert!(
-            loops.service_failed(&access),
+            loops.service_failed(&access, Some(&outage.needle)),
             "⚠⚠⚠⚠⚠ THE PEER'S OWN ACCOUNT MUST BE HEARD. Its hook fired at the exact moment of the \
              529 that cost a live run 28 minutes, and the product read the screen instead because \
              `screening` already read the screen — the weak kind of fix this register names. A \
@@ -17199,7 +17213,7 @@ mod tests {
             .expect("the pane must take what is typed at it");
         let screen = crate::testing::screen_showing(&access, pane, "Overloaded");
         assert!(
-            loops.service_failed(&access),
+            loops.service_failed(&access, Some(&outage.needle)),
             "⚠⚠⚠⚠⚠ THE SCREEN IS DEMOTED, NOT DELETED — item 452(3)'s own word. A peer that raises \
              no notice states nothing however good the pipe is, and `codex` is exactly that peer. \
              A change that MOVED the read to the hook rather than putting it in front passes the \
