@@ -313,8 +313,49 @@
       forever is a worse ending than stopping. **A wait is the treatment for a
       SERVER's bad minute, and 529 is the code that means that one.** Another
       code that earns it is another element for whoever measures it.
+
+      ⚠⚠⚠⚠⚠ AND THE SECOND AND THIRD ELEMENTS ARE THE INTERRUPTION THIS LOOP
+      MEETS MOST — register item 715. A 529 is a bad minute upstream and RARE. A
+      USAGE LIMIT is neither: it is the single most predictable stop in an
+      unattended loop's life, it recurs, and **it resolves itself**. It reached
+      nothing here, because a needle that is one string can only be one sentence,
+      and the run died at `blocked` while the peer went on working.
+
+      ⚠⚠⚠⚠ WHERE THESE TWO COME FROM, AND IT IS NOT A TRANSCRIPTION. They are the
+      peer's OWN records: `claude` writes each of these notices into its session
+      transcript, and twelve distinct ones were read out of this machine's
+      `~/.claude/projects` on 2026-08-27 (2026-08-20 through 2026-08-27). Every
+      one of the eleven OUTAGE notices reads
+
+          Usage limit reached · continuing automatically at <time> · esc or type to cancel
+
+      or the same head followed by `again after you continued`, and the twelfth is
+      the RECOVERY notice, `Usage limit reset · continuing automatically`.
+
+      ⚠⚠⚠ SO THE TWO NEEDLES ARE CHOSEN AGAINST THE FAMILY, NOT AGAINST A
+      SENTENCE, and each one is a fact rather than a wording:
+        * `Usage limit reached` — the peer says the limit is what stopped it.
+        * `continuing automatically at` — the peer says it is coming back, and
+          when. **The trailing `at` is load-bearing**: without it this also
+          matches `Usage limit reset · continuing automatically`, which is the
+          peer telling us the outage is OVER. A needle that matched the recovery
+          notice would file a working peer as a broken one.
+
+      ⚠⚠ AND NEITHER IS THE BARE WORD `limit`, which is the widening this loop in
+      particular must refuse: its own agent WRITES about usage limits — this
+      comment is on that agent's screen right now — and `service_failed` falls
+      back to reading the pane. A needle a run can print by working is a needle
+      that stops the run for working.
+
+      ⚠ BOTH ARE SHORT for the wrap reason two paragraphs up: 19 and 25
+      characters, where the sentence they come from is 76.
     -->
-    <data id="service_needle" expr="'API Error: 529'"/>
+    <data id="service_needles"
+          expr="[
+            { says: 'API Error: 529' },
+            { says: 'Usage limit reached' },
+            { says: 'continuing automatically at' }
+          ]"/>
 
     <!--
       TEN MINUTES, THE OWNER'S NUMBER (2026-08-19), and the same as the
@@ -329,6 +370,12 @@
       session survived the outage with its brief and its half-finished turn, so
       the smallest thing that resumes it is the word that means carry on. Asking
       the milestone again would spend the context the outage did not take.
+
+      ⚠⚠⚠ AND IT IS THE 529 DOOR'S WORD ONLY — register item 715. The limit
+      notices above say `esc or type to cancel` in the same breath, so this word
+      typed at THAT screen cancels the peer's own recovery. The template decides
+      which door speaks (`service_resumes_itself`); this value is what is said
+      when one does, and it stays here unchanged.
     -->
     <data id="service_retry_text" expr="'continue'"/>
 

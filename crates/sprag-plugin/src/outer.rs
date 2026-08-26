@@ -399,11 +399,18 @@ const DONE_MARKER: &str = "done_marker";
 /// *something checked this and was satisfied*.
 const MILESTONE_CHECK: &str = "milestone_check";
 
-/// **WHAT THE SCREEN SAYS WHEN THE PEER'S SERVICE FAILED**, as the document spells it.
+/// **WHAT THE SCREEN SAYS WHEN THE PEER'S SERVICE FAILED**, as the document spells it — a LIST of
+/// `{says}` objects since register item 715.
 ///
-/// ⚠ Empty is the template's shipped value and declines the whole behaviour; the adopting
+/// ⚠ An EMPTY list is the template's shipped value and declines the whole behaviour; the adopting
 /// repository's kind document quotes the words its own peer prints. See `ai_loop.scxml`.
-const SERVICE_NEEDLE: &str = "service_needle";
+const SERVICE_NEEDLES: &str = "service_needles";
+
+/// The key each element of [`SERVICE_NEEDLES`] carries its text under.
+///
+/// ⚠ One key rather than a bare string, for `may_answer`'s reason: every authored list in these
+/// documents is read by one shape of reader, and the shape leaves room for a second key.
+const SERVICE_SAYS: &str = "says";
 
 /// **HOW LONG TO LEAVE AN OUTAGE ALONE**, in milliseconds, as the document spells it.
 const SERVICE_RETRY_MS: &str = "service_retry_ms";
@@ -595,18 +602,28 @@ const STANDING: &str = "standing";
 /// it then requires its quoted text to LEAVE the screen. A printed error line does neither.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceOutage {
-    /// The text on the pane that means the peer's SERVICE failed — not that the peer is asking.
+    /// The texts on the pane that mean the peer's SERVICE failed — not that the peer is asking.
     ///
     /// ⚠⚠ Matched against the screen COLLAPSED (see
     /// [`pane_collapsed`](crate::access::PaneAccess::pane_collapsed)), because the message this was
     /// built for arrives wrapped across rows.
-    pub needle: String,
+    ///
+    /// ⚠⚠⚠⚠ **A SET, BECAUSE A PEER'S WAYS OF SAYING «NOT NOW» ARE A FAMILY** — register item
+    /// 715. It held one string, so one sentence could reach [`crate::act::Does::Wait`] and the rest
+    /// of the family walked past it into *a person is expected*. Any element matching is a match;
+    /// an EMPTY set declines the behaviour, which is what the template ships.
+    pub needles: Vec<String>,
     /// How long to leave the outage alone before saying anything, in milliseconds.
     pub every_ms: u64,
-    /// What to type when the wait is over.
+    /// What to type when the wait is over — where anything is said at all.
     ///
     /// ⚠⚠ NOT the milestone again: the session survived with its brief and its half-finished turn,
     /// so the smallest thing that resumes it is a word meaning carry on.
+    ///
+    /// ⚠⚠⚠ **AND ONE OF THE TWO DOORS SAYS NOTHING** — register item 715. A peer that never ended
+    /// its turn resumes on its own and prints that a keystroke cancels that, so this word is owed
+    /// only by the door an ENDED turn came in at. Which door that is, is the document's decision
+    /// (`service_resumes_itself`), not this value's.
     pub text: String,
 }
 
@@ -1933,8 +1950,9 @@ impl crate::review::Asked for AskingAnother<'_> {
 struct Asking {
     /// Which effect this pass is for.
     does: crate::act::Does,
-    /// What an outage looks like, where this is a pass that could meet one.
-    needle: Option<String>,
+    /// What an outage looks like, where this is a pass that could meet one — the document's own
+    /// LIST, as the JSON a composite `<data>` crosses as (register item 715).
+    needles: Option<String>,
     /// How long the readiness barrier may wait, as this document declares it.
     within: Option<Duration>,
     /// Who this document expects at its pane, from the pass's two halves read as one decision.
@@ -3939,10 +3957,15 @@ impl OuterLoop {
             // values echoed back rather than nil assigned over them: the document's `brief`
             // assigns all three, and an omitted key would delete a number `wait_out_service`
             // divides time by. Register item 428, which is this exact chain breaking one link up.
-            SERVICE_NEEDLE: brief
-                .service
-                .as_ref()
-                .map_or("", |it| it.needle.as_str()),
+            // ⚠⚠ AND THE NEEDLES CROSS AS A LIST OF OBJECTS, the shape `may_answer` above crosses
+            // in — register item 715. A kind that names none echoes the template's own EMPTY list
+            // back, which is the *declined* reading and not a deleted decision.
+            SERVICE_NEEDLES: brief.service.as_ref().map_or_else(Vec::new, |it| {
+                it.needles
+                    .iter()
+                    .map(|says| serde_json::json!({ SERVICE_SAYS: says }))
+                    .collect::<Vec<_>>()
+            }),
             SERVICE_RETRY_MS: brief
                 .service
                 .as_ref()
@@ -4606,14 +4629,14 @@ impl OuterLoop {
         match self.serving.taken(crate::act::Act::Pass) {
             Some(crate::act::Asked::Pass {
                 does,
-                needle,
+                needles,
                 within,
                 awaits,
                 stills,
                 answers,
             }) => Some(Asking {
                 does,
-                needle,
+                needles,
                 within: Self::bound_of(within.as_deref()),
                 expected: Self::expected_of(awaits.as_deref(), stills.as_deref()),
                 answering: Self::answers_of(answers.as_deref()),
@@ -4955,6 +4978,45 @@ impl OuterLoop {
             );
         }
         Ok(ScreenRules::of(rules))
+    }
+
+    /// **WHAT A DOCUMENT SAYS ITS PEER PRINTS WHEN ITS SERVICE FAILS** — `service_needles`, read
+    /// off the datamodel. [`Self::rules_in`]'s shape, and here for its stated reason: **the reader
+    /// of an author's list must be ONE reader**, so a KIND ([`crate::kind::LoopKind`]) and the
+    /// template cannot disagree about what an element is.
+    ///
+    /// # ⚠⚠⚠⚠ Everything unreadable is DECLINED rather than refused, which is the opposite of
+    /// its two neighbours
+    ///
+    /// `consents_in` and `rules_in` answer [`NotScreenable`] on a shape nobody can read, because
+    /// guessing at a clause is how a run types into a dialog its author never authorised. Nothing
+    /// here can type at anybody: the worst an empty set does is leave a run behaving exactly as
+    /// every run behaved before register item 447 existed. So the direction to be wrong in is
+    /// *decline*, and this returns a list rather than a `Result`.
+    ///
+    /// ⚠⚠⚠ **A BLANK `says` IS DROPPED.** [`str::contains`] answers TRUE for the empty string, so
+    /// one stray element in an author's list would route every blocked turn of every run into a
+    /// ten-minute wait while every state and transition still existed — a run that answers no
+    /// dialogs and merely looks slow, which is the hardest failure here to see live.
+    pub(crate) fn service_needles_in(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+    ) -> Vec<String> {
+        let Ok(ScriptValue::Array(items)) = script.get_variable(session, SERVICE_NEEDLES) else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| match item {
+                ScriptValue::Object(fields) => match fields.get(SERVICE_SAYS) {
+                    Some(ScriptValue::String(says)) if !says.trim().is_empty() => {
+                        Some(says.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
     }
 
     /// **THE JUDGED DECISIONS THE DOCUMENT CARRIES**, read live for
@@ -5459,7 +5521,7 @@ impl OuterLoop {
         };
         let Asking {
             does,
-            needle,
+            needles,
             within,
             expected,
             answering,
@@ -5578,7 +5640,7 @@ impl OuterLoop {
                         // model call — 4-6 seconds, measured — spent to arrive at the wrong state.
                         // The document routes on this above `judged` for the same reason; doing it
                         // in the other order here would pay for the judgement anyway.
-                        let service = self.service_failed(panes, needle.as_deref());
+                        let service = self.service_failed(panes, needles.as_deref());
                         let rule = if service {
                             None
                         } else {
@@ -5595,6 +5657,41 @@ impl OuterLoop {
                                 "judged": rule.is_some(),
                                 "rule": rule.unwrap_or_default(),
                             }),
+                        )
+                    }
+                    // ⚠⚠⚠⚠⚠ **THE SECOND DOOR AN OUTAGE ARRIVES AT, AND IT WAS SHUT** — register
+                    // item 715, measured 2026-08-27 on run 5. A 529 ENDS a turn, so it comes in
+                    // above. A USAGE LIMIT ends nothing: the peer prints what happened, stops
+                    // speaking, and waits — so what this driver sees is the quiet bound running
+                    // out, and the machine heard `peer.silent`, whose only destination was *a
+                    // person is expected*. The run reached `blocked` exactly one `await_person_ms`
+                    // later while the peer had already resumed by itself and was working. **The
+                    // most predictable interruption in an unattended loop's life was the one the
+                    // outage path could not see.**
+                    //
+                    // ⚠⚠⚠ THE SAME QUESTION, ASKED OF THE SAME WORDS, ONE ARM OVER — deliberately
+                    // not a second concept. Which of the two doors it came in at is a fact the
+                    // DOCUMENT reads (`service_resumes_itself`), because that is what decides
+                    // whether anything may be typed on the way back; out here both are *the pane
+                    // says the peer's service is out*.
+                    AiLoopEvent::PeerSilent => {
+                        let service = self.service_failed(panes, needles.as_deref());
+                        if service {
+                            // ⚠⚠⚠⚠ AND THE NOTICE `watch` JUST RECORDED IS WITHDRAWN, which is
+                            // the honest half of this arm. `Noticed::Silent` says *nothing spoke
+                            // for the pane*, and this pane spoke: it said why it is quiet and that
+                            // it is coming back. Leaving it standing would put that sentence in the
+                            // run's account of an outage, which is the wrong name for the right
+                            // fact — and the wrong name is what item 715 is about. What replaces it
+                            // is `wait_out_service`'s own `Noticed::ServiceDown`, recorded when the
+                            // wait this causes actually happens.
+                            self.noticed = None;
+                        }
+                        Raise::carrying(
+                            AiLoopEvent::PeerSilent,
+                            // ⚠ A BOOLEAN, for the arm above's measured reason: this datamodel is
+                            // Lua, where the only false values are `nil` and `false`.
+                            serde_json::json!({ "service": service }),
                         )
                     }
                     other => other.into(),
@@ -6241,12 +6338,18 @@ impl OuterLoop {
     /// **DOES THE PANE SAY THE PEER'S SERVICE FAILED** — the fact the document routes `turn.blocked`
     /// on, measured here because a `cond` cannot read a screen.
     ///
-    /// ⚠⚠⚠ **THE NEEDLE IS THE DOCUMENT'S AND AN EMPTY ONE IS A NO.** A template ships it empty and
-    /// declines the whole behaviour; the adopting repository's kind document quotes the words its
-    /// own peer prints, which is `screen_rules`' arrangement and its reason — *a template does not
-    /// know whose agent it will be talking to*. ⚠ An empty needle is checked for explicitly rather
+    /// ⚠⚠⚠ **THE NEEDLES ARE THE DOCUMENT'S AND AN EMPTY LIST IS A NO.** A template ships it empty
+    /// and declines the whole behaviour; the adopting repository's kind document quotes the words
+    /// its own peer prints, which is `screen_rules`' arrangement and its reason — *a template does
+    /// not know whose agent it will be talking to*. ⚠ Emptiness is checked for explicitly rather
     /// than left to `contains`, which answers TRUE for the empty string and would route every
-    /// blocked turn of every run into a ten-minute wait.
+    /// blocked turn of every run into a ten-minute wait — see [`Self::service_needles_of`], which
+    /// drops a blank element for the same reason.
+    ///
+    /// ⚠⚠⚠⚠ **AND IT IS ASKED AT TWO DOORS SINCE REGISTER ITEM 715**: a turn that ENDED
+    /// (`turn.blocked`) and a peer that stopped speaking without ending one (`peer.silent`). The
+    /// question is identical and so is this function; what differs is what the document is then
+    /// allowed to type, which is its decision and not this one's.
     ///
     /// ⚠⚠ **THE SCREEN IS READ COLLAPSED**, the way
     /// [`pane_collapsed`](crate::access::PaneAccess::pane_collapsed) joins it — rows trailing-
@@ -6285,12 +6388,19 @@ impl OuterLoop {
     /// consulted, so a reader of the document could not tell that a blocked turn is matched against
     /// it. It now arrives as a `<param>` on the `watch` pass, declared where the matching happens.
     ///
-    /// ⚠ [`None`] and the empty string are the same answer — *this document declines the
-    /// behaviour* — and both are the template's shipped value rather than a fault.
-    fn service_failed(&self, panes: &dyn PaneAccess, needle: Option<&str>) -> bool {
-        let Some(needle) = needle.filter(|it| !it.is_empty()) else {
+    /// ⚠ [`None`] and an empty list are the same answer — *this document declines the behaviour* —
+    /// and both are the template's shipped value rather than a fault.
+    ///
+    /// # ⚠⚠⚠⚠⚠ ANY ELEMENT MATCHING IS A MATCH, and the set is why item 715 could be paid
+    ///
+    /// One needle meant one sentence, and a peer says *I am not answering right now* in a family of
+    /// them. The widest useful element is still the AUTHOR's to choose and not this function's —
+    /// see the kind document for why `limit` alone is refused here of all loops.
+    fn service_failed(&self, panes: &dyn PaneAccess, needles: Option<&str>) -> bool {
+        let needles = Self::service_needles_of(needles);
+        if needles.is_empty() {
             return false;
-        };
+        }
         // THE PEER'S OWN ACCOUNT FIRST. `noticed` is replaced on every report rather than carried,
         // so anything standing in it belongs to the report in force — there is no stale sentence
         // here to mistake for this turn's (see `sprag_detect::Report::noticed`).
@@ -6298,12 +6408,45 @@ impl OuterLoop {
             .supervision()
             .and_then(|seen| seen.pane_agent_state(self.driving.pane))
             .and_then(|seen| seen.noticed);
-        if stated.is_some_and(|said| said.contains(needle)) {
+        if stated.is_some_and(|said| needles.iter().any(|needle| said.contains(needle))) {
             return true;
         }
         panes
             .pane_collapsed(self.driving.pane)
-            .is_some_and(|screen| screen.contains(needle))
+            .is_some_and(|screen| needles.iter().any(|needle| screen.contains(needle)))
+    }
+
+    /// **THE WORDS THE `watch` PASS CARRIED**, read out of the JSON a composite `<data>` crosses as
+    /// — [`Self::answers_of`]'s shape, one authored list over.
+    ///
+    /// ⚠⚠⚠⚠ **AN UNREADABLE LIST IS AN EMPTY ONE, WHICH IS THE OPPOSITE DIRECTION FROM
+    /// [`Self::answers_of`]**, and the asymmetry is deliberate rather than an oversight. A clause
+    /// list this driver cannot read must not be guessed at, because guessing types into a dialog
+    /// nobody authorised; the worst an empty needle set can do is leave a run behaving exactly as
+    /// every run behaved before item 447 existed. The direction to be wrong in is *decline*.
+    ///
+    /// ⚠⚠⚠ **AN EMPTY ELEMENT IS DROPPED AND NOT CARRIED.** [`str::contains`] answers TRUE for the
+    /// empty string, so one blank `says` in an author's list would route every blocked turn of
+    /// every run into a ten-minute wait while every state and every transition still existed —
+    /// which is the failure hardest to see live, a run that merely looks slow.
+    ///
+    /// ⚠⚠ AN EMPTY MAP IS AN EMPTY LIST, for the reason [`Self::answers_of`] states: an empty table
+    /// has no element to say whether it is a list or a map, so how the engine renders the
+    /// template's shipped `[]` is not something to assume.
+    fn service_needles_of(said: Option<&str>) -> Vec<String> {
+        let Some(held) = said.and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        else {
+            return Vec::new();
+        };
+        let serde_json::Value::Array(items) = held else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| item.get(SERVICE_SAYS).and_then(serde_json::Value::as_str))
+            .filter(|says| !says.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     /// **WAIT OUT THE PEER'S SERVICE** — `service_down`'s whole effect.
@@ -9444,6 +9587,21 @@ mod tests {
             )
             .expect("the document's own bound is writable");
         Some(loops)
+    }
+
+    /// **AUTHORED NEEDLES, RENDERED THE WAY THE `watch` PASS HANDS THEM OVER** — register item 715.
+    ///
+    /// ⚠⚠ The argument crosses as the JSON a composite `<data>` renders to, so a gate that handed
+    /// [`OuterLoop::service_failed`] a bare sentence would be testing a channel the product does
+    /// not have. This is the same crossing `answers` takes and the one `service_needles_of` reads.
+    fn as_the_pass_carries(needles: &[String]) -> String {
+        serde_json::Value::Array(
+            needles
+                .iter()
+                .map(|says| serde_json::json!({ SERVICE_SAYS: says }))
+                .collect(),
+        )
+        .to_string()
     }
 
     /// A pane running `cat` — a peer that takes whatever is typed and says nothing of its own.
@@ -18547,13 +18705,26 @@ mod tests {
             .expect("the pane must take what is typed at it");
         let screen = crate::testing::screen_showing(&access, pane, "moment");
 
-        // ⚠⚠⚠ THE CONTROL: nothing is briefed, so the template's empty needle stands.
+        // ⚠⚠⚠ THE CONTROL: nothing is briefed, so the template's empty list stands.
+        //
+        // ⚠⚠ ALL THREE SPELLINGS OF *NOTHING*, because an empty table has no element to say
+        // whether it is a list or a map and how this engine renders the template's shipped `[]` is
+        // its answer rather than something to assume — plus the empty string, which is what an
+        // argument that evaluated to nothing at all would arrive as.
+        for declined in ["[]", "{}", ""] {
+            assert!(
+                !loops.service_failed(&access, Some(declined)),
+                "⚠⚠⚠⚠ AN EMPTY NEEDLE SET MUST MATCH NOTHING. `contains` answers true for the \
+                 empty string, so a driver that did not check would send every blocked turn of \
+                 every unbriefed run into the wait: {declined:?} against {screen:?}",
+            );
+        }
+        // ⚠⚠⚠⚠⚠ AND A BLANK ELEMENT INSIDE A LIST IS THE SAME NO — register item 715, and the
+        // shape the set made possible: a list is a thing an author edits, so one stray empty
+        // `says` is now a way to write the defect above without noticing.
         assert!(
-            // ⚠ THE TEMPLATE'S OWN SHIPPED VALUE, handed in the way the `watch` pass hands it.
-            !loops.service_failed(&access, Some("")),
-            "⚠⚠⚠⚠ AN EMPTY NEEDLE MUST MATCH NOTHING. `contains` answers true for the empty \
-             string, so a driver that did not check would send every blocked turn of every \
-             unbriefed run into the wait: {screen:?}",
+            !loops.service_failed(&access, Some(&as_the_pass_carries(&[String::new()]))),
+            "⚠⚠⚠⚠ ONE BLANK ELEMENT MUST NOT MATCH EVERYTHING: {screen:?}",
         );
 
         let brief = Brief {
@@ -18582,20 +18753,25 @@ mod tests {
         );
 
         assert!(
-            loops.service_failed(&access, Some(&outage.needle)),
-            "⚠⚠⚠ the briefed loop must recognise its peer's own words on the screen: needle \
+            loops.service_failed(&access, Some(&as_the_pass_carries(&outage.needles))),
+            "⚠⚠⚠ the briefed loop must recognise its peer's own words on the screen: needles \
              {:?} against {screen:?}",
-            outage.needle,
+            outage.needles,
         );
 
         // ⚠⚠⚠⚠ AND THE GATE IS NOT VACUOUS: the message really is split, so the assertion above
         // could not have been satisfied by a per-row read.
         let rows = access.pane_rows(pane).expect("the pane must be readable");
         assert!(
-            !rows.iter().any(|row| row.text.contains(&outage.needle)),
+            !rows.iter().any(|row| {
+                outage
+                    .needles
+                    .iter()
+                    .any(|needle| row.text.contains(needle))
+            }),
             "⚠⚠⚠⚠⚠ THIS GATE PROVES NOTHING UNLESS THE NEEDLE IS ACTUALLY BROKEN ACROSS ROWS. \
              Adjust the padding until it is — a version reading `pane_rows` must FAIL here, and \
-             it goes green the moment one row happens to carry the whole needle: {rows:?}",
+             it goes green the moment one row happens to carry a whole needle: {rows:?}",
         );
     }
 
@@ -18682,45 +18858,65 @@ mod tests {
             "the control: the brief lands and the needle is in force",
         );
 
+        // ⚠⚠ THE WORDS AS THE PASS CARRIES THEM, once — the same value for every arm below, so the
+        // arms differ in the CHANNEL and in nothing else.
+        let carried = as_the_pass_carries(&outage.needles);
+
         // ── THE STAGING: the screen says nothing of it. A `cat` at its prompt shows no such words.
         let blank = access.pane_collapsed(pane).unwrap_or_default();
         assert!(
-            !blank.contains(&outage.needle),
+            !outage.needles.iter().any(|needle| blank.contains(needle)),
             "⚠ THE STAGING: this gate is about a screen that CANNOT answer, so it must not: \
              {blank:?}",
         );
         assert!(
-            !loops.service_failed(&access, Some(&outage.needle)),
+            !loops.service_failed(&access, Some(&carried)),
             "⚠ and with nobody saying anything, nothing is wrong yet",
         );
 
-        // ── ARM 1: the peer states it, and the pixels are still blank. ──
-        *stated.lock().expect("the statement") = Some(format!(
-            "{} Overloaded. This is a server-side issue, usually temporary.",
-            outage.needle,
-        ));
-        assert!(
-            loops.service_failed(&access, Some(&outage.needle)),
-            "⚠⚠⚠⚠⚠ THE PEER'S OWN ACCOUNT MUST BE HEARD. Its hook fired at the exact moment of the \
-             529 that cost a live run 28 minutes, and the product read the screen instead because \
-             `screening` already read the screen — the weak kind of fix this register names. A \
-             build that still reads pixels alone answers false here with the screen blank",
-        );
+        // ⚠⚠⚠⚠⚠ **EVERY ELEMENT, NOT THE FIRST ONE** — register item 715. A set whose first
+        // element works and whose third does not is exactly the shape this list replaced, and it
+        // would read as green here if the loop below were an index.
+        //
+        // ⚠⚠ What is staged is the NEEDLE, because what these two arms are about is which CHANNEL
+        // is read. The peer's whole sentence, unedited, is staged by
+        // `an_outage_the_peer_only_prints_reaches_the_state_built_for_outages`.
+        for needle in &outage.needles {
+            // ── ARM 1: the peer states it, and the pixels are still blank. ──
+            *stated.lock().expect("the statement") = Some(needle.clone());
+            assert!(
+                loops.service_failed(&access, Some(&carried)),
+                "⚠⚠⚠⚠⚠ THE PEER'S OWN ACCOUNT MUST BE HEARD. Its hook fired at the exact moment \
+                 of the 529 that cost a live run 28 minutes, and the product read the screen \
+                 instead because `screening` already read the screen — the weak kind of fix this \
+                 register names. A build that still reads pixels alone answers false here with \
+                 the screen blank. Needle {needle:?}",
+            );
+        }
 
         // ── ARM 2: nothing is stated — a peer that raises no notice — and the words are on screen.
         *stated.lock().expect("the statement") = None;
-        let line = format!("{} Overloaded.\n", outage.needle);
-        let _echoed = access
-            .inject(pane, &crate::access::KeyStroke::text(&line))
-            .expect("the pane must take what is typed at it");
-        let screen = crate::testing::screen_showing(&access, pane, "Overloaded");
-        assert!(
-            loops.service_failed(&access, Some(&outage.needle)),
-            "⚠⚠⚠⚠⚠ THE SCREEN IS DEMOTED, NOT DELETED — item 452(3)'s own word. A peer that raises \
-             no notice states nothing however good the pipe is, and `codex` is exactly that peer. \
-             A change that MOVED the read to the hook rather than putting it in front passes the \
-             arm above and blinds every silent peer: {screen:?}",
-        );
+        for needle in &outage.needles {
+            let (workspace, pane) = quiet_pane();
+            let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            // ⚠ A FRESH PANE PER ELEMENT, so an arm cannot pass on the previous element's text
+            // still standing on a screen this one was supposed to put its own words onto.
+            let loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(1))
+                .expect("the document's datamodel must carry its authored strings");
+            let line = format!("{needle}\n");
+            let _echoed = access
+                .inject(pane, &crate::access::KeyStroke::text(&line))
+                .expect("the pane must take what is typed at it");
+            let screen = crate::testing::screen_showing(&access, pane, needle);
+            assert!(
+                loops.service_failed(&access, Some(&carried)),
+                "⚠⚠⚠⚠⚠ THE SCREEN IS DEMOTED, NOT DELETED — item 452(3)'s own word. A peer that \
+                 raises no notice states nothing however good the pipe is, and `codex` is exactly \
+                 that peer. A change that MOVED the read to the hook rather than putting it in \
+                 front passes the arm above and blinds every silent peer: {needle:?} against \
+                 {screen:?}",
+            );
+        }
     }
 
     /// ⚠⚠⚠⚠⚠ **THE KIND'S OUTAGE REACHES THE TEMPLATE THE RUN ACTUALLY READS** — the whole chain,
@@ -18758,11 +18954,10 @@ mod tests {
 
         // ⚠⚠ THE CONTROL — the template ships DECLINED, and must, or the file decides for every
         // repository that copies it.
-        assert_eq!(
-            loops.text_of(SERVICE_NEEDLE).as_deref(),
-            Some(""),
-            "⚠⚠⚠ the TEMPLATE must ship an empty needle: the sentence is one peer's, at one \
-             version, in one language, and a template does not know whose agent it will drive",
+        assert!(
+            OuterLoop::service_needles_in(&lua, &loops.session).is_empty(),
+            "⚠⚠⚠ the TEMPLATE must ship an empty needle LIST: the sentences are one peer's, at \
+             one version, in one language, and a template does not know whose agent it will drive",
         );
 
         let brief = Brief {
@@ -18791,11 +18986,21 @@ mod tests {
         );
 
         assert_eq!(
-            loops.text_of(SERVICE_NEEDLE).as_deref(),
-            Some(outage.needle.as_str()),
+            OuterLoop::service_needles_in(&lua, &loops.session),
+            outage.needles,
             "⚠⚠⚠⚠⚠ ITEM 428's SHAPE: the kind names the failure, the driver carries it, and the \
              document must ASSIGN it. Delete that one `<assign>` and every other link still \
              passes while a live 529 goes back to killing the run",
+        );
+        // ⚠⚠⚠⚠ AND THE WHOLE SET CROSSES, not its first element — register item 715. A crossing
+        // that carried one string would satisfy the assertion above for a document whose author
+        // wrote three, and the run would then die on the two it dropped exactly as it did before
+        // this list existed.
+        assert!(
+            outage.needles.len() > 1,
+            "⚠⚠⚠ THE PREMISE OF THE ASSERTION ABOVE: this repository's kind authors MORE THAN ONE \
+             needle, or the equality could not tell a set from a single string. Got {:?}",
+            outage.needles,
         );
         assert_eq!(
             loops.authored_number(SERVICE_RETRY_MS),
@@ -19222,7 +19427,7 @@ mod tests {
                         reflect_after_refusals: None,
                         milestone_check: None,
                         service: Some(ServiceOutage {
-                            needle: "the service is down".to_string(),
+                            needles: vec!["the service is down".to_string()],
                             every_ms: 1,
                             text: text.to_string(),
                         }),
@@ -19932,6 +20137,238 @@ mod tests {
              is silent in exactly the way the headline's is; the only difference is that its \
              document declined to bound silence. A driver holding a constant of its own passes the \
              headline and fails here: {declined_walk:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PEER THAT PRINTED WHY IT IS QUIET REACHES THE STATE BUILT FOR OUTAGES, AND A
+    /// PEER THAT PRINTED NOTHING STILL REACHES A PERSON** — register item 715, both halves, driven.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was measured, and why it is the worst shape an unattended loop has
+    ///
+    /// Run 5, 2026-08-27. The peer hit a usage limit, printed *"Usage limit reached · continuing
+    /// automatically at 3:30am · esc or type to cancel"*, stopped speaking, waited, and **resumed
+    /// by itself at 3:30 and carried on working**. The run did not: `Working` to `AwaitingHuman` at
+    /// 01:05:39 on `peer.silent`, `Blocked` at 02:05:39 — exactly one `await_person_ms` later, with
+    /// **460 reports** having arrived during the "silence". Nothing was broken; the classification
+    /// was. `service_down` and its whole retry apparatus (item 447) already existed and were
+    /// unreachable, because `service_needle` was ONE string and that string was the 529.
+    ///
+    /// ⚠⚠ **The cost is not the lost run, it is the DIVERGENCE**: the agent went on editing this
+    /// repository for two hours with no run driving it, so nothing judged its work and no milestone
+    /// accounting saw it. In an unattended loop that is worse than stopping, because stopping is
+    /// visible.
+    ///
+    /// # ⚠⚠⚠⚠ The staging is the peer's OWN sentence, not a variation of it
+    ///
+    /// [`CLAUDE_USAGE_LIMIT_NOW`](crate::testing::CLAUDE_USAGE_LIMIT_NOW) is a notice `claude` wrote
+    /// into its own transcript, quoted byte for byte — items 617 and 642, which are about fixtures
+    /// that check shapes the product cannot produce. It is TYPED INTO THE PANE, so what the driver
+    /// reads is a real screen at a real width with the real wrap, joined by the real
+    /// `pane_collapsed`.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THREE ARMS, and the second is the one that makes the first mean anything
+    ///
+    /// * **THE OUTAGE**: the sentence is on the screen and the run reaches `service_down` — by
+    ///   `peer.silent`, which is the edge this item added, and not by any other road into it.
+    /// * ⚠⚠⚠ **THE CONTROL (R27): A PEER THAT IS REALLY SILENT MUST STILL REACH A PERSON.** Same
+    ///   loop, same bounds, same needles, one difference — nothing on the screen. Without this arm
+    ///   the gate passes for a repair that routes ALL silence into a ten-minute wait, which trades
+    ///   a visible ending for an invisible one and swallows item 458 whole.
+    /// * ⚠⚠ **AND THE RECOVERY NOTICE IS NOT AN OUTAGE.** The peer says `Usage limit reset ·
+    ///   continuing automatically` when it comes BACK, in the same words as it went away. A needle
+    ///   wide enough to match both would file a working peer as a broken one, and the trailing `at`
+    ///   in `continuing automatically at` is what separates them — asserted here rather than
+    ///   trusted to a comment in the kind document.
+    #[test]
+    fn an_outage_the_peer_only_prints_reaches_the_state_built_for_outages() {
+        /// The TURN bound, long enough that nothing below is the turn's own clock deciding.
+        const TURN: Duration = Duration::from_secs(4);
+        /// The SILENCE bound, well inside it — this is the door an outage that ends no turn uses.
+        const QUIET_MS: i64 = 250;
+        /// Enough passes that *it never left `working`* is not *it had not got round to it*.
+        const PASSES: usize = 8;
+
+        /// Drive a loop over a peer that never finishes a turn, with `printed` on its screen.
+        ///
+        /// ⚠ The pane runs `cat`, so what is typed at it is what it shows: the screen is real, and
+        /// so is the width the sentence has to survive.
+        fn ran(printed: Option<&str>) -> (AiLoopState, Vec<String>, Option<Noticed>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let outage = crate::kind::LoopKind::debt(Arc::clone(&lua))
+                .expect("the debt kind's document must open a script session")
+                .service_outage()
+                .expect("this repository's kind must name what its peer prints");
+            let (workspace, pane) = quiet_pane();
+            // ⚠ `working` FOR EVER and named, so the completion contract is armed and can never be
+            // satisfied — the same fixture the silence gate above uses, and for its reason.
+            let seen: Arc<Mutex<crate::access::AgentObservation>> =
+                Arc::new(Mutex::new(crate::access::AgentObservation {
+                    state: sprag_detect::AgentState::Working,
+                    agent: Some("claude".to_string()),
+                    authority: crate::access::Authority::Reported {
+                        source: "hook:claude".to_string(),
+                    },
+                    seq: 1,
+                    asked_seq: 1,
+                    reports: 3,
+                    asking: None,
+                    asked: None,
+                    said: None,
+                    said_seq: 0,
+                    // ⚠⚠⚠ THE PEER STATES NOTHING, WHICH IS THE MEASURED CASE. A usage limit
+                    // raises no `Notification` hook — the 460 reports that arrived during run 5's
+                    // "silence" carried no notice — so the SCREEN is the only witness there is.
+                    // Staging it in `noticed` would test the channel item 452 already gates and
+                    // would not test this one at all.
+                    noticed: None,
+                    transcript: None,
+                    settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
+                }));
+            let source = {
+                let seen = Arc::clone(&seen);
+                Arc::new(move |_id: PaneId| Some(seen.lock().expect("the observation").clone()))
+            };
+            let access = crate::access::WorkspacePaneAccess::new(Arc::clone(&workspace))
+                .with_agent_state(Some(source));
+
+            let mut loops = bounded_at(Arc::clone(&lua), pane, TURN)
+                .expect("the document's datamodel must carry its authored strings");
+            loops
+                .script
+                .set_variable(
+                    &loops.session,
+                    Quiet::DOCUMENT_KEY,
+                    ScriptValue::Int(QUIET_MS),
+                )
+                .expect("the document's own silence bound is writable");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "survive the peer's most predictable stop".to_string(),
+                    milestone: "reach `service_down` rather than a person".to_string(),
+                    reference: "register item 715".to_string(),
+                    closing_rules: None,
+                    context_ceiling: None,
+                    reflect_after_refusals: None,
+                    milestone_check: None,
+                    service: Some(outage.clone()),
+                    max_turns: Some(Counted::Of(40)),
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    // ⚠ A person IS expected, or `awaiting_human` ends the run on arrival and the
+                    // control arm could not be told from an outage.
+                    await_person_ms: Some(60_000),
+                    handback_still_ms: None,
+                    hold_within_ms: None,
+                    ready_timeout_ms: Some(5_000),
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held, or nothing below is about the outage",
+            );
+
+            let run = RunContext::uncancellable();
+            let mut walked = Vec::new();
+            // ⚠⚠⚠⚠⚠ **PRINTED ONCE THE RUN IS `working`, WHICH IS NOT TIDINESS** — measured while
+            // writing this gate. Staged BEFORE the run, the sentence is gone by the time anything
+            // looks: `priming` DELIVERS the opening prompt, the pane echoes it, and the notice
+            // scrolls off a screen `pane_collapsed` reads live. That is also the truth about a real
+            // peer — it prints this in the middle of a turn it was already given — so the order
+            // here is the product's rather than the fixture's convenience.
+            let mut still_to_print = printed;
+            for _ in 0..PASSES {
+                match loops.pump(&access, &run).expect("the pane stays readable") {
+                    Pumped::Moved {
+                        from, raised, to, ..
+                    } => {
+                        walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                        if to == AiLoopState::Working
+                            && let Some(printed) = still_to_print.take()
+                        {
+                            let typed = crate::access::KeyStroke::text(&format!("{printed}\n"));
+                            let _echoed = access
+                                .inject(pane, &typed)
+                                .expect("the pane must take what is typed at it");
+                            let screen =
+                                crate::testing::screen_showing(&access, pane, "Usage limit");
+                            // ⚠⚠⚠ THE PREMISE, ASSERTED INSIDE THE GATE rather than assumed of the
+                            // run: *the words are on the screen the driver reads* and *the run
+                            // routes on them* are two claims, and a gate making only the second
+                            // reports a routing defect for a staging one.
+                            let carried = as_the_pass_carries(&outage.needles);
+                            assert_eq!(
+                                loops.service_failed(&access, Some(&carried)),
+                                printed == crate::testing::CLAUDE_USAGE_LIMIT_NOW,
+                                "⚠⚠ THE PREMISE: the matcher must see this screen exactly as the \
+                                 arms below expect — {carried} against {screen:?}",
+                            );
+                            continue;
+                        }
+                        if to == AiLoopState::AwaitingHuman || to == AiLoopState::ServiceDown {
+                            break;
+                        }
+                    }
+                    other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                }
+            }
+            let landed = loops.state();
+            let noticed = loops.noticed().cloned();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (landed, walked, noticed)
+        }
+
+        // ── THE OUTAGE: the peer's own sentence, and the run must not call anybody ──
+        let (limited, limited_walk, limited_notice) =
+            ran(Some(crate::testing::CLAUDE_USAGE_LIMIT_NOW));
+        assert_eq!(
+            limited,
+            AiLoopState::ServiceDown,
+            "⛔⛔⛔⛔⛔ THE MOST PREDICTABLE INTERRUPTION IN AN UNATTENDED LOOP'S LIFE MUST NOT END \
+             ITS RUN. Left at `awaiting_human` this is the product as measured on run 5: `blocked` \
+             one `await_person_ms` later, with the peer already back at work and nobody driving \
+             it. Walked {limited_walk:?}",
+        );
+        assert!(
+            limited_walk
+                .iter()
+                .any(|edge| edge.contains("PeerSilent") && edge.contains("ServiceDown")),
+            "⚠⚠⚠⚠ AND BY THE EDGE THIS ITEM ADDED. `turn.blocked` reaches the same state and means \
+             the turn ENDED, which is the 529's door and not this one — a walk that got here by it \
+             would be the driver calling a mid-turn peer's silence a blocked turn: {limited_walk:?}",
+        );
+        assert_eq!(
+            limited_notice, None,
+            "⚠⚠⚠ AND THE `Noticed::Silent` THE WATCH RECORDED MUST BE WITHDRAWN. It says *nothing \
+             spoke for the pane*, and this pane spoke — it said why it is quiet and that it is \
+             coming back. Left standing it becomes this run's account of an outage, which is the \
+             wrong name for the right fact and is the whole of what item 715 is about",
+        );
+
+        // ── ⚠⚠⚠ THE CONTROL (R27): a peer that really is silent still reaches a person ──
+        let (silent, silent_walk, silent_notice) = ran(None);
+        assert_eq!(
+            silent,
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, AND IT IS THE ONE THAT MAKES THE ARM ABOVE MEAN ANYTHING. \
+             This peer is silent in exactly the way run 5's was and prints NOTHING; a repair that \
+             sent it to `service_down` too would swallow item 458 whole and trade a visible ending \
+             for an invisible ten-minute wait, repeated: {silent_walk:?}",
+        );
+        assert!(
+            matches!(silent_notice, Some(Noticed::Silent(_))),
+            "⚠⚠ and it must still carry WHY, because `awaiting_human` cannot say it: {silent_notice:?}",
+        );
+
+        // ── ⚠⚠ AND THE PEER SAYING IT IS BACK IS NOT AN OUTAGE ──
+        let (reset, reset_walk, _) = ran(Some(crate::testing::CLAUDE_USAGE_LIMIT_RESET_NOW));
+        assert_eq!(
+            reset,
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠ `Usage limit reset · continuing automatically` is the peer telling us the outage \
+             is OVER, in the same words it used to go away. A needle wide enough to match both \
+             files a working peer as a broken one and waits ten minutes at a time on nothing — \
+             which is why the authored needle carries the trailing `at`: {reset_walk:?}",
         );
     }
 

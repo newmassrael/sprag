@@ -1892,6 +1892,31 @@ pub(crate) const CLAUDE_EDIT_DIALOG_NOW: &[&str] = &[
 /// old builds and a consent gate that passes on a dialog nobody sees any more.
 pub(crate) const CLAUDE_DIALOGS_NOW: &[(&str, &[&str])] = &[("edit", CLAUDE_EDIT_DIALOG_NOW)];
 
+/// **WHAT THIS REPOSITORY'S PEER PRINTS WHEN IT HITS A USAGE LIMIT** — register item 715, and the
+/// sentence a whole night of unattended work was lost to.
+///
+/// # ⚠⚠⚠⚠⚠ Where it comes from, because a hand-written variation would test nothing
+///
+/// It is **the peer's own record, byte for byte** — a `level: notice` line `claude` wrote into its
+/// session transcript under `~/.claude/projects`, not a person's transcription of a screen. Read
+/// 2026-08-27: **twelve distinct such notices** across transcripts dated 2026-08-20 to 2026-08-27,
+/// **eleven of them this family** (the same sentence with a different clock, or the same head
+/// followed by `again after you continued`), and the twelfth [`CLAUDE_USAGE_LIMIT_RESET_NOW`].
+///
+/// ⚠⚠ Items 617 and 642 are why the provenance is written down rather than assumed: a fixture a
+/// person composed checks a shape the product may never produce, and the two needles this sentence
+/// justifies would then be quoting nobody.
+pub(crate) const CLAUDE_USAGE_LIMIT_NOW: &str =
+    "Usage limit reached · continuing automatically at 3:30am · esc or type to cancel";
+
+/// **AND WHAT IT PRINTS WHEN THE LIMIT IS OVER** — the same family, the opposite fact, and the
+/// control that stops a needle swallowing both.
+///
+/// From the same read of the same transcripts. A needle wide enough to match this would file a peer
+/// that has just told us it is BACK as one whose service is down.
+pub(crate) const CLAUDE_USAGE_LIMIT_RESET_NOW: &str =
+    "Usage limit reset · continuing automatically";
+
 /// Replay a captured screen through the SHIPPING parser and hand back what it read.
 ///
 /// ⚠ Through a real [`Emulator`](sprag_vt::Emulator) rather than by handing the parser a

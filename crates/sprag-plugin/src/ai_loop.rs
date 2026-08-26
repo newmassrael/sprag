@@ -8746,12 +8746,27 @@ mod tests {
         // ⚠ TAKEN ONCE. `Serving::taken` REMOVES the act from its slot, so a second call answers
         // `None` and would read as the document never asking.
         let shipped = host.taken(crate::act::Act::Pass);
-        let shipped_clauses = match &shipped {
-            Some(crate::act::Asked::Pass { answers, .. }) => answers.clone().unwrap_or_default(),
+        let (shipped_clauses, shipped_needles) = match &shipped {
+            Some(crate::act::Asked::Pass {
+                answers, needles, ..
+            }) => (
+                answers.clone().unwrap_or_default(),
+                needles.clone().unwrap_or_default(),
+            ),
             other => {
                 panic!("⚠⚠ THE FIXTURE: a `watch` pass must have been asked for. Got {other:?}")
             }
         };
+        // ⚠⚠⚠ THE NEEDLES ARE A LIST NOW (register item 715), so the template's DECLINE crosses as
+        // an empty table — and how an empty table renders is the engine's answer, exactly as it is
+        // for `may_answer` two lines down. What must hold is that it is one of the two spellings
+        // `OuterLoop::service_needles_of` reads as *this document declines*.
+        assert!(
+            matches!(shipped_needles.as_str(), "[]" | "{}"),
+            "⚠⚠⚠⚠⚠ AN EMPTY NEEDLE LIST MUST CROSS AS SOMETHING THE DRIVER READS AS *DECLINED*. \
+             Anything else and an unbriefed run would route blocked turns into a ten-minute wait \
+             on words nobody authored. Got {shipped_needles:?}",
+        );
         assert!(
             matches!(shipped_clauses.as_str(), "[]" | "{}"),
             "⚠⚠⚠⚠⚠ AN EMPTY CLAUSE LIST MUST CROSS AS SOMETHING `answers_of` READS AS *APPROVES \
@@ -8763,7 +8778,7 @@ mod tests {
             shipped,
             Some(crate::act::Asked::Pass {
                 does: crate::act::Does::Watch,
-                needle: Some(String::new()),
+                needles: Some(shipped_needles),
                 // ⚠⚠ AND THE BARRIER'S BOUND RIDES THE SAME ACT — register item 470, stage 2's
                 // other half. This is `ready_timeout_ms`'s shipped value, carried rather than
                 // fetched. `None` would be the `<param>` gone from all twelve `pass.do` sends.
@@ -8784,10 +8799,10 @@ mod tests {
                 // below carries words, and it is read STRUCTURALLY for exactly that reason.
                 answers: Some(shipped_clauses),
             }),
-            "⚠⚠⚠⚠⚠ THE `watch` PASS MUST CARRY A NEEDLE, and an unbriefed document's is the EMPTY \
-             one it ships. `None` here is the `<param>` being gone — the driver would then be back \
-             to fetching `service_needle` out of the datamodel, which no reading of the document \
-             could reveal",
+            "⚠⚠⚠⚠⚠ THE `watch` PASS MUST CARRY THE NEEDLES, and an unbriefed document's are the \
+             EMPTY LIST it ships. `None` here is the `<param>` being gone — the driver would then \
+             be back to fetching `service_needles` out of the datamodel, which no reading of the \
+             document could reveal",
         );
 
         // ── AND A CALLER'S OWN WORDS REACH THE SAME PASS ──
@@ -8797,7 +8812,9 @@ mod tests {
         // handles and every `<assign>` in it is skipped. The gate then read the template's empty
         // needle and reported it as the briefed one being dropped — a true failure with a false
         // diagnosis, which is worse than a red.
-        let outage = "API Error: 529 Overloaded";
+        // ⚠⚠⚠ TWO OF THEM, since register item 715 made this a LIST — and two rather than one so
+        // that a crossing which carried only the head would be red here rather than green.
+        let outage = ["API Error: 529 Overloaded", "Usage limit reached"];
         // ⚠ DELIBERATELY NOT THE SHIPPED 180000, so the assertion below cannot be satisfied by the
         // document's own default standing in for a value the brief was supposed to replace.
         let bound = 4321;
@@ -8822,7 +8839,10 @@ mod tests {
                 "reference": "r",
                 "max_turns": 3,
                 "reflect_every": 9,
-                "service_needle": outage,
+                "service_needles": outage
+                    .iter()
+                    .map(|says| serde_json::json!({ "says": says }))
+                    .collect::<Vec<_>>(),
                 "ready_timeout_ms": bound,
                 "await_person_ms": patience,
                 "handback_still_ms": stillness,
@@ -8842,7 +8862,7 @@ mod tests {
         // that goes red for a harmless change** — the trap register item 470 keeps paying for.
         let Some(crate::act::Asked::Pass {
             does,
-            needle,
+            needles,
             within,
             awaits,
             stills,
@@ -8854,10 +8874,9 @@ mod tests {
             )
         };
         assert_eq!(
-            (does, needle, within, awaits, stills),
+            (does, within, awaits, stills),
             (
                 crate::act::Does::Watch,
-                Some(outage.to_owned()),
                 // ⚠ A BRIEFED BOUND REACHES THE SAME ACT, and this brief sets one: the arguments
                 // are carried together and a reader of one must see the others move.
                 Some(bound.to_string()),
@@ -8867,9 +8886,47 @@ mod tests {
                 Some(patience.to_string()),
                 Some(stillness.to_string()),
             ),
-            "⚠⚠⚠⚠ A BRIEFED NEEDLE MUST REACH THE PASS THAT WOULD MEET IT. If this reads the empty \
-             string, the `<param>` is a literal rather than the datamodel's value and every \
-             adopting repository's own words would be dropped on the floor",
+            "⚠⚠⚠⚠ THE BRIEFED NUMBERS MUST REACH THE PASS THAT READS THEM",
+        );
+
+        // ── ⭐ AND THE BRIEFED NEEDLES REACH IT WITH THEIR WORDS ──
+        //
+        // ⚠⚠ READ AS STRUCTURE rather than pinned by bytes, for `answers`' measured reason below:
+        // the crossing alphabetises the keys of every object it renders, and that ordering is the
+        // serialiser's to choose. What must hold is that BOTH sentences arrived — a `<param>` that
+        // became a literal, or a crossing that kept only the first element, drops an adopting
+        // repository's own words on the floor and the run goes back to dying on them.
+        let carried_needles = needles.unwrap_or_default();
+        let read_back: Vec<String> = serde_json::from_str::<serde_json::Value>(&carried_needles)
+            .ok()
+            .and_then(|held| match held {
+                serde_json::Value::Array(items) => Some(
+                    items
+                        .iter()
+                        .filter_map(|item| {
+                            item.get("says")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "⚠⚠⚠⚠⚠ THE BRIEFED NEEDLE LIST DID NOT CROSS AS SOMETHING THIS DRIVER CAN \
+                     WALK. `OuterLoop::service_needles_of` parses exactly this string, so \
+                     whatever it could not read here it cannot read on a live run: \
+                     {carried_needles:?}"
+                )
+            });
+        assert_eq!(
+            read_back,
+            outage.map(str::to_owned).to_vec(),
+            "⚠⚠⚠⚠ A BRIEFED NEEDLE SET MUST REACH THE PASS THAT WOULD MEET IT, WHOLE. If this \
+             reads empty, the `<param>` is a literal rather than the datamodel's value; if it \
+             reads one element, the set is being flattened somewhere between the brief and the \
+             pass and item 715 is only half paid",
         );
 
         // ── ⭐ AND THE CLAUSE LIST REACHES IT WITH ITS WORDS ──
@@ -9334,10 +9391,18 @@ mod tests {
     /// than asserted about, because it is the sentence the whole design rests on.
     #[test]
     fn a_peer_that_went_silent_is_recoverable_where_a_peer_that_is_gone_is_not() {
-        /// Reach `working` the way a run does, raise `left`, and say where it went **and whether
-        /// the engine calls that an ending** — the second half read off the same machine, in the
-        /// same breath, because a reading taken later is a second authority on one fact.
-        fn from_working(left: AiLoopEvent) -> (AiLoopState, bool) {
+        /// Reach `working` the way a run does, raise `left` with `data`, and say where it went
+        /// **and whether the engine calls that an ending** — the second half read off the same
+        /// machine, in the same breath, because a reading taken later is a second authority on
+        /// one fact.
+        ///
+        /// ⚠⚠⚠⚠ **`data` IS AN ARGUMENT SINCE REGISTER ITEM 715**, and it was `""` before. That
+        /// item gave `peer.silent` a guard, so this fixture was handing a data-carrying event on
+        /// with nothing and the datamodel was asked to index nil — W3C SCXML 3.8 abandons the rest
+        /// of the block, which is a state half-entered in the voice of one that worked. **This
+        /// gate stayed GREEN through it**; what found it was `sprag-gate`'s own ratchet
+        /// (`no_data_carrying_event_is_handed_on_without_its_data`), announcing the new subject.
+        fn from_working(left: AiLoopEvent, data: &str) -> (AiLoopState, bool) {
             let (mut engine, host, _lua, _session) = started();
             carried(&mut engine, &host, AiLoopEvent::Start, "");
             carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
@@ -9346,12 +9411,16 @@ mod tests {
                 AiLoopState::Working,
                 "the fixture: both events below are raised from `working` and nowhere else",
             );
-            carried(&mut engine, &host, left, "");
+            carried(&mut engine, &host, left, data);
             (engine.get_current_state(), engine.is_in_final_state())
         }
 
-        let silent = from_working(AiLoopEvent::PeerSilent);
-        let gone = from_working(AiLoopEvent::PeerGone);
+        // ⚠ `service: false` IS WHAT THE DRIVER PUBLISHES for a peer that printed nothing, which is
+        // exactly the peer this gate is about — see `OuterLoop::pumping`'s `PeerSilent` arm.
+        let quiet = serde_json::json!({"service": false}).to_string();
+        let silent = from_working(AiLoopEvent::PeerSilent, &quiet);
+        // ⚠ `peer.gone` reads no `_event.data` at all, so it is handed on bare exactly as before.
+        let gone = from_working(AiLoopEvent::PeerGone, "");
 
         assert_eq!(
             silent.0,
@@ -9392,7 +9461,7 @@ mod tests {
         let (mut engine, host, _lua, _session) = started();
         carried(&mut engine, &host, AiLoopEvent::Start, "");
         carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
-        carried(&mut engine, &host, AiLoopEvent::PeerSilent, "");
+        carried(&mut engine, &host, AiLoopEvent::PeerSilent, &quiet);
         carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
         assert_eq!(
             engine.get_current_state(),
@@ -10444,6 +10513,136 @@ mod tests {
             "⚠⚠ THE COUNTER MOVED. A reader asking afterwards why a run took all night has \
              nothing else to tell a bad afternoon upstream from hard work, and an edge missing \
              its `<assign>` would reach `working` looking exactly like this one: {retried:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE DOOR AN OUTAGE CAME IN AT DECIDES WHETHER ANYTHING MAY BE TYPED ON THE WAY
+    /// OUT** — register item 715, and the judgement this document records rather than a tidy-up.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the word is HARMFUL and not merely unnecessary
+    ///
+    /// A 529 ENDS a turn: the composer is empty, the service has to be asked again, and
+    /// `service_retry_text` is what asks it. A USAGE LIMIT ends nothing — and the sentence the peer
+    /// prints says so in both directions at once: *"continuing automatically at 3:30am · **esc or
+    /// type to cancel**"*. **A keystroke during that window cancels the recovery the wait is
+    /// waiting for.** So a run that waited its ten minutes and then said `continue` would destroy
+    /// exactly what it was waiting for, on the most predictable interruption it meets.
+    ///
+    /// That is also why the peer's stated resume TIME is not parsed: a clock even slightly early
+    /// types into the cancel window, and it would be a fourth clock nothing keeps in step with
+    /// `service_retry_ms`, `service_retry_max` and `await_person_ms`. The sentence is read for the
+    /// FACT — *this peer resumes itself* — and the fact chooses an edge that says nothing.
+    ///
+    /// # ⚠⚠⚠ Four arms, and each of the three controls is a way this passes for nothing
+    ///
+    /// * **THE SILENT DOOR TYPES NOTHING**, which is the headline.
+    /// * ⚠⚠⚠⚠ **AND THE BLOCKED DOOR STILL SPEAKS.** Without this arm, deleting the prompt from
+    ///   BOTH edges passes — and a 529's only way back to work is something being said, so that is
+    ///   the `blocked` `service_down` exists to prevent, reintroduced silently.
+    /// * ⚠⚠ **AND A SILENCE THAT IS NOT AN OUTAGE STILL REACHES A PERSON**, or the guard could be
+    ///   the constant `true` and every one of item 458's silences would become a ten-minute wait.
+    /// * ⚠⚠ **AND THE COUNTER MOVES ON BOTH**, because a reader in the morning asking why a run
+    ///   spent the night in one state must get the same number whichever door it came in at.
+    #[test]
+    fn an_outage_that_ended_no_turn_is_left_alone_where_one_that_ended_a_turn_is_asked_again() {
+        /// Reach `service_down` by `door`, retry, and say where it landed, whether the document
+        /// asked for a sentence on the way, and what the counter reads.
+        ///
+        /// ⚠ Raised by hand rather than through `carried`, because that helper DRAINS the sentence
+        /// slot — which is right for a routing gate and is the very fact this one is about.
+        fn through(door: AiLoopEvent, data: &str) -> (AiLoopState, Option<String>, ScriptValue) {
+            let (mut engine, host, lua, session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Working,
+                "the fixture: both doors below are taken from `working` and nowhere else",
+            );
+            engine.raise_external(door, data, "");
+            engine.step();
+            let reached = engine.get_current_state();
+            let _entering = host.taken(crate::act::Act::Say);
+            let _noted = host.taken(crate::act::Act::Note);
+            engine.raise_external(AiLoopEvent::ServiceRetry, "", "");
+            engine.step();
+            let said = match host.taken(crate::act::Act::Say) {
+                Some(crate::act::Asked::Say { text, .. }) => Some(text),
+                _ => None,
+            };
+            let _noted = host.taken(crate::act::Act::Note);
+            assert_eq!(
+                reached,
+                AiLoopState::ServiceDown,
+                "the fixture: this arm is about the way OUT, so it must have got in",
+            );
+            (
+                engine.get_current_state(),
+                said,
+                lua.get_variable(&session, "service_retried")
+                    .unwrap_or(ScriptValue::Undefined),
+            )
+        }
+
+        let outage = serde_json::json!({"service": true, "judged": false, "rule": ""}).to_string();
+
+        // ── THE HEADLINE: a peer that never stopped its turn is left alone ──
+        let (landed, said, retried) = through(AiLoopEvent::PeerSilent, &outage);
+        assert_eq!(
+            landed,
+            AiLoopState::Working,
+            "the wait is over and the run carries on watching the turn the peer never dropped",
+        );
+        assert_eq!(
+            said, None,
+            "⛔⛔⛔⛔⛔ NOTHING MAY BE TYPED AT A PEER THAT SAID A KEYSTROKE CANCELS ITS RECOVERY. \
+             `Usage limit reached · continuing automatically at 3:30am · esc or type to cancel` is \
+             the peer's own sentence, and a run that answers it with `continue` cancels the very \
+             thing it waited ten minutes for. Got {said:?}",
+        );
+        assert!(
+            matches!(retried, ScriptValue::Int(1)),
+            "⚠⚠ AND THE COUNTER MOVES ON THIS DOOR TOO, or a morning reader cannot tell a night \
+             spent waiting out limits from one spent working: {retried:?}",
+        );
+
+        // ── ⚠⚠⚠⚠ CONTROL ONE: the door where the turn ENDED must still speak ──
+        let (spoke_landed, spoke_said, spoke_retried) = through(AiLoopEvent::TurnBlocked, &outage);
+        assert_eq!(
+            spoke_landed,
+            AiLoopState::Working,
+            "the same way back to work"
+        );
+        assert_eq!(
+            spoke_said.as_deref(),
+            Some("continue"),
+            "⚠⚠⚠⚠⚠ THE CONTROL THAT MAKES THE HEADLINE MEAN ANYTHING. A 529 leaves an EMPTY \
+             composer, so this state's only way back to work is something being SAID — delete the \
+             prompt from both edges and the headline still passes while a 529 goes back to costing \
+             a run its life, which is the `blocked` this state exists to prevent",
+        );
+        assert!(
+            matches!(spoke_retried, ScriptValue::Int(1)),
+            "and the counter moves here as it always did: {spoke_retried:?}",
+        );
+
+        // ── ⚠⚠ CONTROL TWO: a silence that is NOT an outage still reaches a person ──
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+        carried(
+            &mut engine,
+            &host,
+            AiLoopEvent::PeerSilent,
+            &serde_json::json!({"service": false}).to_string(),
+        );
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠ THE CONTROL: nothing spoke for the pane and nothing on it says why, which is \
+             register item 458's silence and still wants a person. A guard that were the constant \
+             `true` would turn every one of those into a ten-minute wait, repeated, and trade a \
+             visible ending for an invisible one",
         );
     }
 

@@ -37,9 +37,20 @@ use sprag_gate::sources::{Source, rust_sources, workspace_root};
 /// discovered nine events or none, so the first thing asserted is what was discovered. A tenth
 /// data-carrying event is then ANNOUNCED — and announcing it is the point, because the round that
 /// adds one has to decide what its payload is and which raises owe it.
+///
+/// # ⚠⚠⚠⚠⚠ `peer.silent` JOINED THE SET on 2026-08-27, and this gate is how it was found
+///
+/// Register item 715 gave `peer.silent` a guard — `cond="_event.data.service"` — because a peer
+/// that goes quiet having PRINTED why is waiting out an outage rather than falling silent. Its
+/// payload is `{service}`, one boolean, published by the same `watch` pass that publishes
+/// `turn.blocked`'s. **And announcing it caught two fixtures raising it bare**, both in
+/// `ai_loop.rs`: a guard evaluated against a nil `_event.data` is W3C SCXML 3.8's abandoned block,
+/// which is a state half-entered in the voice of one that worked — and both of those gates were
+/// GREEN. That is the whole reason this list is written down rather than discovered.
 const CARRYING: &[&str] = &[
     "brief",
     "judge",
+    "peer.silent",
     "reflect.applied",
     "reflect.done",
     "reflect.none",

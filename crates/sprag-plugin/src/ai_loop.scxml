@@ -249,20 +249,84 @@
       nothing and then report `not_dismissed` — arriving at `awaiting_human` by a
       longer road. **A rule answers a question; this is not one.**
 
-      So the routing is a THIRD branch on `turn.blocked`, above the design one,
-      and the driver measures the fact the same way it measures `judged`: it
-      reads the pane and publishes `_event.data.service`. The driver measures;
-      the document decides. ⚠ It is checked FIRST because a service failure is
-      not a design decision and must never be judged as one — a judge asked about
-      an error message is a model call spent to reach the wrong state.
+      So the routing is a branch on `turn.blocked`, above the design one, and the
+      driver measures the fact the same way it measures `judged`: it reads the
+      pane and publishes `_event.data.service`. The driver measures; the document
+      decides. ⚠ It is checked FIRST because a service failure is not a design
+      decision and must never be judged as one — a judge asked about an error
+      message is a model call spent to reach the wrong state.
+
+      ⚠⚠⚠⚠⚠ AND `turn.blocked` IS NOT THE ONLY DOOR AN OUTAGE ARRIVES AT
+      — register item 715, measured 2026-08-27, and the reason this is a LIST.
+
+      A 529 ENDS a turn, so the machine hears `turn.blocked`. A USAGE LIMIT does
+      not: the peer prints what happened, stops speaking, and waits. Nothing
+      ended, so what the machine hears is `peer.silent` — and that edge went
+      straight to `awaiting_human`, i.e. to *a person is expected*, for the one
+      interruption in an unattended loop's life where **nobody is expected and
+      nothing is wrong**. Measured on run 5: `Working` to `AwaitingHuman` at
+      01:05:39 and `Blocked` at 02:05:39, exactly one `await_person_ms` later,
+      while the peer had already resumed by itself and was working. The run died,
+      the work did not stop, and no account of that night said so. So BOTH doors
+      ask the same question now, and the answer routes to the same state.
+
+      ⚠⚠⚠⚠⚠ AND IT IS A SET, WHICH IS THE REPAIR ITEM 715 ACTUALLY NAMES.
+      This held ONE string, so one sentence could reach the state and its whole
+      family walked past it — item 687's lesson in its smallest possible form: a
+      check that knows N sentences cannot see the N plus first. Adding one more
+      literal moves the trap by one sentence and leaves it standing. What a list
+      buys is that a peer's vocabulary becomes a thing an author ENUMERATES and
+      extends, and that the gate holding it can be re-taken against a real
+      capture the way item 525's dialog gate is.
+
+      ⚠⚠ EACH ENTRY IS AN OBJECT WITH ONE KEY rather than a bare string, for
+      `may_answer`'s and `screen_rules`' reason: every authored list in this file
+      is read by one shape of reader, and a fourth spelling would be a fourth
+      thing to keep in step. It also leaves room for a key this round did not
+      need — naming WHICH outage in the walk — without changing the shape.
 
       ⚠⚠⚠ EMPTY IS THE SHIPPED VALUE AND DECLINES THIS ENTIRELY, for
-      `screen_rules`' reason one door down: the sentence above is `claude`'s, at
+      `screen_rules`' reason one door down: the sentences above are `claude`'s, at
       one version, in English, and **a template does not know whose agent it will
       be talking to**. A repository that means to survive its peer's bad days
       quotes the words its own peer prints, in its own kind document.
     -->
-    <data id="service_needle" expr="''"/>
+    <data id="service_needles" expr="[]"/>
+
+    <!--
+      ⚠⚠⚠⚠⚠ WHETHER THE PEER SAID IT IS COMING BACK BY ITSELF — register item
+      715, and the one decision in this file that is about WHAT NOT TO TYPE.
+
+      ⚠⚠⚠⚠ THE JUDGEMENT THIS RECORDS, BECAUSE THE ALTERNATIVE LOOKS BETTER
+      THAN IT IS. The peer states a RESUME TIME on the screen (*"continuing
+      automatically at 3:30am"*), so the first idea — and the register's — is to
+      parse that clock and wait until it. This document does NOT, and the reason
+      is in the same sentence the clock is in: it ends *"esc or type to cancel"*.
+      **Anything typed during that window cancels the recovery the wait exists to
+      wait for.** A clock that is even slightly early therefore does not merely
+      wait wrongly, it destroys what it was waiting for. And a parsed wall clock
+      is a second clock nothing keeps in step with `service_retry_ms`,
+      `service_retry_max` and `await_person_ms` — which is the argument this file
+      already lost once, two `<data>` down, about ceilings.
+
+      ⚠⚠⚠ SO THE PEER'S SENTENCE IS READ FOR THE FACT AND NOT FOR THE CLOCK: it
+      says *this peer resumes itself*, and that fact selects a way out of
+      `service_down` that TYPES NOTHING and lets the peer's own next word be the
+      evidence that the outage is over. The budget stays exactly what it was, as
+      the bound on how long that may go on. It is not being replaced by the
+      clock; it is being relieved of a job it was never able to do.
+
+      ⚠⚠ IT IS SET BY THE DOOR AND NOT BY WHICH NEEDLE MATCHED, which is the
+      narrower rule and the right one: what decides whether typing helps is
+      whether the TURN ENDED, and the event that arrived is exactly that fact. A
+      529 leaves an empty composer and needs a nudge; a peer that never stopped
+      its turn needs to be left alone. A per-needle answer would be a second
+      authority on something the machine already knows.
+
+      ⚠ FALSE IS THE SHIPPED VALUE, and it is the behaviour every run had before
+      this existed: wait, then say the word.
+    -->
+    <data id="service_resumes_itself" expr="false"/>
 
     <!--
       ⚠⚠⚠ HOW LONG TO LEAVE IT ALONE BEFORE SAYING ANYTHING, in milliseconds.
@@ -1988,10 +2052,15 @@
         the only pass that can MEET an outage. A needle on `judge` or `attend`
         would be this document saying something nothing reads.
 
-        ⚠ The template ships an EMPTY value, which declines the whole behaviour;
+        ⚠⚠⚠ AND ONE PASS IS STILL ENOUGH NOW THAT TWO EVENTS READ IT — register
+        item 715. `turn.blocked` and `peer.silent` are both endings of the SAME
+        watch, decided inside it, so the words they are matched against arrive on
+        the pass that produced both rather than on two.
+
+        ⚠ The template ships an EMPTY LIST, which declines the whole behaviour;
         an adopting repository quotes the words its own peer prints.
       -->
-      <param name="needle" expr="service_needle"/>
+      <param name="needles" expr="service_needles"/>
     </send>
   </transition>
   <transition event="pass" cond="In('judging')">
@@ -2350,7 +2419,7 @@
         behaviour; one that writes only a wait has still declined, because an
         empty needle matches nothing.
       -->
-      <assign location="service_needle" expr="_event.data.service_needle"/>
+      <assign location="service_needles" expr="_event.data.service_needles"/>
       <assign location="service_retry_ms" expr="_event.data.service_retry_ms"/>
       <!--
         ⚠⚠⚠⚠⚠ THE ONE ASSIGNMENT HERE THAT IS GUARDED, AND THE GUARD IS A
@@ -2686,10 +2755,20 @@
       error message is a model call spent to arrive at the wrong state, and a
       run whose judge is slow would pay 4-6 seconds of it per outage.
 
-      ⚠ A run whose kind declines this (the shipped empty needle) never sees the
+      ⚠ A run whose kind declines this (the shipped empty list) never sees the
       key set, so both branches below are reached exactly as they were.
+
+      ⚠⚠⚠⚠ AND IT SAYS THE PEER IS *NOT* COMING BACK ON ITS OWN, which is what
+      makes the way out of `service_down` speak. A turn that is OVER left an empty
+      composer and a service that has to be asked again; see
+      `service_resumes_itself` for the door that means the opposite, and note that
+      the assignment is UNCONDITIONAL rather than only on the true side — a run
+      that meets a limit and then a 529 would otherwise carry the limit's silence
+      into an outage that needs a word.
     -->
-    <transition event="turn.blocked" cond="_event.data.service" target="service_down"/>
+    <transition event="turn.blocked" cond="_event.data.service" target="service_down">
+      <assign location="service_resumes_itself" expr="false"/>
+    </transition>
     <transition event="turn.blocked" cond="_event.data.judged" target="redirecting"/>
     <transition event="turn.blocked" target="screening"/>
 
@@ -2762,7 +2841,26 @@
       a run that fell silent unattended read, forever afterwards, as one somebody
       paused on purpose — and the two want opposite things from whoever finds
       them.
+
+      ⚠⚠⚠⚠⚠ AND FIRST, THE ONE SILENCE THAT IS NOT ONE — register item 715.
+      A peer that PRINTED WHY IT IS QUIET has not fallen silent; it has said it is
+      waiting and, in this peer's case, that it will carry on by itself. The
+      paragraph above is right that no reading of a pane separates a frozen agent
+      from a replaced reporter — and it is wrong that this is always that
+      question, because a pane carrying the peer's own account of its silence
+      answers it. `service_needles` is what that account looks like, matched by
+      the driver on the same watch that produced this event; the state below is
+      where *nobody is expected and nothing is wrong* already lives.
+
+      ⚠⚠ THE CONTROL THIS MUST NOT SWALLOW, said here because it is the whole
+      risk of the edge: a peer that is genuinely silent says NOTHING, so it
+      matches no needle and takes the edge below exactly as before. A repair that
+      let real silence reach `service_down` would trade a visible ending for an
+      invisible wait, and the gate holding this holds that half too.
     -->
+    <transition event="peer.silent" cond="_event.data.service" target="service_down">
+      <assign location="service_resumes_itself" expr="true"/>
+    </transition>
     <transition event="peer.silent" target="awaiting_human"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
@@ -2876,17 +2974,22 @@
     `service_retry_text` rather than the milestone — see `restarting` for the
     case where starting over IS the answer, and note that this is not it.
 
-    ⚠ TWO WAYS OUT AND THREE WAYS TO DIE. `service.retry` is the driver saying
+    ⚠ THREE WAYS OUT AND THREE WAYS TO DIE. `service.retry` is the driver saying
     the wait is over; where it LANDS is this document's decision and it is the
-    two transitions below. The other three are the endings every state here
-    carries. There is no edge for *the service came back on its own*, because a
-    run that says nothing learns nothing: the peer only tells us it is healthy by
-    answering, and it can only answer something asked.
+    three transitions below. The other three are the endings every state here
+    carries. There is no edge for *the service came back on its own* where the
+    turn ENDED, because a run that says nothing learns nothing: such a peer only
+    tells us it is healthy by answering, and it can only answer something asked.
+    ⚠⚠ THAT SENTENCE IS ABOUT AN ENDED TURN AND NOT ABOUT EVERY ARRIVAL —
+    register item 715 found the case it did not cover: a peer that never stopped
+    its turn resumes on its own and says so, and the third edge below is that
+    reading. `service_resumes_itself` is which of the two this is.
 
     ⚠⚠⚠⚠ AND THE DRIVER TYPES NOTHING ON THE WAY OUT — `service_retry_text` is
-    OWED by the edge that reaches `working`, on the same terms as every prompt in
-    this document, so the edge that reaches `awaiting_human` owes nothing and
-    says nothing. That ordering is not tidiness: it used to type first and route
+    OWED by the edge that reaches `working` AFTER AN ENDED TURN, on the same terms
+    as every prompt in this document, so the edge that reaches `awaiting_human`
+    owes nothing and says nothing, and neither does the one for a peer that
+    resumes itself. That ordering is not tidiness: it used to type first and route
     afterwards, which put a word into the composer of a service that had just
     refused and then handed a person a pane with somebody else's text in it —
     against this document's own rule that `awaiting_human` leaves the pane
@@ -2920,6 +3023,35 @@
     <transition event="service.retry"
                 cond="service_retry_max != 'never' &amp;&amp; service_retried &gt;= service_retry_max"
                 target="awaiting_human"/>
+    <!--
+      ⚠⚠⚠⚠⚠ AND THE WAY BACK THAT SAYS NOTHING — register item 715, and the
+      only edge in this document whose whole content is a decision NOT to speak.
+
+      The peer that arrived here through `peer.silent` printed that it is
+      continuing automatically, and printed beside it that a keystroke CANCELS
+      that. So the word that `service_retry_text` exists to say would, typed
+      here, destroy the recovery this state waits for. It is not that the word is
+      unnecessary; it is that it is harmful, which is a different claim and the
+      reason this is an edge rather than an empty string somebody could author.
+
+      ⚠⚠⚠ WHAT ENDS THE OUTAGE THEN, since the block above this state says a run
+      that says nothing learns nothing: the peer's own next report. That sentence
+      was written when every arrival here was a turn that had ENDED, and for those
+      it still holds — a service that refused a turn tells us it is healthy only
+      by answering something. A peer mid-turn is the case it did not have: it goes
+      back to `working`, the turn contract is still armed from the sentence that
+      opened it, and either the peer speaks (`turn.done`) or it is still quiet and
+      this state is reached again. **The budget is what bounds that**, which is
+      the edge above, and it is why the clock on the screen is not parsed.
+
+      ⚠⚠ THE COUNTER MOVES HERE TOO. A reader asking in the morning why a run
+      spent the night in one state must see the same number whichever door the
+      outage came in at, and an edge that skipped the `<assign>` would look
+      identical to this one from anywhere except the walk.
+    -->
+    <transition event="service.retry" cond="service_resumes_itself" target="working">
+      <assign location="service_retried" expr="service_retried + 1"/>
+    </transition>
     <transition event="service.retry" target="working">
       <assign location="service_retried" expr="service_retried + 1"/>
       <!--

@@ -304,12 +304,17 @@ impl LoopKind {
     /// agent it will be talking to**, and a needle written into one would quote words at
     /// repositories whose runs talk to something else entirely.
     ///
-    /// # ⚠⚠⚠ THE NEEDLE DECIDES, AND THE OTHER TWO ONLY SHAPE IT
+    /// # ⚠⚠⚠ THE NEEDLES DECIDE, AND THE OTHER TWO ONLY SHAPE IT
     ///
     /// A document with no needle has declined however carefully it filled the other two, so this
     /// answers [`None`] on that alone. The wait and the word then fall back to the template's own
     /// values rather than to numbers invented here — a kind that names the failure and says nothing
     /// about the remedy has asked for the default remedy, not for a broken one.
+    ///
+    /// ⚠⚠ **AND IT IS A SET SINCE REGISTER ITEM 715.** One string could only ever be one sentence,
+    /// and that was the whole of why a usage limit — the most predictable stop an unattended loop
+    /// meets — could not reach the state built for outages. A blank element is dropped rather than
+    /// carried, because [`str::contains`] answers TRUE for the empty string.
     ///
     /// ⚠⚠ A NEGATIVE OR UNREADABLE WAIT IS THE DEFAULT AND NOT AN ERROR, on
     /// [`turn_budget`](Self::turn_budget)'s terms: this is a document a person edits, and the
@@ -317,10 +322,10 @@ impl LoopKind {
     /// refusing. Falling back to ten minutes is the direction to be wrong in.
     #[must_use]
     pub fn service_outage(&self) -> Option<crate::outer::ServiceOutage> {
-        let needle = match self.script.get_variable(&self.session, "service_needle") {
-            Ok(ScriptValue::String(text)) if !text.trim().is_empty() => text,
-            _ => return None,
-        };
+        let needles = self.service_needles();
+        if needles.is_empty() {
+            return None;
+        }
         let every_ms = match self.script.get_variable(&self.session, "service_retry_ms") {
             Ok(ScriptValue::Int(held)) if held > 0 => u64::try_from(held).ok(),
             _ => None,
@@ -333,10 +338,33 @@ impl LoopKind {
             _ => None,
         };
         Some(crate::outer::ServiceOutage {
-            needle,
+            needles,
             every_ms: every_ms.unwrap_or(crate::outer::DEFAULT_SERVICE_RETRY_MS),
             text: text.unwrap_or_else(|| crate::outer::DEFAULT_SERVICE_RETRY_TEXT.to_owned()),
         })
+    }
+
+    /// **THE WORDS THIS KIND'S PEER PRINTS WHEN ITS SERVICE FAILS**, read off its own datamodel —
+    /// empty where the document declines, which is the template's shipped state.
+    ///
+    /// # ⚠⚠⚠⚠ Why it is a list and why a blank element is dropped
+    ///
+    /// Register item 715. One string could only ever be one sentence, and this repository's peer
+    /// says *I am not answering right now* in a family of them — a 529, a usage limit, and whatever
+    /// it invents next. ⚠ A blank `says` is DROPPED rather than carried, because
+    /// [`str::contains`] answers TRUE for the empty string and one stray element would send every
+    /// blocked turn of every run into the wait.
+    ///
+    /// ⚠⚠ AN UNREADABLE LIST IS AN EMPTY ONE — *this document declines*, which is exactly the
+    /// behaviour of every run before item 447 existed. The direction to be wrong in is the one that
+    /// cannot type at somebody's agent, which is [`consents`](Self::consents)' own rule seen from
+    /// the other side.
+    ///
+    /// ⚠ The reading itself lives beside `consents_in` and `rules_in`, for the reason those two
+    /// state: **the reader of an author's list must be ONE reader**, or a template and a kind can
+    /// disagree about what an element is.
+    fn service_needles(&self) -> Vec<String> {
+        OuterLoop::service_needles_in(&self.script, &self.session)
     }
 }
 
@@ -696,6 +724,14 @@ mod tests {
     /// * ⚠⚠ **AND IT IS NOT THE WHOLE FAMILY.** `API Error` alone would swallow a 400, which is
     ///   this run's own fault and will still be its fault in ten minutes — waiting one out forever
     ///   is a worse ending than stopping.
+    /// * ⚠⚠⚠⚠⚠ **AND THE USAGE LIMIT IS HERE, WHICH IS REGISTER ITEM 715.** The list held ONE
+    ///   string, so the most predictable interruption in an unattended loop's life reached none of
+    ///   this machinery: the peer printed *"Usage limit reached · continuing automatically at
+    ///   3:30am"*, stopped speaking, the machine heard `peer.silent`, and the run was `blocked` an
+    ///   hour later while the peer resumed on its own and kept working.
+    /// * ⚠⚠⚠ **AND NOT THE RECOVERY NOTICE**, which is the same family and the opposite fact:
+    ///   `Usage limit reset · continuing automatically` says the outage is OVER, so the trailing
+    ///   `at` in the needle is load-bearing and is asserted rather than commented.
     /// * **AND THE REMEDY IS THE OWNER'S**: ten minutes, and a word that means carry on rather
     ///   than the milestone again — the session survived the outage holding everything it had.
     #[test]
@@ -705,21 +741,57 @@ mod tests {
                      that paid 28 minutes to find it learns nothing",
         );
         assert!(
-            outage.needle.contains("529"),
+            outage.needles.iter().any(|says| says.contains("529")),
             "⚠⚠⚠⚠ THE CODE IS THE STABLE HALF and the apology around it is not: {:?}",
-            outage.needle,
+            outage.needles,
         );
+        for says in &outage.needles {
+            assert!(
+                says.len() < "API Error: 529 Overloaded. This is a server-side issue".len(),
+                "⚠⚠⚠ EVERY ELEMENT MUST BE A SHORT HEAD. The messages arrive WRAPPED across rows, \
+                 and a needle carrying a whole sentence depends on where the terminal broke it: \
+                 {says:?}",
+            );
+            assert_ne!(
+                says.trim(),
+                "API Error",
+                "⚠⚠ NOT THE WHOLE FAMILY: a 400 is this run's own fault and waiting it out \
+                 forever is a worse ending than stopping",
+            );
+            // ⚠⚠⚠⚠⚠ AND NOT THE BARE WORD THIS LOOP WRITES ABOUT — register item 715. The
+            // fallback reads the PANE, and a debt run's own agent edits a register that discusses
+            // usage limits by name, so `limit` alone is a needle a run can print BY WORKING. That
+            // is not a hypothetical about some other repository: it is this one.
+            assert_ne!(
+                says.trim(),
+                "limit",
+                "⚠⚠⚠ a needle this loop's own work puts on the screen stops the loop for working",
+            );
+        }
+        // ⚠⚠⚠⚠ AND THE USAGE LIMIT IS NAMED AT ALL, which is what item 715 measured missing: the
+        // most predictable stop in an unattended loop's life reached none of this machinery
+        // because the needle was ONE string and that string was the 529.
         assert!(
-            outage.needle.len() < "API Error: 529 Overloaded. This is a server-side issue".len(),
-            "⚠⚠⚠ IT MUST BE THE SHORT HEAD. The message arrives WRAPPED across rows, and a needle \
-             carrying the whole sentence depends on where the terminal broke it: {:?}",
-            outage.needle,
+            outage
+                .needles
+                .iter()
+                .any(|says| says.contains("continuing automatically")),
+            "⚠⚠⚠⚠⚠ THE PEER'S OWN RECOVERY SENTENCE MUST BE HERE. Without it a usage limit is \
+             filed as `peer.silent`, the run reaches `blocked` an hour later, and the peer goes on \
+             working with nobody driving it — measured on run 5, 2026-08-27: {:?}",
+            outage.needles,
         );
-        assert_ne!(
-            outage.needle.trim(),
-            "API Error",
-            "⚠⚠ NOT THE WHOLE FAMILY: a 400 is this run's own fault and waiting it out forever is \
-             a worse ending than stopping",
+        // ⚠⚠⚠ AND IT DOES NOT MATCH THE PEER SAYING IT IS BACK. `Usage limit reset · continuing
+        // automatically` is the RECOVERY notice, in the same transcripts, and a needle that
+        // swallowed it would file a healthy peer as a broken one. The trailing `at` is what
+        // separates them, and this is the assertion that says so rather than a comment.
+        assert!(
+            !outage
+                .needles
+                .iter()
+                .any(|says| "Usage limit reset · continuing automatically".contains(says.as_str())),
+            "⚠⚠⚠⚠ A NEEDLE MUST NOT MATCH THE RECOVERY NOTICE: {:?}",
+            outage.needles,
         );
         assert_eq!(
             outage.every_ms, 600_000,

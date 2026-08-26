@@ -709,11 +709,19 @@ pub enum Asked {
         /// consulted, so a reader of the document could not tell that a blocked turn is matched
         /// against it at all. It now rides the `watch` pass, where the matching happens.
         ///
+        /// # ⚠⚠⚠⚠ It is a LIST, and it crosses as the JSON the datamodel renders
+        ///
+        /// Register item 715. One string could only ever be one sentence, and a peer's ways of
+        /// saying *I am not answering right now* are a family — so the document authors a set and
+        /// this carries it whole. The crossing is the one `answers` already takes: a composite
+        /// `<data>` arrives here as its JSON text, and `OuterLoop::service_needles_of` is the one
+        /// reader of it.
+        ///
         /// ⚠⚠ [`None`] IS A REAL ANSWER AND NOT A MISSING ONE: only the passes that WATCH a turn
         /// can meet an outage, so every other `pass.do` declares no needle and this is `None` for
-        /// them. An empty string is also a real answer — the template ships one, and it declines
-        /// the whole behaviour.
-        needle: Option<String>,
+        /// them. An EMPTY LIST is also a real answer — the template ships one, and it declines the
+        /// whole behaviour.
+        needles: Option<String>,
         /// **HOW LONG THE READINESS BARRIER MAY WAIT**, in milliseconds, exactly as the document
         /// wrote it.
         ///
@@ -1210,6 +1218,11 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
             // only where the pass could MEET an outage — `watch` — so a document that declared one
             // on `judge` or `attend` would be saying something nothing reads. What must never be
             // optional is the word that says WHAT the pass is; this qualifies one of its answers.
+            //
+            // ⚠⚠ `first()` IS RIGHT FOR A LIST TOO, and that is worth one line because it looks
+            // wrong: this `Vec` is *how many `<param>` elements shared a name*, not *how many
+            // elements the value has*. The needles are ONE `<param>` whose value is a table, so
+            // they arrive as one string — the same crossing `answers` takes.
             let optional = |name: &str| params.get(name).and_then(|values| values.first()).cloned();
             // ⚠⚠ AND THE PERSON'S TWO NUMBERS ARE OPTIONAL SEPARATELY BUT MEANINGLESS APART, which
             // is a distinction this reader deliberately does not make: it carries what the document
@@ -1217,7 +1230,7 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
             // that cannot say *and its other half* — see `awaits`.
             Ok(Asked::Pass {
                 does,
-                needle: optional("needle"),
+                needles: optional("needles"),
                 within: optional("within"),
                 awaits: optional("awaits"),
                 stills: optional("stills"),
