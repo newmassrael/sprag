@@ -8655,6 +8655,102 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **THE FOUR ENDINGS A RUN CAN REACH FROM `working` SAY WHAT A STOP WOULD STILL HAVE
+    /// TO REACH** — register item 470, stage 3, and this gate exists because a mutation went GREEN.
+    ///
+    /// # ⚠⚠⚠⚠ What a green mutation named, and why nothing was watching
+    ///
+    /// `AiLoop::driving` used to answer *which pane would a stop have to signal* from a
+    /// twenty-eight-arm state match. That moved into the document as `end.publish`'s `signals`
+    /// argument, and then flipping `cancelled` from `pane` to `nothing` — a change that leaves a
+    /// live model running after a cancel — was **green across the whole suite**. Every `driving`
+    /// gate in `driver.rs` is over a hand-written STUB plugin, never this one; the live cancel gate
+    /// never enters the document's `cancelled` at all, because the Driver ends a cancelled run from
+    /// OUTSIDE, at its loop top. So six of the seven words had no eye on them whatever.
+    ///
+    /// # ⚠⚠ Why it reads the HOST's record rather than the document's text
+    ///
+    /// Asserting the file says `'pane'` would be one copy of the document checked against another.
+    /// What is read here is what the RUNNING machine handed this host when it entered the ending —
+    /// the same reader `OuterLoop::signalling` uses — so a `<param>` that stopped being evaluated,
+    /// a word outside the space, and an `<onentry>` that never fired all land here as a failure.
+    ///
+    /// ⚠ **FOUR OF SEVEN, NAMED RATHER THAN ROUNDED UP.** `converged` and `exhausted` need a judged
+    /// turn and a spent budget to reach, and `abandoned` needs a hold to expire in the orders
+    /// region; none is one or two events from `working`, so they stay uncovered and stay in the
+    /// register. This gate covers the four that are: `failed`, `cancelled`, `peer_gone` and
+    /// `blocked`.
+    #[test]
+    fn the_endings_a_run_reaches_from_working_say_what_a_stop_must_still_reach() {
+        for (route, publishes, signals) in [
+            (
+                vec![AiLoopEvent::Fail],
+                crate::act::Publishes::Failed,
+                crate::act::Signals::Pane,
+            ),
+            // ⚠⚠⚠ THE ONE THE GREEN MUTATION WAS ABOUT. `cancel` is reached because the run ended
+            // WHILE THE AGENT WAS MID-TURN, so the peer is working and a stop has somewhere to go.
+            (
+                vec![AiLoopEvent::Cancel],
+                crate::act::Publishes::Cancelled,
+                crate::act::Signals::Pane,
+            ),
+            // ⚠⚠ THE ONE ANSWERED ON EVIDENCE RATHER THAN ON THE FAIL-SAFE: this state is only
+            // reached because the pane's child was SEEN to have exited.
+            (
+                vec![AiLoopEvent::PeerGone],
+                crate::act::Publishes::PeerGone,
+                crate::act::Signals::Nothing,
+            ),
+            (
+                vec![AiLoopEvent::TurnInterrupted, AiLoopEvent::Unattended],
+                crate::act::Publishes::Blocked,
+                crate::act::Signals::Pane,
+            ),
+        ] {
+            let (mut engine, host, _lua, _session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Working,
+                "⚠⚠⚠ THE FIXTURE: every route below is raised from `working` and nowhere else",
+            );
+            assert_eq!(
+                host.signalling(),
+                None,
+                "⚠⚠⚠⚠ THE CONTROL, and it is the arm a cancelled run actually takes: a machine \
+                 that has not reached an ending has published NOTHING, which `AiLoop::driving` \
+                 folds in with *there IS a pane*. If this ever answers here, that fold has lost \
+                 the case it was written for",
+            );
+
+            for event in route {
+                carried(&mut engine, &host, event, "");
+            }
+            assert!(
+                engine.is_in_final_state(),
+                "the fixture: this route must reach an ending, or nothing below is about one. \
+                 Saw {:?}",
+                engine.get_current_state(),
+            );
+            assert_eq!(
+                host.published(),
+                Some(publishes),
+                "⚠⚠⚠ the ending this route reaches must publish its own word",
+            );
+            assert_eq!(
+                host.signalling(),
+                Some(signals),
+                "⚠⚠⚠⚠⚠ THIS ENDING SAYS THE WRONG THING ABOUT WHAT A STOP MUST REACH. \
+                 `{publishes:?}` declares `{signals:?}` because of what is true of its PANE, and \
+                 the direction fails safe: a needless interrupt costs a peer one keystroke it was \
+                 waiting at anyway, and a missed one leaves a model spending somebody's tokens on \
+                 a question nothing is waiting for",
+            );
+        }
+    }
+
     /// ⚠⚠⚠⚠⚠ **A PEER THAT WENT SILENT AND A PEER THAT IS GONE ARE TWO WORDS AND TWO
     /// DESTINATIONS** — register item 458's edge, and the document's own answer to *is this
     /// recoverable*.
