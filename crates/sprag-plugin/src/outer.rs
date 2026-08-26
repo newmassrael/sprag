@@ -14277,6 +14277,165 @@ mod tests {
     /// And where it says the replacement should start reading.
     const READ_NEXT: &str = "the register entry for it";
 
+    /// ⛔⛔⛔⛔⛔ **A REPLACEMENT SESSION IS TYPED THE MILESTONE THIS RUN IS ON NOW** — the north
+    /// star's item A, *a restart does not restore the run's place*, asked of a RUN.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was gated before this, and what nothing gated at all
+    ///
+    /// `ai_loop.scxml` composes `start_prompt` in `priming`, and `priming` is entered TWICE — once
+    /// at the start and again on `session.ready`, which is the door a replacement comes through.
+    /// The document's own comment says why that matters: *"a fresh agent remembers nothing of
+    /// having been redirected. A loop that carried its instructions only in `turn_prompt` would
+    /// hand its replacement a clean slate and the original milestone."*
+    ///
+    /// **Every gate over that walks the document or calls a builder.**
+    /// `ai_loop`'s `a_milestone_re_typed_into_a_replacement_session_says_how_old_it_is` raises
+    /// `SessionReplaced` and `SessionReady` at the machine by hand and reads the DATAMODEL;
+    /// `a_replacement_session_forgets_the_record_its_predecessor_was_writing` calls
+    /// `Session::replacing` directly. Measured before writing this: **`AiLoopState::Resuming` is
+    /// named exactly once in this whole file and it is the driver's own effect** — no gate here had
+    /// ever driven a run through a session replacement at all.
+    ///
+    /// ⚠⚠ So the composition was proven and the DELIVERY was not, which is this workspace's own
+    /// standing finding twice over: *on the wire is not in front of a person*, and *a gate that
+    /// calls the builder cannot see the wiring — measure the door the product calls*.
+    ///
+    /// # ⚠⚠⚠ What a run can say here that a walk cannot
+    ///
+    /// The pane is REAL and it is a DIFFERENT pane: `respawn` answers a fresh one, so its text
+    /// holds the replacement's prompt and nothing of its predecessor's. That is what makes the
+    /// negative claim below sound — a walk over one datamodel could never assert *the old milestone
+    /// is not in front of this agent*, because there is no second screen to be absent from.
+    #[test]
+    fn a_replacement_session_is_typed_the_milestone_this_run_is_on_now() {
+        /// Above any reading, so nothing here restarts for want of room.
+        const ROOMY: i64 = 800_000;
+        /// The milestone the run OPENS with, and the one a replacement must no longer be reciting
+        /// once a reflection has moved the checkpoint on.
+        const OPENED_WITH: &str = "the checkpoint this run opened with";
+        /// The run's purpose, which a restart must NOT lose — the control on the other side.
+        const PURPOSE: &str = "keep the stand-in answering until somebody says stop";
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        // ⚠⚠⚠ A PATH NOTHING WROTE, and that is the staging rather than a shortcut: `context` reads
+        // 0, every guard in `reviewing` that prices a replacement declines on the READING, and the
+        // run leaves by `unread`. So WHAT restarts this run is independent of every number a later
+        // round might tune — the same discipline the economic gates' own staging uses.
+        let nowhere = std::env::temp_dir()
+            .join(format!("sprag-place-{}", std::process::id()))
+            .join("no-record-was-ever-written.jsonl");
+        let access = crate::testing::supervised_writing(&workspace, &nowhere);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: PURPOSE.to_string(),
+                milestone: OPENED_WITH.to_string(),
+                reference: "what this run was handed at the start".to_string(),
+                closing_rules: None,
+                context_ceiling: Some(ROOMY),
+                reflect_after_refusals: None,
+                milestone_check: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                // ⚠ ON: one judged turn brings the run to `reflecting`, where the peer proposes the
+                // successor this gate is about.
+                reflect_every: Some(1),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        // What each session had on its screen by the time it finished answering. ⚠ Read at
+        // `turn.done` and not at `prompt.sent`: the peer ECHOES what is typed and then replies, so
+        // a turn it has COMPLETED is a turn whose prompt is unarguably painted.
+        let mut greeted: Vec<String> = Vec::new();
+        while walked.len() < 60 {
+            let moved = loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable");
+            let Pumped::Moved {
+                from, raised, to, ..
+            } = moved
+            else {
+                panic!("this run must keep moving: {moved:?}, walked {walked:?}");
+            };
+            walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+            if from == AiLoopState::Working && raised == AiLoopEvent::TurnDone {
+                greeted.push(
+                    access
+                        .pane_collapsed(loops.driving.pane)
+                        .unwrap_or_default(),
+                );
+                if greeted.len() == 2 {
+                    break;
+                }
+            }
+        }
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        assert!(
+            walked
+                .iter()
+                .any(|edge| edge.contains("Restarting --SessionReplaced--> Resuming")),
+            "⚠⚠⚠⚠⚠ THE PREMISE: this run must actually have REPLACED its session, or the second \
+             screen below is the first one still and every claim about a replacement is about \
+             nothing. Walked {walked:?}",
+        );
+        let [first, again] = greeted.as_slice() else {
+            panic!("two sessions must each have answered a turn in 60 passes: walked {walked:?}");
+        };
+
+        // ── THE CONTROL: the opening session really was told the opening milestone ──
+        assert!(
+            first.contains(OPENED_WITH),
+            "⚠⚠⚠ THE CONTROL: the FIRST session must have been typed the milestone the run was \
+             briefed with. Without this, the absence asserted below is satisfied by this gate \
+             being unable to read a pane at all. Screen: {first:?}",
+        );
+
+        // ── AND THE REPLACEMENT IS BRIEFED ON THE CHECKPOINT THE RUN IS ACTUALLY ON ──
+        assert!(
+            again.contains(NEXT) && again.contains(READ_NEXT),
+            "⛔⛔⛔⛔⛔ THE NORTH STAR'S ITEM A: a session replaced mid-run comes up remembering \
+             NOTHING, and `start_prompt` is the only channel there is. This one was not typed the \
+             milestone its own run adopted one state earlier, so it is about to work toward a \
+             checkpoint the run has moved past while being judged against the one it cannot see — \
+             register item 523's finding, on the door that replaces a session rather than the one \
+             that keeps it. Screen: {again:?}",
+        );
+        assert!(
+            again.contains(PURPOSE),
+            "⚠⚠⚠⚠ AND THE RUN'S PURPOSE CROSSES WITH IT. A replacement told its next checkpoint \
+             and not what the checkpoint is FOR cannot tell a finished milestone from a finished \
+             run, which is the one judgement `reflecting` asks it to make. Screen: {again:?}",
+        );
+        assert!(
+            !again.contains(OPENED_WITH),
+            "⛔⛔⛔⛔ AND THE MILESTONE THE RUN HAS MOVED PAST IS NOT STILL IN FRONT OF IT. This is \
+             the half a walk over one datamodel cannot make — a replacement is a DIFFERENT pane, so \
+             the old checkpoint is absent or it was re-typed. Re-typed, the run drives at a \
+             checkpoint it retired and nothing in the walk says so. Screen: {again:?}",
+        );
+    }
+
     /// Drive a run until it takes the edge OUT of `reviewing`, and hand back where it went, what
     /// that pass said, and the whole walk — because *which line* is the first question of any red.
     ///
