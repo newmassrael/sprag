@@ -9229,10 +9229,13 @@ impl OuterLoop {
     /// with this run's echo and the TUI's furniture still in them — which is why the pane road keeps
     /// the discounting the statement road does not need.
     fn turn_produced(&self, panes: &dyn PaneAccess) -> Produced {
-        self.stated_this_turn(panes).map_or_else(
-            || Produced::Painted(self.driving.since.taken(panes, self.driving.pane)),
-            Produced::Stated,
-        )
+        match self.stated_this_turn(panes) {
+            Ok(stated) => Produced::Stated(stated),
+            // ⚠⚠⚠ THE REASON TRAVELS WITH THE FALLBACK — register item 486. This is the one line
+            // that knows WHY the pane is being read, and until now it threw that away: the three
+            // worlds `stated_this_turn` names arrived here as one `None` and left as one word.
+            Err(why) => Produced::Painted(self.driving.since.taken(panes, self.driving.pane), why),
+        }
     }
 
     /// **WHAT THE PEER SAYS IT ANSWERED IN THIS TURN**, or [`None`] where it has not said.
@@ -9242,16 +9245,33 @@ impl OuterLoop {
     /// past what [`say`](Self::say) armed. An unmoved counter is the previous turn's answer still
     /// standing in the tracker, and reading it would be the same defect one end over.
     ///
-    /// ⚠ `None` covers three worlds a caller treats identically — no supervisor, no agent, and an
-    /// agent that has stated nothing since the question — because all three mean *this run must
-    /// read the pane instead*.
-    fn stated_this_turn(&self, panes: &dyn PaneAccess) -> Option<String> {
-        let seen = panes
+    /// ⛔⛔⛔⛔⛔ **THE THREE WORLDS ARE NAMED NOW, AND THEY USED TO BE ONE `None`** — register item
+    /// 486, and this doc is where the defect was WRITTEN DOWN and left standing. It said: *"`None`
+    /// covers three worlds a caller treats identically — no supervisor, no agent, and an agent that
+    /// has stated nothing since the question — because all three mean this run must read the pane
+    /// instead."*
+    ///
+    /// **That last clause is true of the READING and false of the READER.** All three do send this
+    /// run to the pane; they do not send a PERSON to the same place, and the walk printed one
+    /// remedy for all of them — *install the agent's hook* — which run 31 was measured being told
+    /// while its hook was alive and reporting. A comment naming a flattening is not a gate against
+    /// it, and this one outlived two re-judgements of the item.
+    ///
+    /// ⚠ See [`Unstated`] for what each word rules out.
+    fn stated_this_turn(&self, panes: &dyn PaneAccess) -> Result<String, Unstated> {
+        let Some(seen) = panes
             .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(self.driving.pane))?;
-        (seen.said_seq > self.driving.said_at)
-            .then_some(seen.said)
-            .flatten()
+            .and_then(|supervisor| supervisor.pane_agent_state(self.driving.pane))
+        else {
+            return Err(Unstated::Unsupervised);
+        };
+        // ⚠⚠ THE PAIRING IS UNCHANGED — a statement counts as this turn's only once the peer's own
+        // count has moved past what `say` armed. What changed is that failing it is now a WORLD
+        // with a name (`NotYet`) instead of a `None` shared with a pane nobody supervises.
+        if seen.said_seq <= self.driving.said_at {
+            return Err(Unstated::NotYet);
+        }
+        seen.said.ok_or(Unstated::Empty)
     }
 
     fn said_marker(&self, panes: &dyn PaneAccess, variable: &str) -> Heard {
@@ -9267,7 +9287,10 @@ impl OuterLoop {
             // with its own measurement rather than a rider on this one. **Registered.**
             return Heard::NotSaid {
                 read: 0,
-                from: Evidence::Pane,
+                // ⚠⚠ AND IT SAYS SO NOW — register item 486. No peer was asked and no pane was
+                // read, so `Unsupervised` would be a claim about a supervisor nobody consulted.
+                // This NARROWS the world the comment above registers; it does not close it.
+                from: Evidence::Pane(Unstated::NoMarker),
             };
         };
         // ⚠⚠⚠⚠⚠ **THE PEER IS ASKED BEFORE THE PANE IS READ** — register item 441, and the whole of
@@ -9292,7 +9315,7 @@ impl OuterLoop {
         // ⚠ The fallback below is not dead code and must not be deleted: a peer with no hook
         // installed, a host with no supervisor, and a reporter that has gone mute all reach it, and
         // for them the pane is the only evidence there is.
-        let produced = match self.turn_produced(panes) {
+        let (produced, why) = match self.turn_produced(panes) {
             Produced::Stated(stated) => {
                 let lines: Vec<&str> = stated.lines().collect();
                 let said = lines.iter().enumerate().any(|(at, line)| {
@@ -9312,7 +9335,10 @@ impl OuterLoop {
                     }
                 };
             }
-            Produced::Painted(produced) => produced,
+            // ⚠ THE REASON IS CARRIED DOWN THE PANE PATH — register item 486 — because the two
+            // answers this function ends in are composed at the bottom, and a reason re-derived
+            // there would be a second authority on which world this judgement is in.
+            Produced::Painted(produced, why) => (produced, why),
         };
         // ⚠⚠⚠⚠ **AND THE UNFINISHED LAST LINE COUNTS WHEN — AND ONLY WHEN — THE CHILD HAS EXITED.**
         // [`sprag_vt::LinesSince::partial`] sanctions exactly one reading of it: *an unfinished line
@@ -9354,7 +9380,7 @@ impl OuterLoop {
             };
         }
         match (said, produced.lost) {
-            (true, _) => Heard::Said(Evidence::Pane),
+            (true, _) => Heard::Said(Evidence::Pane(why)),
             // ⚠⚠⚠ THE ORDER IS THE CLAIM: a marker FOUND is `Said` whatever was evicted, because a
             // line that is there was not lost. Only an absence has to be qualified, and this is the
             // qualification the answer could not carry before.
@@ -9365,7 +9391,7 @@ impl OuterLoop {
             // one told sixty knows the marker was REJECTED rather than missing.
             (false, 0) => Heard::NotSaid {
                 read: lines.len() as u64,
-                from: Evidence::Pane,
+                from: Evidence::Pane(why),
             },
             (false, lost) => Heard::Unheard { lost },
         }
@@ -9412,7 +9438,9 @@ impl OuterLoop {
                 let said = said.trim();
                 (!said.is_empty()).then(|| said.to_owned())
             }
-            Produced::Painted(produced) => crate::report::account(&produced, &self.driving.asked),
+            Produced::Painted(produced, _) => {
+                crate::report::account(&produced, &self.driving.asked)
+            }
         }
     }
 
@@ -9582,13 +9610,98 @@ pub enum Evidence {
     /// The reading to prefer wherever it exists: it is what the program has, before a terminal has
     /// drawn a cell of it, so no repaint, scroll, width or eviction can take it away.
     Statement,
-    /// **THE PANE**, read as complete logical lines since this turn's mark — the fallback for a peer
-    /// nothing supervises, an agent with no hook installed, and a reporter that has gone mute.
+    /// **THE PANE**, read as complete logical lines since this turn's mark — and WHY the statement
+    /// road was not available, which is register item 486.
     ///
     /// ⚠ Named as a degradation rather than an equivalent: what it can say about a repainting agent
     /// is bounded by whether that agent's output ever moves the pane's addresses, and one was
     /// measured never moving them again.
-    Pane,
+    Pane(Unstated),
+}
+
+/// **WHY A JUDGEMENT HAD TO READ THE PANE** — register item 486, and the word that decides which
+/// remedy a reader is given.
+///
+/// # ⛔⛔⛔⛔⛔ The defect: one word, four worlds, and the wrong repair printed
+///
+/// `OuterLoop::stated_this_turn` said so about itself in its own doc — *"`None` covers three
+/// worlds a caller treats identically"* — and being written down is not the same as being told
+/// apart. [`Evidence::Pane`] was that flattening arriving at a person, and the walk's sentence for
+/// it ends **"Install the agent's hook and this judgement reads what it SAID instead"**.
+///
+/// ⛔⛔ **THAT REMEDY WAS MEASURED FALSE ON THE RUN ITEM 486 IS ABOUT.** 2026-08-25, sprag run 31:
+/// two judgements read the pane at 21:32 and 21:33 while that pane's hook was ALIVE AND REPORTING
+/// in the same minute — `40: working claude source=hook:claude seq=13 asked=7 said=3`. So the run
+/// told whoever read it to install a hook that was already installed, which is worse than saying
+/// nothing: it is a wrong errand, printed with confidence, on the one reading a person acts on.
+///
+/// # ⚠⚠⚠ What the four words are, and why each is a different repair
+///
+/// Nothing here is inferred — each is a branch the code already had and could not say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unstated {
+    /// **NOTHING ANSWERS FOR THIS PANE**: no supervisor at all, or a supervisor holding no agent
+    /// state for it. The peer has no hook installed, or this host cannot see one.
+    ///
+    /// ⚠ **THE ONE WORLD THE OLD SENTENCE WAS TRUE OF**, and now the only one it is printed for.
+    Unsupervised,
+    /// **THE PEER IS REPORTED AND HAS NOT STATED SINCE THIS TURN'S QUESTION WAS ARMED** — its
+    /// `said_seq` has not moved past what `OuterLoop::say` recorded. **The LATE world**, and
+    /// the one run 31 was in.
+    ///
+    /// ⚠⚠ It says *has not stated YET*, never *is late*, and the difference is what the code
+    /// actually knows: a peer that will never state again produces the same reading. What it does
+    /// rule out is the hook being missing — something IS reporting, so *install the hook* is the
+    /// wrong errand here and the sentence must not print it.
+    NotYet,
+    /// **IT HAS STATED SINCE THE QUESTION AND THE STATEMENT CARRIES NO TEXT** — `said_seq` moved
+    /// and `said` is empty. A fact about the REPORTER rather than about the pane or the agent.
+    Empty,
+    /// **NOTHING WAS ASKED OF ANY READER**: the datamodel could not say what the marker IS, so this
+    /// judgement returned before consulting the peer or the pane.
+    ///
+    /// ⚠ It NARROWS the fourth world `said_marker`'s own comment registers (*"`read: 0` is honest
+    /// here — but it is the SAME `0` a turn that printed nothing leaves, so this world is narrowed
+    /// rather than separated"*) and does not close it: what that item wants is a different answer
+    /// from the DOCUMENT, and this only stops the reading claiming a pane was read.
+    NoMarker,
+}
+
+impl Unstated {
+    /// **WHAT A READER SHOULD DO ABOUT IT** — appended to the walk's sentence, and [`None`] where
+    /// there is nothing to do.
+    ///
+    /// ⚠⚠⚠ **THE WHOLE POINT IS THAT THESE DIFFER.** One sentence for four worlds is what printed
+    /// *install the hook* at a run whose hook was reporting, and a reader who follows a wrong
+    /// errand has spent the trust the next warning needs.
+    #[must_use]
+    pub const fn remedy(self) -> Option<&'static str> {
+        match self {
+            Self::Unsupervised => Some(
+                " ⚠ A 0 off the PANE is not evidence about the peer: a full-screen agent repaints \
+                 rather than scrolls, so once its composer settles the pane's line addresses stop \
+                 advancing and every read since any mark is empty. NOTHING REPORTS FOR THIS PANE — \
+                 install the agent's hook and this judgement reads what it SAID instead",
+            ),
+            Self::NotYet => Some(
+                " ⚠⚠ THE HOOK IS INSTALLED AND REPORTING — it simply has not stated anything since \
+                 this turn's question was armed, so this run looked before the peer spoke. Do NOT \
+                 go and install a hook: measured 2026-08-25 (run 31), that is what this sentence \
+                 used to say while the pane's reporter was alive at `seq=13 asked=7 said=3`. A 0 \
+                 off the pane here is still not evidence about the peer",
+            ),
+            Self::Empty => Some(
+                " ⚠⚠ THE PEER'S REPORTER MOVED ITS STATEMENT COUNT AND CARRIED NO TEXT, which is a \
+                 fact about the REPORTER rather than about the agent or the pane — the hook fired \
+                 and said nothing",
+            ),
+            Self::NoMarker => Some(
+                " ⚠⚠ NO PANE WAS READ AND NO PEER WAS ASKED: this loop's datamodel could not say \
+                 what the marker IS, so the `0` above is nothing having been looked at rather than \
+                 nothing having been produced. Nobody's agent is at fault; the document is",
+            ),
+        }
+    }
 }
 
 /// **WHAT A TURN PRODUCED**, as the road it was read by — see [`OuterLoop::turn_produced`].
@@ -9601,8 +9714,9 @@ enum Produced {
     /// The agent's own account of this turn, off the hook that ended it.
     Stated(String),
     /// The pane's complete logical lines since this turn's mark, with everything
-    /// [`crate::report::Produced`] admits it cannot see.
-    Painted(crate::report::Produced),
+    /// [`crate::report::Produced`] admits it cannot see — and WHY this road was taken at all
+    /// ([`Unstated`], register item 486).
+    Painted(crate::report::Produced, Unstated),
 }
 
 impl Produced {
@@ -9615,7 +9729,7 @@ impl Produced {
     fn text(&self) -> String {
         match self {
             Self::Stated(said) => said.clone(),
-            Self::Painted(produced) => produced.lines.join("\n"),
+            Self::Painted(produced, _) => produced.lines.join("\n"),
         }
     }
 
@@ -9639,7 +9753,7 @@ impl Produced {
     const fn evidence(&self) -> Evidence {
         match self {
             Self::Stated(_) => Evidence::Statement,
-            Self::Painted(_) => Evidence::Pane,
+            Self::Painted(_, why) => Evidence::Pane(*why),
         }
     }
 }
@@ -9658,7 +9772,20 @@ impl Evidence {
     pub const fn named(self) -> &'static str {
         match self {
             Self::Statement => "the agent's own account of this turn",
-            Self::Pane => "the pane, since this turn's prompt",
+            // ⚠ THE READER'S NAME IS UNCHANGED BY THE REASON, deliberately. *Which reader answered*
+            // and *why the other one could not* are two facts (register item 486), and folding the
+            // second into this sentence would move a word three composers already print. The reason
+            // travels beside it, in [`Unstated::remedy`].
+            Self::Pane(_) => "the pane, since this turn's prompt",
+        }
+    }
+
+    /// **WHY THE STATEMENT ROAD WAS NOT AVAILABLE**, or [`None`] where it WAS — register item 486.
+    #[must_use]
+    pub const fn unstated(self) -> Option<Unstated> {
+        match self {
+            Self::Statement => None,
+            Self::Pane(why) => Some(why),
         }
     }
 }
@@ -9760,22 +9887,20 @@ impl Heard {
                 "the judge read {} — {read} line(s) of it — and the agent had not declared, which \
                  is what an ordinary turn looks like; nothing here needs acting on.{}",
                 from.named(),
-                match from {
-                    // ⚠⚠⚠⚠⚠ THE SENTENCE THAT USED TO STAND HERE WAS FALSE, AND IT SENT A WHOLE
-                    // ROUND AFTER THE WRONG MECHANISM — register item 441. It read *"A 0 here is a
-                    // turn that printed nothing since its prompt, which an agent that answered is
-                    // not"*, which is exactly what a repainting agent's pane produces for ever:
-                    // measured at `whole=37`, unmoving, while the agent replied every turn.
-                    Evidence::Pane =>
-                        " ⚠ A 0 off the PANE is not evidence about the peer: a full-screen agent \
-                         repaints rather than scrolls, so once its composer settles the pane's \
-                         line addresses stop advancing and every read since any mark is empty. \
-                         Install the agent's hook and this judgement reads what it SAID instead",
-                    // Nothing to qualify: the peer stated its own answer and the marker is not in
-                    // it. A 0 here is the agent stating an empty answer, which is a fact about the
-                    // agent rather than about a reader.
-                    Evidence::Statement => "",
-                },
+                // ⚠⚠⚠⚠⚠ THE SENTENCE THAT USED TO STAND HERE WAS FALSE, AND IT SENT A WHOLE
+                // ROUND AFTER THE WRONG MECHANISM — register item 441. It read *"A 0 here is a
+                // turn that printed nothing since its prompt, which an agent that answered is
+                // not"*, which is exactly what a repainting agent's pane produces for ever:
+                // measured at `whole=37`, unmoving, while the agent replied every turn.
+                //
+                // ⛔⛔⛔⛔⛔ **AND ITS REPLACEMENT WAS FALSE TOO, ON THE RUN ITEM 486 IS ABOUT** —
+                // one sentence for every pane read, ending *install the agent's hook*, printed at
+                // a judgement whose pane was reporting `seq=13 asked=7 said=3` in the same minute
+                // (2026-08-25, sprag run 31). The reader was sent to do something already done.
+                // The remedy is the REASON's now, and `Evidence::Statement` still qualifies
+                // nothing: the peer stated its own answer and the marker is not in it, which is a
+                // fact about the agent rather than about a reader.
+                from.unstated().and_then(Unstated::remedy).unwrap_or(""),
             ),
             Self::Unheard { lost } => format!(
                 "THE JUDGE COULD NOT READ THE WHOLE TURN: {lost} complete lines were evicted from \
@@ -14217,7 +14342,8 @@ mod tests {
             // the same word about a completely different failure.
             Heard::NotSaid {
                 read: 1,
-                from: Evidence::Pane,
+                // ⚠ This double reports no supervisor, which is the world the word names — item 486.
+                from: Evidence::Pane(Unstated::Unsupervised),
             },
             "⚠⚠ THE CONTROL: with nothing evicted, a marker that is not there was NOT SAID, and the \
              run may act on that absence. If this arm is ever `Unheard` the type says every turn is \
@@ -14397,7 +14523,7 @@ mod tests {
             loops.said_done(&Printed(Vec::new())),
             Heard::NotSaid {
                 read: 0,
-                from: Evidence::Pane,
+                from: Evidence::Pane(Unstated::Unsupervised),
             },
             "⚠⚠⚠ A TURN THAT PRINTED NOTHING MUST SAY SO. This is the world where the peer never \
              answered — the run's own question did not even come back — and it is the one a reader \
@@ -14412,7 +14538,7 @@ mod tests {
             ])),
             Heard::NotSaid {
                 read: 3,
-                from: Evidence::Pane,
+                from: Evidence::Pane(Unstated::Unsupervised),
             },
             "⚠⚠⚠⚠ AND A TURN THE JUDGE READ THREE LINES OF MUST SAY THREE — the same word as the \
              arm above and a completely different problem. ⚠ The number is `lines`' own length, so \
@@ -14573,14 +14699,243 @@ mod tests {
             }),
             Heard::NotSaid {
                 read: 0,
-                from: Evidence::Pane,
+                // ⛔⛔⛔⛔⛔ **THE `NotYet` WORLD, AND THIS FIXTURE WAS ALREADY STAGING IT** —
+                // register item 486. A supervisor answers for this pane and its statement count
+                // has not moved past the arming, which is the ONE case run 31 was measured in and
+                // the one the walk used to answer *install the agent's hook* for. The word here is
+                // the whole distinction: `Unsupervised` would say nothing reports for a pane whose
+                // reporter is right there in the double.
+                from: Evidence::Pane(Unstated::NotYet),
             },
             "⚠⚠⚠⚠ A STATEMENT THE PEER MADE BEFORE THIS QUESTION IS NOT THIS TURN'S ANSWER — the \
              tracker carries the last one forward, so without the count this reading would converge \
-             a run on the PREVIOUS turn's marker. It must fall back to the pane, and say it did",
+             a run on the PREVIOUS turn's marker. It must fall back to the pane, and say it did — \
+             and say WHICH pane-road this is, because a reporter that is present and behind is not \
+             a pane nobody reports for",
         );
 
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHY A JUDGEMENT READ THE PANE IS FOUR DIFFERENT FACTS, AND THEY USED TO BE ONE
+    /// WORD** — register item 486, and the half of it that is the code's rather than a frequency's.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The defect is not the missing word — it is the WRONG ERRAND that word printed
+    ///
+    /// The item asks whether the hook is **late or absent** after a session replacement.
+    /// [`OuterLoop::stated_this_turn`] flattened three worlds into one `None` **and said so in its
+    /// own doc**, and [`Evidence::Pane`] carried that flattening to a person: one sentence for
+    /// every pane read, ending *"Install the agent's hook and this judgement reads what it SAID
+    /// instead"*.
+    ///
+    /// ⛔⛔ **MEASURED FALSE ON THE RUN 486 IS ABOUT.** 2026-08-25, sprag run 31: two judgements
+    /// read the pane at 21:32 and 21:33 while that pane's reporter was ALIVE in the same minute —
+    /// `40: working claude source=hook:claude seq=13 asked=7 said=3`. So the answer to *late or
+    /// absent* was already **late**, and the run was telling whoever read it to go and install a
+    /// hook that was already installed. A wrong errand printed with confidence is worse than
+    /// silence: it spends the trust the next warning needs.
+    ///
+    /// # ⚠⚠⚠ Every world is reached through a DOUBLE THAT ALREADY EXISTED
+    ///
+    /// Nothing is invented to make these reachable — they are branches the product already had.
+    /// `Printed` supplies no supervision at all; `Stating` always reports and lets its statement
+    /// count and its text be set apart. That is what makes this a naming of what was there rather
+    /// than four new behaviours.
+    #[test]
+    fn why_a_judgement_read_the_pane_is_four_worlds_and_only_one_wants_a_hook_installed() {
+        /// A peer that reports nothing at all — no supervisor on this access.
+        struct Unwatched;
+        impl PaneAccess for Unwatched {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                Ok(crate::access::Written::of(1))
+            }
+        }
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops =
+            bounded_at(lua, pane, Duration::from_millis(200)).expect("the document's four strings");
+        // ⚠ Driven to a prompt so the turn is ARMED — `said_at` is what the statement count is
+        // compared against, and without it every world below would be the same unarmed reading.
+        loops
+            .pump(&access, &RunContext::uncancellable())
+            .expect("idle to priming");
+
+        // ── THE FOUR WORLDS, EACH THROUGH THE ROAD THE PRODUCT TAKES TO IT ──
+        assert_eq!(
+            loops.stated_this_turn(&Unwatched),
+            Err(Unstated::Unsupervised),
+            "⚠⚠⚠ NOTHING REPORTS FOR THIS PANE, and that is the ONE world *install the agent's \
+             hook* is true of. If this stops being told apart, the remedy goes back to being \
+             printed at every pane read",
+        );
+        assert_eq!(
+            loops.stated_this_turn(&Stating {
+                said: Some("I did the work.".to_owned()),
+                said_seq: 0,
+            }),
+            Err(Unstated::NotYet),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 486, THE WHOLE OF IT: a reporter IS answering for this pane and \
+             its statement count has not moved past this turn's arming. This is the world sprag \
+             run 31 was measured in — hook alive at `seq=13 asked=7 said=3` — and the world the \
+             walk used to answer *install the agent's hook* for. A run that cannot tell it from \
+             `Unsupervised` cannot answer the item's question at all",
+        );
+        assert_eq!(
+            loops.stated_this_turn(&Stating {
+                said: None,
+                said_seq: 1,
+            }),
+            Err(Unstated::Empty),
+            "⚠⚠⚠⚠ AND THE THIRD: the count MOVED and the statement carries no text, which is a \
+             fact about the REPORTER rather than about the agent or the pane. Folded into either \
+             neighbour it sends a reader to the wrong component",
+        );
+        assert_eq!(
+            loops.stated_this_turn(&Stating {
+                said: Some("MILESTONE REACHED".to_owned()),
+                said_seq: 1,
+            }),
+            Ok("MILESTONE REACHED".to_owned()),
+            "⚠⚠⚠⚠⚠ THE CONTROL, AND WITHOUT IT THE THREE ABOVE ARE GREEN AGAINST A READER THAT \
+             NEVER SUCCEEDS. A peer that reports and HAS stated since the question is heard on its \
+             own account, which is the road all three of them are the absence of",
+        );
+
+        // ── AND THE REMEDIES DIFFER, WHICH IS WHAT A PERSON ACTUALLY GETS ──
+        let said_about = |why: Unstated| {
+            Heard::NotSaid {
+                read: 0,
+                from: Evidence::Pane(why),
+            }
+            .noted()
+        };
+        let unsupervised = said_about(Unstated::Unsupervised);
+        assert!(
+            unsupervised.contains("install the agent's hook"),
+            "⚠⚠⚠ THE STAGING: the world that DOES want a hook installed must still say so, or what \
+             follows is measuring a sentence somebody deleted rather than one that moved: \
+             {unsupervised:?}",
+        );
+        let late = said_about(Unstated::NotYet);
+        assert!(
+            !late.contains("install the agent's hook"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 486: this judgement's pane HAS a reporter and the run is \
+             telling its reader to go and install one. That is not a missing word, it is a WRONG \
+             ERRAND — measured being printed at sprag run 31 while `source=hook:claude seq=13` was \
+             live in the same minute — and a reader who follows it has spent the trust the next \
+             warning needs: {late:?}",
+        );
+        assert!(
+            late.contains("HOOK IS INSTALLED AND REPORTING"),
+            "⚠⚠⚠⚠ AND IT MUST SAY THE TRUE THING RATHER THAN MERELY STOP SAYING THE FALSE ONE. \
+             Deleting the clause would pass the assertion above and leave a reader with no account \
+             of why their hooked agent was judged off the screen: {late:?}",
+        );
+        for (why, expected) in [
+            (Unstated::Empty, "REPORTER MOVED ITS STATEMENT COUNT"),
+            (Unstated::NoMarker, "NO PANE WAS READ AND NO PEER WAS ASKED"),
+        ] {
+            let said = said_about(why);
+            assert!(
+                said.contains(expected) && !said.contains("install the agent's hook"),
+                "⚠⚠⚠ {why:?} IS ITS OWN REPAIR TOO — one of these names a broken reporter and the \
+                 other a document that cannot say what its marker is, and neither is fixed by \
+                 touching an agent's hooks: {said:?}",
+            );
+        }
+
+        WorkspacePaneAccess::new(Arc::clone(&workspace))
+            .lifecycle()
+            .expect("lifecycle")
+            .close(pane);
+    }
+
+    /// ⛔⛔⛔⛔ **AND A SESSION REPLACEMENT IS NOT WHAT PUTS A JUDGEMENT ON THE PANE ROAD** — register
+    /// item 486's own premise, asked of the product instead of assumed.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The item says *"immediately after a session swap"* and its own measurement does not
+    ///
+    /// 486 was filed off a run where a turn was judged with no hook shortly after a replacement.
+    /// The 2026-08-25 follow-up (sprag run 31) then found the two pane-road judgements landing at
+    /// 21:32 and 21:33 — while the swap had been at **21:01:58** and the FIRST judgement after it,
+    /// at 21:20, came through the hook. The two readings followed a RE-BRIEFING (`Priming` at
+    /// 21:28), not the swap. That note recorded the discrepancy and could not settle it at n=3.
+    ///
+    /// **This settles the mechanism half**, which is the half a fixture can reach: after
+    /// [`Session::replacing`] the arming is whatever `say` records at the fresh pane, so a peer
+    /// whose reporter has stated since that arming is heard on its OWN ACCOUNT on the very next
+    /// judgement. **Nothing about a replacement forces the pane road.** What the item observed has
+    /// to be explained by the [`Unstated`] world it was in, and that is now a word a run carries.
+    ///
+    /// ⚠ It does NOT answer *how often* — that is a frequency over live runs, and this fixture is
+    /// one replacement. Said rather than implied.
+    #[test]
+    fn a_replaced_session_is_still_heard_on_its_own_account_at_the_very_next_judgement() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops =
+            bounded_at(lua, pane, Duration::from_millis(200)).expect("the document's four strings");
+        loops
+            .pump(&access, &RunContext::uncancellable())
+            .expect("idle to priming");
+
+        // ── THE REPLACEMENT, PERFORMED THE WAY `restarting` PERFORMS IT ──
+        loops.driving = loops.driving.replacing(PaneId(loops.driving.pane.0 + 1));
+        assert_eq!(
+            loops.driving.said_at, 0,
+            "the staging: a fresh session has been told nothing, so its arming starts at zero — \
+             which is the state the item's *immediately after a swap* is about",
+        );
+
+        assert_eq!(
+            loops.stated_this_turn(&Stating {
+                said: Some("MILESTONE REACHED".to_owned()),
+                said_seq: 1,
+            }),
+            Ok("MILESTONE REACHED".to_owned()),
+            "⛔⛔⛔⛔ REGISTER ITEM 486's PREMISE: the session was replaced one line ago and a peer \
+             whose reporter has stated since is STILL heard on its own account. So a replacement \
+             does not by itself put a judgement on the pane road, and *a turn judged with no hook \
+             after a session replacement* has to be explained by which `Unstated` world it was in \
+             — which is exactly what this run could not say until now",
+        );
+        assert_eq!(
+            loops.stated_this_turn(&Stating {
+                said: Some("MILESTONE REACHED".to_owned()),
+                said_seq: 0,
+            }),
+            Err(Unstated::NotYet),
+            "⚠⚠⚠ AND THE CONTROL: the same fresh session whose reporter has NOT stated since is \
+             `NotYet` and not `Unsupervised` — the reporter is there. Without this the arm above \
+             would be green against a reading that had stopped consulting the peer at all",
+        );
+
+        WorkspacePaneAccess::new(Arc::clone(&workspace))
+            .lifecycle()
+            .expect("lifecycle")
+            .close(pane);
     }
 
     /// ⚠⚠⚠⚠⚠ **WHAT A KIND DECIDES REACHES THE RUN THAT IS DRIVEN** — the channel, gated at the
@@ -14753,7 +15108,8 @@ mod tests {
         };
         assert_eq!(
             loops.turn_produced(&painted).evidence(),
-            Evidence::Pane,
+            // ⚠ `NotYet`: this double DOES report, and its count has not moved — item 486.
+            Evidence::Pane(Unstated::NotYet),
             "⚠⚠⚠⚠⚠ THE CONTROL, AND IT IS THE WHOLE FINDING. Nothing was stated for THIS turn, so \
              `turn_produced` silently falls back to the pane — the reader item 441 measured frozen \
              for a full-screen agent, where every read since any mark is empty. A run that could \
@@ -14762,7 +15118,7 @@ mod tests {
         );
         assert_ne!(
             Evidence::Statement.named(),
-            Evidence::Pane.named(),
+            Evidence::Pane(Unstated::NotYet).named(),
             "⚠⚠ and the two must render differently, or publishing the reader tells a reader \
              nothing",
         );
@@ -14956,8 +15312,11 @@ mod tests {
         );
 
         // ── (a)+(b) THE CHECK ITSELF: IT STOOD THERE, AND IT READ ───────────────────────────────
-        let (verdict, explained, _shown) =
-            loops.checked(&access, &run, Heard::Said(Evidence::Pane));
+        let (verdict, explained, _shown) = loops.checked(
+            &access,
+            &run,
+            Heard::Said(Evidence::Pane(Unstated::Unsupervised)),
+        );
         assert_eq!(
             verdict,
             Checked::Passed,
@@ -14984,8 +15343,11 @@ mod tests {
             Briefed::Took,
             "the parts must be held",
         );
-        let (control, _why, _shown) =
-            other_loops.checked(&other_access, &run, Heard::Said(Evidence::Pane));
+        let (control, _why, _shown) = other_loops.checked(
+            &other_access,
+            &run,
+            Heard::Said(Evidence::Pane(Unstated::Unsupervised)),
+        );
         assert_eq!(
             control,
             Checked::Silent,
@@ -18151,7 +18513,11 @@ mod tests {
                         ScriptValue::String(check.to_string()),
                     )
                     .expect("the document's own check is writable");
-                loops.checked(&access, &run, Heard::Said(Evidence::Pane))
+                loops.checked(
+                    &access,
+                    &run,
+                    Heard::Said(Evidence::Pane(Unstated::Unsupervised)),
+                )
             };
             assert_eq!(
                 (ask(&mut loops, DENIES).0, ask(&mut loops, AGREES).0),
@@ -18242,7 +18608,7 @@ mod tests {
                     &run,
                     Heard::NotSaid {
                         read: 0,
-                        from: Evidence::Pane,
+                        from: Evidence::Pane(Unstated::Unsupervised),
                     },
                 ),
                 // ⚠⚠⚠ AND IT NAMES NO READER EITHER — register item 448. A check that was never

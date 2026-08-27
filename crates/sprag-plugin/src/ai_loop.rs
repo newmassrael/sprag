@@ -1466,7 +1466,9 @@ mod tests {
     // ⚠ `OuterLoop` and `Pumped` are gone from here, and their going is a fact: the gate that used
     // them drove the layer UNDER the door in order to reach a state the door refused. The door no
     // longer refuses it, so the PLUGIN reaches it, which is the only height a caller has.
-    use crate::outer::{AiLoopSpec, Brief, Checked, Evidence, INNER_SESSION_ENDS, Noticed};
+    use crate::outer::{
+        AiLoopSpec, Brief, Checked, Evidence, INNER_SESSION_ENDS, Noticed, Unstated,
+    };
     use crate::plugin::{Accounting, Cost, Plugin, Resumption, Verdict};
     use crate::readiness::ReadyWhen;
     use crate::run::RunContext;
@@ -6241,9 +6243,12 @@ mod tests {
             )
         }
 
-        let blind = line(Some(Checked::Failed), Some(Evidence::Pane));
+        let blind = line(
+            Some(Checked::Failed),
+            Some(Evidence::Pane(Unstated::Unsupervised)),
+        );
         assert!(
-            blind.contains(Evidence::Pane.named()),
+            blind.contains(Evidence::Pane(Unstated::Unsupervised).named()),
             "⚠⚠⚠⚠⚠ THE REFUSAL MUST SAY WHAT IT WAS LOOKING AT. Eight identical refusals were \
              read by three rounds and none could say whether the check had been shown the agent's \
              work or a pane whose addresses had frozen — and those are opposite findings wearing \
@@ -6258,9 +6263,12 @@ mod tests {
         );
 
         // ── AND ON THE AGREEMENT TOO ──
-        let agreed = line(Some(Checked::Passed), Some(Evidence::Pane));
+        let agreed = line(
+            Some(Checked::Passed),
+            Some(Evidence::Pane(Unstated::Unsupervised)),
+        );
         assert!(
-            agreed.contains(Evidence::Pane.named()),
+            agreed.contains(Evidence::Pane(Unstated::Unsupervised).named()),
             "⚠⚠⚠⚠ AN AGREEMENT REACHED OFF A BLIND PANE IS A MILESTONE CERTIFIED ON NOTHING, and \
              it is the more dangerous of the two — it ENDS runs. Publishing the reader only beside \
              a refusal would tell the two apart by the absence of a sentence: {agreed:?}",
