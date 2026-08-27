@@ -231,19 +231,30 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
     // `cond` moved out of the document to get it, and the reader decides nothing.
     //
-    // ⚠⚠⚠⚠⚠ **DECIDED 2026-08-26 R100: EXEMPT BY KIND, WITH THE ROW BELOW.** Both name a REGION
-    // ROOT to answer *which of the active states is the one I mean* — `standing_down` in the orders
-    // region, `work` in `OuterLoop::state`'s upward walk. A parallel configuration holds several
-    // active states at once and the generated policy publishes `get_parent` and nothing else, so
-    // the region's id is the ONLY handle there is. **No behaviour is chosen from either name**, and
-    // there is no act a document could declare that would answer *you are in the work region* —
-    // the question is about the arrangement, not about the run.
+    // ⚠⚠⚠⚠⚠ **DECIDED 2026-08-26 R100: EXEMPT BY KIND, WITH THE ROW BELOW.**
     //
-    // ⚠⚠ SO THIS PIN CANNOT HONESTLY REACH ZERO, and saying so is the decision rather than a
-    // failure to finish: two of the twenty-eight rows are readers of the topology and the item is
-    // about DECISIONS in the driver. ⇒ **The floor is 2, and 2026-08-26 R101 REACHED IT.** A round
-    // that drives it lower is deleting a reader, which is deleting the only way this driver can
-    // tell which region it is looking at.
+    // ⛔⛔⛔ **WHAT R100 WROTE HERE WAS FALSE TWICE OVER, AND BOTH WERE MEASURED LATER.** It said
+    // *both name a REGION ROOT*, and *the generated policy publishes `get_parent` and nothing
+    // else*. Neither survives:
+    //   * R107 (2026-08-26) measured that `standing_down` is a LEAF inside `orders`, not a region —
+    //     and put the answer in `Exempt::region_root`, a field the document is asked for. **It did
+    //     not correct this comment, which went on asserting the opposite thirty lines above.**
+    //   * 2026-08-28 measured the generator: `ai_loop_sm.rs` publishes `get_parent`,
+    //     `is_parallel_state`, `is_descendant_of` AND `get_parallel_regions`, the last of which
+    //     answers `[Orders, Work]`. `sprag-plugin`'s own probe had proved this against the real
+    //     codegen and nothing here had read it.
+    //
+    // ⇒ **The lesson is the shape, not the two facts**: a ground recorded as PROSE is a ground
+    // nothing measures, and it rots in place while the structured field beside it stays honest.
+    // The kinds and their document-side predicates live in `Kind` / `EXEMPT_READERS` below.
+    //
+    // ⚠⚠ SO THIS PIN CANNOT HONESTLY REACH ZERO — but the reason R100 gave is not the reason. It
+    // is not that these two are *readers rather than decisions* (true, and not enough); it is that
+    // the population **mixed three roles under one spelling** and two of them have no path to
+    // zero: an ADDRESS (a region has no handle but its id) and an INSTRUMENT (a reading moved into
+    // the document cannot check the document). ⇒ **DECISION is 0 and that is item 470's sentence.**
+    // A round that deletes either row is deleting the driver's only way to say which region it
+    // means, or the only witness that an order was heard.
     //
     // ⚠⚠⚠⚠⚠ **AND THE WALK-CONTROL ABOVE IS WHY THE FLOOR MUST NOT BE DRIVEN TO ZERO EVEN IF
     // SOMEBODY FOUND A WAY.** `the_measurement_reaches_the_loop_it_is_judging` asserts
@@ -484,10 +495,48 @@ fn the_measurement_reaches_the_loop_it_is_judging() {
     );
 }
 
+/// **WHAT A SITE THAT NAMES A STATE IS FOR** — and the reason this is a type rather than a list of
+/// excuses, measured 2026-08-28.
+///
+/// # ⚠⚠⚠⚠⚠ Item 470's population mixed three ROLES under one spelling
+///
+/// *A site in the driver that names a state of this document* counted three different things at
+/// once, and **two of them have no path to zero**:
+///
+/// | kind | what it does | can it reach 0? |
+/// | --- | --- | --- |
+/// | DECISION | picks what the loop DOES from the name | ⭐ yes — and it is 0 |
+/// | [`Address`](Kind::Address) | names a REGION so the driver can ask that region a question | ⛔ no: SCXML gives a region no handle but its id |
+/// | [`Instrument`](Kind::Instrument) | reads the document from OUTSIDE so the two authorities can disagree | ⛔ no: a fact moved into the document cannot check the document |
+///
+/// ⇒ **The stated close condition — the pin at zero — was not a strict gate but a broken one.**
+/// A predicate whose value has no path to zero is a population with something in it that was never
+/// going to leave, and here it was *the same spelling wearing a different role*.
+///
+/// ⚠⚠ **AND THE ESCAPE HATCH MUST NOT DISABLE THE GATE.** A list whose rows say *why this one may
+/// stay* is passed by being ON it, so a round can add a row and walk through. This enum has **no
+/// third arm and no wildcard**: a site that is neither of these two kinds does not compile until
+/// somebody declares what it is, and [`each_exempt_reader_stands_on_the_ground_the_register_recorded`]
+/// makes each kind ANSWER TO THE DOCUMENT rather than to prose.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    /// **IT NAMES A REGION IN ORDER TO ADDRESS IT.** The document must declare this id as a region
+    /// root, and the gate asks the document rather than believing the row.
+    Address,
+    /// **IT READS THE DOCUMENT FROM OUTSIDE, SO THAT TWO AUTHORITIES CAN DISAGREE.** The document
+    /// must declare this id and must NOT declare it a region — a state inside a region, read from
+    /// outside at an arbitrary later moment. Moving it in would delete the disagreement, which is
+    /// the whole instrument.
+    Instrument,
+}
+
 /// **ONE SITE ITEM 470 DOES NOT ASK TO LEAVE, AND THE GROUND IT STANDS ON.**
 struct Exempt {
     /// The document's own id for the state the driver names.
     state: &'static str,
+    /// What this site is FOR. ⚠ Not *why it may stay* — that is prose and prose is what got both of
+    /// these rows wrong. See [`Kind`].
+    kind: Kind,
     /// Whether that id is a REGION ROOT — a direct child of the document's `<parallel>`.
     ///
     /// ⚠⚠⚠ It is a field rather than a sentence because the two exemptions below were recorded as
@@ -495,6 +544,10 @@ struct Exempt {
     /// document answers cannot be wrong in silence.
     region_root: bool,
     /// Why this one survives a pin whose declared goal is zero — in the terms its own kind needs.
+    ///
+    /// ⚠⚠⚠⚠⚠ **PROSE, AND THEREFORE UNMEASURED — which is how BOTH rows came to carry a false one
+    /// until 2026-08-28.** It is kept because a person reading a red needs the argument, not
+    /// because anything checks it. What is checked is [`kind`](Self::kind).
     ground: &'static str,
 }
 
@@ -512,34 +565,66 @@ struct Exempt {
 /// `orders` and not the parallel. See [`region_roots`], written for this.
 ///
 /// ⇒ The close condition this file proposes, on the record: **470 is closed when no DECISION in the
-/// driver is keyed on a state name — floor 2, both readers, each standing on its own ground.**
-/// Restating the item's goal is the owner's; what this gate does is make the floor LOAD-BEARING, so
-/// a round that sinks under it argues with a red instead of editing a comment.
+/// driver is keyed on a state name.** DECISION is 0 today. What is left is not a *floor of two
+/// exemptions* — that framing is what this file corrected on 2026-08-28 — but two sites of a
+/// DIFFERENT [`Kind`], each of which the document itself is asked about.
+///
+/// ⚠⚠⚠⚠⚠ **WHY THE OLD FRAMING WAS THE BUG.** *The pin at zero* counted a population that mixed
+/// three roles under one spelling, and two of those roles have **no path to zero**. A close
+/// condition whose value cannot reach its target is not a strict gate; it is a broken one, and the
+/// tell is exactly that — ask of any predicate you are counting to zero whether a path to zero
+/// exists, and if it does not, the population contains something that was never going to leave.
+/// (Named the same day by the `scxml-core-engine` supervisor, which hit the identical shape in its
+/// own migration count; its numbers are its report and are not measured here.)
+///
+/// ⚠⚠ Restating the item's goal is the owner's; what this gate does is make the remainder
+/// LOAD-BEARING, so a round that sinks under it argues with a red instead of editing a comment.
 const EXEMPT_READERS: &[Exempt] = &[
     Exempt {
         state: "standing_down",
+        kind: Kind::Instrument,
         // ⚠⚠⚠⚠⚠ MEASURED FALSE 2026-08-26 R107, against the register's own recorded ground.
         // `<state id="standing_down"/>` is a self-closing LEAF inside `<state id="orders">`, which
         // is the region. So *the region's id is the only handle* is not this site's defence.
         region_root: false,
-        ground: "a state of the SIBLING region, asked at an arbitrary later moment rather than on \
-                 entry: `judging` needs to know whether a stand-down has been heard when the turn \
-                 it is in the middle of ends. An `<onentry>` publishes ONCE and the driver would \
-                 have to latch it, which is the second copy of state this item is about. The \
-                 document-side alternative was written and removed — a datamodel mirror of this \
-                 state, which left executable content in a template owing an `error.execution` \
-                 edge. `OuterLoop::standing_down` answers it from outside with nothing added here.",
+        // ⚠⚠⚠⚠⚠ REWRITTEN 2026-08-28: the recorded ground was STALE and the real one is stronger.
+        // What was written here — that the document-side alternative was refused because a
+        // datamodel mirror would leave a template owing an `error.execution` edge — no longer
+        // holds: `ai_loop.scxml` carries that edge today, and it already reads this very state
+        // from the sibling region with `In('standing_down')` in two live transitions. The obstacle
+        // the row named is PAID, and the site still must not move, for a different reason.
+        ground: "IT IS THE INSTRUMENT, NOT A COPY. `sprag-host` publishes *a person asked this run \
+                 to stand down* from a flag of its own, raised when the wire call lands — that \
+                 answers whether somebody SPOKE. `OuterLoop::standing_down` answers whether the \
+                 MACHINE HEARD, and the two can disagree by construction, since an order is \
+                 carried in at the top of a pass. Its own doc states the cost of collapsing them: \
+                 *if an order were ever dropped, nothing anywhere could see it, because the only \
+                 published answer was the one that cannot be wrong.* A reading moved INTO the \
+                 document cannot check the document, so this one is not a second copy of state — \
+                 it is the second authority, and deleting it deletes the only witness.",
     },
     Exempt {
         state: "work",
+        kind: Kind::Address,
         // ⚠ MEASURED TRUE the same round: a direct child of `<parallel id="running">`.
         region_root: true,
-        ground: "the REGION ROOT itself. `OuterLoop::state` walks each active state upwards to \
-                 this id to find the deepest member OF THE WORK REGION, because a parallel \
-                 configuration holds several at once and the generated policy publishes \
-                 `get_parent` and nothing else. There is no act a document could declare that \
-                 answers *you are in the work region*: the question is about the arrangement, not \
-                 about the run.",
+        // ⚠⚠⚠⚠⚠ REWRITTEN 2026-08-28: the recorded ground CLAIMED SOMETHING FALSE ABOUT THE
+        // GENERATOR. It said the generated policy publishes `get_parent` *and nothing else*.
+        // Measured against the generated `ai_loop_sm.rs`: it publishes `get_parent`,
+        // `is_parallel_state`, `is_descendant_of` AND `get_parallel_regions` — and
+        // `get_parallel_regions(Running)` answers `[Orders, Work]`. This crate's own probe
+        // `a_driver_can_ask_a_named_region_what_state_it_is_in` drove the real codegen to prove it,
+        // and its comment already said what follows: *a driver that carried its own list of region
+        // roots would hold a second copy of the document's topology.* So the walk is a choice, not
+        // a forced move — but the NAME is not, and that is what this row is for.
+        ground: "IT IS AN ADDRESS. To ask a region anything you must first say WHICH region, and \
+                 SCXML gives a region no handle but its id: `get_parallel_regions` answers the \
+                 LIST, never which member is the work one. `OuterLoop::state` needs the deepest \
+                 active member OF THIS REGION, because a parallel configuration holds several at \
+                 once and the leaves of the two regions sit at the same depth. Naming a region in \
+                 order to address it is not keying a DECISION on a state name: no behaviour is \
+                 chosen from the word, and the question it answers is about the ARRANGEMENT of the \
+                 document rather than about the run.",
     },
 ];
 
@@ -648,6 +733,8 @@ fn each_exempt_reader_stands_on_the_ground_the_register_recorded() {
          all by this walk, and then every claim below is satisfied by the reading having failed",
     );
 
+    let declared = document_states(&document());
+
     for reader in EXEMPT_READERS {
         let is_root = regions.iter().any(|root| root == reader.state);
         assert_eq!(
@@ -659,6 +746,39 @@ fn each_exempt_reader_stands_on_the_ground_the_register_recorded() {
              one. This reader survives on: {}",
             reader.state, reader.region_root, reader.ground,
         );
+
+        // ⚠⚠⚠⚠⚠ AND THE KIND ANSWERS TO THE DOCUMENT TOO — 2026-08-28, item 470's second finding.
+        //
+        // The `ground` above is prose and nothing measures it, which is exactly how BOTH rows came
+        // to carry a false one for two rounds. `kind` is what this arm holds to the document, and
+        // the `match` has no wildcard: a third kind does not compile until somebody writes what
+        // the document must say for it.
+        assert!(
+            declared.iter().any(|state| state == reader.state),
+            "⚠⚠⚠ `{}` IS EXEMPT AND `{DOCUMENT}` DOES NOT DECLARE IT. A row for a state the \
+             document no longer has is a row nothing can argue with — the exemption outlived the \
+             thing it was about.",
+            reader.state,
+        );
+        match reader.kind {
+            Kind::Address => assert!(
+                is_root,
+                "⚠⚠⚠⚠⚠ `{}` IS FILED AS AN ADDRESS AND IT IS NOT A REGION. An address is exempt \
+                 because a region has no handle but its id — a state that merely lives inside a \
+                 region has other handles and owes the stronger argument. `{DOCUMENT}` declares \
+                 the regions {regions:?}.",
+                reader.state,
+            ),
+            Kind::Instrument => assert!(
+                !is_root,
+                "⚠⚠⚠⚠⚠ `{}` IS FILED AS AN INSTRUMENT AND THE DOCUMENT SAYS IT IS A REGION. An \
+                 instrument is exempt because it reads a state of a SIBLING region from outside so \
+                 the two authorities can disagree; a region root is addressed, not witnessed, and \
+                 wearing the wrong kind is how a weak ground borrows a strong one. Regions: \
+                 {regions:?}.",
+                reader.state,
+            ),
+        }
     }
 }
 

@@ -4795,10 +4795,22 @@ impl OuterLoop {
         // sit at the same depth, so `max_by_key` would answer whichever the arrangement happens to
         // yield — the same instability that made `get_current_state` unusable here, one reader on.
         //
-        // ⚠⚠ The walk is UPWARDS, from each active state to `work`, because that is what the
-        // generated policy publishes: `get_parent` and nothing else. The probe proves this reader
-        // works on a machine that has regions, and that it keeps answering after a sibling region
-        // has finished — which is the moment a stand-down handle is for.
+        // ⚠⚠ The walk is UPWARDS, from each active state to `work`, and it needs the DEPTH rather
+        // than mere membership — which is why it is a walk and not `is_descendant_of`.
+        //
+        // ⛔⛔⛔ **THIS COMMENT USED TO SAY `get_parent` WAS ALL THE GENERATED POLICY PUBLISHES,
+        // AND THAT IS FALSE** — measured 2026-08-28 against the generated `ai_loop_sm.rs`, which
+        // also publishes `is_parallel_state`, `is_descendant_of` and `get_parallel_regions` (the
+        // last answering `[Orders, Work]`). This crate's own probe
+        // `a_driver_can_ask_a_named_region_what_state_it_is_in` had driven the real codegen to
+        // prove it, and this line went on advertising the opposite. Register item 470 is about
+        // that shape: a ground kept as prose is a ground nothing measures.
+        //
+        // ⚠ What survives the correction is the NAME, and it survives for a stronger reason than
+        // the false one: `get_parallel_regions` answers the LIST of regions, never which member is
+        // the work one. To ask a region anything you must first say which region — an ADDRESS, not
+        // a decision keyed on a state name. The probe also shows this reader keeps answering after
+        // a sibling region has finished, which is the moment a stand-down handle is for.
         let in_work = self
             .machine
             .get_active_states()
