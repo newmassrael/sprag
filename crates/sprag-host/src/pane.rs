@@ -2176,4 +2176,208 @@ mod tests {
             "a scalar form carries exactly one argument: the whole value",
         );
     }
+
+    /// ⛔⛔⛔⛔⛔ **A PROMPT A COMPOSER FOLDED AWAY IS NOWHERE ANY READER OF THIS PANE CAN REACH** —
+    /// register item 485's two UNMEASURED, measured.
+    ///
+    /// # The item, and why it stood open through two re-judgements
+    ///
+    /// Item 485 (AI loop run 16, 2026-08-19/20) says the driver's prompt is not on the pane's
+    /// screen: an agent's composer FOLDS a pasted block to `[Pasted text #2 +5 lines]`, so **the
+    /// screen and the wire disagree about what was said, and the screen is the surface a person
+    /// audits.** R68 paid half of it — `deliver::Witnessed::Account` names the disagreement in the
+    /// run's own walk. What it left, in the item's own words, is *"whether the fold is recoverable
+    /// from scrollback, and whether `read_pane` sees past it"*, and R68 and R102 both re-judged
+    /// that **nothing measures either**: 25 mentions of `Pasted text` across the workspace, every
+    /// one confirming a fold, and `deliver.rs` reads `scrollback` on zero lines. **Re-measured in
+    /// this round: still zero.** This is that measurement.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the answer is structural, and why it still had to be driven
+    ///
+    /// A terminal's scrollback holds what the CHILD WROTE OUT. A folded prompt is bytes written
+    /// IN that the composer never painted — so no reader over the emulator can produce them, and
+    /// that is a fact about where the two streams meet rather than about any one reader. Driving it
+    /// is what turns *"surely"* into a number: the argument has been available since the item was
+    /// filed and the item stayed open anyway.
+    ///
+    /// # ⚠⚠⚠ It is `read_pane`'s OWN two doors, and both of them
+    ///
+    /// `tool_read_pane` queries [`FULL_TEXT_SLOT`] or [`FULL_LINES_SLOT`] — nothing else — so these
+    /// are that tool one JSON-RPC hop below its mouth. **Both**, because the tool offers both and a
+    /// person whose `screen` read came back empty would try `program` next: an answer for one of
+    /// them is an answer to half the question the item asked.
+    ///
+    /// # ⚠⚠⚠⚠ THE CONTROL IS THE SAME BYTES INTO A CHILD THAT PAINTS THEM
+    ///
+    /// Without it this gate is green against a reader that sees nothing at all. The control demands
+    /// the FIRST line back — the one that has scrolled off a four-row grid — so what it proves is
+    /// that these doors really do reach into scrollback, which is precisely what the subject arm
+    /// then finds empty.
+    #[test]
+    fn a_prompt_a_composer_folded_away_is_nowhere_a_reader_of_this_pane_can_reach() {
+        /// A child that SWALLOWS what it is given and paints a placeholder — an agent's composer
+        /// folding a paste, and the stand-in `sprag-plugin` already measures its loop against.
+        /// `dd` blocks for the first byte so the fold appears in REACTION to the delivery.
+        const FOLDS: &str = "stty raw -echo; printf 'GO'; \
+             dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '\\n[Pasted text #2 +5 lines]\\n'; \
+             exec cat > /dev/null";
+        /// The same child with its mouth open: every byte it is given comes back out.
+        const PAINTS: &str = "stty raw -echo; printf 'GO'; exec cat";
+        /// The head of the delivery — the line a four-row grid scrolls away first.
+        const HEAD: &str = "PROMPT-HEAD-0";
+        /// Its last line, which is still ON the grid — what a child painting the write reacts
+        /// with. ⚠ The staging waits on THIS and never on [`HEAD`]: a marker that has scrolled off
+        /// would make the staging fail whenever the scrollback road breaks, and the control below
+        /// is the assertion that has to speak when it does.
+        const LAST: &str = "PROMPT-LINE-11";
+
+        // Twelve lines into a four-row pane, so eight of them are scrollback by the time anybody
+        // reads. Each is narrower than the pane, so nothing here is measuring a wrap.
+        //
+        // ⚠ CRLF, and that is the child's terminal rather than a habit: these panes run `stty raw`,
+        // which turns OUTPUT translation off too — so a bare `\n` walks the cursor down without
+        // returning it, and twelve lines arrive as a staircase that wraps off the right edge. A
+        // real delivery writes the carriage return anyway.
+        let prompt: String = std::iter::once(format!("{HEAD}\r\n"))
+            .chain((1..12).map(|line| format!("PROMPT-LINE-{line:02}\r\n")))
+            .collect();
+
+        let read = |script: &str| -> (String, Vec<String>) {
+            let (_workspace, mut external) = surface_running(script);
+            assert!(
+                until_printed(&external, "GO"),
+                "the child must be past its `stty` before a byte is written, or this gate measures \
+                 the kernel's echo instead of the child",
+            );
+            external
+                .invoke(TEXT_ACTION, IntrospectValue::Text(prompt.clone()))
+                .expect("the pane takes a write");
+            // The fold is painted in reaction to the write, so wait for the reaction rather than
+            // for a duration — a sleep here would be a race dressed as a bound.
+            let want = if script == FOLDS { "Pasted text" } else { LAST };
+            assert!(
+                until_printed(&external, want),
+                "the staging: this child must have reacted to the delivery ({want:?}), or what is \
+                 read below is a pane that has not answered yet",
+            );
+            let IntrospectValue::Text(text) = external
+                .query(FULL_TEXT_SLOT)
+                .expect("the surface owns the address")
+            else {
+                panic!("{FULL_TEXT_SLOT} answers text");
+            };
+            let IntrospectValue::Json(lines) = external
+                .query(FULL_LINES_SLOT)
+                .expect("the surface owns the address")
+            else {
+                panic!("{FULL_LINES_SLOT} answers an array");
+            };
+            let lines: Vec<String> = serde_json::from_value(lines).expect("an array of strings");
+            (text, lines)
+        };
+
+        // ── THE CONTROL: the same bytes into a child that paints them ──
+        let (painted, painted_lines) = read(PAINTS);
+        assert!(
+            painted.contains(HEAD) && painted_lines.iter().any(|line| line.contains(HEAD)),
+            "⚠⚠⚠⚠⚠ THE CONTROL, AND IT IS WHAT MAKES THE SUBJECT A FINDING: this line was written \
+             first and a four-row grid scrolled it away long ago, so finding it proves both of \
+             `read_pane`'s doors reach into SCROLLBACK. If this is red the subject below is green \
+             about a reader that sees nothing, which is the shape item 485 has been stuck in \
+             through two re-judgements. Text: {painted:?}",
+        );
+
+        // ── THE SUBJECT: the same bytes into a composer that folds them ──
+        let (folded, folded_lines) = read(FOLDS);
+        assert!(
+            folded.contains("[Pasted text"),
+            "the staging for the two claims below: this pane must be showing a FOLD, or it is not \
+             the case item 485 is about. Text: {folded:?}",
+        );
+        assert!(
+            !folded.contains("PROMPT-"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 485, UNMEASURED #1 — *is the fold recoverable from \
+             scrollback?* **NO.** A terminal's scrollback holds what the child WROTE OUT; a folded \
+             prompt is bytes written IN that the composer never painted, so there is nothing for \
+             the emulator to have retained. The screen and the wire disagree about what was said, \
+             and the screen cannot be made to agree by scrolling it. Text: {folded:?}",
+        );
+        assert!(
+            !folded_lines.iter().any(|line| line.contains("PROMPT-")),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 485, UNMEASURED #2 — *does `read_pane` see past it?* **NO, IN \
+             EITHER MODE.** This is the `program` line-break door, the one a person reaches for \
+             when the `screen` read came back without their prompt — and it reads the same \
+             emulator, so it answers the same nothing. Lines: {folded_lines:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **AND THE ONE DOOR THAT DOES RECORD WHAT WAS WRITTEN IN CANNOT RECOVER IT EITHER** —
+    /// register item 485, the door its two UNMEASURED do not name and a reader would try next.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why answering only at the emulator would have left the item where it was
+    ///
+    /// The gate above proves the prompt is not in scrollback and not in either `read_pane` mode,
+    /// **because the emulator only ever held what the child wrote out**. The obvious next question
+    /// is the pane's ECHO TRAIL — the one thing in this daemon that records what was written IN
+    /// ([`ECHO_TRAIL_CAP`](sprag_terminal::ECHO_TRAIL_CAP)). Leaving that unasked is how a
+    /// *"nothing can see it"* claim gets refuted by the next person who looks.
+    ///
+    /// **Asked, it answers twice over that it is not a recovery:**
+    ///
+    /// 1. It is a **bool against a needle the asker supplies** (`recent_input_has.<needle>`), so it
+    ///    can only confirm text somebody already holds. A person who has lost their prompt to a
+    ///    fold cannot ask it for the prompt.
+    /// 2. It keeps **8 KiB**, and a longer write is *"remembered only in part"* — the constant's own
+    ///    words. **Register item 719 measured a real brief at 9,025 bytes**, so on exactly the
+    ///    delivery this matters for, even the bool is wrong about the head.
+    ///
+    /// ⚠ The number below is item 719's own, not one invented here: the size a live loop was
+    /// measured re-typing into every session it opened, and the size a composer folded away.
+    #[test]
+    fn the_pane_that_records_what_was_written_in_forgets_the_head_of_a_real_brief() {
+        /// The brief `sprag runs` measured a live loop retyping into every replacement — item 719.
+        const ITEM_719_BRIEF: usize = 9_025;
+        /// A needle at the very start of that write, and one at its very end.
+        const HEAD: &str = "BRIEF-HEAD-NEEDLE";
+        const TAIL: &str = "BRIEF-TAIL-NEEDLE";
+
+        let (_workspace, mut external) =
+            surface_running("stty raw -echo; printf 'GO'; exec cat > /dev/null");
+        assert!(
+            until_printed(&external, "GO"),
+            "the child must be past its `stty` before a byte is written",
+        );
+
+        let filler = ITEM_719_BRIEF - HEAD.len() - TAIL.len();
+        let brief = format!("{HEAD}{}{TAIL}", "x".repeat(filler));
+        assert_eq!(
+            brief.len(),
+            ITEM_719_BRIEF,
+            "the staging: this write must be item 719's own measured size, not a number this gate \
+             invented",
+        );
+        external
+            .invoke(TEXT_ACTION, IntrospectValue::Text(brief))
+            .expect("the pane takes a write");
+
+        let asked = |needle: &str| -> bool {
+            matches!(
+                external.query(&crate::wire::recent_input_has(needle)),
+                Ok(IntrospectValue::Bool(true)),
+            )
+        };
+        assert!(
+            asked(TAIL),
+            "⚠⚠⚠⚠ THE CONTROL: the trail must still hold the END of this write, or the claim below \
+             is about a door that records nothing at all rather than about its BOUND",
+        );
+        assert!(
+            !asked(HEAD),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 485: the only door in this daemon that records what was \
+             written INTO a pane keeps 8 KiB, and item 719's measured brief is 9,025 bytes — so on \
+             exactly the delivery a fold makes unreadable, this door has already forgotten the \
+             head. It was never a recovery anyway (it answers a bool about a needle the asker \
+             already holds), and this is the second reason: it cannot even confirm.",
+        );
+    }
 }
