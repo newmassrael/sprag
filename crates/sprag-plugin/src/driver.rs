@@ -126,6 +126,26 @@ sprag_vt::closed_set! {
 /// as *"you ran out of steps"* — a false sentence pointing at a guardrail the run never met.
 /// **A list with no glob decides alone**, and this one decided against a variant that did not
 /// exist when it was written.
+///
+/// # ⚠⚠⚠⚠⚠ A SIXTH ARM REDDENS A PIN — register item 545, and the second reader of [`ALL`](Self::ALL)
+///
+/// The two paragraphs above are why there is no `WIRE_WORDS` and they are unchanged. What was
+/// wrong is what they were taken to settle: **no published list meant no pin, and these words went
+/// out on the wire with nothing walking them for as long as the type existed.** `sprag-host`'s
+/// `an_answers_value_space_cannot_widen_under_the_protocol_number` walks them now — through `ALL`
+/// and [`wire_str`](Self::wire_str), not through a list published to anybody — so adding an arm
+/// here is a RED there rather than a silence.
+///
+/// ⚠⚠⚠ It is worth knowing which break that pin is holding, because it is not serde's. Nothing
+/// decodes this key whole; both renderers print the string. The reader that decodes it is
+/// `outcome_from_words`, and an unknown word there is not a parse error but `Iterations` — the
+/// false sentence the paragraph above describes, arriving from a restart where nobody is looking
+/// for it. **The louder break is the one that gets found; this is the other kind.**
+///
+/// ⚠⚠ So the obligation an added arm inherits is stated once, here: say out loud why an older
+/// reader cannot meet the new word, or move `WIRE_PROTOCOL`. What may not happen again is the
+/// thing that happened to `hold` — reaching the wire while every gate stayed green and the pin
+/// recorded its own blindness in a comment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ceiling {
     /// [`Guardrails::max_iterations`] — the run took all the steps it was allowed.

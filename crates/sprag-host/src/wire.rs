@@ -9166,9 +9166,30 @@ mod tests {
     ///
     /// # What this asserts
     ///
-    /// The two closed sets a client decodes WHOLE, pinned by their serialised words. The list is
-    /// derived from `ALL` on both — a hand-typed list is the one a new arm is left out of, which is
-    /// the defect this pin exists for and would be an absurd way to build it.
+    /// Every closed set a peer DECODES out of an answer, pinned by its serialised words. Each list
+    /// is derived from the type's own `ALL` — a hand-typed list is the one a new arm is left out
+    /// of, which is the defect this pin exists for and would be an absurd way to build it.
+    ///
+    /// ⚠ This said *"the two closed sets"* until register item 545, by which round it walked nine.
+    /// The count aged because the sentence counted what the pin held the day it was written instead
+    /// of naming the rule for joining it, which is the line above.
+    ///
+    /// # ⚠⚠⚠⚠ Why `ceiling` is walked here although NOTHING decodes it WHOLE
+    ///
+    /// The paragraph above describes a LOUD break: serde has nowhere to put an unknown word, so the
+    /// document fails. `ceiling` is not that. Both renderers print it as a string, and
+    /// `sprag_plugin::Ceiling` publishes no `WIRE_WORDS` — its own doc records why, and that
+    /// decision stands. The break this key has instead is QUIETER and worse: `outcome_from_words`
+    /// reads it back through `Ceiling::from_wire` and answers `Ceiling::Iterations` for a word it
+    /// does not know, so a run restored by an older reader comes back saying *"you ran out of
+    /// steps"* about a guardrail it never met. **A word that fails a document is found the first
+    /// time anybody looks; a word that becomes a false sentence is never found at all.**
+    ///
+    /// ⚠⚠ So membership here is *what a peer decodes*, not *what serde would reject* — and this set
+    /// joins through `ALL` rather than through a published list, which is the second of the two
+    /// routes register item 545 named and the only one `Ceiling`'s own doc leaves open. Its words
+    /// had been outside every pin since the type existed, and the pin had twice written that fact
+    /// into itself in a comment rather than closing it.
     #[test]
     fn an_answers_value_space_cannot_widen_under_the_protocol_number() {
         const PINNED_VALUES: (u32, &[&str]) = (
@@ -9302,10 +9323,14 @@ mod tests {
             // (`the_only_plugin_that_can_be_held_is_the_one_that_reads_a_hold`), so the day a second
             // plugin honours a hold this word becomes `peer_gone`'s case and the number falls due —
             // said by a red rather than by nobody.
-            // ⚠⚠ A SECOND ANSWER VALUE WIDENED AND THIS PIN CANNOT SEE IT: `ceiling` gained `hold`.
-            // `Ceiling` publishes no `WIRE_WORDS` — its own doc records why — so the widening is
-            // outside this pin by that type's recorded decision rather than by an oversight here.
-            // It rides the same escape for the same reason: no plugin but `ai_loop` reports it.
+            // ⚠⚠ A SECOND ANSWER VALUE WIDENED AND THIS PIN COULD NOT SEE IT: `ceiling` gained
+            // `hold`. It rode R384's escape (no plugin but `ai_loop` reports it), and the widening
+            // was outside this pin because `Ceiling` publishes no `WIRE_WORDS`.
+            // ⚠⚠⚠⚠⚠ **REGISTER ITEM 545 CLOSED THAT, AND THE NOTE IS KEPT BECAUSE IT IS THE
+            // EVIDENCE.** The pin knew it was blind, wrote the blindness into itself HERE and again
+            // beside `verdict:exhausted`, and went on not walking the words for two more re-stamps.
+            // A residue recorded in a comment is one nothing schedules — item 543's whole lesson,
+            // and this is where it was spent. `ceiling` joins below on `Ceiling::ALL`.
             // ⚠ 38: re-stamped with every ANSWER value space unchanged. Register item 567 WITHDREW
             // an address and added a parametric one; what `recent_input_has.<needle>` answers is a
             // bool, which is not an enum and has no arm to widen. The surface pin is the subject.
@@ -9410,8 +9435,10 @@ mod tests {
                 // ordinary vocabulary refusal at the door, because the `plugins` slot publishes
                 // the word and it can ask first. **Neither half of a skewed pair can misread
                 // anything**, which is the one escape the argument-shape pin beside this offers.
-                // ⚠ The same argument covers `ceiling: "turns"`, which this pin deliberately does
-                // not walk (see `sprag_plugin::Ceiling`).
+                // ⚠ The same argument covers `ceiling: "turns"` — which this pin did not walk when
+                // that was written, and does walk now (register item 545, the `ceiling:` block at
+                // the end of this list). The escape is unchanged; what changed is that the pin can
+                // see the word it was reasoning about.
                 "verdict:exhausted",
                 // ⚠⚠⚠ R384: THE SEVENTH VERDICT — a step that REFUSED its peer's tool call on the
                 // loop author's standing instruction and told it what to do instead. Not folded
@@ -9498,6 +9525,29 @@ mod tests {
                 // `not_taken`. Its remedy is its own, which is this pin's test for a word rather
                 // than a sentence: read the pane, or give the run longer.
                 "refusal:unwitnessed",
+                // ⚠⚠⚠⚠⚠ REGISTER ITEM 545: **WHICH CEILING ENDED AN EXHAUSTED RUN**, and the
+                // fourth vocabulary to join this pin *at all* rather than to widen inside it —
+                // `run_status` (R357), a run's `outcome` (R365) and a step's `verdict` (R366) are
+                // the other three, and every one of them joined only after a word had already got
+                // through. This one joins with nothing having got through, which is the difference
+                // worth recording: the pin had written its own blindness into itself twice above.
+                //
+                // ⚠⚠⚠ **AND IT COSTS NO NUMBER, which is a judgement rather than an oversight.**
+                // The three joins above each moved `WIRE_PROTOCOL`, and each carried a NEW word in
+                // the same edit — `interrupted`, `blocked`, `answered`. Not one word below is new:
+                // all five have been on this wire since the run they describe could end, and the
+                // last of them (`hold`) arrived at 37 under the escape recorded above. **What
+                // widened is the pin's eyes, not the value space**, and a number moved for that
+                // would say something false to every reader who takes a bump as a break.
+                //
+                // ⚠⚠ The next ceiling is the one this buys: it cannot be added to the type without
+                // reddening here, so whoever adds it makes the escape argument out loud or pays
+                // the number. Measured by mutation, not asserted — see the item.
+                "ceiling:iterations",
+                "ceiling:cost",
+                "ceiling:duration",
+                "ceiling:turns",
+                "ceiling:hold",
             ],
         );
 
@@ -9582,6 +9632,22 @@ mod tests {
                     .iter()
                     .map(|word| format!("refusal:{word}")),
             )
+            // ⚠⚠⚠ WHICH CEILING ENDED AN EXHAUSTED RUN — register item 545, and the one vocabulary
+            // here that joins through `ALL` and `wire_str` instead of through a `WIRE_WORDS`. That
+            // is not a shortcut: `Ceiling` deliberately publishes no admissible list, because no
+            // client picks a ceiling out of one, and a constant nothing enforces is what this
+            // project has removed twice. `ALL` is generated with the enum from one variant list and
+            // `wire_str` is an exhaustive match, so this walks every variant the type has and can
+            // no more miss one than a projected list can.
+            //
+            // ⚠⚠ It reaches a peer through `outcome_ceiling`, which is `outcome_word`'s companion
+            // and reads `wire_str` exactly as this does — so the pin is over the words a peer
+            // really meets, which is the rule the outcome chain above states.
+            .chain(
+                sprag_plugin::Ceiling::ALL
+                    .iter()
+                    .map(|ceiling| format!("ceiling:{}", ceiling.wire_str())),
+            )
             .collect();
         let mut pinned: Vec<String> = PINNED_VALUES.1.iter().map(|n| (*n).to_owned()).collect();
         served.sort_unstable();
@@ -9592,7 +9658,12 @@ mod tests {
              read a word it does not have, and serde fails the whole document rather than the \
              field. An arm ADDED breaks OLDER READERS of the answer (the number must rise); an arm \
              REMOVED or RENAMED breaks them too. Update this pin and \
-             sprag_rpc::WIRE_PROTOCOL together.",
+             sprag_rpc::WIRE_PROTOCOL together. \
+             ⚠⚠ `ceiling:` breaks a reader QUIETLY instead (register item 545): nothing decodes \
+             that key whole, but `outcome_from_words` reads it back through `Ceiling::from_wire` \
+             and answers `iterations` for a word it does not know — a restored run naming a \
+             guardrail it never met. Weigh a word here on which of the two it is, and either say \
+             out loud why no older reader can meet it or move the number.",
         );
         assert_eq!(
             PINNED_VALUES.0,
