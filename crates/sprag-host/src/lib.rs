@@ -542,7 +542,12 @@ pub enum PaneCells {
 /// The input engine is built from the pane's HANDLE alone, so an
 /// [`Omitted`](PaneCells::Omitted) assembly touches the screen not at all — it neither
 /// projects nor takes the screen lock, which is the whole cost of a pane child.
-fn pane_container(id: PaneId, pty: &PanePty, cells: PaneCells) -> Scene {
+fn pane_container(
+    id: PaneId,
+    pty: &PanePty,
+    start_dir: &std::path::Path,
+    cells: PaneCells,
+) -> Scene {
     let grid = match cells {
         PaneCells::Projected => pty.with_screen_palette(|screen, palette| {
             text_grid_node(screen, palette, CellMetric::DEFAULT)
@@ -550,7 +555,14 @@ fn pane_container(id: PaneId, pty: &PanePty, cells: PaneCells) -> Scene {
         PaneCells::Omitted => grid_node(GRID_TAG, CellMetric::DEFAULT, GridBuffer::new(0, 0)),
     };
     let input = Scene::External(
-        ExternalNode::new(Box::new(pane::SpragPaneExternal::new(pty.handle()))).with_tag(INPUT_TAG),
+        // ⚠⚠ THE BIRTH DIRECTORY TRAVELS WITH THE HANDLE — register item 722. The surface serves it
+        // at `wire::PANE_START_DIR_SLOT`, which is the reading door item 710 built in process and
+        // could not build here; see that slot for why a run driven outside this daemon needed it.
+        ExternalNode::new(Box::new(pane::SpragPaneExternal::new(
+            pty.handle(),
+            start_dir.to_path_buf(),
+        )))
+        .with_tag(INPUT_TAG),
     );
     Scene::Container(
         ContainerNode::new(vec![Scene::TextGrid(grid), input])
@@ -697,7 +709,7 @@ pub fn workspace_scene(
         guard
             .panes()
             .iter()
-            .map(|pane| pane_container(pane.id(), pane.pty(), cells))
+            .map(|pane| pane_container(pane.id(), pane.pty(), pane.start_dir(), cells))
             .collect()
     };
     // The mux control plane speaks the REGISTRY (sessions / windows / layout are mux

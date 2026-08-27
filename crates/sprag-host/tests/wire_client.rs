@@ -27,8 +27,8 @@ use sprag_host::wire::{
     PANES_SLOT, PASTE_ACTION, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
     RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SCREEN_COLLAPSED_SLOT,
     SCREEN_ROWS_SLOT, SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, agent_slot_for,
-    cells_slot_at, pane_processes_at, project_slot_for, recent_input_has,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPAWN_CWD_KEY, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
+    agent_slot_for, cells_slot_at, pane_processes_at, project_slot_for, recent_input_has,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
@@ -6400,6 +6400,99 @@ fn a_park_connection_scoped_to_another_session_is_refused_where_it_is_handed_ove
         !refused.degraded.pane_ids().is_empty(),
         "⚠⚠ ...and it must still be a working driver, or handing it back buys nothing",
     );
+}
+
+/// ⛔⛔⛔⛔⛔ **A DRIVER OUTSIDE THE DAEMON CAN SAY WHERE ITS RUN'S WORK IS** — register item 722,
+/// which is the half of register item 710 that this surface could not answer.
+///
+/// # ⛔⛔ What was broken, and why it was broken in the direction that matters
+///
+/// Item 710 pointed the independent milestone checker at the run's repository, and built it as two
+/// doors: a WRITING one (a spawn may carry a cwd) and a READING one (*where was this pane born*).
+/// The writing door already reached this surface — `SPAWN_CWD_KEY` was in the grammar and nobody
+/// sent it. **The reading door did not exist here at all**: a pane's birth directory had no wire
+/// address, so `RemotePaneAccess` could not implement `PaneOrigin`, `PaneAccess::origin` stayed at
+/// its `None` default, `OuterLoop::checked` was handed nothing, and the checker was spawned with no
+/// directory — landing in `$HOME`, judging a repository it could not open a file in. That is item
+/// 710's own measured defect, alive in the path items 544 and 643 move every run onto.
+///
+/// # ⚠⚠⚠⚠⚠ The premises, asserted inside — because either one missing makes this vacuous
+///
+/// * **THE SURFACE IS THE REMOTE ONE.** The whole item is that the in-process surface answered and
+///   this one did not, so a gate that measured `WorkspacePaneAccess` again would re-measure the
+///   door that already worked. `remote_driver` is a real `RemotePaneAccess` over a real socket.
+/// * ⚠⚠ **AND THE DIRECTORY IS NEITHER `$HOME` NOR THIS PROCESS'S CWD** — item 710's own argument,
+///   restated here because it is what makes the answer evidence. Those two are exactly the values a
+///   broken read degrades to, so a birth directory equal to either would be satisfied by a surface
+///   that had learned nothing.
+///
+/// ⚠ The two links either side of this one are held elsewhere and are not re-measured here:
+/// `sprag_plugin`'s `a_checker_is_put_where_the_work_is_and_told_what_to_consult` holds
+/// *origin answers → the question says where the work is*, and the writing door is the same
+/// `SPAWN_CWD_KEY` this gate spawns through.
+#[test]
+fn a_driver_over_the_socket_reads_where_a_pane_was_born() {
+    let (_host, sock) = spawn_host();
+    let (driver, mut setup) = remote_driver(&sock);
+
+    // ⚠ A directory this daemon can really spawn in, and one nothing else in this test would
+    // produce by accident — the pane is born HERE and nowhere the reader could guess.
+    let repo = std::env::temp_dir().join(format!(
+        "sprag-722-birth-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    std::fs::create_dir_all(&repo).expect("the run's repository stands in a real directory");
+
+    // ── ⚠⚠ THE PREMISES ───────────────────────────────────────────────────────────────────────
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    assert_ne!(
+        Some(repo.clone()),
+        home,
+        "⚠⚠⚠⚠⚠ THE PREMISE: `$HOME` is where a pane with no directory lands, so a repository that \
+         WAS `$HOME` would be answered correctly by a surface that reads nothing at all",
+    );
+    assert_ne!(
+        Some(repo.clone()),
+        std::env::current_dir().ok(),
+        "⚠⚠⚠⚠ AND THE OTHER VALUE A BROKEN READ DEGRADES TO — the process's own working directory. \
+         Item 710's doc names both, and a gate that let the answer coincide with either would pass \
+         against the very defect it is here to catch",
+    );
+
+    let pane = spawn_pane(
+        &mut setup,
+        json!({ "cmd": ["cat"], SPAWN_CWD_KEY: repo.to_string_lossy() }),
+    );
+
+    // ── THE CLAIM ─────────────────────────────────────────────────────────────────────────────
+    let origin = driver.origin().expect(
+        "⛔⛔⛔ ITEM 722: a driver over this socket cannot say where ANY pane was born, so every \
+         run driven outside the daemon puts its milestone checker in `$HOME` — which is exactly \
+         what register item 710 was filed for, one surface along",
+    );
+    assert_eq!(
+        origin.pane_start_dir(pane).as_deref(),
+        Some(repo.as_path()),
+        "⛔⛔⛔⛔⛔ ITEM 722: this pane was spawned in the run's repository through the daemon's own \
+         verb, and the surface a driver reads it back through gives some other answer. The checker \
+         this feeds is told «the work is HERE, open the files» — so a wrong directory is worse than \
+         an absent one, and an absent one already cost item 710 a live checker answering YES about \
+         a tree it never opened",
+    );
+
+    // ⚠ A PANE THIS DAEMON DOES NOT HOLD IS THE OTHER ANSWER, and it is asserted for
+    // `RemotePluginWorld::has_pane`'s reason one gate below: a surface that answered the same
+    // directory to everything would satisfy the claim above and be useless. `None` here is *no such
+    // pane*, never `$HOME`.
+    assert_eq!(
+        origin.pane_start_dir(PaneId(u64::MAX)),
+        None,
+        "⚠⚠⚠ a pane that is not there has no birth directory, and the absence must arrive as one — \
+         register item 709's discipline, which this address is the newest place to need",
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
 }
 
 /// ⛔⛔⛔⛔ **THE WORLD A RUN IS CHECKED AGAINST ANSWERS THE SAME TWO THINGS FROM OUTSIDE THE

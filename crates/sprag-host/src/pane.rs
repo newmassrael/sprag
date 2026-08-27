@@ -73,9 +73,9 @@ use crate::wire::{
     LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, LINES_SINCE_FIELD,
     LINKS_SLOT, MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT,
     PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_HANDS_SLOT, PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT,
-    PANE_REVISION_SLOT, PANE_SCHEMA, PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT,
-    RECENT_INPUT_FIELD, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
-    SUPER_FIELD, TEXT_ACTION,
+    PANE_REVISION_SLOT, PANE_SCHEMA, PANE_START_DIR_SLOT, PASTE_ACTION, PEER_GONE_REFUSAL,
+    PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
+    SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -373,13 +373,26 @@ fn frame_bracketed_paste(text: &str) -> Vec<u8> {
 /// pinion's vantage (it does its work synchronously when invoked).
 pub struct SpragPaneExternal {
     pty: PanePtyHandle,
+    /// **WHERE THE PANE WAS BORN** — served at
+    /// [`crate::wire::PANE_START_DIR_SLOT`], register item 722.
+    ///
+    /// ⚠⚠ HELD RATHER THAN LOOKED UP, and that is safe for the one reason item 710's whole
+    /// argument rests on: the birth directory is immutable. A pane's child may `cd` anywhere and
+    /// its live cwd stops answering the moment it exits (item 684), but where it was SPAWNED is a
+    /// fact nothing later can take away — so a copy taken here can never go stale, which is the
+    /// property the fields around it do not have and why they are read live.
+    start_dir: std::path::PathBuf,
 }
 
 impl SpragPaneExternal {
-    /// Build the engine surface over a live pane's PTY I/O handle.
+    /// Build the engine surface over a live pane's PTY I/O handle and the directory it was born in.
+    ///
+    /// ⚠ `start_dir` is the pane's BIRTH directory — see the field, and
+    /// [`crate::wire::PANE_START_DIR_SLOT`] for why this surface has to be
+    /// able to say it at all.
     #[must_use]
-    pub fn new(pty: PanePtyHandle) -> Self {
-        Self { pty }
+    pub fn new(pty: PanePtyHandle, start_dir: std::path::PathBuf) -> Self {
+        Self { pty, start_dir }
     }
 
     /// Encode a `key` action's args and write the resulting bytes to the
@@ -840,6 +853,19 @@ impl SpragPaneExternal {
             PANE_HANDS_SLOT => Some(IntrospectValue::Json(crate::wire::hands_json(
                 self.pty.hands(),
             ))),
+            // ⚠⚠⚠⚠⚠ WHERE THIS PANE'S WORK LIVES — register item 722, and the address item 710's
+            // reading door was missing. A run driven OUTSIDE this daemon (items 544/643) sees its
+            // panes only through this surface, so without this slot its milestone checker was
+            // spawned with no directory and landed in `$HOME` — item 710's own measured defect,
+            // still live in the direction this daemon is moving.
+            //
+            // ⚠⚠ Never `Null` here: a pane this daemon HOLDS was born somewhere and this surface
+            // was handed that fact at construction. The absence a caller must be able to see is
+            // *there is no pane at this path*, which the surface itself carries — the same
+            // arrangement `PANE_HANDS_SLOT` states directly above.
+            PANE_START_DIR_SLOT => Some(IntrospectValue::Text(
+                self.start_dir.to_string_lossy().into_owned(),
+            )),
             // ⚠⚠⚠⚠⚠ WHAT THIS PANE'S CHILD WROTE — register item 656, off the SAME
             // `PanePtyHandle::raw_output` the in-process `PaneRawCapture` takes, so the two halves
             // of one product cannot come to hold different bytes. Never `Null`: a pane this daemon
@@ -1257,13 +1283,8 @@ mod tests {
         let id = workspace
             .spawn(command, "cat".to_owned(), 20, 4)
             .expect("a pane spawns");
-        let external = SpragPaneExternal::new(
-            workspace
-                .pane(id)
-                .expect("the pane is there")
-                .pty()
-                .handle(),
-        );
+        let born = workspace.pane(id).expect("the pane is there");
+        let external = SpragPaneExternal::new(born.pty().handle(), born.start_dir().to_path_buf());
         (workspace, external)
     }
 

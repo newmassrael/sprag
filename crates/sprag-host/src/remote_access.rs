@@ -120,8 +120,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_plugin::{
     AgentObservation, JobLeader, KeyStroke, PaneAccess, PaneError, PaneForegroundJob, PaneHands,
-    PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOutputLines, PaneRow, PaneSupervision,
-    PaneTerminalModes, Signalled, Written,
+    PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOrigin, PaneOutputLines, PaneRow,
+    PaneSupervision, PaneTerminalModes, Signalled, Written,
 };
 use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT, Outstanding};
 use sprag_terminal::{Hands, JobProcess, PaneEcho, PaneEndOfInput, PaneId, Reach, Stop, Unstopped};
@@ -133,13 +133,13 @@ use crate::wire::{
     FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY,
     KEY_FIELD, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY,
     PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_HANDS_SLOT,
-    PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL,
-    RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SESSION_SLOT, SHIFT_FIELD,
-    SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_CWD_KEY, SPAWN_NAME_KEY, SPAWN_ROWS_KEY,
-    SPLIT_PANE_KEY, STOP_JOB_ACTION, STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY, STOP_JOB_REACH_KEY,
-    STOP_JOB_SIGNAL_KEY, STOP_JOB_STOP_KEY, SUPER_FIELD, agent_slot_for, hands_of, lines_since_at,
-    mux_action_path, pane_input_path, raw_output_of, recent_input_has, refusal, unknown_action,
-    unknown_slot,
+    PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_START_DIR_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT,
+    PEER_GONE_REFUSAL, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SESSION_SLOT,
+    SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_CWD_KEY, SPAWN_NAME_KEY,
+    SPAWN_ROWS_KEY, SPLIT_PANE_KEY, STOP_JOB_ACTION, STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY,
+    STOP_JOB_REACH_KEY, STOP_JOB_SIGNAL_KEY, STOP_JOB_STOP_KEY, SUPER_FIELD, agent_slot_for,
+    hands_of, lines_since_at, mux_action_path, pane_input_path, raw_output_of, recent_input_has,
+    refusal, unknown_action, unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -903,6 +903,27 @@ impl PaneAccess for RemotePaneAccess {
         Some(self)
     }
 
+    /// **WHERE THE WORK IS** — register item 722, and the half of register item 710 this surface
+    /// could not answer until the pane's birth directory had an address.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What its absence cost, in the direction this daemon is moving
+    ///
+    /// Item 710 pointed the independent milestone checker at the run's repository, and built that
+    /// as two doors. The WRITING one (a spawn carries a cwd) reached this surface already —
+    /// `SPAWN_CWD_KEY` was in the grammar and nobody sent it. The READING one did not exist here at
+    /// all, so this method stayed at its trait default of `None`, `OuterLoop::checked` was handed
+    /// nothing, and the checker was spawned with no directory: **`$HOME`, judging a repository it
+    /// could not open a file in** — precisely the defect item 710 was filed for, surviving in the
+    /// path items 544 and 643 are moving every run onto.
+    ///
+    /// ⚠ `Some` on [`hands`](PaneAccess::hands)'s terms: a daemon serving this wire knows where it
+    /// spawned every pane it holds, and one too old to publish the address cannot be reached at all
+    /// — the handshake refuses a protocol that is not this one. The per-PANE absence travels on
+    /// [`pane_start_dir`](PaneOrigin::pane_start_dir), where it means *no such pane here*.
+    fn origin(&self) -> Option<&dyn PaneOrigin> {
+        Some(self)
+    }
+
     /// **ENDING WHAT A PANE IS RUNNING** — register item 654, and the one act on this surface that
     /// is neither a read nor a keystroke.
     ///
@@ -1439,6 +1460,30 @@ impl PaneHands for RemotePaneAccess {
     /// this whole address exists to stop a driver reaching by accident.
     fn pane_hands(&self, id: PaneId) -> Option<Hands> {
         hands_of(&self.read_pane(id, PANE_HANDS_SLOT)?)
+    }
+}
+
+/// **WHERE A PANE WAS BORN, READ OVER THE SOCKET** — register item 722, and the reading door
+/// register item 710 built in process and could not build here.
+///
+/// # ⚠⚠⚠⚠⚠ `None` is *this daemon cannot say*, and a caller must never fill it in
+///
+/// Register item 709's discipline, at the newest place to need it. The one consumer is
+/// `OuterLoop::checked`, which spawns the independent checker: handed a directory it says *the work
+/// is HERE, open the files*, and handed `None` it says nothing at all and the checker judges the
+/// account alone. Those are the two honest answers. A third — defaulting to the caller's `$HOME`,
+/// or to the daemon's cwd — would put a sentence in the checker's mouth about a tree nobody
+/// vouched for, which is the exact failure item 710 measured and item 722 exists to stop repeating
+/// one layer out.
+impl PaneOrigin for RemotePaneAccess {
+    /// ⚠ A pane this daemon does not hold has no surface at this path at all, which is the `None`
+    /// [`PaneOrigin::pane_start_dir`] documents — never an empty path, which would read as *the
+    /// root* to anything that joined onto it.
+    fn pane_start_dir(&self, id: PaneId) -> Option<std::path::PathBuf> {
+        match self.read_pane(id, PANE_START_DIR_SLOT)?.as_str() {
+            Some(dir) if !dir.is_empty() => Some(std::path::PathBuf::from(dir)),
+            _ => None,
+        }
     }
 }
 

@@ -573,6 +573,39 @@ pub const PANE_FOREGROUND_SLOT: &str = "foreground";
 /// always has an answer, possibly zero — this slot is never `null`.
 pub const PANE_HANDS_SLOT: &str = "hands";
 
+/// **WHERE THIS PANE WAS BORN** — the directory it was spawned in, as
+/// [`PaneOrigin`](sprag_plugin::PaneOrigin) answers it in process.
+///
+/// # ⛔⛔⛔⛔⛔ Why this address had to exist — register item 722
+///
+/// Register item 710 gave the independent milestone checker a directory to stand in, and built it
+/// as TWO doors: a writing one (a spawn may carry a cwd) and a READING one (*where was this pane
+/// born*). The writing door reached both surfaces. **The reading door reached only the in-process
+/// one**, because a pane's birth directory had no address on this wire — so
+/// [`RemotePaneAccess`](crate::remote_access::RemotePaneAccess) could not implement `PaneOrigin`
+/// at all, `PaneAccess::origin` stayed at its `None` default, and a run driven from OUTSIDE the
+/// daemon put its checker back exactly where item 710 found it: in `$HOME`, judging a repository it
+/// could not open a file in.
+///
+/// ⚠⚠ **THAT IS THE LIVE PATH AND NOT A CORNER** — register items 544 and 643 move the driver into
+/// a process of its own (`crate::drive`), and such a run sees its panes through the remote surface.
+/// So item 710's repair was half-open in exactly the direction this daemon is moving.
+///
+/// # ⚠⚠⚠ It is the BIRTH directory, and the absence is an answer
+///
+/// Birth and not the live cwd, for [`PaneOrigin`](sprag_plugin::PaneOrigin)'s own measured reason:
+/// a pane's child may `cd`
+/// anywhere and `/proc/<pid>/cwd` stops answering the moment it exits — register item 684 is the
+/// bill for reading the live one. The birth directory is a fact nothing later can take away.
+///
+/// ⚠⚠⚠⚠ **AND `null` MEANS *THIS DAEMON CANNOT SAY*, NEVER `$HOME`** — register item 709's
+/// discipline, which this slot is the newest place to need. A reader that filled an absence in with
+/// a default would hand a checker a directory nobody vouched for and a sentence claiming it had
+/// been pointed there, which is the defect item 710 measured, re-created one layer out.
+///
+/// ⚠ ADDITIVE: a new address earns no [`WIRE_PROTOCOL`] bump — [`PANE_EOF_SLOT`]'s own rule.
+pub const PANE_START_DIR_SLOT: &str = "start_dir";
+
 /// **THE ONE PLACE THIS OBJECT IS SPELLED** — [`Hands`](sprag_terminal::Hands) as the daemon serves
 /// it at [`PANE_HANDS_SLOT`], keyed by the hand vocabulary rather than by two literals of its own.
 ///
@@ -1131,6 +1164,11 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // to be told nothing happened. Its park is `pane/waitForRevision`; the two ship together
     // because a client that could read the number but not be woken by it would poll it.
     SchemaField::new(PANE_REVISION_SLOT, "int"),
+    // ⚠⚠⚠⚠⚠ Register item 722 — see `PANE_START_DIR_SLOT`. Every slot above is about what the pane
+    // is DOING; this is the one fact about where its work LIVES, and it is here because item 710's
+    // reading door stopped at the in-process surface while the driver was being moved out of the
+    // daemon. `string`, and `null` for a daemon that cannot say — never the caller's `$HOME`.
+    SchemaField::new(PANE_START_DIR_SLOT, "string"),
     // ⚠⚠⚠⚠⚠ Register items 557 and 567 — see `RECENT_INPUT_FIELD`. Every slot above is what the
     // pane SHOWS; this is about what was written INTO it, and the two must not be derived from each
     // other. A pty echoes input, so a driver reading its marker off the screen cannot tell the
@@ -10886,6 +10924,16 @@ mod tests {
             // stand down a run on an old daemon, and what they see is an unknown address rather
             // than a silent no-op.
             "stand_down",
+            // ⚠⚠⚠⚠ ADDED, NOT MOVED — register item 722, and the protocol number stands. This is a
+            // new READ address (`PANE_START_DIR_SLOT`): an older client asks for none of it and
+            // every request it already makes keeps working, which is this pin's own stated rule for
+            // an addition and the rule `PANE_EOF_SLOT` and `PANE_PAINTED_SLOT` took before it.
+            //
+            // ⚠⚠ What it buys is the half of register item 710 that could not be built: a driver
+            // running OUTSIDE the daemon (items 544/643) had no way to ask where a pane was born,
+            // so its milestone checker was spawned with no directory and judged a repository from
+            // `$HOME`. See the slot for the whole of it.
+            "start_dir",
             "stop_job",
             "swap_pane",
             "text",
