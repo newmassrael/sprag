@@ -10955,6 +10955,169 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AN OUTAGE ONE DOOR WAITED OUT DOES NOT SPEND THE OTHER DOOR'S BUDGET** — register
+    /// item 729, and the half that makes item 724's two ceilings actually two.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Two ceilings drawing on one counter are not two ceilings
+    ///
+    /// `service_retried` is declared *how many times THIS RUN has waited out its peer's service*,
+    /// and it is never reset — the document's own words, for a reader asking whether a run took
+    /// nine hours because the work was hard or because the service was down. Item 447 then also
+    /// pointed a ceiling at it, which was survivable while both doors shared one number of six.
+    /// Item 724 gave one door thirty-six, and the collision bit: **a run that had just survived a
+    /// five-hour usage limit arrived at its next 529 already twenty waits deep, and a server that
+    /// hiccupped once got no retry at all** — reported as *a person is needed*, about a service
+    /// that was working.
+    ///
+    /// # ⚠⚠⚠ What is driven here, and what each arm alone would let through
+    ///
+    /// * **THE HEADLINE**: spend the self-resuming door's whole budget, complete a turn, then meet
+    ///   a 529 — and the 529 must get its own retries. ⚠ The premise is asserted rather than
+    ///   assumed: the waits spent first must EXCEED the other door's ceiling, or the arm passes on
+    ///   a document that never fixed anything (register item 657's lesson).
+    /// * ⚠⚠⚠⚠ **THE CONTROL, AND IT IS THE ONE THAT STOPS THIS BEING «THE CEILING WAS REMOVED»**:
+    ///   the same 529, spent WITHOUT a completed turn in between, must still reach a person. That
+    ///   is the same run, the same counter and the same ceiling — the single difference is the
+    ///   `turn.done` — so a repair that simply widened or deleted the guard fails here.
+    /// * ⚠⚠ **AND THE REPORT IS UNTOUCHED**: `service_retried` must still read the RUN TOTAL after
+    ///   all of it. The whole design is that the report keeps its declared meaning while the
+    ///   budget gets its own; a repair that reset the counter would pass both arms above and
+    ///   quietly answer *nine hours of outage* with *one*.
+    #[test]
+    fn an_outage_one_door_waited_out_does_not_spend_the_other_doors_budget() {
+        /// Drive a run into `service_down` by the self-resuming door, spend `waits` there, then
+        /// optionally let a turn COMPLETE, then meet a 529 and retry once.
+        ///
+        /// Hands back where that 529 landed and what the run total reads afterwards.
+        ///
+        /// ⚠ The waits are authored onto the counter rather than pumped one at a time: what is
+        /// under test is the ARITHMETIC the guards do, and thirty-six real retries would measure
+        /// the clock instead.
+        fn after_an_outage_of(waits: i64, then_a_turn_completes: bool) -> (AiLoopState, i64) {
+            let (mut engine, host, lua, session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(
+                &mut engine,
+                &host,
+                AiLoopEvent::PeerSilent,
+                &serde_json::json!({"service": true}).to_string(),
+            );
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::ServiceDown,
+                "the fixture: the first outage must be the self-resuming one",
+            );
+            lua.set_variable(&session, "service_retried", ScriptValue::Int(waits))
+                .expect("the document's own counter is writable");
+            carried(&mut engine, &host, AiLoopEvent::ServiceRetry, "");
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Working,
+                "the fixture: {waits} waits must be INSIDE the self-resuming door's budget, or \
+                 this run never gets to the second outage at all",
+            );
+            if then_a_turn_completes {
+                // ⚠⚠ THE PEER ANSWERED, which is the only proof this document ever gets that the
+                // service came back — and the moment item 729 hangs everything on. Driven through
+                // the real event rather than by writing the watermark, because *which moment ends
+                // an outage* is exactly the claim under test.
+                carried(
+                    &mut engine,
+                    &host,
+                    AiLoopEvent::TurnDone,
+                    &serde_json::json!({"context": 0, "cold": 0, "floor": 0}).to_string(),
+                );
+                assert_eq!(
+                    engine.get_current_state(),
+                    AiLoopState::Judging,
+                    "the fixture: a completed turn reaches the state whose entry carries the mark",
+                );
+                carried(
+                    &mut engine,
+                    &host,
+                    AiLoopEvent::Judge,
+                    &serde_json::json!({"done": false, "checked": "", "rule": ""}).to_string(),
+                );
+                carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            }
+            // ── THE SECOND OUTAGE, at the OTHER door ──
+            carried(
+                &mut engine,
+                &host,
+                AiLoopEvent::TurnBlocked,
+                &serde_json::json!({"service": true, "judged": false, "rule": ""}).to_string(),
+            );
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::ServiceDown,
+                "the fixture: the second outage must be the typed-at one, or the arms compare one \
+                 door with itself",
+            );
+            carried(&mut engine, &host, AiLoopEvent::ServiceRetry, "");
+            let total = match lua.get_variable(&session, "service_retried") {
+                Ok(ScriptValue::Int(total)) => total,
+                other => panic!("the run total must stay a number: {other:?}"),
+            };
+            (engine.get_current_state(), total)
+        }
+
+        // Waits to spend at the first door: past the OTHER door's ceiling, inside this one's.
+        //
+        // ⚠⚠ Read off the shipped document below rather than written here, for the reason every
+        // arm of the gate above this one is: a constant would keep passing the day either ceiling
+        // moved, and the whole point is the relationship between them.
+        let (typed_at, resumes_max) = {
+            let (_, host, lua, session) = started();
+            drop(host);
+            let held = |name: &str| match lua.get_variable(&session, name) {
+                Ok(ScriptValue::Int(held)) => held,
+                other => panic!("the document must declare `{name}` as a number: {other:?}"),
+            };
+            (held("service_retry_max"), held("service_resumes_max"))
+        };
+        let spent = resumes_max - 1;
+        assert!(
+            spent > typed_at,
+            "⚠⚠⚠⚠⚠ THE PREMISE, and without it this gate measures nothing: the first outage must \
+             spend MORE than the second door's whole ceiling, or a document that never separated \
+             the budgets would pass every arm below. Spent {spent} against a ceiling of {typed_at}",
+        );
+
+        // ── THE HEADLINE: a turn completed in between, so the 529 gets its own budget ──
+        let (fresh_budget, total_after) = after_an_outage_of(spent, true);
+        assert_eq!(
+            fresh_budget,
+            AiLoopState::Working,
+            "⛔⛔⛔⛔⛔ THE SECOND OUTAGE MUST GET ITS OWN RETRIES. This run waited out a usage \
+             limit, the peer came back, it worked, and then a server hiccupped once — and a \
+             document that counts the whole run against a ceiling of {typed_at} sends it to a \
+             person without trying, reporting that somebody is needed about a service that is up",
+        );
+        // ⚠ TWO retries are driven above — one out of each outage — on top of the waits authored
+        // onto the counter, and the total must have counted BOTH. Spelled as the sum rather than
+        // as a literal so the arm still reads as a claim about the report when the ceilings move.
+        assert_eq!(
+            total_after,
+            spent + 2,
+            "⚠⚠⚠⚠ AND THE RUN TOTAL COUNTED BOTH OUTAGES, which is the half that keeps the report \
+             honest. `service_retried` is declared as how much of THIS RUN was outage and a reader \
+             asks it at the end; a repair that RESET the counter instead of marking it would pass \
+             the arm above and then answer «nine hours of outage» with «one»",
+        );
+
+        // ── ⚠⚠⚠ THE CONTROL: no completed turn, so it is one long outage and the ceiling holds ──
+        let (still_bounded, _) = after_an_outage_of(spent, false);
+        assert_eq!(
+            still_bounded,
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, AND IT IS WHAT SEPARATES «THE BUDGET IS SCOPED» FROM «THE \
+             CEILING IS GONE». Same run, same counter, same ceiling as the headline — the only \
+             difference is that no turn completed, so nothing ever proved the peer came back. A \
+             document that widened or dropped the guard passes the headline and fails here",
+        );
+    }
+
     /// ⚠⚠⚠⚠ **AND THE SENTENCE A PERSON READS SAYS WHICH OUTAGE THE COUNT IS AGAINST** — register
     /// item 724's own residue, paid in the same round rather than registered.
     ///

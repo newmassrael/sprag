@@ -426,12 +426,15 @@ const SERVICE_RETRIED: &str = "service_retried";
 /// **WHETHER THE PEER SAID IT IS COMING BACK ON ITS OWN**, as the document spells it — which of the
 /// two doors into `service_down` this outage arrived at.
 ///
-/// ⚠⚠ Read by the driver only to REPORT it, on [`SERVICE_RETRIED`]'s own terms and for a reason
-/// register item 724 created: since that item the two doors hold ceilings that differ by a factor
-/// of six, so the COUNT alone stopped being readable. *Waited it out twelve times* is a run twice
-/// past its budget at one door and a third of the way through it at the other, and a sentence that
-/// gave a morning reader the number without the door would be item 718's defect — two quantities
-/// wearing one slot — newly minted by the item that fixed the budget.
+/// ⚠⚠ Read by the driver only to REPORT it, on [`SERVICE_RETRIED`]'s own terms: which outage it
+/// was decides what the person who finds the pane should DO — leave a self-resuming peer alone,
+/// look at a service that refused — and neither `blocked` nor the screen still says it by then.
+///
+/// ⚠⚠⚠ **THE REASON WRITTEN HERE WHEN 724 SHIPPED WAS A DIFFERENT ONE AND IT LASTED A DAY**: that
+/// the ceilings differed by a factor of six, so the count needed a scale. **Register item 729
+/// removed that**, by pointing the ceilings at `service_retried - service_retried_carried` instead
+/// of at the counter — the count is a run total again and is nobody's budget position. The flag
+/// survives its own original argument, which is worth saying rather than quietly rewriting.
 const SERVICE_RESUMES_ITSELF: &str = "service_resumes_itself";
 
 /// The wait [`OuterLoop::wait_out_service`] falls back to when the document holds no readable
@@ -2299,17 +2302,19 @@ pub enum Noticed {
         waited: Duration,
         /// **WHICH OUTAGE IT WAS** — true where the peer printed that it is continuing on its own.
         ///
-        /// ⚠⚠⚠ **IT IS HERE TO MAKE THE `retried` COUNT BESIDE IT READABLE, AND THAT IS A DEBT
-        /// REGISTER ITEM 724 INCURRED RATHER THAN INHERITED.** Until 724 both doors were counted by
-        /// one ceiling of six, so a count carried its own scale. They now differ by a factor of six
-        /// — a limit window measured at five hours cannot be paid out of a budget argued from a 529
-        /// — and *waited it out twelve times* became a sentence meaning either «twice past the
-        /// ceiling» or «a third of the way to it» with nothing on the page to say which.
+        /// ⚠⚠⚠ **IT SAYS WHICH OUTAGE, WHICH IS WHAT THE PERSON WHO FINDS THE PANE HAS TO ACT ON**
+        /// — register item 724. The two want opposite reactions: a peer that printed *continuing
+        /// automatically* is coming back on its own and wants to be LEFT ALONE, where a service
+        /// that refused a turn wants somebody to look at whether it is up. `blocked` cannot say
+        /// this and the screen no longer shows it by the time anyone reads the report.
         ///
-        /// ⚠⚠ **NOT THE CEILING ITSELF**, though that is what the reader ultimately wants: the
-        /// ceilings are the document's and copying one here would give one fact two authorities,
-        /// which is the mistake `service_retried`'s own comment above was written to avoid. The
-        /// DOOR is what the driver actually observed; the budget follows from it.
+        /// ⚠⚠ **NOT THE CEILING, AND NO LONGER A SCALE FOR THE COUNT EITHER.** This doc argued the
+        /// second thing when 724 shipped — *twelve is twice past one ceiling and a third of the way
+        /// to the other* — and **register item 729 made that false the next day**: the ceilings now
+        /// read `service_retried - service_retried_carried`, so the count beside this flag is a RUN
+        /// TOTAL and is not a budget position at either door. The sentence it appears in says *this
+        /// run* for exactly that reason. Kept as a correction rather than deleted, because a
+        /// plausible argument that went stale in one day is worth recognising next time.
         resumes: bool,
     },
     // ⚠⚠⚠ AND THERE IS DELIBERATELY NO `PeerGone` ARM, though the first draft of that round wrote

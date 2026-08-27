@@ -364,8 +364,59 @@
       HOW MANY TIMES THIS RUN HAS WAITED OUT ITS PEER'S SERVICE — for the walk,
       and for a reader asking whether a run took nine hours because the work was
       hard or because the service was down.
+
+      ⚠⚠⚠⚠⚠ IT IS A RUN TOTAL AND IT IS NOT WHAT ANY CEILING READS — register item
+      729, and the sentence above is the reason rather than an excuse. This value
+      was declared for a REPORT: *how much of this run was outage*, asked once at
+      the end, of the whole run. Item 447 then also pointed a ceiling at it, and
+      one value answering *how long has this run been unlucky* and *has THIS
+      outage gone on too long* is one value with two jobs. The two questions want
+      opposite things from a second outage: the report wants it added, the budget
+      wants it started over.
+
+      ⚠⚠⚠ AND ITEM 724 IS WHAT MADE THE COLLISION BITE. While both doors shared
+      one ceiling of six the two readings differed by little and never crossed a
+      decision. With six at one door and thirty-six at the other, a run that
+      waited out a five-hour usage limit arrives at its next 529 already twenty
+      waits deep, and a hiccup that deserved six retries gets NONE — reported as
+      *a person is needed*, which is the wrong sentence about a working service.
+      See `service_retried_carried` below for the half that fixes it.
     -->
     <data id="service_retried" expr="0"/>
+
+    <!--
+      ⚠⚠⚠⚠⚠ WHAT WAS ALREADY ACCOUNTED FOR WHEN THIS OUTAGE BEGAN — register item
+      729, and the whole of the repair: the ceilings read
+      `service_retried - service_retried_carried`, which is *waits in THIS
+      outage*, while the value above stays exactly the run total it was declared
+      as. Two questions, two values, and neither has to lie for the other.
+
+      ⚠⚠⚠⚠ A WATERMARK RATHER THAN A SECOND COUNTER, AND THAT IS THIS DOCUMENT'S
+      OWN IDIOM rather than a new invention: `milestone_at` records `turns` at a
+      moment so a guard can read `turns - milestone_at`, and `screened_carried`
+      records `screened` so a guard can read `screened > screened_carried`. The
+      alternative — incrementing a second counter beside the first — would put
+      FOUR assignments where there are two, on edges that already carry one, and
+      the failure of letting copies drift is silent. A watermark adds ONE
+      assignment, in one place, and cannot disagree with the counter it marks.
+
+      ⚠⚠⚠⚠⚠ THE MOMENT IT IS SET IS `judging`'s ENTRY, AND THAT MOMENT ALREADY
+      EXISTED — this item was registered believing the document named nowhere
+      that an outage ENDS, and the document was asked rather than assumed. Every
+      way into `judging` is a `turn.done`, which its own entry comment argues at
+      length is *exactly once per judged turn*; and a completed turn is the only
+      proof this document ever gets that the peer's service came back. So the
+      end of an outage is not a new fact needing a new marker, it is a fact the
+      existing marker already carries. ⚠ Nothing is written on the way OUT of
+      `service_down`: leaving is a retry, not a recovery, and a retry that types
+      into a service still refusing must keep counting.
+
+      ⚠⚠ WHAT A RUN THAT NEVER FINISHES A TURN GETS: nothing is ever carried, so
+      the delta equals the total and every ceiling behaves exactly as it did
+      before this existed. The value fails toward the OLD behaviour, which is the
+      safe direction for a number no run can see.
+    -->
+    <data id="service_retried_carried" expr="0"/>
 
     <!--
       ⚠⚠⚠⚠⚠ HOW MANY TIMES IT MAY DO THAT BEFORE A PERSON IS ASKED — the ceiling
@@ -3091,12 +3142,21 @@
       it by `TurnBlocked` is a server that refused for an hour. The morning reader
       gets the distinction from the pair it arrived by, which is where item 715
       put it.
+
+      ⚠⚠⚠⚠⚠ AND BOTH COUNT THIS OUTAGE, NOT THE RUN — register item 729, which is
+      what makes the two budgets independent rather than merely different. They
+      read `service_retried - service_retried_carried`; against the bare counter a
+      run that had just survived a five-hour usage limit would arrive at its next
+      529 already twenty waits deep and be sent to a person without one retry,
+      reporting that a person is needed about a service that had hiccuped once.
+      **Two ceilings drawing on one budget is not two ceilings**, and that is the
+      difference this subtraction buys.
     -->
     <transition event="service.retry"
-                cond="service_resumes_itself &amp;&amp; service_resumes_max != 'never' &amp;&amp; service_retried &gt;= service_resumes_max"
+                cond="service_resumes_itself &amp;&amp; service_resumes_max != 'never' &amp;&amp; service_retried - service_retried_carried &gt;= service_resumes_max"
                 target="awaiting_human"/>
     <transition event="service.retry"
-                cond="service_resumes_itself == false &amp;&amp; service_retry_max != 'never' &amp;&amp; service_retried &gt;= service_retry_max"
+                cond="service_resumes_itself == false &amp;&amp; service_retry_max != 'never' &amp;&amp; service_retried - service_retried_carried &gt;= service_retry_max"
                 target="awaiting_human"/>
     <!--
       ⚠⚠⚠⚠⚠ AND THE WAY BACK THAT SAYS NOTHING — register item 715, and the
@@ -3253,6 +3313,25 @@
       <assign location="context" expr="_event.data.context"/>
       <assign location="cold" expr="_event.data.cold"/>
       <assign location="floor" expr="_event.data.floor"/>
+      <!--
+        ⚠⚠⚠⚠⚠ AND THE OUTAGE, IF THERE WAS ONE, IS OVER — register item 729. A
+        completed turn is the only proof this document ever gets that the peer's
+        service came back, so this is where *waits in the current outage* goes
+        back to zero. It is written as a watermark rather than a reset because
+        the value it marks is a run TOTAL that a reader still needs whole; see
+        both `<data>` blocks for why one value could not be both.
+
+        ⚠⚠ IT BELONGS HERE FOR THE REASON THE BLOCK ABOVE ARGUES FOR ITS
+        NEIGHBOURS, and gets the same benefit: every way in is a `turn.done`, so
+        this runs exactly once per judged turn, where the two `turn.done` edges
+        would be two copies of one line waiting to drift.
+
+        ⚠ IT IS UNCONDITIONAL, and that is cheaper than being clever: a turn that
+        followed no outage carries `service_retried` unchanged, so assigning it
+        is a no-op. A guard here would be a second place that has to agree about
+        whether an outage happened, for no gain.
+      -->
+      <assign location="service_retried_carried" expr="service_retried"/>
     </onentry>
     <!--
       ⚠⚠⚠ THE RUN'S BUDGET IS SPENT ON A CEILING THIS DOCUMENT CANNOT SEE, so ask
