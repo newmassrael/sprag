@@ -2990,6 +2990,33 @@ fn ai_loop_refusal(why: &sprag_plugin::NotStarted) -> String {
              it, is not the one this driver was written for"
                 .to_owned()
         }
+        // ⛔⛔⛔⛔⛔ **THE ARM THE SENTENCE ABOVE USED TO ANSWER FOR** — register item 510. The
+        // constructor returned `Option`, so a document the door REFUSED was reported as one whose
+        // `<data>` block was short of four strings: a reader sent to the wrong half of the right
+        // file, with nothing to find when they got there.
+        //
+        // ⚠⚠ THE FAULT SPEAKS FOR ITSELF, and that is the whole repair rather than a nicety.
+        // `Faulted`'s own `Display` names the class, the count, and that an error abandons the
+        // rest of its block — which is why a half-composed `onentry` reads as a slow peer. A
+        // sentence written here would be a second author of what an unanswered error means.
+        sprag_plugin::NotStarted::Unanswered(faulted) => {
+            format!(
+                "this build's `ai_loop.scxml` did not survive being built: {faulted}. Nothing was \
+                 prompted, and no argument of this request can change it — the document needs the \
+                 clause that failed repaired AND an edge that answers the error, because it has \
+                 neither"
+            )
+        }
+        // ⚠⚠ AND THE THIRD OF THE THREE, which the same `Option` hid — register item 510. It names
+        // the ENGINE rather than the document: there is no datamodel here to be missing strings
+        // from, so `Undrivable`'s sentence would send a reader to read a `<data>` block that is
+        // not the problem.
+        sprag_plugin::NotStarted::Sessionless => {
+            "this build's statechart engine opened `ai_loop.scxml` with no script session, so \
+             nothing could read or write its datamodel — the engine pinned under this build, not \
+             the document, is what to look at"
+                .to_owned()
+        }
         // ⚠⚠⚠⚠⚠ TWO ARMS STOOD HERE UNTIL 2026-08-26 R100, and both read a STATE NAME back out of
         // the refusal to choose a sentence — `Unbuilt(AiLoopState::Exhausted)` for this one, and a
         // general `Unbuilt(state)` beside it that NOTHING EVER BUILT. That was register item 470's
@@ -4475,6 +4502,78 @@ mod tests {
     use sprag_plugin::PaneAccess;
     use sprag_terminal::CommandBuilder;
     use std::time::Instant;
+
+    /// ⛔⛔⛔⛔⛔ **THREE REFUSALS, THREE SENTENCES, AND ONLY ONE OF THEM IS ABOUT A `<data>`
+    /// BLOCK** — register item 510, arriving at the mouth a caller actually reads.
+    ///
+    /// # ⚠⚠⚠ Why the negative assertion is the load-bearing one
+    ///
+    /// `OuterLoop::new` returned `Option` until 2026-08-27, so a document the DOOR had refused and
+    /// a machine with no script session both reached [`ai_loop_refusal`] as `Undrivable` and were
+    /// told *"this build's `ai_loop.scxml` does not carry the strings a loop is driven by"*. Every
+    /// word of that is a claim about the datamodel. A reader who acted on it opened the right file
+    /// at the wrong place and found nothing wrong, on the one occasion the product had a precise
+    /// answer and could not say it.
+    ///
+    /// So the claim here is not merely *each arm says something*: it is that the phrase belonging
+    /// to the ONE cause it is true of appears in exactly ONE of the three.
+    ///
+    /// ⚠⚠ The sentences are the whole subject, so they are compared as VALUES rather than by
+    /// eye — three arms that quietly rendered the same prose would satisfy any per-arm assertion
+    /// written one at a time, which is how the collapse got in.
+    #[test]
+    fn each_reason_a_loop_could_not_be_built_names_its_own_file() {
+        /// The clause that is true only of a datamodel short of its authored strings.
+        const ABOUT_THE_DATA: &str = "does not carry the strings a loop is driven by";
+
+        let unanswered = ai_loop_refusal(&sprag_plugin::NotStarted::Unanswered(
+            sprag_plugin::document::Faulted {
+                unanswered: 1,
+                error: Some("error.execution"),
+                cascaded: 0,
+            },
+        ));
+        let sessionless = ai_loop_refusal(&sprag_plugin::NotStarted::Sessionless);
+        let undrivable = ai_loop_refusal(&sprag_plugin::NotStarted::Undrivable);
+
+        // ⚠⚠⚠ THE FAULT SPEAKS AND THIS LAYER RELAYS IT — `Faulted`'s own `Display` names the
+        // class, which is who repairs it: `error.execution` is the document's own content and
+        // `error.communication` is a `<send>` this host did not serve. A sentence composed here
+        // would be a second author of that distinction.
+        assert!(
+            unanswered.contains("error.execution") && unanswered.contains("never ran"),
+            "⛔⛔⛔ ITEM 510: the door's own words must reach the caller — which error, and that \
+             it abandoned the rest of its block. Said: {unanswered:?}",
+        );
+        assert!(
+            !unanswered.contains(ABOUT_THE_DATA),
+            "⛔⛔⛔⛔⛔ ITEM 510, THE DEFECT ITSELF: a document the door refused was reported as a \
+             datamodel missing its authored strings. That is the wrong half of the right file, \
+             and it is worse than saying nothing — it is a confident answer nobody can act on. \
+             Said: {unanswered:?}",
+        );
+        assert!(
+            !sessionless.contains(ABOUT_THE_DATA) && sessionless.contains("engine"),
+            "⛔⛔⛔ ITEM 510: a build whose engine opened the document with no script session has \
+             no datamodel to be missing strings FROM, so it must name the engine instead. \
+             Said: {sessionless:?}",
+        );
+        assert!(
+            undrivable.contains(ABOUT_THE_DATA),
+            "⚠⚠⚠ and the arm that clause was ALWAYS true of must keep it, or this item traded \
+             one wrong sentence for another. Said: {undrivable:?}",
+        );
+        assert_eq!(
+            [&unanswered, &sessionless, &undrivable]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3,
+            "⛔⛔⛔⛔ ITEM 510: three causes, three sentences. Two arms rendering one string is \
+             the collapse this item paid for, moved down a layer where no per-arm assertion would \
+             notice it",
+        );
+    }
 
     /// ⚠⚠⚠ **AND THE TURN CONTRACT REACHES A RUN THROUGH THE DOOR PRODUCTION USES.**
     ///

@@ -2461,6 +2461,47 @@ pub enum Noticed {
     // be a second spelling of one fact, which is how the two come to differ.
 }
 
+/// **WHY A LOOP COULD NOT BE BUILT AGAINST ITS OWN DOCUMENT** — register item 499's neighbour,
+/// item 510, and the three facts [`OuterLoop::new`] used to collapse into one `None`.
+///
+/// # ⛔⛔⛔⛔⛔ One absence, three repairs, and the sentence named the wrong file
+///
+/// The constructor refuses in three places and returned `Option`, so `AiLoop::new` had nothing to
+/// tell them apart by and reported all of them as `NotStarted::Undrivable` — *"this build's
+/// document does not carry the strings a loop is driven by"*. That sentence sends a reader to look
+/// for a missing `<data>`. It is true of exactly ONE of the three, and for the other two it is a
+/// confident answer about the wrong file:
+///
+/// | what happened | who repairs it |
+/// |---|---|
+/// | the document raised an error it answers nowhere, while it was being built | the `.scxml` — the clause, or the edge that should have caught it |
+/// | the machine came back carrying no script session | the engine pinned under this build |
+/// | the datamodel does not hold the four authored strings | the `<data>` block |
+///
+/// ⚠⚠ **THE DOOR'S OWN SENTENCE IS CARRIED WHOLE RATHER THAN RE-COMPOSED.**
+/// [`crate::document::Faulted`] already says what a person needs — which error, how many, and that
+/// the rest of the block never ran — and item 505 built it. What item 510 was is that the sentence
+/// existed and could not get past this signature.
+///
+/// ⚠ NEAR-UNREACHABLE TODAY, and the item said so when it was filed: `ai_loop.scxml` answers its
+/// own errors, so a start-up failure lands in `failed` with a fault to read and never reaches the
+/// first arm. This is what a reader gets on the day that stops being true — which is the day
+/// nobody will be in a position to guess.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unopened {
+    /// The door refused the document: an `error.*` it answers nowhere, or its own handler failing
+    /// in a chain the engine had to cut. The refusal is carried WHOLE — see the type's `Display`.
+    Faulted(crate::document::Faulted),
+    /// The machine carries no script session, so nothing can read or write its datamodel.
+    ///
+    /// ⚠ A different fault from [`Undrivable`](Self::Undrivable) and it must not wear its
+    /// sentence: there is no datamodel to be missing strings FROM.
+    Sessionless,
+    /// The datamodel does not carry the four authored strings this driver drives by — the one case
+    /// `NotStarted::Undrivable`'s sentence was always about. See `Authored::read`.
+    Undrivable,
+}
+
 /// **WHY THE AUTHOR'S STANDING INSTRUCTIONS COULD NOT BE READ** — a loop that cannot be screened,
 /// and which part of the document says so.
 ///
@@ -3989,14 +4030,27 @@ impl Told {
 impl OuterLoop {
     /// Drive the machine `script` evaluates against `pane`, on the contracts `spec` declares.
     ///
-    /// [`None`] when the machine's datamodel does not carry the four authored strings — see
-    /// `Authored::read`.
-    ///
     /// ⚠ The engine is the CALLER's — see the module doc. The daemon takes
     /// [`AiLoop`](crate::ai_loop::AiLoop)'s door and constructs one there, which is the decision
     /// that made `sce-rust-lua` a real dependency of the host.
-    #[must_use]
-    pub fn new(script: Arc<dyn IScriptEngine>, pane: PaneId, spec: &AiLoopSpec) -> Option<Self> {
+    ///
+    /// # Errors
+    ///
+    /// [`Unopened`], naming which of the three refusals happened — register item 510.
+    ///
+    /// ⚠⚠⚠ **AND THIS PARAGRAPH USED TO BE ONE LINE SAYING `None` WHEN THE DATAMODEL DOES NOT
+    /// CARRY THE FOUR AUTHORED STRINGS** — one of the three, written as though it were all of
+    /// them. That sentence is the defect item 510 is about, standing in the doc of the function
+    /// that caused it: a reader who believed it went looking for a missing `<data>` whatever had
+    /// actually gone wrong.
+    ///
+    /// ⚠ No `#[must_use]`: [`Result`] carries its own, and clippy's `double_must_use` refuses the
+    /// pair. It was load-bearing while this answered [`Option`], which is not marked.
+    pub fn new(
+        script: Arc<dyn IScriptEngine>,
+        pane: PaneId,
+        spec: &AiLoopSpec,
+    ) -> Result<Self, Unopened> {
         // ⚠⚠⚠ OPENED THROUGH THE ONE DOOR — register item 505. This document ANSWERS its own
         // `error.execution` on the `work` region, so an expression that fails while the datamodel
         // is being initialised lands the machine in `failed` with [`Self::fault`] naming the class,
@@ -4009,14 +4063,23 @@ impl OuterLoop {
         // acts this file declares are performed by THIS driver, and the door is where the handler
         // is registered so it exists before `initialize` runs the first `<onentry>`.
         let serving = crate::act::Serving::new();
-        let machine =
-            crate::document::opened(AiLoopPolicy::new(Arc::clone(&script)), &serving).ok()?;
-        let session = machine.policy().session_id.clone()?;
+        // ⚠⚠⚠⚠⚠ **THE DOOR'S REFUSAL IS CARRIED, NOT DISCARDED** — register item 510. This was
+        // `.ok()?`, which turned a sentence naming the error class into a bare absence, and the
+        // caller then reported the one cause it could name. `Faulted` travels whole because it
+        // already says everything a reader needs; re-composing it here would be a second author
+        // of what an unanswered error means.
+        let machine = crate::document::opened(AiLoopPolicy::new(Arc::clone(&script)), &serving)
+            .map_err(Unopened::Faulted)?;
+        let session = machine
+            .policy()
+            .session_id
+            .clone()
+            .ok_or(Unopened::Sessionless)?;
         // ⚠ VALIDATION, NOT A SNAPSHOT — the answer is dropped. A machine that does not carry the
         // four strings is one this driver cannot drive and refusing here is what stops a run being
         // started against it; keeping the values would be the staleness this round removed.
-        Authored::read(&script, &session)?;
-        Some(Self {
+        Authored::read(&script, &session).ok_or(Unopened::Undrivable)?;
+        Ok(Self {
             done: Completion::new(spec.done_when),
             noticed: None,
             // Nobody has said anything to a run that has not started — see the field.
@@ -10446,7 +10509,10 @@ mod tests {
         pane: PaneId,
         within: Duration,
     ) -> Option<OuterLoop> {
-        with_bound(OuterLoop::new(script, pane, &spec(None))?, within)
+        // ⚠ `.ok()?` rather than `?` — register item 510 made the constructor a `Result` and these
+        // two helpers answer `Option`. The gates below assert on a loop they GOT, so the reason a
+        // build refused belongs to the gate that is about refusals and not to every caller.
+        with_bound(OuterLoop::new(script, pane, &spec(None)).ok()?, within)
     }
 
     /// [`bounded_at`]'s other half, for the gates that also declare a readiness condition.
@@ -10457,7 +10523,7 @@ mod tests {
         within: Duration,
     ) -> Option<OuterLoop> {
         with_bound(
-            OuterLoop::new(script, pane, &spec(Some(ready_when)))?,
+            OuterLoop::new(script, pane, &spec(Some(ready_when))).ok()?,
             within,
         )
     }
@@ -13619,15 +13685,22 @@ mod tests {
         let (workspace, pane) = quiet_pane();
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         engine.start_lying();
-        assert!(
+        // ⛔⛔⛔⛔⛔ **AND IT SAYS WHICH REFUSAL, NOT MERELY THAT THERE WAS ONE** — register item
+        // 510. This read `.is_none()` until 2026-08-27, which is satisfied by a constructor that
+        // reports every refusal as the same thing — and that was the defect: a document the door
+        // had refused arrived at a caller wearing THIS arm's sentence, sending a reader to look
+        // for a missing `<data>` that was not missing. The word is the assertion now.
+        assert_eq!(
             OuterLoop::new(
                 Arc::clone(&engine) as Arc<dyn IScriptEngine>,
                 pane,
                 &spec(None),
             )
-            .is_none(),
+            .err(),
+            Some(Unopened::Undrivable),
             "⚠⚠ a machine that does not answer with its four authored strings must be refused \
-             here, or a run is started against one this driver cannot drive",
+             here, or a run is started against one this driver cannot drive — and refused with \
+             the ONE word that is true of it",
         );
 
         // ── and mid-run, which is a different claim: the prompt is read WHEN IT IS DELIVERED ──

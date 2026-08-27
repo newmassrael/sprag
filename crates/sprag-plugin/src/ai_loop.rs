@@ -66,7 +66,34 @@ use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext};
 pub enum NotStarted {
     /// The machine's datamodel does not carry the four authored strings, so this driver cannot
     /// drive it at all — see `Authored::read`.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND IT USED TO MEAN TWO OTHER THINGS AS WELL** — register item 510, and the reason
+    /// the two arms below exist. `OuterLoop::new` returned `Option`, so a document the door had
+    /// REFUSED and a machine carrying no script session both arrived here as an absence and were
+    /// reported with this sentence. **A reader was sent to look for a missing `<data>` by a
+    /// refusal that had nothing to do with one.** The word means only what it says now, and the
+    /// compiler is what keeps it that way.
     Undrivable,
+    /// ⚠⚠⚠⚠⚠ **THE DOCUMENT RAISED AN ERROR IT ANSWERS NOWHERE, WHILE IT WAS BEING BUILT** —
+    /// register item 510, and [`Faulted`](Self::Faulted)'s twin on the other side of the door.
+    ///
+    /// The pair is worth keeping apart because the *diagnosis* differs even where the repair is in
+    /// the same file. [`Faulted`](Self::Faulted) is a document that answered: the machine came back
+    /// in `failed` with the class named, and what to fix is the clause. This is a document that did
+    /// NOT — the error was raised where no state could match it, so there is no machine to read and
+    /// the document is ALSO missing the edge that should have caught it. Register item 509 is the
+    /// channel for the same fact mid-run.
+    ///
+    /// ⚠ The payload is `crate::document::Faulted` whole, because it already carries the sentence
+    /// a person acts on — which error, how many, and that the rest of that block never ran.
+    Unanswered(crate::document::Faulted),
+    /// ⚠⚠ **THE MACHINE CAME BACK CARRYING NO SCRIPT SESSION**, so nothing can read its datamodel —
+    /// register item 510.
+    ///
+    /// ⚠ Not [`Undrivable`](Self::Undrivable), and the difference is which file to open: that one
+    /// is a datamodel missing four strings, and this is a build with no datamodel to miss them
+    /// from. The engine pinned under this build is what a reader should look at.
+    Sessionless,
     /// The brief did not reach the machine, and what the machine said about it.
     ///
     /// ⚠ [`Briefed::Took`] is not representable here: this arm is only built from the other two.
@@ -114,6 +141,22 @@ pub enum NotStarted {
     /// the edge assigned it to. The class is the repair: this document's content is the author's,
     /// and a `<send>` nobody served is the host's.
     Faulted(String),
+}
+
+/// **WHY THE LOOP COULD NOT BE BUILT, IN THE DOOR'S VOCABULARY** — register item 510.
+///
+/// ⚠⚠⚠ A `From` rather than a closure at the one call site, and the reason is that a closure is
+/// not a thing a gate can hold. This mapping is the whole of what the item bought — three refusals
+/// keeping three sentences where they used to collapse into one — so it has to be assertable
+/// without first breaking a document a run would have to be driven against.
+impl From<crate::outer::Unopened> for NotStarted {
+    fn from(why: crate::outer::Unopened) -> Self {
+        match why {
+            crate::outer::Unopened::Faulted(faulted) => Self::Unanswered(faulted),
+            crate::outer::Unopened::Sessionless => Self::Sessionless,
+            crate::outer::Unopened::Undrivable => Self::Undrivable,
+        }
+    }
 }
 
 /// A BOUNDED, CANCELLABLE RUN of `ai_loop.scxml`'s machine against one pane — the door onto
@@ -209,7 +252,10 @@ impl AiLoop {
         // measured the refusal's premise — that a run really does reach that state — is kept and
         // now measures the walk THROUGH it, which is the standing rule for a gate whose defect has
         // been paid.
-        let mut inner = OuterLoop::new(script, pane, spec).ok_or(NotStarted::Undrivable)?;
+        // ⚠⚠⚠⚠⚠ **THE REASON SURVIVES THE DOOR** — register item 510. This was
+        // `.ok_or(NotStarted::Undrivable)`, which answered one sentence for three different
+        // refusals; the constructor carries which one now, and each keeps its own.
+        let mut inner = OuterLoop::new(script, pane, spec).map_err(NotStarted::from)?;
         // ⚠⚠⚠⚠⚠ THE DOCUMENT'S OWN CONTENT FAILED WHILE IT WAS BEING BUILT — register item 505, and
         // asked HERE because the answer is already in the machine by the time this line runs. An
         // expression that cannot be evaluated raises `error.execution` during initialisation, the
@@ -1477,6 +1523,92 @@ mod tests {
 
     /// The document's own composed prompt, as a person reading the file expects it.
     const COMPOSED_START_PROMPT: &str = "North star: ";
+
+    /// ⛔⛔⛔⛔⛔ **A REFUSAL THE DOOR EXPLAINED IS NOT REPORTED AS THE ONE IT DID NOT** — register
+    /// item 510, and the sentence that used to name the wrong half of the right file.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was wrong, and why it was a number rather than a fix for seven days
+    ///
+    /// [`crate::outer::OuterLoop::new`] refuses in three places and returned [`Option`], so all
+    /// three arrived here as one absence and were reported as `NotStarted::Undrivable` — *"this
+    /// build's document does not carry the strings a loop is driven by"*. That sends a reader to
+    /// look for a missing `<data>`. It is true of ONE of the three. For a document the door
+    /// REFUSED, the truth is that an error was raised where nothing could answer it, and item 505
+    /// had already built the sentence saying so — [`crate::document::Faulted`] — which could not
+    /// get past the signature.
+    ///
+    /// # ⚠⚠⚠⚠ The fault is REAL, which is what stops this being a test of its own fixture
+    ///
+    /// `probe_unanswered.scxml` raises `error.execution` and answers no error at all, so
+    /// [`crate::document::opened`] hands back a genuine [`crate::document::Faulted`] — the same
+    /// value the door would produce on the day `ai_loop.scxml` stopped answering its own. A
+    /// hand-built struct would assert that this mapping moves a payload; this asserts that the
+    /// payload a real refusal carries survives it.
+    ///
+    /// ⚠⚠ **AND THE THREE MUST BE THREE.** Two of them mapping to one arm is precisely the defect,
+    /// so the claim is that the set has three distinct members — a mapping that collapsed any pair
+    /// again passes every other assertion here.
+    #[test]
+    fn a_door_that_refused_a_document_says_so_rather_than_blaming_its_datamodel() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        // ⚠ THE PRODUCT'S OWN ROAD AND THE PRODUCT'S OWN HOST — `document`'s door, not a hand
+        // `Engine::new`, which is this crate's recorded fixture failure shape.
+        let faulted = crate::document::opened(
+            crate::sm::probe_unanswered_sm::ProbeUnansweredPolicy::new(lua),
+            &crate::act::Serving::new(),
+        )
+        .err()
+        .expect(
+            "⚠⚠⚠ `probe_unanswered.scxml` raises an error it answers nowhere, so the door must \
+             refuse it — without a real refusal this gate would be about a struct somebody typed",
+        );
+
+        let refused = NotStarted::from(crate::outer::Unopened::Faulted(faulted.clone()));
+        assert_eq!(
+            refused,
+            NotStarted::Unanswered(faulted.clone()),
+            "⛔⛔⛔ ITEM 510: a document the door refused must arrive as its own refusal. It used \
+             to arrive as `Undrivable`, which is a claim about a `<data>` block and sends whoever \
+             reads it to the wrong place with nothing to find",
+        );
+        let NotStarted::Unanswered(carried) = &refused else {
+            panic!("the arm above is what it is: {refused:?}");
+        };
+        // ⚠⚠⚠⚠ **THE FAULT'S OWN SENTENCE, WHICH IS THE ITEM'S DONE-WHEN IN ONE ASSERTION.** Not a
+        // sentence composed here: `Faulted`'s `Display` names the class (who repairs it), the
+        // count, and that an error abandons the rest of its block — the fact that makes a
+        // half-composed `onentry` read as a slow peer.
+        let said = carried.to_string();
+        assert!(
+            said.contains("error.execution") && said.contains("never ran"),
+            "⛔⛔⛔⛔ ITEM 510's done-when: the fault's OWN sentence must survive the door. A \
+             mapping that kept the arm and dropped the payload would pass everything above and \
+             leave a reader with a word and no diagnosis. Said: {said:?}",
+        );
+
+        // ⚠⚠⚠ AND THE OTHER TWO KEEP THEIR OWN. `Undrivable` is the arm whose sentence was always
+        // true — it must still mean only that — and a machine with no script session is a third
+        // fact about a different file (the engine, not the document).
+        let three = [
+            refused.clone(),
+            NotStarted::from(crate::outer::Unopened::Sessionless),
+            NotStarted::from(crate::outer::Unopened::Undrivable),
+        ];
+        assert_eq!(
+            (three[1].clone(), three[2].clone()),
+            (NotStarted::Sessionless, NotStarted::Undrivable),
+            "⚠⚠⚠ each refusal keeps its own word, or the collapse this item paid for comes back \
+             wearing a different pair",
+        );
+        for (one, two) in [(0, 1), (0, 2), (1, 2)] {
+            assert_ne!(
+                three[one], three[two],
+                "⛔⛔⛔⛔⛔ ITEM 510: THREE REFUSALS, THREE ANSWERS. Two of them landing on one \
+                 arm is the whole defect — a caller then reads one sentence for two different \
+                 repairs, and one of the two is always wrong. Got {three:?}",
+            );
+        }
+    }
 
     /// A peer that answers a working prompt at once — every gate here but the one measuring what
     /// happens when a run's clock expires INSIDE a turn. See `standin_agent_reporting`.
