@@ -8218,23 +8218,17 @@ impl OuterLoop {
         // `barrier_says` exists as one function.
         let produced = self.turn_produced(panes);
         let shown = produced.evidence();
-        // ⛔⛔⛔⛔⛔ **WHERE THIS RUN'S WORK IS — register item 710, and the fact the checker had no
-        // way to learn.** A run drives one pane and the work is in a repository; the pane's BIRTH
-        // directory is the only thing in this process that says which, and item 684 is why it is the
-        // birth one rather than `/proc/<pid>/cwd` (a live read goes blind the moment the child
-        // exits, and answered `$HOME` for a restarted pane).
+        // ⛔⛔⛔⛔⛔ **WHERE THE CHECK STANDS, THE COPY THAT KEEPS IT THERE, AND THE SENTENCE THAT
+        // SAYS SO — ONE ANSWER** (registers 710 and 705). They are resolved together in
+        // [`a_check_to_put`](Self::a_check_to_put) because they are one decision, and a caller that
+        // could take two of the three would be free to spawn in one tree and name another.
         //
-        // ⚠⚠ READ ONCE and used twice — for the spawn and for the sentence in the question. Reading
-        // it again inside `check_question` would be two readers of one fact, free to disagree about
-        // whether the checker was told where it is standing and where it actually stands.
-        //
-        // ⚠ [`None`] is a surface that cannot say (`PaneAccess::origin`), and it degrades to exactly
-        // what this did before 710: a pane with no directory, and a question that does not claim
-        // otherwise. That is a loss rather than a fix, and it is named where the capability is.
-        let standing_in = panes
-            .origin()
-            .and_then(|origin| origin.pane_start_dir(self.driving.pane));
-        let question = self.check_question(&produced, standing_in.as_deref());
+        // ⚠⚠⚠ **THE COPY IS HELD IN A BINDING THAT OUTLIVES THE CHECK AND NOT ONE STATEMENT
+        // LONGER.** Dropping it removes the working copy, so a `let _ =` here would delete the tree
+        // before the checker was even spawned, and a name that lived past this function would keep
+        // one per check. The check happens below, inside this scope, which is exactly the lifetime
+        // this wants.
+        let (_copy, standing_in, question) = self.a_check_to_put(panes, &produced);
         // ⚠⚠⚠⚠⚠ **COUNTED HERE AND NOWHERE ELSE** — register item 601. This is the one place a
         // claim is really put to an independent process: past the `said` guard and past the empty
         // argv, so the tally counts CHECKS ASKED rather than judging edges walked. A counter one
@@ -8346,6 +8340,62 @@ impl OuterLoop {
     /// go through, which is item 428's shape exactly (*"a fixture that bypasses the product's own
     /// door passes even when the door is nailed shut"*). The gates take the same two steps the
     /// product takes.
+    /// **THE COPY, THE DIRECTORY, AND THE QUESTION — ONE ANSWER** — registers 710 and 705.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the three come back together
+    ///
+    /// They are one decision wearing three shapes: WHERE the checker is spawned, WHICH tree that
+    /// is, and WHAT the question tells it about where it stands. Resolved separately, a round can
+    /// isolate the spawn and leave the sentence naming the agent's own repository — and that is
+    /// **worse than not isolating at all**, because `check_question` says *the work is in {dir}, and
+    /// that is the directory you are running in*: a checker handed a copy and told the work is
+    /// elsewhere has been given an instruction to walk out of its copy and into somebody's work.
+    ///
+    /// ⚠⚠⚠⚠ **AND IT EXISTS SO A GATE CAN DRIVE THE PRODUCT'S OWN RESOLUTION.** The first form of
+    /// item 705's gate rebuilt these three steps in the test and asserted on its own copy — a
+    /// mutation that made [`checked`](Self::checked) name the shared tree left it **green**, which
+    /// is a gate measuring its own variable and is the thing this crate keeps paying for. One
+    /// function, one reader, and the gate calls it.
+    ///
+    /// # ⚠⚠ Where the work is, and what an absence means
+    ///
+    /// The directory is the driving pane's BIRTH one — item 684 is why not `/proc/<pid>/cwd`, which
+    /// goes blind the moment a child exits and answered `$HOME` for a restarted pane. A surface
+    /// that cannot say answers [`None`] (item 710), and a surface that cannot isolate answers
+    /// `None` too (item 705): **both degrade to what this did before, and the question then makes
+    /// no claim about where the checker is standing.** What must never happen is the reverse — a
+    /// sentence naming a copy that was never cut.
+    fn a_check_to_put(
+        &self,
+        panes: &dyn PaneAccess,
+        produced: &Produced,
+    ) -> (
+        Option<Box<dyn crate::access::CutCheckout>>,
+        Option<std::path::PathBuf>,
+        String,
+    ) {
+        let work_is_in = panes
+            .origin()
+            .and_then(|origin| origin.pane_start_dir(self.driving.pane));
+        // ⛔⛔⛔⛔ **THE CHECK IS GIVEN A COPY TO BE WRONG IN** — register item 705. The checker
+        // mutates what it judges (measured 2026-08-26, in its own words in run 0's walk), and the
+        // tree it was judging belonged to the AGENT: three writers where item 196 counted two, a
+        // watcher that read the checker's mutation as the agent's leftover and told the owner the
+        // agent's report was false — it was true — and then ran `git checkout --` over it.
+        let copy = work_is_in
+            .as_deref()
+            .and_then(|dir| panes.checkout().and_then(|surface| surface.cut(dir)));
+        // ⚠⚠ THE COPY WINS WHERE THERE IS ONE, and the shared tree is the fallback rather than the
+        // default. Written as `or` on the copy — not as a branch on the capability — so there is no
+        // arrangement in which the spawn and the sentence disagree.
+        let standing_in = copy
+            .as_ref()
+            .map(|cut| cut.path().to_path_buf())
+            .or(work_is_in);
+        let question = self.check_question(produced, standing_in.as_deref());
+        (copy, standing_in, question)
+    }
+
     fn check_question(&self, produced: &Produced, standing_in: Option<&std::path::Path>) -> String {
         let milestone = self.text_of(MILESTONE).unwrap_or_default();
         // ⛔⛔⛔⛔⛔ **WHERE THE WORK IS, AND THAT IT MAY BE OPENED — register item 710.** Until this
@@ -14114,6 +14164,159 @@ mod tests {
             .lifecycle()
             .expect("lifecycle")
             .close(other_pane);
+    }
+
+    /// A surface that answers everything [`WorkspacePaneAccess`] does and can also CUT A COPY —
+    /// register item 705's capability, stood in so this gate is about the DRIVER's choice rather
+    /// than about `git`.
+    ///
+    /// ⚠ `cut` is a stand-in on purpose: whether a real copy carries uncommitted work and cleans
+    /// itself up is `sprag_host::checkout`'s own gate, driven against a real repository. What is
+    /// unmeasured until here is the thing only this crate can get wrong — **which of the two paths
+    /// the checker is told to stand in**.
+    struct Isolating {
+        inner: WorkspacePaneAccess,
+        copy: std::path::PathBuf,
+    }
+
+    impl crate::access::CutCheckout for std::path::PathBuf {
+        fn path(&self) -> &std::path::Path {
+            self
+        }
+    }
+
+    impl crate::access::PaneCheckout for Isolating {
+        fn cut(&self, _dir: &std::path::Path) -> Option<Box<dyn crate::access::CutCheckout>> {
+            Some(Box::new(self.copy.clone()))
+        }
+    }
+
+    impl PaneAccess for Isolating {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            self.inner.pane_ids()
+        }
+        fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+            self.inner.pane_collapsed(id)
+        }
+        fn pane_rows(&self, id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+            self.inner.pane_rows(id)
+        }
+        fn pane_eof(&self, id: PaneId) -> Option<bool> {
+            self.inner.pane_eof(id)
+        }
+        fn pane_full_text(&self, id: PaneId) -> Option<String> {
+            self.inner.pane_full_text(id)
+        }
+        fn inject(
+            &self,
+            id: PaneId,
+            keys: &[crate::access::KeyStroke],
+        ) -> Result<crate::access::Written, PaneError> {
+            self.inner.inject(id, keys)
+        }
+        fn origin(&self) -> Option<&dyn crate::access::PaneOrigin> {
+            self.inner.origin()
+        }
+        // ⚠ FORWARDED, not defaulted: a double that quietly answered `None` here would have this
+        // gate leaking a pane per run — and the first draft did exactly that, which is why the
+        // delegation is spelled rather than assumed.
+        fn lifecycle(&self) -> Option<&dyn crate::access::PaneLifecycle> {
+            self.inner.lifecycle()
+        }
+        fn checkout(&self) -> Option<&dyn crate::access::PaneCheckout> {
+            Some(self)
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE CHECKER IS SENT TO A COPY, AND THE SENTENCE NAMES THE COPY** — register item
+    /// 705, at the one layer that decides it.
+    ///
+    /// # ⛔⛔ What the shared tree cost, measured on a live run
+    ///
+    /// Since register item 710 the milestone checker stands in the run's repository and is told to
+    /// open the files there. To judge a claim it mutates the tree, watches a gate go red, and puts
+    /// it back — 2026-08-26, in the checker's own words in run 0's walk. That tree belongs to the
+    /// AGENT, so three writers held it where item 196 had counted two: a watcher read the mutation
+    /// as the agent's leftover, told the owner *"one sentence of the report is false right now"*
+    /// (it was true), and then ran `git checkout --` over it. A no-op by luck — a minute earlier it
+    /// would have destroyed the measurement the milestone rests on.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the SENTENCE is asserted and not only the directory
+    ///
+    /// `check_question` makes two claims about one path — *the work is in {dir}* and *that is the
+    /// directory you are running in*. Isolating the spawn while leaving the sentence naming the
+    /// shared tree would hand a checker a copy and an instruction to walk out of it, which is worse
+    /// than not isolating at all: it is item 710's defect with this item's clothes on. So the arm
+    /// below reads the question and asserts the copy is what it names.
+    ///
+    /// ⚠⚠ **AND THE CONTROL IS THE SAME RUN ON A SURFACE THAT CANNOT ISOLATE**, which is what
+    /// stops this passing against a driver that names a copy it never got: the sentence must fall
+    /// back to the real repository and say so, because a run degrading in silence is the failure
+    /// register item 709 exists about.
+    #[test]
+    fn a_check_is_sent_to_a_copy_and_the_sentence_names_the_copy() {
+        let repo = std::env::temp_dir().join(format!(
+            "sprag-705-wired-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::create_dir_all(&repo).expect("the run's repository");
+        let copy = repo.join("a-copy-nobody-else-is-in");
+
+        // ⚠ The account is EMPTY on purpose: what this gate reads is the sentence about WHERE, and
+        // an account with content would only add noise to the string being searched.
+        let produced = Produced::Stated(String::new());
+        // ⚠⚠⚠⚠⚠ **THROUGH THE PRODUCT'S OWN RESOLUTION, AND THE FIRST DRAFT DID NOT.** It rebuilt
+        // these steps here and asserted on its own copy — so a mutation that made the product name
+        // the shared tree left this gate GREEN. A gate that reimplements what it is checking is
+        // measuring its own variable, which is why `a_check_to_put` exists as one function and why
+        // this closure calls it rather than repeating it.
+        let question_from = |panes: &dyn PaneAccess, pane: PaneId| {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let loops = bounded_at(lua, pane, Duration::from_secs(20))
+                .expect("the document's four authored strings");
+            let (_copy, _where, question) = loops.a_check_to_put(panes, &produced);
+            question
+        };
+
+        // ── THE CLAIM: a surface that can isolate sends the checker to the COPY ────────────────
+        let (workspace, pane) = pane_born_in(&repo);
+        let isolating = Isolating {
+            inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            copy: copy.clone(),
+        };
+        let said = question_from(&isolating, pane);
+        assert!(
+            said.contains(&copy.display().to_string()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 705: the checker was handed a working copy and then told the \
+             work is somewhere else. It mutates what it is told to judge, so this sentence is what \
+             decides whose tree gets written in — and naming the original while standing in a copy \
+             is the one outcome worse than not isolating: {said}",
+        );
+        assert!(
+            !said.contains(&format!("in {}, and", repo.display())),
+            "⚠⚠⚠⚠ AND IT MUST NOT NAME THE AGENT'S OWN TREE AT ALL. A sentence carrying both paths \
+             lets a careful checker choose the wrong one, which is the failure this repairs: {said}",
+        );
+
+        // ── ⚠⚠ THE CONTROL: a surface that cannot isolate degrades, and says the real tree ─────
+        let plain = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        assert!(
+            plain.checkout().is_none(),
+            "⚠⚠⚠ THE PREMISE OF THE CONTROL: this surface must genuinely offer no isolation, or \
+             the arm below is the arm above wearing a second name",
+        );
+        let degraded = question_from(&plain, pane);
+        assert!(
+            degraded.contains(&repo.display().to_string())
+                && !degraded.contains(&copy.display().to_string()),
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED: a run that could not cut a copy must stand in the \
+             repository exactly as it did before item 705 — a loss, named. What it must never do is \
+             name a copy it never got: {degraded}",
+        );
+
+        isolating.lifecycle().expect("lifecycle").close(pane);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     /// ⚠⚠⚠⚠⚠ **THE INDEPENDENT CHECK IS SHOWN THE WORK, AND ON A FROZEN PANE THE WORK IS WHAT THE

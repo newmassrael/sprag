@@ -119,9 +119,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_plugin::{
-    AgentObservation, JobLeader, KeyStroke, PaneAccess, PaneError, PaneForegroundJob, PaneHands,
-    PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOrigin, PaneOutputLines, PaneRow,
-    PaneSupervision, PaneTerminalModes, Signalled, Written,
+    AgentObservation, CutCheckout, JobLeader, KeyStroke, PaneAccess, PaneCheckout, PaneError,
+    PaneForegroundJob, PaneHands, PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOrigin,
+    PaneOutputLines, PaneRow, PaneSupervision, PaneTerminalModes, Signalled, Written,
 };
 use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT, Outstanding};
 use sprag_terminal::{Hands, JobProcess, PaneEcho, PaneEndOfInput, PaneId, Reach, Stop, Unstopped};
@@ -924,6 +924,29 @@ impl PaneAccess for RemotePaneAccess {
         Some(self)
     }
 
+    /// **THIS SURFACE CAN CUT A WORKING COPY, AND THE REASON IS THE SOCKET** — register item 705.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why isolation belongs HERE and not behind a wire verb
+    ///
+    /// The obvious shape is a daemon action — *make me a copy* — and it is the wrong one. This
+    /// surface is a driver's, and a driver reaches its daemon over a UNIX socket, which means the
+    /// two share a filesystem: a path the daemon named is a path THIS process can open. So the copy
+    /// can be cut right here, and then the thing that removes it is an ordinary [`Drop`] in the
+    /// process that wanted it.
+    ///
+    /// ⚠⚠ **THAT IS WHAT MAKES THE LIFETIME SAFE.** Across a wire the copy would outlive its asker
+    /// whenever a driver died mid-check, and the daemon would need a map from panes to trees and a
+    /// reaper for it — machinery whose failure mode is a repository quietly filling with
+    /// half-applied mutations. Held on this side, a driver that dies takes its copy with it.
+    ///
+    /// ⚠ `Some` unconditionally, on [`hands`](PaneAccess::hands)'s terms: what a copy needs is a
+    /// `git` and a repository, and neither is known until one is asked for. The per-CALL absence
+    /// travels on [`PaneCheckout::cut`], where it means *this could not be isolated* and the caller
+    /// degrades out loud.
+    fn checkout(&self) -> Option<&dyn PaneCheckout> {
+        Some(self)
+    }
+
     /// **ENDING WHAT A PANE IS RUNNING** — register item 654, and the one act on this surface that
     /// is neither a read nor a keystroke.
     ///
@@ -1475,6 +1498,26 @@ impl PaneHands for RemotePaneAccess {
 /// or to the daemon's cwd — would put a sentence in the checker's mouth about a tree nobody
 /// vouched for, which is the exact failure item 710 measured and item 722 exists to stop repeating
 /// one layer out.
+/// **CUTTING THE COPY** — register item 705, done in the driver's own process for
+/// [`PaneAccess::checkout`]'s stated reason.
+///
+/// ⚠ The temporary root is this machine's, not a directory of the repository's: a copy inside the
+/// tree being copied is a copy the checker can wander into, and it would show up in the agent's own
+/// `git status` as untracked litter — which is the confusion item 705 is about, re-created by the
+/// repair.
+impl PaneCheckout for RemotePaneAccess {
+    fn cut(&self, dir: &std::path::Path) -> Option<Box<dyn CutCheckout>> {
+        crate::checkout::IsolatedCheckout::of(dir, &std::env::temp_dir())
+            .map(|cut| Box::new(cut) as Box<dyn CutCheckout>)
+    }
+}
+
+impl CutCheckout for crate::checkout::IsolatedCheckout {
+    fn path(&self) -> &std::path::Path {
+        Self::path(self)
+    }
+}
+
 impl PaneOrigin for RemotePaneAccess {
     /// ⚠ A pane this daemon does not hold has no surface at this path at all, which is the `None`
     /// [`PaneOrigin::pane_start_dir`] documents — never an empty path, which would read as *the

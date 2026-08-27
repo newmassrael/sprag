@@ -790,11 +790,24 @@ pub trait PaneAccess {
     /// must degrade by saying so rather than by picking a directory — see [`PaneOrigin`] and
     /// register item 710, which is what picking one silently cost.
     ///
-    /// ⚠ A surface that reaches its panes over a SOCKET keeps the `None` today: the birth directory
-    /// has no address on that wire, so the answer would have to be invented. Named here rather than
-    /// left to be discovered, because the consumer that wants it is the one supervisor this
-    /// workspace is moving OUT of the daemon.
+    /// ⚠ **THAT WAS ONCE «EVERY SOCKET SURFACE KEEPS THE `None`», AND REGISTER ITEM 722 ENDED
+    /// IT.** The sentence here said the birth directory had no address on that wire, so the answer
+    /// would have to be invented — true when it was written, and it meant a run driven OUT of the
+    /// daemon (items 544/643, now the default) put its checker in `$HOME`. The wire has the address
+    /// now, so the answer is read rather than invented. Corrected rather than deleted: a doc that
+    /// described a hole is the thing a reader checks when they wonder whether it is still there.
     fn origin(&self) -> Option<&dyn PaneOrigin> {
+        None
+    }
+
+    /// The *isolation* surface — CUT A WORKING COPY a check can be wrong in — if this
+    /// implementation can make one. `None` by default, on the same terms as the sub-surfaces around
+    /// it.
+    ///
+    /// ⚠⚠ A `None` here is *"this surface cannot isolate"*, and a consumer must degrade by naming
+    /// the shared tree AND SAYING SO — never by pretending it isolated. See [`PaneCheckout`] and
+    /// register item 705.
+    fn checkout(&self) -> Option<&dyn PaneCheckout> {
         None
     }
 
@@ -1599,6 +1612,49 @@ pub trait PaneSupervision {
 pub trait PaneOrigin {
     /// The directory pane `id` was spawned in, or `None` for a pane this surface does not hold.
     fn pane_start_dir(&self, id: PaneId) -> Option<std::path::PathBuf>;
+}
+
+/// **A WORKING COPY THAT IS NOBODY ELSE'S** — the surface a supervisor asks when it is about to let
+/// a second process loose in somebody's repository. Reached via [`PaneAccess::checkout`].
+///
+/// # ⛔⛔⛔⛔⛔ Why a supervisor needs it — register item 705
+///
+/// The independent milestone checker (item 428) is another agent, and since item 710 it is spawned
+/// in the run's repository and told to open the files there. To judge whether a milestone holds it
+/// does what a reviewer does: it MUTATES the tree, watches a gate go red, and puts it back.
+/// Measured 2026-08-26, in the checker's own words in a run's walk.
+///
+/// That tree belongs to the agent being judged. While the checker held it there were three writers
+/// — a person, the agent, the checker — where register item 196 had counted two, and both costs
+/// landed the same night: a watcher attributed the checker's mutation to the AGENT and told the
+/// owner the agent's report was false (it was true), then ran `git checkout --` over it, which was
+/// a no-op only because the check had already finished.
+///
+/// ⚠⚠ **A NOTICE IS NOT THE REPAIR.** It has to be read, in time, by somebody already looking — and
+/// the watcher that got this wrong *was* reading `sprag runs`. What does not depend on a habit is
+/// for the check to have nowhere to be wrong except its own copy.
+///
+/// # ⚠⚠⚠ Why the absence is an answer
+///
+/// `None` from [`checkout`](PaneAccess::checkout), or from [`cut`](Self::cut), is *this surface
+/// cannot isolate* — never *here is the shared tree*. A consumer degrades to the tree it had before
+/// and says so; one that quietly substituted the original would put a sentence in a checker's mouth
+/// about a copy that does not exist, which is item 710's defect wearing this item's clothes.
+pub trait PaneCheckout {
+    /// Cut a working copy of `dir` that carries what is uncommitted in it, or [`None`] where that
+    /// cannot be done at all.
+    ///
+    /// ⚠ The copy is removed when the returned value is dropped — which is why it is returned as a
+    /// value and not as a path. A caller that could hold the path without holding the thing that
+    /// cleans it up would leave a second tree carrying a half-applied mutation, which is the
+    /// confusion this whole capability exists to end.
+    fn cut(&self, dir: &std::path::Path) -> Option<Box<dyn CutCheckout>>;
+}
+
+/// A working copy handed out by [`PaneCheckout::cut`], removed when this value is dropped.
+pub trait CutCheckout {
+    /// Where the copy is — the directory a check should be told to stand in.
+    fn path(&self) -> &std::path::Path;
 }
 
 /// Pane *lifecycle* control: spawn and close panes. The capability a plugin
