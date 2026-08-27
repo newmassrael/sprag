@@ -6977,6 +6977,19 @@ const STANDIN_PRODUCES: u64 = 7;
 /// row the prompt just delivered contains — the echo rule — and the prompt names both labels
 /// mid-sentence. So the caller's milestone and reference are what keep the two apart, and the gate
 /// asserts the driver really took them.
+///
+/// # ⚠⚠⚠⚠ AND IT CAN DECLARE, which is the only way a stand-down or a convergence is reachable
+///
+/// `declares_on` is the WORK turn — a reflection and a closing account are not one — at which the
+/// peer says the document's done marker instead of acknowledging. Every ending that rests on the
+/// agent having finished something needs it: `judging`'s stand-down edge is
+/// `_event.data.done && In('standing_down')`, its milestone edge is `_event.data.done`, and a peer
+/// that only ever acknowledges can reach neither. [`None`] never declares, which is what the two
+/// gates above want.
+///
+/// ⚠ `MILESTONE REACHED` is spelled here on the other clauses' terms, and its drift has the same
+/// catcher: a run whose peer says the wrong words never converges, loudly, in the one gate that
+/// asks for that ending.
 fn standin_that_reports_itself(
     sprag: &Path,
     log: &Path,
@@ -6984,6 +6997,7 @@ fn standin_that_reports_itself(
     states_asked: bool,
     next: (&str, &str),
     record: Option<&Path>,
+    declares_on: Option<u32>,
 ) -> String {
     // ⚠⚠ THE ONE THING THE TWO ARMS DIFFER BY, and it is the whole of item 730 on the product's
     // side: the prompt the turn opened on, stated by the peer that was asked it.
@@ -7028,13 +7042,29 @@ fn standin_that_reports_itself(
         ),
         None => (String::new(), String::new()),
     };
+    // ⚠⚠ THE WORK TURN IS COUNTED SEPARATELY FROM THE RECORD ROW. `n` moves on every turn a row is
+    // written for — reflections and the closing account included — and *declare on the second WORK
+    // turn* is not the same sentence. A peer that declared on a reflection would be answering the
+    // question *where next* with the words *I am finished*.
+    let answers = match declares_on {
+        Some(turn) => format!(
+            "if [ $t -ge {turn} ]; then printf 'MILESTONE REACHED\\n'; else printf 'ACK\\n'; fi\n"
+        ),
+        None => "printf 'ACK\\n'\n".to_owned(),
+    };
     // ⚠ EVERY PATH IS QUOTED. They are `/tmp` names this test composes, and one of them carrying a
     // shell metacharacter killed the stand-in before its first line — see the caller's own note.
     //
-    // ⚠⚠ THE THREE CLAUSES IN THE `case`s ARE THE DOCUMENT'S OWN: `exactly:` is what every WORK
-    // prompt ends with (`done_instruction`), *where you got to* is what `stopping` asks, and
-    // `NEXT MILESTONE:` is the label `reflecting` authors. See the type's doc for why they are
-    // spelled and what catches each of them drifting.
+    // ⚠⚠ THE FOUR CLAUSES IN THE `case`s ARE THE DOCUMENT'S OWN: `exactly:` is what every WORK
+    // prompt ends with (`done_instruction`), *Summarise* is what `closing` asks a run that GOT
+    // there, *where you got to* is what `stopping` asks one that did not, and `NEXT MILESTONE:` is
+    // the label `reflecting` authors. See the type's doc for why they are spelled and what catches
+    // each of them drifting.
+    //
+    // ⚠⚠⚠ `closing`'s CLAUSE IS NOT OPTIONAL ONCE A PEER CAN DECLARE. A stand-down and a
+    // convergence both end by asking for an account, and a stand-in that did not recognise that
+    // question would end the run on its wall clock with the milestone already banked — an
+    // `exhausted(duration)` about a run that had finished.
     //
     // ⚠⚠⚠ THE REFLECTION CLAUSE IS FIRST AND ENDS IN `continue`, which is not tidiness: its prompt
     // may carry the work clause's words too, and a stand-in that fell through would answer one
@@ -7044,6 +7074,7 @@ fn standin_that_reports_itself(
          stty -echo\n\
          s=1\n\
          n=0\n\
+         t=0\n\
          '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
          printf 'AGENT-READY\\n'\n\
          while IFS= read -r line; do\n\
@@ -7059,10 +7090,11 @@ fn standin_that_reports_itself(
          '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
          continue;;\n\
          esac\n\
-         case \"$line\" in *exactly:*|*'where you got to'*) ;; *) continue;; esac\n\
+         case \"$line\" in *exactly:*|*Summarise*|*'where you got to'*) ;; *) continue;; esac\n\
+         t=$((t+1))\n\
          s=$((s+1))\n\
          '{sprag}' report-agent working --name sh --seq $s{asked}{states_record} >> '{log}' 2>&1\n\
-         printf 'ACK\\n'\n\
+         {answers}\
          s=$((s+1))\n\
          {writes_row}\
          '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
@@ -7170,6 +7202,9 @@ fn a_host_run_drives_its_turns_on_the_turn_contract_that_ships() {
                         ("this run does not reflect", "nor does it carry a reference"),
                         // ⚠ AND IT KEEPS NO RECORD. This gate's subject is the turn CONTRACT, and a
                         // readable spend would put a second moving part into a two-arm comparison.
+                        None,
+                        // ⚠ AND IT NEVER DECLARES: this run must end on its BUDGET, so a peer that
+                        // said the marker would end it a different way and measure something else.
                         None,
                     ),
                 ],
@@ -7448,6 +7483,9 @@ fn a_host_run_replaces_its_inner_session_and_the_fresh_one_works() {
                     // the file means the reading is readable, larger and still `Unmeasured` — which
                     // only the baseline having been dropped can explain.
                     Some(&record),
+                    // ⚠ NEVER DECLARES — this run's reflection is brought on by the CADENCE, and a
+                    // declared milestone would reach `reflecting` by a different edge.
+                    None,
                 ),
             ],
             SPAWN_COLS_KEY: 80,
@@ -7798,6 +7836,9 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
                         true,
                         ("the next checkpoint this arm names", "and the line it carries"),
                         Some(&record),
+                        // ⚠ NEVER DECLARES: the ceiling is what must bring this run to `reviewing`,
+                        // and a milestone would take it there by an edge above the one under test.
+                        None,
                     ),
                 ],
                 SPAWN_COLS_KEY: 80,
@@ -7984,6 +8025,251 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
         "⚠⚠⚠ both arms must spend their whole turn budget — a `duration` ending is a turn that \
          never ended, and a short count is a run that stopped working after it decided. Filled \
          walked {full_walk:?}; roomy walked {roomy_walk:?}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A RUN THAT HAS BEEN STOOD DOWN FINISHES ITS MILESTONE AND STOPS** — the last of the
+/// four lifecycles register item 730 found measurable only over a double.
+///
+/// # ⚠⚠⚠⚠⚠ Why this ending is the one a person actually uses, and why it had no host gate
+///
+/// A stand-down is what somebody types at a loop they want to end WITHOUT losing the turn it is in
+/// the middle of. [`STAND_DOWN_TAKES_EFFECT`](sprag_plugin::STAND_DOWN_TAKES_EFFECT) is the promise
+/// the surface makes about it — *"it finishes the turn its agent is in the middle of and stops at
+/// the next milestone, banking that work"* — and every gate over the edge that keeps that promise
+/// ran against `sprag_plugin`'s `#[cfg(test)]` supervisor double, because no host test could end a
+/// `Settles` turn until register item 730.
+///
+/// # ⚠⚠⚠ The two arms differ in ONE act, and the SAME declaration takes opposite doors
+///
+/// Same stand-in, same brief, same peer declaring the milestone on the same turn — and one of the
+/// runs has been stood down before it starts. `judging` then reads
+/// `_event.data.done && In('standing_down')` and goes to `closing`; without the order the same
+/// declaration falls through to the plain `done` edge and goes to `reflecting`, which is the loop
+/// carrying on. **Converged versus exhausted, off one call.**
+///
+/// ⚠⚠ **THE CADENCE AND THE CEILING ARE BOTH MADE UNREACHABLE ON PURPOSE** (`reflect_every` equals
+/// the budget, no `context_ceiling` is authored). That is what makes the control's `reflecting`
+/// EVIDENCE: with those two doors shut, the only edge left that reaches it is the one that requires
+/// `_event.data.done` — so the control arriving there is the proof that the peer really declared,
+/// and neither arm's claim rests on reading a marker off a screen in this test.
+///
+/// # ⚠⚠⚠⚠ The premises, asserted inside, because each one alone makes the claim vacuous
+///
+/// * **The order was really taken.** The document is asked, through
+///   [`AiLoop::standing_down`](sprag_plugin::AiLoop::standing_down), and the two arms must disagree
+///   — an order that never reached the machine leaves this gate comparing one run with itself.
+/// * **The peer really declared, in BOTH arms.** The control's `reflecting` says so for it; the
+///   stood-down arm's own `closing` edge requires the same `_event.data.done`, so a run that ended
+///   for any other reason cannot carry the word this gate reads.
+/// * **The work was BANKED**, which is the half of the promise a `converged` does not say by
+///   itself: `banked` counts what the DOCUMENT completed and a stand-down that threw the turn away
+///   would still report the same ending word.
+#[test]
+fn a_run_that_has_been_stood_down_finishes_its_milestone_and_stops() {
+    /// The turn the peer declares on. Two rather than one, so the run is measured taking a turn it
+    /// does NOT declare on first — a peer that declared immediately would leave *finishes the turn
+    /// it is in the middle of* untested.
+    const DECLARES_ON: u32 = 2;
+    /// The document's budget, and it is what the CONTROL ends on. Reached only by an arm that keeps
+    /// working after its milestone, which is the whole difference between the two.
+    const TURNS: i64 = 3;
+
+    /// Drive one arm, ordered or not, and hand back its ending, its walk, whether the document
+    /// holds the order, and the daemon's pane set before and after.
+    fn ran(ordered: bool) -> (sprag_plugin::Outcome, Vec<String>, bool, Vec<u64>, Vec<u64>) {
+        let (_host, sock) = spawn_host();
+        let (driving, mut setup) = remote_driver(&sock);
+
+        // ⚠ NO THREAD ID — it is interpolated into a shell script. See the neighbouring gates.
+        let under =
+            std::env::temp_dir().join(format!("sprag-standdown-{}-{ordered}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&under);
+        std::fs::create_dir_all(&under).expect("a directory of this arm's own");
+        let log = under.join("what-the-daemon-said-to-each-report");
+        let state = under.join("state");
+        std::fs::create_dir_all(&state).expect("a state home of this arm's own");
+
+        let listed = |conn: &mut HostConn| -> Vec<u64> {
+            conn.call(
+                "scene/query",
+                json!({ "path": mux_action_path(PANES_SLOT) }),
+            )
+            .expect("panes query")
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry["id"].as_u64())
+            .collect()
+        };
+
+        let pane = spawn_pane(
+            &mut setup,
+            json!({
+                SPAWN_CMD_KEY: [
+                    "/bin/sh",
+                    "-c",
+                    standin_that_reports_itself(
+                        Path::new(env!("CARGO_BIN_EXE_sprag")),
+                        &log,
+                        &state,
+                        true,
+                        ("what the control goes on to work toward", "and its reference"),
+                        // ⚠ NO RECORD. Neither door here reads a spend, and a readable one would
+                        // put the capacity edge back in play — a second moving part in a two-arm
+                        // comparison that is about one act.
+                        None,
+                        Some(DECLARES_ON),
+                    ),
+                ],
+                SPAWN_COLS_KEY: 80,
+                SPAWN_ROWS_KEY: 16,
+            }),
+        );
+        let before = listed(&mut setup);
+
+        let script: std::sync::Arc<dyn sce_rust_runtime::IScriptEngine> =
+            std::sync::Arc::new(sce_rust_lua::LuaEngine::new());
+        let brief = sprag_plugin::Brief {
+            north_star: "the stand-in reaches a checkpoint and somebody has asked it to stop"
+                .to_string(),
+            milestone: "the checkpoint this run is working toward".to_string(),
+            reference: "register item 730's fourth lifecycle".to_string(),
+            closing_rules: None,
+            // ⚠⚠ NOT AUTHORED, which SHUTS the capacity edge: `judging` tests it on
+            // `context_ceiling > 0`. With the cadence shut too (below), the only door left into
+            // `reflecting` is the one that requires a declared milestone — which is what makes the
+            // control's ending evidence about the peer rather than about the loop's housekeeping.
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            milestone_check: None,
+            service: None,
+            max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
+            // ⚠ EQUAL to the budget, which is what shuts the cadence: `judging` tests the budget
+            // above it, so `turns_since_reflect >= reflect_every` can never be the reason.
+            reflect_every: Some(TURNS),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: Some(3_600_000),
+            ready_timeout_ms: Some(15_000),
+            turn_within_ms: Some(5_000),
+        };
+        let mut spec = sprag_plugin::AiLoopSpec::driving("sh");
+        spec.shows_the_prompt = false;
+
+        let mut loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
+            .expect("a well-briefed loop over a live pane starts");
+        // ⚠⚠⚠⚠⚠ **THE ORDER IS GIVEN BEFORE THE RUN, and that is a constraint rather than a
+        // preference.** `Driver::run` takes `&mut loops` for the whole run and
+        // `AiLoop::stand_down` needs the same borrow, so there is no seam to reach in through from
+        // this thread. It costs nothing the claim needs: the order is a STATE in the document's
+        // orders region, and a run that carries it from its first pump meets the same guard on the
+        // same edge as one that is given it half way. ⚠ What it does NOT measure is a stand-down
+        // arriving mid-turn, which is the daemon's own channel and its own gate.
+        if ordered {
+            loops.stand_down();
+        }
+        let held = loops.standing_down();
+        let progress = sprag_plugin::ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 8_000,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(std::sync::Arc::clone(&progress))
+        .run(&mut loops, &driving, &RunContext::uncancellable());
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        let after = listed(&mut setup);
+        println!(
+            "== stood down {ordered}: {:?} in {} iteration(s), banked {:?}, panes {before:?} -> \
+             {after:?} ==",
+            outcome.state, outcome.iterations, outcome.banked,
+        );
+        let _ = std::fs::remove_dir_all(&under);
+        (outcome, walk, held, before, after)
+    }
+
+    let (stopped, stopped_walk, stopped_held, stopped_before, stopped_after) = ran(true);
+    let (carried_on, carry_walk, carry_held, carry_before, carry_after) = ran(false);
+
+    // ── ⚠⚠ THE PREMISES ──────────────────────────────────────────────────────────────────────
+    assert_eq!(
+        (stopped_held, carry_held),
+        (true, false),
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: the two arms do not differ in whether the DOCUMENT holds the \
+         order. `standing_down` reads the machine's own orders region, so this is the act having \
+         landed rather than this test having intended it — and without the difference the whole \
+         comparison below is one run measured against itself",
+    );
+    assert!(
+        carry_walk
+            .iter()
+            .any(|note| note.contains("--> Reflecting")),
+        "⚠⚠⚠⚠ THE PREMISE FAILED: the control never reflected. With no ceiling authored and the \
+         cadence equal to the budget, the ONLY door left into `reflecting` is the one that requires \
+         a declared milestone — so this is how the gate knows the peer really said it, in both \
+         arms. Its walk: {carry_walk:?}",
+    );
+
+    // ── ⛔⛔⛔ THE CLAIM: THE ORDERED RUN CLOSED, NAMING THE ORDER ───────────────────────────
+    assert!(
+        stopped_walk
+            .iter()
+            .any(|note| note.contains("--> Closing") && note.contains("stood_down")),
+        "⛔⛔⛔⛔⛔ A STOOD-DOWN RUN MUST STOP AT ITS MILESTONE, AND SAY THAT IS WHY. `judging` has \
+         two edges a declared milestone can take and they differ only by `In('standing_down')` — so \
+         a run that reached an ending without this word took the other one, and the order a person \
+         gave did nothing. The walk: {stopped_walk:?}",
+    );
+    assert_eq!(
+        stopped.state,
+        sprag_plugin::OutcomeState::Converged,
+        "⚠⚠⚠ and it must end CONVERGED — `STAND_DOWN_TAKES_EFFECT` promises a person that \
+         `sprag runs` reports it converged and says somebody stood it down, and an ending of any \
+         other word breaks that sentence. The walk: {stopped_walk:?}",
+    );
+    assert_eq!(
+        stopped.banked.as_ref().map(|banked| banked.completed),
+        Some(DECLARES_ON),
+        "⛔⛔⛔⛔ AND THE WORK MUST BE BANKED, which is the half of the promise the ending word does \
+         not carry: *it finishes the turn its agent is in the middle of and stops at the next \
+         milestone, BANKING THAT WORK*. A stand-down that threw the declaring turn away reports the \
+         same `converged`. The walk: {stopped_walk:?}",
+    );
+    assert_eq!(
+        stopped_after, stopped_before,
+        "⚠⚠ and no pane was born or died: a stand-down ENDS a run, where every door out of \
+         `reviewing` replaces its session. Panes {stopped_before:?} -> {stopped_after:?}",
+    );
+
+    // ── ⛔⛔ THE CONTROL: THE SAME DECLARATION, UNORDERED, CARRIES ON ────────────────────────
+    assert!(
+        !carry_walk.iter().any(|note| note.contains("--> Closing")),
+        "⛔⛔⛔⛔ THE CONTROL: without the order, the SAME declaration must not end the run. \
+         `reflecting` is where a finished milestone goes when nobody has asked the loop to stop — \
+         it asks what to work toward next — and a run that closed here would be ending on the \
+         agent's word alone, which is the thing the order exists to authorise. The walk: \
+         {carry_walk:?}",
+    );
+    assert_eq!(
+        carried_on.state,
+        sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Turns),
+        "⚠⚠⚠ and it must go on to spend its whole budget: *carries on* is a claim about work done \
+         AFTER the milestone, and a run that stalled would satisfy *did not close* by doing \
+         nothing. The walk: {carry_walk:?}",
+    );
+    assert_ne!(
+        carry_after, carry_before,
+        "⚠⚠ and its session was replaced, which is what `reflecting` leads to here — the pane set \
+         moved where the stood-down arm's did not. Panes {carry_before:?} -> {carry_after:?}",
     );
 }
 
