@@ -2558,17 +2558,39 @@ impl Billed {
     /// `cold` is the first one's WRITE and `floor` is the second one's READ — a two-request fixture
     /// cannot tell a reader that confuses them from one that does not.
     pub(crate) fn transcript(&self) -> String {
-        let request = |id: &str, wrote: u64, read: u64| {
-            format!(
-                r#"{{"type":"assistant","message":{{"id":"{id}","usage":{{"input_tokens":0,"cache_read_input_tokens":{read},"cache_creation_input_tokens":{wrote},"output_tokens":1}}}}}}"#
-            )
-        };
         [
-            request("m1", self.cold, 0),
-            request("m2", 0, self.floor),
-            request("m3", 0, self.context),
+            Self::request("m1", self.cold, 0, 1),
+            Self::request("m2", 0, self.floor, 1),
+            Self::request("m3", 0, self.context, 1),
         ]
         .join("\n")
+    }
+
+    /// The same record after its session TOOK ANOTHER TURN and wrote `output` tokens of it —
+    /// register item 719, and the only axis this fixture needed to grow to stage that item.
+    ///
+    /// ⚠⚠ **THE READING IS UNCHANGED AND ONLY THE OUTPUT MOVES**, which is the whole reason this
+    /// exists as a second record rather than as a different [`Billed`]. What item 719 is about is a
+    /// loop telling a turn that produced something from one that did not, and a fixture that moved
+    /// two numbers at once would leave a gate unable to say which of them a reader answered from —
+    /// [`Billed::reading`] one method up refuses the same thing from the other side.
+    ///
+    /// ⚠ The fourth request carries the same `cache_read_input_tokens` as the third, so `context`
+    /// reads identically before and after: a turn that produces output does not have to grow the
+    /// context this fixture's other readers are pinned on.
+    pub(crate) fn after_a_turn_producing(&self, output: u64) -> String {
+        format!(
+            "{}\n{}",
+            self.transcript(),
+            Self::request("m4", 0, self.context, output),
+        )
+    }
+
+    /// One billed request, as its reader will meet it in the record.
+    fn request(id: &str, wrote: u64, read: u64, output: u64) -> String {
+        format!(
+            r#"{{"type":"assistant","message":{{"id":"{id}","usage":{{"input_tokens":0,"cache_read_input_tokens":{read},"cache_creation_input_tokens":{wrote},"output_tokens":{output}}}}}}}"#
+        )
     }
 }
 

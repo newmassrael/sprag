@@ -693,6 +693,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 because,
                 unreadable,
                 checked,
+                made,
                 explained,
                 shown,
                 witnessed,
@@ -717,6 +718,17 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                     .unwrap_or_default();
                 let cause = because
                     .map(|reason| format!(" — {}", reason.noted()))
+                    .unwrap_or_default();
+                // ⚠⚠⚠⚠⚠ AND WHAT THE TURN THIS EDGE ENDED ACTUALLY PRODUCED — register item 719,
+                // and **this harness is the reader it was measured for**. The 110 iterations in 51
+                // minutes that item is made of were watched by a person, against a live agent, on a
+                // walk that said `Working --TurnDone--> Judging` for every one of them — a line
+                // that is true of a turn which committed a milestone and of a turn which wrote
+                // nothing, and identical in both. This is the clause that separates them, and it
+                // is read off the agent's OWN record rather than off the screen it repaints.
+                let outcome = made
+                    .and_then(sprag_plugin::Made::describe)
+                    .map(|said| format!(" — {said}"))
                     .unwrap_or_default();
                 // ⚠⚠⚠ AND A RECORD THIS RUN COULD NOT READ — register item 431(a), and THIS reader is
                 // the one it was written for: a person watching a live agent is who would otherwise
@@ -779,7 +791,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 step(
                     began,
                     &format!(
-                        "{from:?} --{raised:?}--> {to:?}{cause}{verdict}{evidence}{arrived}{unread}"
+                        "{from:?} --{raised:?}--> {to:?}{cause}{outcome}{verdict}{evidence}{arrived}{unread}"
                     ),
                 );
                 walked.push((from, raised, to));

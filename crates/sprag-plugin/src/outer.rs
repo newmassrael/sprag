@@ -2005,6 +2005,19 @@ pub enum Pumped {
         /// [`Cost::Bytes`](crate::plugin::Cost::Bytes), so the same `max_cost` ceiling that bounds
         /// every other byte-relay run bounds a loop, and a run's published spend is real.
         spent: u64,
+        /// **WHETHER THE TURN THIS PASS ENDED PRODUCED ANYTHING** — register item 719, and [`None`]
+        /// on every pass that did not end one.
+        ///
+        /// # ⚠⚠ Why it sits beside [`spent`](Self::Moved::spent) and answers a different question
+        ///
+        /// `spent` is what the LOOP typed; this is what the AGENT wrote back, read off its own
+        /// record. A run bounded on the first has no idea whether the second is moving, which is
+        /// the whole of item 719: a loop with a cost ceiling and no concept of progress re-prompted
+        /// an agent that had stopped producing anything, 110 times in 51 minutes.
+        ///
+        /// ⚠ It is [`Made`] rather than a count for the reason that type holds — the count is in
+        /// the sentence and the WORD is what could ever be routed on.
+        made: Option<Made>,
         /// **WHAT PROVED THIS PASS'S DELIVERY ARRIVED** — and [`None`] both for a pass that
         /// delivered nothing and for one whose evidence is what this run was already told. See
         /// [`Witnessed`](crate::deliver::Witnessed) for why a success still owes a word (register
@@ -2506,6 +2519,24 @@ struct Session {
     /// ⚠ `None` is *nobody stated one*, never *there is no transcript*: an agent with no hooks
     /// installed states nothing ever, and that peer is exactly who the fallback exists for.
     transcript: Option<std::path::PathBuf>,
+    /// **WHAT THIS SESSION HAD PRODUCED WHEN ITS LAST TURN ENDED** — the earlier of the two looks
+    /// [`Made`] is the difference between, and [`None`] before this session has ended one.
+    ///
+    /// # ⚠⚠⚠ Why the pair is kept HERE, where the three costs beside it are not kept at all
+    ///
+    /// `context`, `cold` and `floor` are LEVELS: [`OuterLoop::costs_now`] recomputes each of them
+    /// every judged turn and hands the current value straight to the document, so nothing has to be
+    /// remembered. *Did this turn produce anything?* is not a level — it is a DIFFERENCE, and a
+    /// difference needs the earlier reading to still exist when the later one arrives.
+    ///
+    /// ⚠⚠ **AND IT BELONGS TO ONE SESSION, WHICH IS WHY IT IS A FIELD OF THIS TYPE.** The total is
+    /// read out of the record THIS session writes; a replacement writes a different file and starts
+    /// from zero. [`Session::replacing`] therefore drops it with everything else that was true of
+    /// the pane being replaced, and the field one line up holds the measured reason: carried over,
+    /// *"the spend would freeze at whatever the predecessor last spent and look like an agent doing
+    /// nothing"* — which is precisely the verdict this pair exists to hand out, so a carried
+    /// baseline would make the loop's first honest reading its first false one.
+    produced: Option<u64>,
 }
 
 impl Session {
@@ -2542,6 +2573,13 @@ impl Session {
             // fresh agent as one doing nothing at all. The name above says the same thing about the
             // derived road; this says it about the stated one.
             transcript: None,
+            // ⚠⚠⚠ AND THE BASELINE THOSE TWO WOULD BE READ AGAINST. It is a total taken off the
+            // record the PREDECESSOR was writing, and the replacement's own total starts at zero —
+            // so carried over, every turn of the fresh session would compare a small number against
+            // a large one and answer `Unmeasured` for as long as the replacement took to overtake
+            // its predecessor's whole output. Dropped, the first turn of a new session says
+            // *nothing could be compared*, which is exactly true of it.
+            produced: None,
         }
     }
 
@@ -2692,6 +2730,120 @@ impl Checked {
                  bound, or answered something that is not a verdict. Silence is not agreement: fix \
                  the checker, or the milestone is resting on the working agent's own word"
             }
+        }
+    }
+}
+
+/// **WHETHER THE TURN THAT JUST ENDED PRODUCED ANYTHING** — register item 719, and the answer is a
+/// DIFFERENCE between two readings of one number rather than a reading of a new one.
+///
+/// # ⚠⚠⚠⚠⚠ The defect: this loop had no concept of PROGRESS at all
+///
+/// [`DoneWhen::Settles`] answers *the agent moved and is at
+/// rest again*, which is the right definition of a turn's END and says nothing about what came of
+/// it. Nothing above it asked the other question, so *"here is the work"* and *"nothing has come in
+/// yet"* were the same ending and the loop re-prompted on both. Measured 2026-08-27 on the loop
+/// driving another repository: **110 iterations in 51 minutes, no commit, the tree unchanged.**
+///
+/// ⚠⚠ **AND THE SIGNAL WAS ALREADY BEING COMPUTED.** [`Spend::produced`](crate::spend::Spend) is
+/// the session's own output total, parsed out of its record by the same read `OuterLoop::costs_now`
+/// already makes on every judged turn — and it was published to nobody.
+/// `sprag runs` says the reading out loud for a PERSON in its own words: *"the counters, so a person
+/// watching a long loop can tell PROGRESS from STUCK — **two looks showing the same numbers** is the
+/// answer to that question"*. This is that reading, given to the loop.
+///
+/// # ⚠⚠⚠ Why `produced` and not `context`, which is the number already on the wire
+///
+/// `context` is a LEVEL — what the last request was charged to read — and a level is the wrong
+/// instrument twice over: it grows with the conversation whatever the agent does with a turn, and it
+/// FALLS when a session is compacted, so a difference over it is negative on some of the busiest
+/// turns there are. `produced` is a TOTAL of what the model wrote, its own doc names it as *"the
+/// only component that is neither re-read nor re-sent"*, and it never decreases inside one session.
+/// The same numbers twice therefore means one thing only: the agent wrote nothing.
+///
+/// # ⚠⚠⚠⚠ Why a WORD and not the difference itself
+///
+/// The datamodel this reaches is Lua, where `0` is TRUE — so a raw count would make *this turn
+/// produced nothing* the truthy value and *nothing could be measured* the falsy one, which is
+/// backwards from every other key on this event. [`Checked`] one type up settled the same question
+/// the same way for the same reason: **a word, or `false`**. The count itself travels in the walk,
+/// where the reader is a person and the question is *how much*.
+///
+/// ⚠ [`Unmeasured`](Self::Unmeasured) is NOT [`Nothing`](Self::Nothing), on this file's standing
+/// rule that a zero must never have two meanings (`Accounted`, one type down, is the same
+/// argument): a run whose agent writes somewhere this host cannot read, and a session's FIRST turn —
+/// which has no earlier reading to be compared with — must not be reported as an agent that did
+/// nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Made {
+    /// **NOTHING COULD BE COMPARED**: no readable record, or no reading from this same session to
+    /// compare against — which is every session's first turn, and every turn after a replacement.
+    ///
+    /// ⚠ Published as `false`, so a document that grows a guard on this reads *the loop could not
+    /// tell* as the falsy answer rather than as a verdict about the agent.
+    Unmeasured,
+    /// **THE TWO READINGS ARE THE SAME**: the session wrote nothing at all between the end of the
+    /// previous turn and the end of this one.
+    Nothing,
+    /// The session's output total moved, by the tokens carried here.
+    ///
+    /// ⚠ The count is carried for the walk and never for a guard — see the type, and [`Checked`]'s
+    /// `explained` for the same division between what routes and what is merely said.
+    Something(u64),
+}
+
+impl Made {
+    /// **THE WORD THIS DRIVER PUBLISHES** as `_event.data.produced`, or [`None`] for the arm that
+    /// publishes `false`.
+    ///
+    /// ⚠⚠ A WORD OR `false`, NEVER AN EMPTY STRING and never a number, for the reason the type
+    /// holds: this datamodel is Lua, where `''` and `0` are both TRUE.
+    #[must_use]
+    pub const fn wire_str(self) -> Option<&'static str> {
+        match self {
+            Self::Unmeasured => None,
+            Self::Nothing => Some("nothing"),
+            Self::Something(_) => Some("something"),
+        }
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD MAKE OF IT** — the sentence a walk carries, or [`None`]
+    /// where there is nothing to say.
+    ///
+    /// ⚠ [`Unmeasured`](Self::Unmeasured) says nothing at all, on this file's own measured rule
+    /// about levels: a sentence on every turn of a run that cannot measure its agent would fill a
+    /// bounded journal with one fact, which is R396's thirteen identical lines and item 277's cost.
+    #[must_use]
+    pub fn describe(self) -> Option<String> {
+        match self {
+            Self::Unmeasured => None,
+            Self::Nothing => Some(
+                "AND THIS TURN PRODUCED NOTHING — its session's own record holds the same output \
+                 total it held when the last turn ended, so the agent answered and wrote not one \
+                 token of work"
+                    .to_owned(),
+            ),
+            Self::Something(tokens) => {
+                Some(format!("and this turn produced {tokens} tokens of output"))
+            }
+        }
+    }
+
+    /// The verdict a PAIR of readings comes to — `before` is what the session had produced when its
+    /// last turn ended, `now` what it has produced at the end of this one.
+    ///
+    /// ⚠⚠⚠ **A DECREASE IS [`Unmeasured`](Self::Unmeasured) AND NOT [`Nothing`](Self::Nothing).**
+    /// The total cannot fall inside one session, so a fall means the two readings came off two
+    /// different records — a session replaced without this run noticing, or an agent that moved
+    /// where it writes mid-run, both of which [`Session::transcript`] says happen. Reporting *the
+    /// agent did nothing* out of two records is the failure [`Session::replacing`] already refuses
+    /// one field over: *"the spend would freeze at whatever the predecessor last spent and look
+    /// like an agent doing nothing"*.
+    fn between(before: Option<u64>, now: Option<u64>) -> Self {
+        match (before, now) {
+            (Some(before), Some(now)) if now > before => Self::Something(now - before),
+            (Some(before), Some(now)) if now == before => Self::Nothing,
+            _ => Self::Unmeasured,
         }
     }
 }
@@ -3435,6 +3587,17 @@ pub struct OuterLoop {
     /// reported — and one that breaks AGAIN, or a replacement session naming a different unreadable
     /// file, is a new finding rather than a silence.
     unaccountable: Option<std::path::PathBuf>,
+    /// ⚠⚠⚠⚠⚠ **WHETHER THE TURN THAT JUST ENDED PRODUCED ANYTHING** — register item 719. Written by
+    /// [`costs_now`](Self::costs_now), which is the one place a turn's ending reads its session's
+    /// record, and read at the funnel on the pass that raised `turn.done`.
+    ///
+    /// ⚠⚠ **AN ANSWER ABOUT ONE TURN, kept the way [`verdict`](Self::verdict) is and never latched
+    /// the way [`unaccountable`](Self#structfield.unaccountable) is.** The two neighbours divide on
+    /// exactly this: an unreadable record is a LEVEL that stays true until the file becomes
+    /// readable, and *this turn produced nothing* belongs to ONE turn. Carried onto a later pass it
+    /// would be R396's thirteen identical lines — a verdict about a turn that had already been
+    /// judged, printed onto every step that followed it.
+    made: Option<Made>,
     /// ⚠⚠⚠⚠ **WHAT PROVED THIS PASS'S DELIVERY ARRIVED** — register item 434. Written by
     /// [`say`](Self::say) on every delivery it makes, whichever caller asked for one, and read at
     /// the funnel so it belongs to the pass that earned it. See
@@ -3622,6 +3785,9 @@ impl OuterLoop {
                 // ⚠ And this one cannot be known here even in principle: an agent states where it
                 // writes on the hook that opens its FIRST TURN, and nothing has been asked yet.
                 transcript: None,
+                // ⚠ Nor this: it is what the session had produced when its LAST TURN ENDED, and no
+                // turn has been taken. A session's first turn has nothing to be compared with.
+                produced: None,
             },
             machine,
             serving,
@@ -3649,6 +3815,8 @@ impl OuterLoop {
             explained: None,
             shown: None,
             unaccountable: None,
+            // ⚠ No turn has ended, so there is no turn for this to be an answer about.
+            made: None,
             witnessed: None,
             walked: Vec::new(),
             told: Told::default(),
@@ -5442,6 +5610,11 @@ impl OuterLoop {
                     because: self.restarting_because().map(Because::Restarted),
                     unreadable: None,
                     checked: None,
+                    // ⚠⚠ NO TURN ENDED HERE, so there is nothing this pass could have produced.
+                    // The prompt never became a question at all — which is exactly the churn item
+                    // 719 was measured inside, and the honest answer is still that this pass took
+                    // no turn rather than that a turn came to nothing.
+                    made: None,
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
                     // said beside, and no artifact for anything to have been shown — see
                     // `Pumped::Moved`'s `explained` and `shown`.
@@ -5481,6 +5654,9 @@ impl OuterLoop {
                     // ⚠ AND NO JUDGEMENT HAPPENED, so no milestone was claimed for anything to
                     // check: this pass is a pane whose program has gone.
                     checked: None,
+                    // ⚠ NOR DID A TURN END. The peer left mid-turn, and *this turn produced
+                    // nothing* is a verdict about an agent that answered — which this one did not.
+                    made: None,
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
                     // said beside, and no artifact for anything to have been shown — see
                     // `Pumped::Moved`'s `explained` and `shown`.
@@ -5964,6 +6140,18 @@ impl OuterLoop {
             found,
             because,
             unreadable,
+            // ⚠⚠⚠ ON THE PASS THAT ENDED A TURN AND NO OTHER — register item 719, and it is
+            // `checked`'s rule one fact over: the verdict belongs to THIS turn, and a later pass
+            // reading the slot would put *this turn produced nothing* on a step that took no turn
+            // at all.
+            //
+            // ⚠⚠ KEYED ON THE EVENT THIS PASS RAISED, never on where the machine was. Five states
+            // raise `turn.done` and the answer is about the TURN rather than about any of them —
+            // which is register item 470's rule read from the other side: what the driver knows is
+            // what it did, and the topology is the document's business.
+            made: (event == AiLoopEvent::TurnDone)
+                .then_some(self.made)
+                .flatten(),
             // ⚠ ON THE PASSES THAT JUDGED AND NO OTHER. The verdict belongs to the claim this
             // judgement made, and `verdict` is written fresh by every judgement — so a later pass
             // reading it would put a check's answer on a milestone it never saw.
@@ -8499,12 +8687,39 @@ impl OuterLoop {
         // and a record that has become readable must stop being reported. The DIFF that turns it
         // into one finding is taken at the funnel, beside `found`'s.
         self.unaccountable = accounted.unreadable().cloned();
+        // ⚠⚠⚠⚠⚠ **AND WHETHER THE TURN THAT JUST ENDED PRODUCED ANYTHING** — register item 719, and
+        // it is a SECOND LOOK AT A NUMBER THIS READ ALREADY MADE rather than a new instrument. The
+        // whole-file parse above answers `Spend::produced` — the session's own output total — every
+        // judged turn, and until this line it was computed and thrown away.
+        //
+        // ⚠⚠⚠ THE DIFFERENCE IS TAKEN HERE BECAUSE THIS IS WHERE THE PAIR EXISTS, which is the same
+        // argument `found` and `unreadable` are computed at the funnel on: the earlier reading is
+        // kept on the SESSION (so a replacement drops it), the later one is in hand, and a second
+        // party recomputing either would be a second authority on one quantity. ⚠ Both call sites
+        // that raise `turn.done` come through here, so there is no edge where the baseline moves
+        // without the verdict being taken, and none where it is taken twice for one turn.
+        let now = spend.map(|spend| spend.produced);
+        self.made = Some(Made::between(self.driving.produced, now));
+        // ⚠⚠ THE BASELINE MOVES ONLY ON A READING THAT HAPPENED. A turn whose record could not be
+        // read must not overwrite the last real reading with `None`: the NEXT turn would then be
+        // `Unmeasured` as well, so one unreadable moment would cost two turns their answer instead
+        // of one. `costs_now`'s own rule about the zeros, one field up, in the other direction.
+        if now.is_some() {
+            self.driving.produced = now;
+        }
         serde_json::json!({
             "context": spend.map_or(0, |spend| spend.context),
             "cold": spend.map_or(0, |spend| spend.cold),
             "floor": spend.map_or(0, |spend| spend.floor),
             "unreadable": match accounted.unreadable() {
                 Some(record) => serde_json::Value::from(record.display().to_string()),
+                None => serde_json::Value::Bool(false),
+            },
+            // ⚠⚠ A WORD OR `false`, NEVER A NUMBER, and this key is the one where that rule bites
+            // hardest: the count it stands for is ZERO on the answer a guard would most want, and
+            // Lua's `0` is TRUE. See [`Made`], which holds the whole argument.
+            "produced": match self.made.and_then(Made::wire_str) {
+                Some(word) => serde_json::Value::from(word),
                 None => serde_json::Value::Bool(false),
             },
         })
@@ -12676,6 +12891,8 @@ mod tests {
                 // ⚠ AND NOTHING WAS JUDGED, so no milestone was claimed to be checked — and with no
                 // verdict there is nothing for a checker's words to be said beside (item 461).
                 checked: None,
+                // ⚠ AND NO TURN ENDED, so there is nothing this pass could have produced either.
+                made: None,
                 explained: None,
                 shown: None,
             },
@@ -14986,6 +15203,252 @@ mod tests {
         );
 
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A TURN THAT PRODUCED NOTHING IS TOLD APART FROM ONE THAT DID** — register item
+    /// 719, and the fact the loop had no word for at all.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The defect, measured rather than argued
+    ///
+    /// [`DoneWhen::Settles`](crate::completion::DoneWhen::Settles) answers *the agent moved and is
+    /// at rest again* — the right definition of a turn's END, and silent about what came of it. So
+    /// *"here is the work"* and *"nothing has come in yet"* were one ending and the loop re-prompted
+    /// on both, with the agent having no way out: answer and be pumped, stay quiet and be
+    /// `PeerSilent`. Measured 2026-08-27 on the loop driving another repository: **110 iterations in
+    /// 51 minutes, no commit, the tree unchanged.** `no_progress`, `stalled` and `made_progress`
+    /// matched NOTHING in this workspace's shipping Rust or in its document.
+    ///
+    /// ⚠⚠ **AND NO NEW INSTRUMENT WAS OWED.** `sprag runs` already writes the reading down in its
+    /// own words — *"the counters, so a person watching a long loop can tell PROGRESS from STUCK —
+    /// two looks showing the same numbers is the answer to that question"* — and
+    /// [`crate::spend::Spend::produced`] was already parsed out of the session's record by the read
+    /// [`OuterLoop::costs_now`] makes on every judged turn. What was missing was a reader: the
+    /// answer was computed for a PERSON and thrown away before the loop saw it.
+    ///
+    /// # ⚠⚠⚠ Two runs differing in ONE fact: whether the agent's record grew
+    ///
+    /// The same stand-in, the same brief, the same record on disk at the start. In the SUBJECT
+    /// nothing touches that file again; in the CONTROL one more billed request is appended between
+    /// the two turns. Everything else — the pane, the prompts, the peer's replies — is identical, so
+    /// the only thing either arm's verdict can be answering from is the record.
+    ///
+    /// # ⚠⚠⚠⚠ Three premises are asserted INSIDE the gate, because each one can make it vacuous
+    ///
+    /// * **THE PEER REALLY ANSWERS.** Both arms must take TWO `Working --TurnDone--> Judging`
+    ///   edges. A fixture whose agent said nothing would reach `NotYet` or `PeerSilent` and never
+    ///   produce a verdict to read, and *nothing produced* would then be a sentence about a turn
+    ///   that never happened.
+    /// * **THE RECORD REALLY IS READ.** `context` must hold this repository's own measured reading
+    ///   on both arms, and never `0`. This is the sharp one: an unreadable record publishes
+    ///   [`Made::Unmeasured`] — which is `false`, the product's own fallback — so a fixture that
+    ///   staged the fault by accident would agree with the expectation while measuring nothing.
+    /// * **THE CONTROL'S RECORD REALLY GREW.** The two files are compared through
+    ///   [`crate::spend::spend_in`] before either run starts, so the arm that is supposed to differ
+    ///   is known to differ, in the quantity under test and in no other.
+    ///
+    /// ⚠ And the FIRST turn of both arms must answer `false`: a session that has ended no turn has
+    /// no earlier reading to be compared with, and reporting *the agent produced nothing* there
+    /// would accuse every fresh session on the turn it was briefed.
+    #[test]
+    fn a_turn_that_produced_nothing_is_told_apart_from_one_that_did() {
+        /// Above the reading, so capacity never moves these runs — the door under test is the only
+        /// difference between the arms.
+        const ROOMY: i64 = 800_000;
+        /// What the control's extra billed request writes. ⚠ Not `1`: a count that could be
+        /// confused with the fixture's own per-request output would let a reader answering with the
+        /// wrong number look right.
+        const WROTE: u64 = 37;
+
+        let sample = crate::testing::MEASURED_HERE;
+        let still = sample.transcript();
+        let grown = sample.after_a_turn_producing(WROTE);
+
+        // ⚠⚠⚠⚠ THE THIRD PREMISE, TAKEN BEFORE EITHER RUN: the two records differ in the quantity
+        // under test and in nothing else. A control that did not actually grow would agree with the
+        // subject and this gate would be measuring one arm twice.
+        let before = crate::spend::spend_in(&still);
+        let after = crate::spend::spend_in(&grown);
+        assert_eq!(
+            (after.produced - before.produced, after.context),
+            (WROTE, before.context),
+            "⚠⚠⚠ the control's record must differ from the subject's by {WROTE} tokens of OUTPUT \
+             and by nothing else — the reading a restart is priced on must be identical, or a red \
+             below could be a reader that answered from `context`: {before:?} then {after:?}",
+        );
+
+        /// **WHAT ONE ARM SAW ON ONE TURN** — the driver's own verdict, and the word the DOCUMENT
+        /// was told.
+        ///
+        /// ⚠⚠ BOTH READINGS, because they answer different halves of the claim. The verdict is what
+        /// the loop worked out; the word is what it now HOLDS — and item 719 is owed the second. A
+        /// gate reading only the first would pass with the key never reaching the machine.
+        #[derive(Debug, PartialEq, Eq)]
+        struct Turn {
+            /// [`Pumped::Moved`]'s answer for the turn this pass ended.
+            made: Option<Made>,
+            /// `_event.data.produced` as the datamodel holds it — [`None`] where it holds `false`.
+            held: Option<String>,
+        }
+
+        /// Drive one arm two turns deep and say what the loop made of each.
+        fn turns(
+            record: &std::path::Path,
+            grow_to: Option<&str>,
+        ) -> (Vec<Turn>, Option<i64>, Vec<String>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            // ⚠ The peer never says the marker, so nothing it says can end these runs early.
+            let (workspace, pane) = standin_agent(99);
+            let access = crate::testing::supervised_writing(&workspace, record);
+            let mut loops = ready_bounded_at(
+                Arc::clone(&lua),
+                pane,
+                ReadyWhen::Settles("claude".to_string()),
+                Duration::from_secs(5),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "the stand-in keeps answering".to_string(),
+                    milestone: "reach it".to_string(),
+                    reference: "this gate".to_string(),
+                    closing_rules: None,
+                    context_ceiling: Some(ROOMY),
+                    reflect_after_refusals: None,
+                    milestone_check: None,
+                    service: None,
+                    max_turns: Some(Counted::Of(40)),
+                    // ⚠⚠ OFF, and it is load-bearing here rather than tidy: a reflection replaces
+                    // the session, and a replacement DROPS the earlier reading on purpose — so a
+                    // cadence that fired between these two turns would make the second one
+                    // `Unmeasured` and both arms would agree for a reason this gate is not about.
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    await_person_ms: Some(0),
+                    handback_still_ms: None,
+                    hold_within_ms: None,
+                    ready_timeout_ms: None,
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held",
+            );
+
+            let run = RunContext::uncancellable();
+            let mut walked: Vec<String> = Vec::new();
+            let mut seen: Vec<Turn> = Vec::new();
+            while walked.len() < 40 && seen.len() < 2 {
+                match loops
+                    .pump(&access, &run)
+                    .expect("the pane must stay readable")
+                {
+                    Pumped::Moved {
+                        from,
+                        raised,
+                        to,
+                        made,
+                        ..
+                    } => {
+                        walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                        if raised != AiLoopEvent::TurnDone {
+                            continue;
+                        }
+                        // ⚠⚠⚠ READ AFTER THE MOVE. `judging`'s `onentry` is what assigns the key,
+                        // so a reading taken before the machine had entered it would be the seed
+                        // this document authors rather than what this turn was told.
+                        let held = match loops.script.get_variable(&loops.session, "produced") {
+                            Ok(ScriptValue::String(word)) => Some(word),
+                            _ => None,
+                        };
+                        seen.push(Turn { made, held });
+                        // ⚠ THE ONE THING THE ARMS DIFFER BY, applied AFTER the first turn's
+                        // reading has been taken and before the second's: an agent's record grows
+                        // while it works, and this is that growth arriving between two turns.
+                        if seen.len() == 1
+                            && let Some(text) = grow_to
+                        {
+                            std::fs::write(record, text)
+                                .expect("the record the session is writing");
+                        }
+                    }
+                    other => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                }
+            }
+            let held = loops.context();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (seen, held, walked)
+        }
+
+        let home = std::env::temp_dir().join(format!("sprag-produced-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        let stuck_at = home.join("what-the-stuck-session-said.jsonl");
+        let moving_at = home.join("what-the-working-session-said.jsonl");
+        std::fs::write(&stuck_at, &still).expect("the agent's own record");
+        std::fs::write(&moving_at, &still).expect("the agent's own record");
+
+        let (stuck, stuck_context, stuck_walk) = turns(&stuck_at, None);
+        let (moving, moving_context, moving_walk) = turns(&moving_at, Some(&grown));
+        let _ = std::fs::remove_dir_all(&home);
+
+        // ⚠⚠⚠⚠ THE FIRST PREMISE. Everything below is a claim about a TURN, and an arm that never
+        // completed two would satisfy several of them by having nothing to say.
+        assert_eq!(
+            (stuck.len(), moving.len()),
+            (2, 2),
+            "⚠⚠⚠ both arms must complete TWO turns — the peer really answers, twice, or *this turn \
+             produced nothing* is a sentence about a turn that never happened. Stuck walked \
+             {stuck_walk:?}; moving walked {moving_walk:?}",
+        );
+
+        // ⚠⚠⚠⚠⚠ THE SECOND PREMISE, AND THE SHARP ONE. `Made::Unmeasured` publishes `false`, which
+        // is exactly what a run whose record could not be read publishes — so a fixture that staged
+        // the fault by accident would AGREE with half the expectations below while measuring
+        // nothing at all. The record really was read on both arms, and it read what was in it.
+        let read = Some(i64::try_from(sample.context).expect("a reading fits an i64"));
+        assert_eq!(
+            (stuck_context, moving_context),
+            (read, read),
+            "⚠⚠⚠⚠ the session's own record must have reached the document as `context` on BOTH \
+             arms and must not be the zero that means *this could not be read*. A run that read \
+             nothing answers `false` for every turn, which is one of the answers under test",
+        );
+
+        // ⚠⚠⚠ THE FIRST TURN OF EITHER ARM HAS NOTHING TO BE COMPARED WITH, and it must say so
+        // rather than accuse the agent. This is the arm that separates *nothing was produced* from
+        // *nothing could be compared* — the two-meanings-for-one-zero rule this file is built on.
+        assert_eq!(
+            (stuck[0].made, moving[0].made),
+            (Some(Made::Unmeasured), Some(Made::Unmeasured)),
+            "⚠⚠⚠ a session's FIRST turn has no earlier reading, so the loop must answer *could \
+             not compare* — never *the agent produced nothing*, which would accuse every fresh \
+             session on the turn it was briefed. Stuck walked {stuck_walk:?}",
+        );
+        assert_eq!(
+            (stuck[0].held.as_deref(), moving[0].held.as_deref()),
+            (None, None),
+            "⚠⚠ and the DOCUMENT must hold `false` for it, never a word: a guard grown on this key \
+             has to read *the loop could not tell* as the falsy answer",
+        );
+
+        // ⛔⛔⛔⛔⛔ **THE CLAIM.** One fact differs between the arms and the loop answers differently.
+        assert_eq!(
+            (stuck[1].made, moving[1].made),
+            (Some(Made::Nothing), Some(Made::Something(WROTE))),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 719. Two turns, one peer, one brief — and the ONLY difference \
+             is whether the agent's own record grew between them. The loop must call the second \
+             turn of the stuck arm PRODUCED NOTHING and the second turn of the moving arm \
+             {WROTE} tokens. A loop that answers the same for both has no concept of progress, \
+             which is the whole of this item: it re-prompted a stopped agent 110 times in 51 \
+             minutes with the answer already computed beside it.\n  stuck walked \
+             {stuck_walk:?}\n  moving walked {moving_walk:?}",
+        );
+        assert_eq!(
+            (stuck[1].held.as_deref(), moving[1].held.as_deref()),
+            (Some("nothing"), Some("something")),
+            "⚠⚠⚠⚠ AND THE LOOP MUST HOLD IT, not merely have worked it out. The verdict above is \
+             the driver's; this is what the document was told, and item 719 is owed the second — \
+             the reader that was missing is the LOOP, not a person reading a run's journal",
+        );
     }
 
     /// ⚠⚠⚠⚠⚠ **A SESSION THAT HAS READ PAST ITS CEILING HANDS OVER WITHOUT WAITING TO BE ASKED** —
@@ -18033,6 +18496,7 @@ mod tests {
                     because,
                     unreadable,
                     checked,
+                    made: _,
                     explained: _,
                     shown: _,
                 } => {

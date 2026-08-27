@@ -1678,6 +1678,47 @@
     <data id="floor" expr="0"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ WHETHER THE TURN THAT JUST ENDED PRODUCED ANYTHING — register item
+      719, written by the driver on the same `turn.done` as the three above and
+      by nothing else.
+
+      THE DEFECT IT NAMES. `done_when: settles` answers *the agent moved and is
+      at rest again*, which is the right definition of a turn's END and says
+      nothing about what came of it. So `here is the work` and `nothing has come
+      in yet` were the same ending and this machine re-prompted on both.
+      Measured 2026-08-27 on the loop driving another repository: 110 iterations
+      in 51 minutes, no commit, the tree unchanged. Nothing in this document or
+      in its driver had a word for `no progress`.
+
+      ⚠⚠ IT IS NOT A LEVEL, WHICH IS WHAT MAKES IT DIFFERENT FROM ITS
+      NEIGHBOURS. `context`, `cold` and `floor` are each read fresh off the
+      session's record every turn; this is the DIFFERENCE between two such
+      reads — the session's own output total now against what it was when the
+      last turn ended. The driver takes the difference because only the driver
+      held the earlier reading, and a second party recomputing it would be a
+      second authority on one quantity.
+
+      ⚠⚠⚠ THREE ANSWERS AND `false` IS ONE OF THEM. `'nothing'` and
+      `'something'` are verdicts about the agent; `false` is *this run could not
+      compare* — a record it cannot read, or a session's FIRST turn, which has
+      no earlier reading. A guard that read those as `nothing` would accuse
+      every fresh session of doing nothing on the turn it was briefed.
+
+      ⚠⚠⚠⚠ A WORD, NEVER A COUNT, for `checked`'s measured reason one state
+      over: this datamodel is Lua, where `0` is TRUE — so a count here would
+      make `the agent produced nothing` the truthy value, and any guard written
+      on it would fire on every turn of every run.
+
+      ⚠ NOTHING GUARDS ON IT YET, and that is stated rather than left to be
+      inferred. What item 719 is owed is that this loop can TELL a turn that
+      produced something from one that did not; what to DO about an empty turn
+      is a separate decision, unproven, and one this document must not make by
+      accident. `context` was carried here for two rounds under exactly the same
+      sentence before `reviewing` grew a guard on it.
+    -->
+    <data id="produced" expr="false"/>
+
+    <!--
       ⚠⚠ HOW MANY TIMES THIS RUN HAS ALREADY REPLACED ITS SESSION. Counted where
       the replacement happens, so it is the act rather than an intention.
 
@@ -3313,6 +3354,22 @@
       <assign location="context" expr="_event.data.context"/>
       <assign location="cold" expr="_event.data.cold"/>
       <assign location="floor" expr="_event.data.floor"/>
+      <!--
+        ⚠⚠⚠⚠⚠ AND WHETHER THE TURN THAT JUST ENDED PRODUCED ANYTHING — register
+        item 719, in the block above's one place and for its reason exactly:
+        every way in is a `turn.done`, so this runs once per judged turn.
+
+        It is the one fact here that is not a LEVEL. The three above are read
+        fresh off the session's record every turn; this is the DIFFERENCE
+        between two of those reads, taken by the driver because only the driver
+        held the earlier one. See `Made` in `outer.rs`.
+
+        ⚠⚠ A WORD OR `false`, NEVER A COUNT, and this key is where that rule
+        matters most: the count it stands for is ZERO on the answer that says
+        the agent produced nothing, and this datamodel is Lua, where `0` is
+        TRUE. A guard written on a number here would fire on every turn.
+      -->
+      <assign location="produced" expr="_event.data.produced"/>
       <!--
         ⚠⚠⚠⚠⚠ AND THE OUTAGE, IF THERE WAS ONE, IS OVER — register item 729. A
         completed turn is the only proof this document ever gets that the peer's

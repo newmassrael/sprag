@@ -170,6 +170,9 @@ struct Learned<'a> {
     unreadable: Option<&'a std::path::Path>,
     /// What an independent check said about the milestone this judgement claimed — item 428.
     checked: Option<crate::outer::Checked>,
+    /// Whether the turn this pass ENDED produced anything — register item 719, and [`None`] on
+    /// every pass that ended no turn.
+    made: Option<crate::outer::Made>,
     /// What that check said BESIDE its verdict — register item 461.
     ///
     /// ⚠ Borrowed, like [`found`](Self::found) and [`unreadable`](Self::unreadable) beside it: this
@@ -456,6 +459,7 @@ impl AiLoop {
             because,
             unreadable,
             checked,
+            made,
             explained,
             shown,
             witnessed,
@@ -467,6 +471,19 @@ impl AiLoop {
         };
         if let Some(reason) = because {
             note = format!("{note} — {}", reason.noted());
+        }
+        // ⚠⚠⚠⚠⚠ **WHAT THE TURN THIS EDGE ENDED ACTUALLY PRODUCED** — register item 719, straight
+        // after the cause because it is about the act this edge REPORTS, exactly where the verdict
+        // below sits for the judgement the next edge makes. The two never land on one line: a turn
+        // ends on `turn.done` and a claim is checked on `judge`.
+        //
+        // ⚠⚠ SAID ON EVERY MEASURED TURN AND NOT ONLY ON THE EMPTY ONE, which is the rule three
+        // clauses below it are already written on: telling two facts apart by the ABSENCE of a
+        // sentence is the reading this workspace has burned wire numbers over, and a person
+        // scanning a run for the moment it stopped getting anywhere needs the productive turns to
+        // say so too. ⚠ The unmeasured answer says nothing, and [`Made::describe`] holds why.
+        if let Some(outcome) = made.and_then(crate::outer::Made::describe) {
+            note = format!("{note} — {outcome}");
         }
         // ⚠⚠⚠⚠ THE CLAIM'S VERDICT COMES STRAIGHT AFTER THE CAUSE, and it is APPENDED rather than
         // substituted — register item 428, learned from three neighbouring gates in one run. The
@@ -1067,6 +1084,7 @@ impl Plugin for AiLoop {
                 because,
                 unreadable,
                 checked,
+                made,
                 explained,
                 shown,
             } => {
@@ -1116,6 +1134,7 @@ impl Plugin for AiLoop {
                         because,
                         unreadable: unreadable.as_deref(),
                         checked,
+                        made,
                         explained: explained.as_deref(),
                         shown,
                         witnessed,
@@ -2562,6 +2581,150 @@ mod tests {
         assert!(
             !untold.iter().any(|note| note.contains(SAYS)),
             "⚠⚠ nothing was named, so nothing failed to be read: {untold:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **THE WALK SAYS WHICH TURNS PRODUCED NOTHING** — register item 719, and the reader
+    /// this half is for is the PERSON watching a long loop.
+    ///
+    /// # ⚠⚠⚠ Why the line was not already enough, measured on a real walk
+    ///
+    /// `Working --TurnDone--> Judging` is what the journal said for every one of the **110
+    /// iterations in 51 minutes** item 719 is made of, on a run that committed nothing and left the
+    /// tree unchanged. It is the same line a turn that finished a milestone writes. So the whole
+    /// diagnosis of that run had to be done from OUTSIDE it — by counting commits — and the number
+    /// that would have answered it was being parsed out of the agent's own record on every one of
+    /// those turns and thrown away.
+    ///
+    /// ⚠⚠ The sibling gate `a_turn_that_produced_nothing_is_told_apart_from_one_that_did` holds the
+    /// VERDICT and the datamodel key at the driver's own layer. This one holds the SENTENCE, and it
+    /// is not a re-spelling: the note is composed a layer up, in [`AiLoop::walked`], out of a field
+    /// that has to cross [`Pumped::Moved`] to get there — and a clause dropped anywhere on that road
+    /// is invisible to a gate that reads the pump.
+    ///
+    /// # ⚠⚠ Two arms differing in ONE fact, and the control is the interesting one
+    ///
+    /// The same peer, the same brief, the same record on disk — and in the moving arm one more
+    /// billed request is appended between the turns. A control that merely stated no record would
+    /// prove nothing here: it would be silent for the ordinary reason (`Made::Unmeasured` says
+    /// nothing at all), so a driver that had lost the clause entirely would pass it.
+    #[test]
+    fn the_walk_says_which_turns_produced_nothing() {
+        /// The clause a reader is owed — asserted rather than the whole sentence, so a reword does
+        /// not fail this gate while a SILENCE does. `a_record_the_run_could_not_read_is_named_in_
+        /// the_walk_once`'s rule, one fact over.
+        const EMPTY: &str = "THIS TURN PRODUCED NOTHING";
+        /// And the clause the productive turn owes, on the same rule.
+        const WORKED: &str = "tokens of output";
+        /// What the moving arm's extra request writes. ⚠ Not `1`: a count that could be confused
+        /// with the fixture's own per-request output would let a wrong reader look right.
+        const WROTE: u64 = 37;
+
+        let sample = crate::testing::MEASURED_HERE;
+        let still = sample.transcript();
+        let grown = sample.after_a_turn_producing(WROTE);
+
+        /// Step one arm until the peer has ended two turns, and hand back every note it wrote.
+        fn walk_of(record: &std::path::Path, grow_to: Option<&str>) -> Vec<String> {
+            use crate::plugin::Plugin as _;
+
+            // ⚠ The peer answers many prompts before its marker, so nothing it says ends these
+            // runs before the second turn this gate is about.
+            let (workspace, pane) = standin_agent(9);
+            let access = crate::testing::supervised_writing(&workspace, record);
+            let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+                .expect("a well-briefed loop over a live pane starts");
+            let run = RunContext::uncancellable();
+            let mut walk: Vec<String> = Vec::new();
+            let mut turns = 0_usize;
+            // ⚠⚠ STEPPED BY HAND RATHER THAN THROUGH THE `Driver`, and that is the one thing this
+            // gate needs that its neighbour does not: an agent's record GROWS WHILE IT WORKS, and
+            // the only way to stage that between two turns is to be holding the loop between them.
+            while walk.len() < 40 && turns < 2 {
+                let step = loops.step(&access, &run).expect("the pane stays readable");
+                let Some(note) = step.note else {
+                    continue;
+                };
+                let ended = note.contains("--TurnDone-->");
+                walk.push(note);
+                if !ended {
+                    continue;
+                }
+                turns += 1;
+                // ⚠ THE ONE THING THE ARMS DIFFER BY, applied after the first turn has been judged
+                // and before the second ends.
+                if turns == 1
+                    && let Some(text) = grow_to
+                {
+                    std::fs::write(record, text).expect("the record the session is writing");
+                }
+            }
+            access.lifecycle().expect("lifecycle").close(pane);
+            assert_eq!(
+                turns, 2,
+                "⚠⚠⚠ THE PREMISE: the peer must really ANSWER, twice. A run that ended no turn \
+                 has nothing for either clause to be said about, and both assertions below would \
+                 pass on the silence: {walk:?}",
+            );
+            walk
+        }
+
+        let home = std::env::temp_dir().join(format!("sprag-walk-produced-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        let stuck_at = home.join("what-the-stuck-session-said.jsonl");
+        let moving_at = home.join("what-the-working-session-said.jsonl");
+        std::fs::write(&stuck_at, &still).expect("the agent's own record");
+        std::fs::write(&moving_at, &still).expect("the agent's own record");
+
+        let stuck = walk_of(&stuck_at, None);
+        let moving = walk_of(&moving_at, Some(&grown));
+        let _ = std::fs::remove_dir_all(&home);
+
+        let named: Vec<&String> = stuck.iter().filter(|note| note.contains(EMPTY)).collect();
+        assert_eq!(
+            named.len(),
+            1,
+            "⛔⛔⛔⛔ REGISTER ITEM 719: the turn whose agent wrote nothing must be NAMED in the \
+             walk, and exactly once — there was one such turn. Every line of the 110-iteration run \
+             this item is made of read `Working --TurnDone--> Judging`, which is also what a turn \
+             that finished the work writes. Walked {stuck:?}",
+        );
+        assert!(
+            named[0].contains("--TurnDone-->"),
+            "⚠⚠ and it must be said ON THE EDGE THAT ENDED THE TURN, not carried onto a later step \
+             — a verdict about one turn printed on the next is R396's thirteen identical lines: \
+             {:?}",
+            named[0],
+        );
+        assert!(
+            !stuck.iter().any(|note| note.contains(WORKED)),
+            "⚠⚠ and this arm's agent produced nothing at all, so no turn of it may claim output: \
+             {stuck:?}",
+        );
+
+        // ⛔⛔ THE CONTROL, and it is what makes the claim above attributable: the same run whose
+        // agent DID write something must say so, in the same place, rather than being silent.
+        let worked: Vec<&String> = moving.iter().filter(|note| note.contains(WORKED)).collect();
+        assert_eq!(
+            worked.len(),
+            1,
+            "⛔⛔⛔ the productive turn must say what it produced. Telling two facts apart by the \
+             ABSENCE of a sentence is the reading this workspace has burned wire numbers over — and \
+             a driver that had lost this clause altogether would pass the claim above. Walked \
+             {moving:?}",
+        );
+        assert!(
+            worked[0].contains(&WROTE.to_string()),
+            "⚠⚠⚠ AND IT MUST BE THE DIFFERENCE, not the session's total: the record held {} tokens \
+             of output before this turn and {WROTE} more after it, so a reader answering with the \
+             total would say {} here: {:?}",
+            crate::spend::spend_in(&still).produced,
+            crate::spend::spend_in(&grown).produced,
+            worked[0],
+        );
+        assert!(
+            !moving.iter().any(|note| note.contains(EMPTY)),
+            "⚠⚠ and no turn of the moving arm may be called empty: {moving:?}",
         );
     }
 
@@ -8432,8 +8595,15 @@ mod tests {
     }
 
     /// **WHAT THE DRIVER PUTS ON `turn.done`** — three numbers, and a zero is a record that could
-    /// not be read rather than a small one. `judging`'s `onentry` assigns all three.
-    const TURN: &str = r#"{"context": 0, "cold": 0, "floor": 0}"#;
+    /// not be read rather than a small one; then whether the turn produced anything, which is the
+    /// one key here that is a DIFFERENCE rather than a reading. `judging`'s `onentry` assigns all
+    /// four.
+    ///
+    /// ⚠ `false` for the fourth, which is what a run whose record it cannot read publishes — the
+    /// honest value for a fixture that puts no record anywhere, and never `0`: this datamodel is
+    /// Lua, where `0` is TRUE (register item 719, and `JUDGED` two doc comments down for the same
+    /// rule).
+    const TURN: &str = r#"{"context": 0, "cold": 0, "floor": 0, "produced": false}"#;
 
     /// **WHAT THE DRIVER PUTS ON `judge` AFTER AN ORDINARY TURN** — five keys, every one of them
     /// `false`, which is `OuterLoop::pump`'s own shape for *the agent worked and declared nothing*.
