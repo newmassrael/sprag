@@ -77,13 +77,77 @@ use crate::run::{RunContext, Waited, poll_until};
 /// four homes. The declaration is [`sprag_detect::peer`], which also says the thing this constant
 /// never could: the key arrives on the SCREEN — nothing reports it, it is pressed and then read.
 ///
-/// ⚠⚠ **THE RESIDUE, STATED RATHER THAN HIDDEN — item 150's remaining half.** This site is
-/// AGENT-BLIND: `refuse` is handed a pane and a question, not a peer, so one agent's key is what
-/// every agent gets. Reading it from `claude`'s row makes the source single without making the
-/// choice per-agent, which is the honest half to pay first. What keeps it from being silent is
-/// unchanged: an agent that does not take this key leaves the dialog up, NOTHING is typed, and the
-/// run reports `Refusal::NotDismissed`.
+/// ⚠⚠ **THIS IS THE KEY FOR A PANE THAT NAMES NO PEER THIS BUILD DECLARES** — item 150's second
+/// half is paid (`refuses_at`), and what is left standing here is the FALLBACK rather than the
+/// choice. A pane whose agent is named and declared gets that peer's own key.
+///
+/// ⚠ Why `claude`'s row is the fallback rather than a refusal to press: every pane this loop drives
+/// today is one nothing may have identified — a scraped pane, a host with no supervisor — and
+/// declining to press would take the screening act away from all of them to fix a case that has
+/// never been measured. What keeps it from being silent is unchanged: an agent that does not take
+/// this key leaves the dialog up, NOTHING is typed, and the run reports `Refusal::NotDismissed`.
 pub const REFUSES: &str = sprag_detect::peer::Peer::CLAUDE.refuses;
+
+/// ⛔⛔⛔⛔⛔ **WHOSE KEY A SCREENING PRESSED** — register item 150's remaining half, and the reason
+/// it needs a word at all.
+///
+/// # ⚠⚠⚠⚠⚠ Both declared peers answer `Escape`, so the KEY cannot say whether anybody looked
+///
+/// `Peer::CLAUDE.refuses` and `Peer::CODEX.refuses` are both `"Escape"` at this build. A repair that
+/// only changed which constant the press reads would therefore be **invisible**: the bytes are
+/// identical, every gate stays green, and nothing could tell a site that consulted the pane's own
+/// manifest from one that never did. That is the vacuity this register keeps paying for, and it is
+/// why the resolution is a VALUE rather than an inlined lookup.
+///
+/// ⚠⚠ It also states the honest limit of the repair: `codex`'s key is carried as `claude`'s guess
+/// (register item 4 — unmeasured against a live `codex`), so [`Peers`](Self::Peers) means *this
+/// build's declaration for that agent was used*, never *this key was watched landing at it*.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refuses {
+    /// The pane named an agent this build declares, and the key is **that peer's own**.
+    Peers(&'static str),
+    /// Nothing named an agent this build declares — no supervisor, no agent state, or a name with
+    /// no manifest — so [`REFUSES`] stands. Carries the name where there was one, because *nobody
+    /// said* and *said something this build has never heard of* are different things to go and fix.
+    Assumed(Option<String>),
+}
+
+impl Refuses {
+    /// The key itself.
+    #[must_use]
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::Peers(name) => sprag_detect::peer::of(name).map_or(REFUSES, |peer| peer.refuses),
+            Self::Assumed(_) => REFUSES,
+        }
+    }
+}
+
+/// **WHICH KEY TURNS THIS PANE'S PEER DOWN**, asked of the pane rather than assumed — register
+/// item 150.
+///
+/// # ⚠⚠⚠⚠ The defect: the press was agent-blind while the manifest was right there
+///
+/// Item 150's first half moved the key's HOME into `sprag-detect`'s manifest (R68). Its second half
+/// stood open through two re-judgements because the home was built and **nothing ever asked it
+/// about a particular pane**: `peer::of` had zero call sites in the workspace, and the press was
+/// `KeyStroke::named(REFUSES)` — one agent's key for every agent.
+///
+/// ⚠ The lookup is by the name the SUPERVISOR reports for that pane, which is the same road
+/// `Session::identify` and the readiness barrier already take. A pane nothing reports for answers
+/// [`Refuses::Assumed`], which is what every scraped pane is.
+pub(crate) fn refuses_at(panes: &dyn PaneAccess, pane: PaneId) -> Refuses {
+    let named = panes
+        .supervision()
+        .and_then(|supervisor| supervisor.pane_agent_state(pane))
+        .and_then(|seen| seen.agent);
+    match named {
+        Some(name) => sprag_detect::peer::of(&name).map_or(Refuses::Assumed(Some(name)), |peer| {
+            Refuses::Peers(peer.name)
+        }),
+        None => Refuses::Assumed(None),
+    }
+}
 
 /// How long the dialog has to leave the screen after [`REFUSES`] goes in.
 ///
@@ -315,7 +379,16 @@ pub(crate) fn refuse(
     if left_the_question(panes, pane, question) {
         return Ok(Refused::AlreadyGone);
     }
-    let bytes = panes.inject(pane, &[KeyStroke::named(REFUSES)])?.bytes();
+    // ⛔⛔⛔⛔⛔ **THE PEER'S OWN KEY, ASKED OF THE PANE** — register item 150's remaining half. This
+    // line was `KeyStroke::named(REFUSES)`: one agent's answer pressed at every agent, while the
+    // manifest that knows better sat in `sprag-detect` with `peer::of` unreached from anywhere in
+    // the workspace. ⚠ Both declared peers say `Escape` today, so this changes no byte — see
+    // [`Refuses`], which is why the resolution is a value a gate can see rather than a lookup
+    // inlined here where nothing could tell it from the constant.
+    let refuses = refuses_at(panes, pane);
+    let bytes = panes
+        .inject(pane, &[KeyStroke::named(refuses.key())])?
+        .bytes();
     // ⚠⚠⚠ THE FIRST PROOF, and the `Tab` arm of the live probe is what it is for. A dialog that is
     // still up takes an Enter as an answer to ITSELF — measured, with the file written — so
     // nothing may be typed until this holds.
@@ -567,6 +640,138 @@ mod tests {
             sprag_input::is_key_name(REFUSES),
             "⚠⚠⚠ {REFUSES:?} is not a key name this build encodes, so every screening act would \
              fail as `PaneError::Encode` with a dialog on the screen and a person's agent waiting",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE KEY A SCREENING PRESSES IS THE PANE'S PEER'S, ASKED RATHER THAN ASSUMED** —
+    /// register item 150's remaining half, open through two re-judgements.
+    ///
+    /// # What was left, in the register's own words
+    ///
+    /// R68 paid the first half: the key's HOME moved to `sprag-detect`'s peer manifest, and
+    /// [`REFUSES`] became a read of `Peer::CLAUDE.refuses` rather than a spelling of `"Escape"`.
+    /// R68 and R102 both re-judged the rest open with the same sentence: **the pressing site is
+    /// still agent-blind** — `peer::of` had **zero call sites in the workspace**, so a home had been
+    /// built that nothing ever asked about a particular pane, and a second agent was handed
+    /// `claude`'s key.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the KEY cannot be the assertion, and what this gate does instead
+    ///
+    /// `Peer::CLAUDE.refuses` and `Peer::CODEX.refuses` are **both `"Escape"`** at this build. So a
+    /// gate that pressed at a codex pane and asserted the bytes would pass **whether or not anybody
+    /// looked** — it would be green over the exact defect item 150 names, which is this register's
+    /// most-paid-for shape. The assertion is therefore the RESOLUTION: which declaration answered,
+    /// and whether one answered at all.
+    ///
+    /// ⚠⚠ **AND THE FOUR ANSWERS ARE FOUR REPAIRS.** *This peer's own key* and *nobody named a peer*
+    /// are different facts, and *named something with no manifest* is a third — it is the one that
+    /// says a manifest is missing rather than a supervisor. The last is what a scraped pane is, and
+    /// it must keep working: every pane driven without a supervisor reaches it.
+    #[test]
+    fn the_key_a_screening_presses_is_the_panes_own_peers() {
+        /// A pane that reports whatever agent name it is built with — or nothing at all.
+        struct Named(Option<&'static str>);
+        impl PaneAccess for Named {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                Ok(crate::access::Written::of(1))
+            }
+            // ⚠ A pane with NO agent name still has a supervisor here — that is the honest shape of
+            // a host watching a plain shell, and it keeps this arm about the NAME rather than about
+            // whether anything reports at all.
+            fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+                self.0.map(|_| self as &dyn crate::access::PaneSupervision)
+            }
+        }
+        impl crate::access::PaneSupervision for Named {
+            fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
+                Some(crate::access::AgentObservation {
+                    state: sprag_detect::AgentState::Blocked,
+                    agent: self.0.map(str::to_owned),
+                    authority: crate::access::Authority::Scraped { rule: None },
+                    seq: 1,
+                    asked_seq: 0,
+                    reports: 0,
+                    asking: None,
+                    asked: None,
+                    said: None,
+                    said_seq: 0,
+                    noticed: None,
+                    transcript: None,
+                    settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
+                })
+            }
+        }
+
+        let at = |named: Option<&'static str>| refuses_at(&Named(named), PaneId(1));
+
+        assert_eq!(
+            at(Some("claude")),
+            Refuses::Peers("claude"),
+            "⚠⚠⚠ THE STAGING: a pane that names the peer this build was written against must \
+             resolve through the MANIFEST. If this is `Assumed`, the lookup is not happening at \
+             all and the three arms below are about a constant",
+        );
+        assert_eq!(
+            at(Some("codex")),
+            Refuses::Peers("codex"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 150: a SECOND agent must be turned down with its OWN \
+             declaration. This is the whole of what stood open — the manifest was built and \
+             `peer::of` had no call site anywhere, so every pane got `claude`'s answer. ⚠ Both \
+             peers spell `Escape` today, which is exactly why this asserts WHICH declaration \
+             answered and not which bytes went out: a gate on the key is green over the defect",
+        );
+        assert_eq!(
+            at(Some("nano")),
+            Refuses::Assumed(Some("nano".to_owned())),
+            "⚠⚠⚠⚠ AND A NAME THIS BUILD HAS NEVER HEARD OF IS ITS OWN ANSWER, carrying the name. \
+             *Nobody said* sends somebody to look at the supervisor; *said `nano`* says a MANIFEST \
+             is missing, and a reading that folded them would send every reader to the wrong one",
+        );
+        assert_eq!(
+            at(None),
+            Refuses::Assumed(None),
+            "⚠⚠ AND THE PANE NOTHING NAMES STILL GETS A KEY — every scraped pane is this one, and \
+             a repair that refused to press here would take the screening act away from all of \
+             them to fix a case nobody has measured",
+        );
+
+        // ── ⚠⚠⚠⚠⚠ AND THE FACT THAT MAKES THIS GATE NECESSARY, ASSERTED RATHER THAN TRUSTED ──
+        //
+        // Both declarations answer `Escape` at this build, so the four resolutions above press the
+        // same byte. The day that stops being true this line reds and its neighbours become
+        // observable in the bytes too — which is the good direction, and it is the day item 4's
+        // live `codex` measurement is what changes them.
+        assert_eq!(
+            [
+                at(Some("claude")).key(),
+                at(Some("codex")).key(),
+                at(Some("nano")).key(),
+                at(None).key(),
+            ],
+            [REFUSES; 4],
+            "⚠⚠⚠ THE KEYS ARE ALL ONE TODAY, and this gate says so out loud: it is why the \
+             assertions above are about the RESOLUTION. If this reds, a peer's key has diverged — \
+             go and check that the divergence is a MEASUREMENT (register item 4) and not a guess",
         );
     }
 }
