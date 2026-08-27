@@ -9062,6 +9062,41 @@ const WORK_NEEDING_A_PERSON: &str = "stty -icanon -echo 2>/dev/null\n\
        esac\n\
      done\n";
 
+/// The stimulus every supervised run in this file types, named rather than spelled twice — register
+/// item 725. [`the_run_has_typed`] derives its trigger from this, so a round that reworded the
+/// stimulus cannot leave a gate waiting for a line the peer will never print again.
+const SUPERVISED_STIMULUS: &str = "ping";
+
+/// **THE LINE THAT MEANS THE RUN'S KEYSTROKE HAS LANDED** — the marker [`WORK_NEEDING_A_PERSON`]
+/// prints for the LAST byte of [`SUPERVISED_STIMULUS`], which the peer reaches only after taking
+/// every byte before it.
+///
+/// # ⚠⚠⚠⚠⚠ Why a gate wants THIS moment and not `TURN 1` — register item 725
+///
+/// Both say *the run is plainly driving*, and for a long time either would do. They are opposite
+/// instants for a test that then types as a PERSON: `TURN n` is printed a whole second after the
+/// peer took the run's Enter, so it is the moment the run has been told its turn ENDED — and it
+/// starts the next one, barrier and all, immediately. A person's byte aimed at that instant is
+/// racing the run's next write down a much longer road (a real client, a key decoder, the wire),
+/// and **measured 2026-08-27 the run won: a whole extra stimulus landed AFTER the person's byte had
+/// been consumed**, leaving `WORK DONE` one processed Enter away.
+///
+/// This marker is printed while the peer still holds the run's Enter and has a second of work to do
+/// before the run hears anything, so the person's byte is counted while the run has nothing in
+/// flight — and the run's next barrier check refuses instead of typing. Measured on the same day,
+/// same gate: the pane ends `… TURN 1 / HANDED BACK` with **nothing after it at all**.
+///
+/// ⛔ It is not a longer `sleep` and not a widened bound: it is an OBSERVATION, and the one this
+/// file already reasons in — see `TURN 1`'s own note, which this replaces rather than contradicts.
+fn the_run_has_typed() -> String {
+    let last = SUPERVISED_STIMULUS
+        .as_bytes()
+        .last()
+        .copied()
+        .expect("the stimulus every supervised run types is never empty");
+    format!("SAW {last}")
+}
+
 /// Submit one `orchestrator` run over the wire against `pane`, watched by a person, and say whether
 /// a pane they take ever comes back (`still` in milliseconds, or [`None`] for *never*).
 ///
@@ -9071,7 +9106,7 @@ fn submit_supervised_run(conn: &mut HostConn, session: &str, pane: u64, still: O
     let mut args = json!({
         "plugin": "orchestrator",
         "pane": pane,
-        "stimulus": "ping",
+        "stimulus": SUPERVISED_STIMULUS,
         "sentinel": "WORK DONE",
         sprag_host::wire::PluginGrammar::AWAIT_PERSON.name: 30_000,
         // ⚠⚠ SIXTY TURNS, AND THE NUMBER IS THE POINT: the ceiling must not be what ends either
@@ -9228,7 +9263,11 @@ fn a_person_at_a_real_keyboard_who_is_not_waited_for_keeps_the_pane() {
     });
 
     submit_supervised_run(&mut conn, &session, 0, None);
-    pane_showing(&mut conn, &session, "TURN 1");
+    // ⚠⚠⚠⚠⚠ THE BEHAVIOURAL TRIGGER, AND WHICH BEHAVIOUR IS THE WHOLE OF REGISTER ITEM 725: the
+    // person reaches in once the run's OWN KEYSTROKE HAS LANDED — not after a clock, and not at
+    // `TURN 1`, which is the instant the run has just been told its turn ended and starts the next
+    // one. See [`the_run_has_typed`] for what was measured at each of the two moments.
+    pane_showing(&mut conn, &session, &the_run_has_typed());
     tui.type_bytes(b"X");
 
     let outcome = finished_outcome(&mut conn, &session);
@@ -9246,5 +9285,28 @@ fn a_person_at_a_real_keyboard_who_is_not_waited_for_keeps_the_pane() {
         "⚠⚠⚠ AND THE PANE IS THE WITNESS: their byte reached the peer, so the goal was ONE turn \
          away — and the run did not take it. That is the whole difference the argument buys, and \
          it is measured here rather than argued: {held:?}",
+    );
+    // ⚠⚠⚠⚠⚠ **AND NOTHING THE RUN TYPED CAME AFTER THEM, WHICH IS WHY THE LINE ABOVE IS SAFE TO
+    // ASSERT** — register item 725.
+    //
+    // The claim above is about a WORD; this is about the SILENCE that makes the word impossible,
+    // and without it this gate passes on a technicality. Measured 2026-08-27 with the person's
+    // byte aimed at `TURN 1`: the pane ended `… HANDED BACK / SAW 112 / SAW 105 / SAW 110 / SAW
+    // 103` — a whole stimulus the run typed AFTER they took the pane, with only its unconsumed
+    // Enter standing between this gate and `WORK DONE`. It went green. Under a full workspace load
+    // that Enter got consumed and the same product read red, which is the whole of item 725.
+    //
+    // ⚠⚠ So the fix is not a wider bound here, it is the TRIGGER — see [`the_run_has_typed`] — and
+    // this assertion is what holds it to that. A round that moved the person's keystroke back to a
+    // turn boundary would go green on the line above and fail here, which is the distinction item
+    // 728 named one gate over: a race must not be allowed to pass because the losing byte happened
+    // to be slow.
+    assert!(
+        held.trim_end().ends_with("HANDED BACK"),
+        "⚠⚠⚠⚠⚠ THE RUN TYPED AFTER THE PERSON TOOK THE PANE. `taken_over` is reported and the \
+         word above is absent, so this gate would have gone green — but the pane says the run \
+         went on typing past their byte, and every one of those keystrokes is one processed Enter \
+         from reaching the goal this run was told to stop short of. The person's byte must be \
+         counted before the run's next barrier check, which is what the trigger buys: {held:?}",
     );
 }
