@@ -83,6 +83,7 @@
 //! sprag agent [-t SESSION] [PANE]                 what the AI agent in each pane is doing
 //! sprag report-agent STATE [--pane PANE] [--source S]  say what the agent in a pane is DOING
 //!                          [--name AGENT] [--seq N]  (the pane defaults to $SPRAG_PANE)
+//!                          [--asked PROMPT]          --asked is what ENDS a turn: see the verb
 //! sprag release-agent [-t SESSION] [--pane PANE]      hand the pane back to screen inference
 //! sprag install-hooks [AGENT…] [--yes] [--dry-run]  wire an agent's OWN config to report-agent,
 //! sprag uninstall-hooks [AGENT…] [--yes] [--dry-run]  so it says what it is doing instead of
@@ -3043,28 +3044,6 @@ fn invoke_action(conn: &mut HostConn, params: Value) -> io::Result<Value> {
     }
 }
 
-/// `report-agent STATE [-t SESSION] [--pane N] [--source S] [--name AGENT] [--seq N]`: say what the
-/// agent in a pane is doing, from INSIDE that pane.
-///
-/// The pane defaults to `$SPRAG_PANE` — the variable the daemon publishes into every pane it births —
-/// so the useful form is the short one and it takes no argument a hook would have to discover:
-///
-/// ```text
-/// sprag report-agent working
-/// sprag report-agent idle --source myhook
-/// ```
-///
-/// That default is the whole reason a shell hook needs no JSON-RPC of its own. Outside a pane there is
-/// no such variable and no default: the error says so rather than reporting about somebody else's
-/// pane.
-///
-/// `--source` defaults to `cli` because a report must always name an authority (the daemon refuses an
-/// unnamed one), and the honest name for a report typed at a command line is the command line. A hook
-/// SHOULD pass its own, since a source is also the unit a replay is refused against.
-///
-/// Prints what the daemon did with it — `accepted`/`refused`, whether the published verdict `changed`,
-/// and the published `seq` — because a report that arrived out of order is refused silently otherwise,
-/// which is exactly the case a reporter needs to see.
 /// `display-message [-t SESSION] [-c CLIENT] [-s note|warn|alert] MESSAGE` — put a sentence in
 /// front of the people looking at this daemon (tmux `display-message`).
 ///
@@ -3183,6 +3162,56 @@ fn display_message(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
+/// `report-agent STATE [-t SESSION] [--pane N] [--source S] [--name AGENT] [--seq N]
+/// [--asked PROMPT]`: say what the agent in a pane is doing, from INSIDE that pane.
+///
+/// ⚠⚠ THESE PARAGRAPHS SAT ON `display_message`, WHICH IS A DIFFERENT VERB. They were written above
+/// that function with no blank line between them, so rustdoc read the whole lot as one comment about
+/// `display-message` and this function had no doc at all. Found while adding `--asked` (register
+/// item 730) — the new prose would have landed on the wrong verb too.
+///
+/// The pane defaults to `$SPRAG_PANE` — the variable the daemon publishes into every pane it births —
+/// so the useful form is the short one and it takes no argument a hook would have to discover:
+///
+/// ```text
+/// sprag report-agent working
+/// sprag report-agent idle --source myhook
+/// ```
+///
+/// That default is the whole reason a shell hook needs no JSON-RPC of its own. Outside a pane there is
+/// no such variable and no default: the error says so rather than reporting about somebody else's
+/// pane.
+///
+/// `--source` defaults to `cli` because a report must always name an authority (the daemon refuses an
+/// unnamed one), and the honest name for a report typed at a command line is the command line. A hook
+/// SHOULD pass its own, since a source is also the unit a replay is refused against.
+///
+/// Prints what the daemon did with it — `accepted`/`refused`, whether the published verdict `changed`,
+/// and the published `seq` — because a report that arrived out of order is refused silently otherwise,
+/// which is exactly the case a reporter needs to see.
+///
+/// # ⛔⛔⛔⛔⛔ `--asked` IS WHAT LETS A REPORTER END A TURN AT ALL — register item 730
+///
+/// [`AGENT_ASKED_KEY`](sprag_host::wire::AGENT_ASKED_KEY) is the key
+/// [`Tracker::asked_seq`](sprag_detect::Tracker::asked_seq) counts, and
+/// [`DoneWhen::Settles`](sprag_plugin::DoneWhen::Settles) — the contract every shipped agent loop
+/// runs on ([`INNER_SESSION_ENDS`](sprag_plugin::INNER_SESSION_ENDS)) — **pairs a peer's rest
+/// against that counter** wherever the rest is the agent's own statement
+/// ([`Authority::is_exact`](sprag_plugin::Authority::is_exact)). So a reporter that cannot state a
+/// prompt can report `idle` for ever and **the turn never ends**: the loop waits out its bound, on
+/// every turn, for the whole life of the run.
+///
+/// ⚠⚠ The wire has carried this key since register item 441 and the daemon has always accepted it;
+/// **only `sprag hook` could send one**. That made the shipped turn contract reachable exclusively
+/// by the agents whose hooks this binary ships, and unreachable by any other reporter — a person, a
+/// stand-in, an agent whose config sprag does not write. Measured 2026-08-27 (item 730): a
+/// whole-run host gate could not drive `INNER_SESSION_ENDS` at all and had to fall back to
+/// [`DoneWhen::Exits`](sprag_plugin::DoneWhen::Exits), so reflection, session replacement,
+/// stand-down and the context ceiling were measured only over doubles.
+///
+/// ⚠ OMITTED WHEN NOT GIVEN, never sent as `null` — the hook's own rule one function down: most
+/// reports say nothing about a prompt because they are not the event that opens a turn, and a
+/// `null` would be a claim that the agent stated it had been asked nothing.
 fn report_agent(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "report-agent")?;
     let mut state: Option<String> = None;
@@ -3190,10 +3219,19 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
     let mut source: Option<String> = None;
     let mut name: Option<String> = None;
     let mut seq: Option<u64> = None;
+    let mut asked: Option<String> = None;
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--pane" => pane = Some(named_pane(&mut it, "report-agent")?),
+            // ⚠⚠⚠⚠⚠ THE PROMPT THIS TURN OPENED ON — register item 730, and the one argument here
+            // that changes what a DRIVER can do rather than what a reader sees. See the doc above.
+            "--asked" => {
+                asked = Some(
+                    it.next()
+                        .ok_or_else(|| bad_input("report-agent: --asked needs the prompt text"))?,
+                );
+            }
             "--source" => {
                 source = Some(
                     it.next()
@@ -3223,7 +3261,8 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
                     io::ErrorKind::InvalidInput,
                     format!(
                         "report-agent: unexpected argument {other:?} (report-agent STATE \
-                         [-t SESSION] [--pane N] [--source S] [--name AGENT] [--seq N])"
+                         [-t SESSION] [--pane N] [--source S] [--name AGENT] [--seq N] \
+                         [--asked PROMPT])"
                     ),
                 ));
             }
@@ -3281,6 +3320,13 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
     }
     if let Some(seq) = seq {
         params["seq"] = Value::from(seq);
+    }
+    // ⚠⚠⚠⚠⚠ SENT ONLY WHEN STATED, on the hook's own rule (see `deliver_hook`): a `null` here would
+    // be a claim that the agent said it had been asked nothing, and most reports are not the event
+    // that opens a turn. Absent, `Tracker::report` leaves `asked_seq` where it was — which is
+    // exactly the reading `DoneWhen::Settles` pairs a rest against.
+    if let Some(asked) = asked {
+        params[sprag_host::wire::AGENT_ASKED_KEY] = Value::String(asked);
     }
     // The refusal stays a REFUSAL rather than becoming a rendered sentence this side would then
     // have to match on ([`agent_refusal`]). A transport failure is passed through untouched: it is

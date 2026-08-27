@@ -6907,6 +6907,343 @@ fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
     let _ = std::fs::remove_dir_all(&under);
 }
 
+/// **A STAND-IN AGENT THAT REPORTS ITS OWN TURNS THROUGH THE SHIPPED CLI** — register item 730, and
+/// the fixture that makes [`INNER_SESSION_ENDS`](sprag_plugin::INNER_SESSION_ENDS) drivable from a
+/// host integration test at all.
+///
+/// # ⚠⚠⚠⚠⚠ What it stands in for, and what it deliberately does NOT fake
+///
+/// [`DoneWhen::Settles`](sprag_plugin::DoneWhen::Settles) asks a SUPERVISOR whether the agent came
+/// back to rest, and this daemon supervises no `/bin/sh` — its detector reads screens and titles
+/// and reports no agent for a shell. Two roads were available and only one of them is honest:
+///
+/// * **paint the screen like a real agent** so the DETECTOR is fooled. Refused: that measures the
+///   fixture's imitation of somebody else's UI, which is this workspace's own standing rule about
+///   stand-ins that parse by pattern, and item 730 names it out loud;
+/// * **report, as a hook-instrumented agent does.** The stand-in says what it is doing through
+///   `sprag report-agent`, in the pane the daemon gave it, over the socket the daemon published
+///   into that pane's environment. Nothing here is a double: the CLI is the shipped binary, the
+///   action is the shipped one, the tracker counts it exactly as it counts `claude`'s hook.
+///
+/// # ⛔⛔⛔ `--asked` IS THE WHOLE MECHANISM, and it did not exist until item 730
+///
+/// `Settles` pairs the peer's rest against
+/// [`asked_seq`](sprag_detect::Tracker::asked_seq) wherever the rest is the agent's own statement,
+/// and that counter moves only on a report that STATES A PROMPT. The verb could not state one — the
+/// key was reachable exclusively through `sprag hook` — so a reporter could say `idle` for ever and
+/// the turn never ended. `states_asked: false` is that world, kept as this gate's control.
+///
+/// # ⚠⚠ Why it answers only the lines the DOCUMENT's own prompts end with
+///
+/// A prompt is one paste to a real agent and many `read` lines to a shell. Reporting per LINE would
+/// end the turn on the first line of a twenty-line prompt — `Settles`' own documented hazard, met
+/// from the fixture's side — so a turn is reported once, on the clause the composed prompt ends
+/// with. `sprag_plugin`'s `standin_agent` keys on the same two for the same reason and is
+/// unreachable from here (`#[cfg(test)]`, in another crate).
+///
+/// ⚠⚠⚠ **THE STOP CLAUSE IS SPELLED, AND ITS DRIFT IS CAUGHT BY AN ASSERTION RATHER THAN A COPY.**
+/// A fixture cannot read a datamodel that has not been initialised. What holds it in step is the
+/// ENDING: a stand-in that stops recognising what it is asked never publishes another change, so
+/// the run walks to its wall clock and reports `exhausted(duration)` where the gate demands
+/// `exhausted(turns)`. That is the shape four plugin gates were measured coming back wrong in
+/// before `standin_agent` learned to answer both endings.
+fn standin_that_reports_itself(
+    sprag: &Path,
+    log: &Path,
+    state: &Path,
+    states_asked: bool,
+) -> String {
+    // ⚠⚠ THE ONE THING THE TWO ARMS DIFFER BY, and it is the whole of item 730 on the product's
+    // side: the prompt the turn opened on, stated by the peer that was asked it.
+    let asked = if states_asked {
+        " --asked \"$line\""
+    } else {
+        ""
+    };
+    // ⚠ EVERY PATH IS QUOTED. They are `/tmp` names this test composes, and one of them carrying a
+    // shell metacharacter killed the stand-in before its first line — see the caller's own note.
+    //
+    // ⚠⚠ THE TWO CLAUSES IN THE `case` ARE THE DOCUMENT'S OWN: `exactly:` is what every WORK prompt
+    // ends with (`done_instruction`) and *where you got to* is what `stopping` asks. See the type's
+    // doc for why they are spelled and what catches them drifting.
+    format!(
+        "export XDG_STATE_HOME='{state}'\n\
+         stty -echo\n\
+         s=1\n\
+         '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
+         printf 'AGENT-READY\\n'\n\
+         while IFS= read -r line; do\n\
+         printf '%s\\n' \"$line\"\n\
+         case \"$line\" in *exactly:*|*'where you got to'*) ;; *) continue;; esac\n\
+         s=$((s+1))\n\
+         '{sprag}' report-agent working --name sh --seq $s{asked} >> '{log}' 2>&1\n\
+         printf 'ACK\\n'\n\
+         s=$((s+1))\n\
+         '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
+         done\n",
+        sprag = sprag.display(),
+        log = log.display(),
+        state = state.display(),
+    )
+}
+
+/// ⛔⛔⛔⛔⛔ **A HOST INTEGRATION TEST DRIVES A WHOLE RUN ON THE TURN CONTRACT THAT SHIPS** —
+/// register item 730, and the wall every whole-run gate outside `sprag_plugin` had hit.
+///
+/// # ⚠⚠⚠⚠⚠ What could not be measured, and what that cost
+///
+/// [`AiLoopSpec::driving`](sprag_plugin::AiLoopSpec::driving) — the constructor the daemon builds
+/// every loop through — sets [`INNER_SESSION_ENDS`](sprag_plugin::INNER_SESSION_ENDS), which is
+/// [`DoneWhen::Settles`](sprag_plugin::DoneWhen::Settles). A `Settles` turn asks a supervisor, this
+/// daemon supervises no `/bin/sh`, and the turn therefore never ended: the run pumped
+/// `Working --Null--> Working` until a guardrail bit. So item 705's whole-run gate had to fall back
+/// to [`DoneWhen::Exits`](sprag_plugin::DoneWhen::Exits) and say so, and **reflection, session
+/// replacement, stand-down and the context ceiling stayed measurable only over `sprag_plugin`'s own
+/// `#[cfg(test)]` supervisor double** — which is *measure the door the product calls* holding
+/// everywhere in this workspace except at the layer that assembles the product.
+///
+/// # ⚠⚠⚠ The road, measured before it was built on — item 730's own instruction
+///
+/// The item said to measure whether `report-agent` can move `asked_seq` FIRST, because *"if it
+/// cannot, this road is a dead end and what is MISSING is this item's answer"*. It could not: the
+/// verb took four arguments and none of them was the prompt, so the key
+/// [`AGENT_ASKED_KEY`](sprag_host::wire::AGENT_ASKED_KEY) — carried on the wire since register item
+/// 441, accepted by the daemon since then, counted by the tracker since then — **had exactly one
+/// writer in the whole tree, `sprag hook`.** The shipped turn contract was reachable only by the
+/// agents whose hooks this binary ships. `--asked` is that missing door, and the control arm below
+/// is the measurement kept.
+///
+/// # ⚠⚠ The two arms differ in ONE argument
+///
+/// Same daemon, same stand-in script, same brief, same spec — and one of them passes `--asked` on
+/// the report that opens each turn. Everything else is identical, so what the two endings differ by
+/// is the counter `Settles` pairs against and nothing else.
+///
+/// # ⚠⚠⚠⚠ The premises, asserted inside, because each one alone makes the claim vacuous
+///
+/// * **The contract really is the shipped one.** `spec.done_when` is read back and required to be
+///   `INNER_SESSION_ENDS` — never assigned by this gate, because a gate that set the contract it is
+///   measuring would be green over a constructor that had stopped choosing it.
+/// * **The reports really landed.** The CLI's own answer for every report is captured and required
+///   to say `accepted`; a stand-in whose `sprag` could not reach the daemon would be silent in
+///   exactly the way a blocked turn is.
+/// * **The ending is the DOCUMENT's budget and not the wall clock.** `exhausted(turns)` is the only
+///   ending that says every turn completed; `exhausted(duration)` is what a peer that stopped
+///   answering produces, and it is what the control arm produces.
+#[test]
+fn a_host_run_drives_its_turns_on_the_turn_contract_that_ships() {
+    /// How many turns the DOCUMENT is given. Two rather than one, so *a turn ended* is measured as
+    /// a repeatable thing rather than as one lucky edge.
+    const TURNS: i64 = 2;
+    /// The run's wall clock, and it is what the CONTROL arm spends: a run whose turns never end has
+    /// no other ending. ⚠⚠ Sized off the measurement rather than guessed — the stated arm drives
+    /// both its turns, the closing account and the whole ending in **~50ms** (printed below), so
+    /// this is two hundred times what the claim needs and the only thing paying for it is the arm
+    /// that is supposed to run out. ⚠ The control outlives it by the account window the driver
+    /// grants a run whose clock has passed, which is `turn_within_ms` twice.
+    const CEILING: Duration = Duration::from_secs(10);
+
+    /// Drive one arm and hand back what the run ended as, what it walked, and what the stand-in's
+    /// own reports came back as — the third value carrying the PANE's own text when the reports
+    /// said nothing at all, because a stand-in that died has left its reason on the screen and
+    /// nowhere else.
+    fn ran(states_asked: bool) -> (sprag_plugin::Outcome, Vec<String>, String) {
+        let (_host, sock) = spawn_host();
+        let (driving, mut setup) = remote_driver(&sock);
+
+        // ⚠⚠ NO THREAD ID IN THIS NAME, unlike its neighbours, and the reason is measured rather
+        // than stylistic: `ThreadId` renders as `ThreadId(12)`, this path is interpolated into a
+        // SHELL SCRIPT, and `dash` answered `Syntax error: "(" unexpected` — the stand-in died
+        // before its first line and the pane's own screen is what said so. The pid plus the arm is
+        // unique here because this test runs once per process and its two arms differ by the flag.
+        let under =
+            std::env::temp_dir().join(format!("sprag-730-{}-{states_asked}", std::process::id(),));
+        let _ = std::fs::remove_dir_all(&under);
+        std::fs::create_dir_all(&under).expect("a directory of this arm's own");
+        let log = under.join("what-the-daemon-said-to-each-report");
+        let state = under.join("state");
+        std::fs::create_dir_all(&state).expect("a state home of this arm's own");
+
+        // ⚠⚠ THE PANE IS BORN BY THE DAEMON, which is what puts `SPRAG_PANE` and the socket's
+        // address into the stand-in's environment — so its `report-agent` takes no argument naming
+        // either, exactly as a real agent's hook takes none.
+        let pane = spawn_pane(
+            &mut setup,
+            json!({
+                SPAWN_CMD_KEY: [
+                    "/bin/sh",
+                    "-c",
+                    standin_that_reports_itself(
+                        Path::new(env!("CARGO_BIN_EXE_sprag")),
+                        &log,
+                        &state,
+                        states_asked,
+                    ),
+                ],
+                SPAWN_COLS_KEY: 80,
+                SPAWN_ROWS_KEY: 16,
+            }),
+        );
+
+        let script: std::sync::Arc<dyn sce_rust_runtime::IScriptEngine> =
+            std::sync::Arc::new(sce_rust_lua::LuaEngine::new());
+        let brief = sprag_plugin::Brief {
+            north_star: "the stand-in answers, and says so through the CLI".to_string(),
+            milestone: "two turns end on the contract that ships".to_string(),
+            reference: "register item 730".to_string(),
+            closing_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            milestone_check: None,
+            service: None,
+            max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
+            // ⚠ EQUAL to the turn budget, which keeps `reflecting` unreachable: `judging` tests the
+            // budget first. A reflection would replace the session and this gate's subject is the
+            // TURN, not the lifecycle the turn makes measurable.
+            reflect_every: Some(TURNS),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: Some(3_600_000),
+            ready_timeout_ms: Some(15_000),
+            // ⚠ Sixty times the whole stated run, and it is paid TWICE by the control arm alone —
+            // the account window a run whose clock has passed is granted. See `CEILING`.
+            turn_within_ms: Some(3_000),
+        };
+        // ⚠⚠⚠⚠⚠ `done_when` IS NOT SET HERE, and that is the claim rather than a convenience: this
+        // is the constructor `plugins.rs` builds every requested loop through, and what it chooses
+        // is what a live run gets.
+        let mut spec = sprag_plugin::AiLoopSpec::driving("sh");
+        // ⚠ A `/bin/sh` peer paints only once it holds a whole LINE, so a delivery cannot be
+        // confirmed on screen before the newline that submits it — item 705's fixture, same reason.
+        spec.shows_the_prompt = false;
+        assert_eq!(
+            spec.done_when,
+            sprag_plugin::INNER_SESSION_ENDS,
+            "⚠⚠⚠⚠⚠ THE PREMISE: the constructor the daemon uses must still choose the contract \
+             this gate is about, or the run below is measuring something else entirely",
+        );
+
+        let mut loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
+            .expect("a well-briefed loop over a live pane starts");
+        let progress = sprag_plugin::ProgressCell::default();
+        let began = std::time::Instant::now();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 4_000,
+            max_cost: None,
+            max_duration: Some(CEILING),
+        })
+        .reporting_to(std::sync::Arc::clone(&progress))
+        .run(&mut loops, &driving, &RunContext::uncancellable());
+        // ⚠⚠ PRINTED RATHER THAN ASSERTED, on this file's own rule about numbers a round would
+        // otherwise have to raise a bound to read: what the STATED arm costs is what says how much
+        // headroom `CEILING` has, and the control's cost IS `CEILING` by construction.
+        println!(
+            "== item 730, arm states_asked={states_asked}: {:?}, {} iteration(s), in {:?} ==",
+            outcome.state,
+            outcome.iterations,
+            began.elapsed(),
+        );
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        let said = std::fs::read_to_string(&log).unwrap_or_default();
+        // ⚠⚠ AND WHAT THE PANE ITSELF SHOWS, when the reports came back empty. A stand-in that
+        // could not start leaves its reason there and in no other place this test can reach, and a
+        // premise failure that could not quote it sent the first run of this gate looking at the
+        // wrong layer.
+        let said = if said.trim().is_empty() {
+            format!(
+                "(no report reached the daemon; the pane shows: {:?})",
+                sprag_plugin::PaneAccess::pane_collapsed(&driving, pane).unwrap_or_default(),
+            )
+        } else {
+            said
+        };
+        let _ = std::fs::remove_dir_all(&under);
+        (outcome, walk, said)
+    }
+
+    let (stated, walk, said) = ran(true);
+
+    // ── ⚠⚠ THE PREMISE: the stand-in's own reports really reached the daemon ─────────────────
+    assert!(
+        said.contains("accepted"),
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: not one of the stand-in's reports was accepted, so the turn \
+         below did not end because a peer came back to rest — it ended, or failed to, for a reason \
+         this gate is not about. A stand-in whose `sprag` cannot reach the daemon looks exactly \
+         like a peer that never answered. What the CLI said: {said:?}; the walk: {walk:?}",
+    );
+    assert!(
+        !said.contains("REFUSED"),
+        "⚠⚠ and none of them was refused as a replay — the stand-in's own `--seq` must rise, or \
+         some of its turns were never counted at all. What the CLI said: {said:?}",
+    );
+
+    // ── ⛔⛔⛔ THE CLAIM ──────────────────────────────────────────────────────────────────────
+    assert_eq!(
+        stated.state,
+        sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Turns),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 730: a whole run driven from OUTSIDE `sprag_plugin`, over a real \
+         daemon, on the turn contract the shipped constructor chooses, must spend the turns its \
+         document was given. An `exhausted(duration)` here is the wall clock ending a run whose \
+         turns never ended — which is the state this layer was in for every gate before this one, \
+         and the reason reflection, session replacement, stand-down and the context ceiling are \
+         measured only over a double. The walk: {walk:?}",
+    );
+    assert_eq!(
+        stated.banked.as_ref().map(|banked| banked.completed),
+        Some(u32::try_from(TURNS).expect("a small budget fits a u32")),
+        "⚠⚠⚠ and the DOCUMENT must have counted every one of them — `turns` moves on `turn.done` \
+         and on nothing else, so this is the same fact the walk shows, read off the machine rather \
+         than off prose. The walk: {walk:?}",
+    );
+    let ended: Vec<&String> = walk
+        .iter()
+        .filter(|note| note.contains("--TurnDone--> Judging"))
+        .collect();
+    assert!(
+        ended.len() >= usize::try_from(TURNS).expect("a small budget fits a usize"),
+        "⚠⚠⚠ and the walk must show each of them ending. Got {}: {walk:?}",
+        ended.len(),
+    );
+
+    // ── ⛔⛔ THE CONTROL, WHICH IS ITEM 730's ③ KEPT AS A GATE ────────────────────────────────
+    //
+    // The same everything, minus the one argument. `asked_seq` then never moves, `Settles`' fourth
+    // term is false for ever at a pane whose rest is its own statement, and the run walks to its
+    // wall clock with its turn budget untouched. This is what the whole layer looked like before
+    // `--asked` existed, and it is why the arm above is a claim about the product rather than about
+    // a fixture that happened to work.
+    let (silent, control_walk, control_said) = ran(false);
+    assert!(
+        control_said.contains("accepted"),
+        "⚠⚠⚠⚠ THE CONTROL'S OWN PREMISE: its reports must land too, or the two arms differ in \
+         whether the CLI ran at all rather than in what it stated. What the CLI said: \
+         {control_said:?}",
+    );
+    assert_eq!(
+        silent.state,
+        sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Duration),
+        "⛔⛔⛔⛔ THE CONTROL: a reporter that states no prompt must NOT be able to end a `Settles` \
+         turn. If this arm now spends its turn budget, `asked_seq` is being moved by something \
+         other than a stated prompt — and the claim above is then true of a run that would have \
+         passed without item 730's repair. The walk: {control_walk:?}",
+    );
+    assert_eq!(
+        silent.banked.as_ref().map(|banked| banked.completed),
+        Some(0),
+        "⚠⚠ and it must have banked NO turn at all: the peer answered on its screen every time, \
+         and the contract is what refused to call any of it a completed turn. The walk: \
+         {control_walk:?}",
+    );
+}
+
 /// ⛔⛔⛔⛔⛔ **A DRIVER OUTSIDE THE DAEMON CAN SAY WHERE ITS RUN'S WORK IS** — register item 722,
 /// which is the half of register item 710 that this surface could not answer.
 ///
