@@ -5325,6 +5325,29 @@ mod tests {
             json!(format!("ai_loop pane={}", pane.0)),
             "a reader of `runs` must be able to see WHICH pane a loop is driving: {entry:?}",
         );
+        // ⛔⛔⛔⛔⛔ **AND HOW BIG THE BRIEF THIS DOOR ACCEPTED IS** — register item 719's second
+        // direction, asserted HERE because this gate is the only one that walks the whole chain:
+        // a wire request, a real `AiLoop::new`, the brief read back out of a real datamodel, the
+        // driver's per-step read, and the row a caller is told to poll. Everything else about this
+        // level is measured in pieces, and a chain measured in pieces is one that can be broken at
+        // a join nobody owns.
+        //
+        // ⚠⚠ THE NUMBERS ARE THIS REQUEST'S OWN: the three strings `ai_loop_request` sends, whose
+        // lengths nothing here restates — 33 + 14 + 9. If somebody edits that fixture's prose this
+        // goes red and the arithmetic is the repair, which is the honest coupling.
+        let briefed = entry
+            .get(RUN_BRIEFED_KEY)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            briefed.contains("56 bytes") && briefed.contains("north_star"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 719: `orchestrate` took this brief and the row it points its \
+             caller at says nothing about the size — which is the whole of that item's second \
+             direction. A brief is re-typed in full into every session a run opens, and the person \
+             who wrote 9,025 bytes of one had no way to find that out. Said: {briefed:?} in \
+             {entry:?}",
+        );
         // ⛔⛔⛔ **AND NOT ONLY AS PROSE INSIDE THAT NAME** — register item 540.
         //
         // The assertion above passed for a year while the ONLY structured answer to *which pane is
