@@ -8547,6 +8547,41 @@ fn a_loop_converges_on_what_its_agent_says_not_on_what_its_terminal_shows() {
         !printed_walk.iter().any(|note| note.contains(BY_STATEMENT)),
         "⚠⚠ and it must not claim a statement it never made. The walk: {printed_walk:?}",
     );
+
+    // ── ⛔⛔⛔⛔⛔ AND WHY IT READ THE PANE, ON A RUN WHOSE REPORTER IS ALIVE ──────────────────
+    //
+    // Register item 486. This arm's peer is `standin_that_reports_itself` — it runs `sprag
+    // report-agent`, so something IS answering for that pane — and it simply does not STATE its
+    // declaration. That is `Unstated::NotYet`, which is the world sprag run 31 was measured in
+    // (2026-08-25: two pane-road judgements while `source=hook:claude seq=13 asked=7 said=3` was
+    // live in the same minute).
+    //
+    // ⛔⛔ **AND THE WALK USED TO TELL THIS RUN'S READER TO GO AND INSTALL A HOOK.** One sentence
+    // was printed for every pane read, ending *"Install the agent's hook and this judgement reads
+    // what it SAID instead"* — a wrong errand, at a pane whose reporter is right there in the
+    // fixture. This is the end-to-end proof that the reason now survives from
+    // `stated_this_turn` through `Because::Judged` to the sentence a person reads in `sprag runs`:
+    // every other gate on item 486 measures one joint of that chain.
+    let reason = printed_walk
+        .iter()
+        .find(|note| note.contains(BY_PANE))
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !reason.contains("install the agent's hook"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 486: this pane's agent reports itself — the fixture spawns it \
+         through `sprag report-agent` — and the run is telling whoever reads its walk to go and \
+         install a hook. That is not a missing word, it is a WRONG ERRAND, and it is the one this \
+         item was measured costing a reader on sprag run 31. The line: {reason:?}",
+    );
+    assert!(
+        reason.contains("HOOK IS INSTALLED AND REPORTING"),
+        "⚠⚠⚠⚠ AND IT MUST SAY THE TRUE THING RATHER THAN MERELY STOP SAYING THE FALSE ONE — a \
+         deleted clause passes the assertion above and leaves this run's reader with no account of \
+         why their reporting agent was judged off the screen. ⚠ This is also the claim that the \
+         `Unstated` word REACHES A WALK at all: if it does not, *run a loop and read the walk* is \
+         not a way to answer item 486's remaining question. The line: {reason:?}",
+    );
 }
 
 /// ⛔⛔⛔⛔⛔ **A DRIVER OUTSIDE THE DAEMON CAN SAY WHERE ITS RUN'S WORK IS** — register item 722,
