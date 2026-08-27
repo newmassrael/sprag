@@ -462,6 +462,36 @@ pub struct Checks {
     ///
     /// ⚠ The sentence is `judge`'s, not composed here: one authority on what a silence means.
     pub why_silent: Option<String>,
+    /// How many of [`asked`](Self::asked) the checker TURNED DOWN — register item 499.
+    ///
+    /// ⚠⚠⚠ THE THIRD VERDICT, AND IT WAS THE ONE WITH NO TALLY. A check answers agreed, refused or
+    /// nothing; `asked` counted the question and `silent` counted one of the three answers, so the
+    /// arm that publishes [`crate::outer::Checked::Failed`] incremented nothing. **A refusal was
+    /// readable in a run's walk and nowhere in its answer**, which is this type's own opening
+    /// argument — a fact the driver knows reaching a bounded stream and not the level.
+    pub refused: u32,
+    /// **THE MOST REFUSALS ONE CLAIM-CHAIN TOOK IN A ROW** — how close this run ever came to
+    /// `reflect_after_refusals`, in the units that ceiling is written in.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the total above cannot answer the question this one is for
+    ///
+    /// Register item 499. `reflect_after_refusals` bounds CONSECUTIVE refusals, and thirty-two
+    /// refusals spread one apiece over thirty-two claims is a run that never approached a ceiling
+    /// of two, while sixteen pairs is a run that hit it sixteen times. [`refused`](Self::refused)
+    /// cannot tell those apart, so a number authored against the ceiling could never be defended
+    /// or withdrawn from it.
+    ///
+    /// ⚠⚠⚠ **THE DOCUMENT IS THE ONE AUTHOR OF *CONSECUTIVE*, AND THIS ONLY MARKS ITS HIGH WATER.**
+    /// `ai_loop.scxml` holds `refusals` and decides where it resets — on entry to `reflecting`, by
+    /// ANY road, a cadence reflection included. A driver that re-derived the streak would be a
+    /// second author of that reset rule and free to disagree with the guard it is measuring. What
+    /// is recorded here is the value the document's own ceiling guard compares (`refusals + 1`),
+    /// read at the one moment a refusal is known — the watermark idiom that document already uses
+    /// for `milestone_at`, `screened_carried` and `service_retried_carried`.
+    ///
+    /// ⚠ `0` for a run whose checks all agreed, and that is the reading the item was registered
+    /// for: *the ceiling was never approached*, which is a measurement and not an absence.
+    pub refused_in_a_row: u32,
 }
 
 impl Checks {
@@ -473,6 +503,8 @@ impl Checks {
         asked: 0,
         silent: 0,
         why_silent: None,
+        refused: 0,
+        refused_in_a_row: 0,
     };
 
     /// Whether EVERY check this run asked said nothing — the reading that says *this run's endings

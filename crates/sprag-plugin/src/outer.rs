@@ -399,6 +399,16 @@ const DONE_MARKER: &str = "done_marker";
 /// *something checked this and was satisfied*.
 const MILESTONE_CHECK: &str = "milestone_check";
 
+/// **HOW MANY TIMES IN A ROW THIS DOCUMENT HAS BEEN REFUSED**, as the document itself counts it —
+/// read, never written, by the driver.
+///
+/// ⚠⚠⚠ Register item 499. `ai_loop.scxml` increments this on the refusing edge and clears it on
+/// entry to `reflecting`, and BOTH halves of that are the document's decision: what a streak is
+/// and where it ends. The driver reads it at the one moment a refusal is known, so
+/// [`crate::plugin::Checks::refused_in_a_row`] can say how close a run came to
+/// `reflect_after_refusals` without re-deciding either half.
+const REFUSALS: &str = "refusals";
+
 /// **WHAT THE SCREEN SAYS WHEN THE PEER'S SERVICE FAILED**, as the document spells it — a LIST of
 /// `{says}` objects since register item 715.
 ///
@@ -8791,7 +8801,28 @@ impl OuterLoop {
             // verdict at all — and publishing them on one arm would tell the two apart by the
             // absence of a sentence, which is the reading this crate has burned wire numbers over.
             Ok(judged) if judged.holds => (Checked::Passed, judged.explained, Some(shown)),
-            Ok(judged) => (Checked::Failed, judged.explained, Some(shown)),
+            // ⚠⚠⚠⚠⚠ **AND THE REFUSAL IS TALLIED IN ITS OWN ARM** — register item 499, on the rule
+            // the silent arm below states for itself: the tally moves with the word, in the same
+            // arm, so *how many were refused* and *what the walk said about them* cannot disagree.
+            // This arm used to publish a verdict and count nothing, which is why a number authored
+            // against `reflect_after_refusals` had no run's measurement to stand on.
+            Ok(judged) => {
+                self.checks.refused = self.checks.refused.saturating_add(1);
+                // ⚠⚠⚠⚠ **THE DEPTH IS THE DOCUMENT'S OWN GUARD EXPRESSION, READ WHERE THE
+                // DOCUMENT READS IT.** `judging`'s ceiling asks *would this refusal be the Nth*
+                // as `refusals + 1`, evaluated before the count has taken it — and this runs
+                // inside the pass that RAISES that judgement, so `refusals` here is the same
+                // pre-edge value that guard sees. Recomputing the streak on this side would make
+                // the driver a second author of where `refusals` resets, which is the one part
+                // of it the document alone decides.
+                //
+                // ⚠ A document that holds no such counter answers `None` and the depth is this
+                // refusal alone, which is the honest floor rather than a zero.
+                let before = self.authored_number(REFUSALS).unwrap_or(0);
+                let deep = u32::try_from(before).unwrap_or(u32::MAX).saturating_add(1);
+                self.checks.refused_in_a_row = self.checks.refused_in_a_row.max(deep);
+                (Checked::Failed, judged.explained, Some(shown))
+            }
             // ⚠⚠⚠ A CHECK THAT SAID NOTHING IS NOT A CHECK THAT AGREED. See [`Checked::Silent`],
             // and this crate's standing direction: silence is never a yes.
             //
@@ -18322,8 +18353,8 @@ mod tests {
         const NEVER: i64 = 99;
 
         /// Drive a run whose every turn claims the milestone and whose every claim is refused, and
-        /// say where it got to and why.
-        fn driven(ceiling: i64) -> (Option<ReflectReason>, Vec<String>) {
+        /// say where it got to, why, and **what its own tally came to** — register item 499.
+        fn driven(ceiling: i64) -> (Option<ReflectReason>, Vec<String>, crate::plugin::Checks) {
             let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
             // ⚠ ONE prompt to the marker, and the stand-in says it on EVERY turn after — which is
             // exactly run 16's shape: an agent that goes on claiming what the check goes on
@@ -18395,10 +18426,11 @@ mod tests {
                 }
             }
             access.lifecycle().expect("lifecycle").close(pane);
-            (reason, walked)
+            let counted = loops.checks();
+            (reason, walked, counted)
         }
 
-        let (armed, armed_walk) = driven(CEILING);
+        let (armed, armed_walk, armed_checks) = driven(CEILING);
         assert_eq!(
             armed,
             Some(ReflectReason::Refused),
@@ -18408,8 +18440,33 @@ mod tests {
              because a person pressed Escape. Walked {armed_walk:?}",
         );
 
+        // ⛔⛔⛔⛔⛔ **AND THE RUN CAN SAY HOW CLOSE IT CAME, WHICH IS THE WHOLE OF REGISTER ITEM
+        // 499.** The arm above proves the ceiling FIRES; this proves the number it fired at is
+        // readable off the run instead of only off a walk. That distinction is what the item was
+        // registered for: `reflect_after_refusals` was moved from the template's three to this
+        // repository's two on the TEMPLATE's argument, and nothing anywhere counted refusals in a
+        // row, so the number could be neither defended nor withdrawn.
+        //
+        // ⚠⚠⚠⚠⚠ **`CEILING` EXACTLY, AND THAT IS THE CLAIM A WALK COUNT CANNOT MAKE.** The
+        // refusal that trips the ceiling takes the edge into `reflecting` and NOT the one into
+        // `disputing`, so a reader tallying `Judging --Judge--> Disputing` — which the control
+        // below does, and which is the sharpest needle a walk has — counts one FEWER than the
+        // refusals that happened. The depth here is read from the document's own guard expression,
+        // so it counts both refusing edges and agrees with the bound it is measured against.
+        assert_eq!(
+            (armed_checks.refused_in_a_row, armed_checks.refused),
+            (
+                u32::try_from(CEILING).expect("a small ceiling"),
+                u32::try_from(CEILING).expect("a small ceiling")
+            ),
+            "⛔⛔⛔ ITEM 499: a run stopped by the refusal ceiling must be able to SAY it reached \
+             it — every refusal here was consecutive, so the depth and the total are both the \
+             ceiling. A depth one short would mean the tally missed the refusal that fired it, \
+             which is the one refusal a walk-based count also misses. Walked {armed_walk:?}",
+        );
+
         // ── THE CONTROL: the same run, the ceiling out of reach ──
-        let (never, never_walk) = driven(NEVER);
+        let (never, never_walk, never_checks) = driven(NEVER);
         assert_eq!(
             never, None,
             "⚠⚠⚠⚠ the control: with the ceiling unreachable this run must STILL be buying turns \
@@ -18430,6 +18487,35 @@ mod tests {
                 > usize::try_from(CEILING).expect("a small ceiling"),
             "⚠⚠⚠ and it must have refused MORE times than the armed run's ceiling, or the control \
              is quiet for want of refusals rather than for want of a bound. Walked {never_walk:?}",
+        );
+        // ⛔⛔⛔⛔ **AND THE CONTROL IS WHAT MAKES THE DEPTH A MEASUREMENT RATHER THAN A CONSTANT** —
+        // register item 499. Every claim in this arm is refused and nothing reflects, so the
+        // document's `refusals` never resets: the depth must RISE past the armed run's ceiling and
+        // equal the total. A driver that published `1` for every refusal, or that re-derived the
+        // streak with a reset rule of its own, passes the arm above and dies here.
+        //
+        // ⚠⚠ THE WALK IS THE INDEPENDENT WITNESS, not a second copy of the same read: here — and
+        // only here, because no ceiling fires — every refusal takes the edge into `disputing`, so
+        // the needle this gate already trusts must count exactly what the tally does.
+        let disputed = u32::try_from(
+            never_walk
+                .iter()
+                .filter(|note| note.contains("Judging --Judge--> Disputing"))
+                .count(),
+        )
+        .expect("a bounded walk");
+        assert_eq!(
+            (never_checks.refused_in_a_row, never_checks.refused),
+            (disputed, disputed),
+            "⛔⛔⛔ ITEM 499: with no reachable ceiling this run is refused over and over with \
+             nothing clearing the count, so the depth IS the total and both are what the walk \
+             witnessed. Walked {never_walk:?}",
+        );
+        assert!(
+            never_checks.refused_in_a_row > u32::try_from(CEILING).expect("a small ceiling"),
+            "⛔⛔⛔⛔ AND THE DEPTH MUST RISE, or this arm agrees with a driver that publishes the \
+             same number for every refusal. It has to pass the armed run's bound, which is the \
+             comparison the whole item is about. Got {never_checks:?}, walked {never_walk:?}",
         );
     }
 
@@ -18639,6 +18725,26 @@ mod tests {
                 "⛔⛔⛔ ITEM 601: this run put five claims to a checker and one of them answered \
                  nothing, and the run has to be able to say so at the LEVEL — the walk says each \
                  verdict as it happens and is gone by the time anybody reads the ending. Got \
+                 {counted:?}",
+            );
+            // ⛔⛔⛔⛔⛔ **AND THE THIRD VERDICT IS COUNTED WITH THE OTHER TWO** — register item
+            // 499. Of the five asks above, THREE were refusals (DENIES, EXPLAINS, DENIES) and the
+            // tally has to say so: `asked` counted the question and `silent` counted one answer,
+            // and the arm that publishes `Failed` incremented nothing at all — so *how often does
+            // this checker disagree* had no answer outside a bounded walk.
+            //
+            // ⚠⚠ THE DEPTH IS ONE HERE, AND THAT IS THE CORRECT READING RATHER THAN A WEAK ONE.
+            // Nothing in this block drives the MACHINE, so the document's `refusals` never leaves
+            // zero and every refusal is a run of one. The arm that measures a depth that RISES is
+            // `a_claim_refused_to_the_ceiling_reflects_rather_than_buying_another_turn`, which
+            // drives real judgements; what this holds is that the driver reads the document rather
+            // than counting on its own — a private counter would say THREE here.
+            assert_eq!(
+                (counted.refused, counted.refused_in_a_row),
+                (3, 1),
+                "⛔⛔⛔ ITEM 499: three of these five checks REFUSED and the run has to say so at \
+                 the level. And the depth is the DOCUMENT's `refusals + 1`, which no judgement \
+                 here ever moved — a driver keeping its own streak would report three. Got \
                  {counted:?}",
             );
             assert!(

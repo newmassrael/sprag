@@ -3314,6 +3314,13 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
             // ⚠ The checker's own words, carried rather than re-composed: `judge` is the one
             // authority on what a silence means, and it lives on the other side of this wire.
             "why_silent": progress.checks.why_silent,
+            // ⚠⚠⚠ AND THE THIRD VERDICT WITH THE DEPTH IT REACHED — register item 499. Added
+            // KEYS on an answer, which is the one change this surface's pin does not number: an
+            // older daemon omits them and the reader below refuses the tally whole rather than
+            // filling in a zero it was not told, so absence is *this daemon did not say* and
+            // never *no claim was ever refused*.
+            "refused": progress.checks.refused,
+            "refused_in_a_row": progress.checks.refused_in_a_row,
         },
         RUN_DRIVING_KEY: progress.driving.map(|pane| pane.0),
         RUN_BANKED_KEY: progress.banked.as_ref().map(|banked| json!({
@@ -3443,6 +3450,13 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
                 .get("why_silent")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            // ⚠⚠⚠ WHOLE OR NOTHING REACHES THE TWO NEW KEYS TOO — register item 499, on this
+            // block's own rule. A daemon too old to publish them is a daemon that cannot say
+            // whether anything was refused, and a `0` filled in here would answer *nothing ever
+            // was* on its behalf. Refusing the tally sends the row to the cell instead, which is
+            // exactly what a reader gets today from a daemon older than item 663.
+            refused: small(tally.get("refused"))?,
+            refused_in_a_row: small(tally.get("refused_in_a_row"))?,
         })
     })();
     let banked = (|| {
@@ -4287,6 +4301,19 @@ fn delivered_clause(deliveries: sprag_plugin::Deliveries) -> Option<String> {
 ///
 /// ⚠ The reason for the last silence is `judge::Unheard`'s own words, carried rather than composed:
 /// one authority on what a silence means.
+///
+/// # ⚠⚠⚠⚠⚠ And what became of the claims the checker DID answer — register item 499
+///
+/// A refusal is the check working, so it never replaces the readings above: those are about whether
+/// anything was verified at all, and this is about what the verdicts came to. It rides as a clause
+/// on whichever of them applies, for [`delivery_sentence`]'s reason one function up — *the fact a
+/// reader acts on is a comparison*, and the comparison here is a DEPTH against a ceiling.
+///
+/// ⚠⚠ **THE DEPTH IS SAID EVEN WHEN IT IS ONE, AND THAT IS THE MEASUREMENT RATHER THAN NOISE.** The
+/// number `reflect_after_refusals` is set to was authored against a distribution nobody had, and
+/// *every refusal stood alone* is precisely the reading that defends or withdraws it. A clause that
+/// appeared only once a run got into trouble would leave the ordinary case — the one that says the
+/// ceiling is slack — unmeasured all over again.
 #[must_use]
 pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
     if checks.asked == 0 {
@@ -4296,9 +4323,11 @@ pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
         .why_silent
         .as_deref()
         .map_or_else(String::new, |why| format!(" ({why})"));
+    let refused = refusal_clause(checks);
     if checks.silent == 0 {
         return Some(format!(
-            "{} milestone claim(s) went to an independent checker and every one of them answered",
+            "{} milestone claim(s) went to an independent checker and every one of them \
+             answered{refused}",
             checks.asked,
         ));
     }
@@ -4313,9 +4342,39 @@ pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
         ));
     }
     Some(format!(
-        "⚠ {} of {} milestone claims went unverified — the checker answered for the rest{why}",
+        "⚠ {} of {} milestone claims went unverified — the checker answered for the rest{why}\
+         {refused}",
         checks.silent, checks.asked,
     ))
+}
+
+/// **WHAT THE VERDICTS CAME TO**, as a clause [`checks_sentence`] appends — empty for a run nothing
+/// refused.
+///
+/// # ⚠⚠⚠⚠⚠ Register item 499: the clause exists so a ceiling can be defended or withdrawn
+///
+/// `ai_loop.scxml`'s `reflect_after_refusals` bounds refusals **IN A ROW**, and until this ran
+/// nothing outside a run's own walk counted them at all. The two numbers are said together on
+/// purpose: a total says how often the checker disagreed, and only the depth says whether the
+/// ceiling was ever approached — thirty refusals one apiece and fifteen pairs are the same total
+/// and opposite facts about the bound.
+///
+/// ⚠⚠ **THE DEPTH IS NEVER OMITTED WHEN IT IS ONE.** *Every refusal stood alone* is the finding
+/// that says a ceiling of two was slack, and a clause that only spoke up on trouble would publish
+/// the exceptional case and hide the measurement.
+///
+/// ⚠ It says nothing about what the ceiling IS. That number is the loop KIND's — `sprag_plugin`'s
+/// `LoopKind::reflect_after_refusals`, one document per repository — and a renderer that quoted one
+/// would be a second author of a decision it cannot see.
+fn refusal_clause(checks: &sprag_plugin::Checks) -> String {
+    if checks.refused == 0 {
+        return String::new();
+    }
+    format!(
+        ", and {} of them the checker refused — at most {} in a row, which is the depth a \
+         reflection ceiling is set against",
+        checks.refused, checks.refused_in_a_row,
+    )
 }
 
 /// ⛔⛔⛔⛔⛔ **WHAT THE DOOR TOOK, SAID ONCE, WHERE THE CALLER WILL READ IT** — register item 719's
@@ -9525,6 +9584,11 @@ mod tests {
                             asked: 3,
                             silent: 2,
                             why_silent: Some("THE-CHECKER-NEVER-ANSWERED".to_owned()),
+                            // ⚠ DISTINCT FROM EVERY NUMBER BESIDE THEM — register item 499, on
+                            // this gate's own terms: a value equal to a neighbour's would let a
+                            // transport that dropped one key and duplicated another still pass.
+                            refused: 7,
+                            refused_in_a_row: 6,
                         },
                         driving: Some(pane),
                         banked: Some(sprag_plugin::Banked {
@@ -9571,6 +9635,21 @@ mod tests {
             "⛔⛔⛔⛔ REGISTER ITEM 663 / 601: what this run's checks came to did not reach a \
              reader. That sentence is the one that says an ending rests on the working agent's own \
              word, and it is composed HERE from what the driver reported. Said: {said:?}",
+        );
+        // ⛔⛔⛔⛔⛔ **AND WHAT THE VERDICTS CAME TO CROSSES THE SAME WIRE** — register item 499.
+        // The tally's other two numbers are new keys on an answer, which is the change this
+        // surface's pin does not number; what that costs is that a transport dropping them fails
+        // SILENTLY, because a row missing a clause reads exactly like a run nothing refused. So
+        // the numbers are asserted at the ROW, past the report, the wire and the reader — and
+        // they are distinct from every count beside them (7 and 6 against 5, 2 and 1) so a hop
+        // that carried the wrong field still cannot pass.
+        assert!(
+            said.contains("7 of them the checker refused") && said.contains("6 in a row"),
+            "⛔⛔⛔⛔ REGISTER ITEM 663 / 499: how often this run's claims were REFUSED, and how \
+             deep the refusals ran, did not reach a reader. That depth is the only number that \
+             says whether `reflect_after_refusals` was ever approached — the question the ceiling \
+             was authored without, and the one nothing outside a bounded walk could answer. \
+             Said: {said:?}",
         );
         assert_eq!(
             row.get(RUN_DRIVING_KEY),
