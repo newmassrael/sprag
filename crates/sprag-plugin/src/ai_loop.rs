@@ -7676,7 +7676,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(200));
             let seen = access
                 .supervision()
-                .and_then(|supervisor| supervisor.pane_agent_state(pane));
+                .and_then(|supervisor| supervisor.pane_agent_state(pane).seen());
             samples.push(format!(
                 "{:?}/{:?}",
                 seen.as_ref().map(|s| s.state),
@@ -7702,7 +7702,7 @@ mod tests {
         let showing = access.pane_full_lines(pane).unwrap_or_default().join("\n");
         let seen = access
             .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(pane));
+            .and_then(|supervisor| supervisor.pane_agent_state(pane).seen());
         for live in access.pane_ids() {
             access.lifecycle().expect("lifecycle").close(live);
         }

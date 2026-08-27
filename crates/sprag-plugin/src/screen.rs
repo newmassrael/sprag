@@ -139,7 +139,7 @@ impl Refuses {
 pub(crate) fn refuses_at(panes: &dyn PaneAccess, pane: PaneId) -> Refuses {
     let named = panes
         .supervision()
-        .and_then(|supervisor| supervisor.pane_agent_state(pane))
+        .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
         .and_then(|seen| seen.agent);
     match named {
         Some(name) => sprag_detect::peer::of(&name).map_or(Refuses::Assumed(Some(name)), |peer| {
@@ -702,8 +702,8 @@ mod tests {
             }
         }
         impl crate::access::PaneSupervision for Named {
-            fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
-                Some(crate::access::AgentObservation {
+            fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
+                crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
                     state: sprag_detect::AgentState::Blocked,
                     agent: self.0.map(str::to_owned),
                     authority: crate::access::Authority::Scraped { rule: None },
@@ -718,7 +718,7 @@ mod tests {
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
-                })
+                }))
             }
         }
 

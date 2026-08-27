@@ -211,7 +211,7 @@ pub use access::{
     PaneChanges, PaneCheckout, PaneDoing, PaneError, PaneForegroundJob, PaneHands, PaneInputEcho,
     PaneInputTrail, PaneJobControl, PaneLifecycle, PaneOrigin, PaneOutputLines, PaneRawCapture,
     PaneRow, PaneSupervision, PaneTerminalModes, ReporterVoice, RowTrail, Settling, Signalled,
-    WorkspacePaneAccess, Written,
+    Supervised, WorkspacePaneAccess, Written,
 };
 pub use act::{Act, Asked, Asks, Does, Refused as ActRefused, Serving};
 pub use agent::{Agent, AgentSpec};

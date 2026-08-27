@@ -2820,10 +2820,18 @@ impl<A: PaneAccess> PaneSupervision for Counted<A> {
     /// ⚠ COUNTED TWICE, into two numbers that answer two questions: it is a look like any other
     /// (item 280's number), and it is the read a round of a completion contract must make exactly
     /// once (item 637's). Neither number can be derived from the other.
-    fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation> {
+    fn pane_agent_state(&self, id: PaneId) -> crate::access::Supervised {
         self.looked();
         self.supervisions.fetch_add(1, Ordering::Relaxed);
-        self.inner.supervision()?.pane_agent_state(id)
+        // ⚠ THE WHOLE ANSWER IS RELAYED, register item 573 — including
+        // `Supervised::Unspellable`. A counting double that flattened the third arm would be the
+        // shape item 555 caught in `CountingRemote`: an instrument that quietly answers for the
+        // surface it is supposed to be measuring.
+        self.inner
+            .supervision()
+            .map_or(crate::access::Supervised::NotAnAgent, |supervisor| {
+                supervisor.pane_agent_state(id)
+            })
     }
 }
 

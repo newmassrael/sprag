@@ -69,7 +69,7 @@ use crate::run::{Look, RunContext, Waited, park_until, poll_until};
 /// the guard — a build that cannot see agents cannot protect their dialogs either, and pretending
 /// otherwise would block every run on every host that has no detector.
 pub(crate) fn peer_asking(panes: &dyn PaneAccess, pane: PaneId) -> Option<Option<Question>> {
-    let seen = panes.supervision()?.pane_agent_state(pane)?;
+    let seen = panes.supervision()?.pane_agent_state(pane).seen()?;
     (seen.state == AgentState::Blocked).then_some(seen.asking)
 }
 
@@ -89,7 +89,7 @@ pub(crate) fn peer_asking(panes: &dyn PaneAccess, pane: PaneId) -> Option<Option
 ///
 /// ⚠ A host with no supervisor answers `None`, and the run reports the refusal it always did.
 pub(crate) fn peer_noticed(panes: &dyn PaneAccess, pane: PaneId) -> Option<String> {
-    let seen = panes.supervision()?.pane_agent_state(pane)?;
+    let seen = panes.supervision()?.pane_agent_state(pane).seen()?;
     (seen.state == AgentState::Blocked)
         .then_some(seen.noticed)
         .flatten()
@@ -211,7 +211,7 @@ pub(crate) fn moved_on(panes: &dyn PaneAccess, pane: PaneId, question: Option<&Q
         None => {
             let Some(seen) = panes
                 .supervision()
-                .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
             else {
                 // ⚠ A host with no supervisor, or a pane it does not know, is what
                 // `peer_asking(..).is_none()` has always read as *not blocked* — kept
@@ -1610,7 +1610,7 @@ impl Readiness {
             // observation naming no agent is not evidence about WHICH program is at rest.
             ReadyWhen::Settles(agent) => panes
                 .supervision()
-                .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
                 .is_some_and(|seen| {
                     seen.state == AgentState::Idle && seen.agent.as_deref() == Some(agent.as_str())
                 }),
@@ -2899,8 +2899,8 @@ mod tests {
         /// settle window, and the state a peer is in for `DEFAULT_SETTLE` after being answered.
         struct StillBlockedNothingReadable;
         impl crate::access::PaneSupervision for StillBlockedNothingReadable {
-            fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
-                Some(crate::access::AgentObservation {
+            fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
+                crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
                     state: AgentState::Blocked,
                     agent: Some("claude".to_owned()),
                     // ⚠ The SCREEN-read authority, deliberately: the settle window is a property
@@ -2920,7 +2920,7 @@ mod tests {
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
-                })
+                }))
             }
         }
         impl PaneAccess for StillBlockedNothingReadable {

@@ -1297,7 +1297,7 @@ impl Submission {
             | SubmittedWhen::Released { .. }
             | SubmittedWhen::Took { .. } => panes
                 .supervision()
-                .and_then(|supervisor| supervisor.pane_agent_state(pane)),
+                .and_then(|supervisor| supervisor.pane_agent_state(pane).seen()),
             SubmittedWhen::Unchecked | SubmittedWhen::Repaints { .. } => None,
         };
         Self {
@@ -1341,7 +1341,7 @@ impl Submission {
                 Some(
                     panes
                         .supervision()
-                        .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                        .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
                         .is_some_and(|seen| {
                             // ⚠⚠ BOTH, and the name is what makes this a claim about the peer the
                             // submit went to rather than about whatever is in the pane now.
@@ -1359,7 +1359,7 @@ impl Submission {
                 Some(
                     panes
                         .supervision()
-                        .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                        .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
                         .is_some_and(|seen| {
                             // ⚠ NO `seq` COMPARISON, deliberately — see the kind's own doc. What is
                             // asked is a PROPERTY of the pane now, and requiring a published change
@@ -1375,7 +1375,7 @@ impl Submission {
                 Some(
                     panes
                         .supervision()
-                        .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                        .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
                         .is_some_and(|seen| {
                             // ⚠⚠⚠ THREE THINGS, and dropping any one of them admits a false yes:
                             // the peer is the one addressed, its state has MOVED since the press
@@ -2254,9 +2254,9 @@ mod tests {
     }
 
     impl crate::access::PaneSupervision for Reporting {
-        fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
+        fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
             let submitted = self.inner.submitted();
-            Some(crate::access::AgentObservation {
+            crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
                 state: sprag_detect::AgentState::Working,
                 agent: Some("claude".to_owned()),
                 authority: crate::access::Authority::Reported {
@@ -2273,7 +2273,7 @@ mod tests {
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
                 reporter: crate::access::ReporterVoice::Speaking,
-            })
+            }))
         }
     }
 
@@ -2383,14 +2383,14 @@ mod tests {
     }
 
     impl crate::access::PaneSupervision for Composing {
-        fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
+        fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
             *self.looks.lock().expect("the counter") += 1;
             let holding = if self.inner.submitted() {
                 self.holding_after
             } else {
                 self.holding_before
             };
-            Some(crate::access::AgentObservation {
+            crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
                 state: if holding {
                     AgentState::Holding
                 } else {
@@ -2419,7 +2419,7 @@ mod tests {
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
                 reporter: crate::access::ReporterVoice::Speaking,
-            })
+            }))
         }
     }
 

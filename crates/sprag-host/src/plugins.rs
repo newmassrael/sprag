@@ -7709,7 +7709,7 @@ mod tests {
         // ...and on that host, a pane no manifest claims is the other answer: `None` for this pane,
         // from a surface that exists.
         assert!(
-            supervision.pane_agent_state(PaneId(9999)).is_none(),
+            supervision.pane_agent_state(PaneId(9999)) == sprag_plugin::Supervised::NotAnAgent,
             "a pane nobody knows is not an agent",
         );
 

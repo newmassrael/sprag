@@ -1617,14 +1617,80 @@ pub struct AgentObservation {
 /// and the second says *this pane is not an agent*. Collapsing them into one `None` would let a
 /// supervisor conclude "no agents here" from a host that simply never looked.
 pub trait PaneSupervision {
-    /// What the agent in `id` is doing right now, or `None` for a pane no manifest claims (and for
-    /// a pane id nobody knows).
+    /// What the agent in `id` is doing right now — see [`Supervised`] for why this is three answers
+    /// and not an [`Option`].
     ///
     /// A LEVEL: safe to call as often as a plugin steps, and each answer stands on its own. The
     /// read is arbitrated by the host's one detector, so two plugins watching one pane can never
     /// disagree about it, and the host's quiescence gate means a pane whose screen has not moved
     /// costs no rule evaluation.
-    fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation>;
+    fn pane_agent_state(&self, id: PaneId) -> Supervised;
+}
+
+/// **WHAT LOOKING AT A PANE'S AGENT ANSWERED** — three outcomes, because two of them used to be one
+/// `None` and that collapse is register item 573.
+///
+/// # ⛔⛔⛔⛔⛔ *Not an agent* and *a word I cannot spell* are opposite instructions
+///
+/// [`NotAnAgent`](Self::NotAnAgent) says **carry on** — the daemon looked and no manifest claims
+/// that pane, so a supervisor is right to walk past it. [`Unspellable`](Self::Unspellable) says the
+/// daemon is AHEAD of this build: something is running there, this build has no word for what it is
+/// doing, and the honest instruction is **ask a person**. Reading the second as the first is how a
+/// supervisor drives straight past a pane running an agent it has never heard of, and it goes live
+/// the day a daemon and a driver are different builds — the ordinary state after any rebuild here.
+///
+/// # ⚠⚠⚠⚠ Why this type exists when `sprag_host::agent::Verdict` already has the three arms
+///
+/// It has had them since register item 564 — **on the host side only**. `sprag-host` depends on
+/// this crate, so this trait cannot name that type, and the asymmetry is exactly what item 573 is:
+/// the wire's reader learned to separate the two facts and the DOOR a plugin looks through did not.
+/// A remote surface met an unspellable word, latched, and still had to answer this call — with no
+/// third answer to give, it answered `None`, so **the first such verdict read as *not an agent* for
+/// one whole step** before the latch could speak. This is that step closed.
+///
+/// ⚠ The payload is the WORD, verbatim. A supervisor that is told only *"something is wrong"*
+/// cannot say which build is ahead; the word is the one thing that can.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Supervised {
+    /// The host looked and no manifest claims this pane. **Carry on.**
+    NotAnAgent,
+    /// A verdict this build can read.
+    ///
+    /// ⚠ BOXED, exactly as `sprag_host::agent::Verdict::Seen` is and for the same reason: an
+    /// [`AgentObservation`] dwarfs the other two arms, and every call that answers *not an agent*
+    /// would otherwise carry its whole size.
+    Seen(Box<AgentObservation>),
+    /// A state word this build's vocabulary does not hold, carried verbatim. **A skew, not an
+    /// absence** — ask a person, and compare the two builds.
+    Unspellable(String),
+}
+
+impl Supervised {
+    /// The observation when there is one, and [`None`] for both other answers.
+    ///
+    /// # ⚠⚠⚠ It is a CONVENIENCE and never the whole reading
+    ///
+    /// Every consumer whose question is *what is this agent doing* wants exactly this, and for them
+    /// the two absences really are one: neither yields an observation to act on. What must not
+    /// happen is a consumer whose question is *is this pane worth supervising* reaching for it —
+    /// that one has to match, because for it the two absences are opposite instructions and folding
+    /// them is the defect this type was made to end.
+    #[must_use]
+    pub fn seen(self) -> Option<AgentObservation> {
+        match self {
+            Self::Seen(observation) => Some(*observation),
+            Self::NotAnAgent | Self::Unspellable(_) => None,
+        }
+    }
+
+    /// The word this build could not spell, or [`None`] for the two answers that are not a skew.
+    #[must_use]
+    pub fn unspellable(&self) -> Option<&str> {
+        match self {
+            Self::Unspellable(word) => Some(word),
+            Self::NotAnAgent | Self::Seen(_) => None,
+        }
+    }
 }
 
 /// **WHERE A PANE WAS POINTED** — the directory it was born in, which is the honest answer to
@@ -2146,8 +2212,17 @@ impl WorkspacePaneAccess {
 }
 
 impl PaneSupervision for WorkspacePaneAccess {
-    fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation> {
-        (self.agent_state.as_ref()?)(id)
+    /// ⚠⚠ **IN PROCESS THERE IS NO SKEW TO REPORT** — register item 573. The detector and this
+    /// reader are the same binary, so a state word it cannot spell cannot exist: the vocabulary has
+    /// one definition and both sides are it. [`Supervised::Unspellable`] is a fact about TWO builds
+    /// and this host is one, so the honest answer here is only ever the other two.
+    fn pane_agent_state(&self, id: PaneId) -> Supervised {
+        let Some(look) = self.agent_state.as_ref() else {
+            return Supervised::NotAnAgent;
+        };
+        look(id).map_or(Supervised::NotAnAgent, |observation| {
+            Supervised::Seen(Box::new(observation))
+        })
     }
 }
 

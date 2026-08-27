@@ -2768,7 +2768,7 @@ impl Session {
         // report that has gone quiet, not a session that has stopped writing.
         if let Some(said) = panes
             .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(self.pane))
+            .and_then(|supervisor| supervisor.pane_agent_state(self.pane).seen())
             .and_then(|seen| seen.transcript)
         {
             self.transcript = Some(std::path::PathBuf::from(said));
@@ -7053,7 +7053,7 @@ impl OuterLoop {
         // here to mistake for this turn's (see `sprag_detect::Report::noticed`).
         let stated = panes
             .supervision()
-            .and_then(|seen| seen.pane_agent_state(self.driving.pane))
+            .and_then(|seen| seen.pane_agent_state(self.driving.pane).seen())
             .and_then(|seen| seen.noticed);
         if stated.is_some_and(|said| needles.iter().any(|needle| said.contains(needle))) {
             return true;
@@ -8768,7 +8768,7 @@ impl OuterLoop {
     fn submit_lands_when(&self, panes: &dyn PaneAccess) -> SubmittedWhen {
         let reported = panes
             .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(self.driving.pane))
+            .and_then(|supervisor| supervisor.pane_agent_state(self.driving.pane).seen())
             .is_some_and(|seen| {
                 matches!(seen.authority, crate::access::Authority::Reported { .. })
             });
@@ -9296,7 +9296,7 @@ impl OuterLoop {
     fn said_seq_at(panes: &dyn PaneAccess, pane: PaneId) -> u64 {
         panes
             .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(pane))
+            .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
             .map_or(0, |seen| seen.said_seq)
     }
 
@@ -9353,11 +9353,17 @@ impl OuterLoop {
     ///
     /// ⚠ See [`Unstated`] for what each word rules out.
     fn stated_this_turn(&self, panes: &dyn PaneAccess) -> Result<String, Unstated> {
-        let Some(seen) = panes
-            .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(self.driving.pane))
-        else {
+        // ⚠⚠⚠⚠⚠ **THE THIRD ANSWER IS KEPT APART HERE, REGISTER ITEM 573.** Folding it into
+        // `Unsupervised` would print *nothing answers for this pane* about a pane that answered
+        // promptly — and send a reader to install a hook that is installed and reporting, which is
+        // exactly the wrong errand item 486 was filed for, one world further along.
+        let Some(supervisor) = panes.supervision() else {
             return Err(Unstated::Unsupervised);
+        };
+        let seen = match supervisor.pane_agent_state(self.driving.pane) {
+            crate::access::Supervised::Seen(seen) => seen,
+            crate::access::Supervised::NotAnAgent => return Err(Unstated::Unsupervised),
+            crate::access::Supervised::Unspellable(_) => return Err(Unstated::Unspellable),
         };
         // ⚠⚠ THE PAIRING IS UNCHANGED — a statement counts as this turn's only once the peer's own
         // count has moved past what `say` armed. What changed is that failing it is now a WORLD
@@ -9771,6 +9777,19 @@ pub enum Unstated {
     /// rather than separated"*) and does not close it: what that item wants is a different answer
     /// from the DOCUMENT, and this only stops the reading claiming a pane was read.
     NoMarker,
+    /// **THE HOST LOOKED AND SPOKE A STATE WORD THIS BUILD CANNOT SPELL** — register item 573, and
+    /// the fifth world, which used to arrive as [`Unsupervised`](Self::Unsupervised).
+    ///
+    /// ⚠⚠⚠⚠⚠ *Nothing answers for this pane* is FALSE here and the difference is the whole item.
+    /// Something answers, promptly, about a pane that is running an agent — this build simply has
+    /// no word for what it is doing. Printed as `Unsupervised` it sends a reader to install a hook
+    /// that is already installed and reporting, which is precisely the wrong errand item 486 was
+    /// filed for, one world further along.
+    ///
+    /// ⚠ It carries no payload: the WORD is on the surface that met it
+    /// (`RemotePaneAccess::unspellable_state`, and [`crate::Supervised::Unspellable`] on the call
+    /// itself), and a second copy here would be a second authority on which build is ahead.
+    Unspellable,
 }
 
 impl Unstated {
@@ -9805,6 +9824,12 @@ impl Unstated {
                 " ⚠⚠ NO PANE WAS READ AND NO PEER WAS ASKED: this loop's datamodel could not say \
                  what the marker IS, so the `0` above is nothing having been looked at rather than \
                  nothing having been produced. Nobody's agent is at fault; the document is",
+            ),
+            Self::Unspellable => Some(
+                " ⚠⚠⚠ THE HOST ANSWERED WITH A STATE WORD THIS BUILD CANNOT SPELL — something IS \
+                 running in that pane and this driver has no word for what it is doing, so the \
+                 pane was NOT read as a shell and no hook is missing. The two binaries are \
+                 different builds: compare them, and read the word off the surface that met it",
             ),
         }
     }
@@ -14831,8 +14856,8 @@ mod tests {
     }
 
     impl crate::access::PaneSupervision for Stating {
-        fn pane_agent_state(&self, _id: PaneId) -> Option<crate::access::AgentObservation> {
-            Some(crate::access::AgentObservation {
+        fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
+            crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
                 state: sprag_detect::AgentState::Idle,
                 agent: Some("claude".to_string()),
                 authority: crate::access::Authority::Reported {
@@ -14849,7 +14874,7 @@ mod tests {
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
                 reporter: crate::access::ReporterVoice::Speaking,
-            })
+            }))
         }
     }
 

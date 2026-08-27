@@ -708,7 +708,7 @@ impl Completion {
     pub fn begin(&mut self, panes: &dyn PaneAccess, pane: PaneId) {
         self.addressed = panes
             .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(pane))
+            .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
             .and_then(|seen| {
                 seen.agent.map(|agent| Addressed {
                     agent,
@@ -752,7 +752,7 @@ impl Completion {
         // caller's contract — nothing under this line asks the pane anything.
         let seen = panes
             .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(pane));
+            .and_then(|supervisor| supervisor.pane_agent_state(pane).seen());
         // ⚠⚠ READ UNCONDITIONALLY, where the old code reached it only after `satisfied` said no.
         // That saved one call on the round a turn ENDS — one per wait, not one per look — and cost
         // the `DoneWhen::Exits` arm a second read on every other round, because `satisfied` and the

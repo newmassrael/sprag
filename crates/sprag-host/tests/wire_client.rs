@@ -6239,11 +6239,18 @@ impl CountingRemote {
 }
 
 impl sprag_plugin::PaneSupervision for CountingRemote {
-    fn pane_agent_state(&self, id: PaneId) -> Option<sprag_plugin::AgentObservation> {
+    fn pane_agent_state(&self, id: PaneId) -> sprag_plugin::Supervised {
         self.looked();
         self.supervisions
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.inner.supervision()?.pane_agent_state(id)
+        // ⚠⚠ THE WHOLE ANSWER IS RELAYED — register item 573, and item 555's lesson about this
+        // very double: an instrument that flattened the third arm would answer for the surface it
+        // exists to measure.
+        self.inner
+            .supervision()
+            .map_or(sprag_plugin::Supervised::NotAnAgent, |supervisor| {
+                supervisor.pane_agent_state(id)
+            })
     }
 }
 
@@ -9245,6 +9252,7 @@ fn a_remote_driver_waiting_on_a_verdict_stops_asking_for_it_every_slice() {
         .supervision()
         .expect("the daemon supervises")
         .pane_agent_state(PaneId(0))
+        .seen()
         .expect("the pane reported itself an agent");
     let mut done = sprag_plugin::Completion::new(sprag_plugin::DoneWhen::Settles);
     done.begin(&driver, PaneId(0));
@@ -9274,6 +9282,7 @@ fn a_remote_driver_waiting_on_a_verdict_stops_asking_for_it_every_slice() {
         .supervision()
         .expect("the daemon supervises")
         .pane_agent_state(PaneId(0))
+        .seen()
         .expect("the pane is still an agent");
     assert_eq!(
         (
@@ -9732,7 +9741,7 @@ fn a_remote_driver_reads_a_pane_agent_verdict_and_a_plain_pane_is_a_different_ab
         )
     });
 
-    let seen = supervisor.pane_agent_state(agent).unwrap_or_else(|| {
+    let seen = supervisor.pane_agent_state(agent).seen().unwrap_or_else(|| {
         panic!(
             "⛔⛔⛔⛔ REGISTER ITEM 557: the pane that just REPORTED itself an agent reads as *not \
              an agent* through a remote driver's surface. The daemon holds the verdict — it is on \
@@ -9851,7 +9860,7 @@ fn a_remote_driver_reads_a_pane_agent_verdict_and_a_plain_pane_is_a_different_ab
 
     // ── AND THE PANE THAT IS SIMPLY NOT AN AGENT, IN THE SAME BREATH ───────────────────────────
     assert!(
-        supervisor.pane_agent_state(plain).is_none(),
+        supervisor.pane_agent_state(plain) == sprag_plugin::Supervised::NotAnAgent,
         "⚠⚠⚠⚠⚠ a pane no manifest claims must read as NOT AN AGENT. An address answering \
          something here would have a driver supervise a shell — and one answering the neighbouring \
          pane's verdict would have it supervise the wrong peer",
@@ -11585,9 +11594,19 @@ fn a_state_word_this_build_cannot_spell_stops_the_driver_claiming_to_supervise()
     // ── THE READ MEETS A WORD FROM THE FUTURE ─────────────────────────────────────────────────
     let seen = supervisor.pane_agent_state(pane);
     assert!(
-        seen.is_none(),
+        seen.clone().seen().is_none(),
         "⚠⚠⚠ a verdict this build cannot read must not be turned into one it can — a fallback \
          variant would have a supervisor act on a state nobody published. Got {seen:?}",
+    );
+    // ⛔⛔⛔⛔⛔ **AND IT SAYS SO ON THE SAME CALL — REGISTER ITEM 573.** This is the step that used
+    // to read as *not an agent*: the surface latched, but the caller already mid-step got a bare
+    // `None` and skipped a pane running an agent it had never heard of. The third answer carries
+    // the word out immediately, so there is no longer a window in which the two are one fact.
+    assert_eq!(
+        seen.unspellable(),
+        Some("dreaming"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 573: the FIRST unspellable verdict must be told apart from *not \
+         an agent* on the call that met it, not one step later off the latch. Got {seen:?}",
     );
     assert_eq!(
         remote.unspellable_state().as_deref(),
@@ -11657,7 +11676,7 @@ fn a_remote_read_that_saw_nothing_says_which_of_the_three_reasons_it_was() {
         .expect("this daemon supervises, so the agent address is served");
     assert_eq!(
         supervisor.pane_agent_state(pane),
-        None,
+        sprag_plugin::Supervised::NotAnAgent,
         "the premise: a `cat` is not an agent, so the address the daemon serves holds nothing",
     );
     assert_eq!(

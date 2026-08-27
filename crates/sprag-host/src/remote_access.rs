@@ -119,9 +119,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_plugin::{
-    AgentObservation, CutCheckout, JobLeader, KeyStroke, PaneAccess, PaneCheckout, PaneError,
-    PaneForegroundJob, PaneHands, PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOrigin,
-    PaneOutputLines, PaneRow, PaneSupervision, PaneTerminalModes, Signalled, Written,
+    CutCheckout, JobLeader, KeyStroke, PaneAccess, PaneCheckout, PaneError, PaneForegroundJob,
+    PaneHands, PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOrigin, PaneOutputLines, PaneRow,
+    PaneSupervision, PaneTerminalModes, Signalled, Written,
 };
 use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT, Outstanding};
 use sprag_terminal::{Hands, JobProcess, PaneEcho, PaneEndOfInput, PaneId, Reach, Stop, Unstopped};
@@ -1769,7 +1769,7 @@ impl PaneSupervision for RemotePaneAccess {
     /// ([`crate::agent::verdict_of`]), which is what keeps the two spellings of this verdict one
     /// edit apart rather than one round apart. A state word this build does not know reads as
     /// absent rather than as a guess — see that function.
-    fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation> {
+    fn pane_agent_state(&self, id: PaneId) -> sprag_plugin::Supervised {
         // ⚠⚠⚠⚠⚠ **TAKEN BEFORE THE REQUEST GOES OUT** — register item 640. The settling deadline
         // crosses this wire as a REMAINING TIME, so it has to be anchored to a clock this process
         // owns, and the two candidate moments are not equivalent: anchored to the answer's ARRIVAL
@@ -1777,20 +1777,29 @@ impl PaneSupervision for RemotePaneAccess {
         // PAST the publish it is waiting for. Anchored here it is early by that much, which costs
         // one look and cannot lose a wakeup. `crate::agent::Sent` is the type that says which.
         let sent = crate::agent::Sent::now();
-        let answer = self.read(&mux_action_path(&agent_slot_for(id.0)))?;
+        let Some(answer) = self.read(&mux_action_path(&agent_slot_for(id.0))) else {
+            // ⚠ NOTHING AT THE ADDRESS — the pane is gone, this daemon does not serve it, or the
+            // wire failed. `RemotePaneAccess::unseen` is what separates those (register item 556);
+            // for THIS question all four mean the same thing: no manifest claims that pane here.
+            return sprag_plugin::Supervised::NotAnAgent;
+        };
         match crate::agent::verdict_of(&answer, sent) {
-            crate::agent::Verdict::Seen(seen) => Some(*seen),
-            crate::agent::Verdict::NotAnAgent => None,
+            // ⚠ The box travels rather than being unwrapped and re-made — both types box this
+            // payload for the same reason, so the move is free.
+            crate::agent::Verdict::Seen(seen) => sprag_plugin::Supervised::Seen(seen),
+            crate::agent::Verdict::NotAnAgent => sprag_plugin::Supervised::NotAnAgent,
             // ⚠⚠⚠⚠⚠ A WORD THIS BUILD CANNOT SPELL TAKES THE WHOLE SURFACE DOWN, register item 564.
             // Answering `None` alone would say *this pane is a shell* about a pane running an agent
             // this driver has never heard of. The honest instruction is the one
             // `PaneAccess::supervision` answering `None` carries — **ask a person** — so the skew
             // latches and [`supervision`](PaneAccess::supervision) stops claiming to look.
             //
-            // ⚠⚠ The caller that is mid-step gets this one `None` first, because the trait has no
-            // error channel here. That is one step read as *not an agent*, which makes a supervisor
-            // skip a pane rather than act wrongly on it; from the next step the answer is the
-            // stronger and correct one. See the register's residue.
+            // ⚠⚠⚠⚠⚠ **AND THE MID-STEP CALLER IS TOLD NOW, WHICH IS REGISTER ITEM 573.** This arm
+            // used to answer `None` and note that *"the caller that is mid-step gets this one
+            // `None` first, because the trait has no error channel here … See the register's
+            // residue."* It has one: [`Supervised::Unspellable`] carries the word out on the same
+            // call that met it, so the ONE STEP that read as *not an agent* is gone. The latch below
+            // is unchanged and still does its slower, wider job.
             crate::agent::Verdict::Unspellable(word) => {
                 tracing::warn!(
                     target: "sprag_host",
@@ -1799,8 +1808,8 @@ impl PaneSupervision for RemotePaneAccess {
                     "the daemon published an agent state this build cannot spell, so this driver \
                      can no longer claim to supervise — the two are different builds"
                 );
-                *lock(&self.unspellable) = Some(word);
-                None
+                *lock(&self.unspellable) = Some(word.clone());
+                sprag_plugin::Supervised::Unspellable(word)
             }
         }
     }

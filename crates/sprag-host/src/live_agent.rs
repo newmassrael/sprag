@@ -298,7 +298,7 @@ impl Live {
     fn seq(&self) -> Option<u64> {
         self.access
             .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(self.pane))
+            .and_then(|supervisor| supervisor.pane_agent_state(self.pane).seen())
             .map(|seen| seen.seq)
     }
 
@@ -405,7 +405,7 @@ impl Watch {
 fn verdict_of(access: &WorkspacePaneAccess, pane: PaneId) -> String {
     match access
         .supervision()
-        .and_then(|supervisor| supervisor.pane_agent_state(pane))
+        .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
     {
         Some(seen) => format!(
             "state={:?} agent={:?} seq={} authority={:?} asking={}",
@@ -3367,7 +3367,7 @@ fn what_a_key_does_to_a_live_agents_permission_dialog() {
         let dismissed = sprag_plugin::poll_until(&run, DISMISSED_WITHIN, || {
             live.access
                 .supervision()
-                .and_then(|supervisor| supervisor.pane_agent_state(live.pane))
+                .and_then(|supervisor| supervisor.pane_agent_state(live.pane).seen())
                 .is_none_or(|seen| seen.asking.is_none_or(|now| now.asked != question.asked))
         });
         let dismissed_in = pressed_at.elapsed();
@@ -6045,7 +6045,7 @@ fn what_makes_a_live_agents_composer_fold_the_prompt_away() {
     let authority = live
         .access
         .supervision()
-        .and_then(|supervisor| supervisor.pane_agent_state(live.pane))
+        .and_then(|supervisor| supervisor.pane_agent_state(live.pane).seen())
         .map(|seen| format!("{:?}", seen.authority));
     let delivered = deliver(
         &live.access,
