@@ -6402,6 +6402,146 @@ fn a_park_connection_scoped_to_another_session_is_refused_where_it_is_handed_ove
     );
 }
 
+/// Run a `git` verb in `at` and say whether it worked — enough git for a fixture, and no more.
+fn git(at: &Path, args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(at)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// What a repository's own `git diff HEAD` reads — the exact thing register item 705's «done when»
+/// asks to hold still while a check runs.
+fn diff_head(at: &Path) -> Vec<u8> {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(at)
+        .args(["diff", "HEAD"])
+        .output()
+        .expect("a repository answers its own diff")
+        .stdout
+}
+
+/// ⛔⛔⛔⛔⛔ **THE SURFACE A LIVE RUN USES REALLY CUTS A COPY, AND THE AGENT'S TREE DOES NOT MOVE**
+/// — register item 705, at the one seam its two other gates leave between them.
+///
+/// # ⚠⚠⚠⚠⚠ What was unproven until this, stated exactly
+///
+/// Item 705 is held by three claims and they live in three places:
+///
+/// * **which directory the driver picks** — `sprag_plugin`'s
+///   `a_check_is_sent_to_a_copy_and_the_sentence_names_the_copy`, over a STAND-IN copy;
+/// * **whether a real copy carries the work and isolates a mutation** —
+///   `sprag_host::checkout`'s own gate, over real `git`;
+/// * **and that the surface a live run actually holds joins those two** — which nothing said, and
+///   is this gate. Without it the first two can both be green while `PaneAccess::checkout` on the
+///   live surface answers something that is not the mechanism at all.
+///
+/// ⚠⚠ **THE SURFACE IS THE REMOTE ONE ON PURPOSE.** `RUN_DRIVER_PROCESS` defaults to `on`, so a
+/// live run's driver is a process outside the daemon and sees its panes through exactly this type.
+/// The in-process surface cannot isolate — its crate may not spawn a `git` — and degrades, which is
+/// a loss the product names rather than hides.
+///
+/// # ⚠⚠⚠ The premises, asserted inside
+///
+/// * **The repository is mid-claim**, carrying work that is not yet committed. A clean tree would
+///   be satisfied by a copy of `HEAD` alone, and the arm about carrying the agent's in-flight work
+///   would be about nothing.
+/// * **The check really writes.** *The shared tree did not change* is satisfied trivially by a
+///   check that never touched anything — register item 280's fifth lesson, and the reason the
+///   mutation below is asserted to have landed before the original is asked whether it moved.
+#[test]
+fn the_surface_a_run_uses_cuts_a_copy_and_the_agents_tree_does_not_move() {
+    let (_host, sock) = spawn_host();
+    let (driver, _setup) = remote_driver(&sock);
+
+    let repo = std::env::temp_dir().join(format!(
+        "sprag-705-seam-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).expect("a directory to make a repository in");
+    assert!(
+        git(&repo, &["init", "-q", "."]),
+        "the fixture needs a `git`"
+    );
+    assert!(git(&repo, &["config", "user.email", "gate@example"]));
+    assert!(git(&repo, &["config", "user.name", "gate"]));
+    std::fs::write(repo.join("door.txt"), "door returns 1\n").expect("the committed file");
+    assert!(git(&repo, &["add", "door.txt"]));
+    assert!(git(&repo, &["commit", "-qm", "base"]));
+    // ⚠⚠ THE AGENT IS MID-CLAIM: this is the work the milestone is about, and it is not in `HEAD`.
+    std::fs::write(repo.join("door.txt"), "door returns 2\n").expect("the uncommitted edit");
+
+    let before = diff_head(&repo);
+    assert!(
+        !before.is_empty(),
+        "⚠⚠⚠⚠ THE PREMISE: the agent must have work that is not yet committed, or a copy of `HEAD` \
+         alone would satisfy the arm below and this gate would be about nothing",
+    );
+
+    // ── THE SEAM: the surface a live run holds hands back the real mechanism ──────────────────
+    let surface = driver.checkout().expect(
+        "⛔⛔⛔ ITEM 705: the surface every out-of-daemon run uses cannot isolate at all, so the \
+         milestone checker is loose in the tree the agent is working in — which is what this item \
+         was filed about, measured on run 0",
+    );
+    let cut = surface.cut(&repo).expect("a repository can be cut");
+    assert_ne!(
+        cut.path(),
+        repo.as_path(),
+        "⛔⛔⛔⛔⛔ THE «COPY» IS THE ORIGINAL. Every assertion below would pass over a surface that \
+         isolates nothing, and the checker would be told to open the files in the agent's own tree",
+    );
+    assert_eq!(
+        std::fs::read_to_string(cut.path().join("door.txt")).ok(),
+        Some("door returns 2\n".to_owned()),
+        "⛔⛔⛔⛔ THE CHECKER WOULD JUDGE THE WRONG TREE: the claim is about work that is not in \
+         `HEAD`, and a copy without it lets a careful checker open real files, reason correctly, \
+         and answer about something else",
+    );
+
+    // ── ⚠⚠ THE CHECK MUTATES — the premise that makes the claim below mean anything ───────────
+    std::fs::write(cut.path().join("door.txt"), "MUTATED BY THE CHECK\n")
+        .expect("the check writes into what it was given");
+    assert_eq!(
+        std::fs::read_to_string(cut.path().join("door.txt")).ok(),
+        Some("MUTATED BY THE CHECK\n".to_owned()),
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: nothing was written, so «the agent's tree did not move» below \
+         is satisfied by a check that never touched anything at all",
+    );
+
+    // ── THE CLAIM ────────────────────────────────────────────────────────────────────────────
+    assert_eq!(
+        diff_head(&repo),
+        before,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 705: a check mutated the tree the AGENT is working in. Measured \
+         2026-08-26 on run 0: a watcher read exactly this as the agent's leftover, told the owner \
+         one sentence of the agent's report was false — it was true — and then ran `git checkout \
+         --` over it, which was a no-op only because the check had already finished",
+    );
+
+    // ── AND THE COPY GOES WHEN THE CHECK IS OVER ─────────────────────────────────────────────
+    let was_at = cut.path().to_path_buf();
+    drop(cut);
+    assert!(
+        !was_at.exists(),
+        "⚠⚠⚠⚠ A COPY OUTLIVED ITS CHECK — a second tree holding a half-applied mutation, which is \
+         the confusion this item exists to end, re-created by the repair",
+    );
+    assert_eq!(
+        diff_head(&repo),
+        before,
+        "⚠⚠ and removing the copy is not a write to the agent's tree either",
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// ⛔⛔⛔⛔⛔ **A DRIVER OUTSIDE THE DAEMON CAN SAY WHERE ITS RUN'S WORK IS** — register item 722,
 /// which is the half of register item 710 that this surface could not answer.
 ///
