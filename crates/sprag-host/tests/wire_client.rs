@@ -6907,6 +6907,21 @@ fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
     let _ = std::fs::remove_dir_all(&under);
 }
 
+/// **WHAT THE FIRST BILLED REQUEST OF [`standin_that_reports_itself`]'s RECORD WRITES TO CACHE** —
+/// `cold`, the toll a replacement re-pays, and the number `reviewing`'s economic door multiplies by
+/// twenty.
+///
+/// ⚠⚠ SIZED SO THAT THE ECONOMICS ARE **EVALUATED AND FALSE**, never skipped. The guard reads
+/// `cold > 0 && floor > 0 && context - floor >= 20 * cold`, so a fixture leaving `cold` at zero
+/// would take the same road for a different reason — and a control that passes because a term was
+/// absent proves nothing about the term that matters. At 5,000 the break-even is 100,000 and this
+/// stand-in's reading never approaches it.
+const STANDIN_COLD: u64 = 5_000;
+/// What every one of its billed requests reports as OUTPUT — what register item 719's per-turn
+/// reading is the difference of. ⚠ Not `1`: a count that could be confused with a request COUNT
+/// would let a wrong reader look right.
+const STANDIN_PRODUCES: u64 = 7;
+
 /// **A STAND-IN AGENT THAT REPORTS ITS OWN TURNS THROUGH THE SHIPPED CLI** — register item 730, and
 /// the fixture that makes [`INNER_SESSION_ENDS`](sprag_plugin::INNER_SESSION_ENDS) drivable from a
 /// host integration test at all.
@@ -6950,6 +6965,8 @@ fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
 ///
 /// # ⚠⚠⚠⚠ AND IT ANSWERS THE REFLECTION, which is what lets a run REPLACE ITS SESSION
 ///
+/// (see [`STANDIN_COLD`] for the numbers the record it writes carries)
+///
 /// `reflecting` is a `Settles` turn like any other (`OuterLoop::reflect` calls `watch` and refuses
 /// anything but `turn.done`), and its answer is two labelled rows the driver reads back off the
 /// pane. A stand-in that ignored it would end the turn and name no successor, so the run would take
@@ -6985,15 +7002,28 @@ fn standin_that_reports_itself(
     // a streamed reply repeats its envelope — and a REPLACED session re-runs this script from the
     // top with `s` back at 1, so ids without the pid would collide with the predecessor's rows and
     // the total would stop growing exactly where this gate needs it to grow.
+    //
+    // ⚠⚠⚠⚠ **AND THE READING GROWS, WHICH IS WHAT MAKES A CEILING REACHABLE.** `context` is the
+    // LAST billed request's cache read, so a fixture that wrote a constant could never cross an
+    // authored `context_ceiling` — the door would be unreachable and a gate over it would be
+    // measuring the number it typed. Row *n* reads `4000 + 4000n`, and only the FIRST row writes
+    // cache: `cold` is the first request's WRITE and `floor` is the SECOND request's READ, so the
+    // schedule fixes both at values the economics guard is EVALUATED against and fails on the
+    // arithmetic — never skipped for being zero, which is a different control.
     let (states_record, writes_row) = match record {
         Some(path) => (
             format!(" --transcript '{}'", path.display()),
             format!(
-                "printf '{{\"type\":\"assistant\",\"message\":{{\"id\":\"m%s-%s\",\"usage\":\
-                 {{\"input_tokens\":0,\"cache_read_input_tokens\":9000,\
-                 \"cache_creation_input_tokens\":300,\"output_tokens\":7}}}}}}\\n' \"$$\" \"$s\" \
-                 >> '{}'\n",
+                "n=$((n+1))\n\
+                 r=$((4000 + 4000 * n))\n\
+                 if [ $n -eq 1 ]; then w={COLD}; else w=0; fi\n\
+                 printf '{{\"type\":\"assistant\",\"message\":{{\"id\":\"m%s-%s\",\"usage\":\
+                 {{\"input_tokens\":0,\"cache_read_input_tokens\":%s,\
+                 \"cache_creation_input_tokens\":%s,\"output_tokens\":{PRODUCES}}}}}}}\\n' \
+                 \"$$\" \"$s\" \"$r\" \"$w\" >> '{}'\n",
                 path.display(),
+                COLD = STANDIN_COLD,
+                PRODUCES = STANDIN_PRODUCES,
             ),
         ),
         None => (String::new(), String::new()),
@@ -7013,6 +7043,7 @@ fn standin_that_reports_itself(
         "export XDG_STATE_HOME='{state}'\n\
          stty -echo\n\
          s=1\n\
+         n=0\n\
          '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
          printf 'AGENT-READY\\n'\n\
          while IFS= read -r line; do\n\
@@ -7646,6 +7677,313 @@ fn a_host_run_replaces_its_inner_session_and_the_fresh_one_works() {
          vacuous: if the record had simply become unreadable at the replacement, EVERY later turn \
          would answer *nothing could be compared* too. Readable, growing, and unmeasured for \
          exactly one turn is a dropped baseline and nothing else. The walk: {walk:?}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A SESSION THAT HAS FILLED UP HANDS OVER, AND ONE THAT HAS NOT KEEPS WORKING** —
+/// register item 424(b)'s door, driven end to end over a real daemon for the first time.
+///
+/// # ⚠⚠⚠⚠⚠ Why this door had never been crossed outside `sprag_plugin`
+///
+/// `context_ceiling` is decided on `context` — what the inner session's own record says its last
+/// billed request was charged to read — and until register item 730 gave `report-agent` a
+/// `--transcript`, **nothing but a sprag-installed hook could make that number anything but zero.**
+/// A zero is the document's *do not decide on this*, so every host-layer run took the
+/// `context_ceiling <= 0` doors whatever ceiling was authored, and the capacity edge was
+/// unreachable by construction.
+///
+/// # ⚠⚠⚠ The two arms differ in ONE NUMBER, and take opposite doors
+///
+/// Same stand-in, same record, same growth, same budget — and one authored ceiling below the
+/// reading the session reaches, one above it.
+///
+/// | arm | `reviewing` says | the session |
+/// |---|---|---|
+/// | ceiling BELOW the reading | `capacity` | is **replaced** |
+/// | ceiling ABOVE it | (no restart reason at all) | is **kept**, and the run re-primes on it |
+///
+/// ⚠⚠ **THE CONTROL IS THE INTERESTING HALF.** Every other door out of `reviewing` restarts; this
+/// one is the only edge in the state that does NOT, so it is the only thing that can show the
+/// ceiling DECIDING rather than the loop replacing its session the way it always does. The pane set
+/// is read off the daemon before and after: kept means *no pane was born and none died*.
+///
+/// # ⚠⚠⚠⚠ And the ceiling outranks the cadence, which the arms also show
+///
+/// `judging` tests the ceiling ABOVE `turns_since_reflect >= reflect_every`, so the filling arm
+/// reflects on turn two while its cadence would not have come round until turn three. That is the
+/// item's own claim — *a session must be able to hand over before the window fills, whatever the
+/// cadence says* — and it falls out of the same single number.
+///
+/// # ⚠⚠⚠ The premises, asserted inside, because each one alone makes the claim vacuous
+///
+/// * **The reading really reached the document.** `context` is read back off the datamodel and must
+///   be the record's own number, never `0` — a run that read nothing takes a `<= 0` door and would
+///   satisfy *the session was replaced* for a reason that has nothing to do with capacity.
+/// * **The economics were EVALUATED and false.** `reviewing`'s first door restarts on
+///   `context - floor >= 20 * cold`, above the capacity edge, so a control that kept its session
+///   because a term was zero would prove nothing about the term under test. The arithmetic is
+///   recomputed here from the fixture's own constants.
+/// * **Both arms really reached `reviewing`.** A run that never reflected takes neither door.
+#[test]
+fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() {
+    /// The document's turn budget. Three: two before the decision and one after it, so the run
+    /// ends on its budget rather than on the clock in BOTH arms.
+    const TURNS: i64 = 3;
+    /// The cadence. Below the budget, so the arm that never fills up still reaches `reviewing` —
+    /// which is the only way its door can be read at all.
+    const EVERY: i64 = 2;
+    /// [`standin_that_reports_itself`]'s own schedule, spelled once: its *n*th billed request reads
+    /// `4000 + 4000n`. ⚠ A function of `n` rather than two digits, because both numbers this gate
+    /// reasons with come off it — a ceiling written against a REMEMBERED reading is the shape this
+    /// workspace has paid for repeatedly.
+    const fn reads_at(n: i64) -> i64 {
+        4_000 + 4_000 * n
+    }
+    /// What the SECOND billed request reads — where the schedule has got to when the decision is
+    /// taken, because `context` is assigned on each judged turn and the reflection is the third.
+    const READING: i64 = reads_at(2);
+    /// A ceiling the session has PASSED. Below the reading, so `context >= context_ceiling`.
+    const FULL: i64 = READING - 2_000;
+    /// A ceiling it is nowhere near. ⚠ It also has to leave the ECONOMIC door shut, which is
+    /// asserted below rather than assumed.
+    const ROOMY: i64 = READING * 10;
+
+    /// Drive one arm at `ceiling` and hand back its ending, its walk, what the document held as
+    /// `context` when it decided, and the daemon's pane set before and after.
+    fn ran(
+        ceiling: i64,
+    ) -> (
+        sprag_plugin::Outcome,
+        Vec<String>,
+        Option<i64>,
+        Vec<u64>,
+        Vec<u64>,
+    ) {
+        let (_host, sock) = spawn_host();
+        let (driving, mut setup) = remote_driver(&sock);
+
+        // ⚠ NO THREAD ID — it is interpolated into a shell script. See the neighbouring gate.
+        let under =
+            std::env::temp_dir().join(format!("sprag-capacity-{}-{ceiling}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&under);
+        std::fs::create_dir_all(&under).expect("a directory of this arm's own");
+        let log = under.join("what-the-daemon-said-to-each-report");
+        let state = under.join("state");
+        let record = under.join("what-the-standin-says-it-is-writing.jsonl");
+        std::fs::create_dir_all(&state).expect("a state home of this arm's own");
+
+        let listed = |conn: &mut HostConn| -> Vec<u64> {
+            conn.call(
+                "scene/query",
+                json!({ "path": mux_action_path(PANES_SLOT) }),
+            )
+            .expect("panes query")
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry["id"].as_u64())
+            .collect()
+        };
+
+        let pane = spawn_pane(
+            &mut setup,
+            json!({
+                SPAWN_CMD_KEY: [
+                    "/bin/sh",
+                    "-c",
+                    standin_that_reports_itself(
+                        Path::new(env!("CARGO_BIN_EXE_sprag")),
+                        &log,
+                        &state,
+                        true,
+                        ("the next checkpoint this arm names", "and the line it carries"),
+                        Some(&record),
+                    ),
+                ],
+                SPAWN_COLS_KEY: 80,
+                SPAWN_ROWS_KEY: 16,
+            }),
+        );
+        let before = listed(&mut setup);
+
+        let script: std::sync::Arc<dyn sce_rust_runtime::IScriptEngine> =
+            std::sync::Arc::new(sce_rust_lua::LuaEngine::new());
+        let brief = sprag_plugin::Brief {
+            north_star: "the stand-in works until its window is the question".to_string(),
+            milestone: "the checkpoint this run starts on".to_string(),
+            reference: "register item 424(b)".to_string(),
+            closing_rules: None,
+            // ⚠⚠⚠⚠⚠ THE ONE NUMBER THE TWO ARMS DIFFER BY, and it is AUTHORED THROUGH THE BRIEF —
+            // never written into the datamodel by hand. A gate that reached its subject by a door
+            // no caller has is measuring itself (register item 492).
+            context_ceiling: Some(ceiling),
+            reflect_after_refusals: None,
+            milestone_check: None,
+            service: None,
+            max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
+            reflect_every: Some(EVERY),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: Some(3_600_000),
+            ready_timeout_ms: Some(15_000),
+            turn_within_ms: Some(5_000),
+        };
+        let mut spec = sprag_plugin::AiLoopSpec::driving("sh");
+        spec.shows_the_prompt = false;
+
+        let mut loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
+            .expect("a well-briefed loop over a live pane starts");
+        let progress = sprag_plugin::ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 8_000,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(std::sync::Arc::clone(&progress))
+        .run(&mut loops, &driving, &RunContext::uncancellable());
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        let held = loops.context();
+        let after = listed(&mut setup);
+        println!(
+            "== ceiling {ceiling}: {:?} in {} iteration(s), context {held:?}, panes {before:?} -> \
+             {after:?} ==",
+            outcome.state, outcome.iterations,
+        );
+        let _ = std::fs::remove_dir_all(&under);
+        (outcome, walk, held, before, after)
+    }
+
+    // ── ⚠⚠ THE ARITHMETIC PREMISE, BEFORE EITHER RUN ────────────────────────────────────────
+    //
+    // `reviewing` tests the ECONOMIC door first, and it restarts too — so a control that kept its
+    // session while that door was open would be measuring nothing. This is the guard's own
+    // expression over the fixture's own constants.
+    let floor = reads_at(1);
+    let cold = i64::try_from(STANDIN_COLD).expect("a toll fits an i64");
+    assert!(
+        READING - floor < 20 * cold,
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: this stand-in's reading already pays for a restart on the \
+         ECONOMIC door ({READING} - {floor} >= 20 * {cold}), which `reviewing` tests ABOVE the one \
+         under test — so the arm that is supposed to keep its session would restart for a reason \
+         this gate is not about, and the arm that is supposed to restart would prove nothing",
+    );
+
+    let (filled, full_walk, full_context, full_before, full_after) = ran(FULL);
+    let (roomy, roomy_walk, roomy_context, roomy_before, roomy_after) = ran(ROOMY);
+
+    // ── ⚠⚠ THE PREMISES ──────────────────────────────────────────────────────────────────────
+    //
+    // ⚠⚠⚠⚠⚠ **THE READING IS ASSERTED AS NON-ZERO, NOT AS A VALUE, and that is a repair.** The
+    // first draft demanded the number the document held when it DECIDED — and `context` is a LEVEL
+    // that every judged turn overwrites, so what a reader gets after the run is the LAST turn's
+    // (measured: 20,000 and 24,000 against a decision taken at 12,000). That is the same trap the
+    // neighbouring gate's `Plugin::driving` reading fell into, met a second time in one round:
+    // **a level read after the run is not the level the run decided on.**
+    //
+    // What is left is enough, because the DOORS carry the rest: `capacity` fires only on
+    // `context_ceiling > 0 && context > 0 && context >= context_ceiling`, and the control's edge
+    // only on `context > 0 && context < context_ceiling`. The reading being real is the part the
+    // door cannot say — a `0` takes a different door entirely — and that is what this asserts.
+    assert!(
+        full_context.is_some_and(|held| held > 0) && roomy_context.is_some_and(|held| held > 0),
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: the session's own record did not reach the document as \
+         `context` on both arms — {full_context:?} and {roomy_context:?}. A `0` is what a run whose \
+         reporter states no transcript reads, and it takes a `context_ceiling <= 0` door, which \
+         restarts: the claim below would then be satisfied by a run that consulted no ceiling",
+    );
+    for (name, walk) in [("filled", &full_walk), ("roomy", &roomy_walk)] {
+        assert!(
+            walk.iter().any(|note| note.contains("--> Reviewing")),
+            "⚠⚠⚠ THE PREMISE FAILED: the {name} arm never reached `reviewing`, so it took neither \
+             of the doors this gate is about. The walk: {walk:?}",
+        );
+        assert_eq!(
+            walk.iter()
+                .filter(|note| note.contains("--> Reviewing"))
+                .count(),
+            1,
+            "⚠⚠ and it must have decided EXACTLY ONCE, or *which door* is a question about several \
+             decisions read as one. The walk: {walk:?}",
+        );
+    }
+
+    // ── ⛔⛔⛔ THE CLAIM: A FULL SESSION HANDS OVER, NAMING CAPACITY ─────────────────────────
+    assert!(
+        full_walk
+            .iter()
+            .any(|note| note.contains("--> Restarting — capacity:")),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 424(b): a session whose reading has passed the ceiling its caller \
+         authored must hand over, and `reviewing` must say WHY in that word. Every other door out \
+         of that state also restarts, so a replacement alone says nothing — the reason is the \
+         claim. The walk: {full_walk:?}",
+    );
+    assert!(
+        full_after != full_before && full_after.len() == full_before.len(),
+        "⚠⚠⚠ and the daemon must have seen it: ONE pane died and ONE was born, which is what a \
+         respawn is and what a walk cannot distinguish from a machine visiting states. Panes \
+         {full_before:?} -> {full_after:?}",
+    );
+    // ⚠ AND THE CEILING OUTRANKED THE CADENCE. `judging` tests it above `turns_since_reflect`, so
+    // this arm reflected on the turn its window filled rather than waiting for its budget to come
+    // round — which is the half of item 424(b) a cadence cannot buy.
+    assert!(
+        full_walk
+            .iter()
+            .any(|note| note.contains("--> Reflecting — capacity:")),
+        "⚠⚠⚠ and it must have been the CEILING that sent it to reflect, not the cadence — the two \
+         are different edges and only one of them can act before the count comes round. The walk: \
+         {full_walk:?}",
+    );
+
+    // ── ⛔⛔ THE CONTROL: A SESSION WITH ROOM KEEPS WORKING ON THE SAME PANE ─────────────────
+    assert!(
+        !roomy_walk
+            .iter()
+            .any(|note| note.contains("--> Restarting")),
+        "⛔⛔⛔⛔ THE CONTROL: a session that is nowhere near its ceiling must be KEPT. This is the \
+         only edge in `reviewing` that does not restart, so it is the only thing that can show the \
+         ceiling deciding rather than the loop doing what it always does. The walk: {roomy_walk:?}",
+    );
+    assert!(
+        roomy_walk
+            .iter()
+            .any(|note| note.contains("Reviewing --") && note.contains("--> Priming")),
+        "⚠⚠⚠ and it must have gone back to `priming` — re-briefed on the session it already had, \
+         which is what *kept* means here. The walk: {roomy_walk:?}",
+    );
+    assert_eq!(
+        roomy_after, roomy_before,
+        "⛔⛔⛔ AND THE DAEMON MUST HAVE SEEN NOTHING HAPPEN. No pane was born and none died: this \
+         is the reading that cannot be satisfied by a machine that merely visited the states, and \
+         it is the same instrument the neighbouring gate needed after its first one turned out to \
+         be vacuous",
+    );
+
+    // ── ⚠⚠ AND BOTH ARMS DID THE WORK THEY WERE BUDGETED ────────────────────────────────────
+    assert_eq!(
+        (
+            filled.state,
+            roomy.state,
+            filled.banked.as_ref().map(|banked| banked.completed),
+            roomy.banked.as_ref().map(|banked| banked.completed),
+        ),
+        (
+            sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Turns),
+            sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Turns),
+            Some(u32::try_from(TURNS).expect("a small budget fits a u32")),
+            Some(u32::try_from(TURNS).expect("a small budget fits a u32")),
+        ),
+        "⚠⚠⚠ both arms must spend their whole turn budget — a `duration` ending is a turn that \
+         never ended, and a short count is a run that stopped working after it decided. Filled \
+         walked {full_walk:?}; roomy walked {roomy_walk:?}",
     );
 }
 
