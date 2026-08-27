@@ -830,6 +830,14 @@ impl AiLoop {
                     // a replacement, and were typed into the fresh session verbatim. The remedies
                     // differ completely — go and look at that pane, against go and shorten that
                     // brief — so they are two sentences and not one with a clause.
+                    //
+                    // ⚠ **UNMEASURED, STATED**: no gate drives a run to `failed` and reads either
+                    // of these sentences, and the arm below has never had one. What IS gated is
+                    // the ROUTING that picks between them — the driver's answer
+                    // (`the_text_a_refusal_cost_a_session_outlives_the_session_it_bought`) and the
+                    // document's (`the_bound_on_a_refused_prompt_is_spent_and_returned_by_every_
+                    // brief_that_lands`) — because `noticed` is `OuterLoop`'s private slot and a
+                    // fixture that could set it would be product surface built for a `format!`.
                     Some(Noticed::Unasked {
                         attempts,
                         written,
