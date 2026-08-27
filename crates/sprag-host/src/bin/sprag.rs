@@ -5655,12 +5655,50 @@ fn render_run(run: &Value) -> String {
     let canceller = run[sprag_host::plugins::RUN_CANCELLED_BY_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⚠⚠⚠⚠⚠ AND WHICH PANE A PERSON SHOULD ACTUALLY WALK TO — register item 726, in the same place
+    // and under the same constraint as the four clauses above.
+    //
+    // ⛔⛔ THE NAME ON THE HEADING IS NOT THAT PANE, AND MEASURING IS WHAT SAID SO. Run 18 was named
+    // `ai_loop pane=49` and was driving 54: a run REPLACES its inner session as it goes, and
+    // `label` is prose composed ONCE, when the run opened. A person following this row's own
+    // *go and look at that pane* arrived at a pane that no longer existed — which breaks the one
+    // requirement the whole project is built on (items 243/285, a person can always see how the
+    // loop is turning), through the mouth that exists to serve it.
+    //
+    // ⚠⚠⚠ READ OFF THE KEY, AND NEVER BY PARSING THE LABEL. `RUN_DRIVING_KEY` is register item
+    // 540's whole point — `Plugin::driving` is asked of the driver on every step and never cached,
+    // so it is the live answer where the name is a birth certificate. A clause that cut `49` out of
+    // `ai_loop pane=49` in order to COMPARE the two would re-create exactly the derive-it-from-a-
+    // name defect that key was built to retire. So this states the live pane outright rather than
+    // diffing it against prose, and a reader who sees the two differ has learned the true thing:
+    // the run moved, and the row now says where to.
+    //
+    // ⚠⚠ AND AN ABSENCE IS SAID RATHER THAN FILLED IN — register item 709's discipline, which is
+    // the half a reader is most likely to lose. `driving` is absent until a step reports one, so a
+    // RUNNING run with no key has no pane anybody has vouched for, and the only number on the row
+    // is the name from before any of this happened. Left silent, that name gets read as current —
+    // the same failure this clause repairs, one case over. ⚠ A run that has STOPPED says nothing
+    // here: its absence is history rather than a question, and a line per finished run would be
+    // noise on the rows nobody has to act on.
+    let walk_to = match (
+        run[sprag_host::plugins::RUN_DRIVING_KEY].as_u64(),
+        state["status"].as_str() == Some("running"),
+    ) {
+        (Some(pane), _) => format!(
+            "\n  the pane to walk to is {pane} — the name above was composed when this run opened, \
+             and a run that has replaced its session is no longer on it"
+        ),
+        (None, true) => "\n  ⚠ nothing has reported which pane this run is driving, so the name \
+                         above is not an answer to that"
+            .to_owned(),
+        (None, false) => String::new(),
+    };
     let head = format!("run {id}  {label}{opener}{}\n", render_build(run));
     match state["status"].as_str() {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{}{order}{prompts}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{}{order}{walk_to}{prompts}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -5677,7 +5715,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{prompts}{verified}{canceller}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{walk_to}{prompts}{verified}{canceller}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -9654,6 +9692,135 @@ mod tests {
             "⚠⚠⚠⚠⚠ THE CONTROL: this run put nothing on any pane, so there is no prompt for \
              anybody to go and look at. A sentence here would send a person to search a screen the \
              text never reached",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THAT MOVED PANE SENDS A PERSON TO THE PANE IT IS ON, NOT THE ONE IT WAS
+    /// BORN OVER** — register item 726, measured 2026-08-27 on run 18.
+    ///
+    /// # ⛔⛔ What a person was actually told
+    ///
+    /// `sprag runs` printed `run 18  ai_loop pane=49 … running` and, directly under it, *"1
+    /// prompt(s) reached that pane and were never asked … so go and look at that pane"*. **Pane 49
+    /// did not exist.** The run had replaced its inner session hours before
+    /// (`Restarting --SessionReplaced--> Resuming`) and was driving 54 — established by
+    /// `/proc/<pid>/cwd` rather than by counting panes, because the numbers are the thing under
+    /// suspicion. So the mouth built so a person can always see how the loop is turning handed them
+    /// an instruction that could not be followed: items 243 and 285 broken at the last inch.
+    ///
+    /// # ⚠⚠⚠ Why the repair is not *print the label properly*
+    ///
+    /// `label` is prose composed ONCE, when the run opens, and `RunRecord::label`'s own doc says
+    /// identity re-derived from prose is identity that drifts. The live answer already existed:
+    /// [`sprag_host::plugins::RUN_DRIVING_KEY`] — register item 540 — written from
+    /// `Plugin::driving`, which is asked of the driver every step and never cached. **The fact was
+    /// never missing; the mouth did not read it**, which is the shape register item 594 was filed
+    /// about and this binary keeps re-learning. A clause that cut `49` out of the name in order to
+    /// COMPARE the two would rebuild the derive-it-from-a-name defect item 540 retired, so the row
+    /// states the live pane outright and lets a reader see for themselves that the name is older.
+    ///
+    /// # ⚠⚠ The premise, asserted inside — and where the other half of it lives
+    ///
+    /// The fixture's name and its live pane must actually DIFFER, or a renderer that printed the
+    /// name alone would pass this gate untouched. That the two really do diverge in a live run is
+    /// not assumed here either: `sprag_plugin`'s
+    /// `a_reflection_replaces_the_session_and_the_new_one_is_told_what_was_learned` drives a REAL
+    /// replacement and holds `driving()` to the pane that replaced the old one. This gate is the
+    /// far end of that same wire — the end a person reads.
+    #[test]
+    fn a_run_that_moved_pane_sends_a_person_to_the_pane_it_is_on() {
+        /// The pane this run's NAME was composed over, when it opened.
+        const BORN_OVER: u64 = 49;
+        /// The pane it is driving now, after a session replacement.
+        const DRIVING_NOW: u64 = 54;
+        assert_ne!(
+            BORN_OVER, DRIVING_NOW,
+            "⚠⚠⚠⚠⚠ THE PREMISE, and without it every arm below is vacuous: the whole defect is a \
+             run whose NAME and whose PANE disagree, so a fixture where the two match would go \
+             green against a mouth that prints the name and reads nothing",
+        );
+
+        /// A run mid-flight, named over one pane and driving another. ⚠ It is given a WALK for the
+        /// reason the neighbouring gate states: a block with no journal ENDS on whatever clause
+        /// came last, so without one the positional assertions cannot tell a clause that DISPLACED
+        /// the walk from one that merely followed it.
+        fn moved_run(driving: Option<u64>) -> Value {
+            let mut run = serde_json::json!({
+                "id": 18,
+                "label": format!("ai_loop pane={BORN_OVER}"),
+                "state": {
+                    "status": "running",
+                    "iterations": 12,
+                    "cost": 0,
+                    "unit": "steps",
+                },
+                sprag_host::plugins::RUN_JOURNAL_KEY: [{
+                    "iteration": 1,
+                    "cost": 245,
+                    "unit": "bytes",
+                    "verdict": "continue",
+                    "note": "Idle --Start--> Priming",
+                }],
+            });
+            if let Some(pane) = driving {
+                run[sprag_host::plugins::RUN_DRIVING_KEY] = serde_json::json!(pane);
+            }
+            run
+        }
+
+        // ── THE HEADLINE: the row names the pane the run is on ──
+        let said = render_run(&moved_run(Some(DRIVING_NOW)));
+        assert!(
+            said.contains(&format!("walk to is {DRIVING_NOW}")),
+            "⛔⛔⛔⛔⛔ ITEM 726: this run is driving pane {DRIVING_NOW} and the only pane anywhere on \
+             its row is {BORN_OVER} — the name it was opened with. A person following this row's \
+             own «go and look at that pane» walks to a pane that is not there, and the fact that \
+             would have told them otherwise was already on the wire. Got: {said}",
+        );
+
+        // ⚠⚠ AND IT LANDS WHERE THE TWO POSITIONAL READERS ARE NOT. This repository's own
+        // outer-loop watcher takes a run's STATUS as the line after the heading and its walk as the
+        // block's LAST line, so a clause at either end silently moves a reader that already exists.
+        let lines: Vec<&str> = said.lines().collect();
+        assert!(
+            !lines[0].contains("walk to is") && !lines[1].contains("walk to is"),
+            "⚠⚠⚠ the clause must not land on the heading or on the status line under it — the \
+             repayment loop's watcher reads both by position: {said}",
+        );
+        assert!(
+            lines[lines.len() - 1].contains("Idle --Start--> Priming"),
+            "⚠⚠ and the WALK is still last, which is the other half of that claim: a clause that \
+             pushed the walk off the end would satisfy the assertion above while breaking the \
+             reader it exists to protect: {said}",
+        );
+
+        // ── ⚠⚠⚠ THE CONTROL: nothing reported a pane, and the NAME MUST NOT STAND IN FOR ONE ──
+        let unreported = render_run(&moved_run(None));
+        assert!(
+            !unreported.contains("walk to is"),
+            "⚠⚠⚠⚠ a run nothing has vouched a pane for must not be given one: {unreported}",
+        );
+        assert!(
+            unreported.contains("nothing has reported which pane"),
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, AND IT IS REGISTER ITEM 709's DISCIPLINE AT THIS MOUTH: an \
+             absence read as the old value is the defect above wearing the opposite face. This run \
+             is RUNNING and no step has said which pane it drives, so the only number on the row is \
+             a name from before any of it happened — and silence here lets a reader take that name \
+             for a current answer. Got: {unreported}",
+        );
+
+        // ── ⚠ AND A RUN THAT HAS STOPPED SAYS NEITHER THING, so the clause is not noise on the
+        // rows nobody has to act on ──
+        let finished = render_run(&run_entry(&blocked_run(
+            sprag_plugin::Refusal::NotOffered,
+            0,
+        )));
+        assert!(
+            !finished.contains("walk to is")
+                && !finished.contains("nothing has reported which pane"),
+            "⚠⚠ a finished run that never reported a pane is history rather than a question, and a \
+             clause on every such row would train a reader to skip the line that matters — the \
+             argument `render_answered`'s own gate makes one clause over: {finished}",
         );
     }
 
