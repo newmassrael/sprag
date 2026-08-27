@@ -84,6 +84,7 @@
 //! sprag report-agent STATE [--pane PANE] [--source S]  say what the agent in a pane is DOING
 //!                          [--name AGENT] [--seq N]  (the pane defaults to $SPRAG_PANE)
 //!                          [--asked PROMPT]          --asked is what ENDS a turn: see the verb
+//!                          [--said ANSWER]           --said is what a convergence is decided on
 //!                          [--transcript PATH]       and --transcript is what makes spend readable
 //! sprag release-agent [-t SESSION] [--pane PANE]      hand the pane back to screen inference
 //! sprag install-hooks [AGENT…] [--yes] [--dry-run]  wire an agent's OWN config to report-agent,
@@ -3164,8 +3165,8 @@ fn display_message(args: Vec<String>) -> io::Result<()> {
 }
 
 /// `report-agent STATE [-t SESSION] [--pane N] [--source S] [--name AGENT] [--seq N]
-/// [--asked PROMPT] [--transcript PATH]`: say what the agent in a pane is doing, from INSIDE that
-/// pane.
+/// [--asked PROMPT] [--said ANSWER] [--transcript PATH]`: say what the agent in a pane is doing,
+/// from INSIDE that pane.
 ///
 /// ⚠⚠ THESE PARAGRAPHS SAT ON `display_message`, WHICH IS A DIFFERENT VERB. They were written above
 /// that function with no blank line between them, so rustdoc read the whole lot as one comment about
@@ -3215,6 +3216,21 @@ fn display_message(args: Vec<String>) -> io::Result<()> {
 /// reports say nothing about a prompt because they are not the event that opens a turn, and a
 /// `null` would be a claim that the agent stated it had been asked nothing.
 ///
+/// # ⛔⛔⛔⛔⛔ `--said` IS `--asked`'s OTHER END, AND IT DECIDES WHAT A LOOP CONVERGES ON
+///
+/// [`AGENT_SAID_KEY`](sprag_host::wire::AGENT_SAID_KEY) is what the agent states it ANSWERED, and
+/// `OuterLoop::said_marker` — the reader that decides whether a milestone was declared — asks the
+/// peer BEFORE it reads the pane. Register item 441 is what the pane costs when it is the only
+/// road: measured 2026-08-18 at every judgement of a live run, the pane's whole logical-line count
+/// stood at **37 and never moved** while the agent wrote reply after reply with the marker alone on
+/// a row, because a full-screen agent repaints instead of scrolling. **Nine judged turns read as a
+/// peer that said nothing.**
+///
+/// So a reporter that cannot state an answer leaves every convergence, every stand-down and every
+/// reflection resting on a reader that goes permanently blind against the agents this loop is built
+/// to drive. Like its two neighbours, the key has been on the wire and accepted by the daemon since
+/// item 441, with `sprag hook` as its only writer.
+///
 /// # ⛔⛔⛔⛔ `--transcript` IS THE SAME ABSENCE, ONE KEY OVER — register item 730's residue
 ///
 /// [`AGENT_TRANSCRIPT_KEY`](sprag_host::wire::AGENT_TRANSCRIPT_KEY) is where an agent says it is
@@ -3236,6 +3252,7 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
     let mut name: Option<String> = None;
     let mut seq: Option<u64> = None;
     let mut asked: Option<String> = None;
+    let mut said: Option<String> = None;
     let mut transcript: Option<String> = None;
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
@@ -3247,6 +3264,14 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
                 transcript = Some(
                     it.next()
                         .ok_or_else(|| bad_input("report-agent: --transcript needs a path"))?,
+                );
+            }
+            // ⚠⚠⚠⚠⚠ AND WHAT IT ANSWERED — `--asked`'s other end, and the LAST of the three keys
+            // only `sprag hook` could send. See the doc above.
+            "--said" => {
+                said = Some(
+                    it.next()
+                        .ok_or_else(|| bad_input("report-agent: --said needs the answer text"))?,
                 );
             }
             // ⚠⚠⚠⚠⚠ THE PROMPT THIS TURN OPENED ON — register item 730, and the one argument here
@@ -3287,7 +3312,7 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
                     format!(
                         "report-agent: unexpected argument {other:?} (report-agent STATE \
                          [-t SESSION] [--pane N] [--source S] [--name AGENT] [--seq N] \
-                         [--asked PROMPT] [--transcript PATH])"
+                         [--asked PROMPT] [--said ANSWER] [--transcript PATH])"
                     ),
                 ));
             }
@@ -3352,6 +3377,11 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
     // exactly the reading `DoneWhen::Settles` pairs a rest against.
     if let Some(asked) = asked {
         params[sprag_host::wire::AGENT_ASKED_KEY] = Value::String(asked);
+    }
+    // ⚠⚠ ON THE SAME TERMS AS ITS TWO NEIGHBOURS: sent only when stated. The hook sends this one on
+    // the event that ENDS a turn, where `--asked` rides the one that opens it.
+    if let Some(said) = said {
+        params[sprag_host::wire::AGENT_SAID_KEY] = Value::String(said);
     }
     // ⚠⚠ ON THE SAME TERMS, and the hook states the two together for a reason: a transcript path
     // arrives on the event that OPENS a turn, so a report carrying one without a prompt is a claim

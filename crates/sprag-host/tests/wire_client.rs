@@ -6907,6 +6907,31 @@ fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
     let _ = std::fs::remove_dir_all(&under);
 }
 
+/// **WHERE A STAND-IN PUTS ITS DECLARATION** — the axis register item 441 is about, staged.
+///
+/// # ⚠⚠⚠⚠⚠ Why *where* is a separate question from *whether*
+///
+/// `OuterLoop::said_marker` asks the PEER before it reads the pane: a statement dated to this turn
+/// (`said_seq` past the turn's arming) is used and the terminal is never looked at; without one the
+/// pane's lines since the prompt are all there is. **Both roads answer *the agent declared*, and
+/// they are not equally trustworthy** — item 441 measured the pane road going permanently blind
+/// against a full-screen agent, nine judged turns in a row.
+///
+/// So a fixture that BOTH prints and states proves nothing about which road answered, and every
+/// host gate before this one declared by printing alone. These arms separate them.
+#[derive(Clone, Copy)]
+enum Declares {
+    /// Never — it acknowledges every turn, which is what a run that must end on its budget wants.
+    Never,
+    /// On this WORK turn, PRINTED on its screen and stated nowhere. The pane is the only evidence,
+    /// which is the world every gate here lived in before `--said` existed.
+    ByPrinting(u32),
+    /// On this WORK turn, STATED in its report and printed nowhere. ⚠⚠ The screen says `ACK`, so a
+    /// reader that fell back to the pane finds nothing at all — which is what makes a convergence
+    /// here attributable to the statement and to nothing else.
+    ByStating(u32),
+}
+
 /// **WHAT THE FIRST BILLED REQUEST OF [`standin_that_reports_itself`]'s RECORD WRITES TO CACHE** —
 /// `cold`, the toll a replacement re-pays, and the number `reviewing`'s economic door multiplies by
 /// twenty.
@@ -6997,7 +7022,7 @@ fn standin_that_reports_itself(
     states_asked: bool,
     next: (&str, &str),
     record: Option<&Path>,
-    declares_on: Option<u32>,
+    declares: Declares,
 ) -> String {
     // ⚠⚠ THE ONE THING THE TWO ARMS DIFFER BY, and it is the whole of item 730 on the product's
     // side: the prompt the turn opened on, stated by the peer that was asked it.
@@ -7046,12 +7071,44 @@ fn standin_that_reports_itself(
     // written for — reflections and the closing account included — and *declare on the second WORK
     // turn* is not the same sentence. A peer that declared on a reflection would be answering the
     // question *where next* with the words *I am finished*.
-    let answers = match declares_on {
-        Some(turn) => format!(
-            "if [ $t -ge {turn} ]; then printf 'MILESTONE REACHED\\n'; else printf 'ACK\\n'; fi\n"
+    //
+    // ⚠⚠⚠⚠⚠ **AND WHERE IT PUTS THE DECLARATION IS THE OTHER AXIS** — see [`Declares`]. Printing
+    // leaves the marker only on the pane; stating leaves it only in the report, on the `idle` that
+    // ENDS the turn (which is the event a real agent's hook carries `said` on). The two never
+    // happen together in one arm, because a peer that did both could not say which reader answered.
+    //
+    // ⚠⚠⚠ **THE STATING ARM BRANCHES THE WHOLE COMMAND RATHER THAN BUILDING A FRAGMENT.** The
+    // first draft put ` --said 'MILESTONE REACHED'` into a shell variable and expanded it unquoted
+    // at the call — and an unquoted expansion splits on spaces WITHOUT removing the quotes, so the
+    // daemon was handed three words with apostrophes in them, the report carried no `said`, and the
+    // run simply never converged. Branching keeps the marker one argument.
+    //
+    // ⚠⚠⚠⚠ **THE STATING ARM STATES ON EVERY TURN, and only the CONTENT changes.** That is what a
+    // real agent's hook does — `said` rides the event that ends any turn — and it is what makes the
+    // road readable: the walk names the reader on an ORDINARY turn too, so a gate can see which
+    // road a run is on without needing the declaring turn to say it. A peer that stated only when
+    // it declared would leave the two arms indistinguishable until the very edge under test.
+    let ends_turn = |report: &str| match declares {
+        Declares::ByStating(turn) => format!(
+            "if [ $t -ge {turn} ]; then a='MILESTONE REACHED'; else a='ACK'; fi\n\
+             {report} --said \"$a\" >> '{log}' 2>&1\n",
+            log = log.display(),
         ),
-        None => "printf 'ACK\\n'\n".to_owned(),
+        _ => format!("{report} >> '{}' 2>&1\n", log.display()),
     };
+    let answers = match declares {
+        Declares::ByPrinting(turn) => format!(
+            "if [ $t -ge {turn} ]; then printf 'MILESTONE REACHED\\n'; \
+             else printf 'ACK\\n'; fi\n"
+        ),
+        // ⚠ The STATING arm's screen says `ACK` and nothing else — see [`Declares`], where that is
+        // the whole point rather than a detail.
+        Declares::Never | Declares::ByStating(_) => "printf 'ACK\\n'\n".to_owned(),
+    };
+    let work_turn_ends = ends_turn(&format!(
+        "'{sprag}' report-agent idle --name sh --seq $s",
+        sprag = sprag.display(),
+    ));
     // ⚠ EVERY PATH IS QUOTED. They are `/tmp` names this test composes, and one of them carrying a
     // shell metacharacter killed the stand-in before its first line — see the caller's own note.
     //
@@ -7097,7 +7154,7 @@ fn standin_that_reports_itself(
          {answers}\
          s=$((s+1))\n\
          {writes_row}\
-         '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
+         {work_turn_ends}\
          done\n",
         sprag = sprag.display(),
         log = log.display(),
@@ -7205,7 +7262,7 @@ fn a_host_run_drives_its_turns_on_the_turn_contract_that_ships() {
                         None,
                         // ⚠ AND IT NEVER DECLARES: this run must end on its BUDGET, so a peer that
                         // said the marker would end it a different way and measure something else.
-                        None,
+                        Declares::Never,
                     ),
                 ],
                 SPAWN_COLS_KEY: 80,
@@ -7485,7 +7542,7 @@ fn a_host_run_replaces_its_inner_session_and_the_fresh_one_works() {
                     Some(&record),
                     // ⚠ NEVER DECLARES — this run's reflection is brought on by the CADENCE, and a
                     // declared milestone would reach `reflecting` by a different edge.
-                    None,
+                    Declares::Never,
                 ),
             ],
             SPAWN_COLS_KEY: 80,
@@ -7838,7 +7895,7 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
                         Some(&record),
                         // ⚠ NEVER DECLARES: the ceiling is what must bring this run to `reviewing`,
                         // and a milestone would take it there by an edge above the one under test.
-                        None,
+                        Declares::Never,
                     ),
                 ],
                 SPAWN_COLS_KEY: 80,
@@ -8119,7 +8176,11 @@ fn a_run_that_has_been_stood_down_finishes_its_milestone_and_stops() {
                         // put the capacity edge back in play — a second moving part in a two-arm
                         // comparison that is about one act.
                         None,
-                        Some(DECLARES_ON),
+                        // ⚠ BY PRINTING, which is what every host gate before `--said` could do —
+                        // and it is right here: this gate's subject is the ORDER, so putting the
+                        // declaration on the road the neighbouring gate is about would move two
+                        // things at once.
+                        Declares::ByPrinting(DECLARES_ON),
                     ),
                 ],
                 SPAWN_COLS_KEY: 80,
@@ -8270,6 +8331,221 @@ fn a_run_that_has_been_stood_down_finishes_its_milestone_and_stops() {
         carry_after, carry_before,
         "⚠⚠ and its session was replaced, which is what `reflecting` leads to here — the pane set \
          moved where the stood-down arm's did not. Panes {carry_before:?} -> {carry_after:?}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A LOOP CONVERGES ON WHAT ITS AGENT SAYS, NOT ON WHAT ITS TERMINAL SHOWS** — register
+/// item 441, and the last of the three keys `sprag hook` alone could send.
+///
+/// # ⚠⚠⚠⚠⚠ What the pane road costs, measured rather than argued
+///
+/// `OuterLoop::said_marker` asks the peer first and reads the terminal only where it has said
+/// nothing. Item 441 is what the terminal is worth when it is the only road: on 2026-08-18, at
+/// every judgement of a live run, the pane's whole logical-line count stood at **37 and never
+/// moved** while the agent wrote reply after reply with the marker alone on a row — a full-screen
+/// agent repaints instead of scrolling, so nothing is shed and, once its composer settles, nothing
+/// new stands above the cursor. **Nine judged turns read identically to a peer that said nothing.**
+///
+/// # ⛔⛔⛔ And every host gate before this one was riding that road
+///
+/// `--said` did not exist, so a stand-in could declare only by PRINTING — and the four gates above
+/// converge, stand down and reflect on markers scraped off a `/bin/sh` that scrolls. That is not
+/// wrong, and it is not the shipped shape: it is the fallback working for a peer that happens not
+/// to have the property item 441 measured. This gate is the other road, and it is the one a real
+/// agent takes.
+///
+/// # ⚠⚠⚠ The two arms put the SAME declaration in different places
+///
+/// | arm | the marker is | the pane says | must converge |
+/// |---|---|---|---|
+/// | `ByStating` | in the report only | `ACK` | on the agent's own account |
+/// | `ByPrinting` | on the pane only | `MILESTONE REACHED` | on the fallback |
+///
+/// ⚠⚠ **THE STATED ARM'S SCREEN IS BARE ON PURPOSE.** A peer that both printed and stated would
+/// converge whichever reader answered, so it could not tell them apart — which is exactly the
+/// position every gate here was in until now. With the pane holding nothing but `ACK`, a
+/// convergence can only have come from the statement, and the walk says which reader was used in
+/// the product's own words.
+///
+/// # ⚠⚠⚠⚠ The premises, asserted inside, because each one alone makes the claim vacuous
+///
+/// * **Both arms really converged.** An ending of any other word means no declaration was read at
+///   all, and *which reader* is then a question about nothing.
+/// * **The walk names the READER**, and the two arms must name different ones. Converging is the
+///   weaker half: the strong claim is that the statement road was the one taken, and `Evidence` is
+///   the product's own answer to that (register item 448).
+/// * **The stated arm's pane really is bare.** Asserted through the walk rather than assumed — a
+///   fixture that printed after all would make the claim true of the road it was meant to exclude.
+#[test]
+fn a_loop_converges_on_what_its_agent_says_not_on_what_its_terminal_shows() {
+    /// The work turn the peer declares on — the second, so a turn it does not declare on is
+    /// measured first in both arms.
+    const DECLARES_ON: u32 = 2;
+    /// The phrase the walk carries on an ORDINARY judged turn when the AGENT's own account was the
+    /// reader.
+    ///
+    /// ⚠⚠ READ OFF AN ORDINARY TURN, and that is not second best. The DECLARING edge names no
+    /// reader unless a `milestone_check` is authored — `Evidence` rides the check's artifact — and
+    /// authoring one here would send this fixture's checker into an isolated checkout of a pane
+    /// born in `$HOME`, which is register item 705's machinery pointed at somebody's home
+    /// directory. The road does not change between a run's turns; only what the peer states does.
+    const BY_STATEMENT: &str = "the judge read the agent's own account of this turn";
+    /// And when the terminal was. ⚠ Both are the product's own words (`Evidence::named`): a gate
+    /// that spelled its own would go green the day the product stopped saying either.
+    const BY_PANE: &str = "the judge read the pane, since this turn's prompt";
+
+    /// Drive one arm and hand back its ending and its walk.
+    fn ran(declares: Declares, name: &str) -> (sprag_plugin::Outcome, Vec<String>) {
+        let (_host, sock) = spawn_host();
+        let (driving, mut setup) = remote_driver(&sock);
+
+        // ⚠ NO THREAD ID — it is interpolated into a shell script. See the neighbouring gates.
+        let under = std::env::temp_dir().join(format!("sprag-said-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&under);
+        std::fs::create_dir_all(&under).expect("a directory of this arm's own");
+        let log = under.join("what-the-daemon-said-to-each-report");
+        let state = under.join("state");
+        std::fs::create_dir_all(&state).expect("a state home of this arm's own");
+
+        let pane = spawn_pane(
+            &mut setup,
+            json!({
+                SPAWN_CMD_KEY: [
+                    "/bin/sh",
+                    "-c",
+                    standin_that_reports_itself(
+                        Path::new(env!("CARGO_BIN_EXE_sprag")),
+                        &log,
+                        &state,
+                        true,
+                        ("nothing this run reflects toward", "nor carries"),
+                        // ⚠ NO RECORD: neither road reads a spend, and a readable one would open
+                        // the capacity edge — a second thing moving in a two-arm comparison.
+                        None,
+                        declares,
+                    ),
+                ],
+                SPAWN_COLS_KEY: 80,
+                SPAWN_ROWS_KEY: 16,
+            }),
+        );
+
+        let script: std::sync::Arc<dyn sce_rust_runtime::IScriptEngine> =
+            std::sync::Arc::new(sce_rust_lua::LuaEngine::new());
+        let brief = sprag_plugin::Brief {
+            north_star: "the stand-in reaches a checkpoint and somebody has asked it to stop"
+                .to_string(),
+            milestone: "the checkpoint this run is working toward".to_string(),
+            reference: "register item 441".to_string(),
+            closing_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            milestone_check: None,
+            service: None,
+            // ⚠⚠ Above what either arm needs, so a run that FAILED to read the declaration does not
+            // end on its budget looking like one that did — it runs on and this gate says so.
+            max_turns: Some(sprag_plugin::Counted::Of(6)),
+            reflect_every: Some(6),
+            // (the wall clock is the caller's — see the `Guardrails` below)
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: Some(3_600_000),
+            ready_timeout_ms: Some(15_000),
+            turn_within_ms: Some(5_000),
+        };
+        let mut spec = sprag_plugin::AiLoopSpec::driving("sh");
+        spec.shows_the_prompt = false;
+
+        let mut loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
+            .expect("a well-briefed loop over a live pane starts");
+        // ⚠⚠ STOOD DOWN, which is what turns a declaration into an ENDING here: without the order
+        // a declared milestone goes to `reflecting` and the run carries on, and this gate's subject
+        // is which READER answered rather than which door the answer opened.
+        loops.stand_down();
+        let progress = sprag_plugin::ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 8_000,
+            max_cost: None,
+            // ⚠⚠ TIGHT ON PURPOSE. Both arms converge in well under a second; this bound is only
+            // ever paid by an arm that FAILED to read its declaration, and the first draft of this
+            // gate spent two of them at sixty seconds each before the runner cut it off. A failure
+            // that takes minutes to report is a failure nobody iterates against.
+            max_duration: Some(Duration::from_secs(15)),
+        })
+        .reporting_to(std::sync::Arc::clone(&progress))
+        .run(&mut loops, &driving, &RunContext::uncancellable());
+        let walk: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        // ⚠⚠ THE MARKER IS ON THE PANE IN BOTH ARMS AND THAT IS NOT A FIXTURE FAULT: the peer
+        // echoes what it reads, and the WORK PROMPT ends *reply exactly: MILESTONE REACHED*. What
+        // separates the arms is whether it is there as the AGENT'S OWN ROW — which is what the echo
+        // discount (`wraps_onto`, against the prompt this run typed) exists to decide, and which
+        // this test cannot re-derive from outside. So the reading printed is the one that matters:
+        // WHICH READER the product says it used.
+        let reader = walk
+            .iter()
+            .find_map(|note| note.split_once("the judge read ").map(|(_, rest)| rest))
+            .map(|rest| rest.split(" — ").next().unwrap_or(rest).to_owned());
+        println!(
+            "== declares {name}: {:?} in {} iteration(s); the judge read {reader:?} ==",
+            outcome.state, outcome.iterations,
+        );
+        let _ = std::fs::remove_dir_all(&under);
+        (outcome, walk)
+    }
+
+    let (stated, stated_walk) = ran(Declares::ByStating(DECLARES_ON), "by-stating");
+    let (printed, printed_walk) = ran(Declares::ByPrinting(DECLARES_ON), "by-printing");
+
+    // ── ⚠⚠ THE PREMISE: BOTH ARMS REALLY READ A DECLARATION ─────────────────────────────────
+    assert_eq!(
+        (stated.state, printed.state),
+        (
+            sprag_plugin::OutcomeState::Converged,
+            sprag_plugin::OutcomeState::Converged,
+        ),
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: an arm did not converge, so no declaration was read at all and \
+         *which reader* is a question about nothing. Stated walked {stated_walk:?}; printed walked \
+         {printed_walk:?}",
+    );
+
+    // ── ⛔⛔⛔ THE CLAIM: THE STATED ARM CONVERGED ON THE AGENT'S OWN ACCOUNT ─────────────────
+    assert!(
+        stated_walk.iter().any(|note| note.contains(BY_STATEMENT)),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 441: this peer put its declaration NOWHERE BUT ITS REPORT — its \
+         screen says `ACK` — and the run still converged, so something read it. The walk must name \
+         the agent's own account as the reader: a convergence that says it was shown the PANE here \
+         is a reader finding a marker that is not on the pane. The walk: {stated_walk:?}",
+    );
+    assert!(
+        !stated_walk.iter().any(|note| note.contains(BY_PANE)),
+        "⚠⚠⚠ and it must NOT also name the pane — the two roads are exclusive by construction \
+         (`said_marker` returns on the statement before the terminal is touched), so both would \
+         mean the reading is not the one this gate thinks it is. The walk: {stated_walk:?}",
+    );
+
+    // ── ⛔⛔ THE CONTROL: THE FALLBACK STILL WORKS, AND SAYS SO ──────────────────────────────
+    //
+    // ⚠ This is R27's rule: a repair that made the OTHER road stop working would pass the claim
+    // above and break every peer with no hooks installed — which is exactly who the pane read is
+    // kept for, and its own doc says so in one line: *the fallback is not dead code*.
+    assert!(
+        printed_walk.iter().any(|note| note.contains(BY_PANE)),
+        "⛔⛔⛔⛔ THE CONTROL: a peer that states nothing must still be read off its pane, and the \
+         walk must say that is what happened. Every agent with no hook installed is this peer, and \
+         a repair that took its road away would look green in the claim above. The walk: \
+         {printed_walk:?}",
+    );
+    assert!(
+        !printed_walk.iter().any(|note| note.contains(BY_STATEMENT)),
+        "⚠⚠ and it must not claim a statement it never made. The walk: {printed_walk:?}",
     );
 }
 
