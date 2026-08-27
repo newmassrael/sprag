@@ -10041,6 +10041,108 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE BOUND ON A REFUSED PROMPT COUNTS REFUSALS IN A ROW, AND THE CHURN REGISTER
+    /// ITEM 719 MEASURED IS NOT A ROW** — the corrected diagnosis, pinned.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What the item believed, and what the document actually does
+    ///
+    /// Item 719 filed *"a recovery that re-types the input that caused the failure — churn with a
+    /// period of ONE TURN"* and read it as a cycle nothing bounds. **Asked, the document answers
+    /// otherwise**: `prompt.unasked` has a guard (`unasked_since_taken`), one free replacement, and
+    /// a second refusal goes to `failed`. The gate above holds both halves.
+    ///
+    /// **So the bound exists. It simply does not count what 719 is about.** It is cleared by
+    /// `priming`'s `prompt.sent` — the document says so in its own words, *"a question that landed
+    /// is what makes the next refusal a NEW fact rather than the same one continuing"* — and the
+    /// prompt that lands in item 719's run is the BRIEF, retyped in full into every replacement.
+    /// The turn prompt is the one refused. So every cycle clears the counter before spending it:
+    ///
+    /// ```text
+    /// priming's brief LANDS  ->  counter := 0
+    /// the turn prompt is refused  ->  replacement, counter := 1
+    /// the replacement's brief LANDS  ->  counter := 0        <- the bound is spent and returned
+    /// the turn prompt is refused  ->  replacement, counter := 1
+    /// ...
+    /// ```
+    ///
+    /// **One replacement per turn, for as long as the run lasts.** Item 719 measured two in about
+    /// nine minutes, at 9,025 bytes retyped each time, and could not say why the document's own
+    /// guard had not stopped it. This is why.
+    ///
+    /// # ⚠⚠⚠ Why that is a finding and not a defect in the guard
+    ///
+    /// The guard answers a different question — *will this peer take a question at all?* — and its
+    /// answer is right: a session that takes one is not the session a further restart cannot reach.
+    /// What has no counter at all is **the same TEXT being re-delivered after each replacement**,
+    /// which is 719's own done-when line. Naming which of the two is missing is what this pins, and
+    /// it is what the repair has to be built on: a bound on refusals in a row cannot express it,
+    /// however it is tuned.
+    ///
+    /// ⚠⚠ **DRIVEN AT THE DOCUMENT, EVENT BY EVENT** — its neighbour's argument exactly. What is
+    /// asserted is the machine's own arithmetic, and a pane fixture would put a delivery, a
+    /// supervisor and a peer's timing between the claim and the answer.
+    ///
+    /// ⚠ **IT ASSERTS THE PRESENT BEHAVIOUR, WHICH IS THE CHURN.** That is deliberate: item 719 is
+    /// open, and a gate that demanded the repair before it exists would be a red nobody can read as
+    /// anything but "not done yet". The day the loop stops repeating itself, this gate is what says
+    /// exactly which sentence changed.
+    #[test]
+    fn the_bound_on_a_refused_prompt_is_spent_and_returned_by_every_brief_that_lands() {
+        /// How many replacement cycles to drive. Three rather than two: the guard's own budget is
+        /// ONE, so a second replacement already exceeds it and a third says the excess is not a
+        /// fencepost.
+        const CYCLES: usize = 3;
+
+        let (mut engine, host, _lua, _session) = started();
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+
+        let mut walked = Vec::new();
+        for cycle in 0..CYCLES {
+            // ⚠ THE BRIEF LANDS. This is the whole mechanism: `priming`'s `prompt.sent` clears
+            // `unasked_since_taken`, and in item 719's run the brief is exactly what the peer takes
+            // — 9,025 bytes of it, retyped into every session this loop opens.
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+            carried(&mut engine, &host, AiLoopEvent::Judge, "{\"done\": false}");
+            // ⚠ AND THE TURN PROMPT DOES NOT. Same peer, same session, one prompt later.
+            carried(&mut engine, &host, AiLoopEvent::PromptUnasked, "");
+            walked.push(format!("cycle {cycle}: {:?}", engine.get_current_state()));
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Restarting,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 719, PINNED: the run must still be BUYING A REPLACEMENT on \
+                 cycle {cycle}, because the brief it just landed returned the one free replacement \
+                 the guard had already spent. A `failed` here would mean the bound had begun to \
+                 count what this item is about — which would be the repair, and this gate is where \
+                 it would be announced. Walked {walked:?}",
+            );
+            carried(&mut engine, &host, AiLoopEvent::SessionReplaced, "");
+            carried(&mut engine, &host, AiLoopEvent::SessionReady, "");
+        }
+
+        // ⚠⚠⚠⚠⚠ THE CONTROL, AND IT IS WHAT MAKES THE LOOP ABOVE A FINDING RATHER THAN A CLAIM
+        // THAT NOTHING IS BOUNDED. The identical walk with the brief NOT landing between the two
+        // refusals ends the run — one refusal, one replacement, and the second is a person's. So
+        // the guard is real, it fires, and every cycle above is it being handed back its budget.
+        let (mut spun, host, _lua, _session) = started();
+        for event in [
+            AiLoopEvent::Start,
+            AiLoopEvent::PromptUnasked,
+            AiLoopEvent::SessionReplaced,
+            AiLoopEvent::SessionReady,
+            AiLoopEvent::PromptUnasked,
+        ] {
+            carried(&mut spun, &host, event, "");
+        }
+        assert_eq!(
+            spun.get_current_state(),
+            AiLoopState::Failed,
+            "⚠⚠⚠⚠ THE CONTROL: two refusals with nothing taken between them must END the run. \
+             Without this the loop above would be reporting that `prompt.unasked` is unbounded, \
+             which is false and is what item 719 assumed",
+        );
+    }
+
     /// ⚠⚠⚠⚠⚠ **A SESSION WITH ROOM LEFT IS STILL REPLACED ONCE REPLACING IT HAS PAID FOR
     /// ITSELF** — register item 424(a), the ECONOMIC half of the owner's question *"왜 고정이야?
     /// 컨텍스트 넘길 타이밍이 계산되어야 하는 거 아니야?"*
