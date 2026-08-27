@@ -2275,6 +2275,16 @@ pub enum Noticed {
         attempts: u32,
         /// Bytes the delivery put on the pane's pseudoterminal.
         written: u64,
+        /// ⚠⚠⚠⚠⚠ **AND WHETHER THIS RUN HAD ALREADY BOUGHT A SESSION FOR THESE EXACT BYTES** —
+        /// register item 719, and the fact that decides which of two opposite sentences a reader
+        /// of the failed run gets.
+        ///
+        /// [`Retyped::First`] is the case the arm above describes: two sessions, neither of which
+        /// would take a question, and nobody can say the text is why.
+        /// [`Retyped::Again`] says the text IS why — the same bytes went in, were
+        /// refused, bought a replacement, and were typed again — so the remedy is the prompt and
+        /// not the pane.
+        retyped: Retyped,
     },
     /// ⚠⚠⚠⚠ **NOTHING SPOKE FOR THE PANE FOR THE WHOLE OF THE DOCUMENT'S SILENCE BOUND** — register
     /// item 458, and it is on this enum by the rule the paragraph below states rather than in spite
@@ -2845,6 +2855,118 @@ impl Made {
             (Some(before), Some(now)) if now == before => Self::Nothing,
             _ => Self::Unmeasured,
         }
+    }
+}
+
+/// **WHETHER THE TEXT A PEER HAS JUST REFUSED IS TEXT THIS RUN ALREADY BOUGHT A SESSION FOR** —
+/// register item 719's own done-when line, and the counter the document was measured not to have.
+///
+/// # ⚠⚠⚠⚠⚠ The defect: the recovery re-types the input that caused the failure
+///
+/// `prompt.unasked` means *the text reached the pane and the submit never became a question*, and
+/// this loop's answer to it is a session replacement — which is right, and was measured right: a
+/// fresh session took the identical prompt where the wedged one would not. What nothing bounded is
+/// the case where the TEXT is why. Then the replacement re-types the same bytes into the same
+/// composer, meets the same refusal, and buys another replacement. **Measured 2026-08-27 on the
+/// owner's own daemon: two replacements in about nine minutes, 9,025 bytes retyped into each, with
+/// no ending in sight — the period of that cycle is ONE TURN.**
+///
+/// # ⚠⚠⚠⚠ Why the document's existing bound cannot express it, however it is tuned
+///
+/// `unasked_since_taken` counts REFUSALS IN A ROW: one free replacement, and a second refusal with
+/// nothing taken in between ends the run. That guard is correct and it is not this one — it answers
+/// *will this peer take a question at all?*, and it is cleared the moment any prompt lands, because
+/// (the document's own words) *"a question that landed is what makes the next refusal a NEW fact
+/// rather than the same one continuing"*.
+///
+/// **In the measured churn a question lands on every cycle.** It is the BRIEF, retyped in full into
+/// every replacement by `priming`; the prompt that is refused is the turn prompt one step later. So
+/// the budget is spent and handed straight back, for as long as the run lasts —
+/// `the_bound_on_a_refused_prompt_is_spent_and_returned_by_every_brief_that_lands` pins that
+/// arithmetic. **A row is the wrong thing to count. The fact with no counter at all is the same
+/// TEXT coming back**, and this is it.
+///
+/// # ⚠⚠⚠⚠⚠ Why the memory is on [`OuterLoop`] and not on the session
+///
+/// Because `Session::replacing` forgets every per-pane field BY DESIGN, and it is right to: every
+/// value in there is a statement about the pane that has just gone, and that struct exists so a
+/// replacement cannot carry one over. A memory kept there would be dropped by the very act it has
+/// to survive — the replacement — and this type would then answer [`First`](Self::First) on every
+/// cycle of the churn it exists to end. **The fact is about the RUN**, which has now spent a
+/// session on this text, and a run outlives its sessions.
+///
+/// ⚠⚠ **AND IT IS NEVER FORGOTTEN, WHICH IS THE OTHER HALF.** A memory cleared by a prompt that
+/// landed would be `unasked_since_taken`'s hole in a second spelling: the brief lands on every
+/// cycle. A memory cleared by THIS text landing would still leave the two-turn churn — refuse,
+/// replace, land, refuse, replace — unbounded. So what is remembered is remembered for the run.
+///
+/// ⚠⚠ **AND IT IS EVERY TEXT RATHER THAN THE LAST ONE**, which is that argument a third time. A
+/// one-slot memory answers *the same as the refusal immediately before this one*, and alternation
+/// walks straight through it: A refused, brief lands, B refused, brief lands, A again — each one
+/// the first sight of its own text, and the cycle never ends. *This run has already bought a
+/// session for these bytes* does not stop being true because some other text was refused between.
+///
+/// ⚠ **THE RESIDUE, STATED RATHER THAN HIDDEN**: a run whose composer wedged once on a text,
+/// recovered, and worked for fifty turns will END rather than restart if that same text ever wedges
+/// it again. That is the side to be wrong on. The alternative is the cycle above, which has no
+/// ending at all, and `failed` names the text and its size so the person who reads it can act.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retyped {
+    /// **THIS RUN HAS NOT HAD THIS TEXT REFUSED BEFORE.** A session replacement is the remedy that
+    /// was measured to work, and the document's own bound decides whether one is still affordable.
+    ///
+    /// ⚠ Published as `false`, so the document's guard reads *there is nothing new here* as the
+    /// falsy answer — [`Made`]'s rule one type up, for the same datamodel's reason.
+    First,
+    /// **THE SAME BYTES, AFTER A REPLACEMENT HAS ALREADY BEEN SPENT ON THEM** — carrying how many,
+    /// because the size is what a reader has to act on.
+    ///
+    /// ⚠ The count is for the SENTENCE and never for a guard, [`Made::Something`]'s division
+    /// exactly: what routes is the word.
+    Again(usize),
+}
+
+impl Retyped {
+    /// **THE WORD THIS DRIVER PUBLISHES** as `_event.data.retyped`, or [`None`] for the arm that
+    /// publishes `false`.
+    ///
+    /// ⚠⚠ A WORD OR `false`, NEVER A COUNT — this datamodel is Lua, where `0` is TRUE, so a length
+    /// on the wire would make *the first refusal of an empty text* the truthy answer and every
+    /// other one truthy as well. [`Made::wire_str`] settled the same question the same way.
+    #[must_use]
+    pub const fn wire_str(self) -> Option<&'static str> {
+        match self {
+            Self::First => None,
+            Self::Again(_) => Some("again"),
+        }
+    }
+
+    /// **THE WHOLE `_event.data` THIS DRIVER PUTS ON `prompt.unasked`**, serialised.
+    ///
+    /// # ⚠⚠⚠⚠ Why the payload is a function and not two lines at the raise
+    ///
+    /// Because the raise and the document's guard are two halves of one wire and **nothing joins
+    /// them**. The document's gates drive the machine by hand, the driver's gates ask this type
+    /// directly, and a key renamed on one side would leave both green while every real refusal
+    /// evaluated a nil — which this file has a name for: `error.execution`, answered by `work`'s
+    /// own edge, ending the run `failed` on a fault nobody meant. Measured here the day the guard
+    /// was added, with `priming` reporting `Failed` where `Restarting` was expected.
+    ///
+    /// So the document's gates spell their payloads against THIS, and the ratchet that holds the
+    /// two together is one assertion rather than anybody's memory.
+    ///
+    /// ⚠ Built by the JSON writer and never by `format!`, for `Raise::carrying`'s reason: every
+    /// value that crosses this wire could hold quotes and newlines, and a hand-spliced object ends
+    /// early on the first one.
+    #[must_use]
+    pub fn wire(self) -> String {
+        serde_json::json!({
+            "retyped": match self.wire_str() {
+                Some(word) => serde_json::Value::from(word),
+                None => serde_json::Value::Bool(false),
+            },
+        })
+        .to_string()
     }
 }
 
@@ -3513,6 +3635,35 @@ pub struct OuterLoop {
     /// A turn that was never started can never end, so there is nothing here to wait for and
     /// nothing to judge — see `say`, which holds the live measurement this field exists for.
     unasked: bool,
+    /// ⚠⚠⚠⚠⚠ **THE TEXT A REFUSAL HAS ALREADY COST THIS RUN A SESSION** — register item 719, and
+    /// the reading behind `_event.data.retyped`. See [`Retyped`], which holds the whole argument.
+    ///
+    /// ⚠⚠⚠ **IT IS A FIELD OF THE RUN AND NOT OF ITS SESSION, WHICH IS THE ONLY PLACE IT CAN
+    /// WORK.** Every field of [`Session`] is a statement about one pane and
+    /// `Session::replacing` drops the lot — deliberately, so a replacement cannot carry one over.
+    /// The fact here is about the RUN: it has spent a session on these bytes, and it is still true
+    /// of the session that spending bought. Kept one struct down, the memory would be forgotten by
+    /// the very act it exists to bound, and [`retyping`](Self::retyping) would answer
+    /// [`Retyped::First`] on every turn of the churn.
+    ///
+    /// ⚠⚠ **A LATCH, AND CLEARED BY NOTHING.** The two clearing rules that suggest themselves both
+    /// reopen the cycle: *any prompt that landed* is `unasked_since_taken`'s own hole (the brief
+    /// lands on every replacement), and *this text landing* leaves the two-turn shape — refuse,
+    /// replace, land, refuse — with no bound at all.
+    ///
+    /// ⚠⚠⚠ **AND IT IS EVERY TEXT, NOT THE LAST ONE.** A single slot answers *the same as the
+    /// refusal before this one*, which is a different sentence and is beatable by alternation: A
+    /// refused, brief lands, B refused, brief lands, A refused — every one of them the first
+    /// refusal of its text, and the cycle runs for ever. *This run has already bought a session for
+    /// these bytes* does not stop being true when some other text is refused in between.
+    ///
+    /// ⚠ **WHAT IT COSTS, STATED**: one prompt's worth of bytes per replacement this run buys, kept
+    /// for the run's life. Nothing else here grows, and it is bounded by the thing that is
+    /// expensive: a text only lands here by costing a whole session replacement, and the second
+    /// sight of any of them ends the run.
+    ///
+    /// ⚠ Empty until a prompt has been refused, which is every healthy run for its whole life.
+    refused: Vec<String>,
     /// ⚠⚠⚠ **WHAT THE JUDGE SAW ON THIS JUDGEMENT** — the reading behind `_event.data.unheard`,
     /// kept so the edge out of `judging` can say which of its two meanings it had. Register item
     /// 423; see [`Because::Judged`].
@@ -3810,6 +3961,10 @@ impl OuterLoop {
             ended: Vec::new(),
             stopping_short: None,
             unasked: false,
+            // ⚠ Nothing has been typed at this peer, so nothing can have been refused by it — see
+            // the field, and [`Retyped`] for why the memory belongs to the run rather than to the
+            // session beside it.
+            refused: Vec::new(),
             saw: None,
             verdict: None,
             explained: None,
@@ -3840,6 +3995,25 @@ impl OuterLoop {
     #[must_use]
     pub const fn asked_nothing(&self) -> bool {
         self.unasked
+    }
+
+    /// **HAS THIS RUN ALREADY BOUGHT A SESSION FOR `text`?** — register item 719, and the one
+    /// reader and one writer of [`refused`](Self#structfield.refused).
+    ///
+    /// ⚠⚠ **IT RECORDS AS IT ANSWERS**, which is [`Told::tell`]'s discipline one type over: *what
+    /// this run has spent a session on* and *what it just told its document* are one act, so the
+    /// two cannot come apart. Two of them would be two facts nobody keeps in step, which is the
+    /// shape register item 445 is about.
+    ///
+    /// ⚠ Called from the ONE arm that raises `prompt.unasked`, so the memory grows on refusals and
+    /// on nothing else. A prompt that lands leaves it exactly as it was — see [`Retyped`], where
+    /// every clearing rule that suggested itself is refused with the cycle it would reopen.
+    fn retyping(&mut self, text: &str) -> Retyped {
+        if self.refused.iter().any(|had| had == text) {
+            return Retyped::Again(text.len());
+        }
+        self.refused.push(text.to_owned());
+        Retyped::First
     }
 
     /// ⚠⚠⚠ **THE RUN IS OUT OF BUDGET — ROUTE THE NEXT JUDGEMENT TO `stopping`.**
@@ -5585,7 +5759,23 @@ impl OuterLoop {
                 written,
                 wanted: crate::deliver::SubmittedWhen::Took { .. },
             }) => {
-                self.noticed = Some(Noticed::Unasked { attempts, written });
+                // ⚠⚠⚠⚠⚠ **AND WHETHER THESE EXACT BYTES HAVE ALREADY COST THIS RUN A SESSION** —
+                // register item 719. The text is read off the SESSION, where `say` wrote it in the
+                // same breath as the injection that was just refused, and the memory it is
+                // compared against is the RUN's — see [`Retyped`], which holds why those two
+                // cannot be the same struct.
+                //
+                // ⚠⚠⚠ TAKEN BEFORE THE RAISE, because the raise is what consumes it: the document
+                // reads the word off `_event.data` and answers `failed` where a replacement has
+                // already been spent on this text. The driver's whole part is saying which of the
+                // two facts this is, exactly as it does for `produced` and `checked`.
+                let said = self.driving.asked.clone();
+                let retyped = self.retyping(&said);
+                self.noticed = Some(Noticed::Unasked {
+                    attempts,
+                    written,
+                    retyped,
+                });
                 // ⚠⚠⚠⚠⚠ **READ AT THE RAISE, for the sibling arm below's reason exactly.** This
                 // arm also raises AFTER `pumping` has run, so the pass's opening state is one the
                 // machine may already have left — and a walk line naming the wrong state is the
@@ -5593,7 +5783,16 @@ impl OuterLoop {
                 // reading the sibling's own comment, which claimed *every other arm* reported a
                 // raise made while `from` was still current: this was the exception it named.
                 let from = self.state();
-                self.walk(AiLoopEvent::PromptUnasked);
+                // ⚠⚠ CARRIED RATHER THAN BARE, because a guard reads it. `walk` is
+                // `process_event`, which is `raise_external(event, "", "")` and carries no data at
+                // all — so an event whose `cond` reads `_event.data` has to go through the raise
+                // that takes a payload, and the document's own edge would otherwise be evaluating
+                // a nil. See [`Raise`], where the same division is written out.
+                // ⚠⚠ A WORD OR `false`, NEVER A COUNT — [`Retyped::wire_str`] holds the reason,
+                // and it is `produced`'s: this datamodel is Lua, where `0` is TRUE. The payload is
+                // composed by the type rather than here, so the document's own gates can spell
+                // theirs against the one the product sends — see [`Retyped::wire`].
+                self.walk_carrying(AiLoopEvent::PromptUnasked, &retyped.wire());
                 Ok(Pumped::Moved {
                     from,
                     raised: AiLoopEvent::PromptUnasked,
@@ -11168,6 +11367,91 @@ mod tests {
             "⚠⚠ and the other road to a record is forgotten on the same terms: a launch name is a \
              fact about the process that has gone. Got {:?}",
             fresh.identity,
+        );
+
+        WorkspacePaneAccess::new(Arc::clone(&workspace))
+            .lifecycle()
+            .expect("lifecycle")
+            .close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND WHAT THE RUN MUST NOT FORGET ACROSS THAT REPLACEMENT IS THE TEXT THE
+    /// REPLACEMENT WAS BOUGHT WITH** — register item 719, and the exact opposite claim to its
+    /// neighbour's, one struct out.
+    ///
+    /// # ⚠⚠⚠⚠ Why this gate exists at all, when the type it guards has three obvious lines
+    ///
+    /// Because WHERE the memory lives is the whole decision, and both placements compile.
+    /// [`Retyped`] is answered by comparing what was just refused against what was refused before,
+    /// and *before* has to survive the one act that stands between the two refusals — the session
+    /// replacement. `Session::replacing` drops every field it is given, deliberately and correctly:
+    /// each one is a statement about the pane that has gone. **A memory kept there would be
+    /// forgotten by the very act it exists to bound**, and this driver would then answer
+    /// [`Retyped::First`] on every turn of the churn — which is what the loop does today, and is
+    /// item 719 itself.
+    ///
+    /// ⚠⚠ **AND THE WRONG PLACEMENT IS GREEN EVERYWHERE ELSE.** Every other gate in this crate that
+    /// touches a refusal drives ONE, so the second-look question is never asked; the document's own
+    /// gates drive the word rather than derive it. The mutation this is the answer to is one line —
+    /// move `refused` from [`OuterLoop`] to `Session` — and it costs nothing anywhere but here.
+    ///
+    /// ⚠ The replacement is performed the way `restarting` performs it (`Session::replacing` onto a
+    /// fresh pane id), rather than by driving a whole live respawn: what is under test is what the
+    /// RUN keeps, and a pty round trip would put a spawn, a barrier and a delivery between the
+    /// claim and the answer.
+    #[test]
+    fn the_text_a_refusal_cost_a_session_outlives_the_session_it_bought() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+
+        /// The turn prompt item 719 measured, standing in for its 9,025 bytes.
+        const WEDGED: &str = "take the next milestone, and here is the whole diagnosis …";
+        /// What `priming` types into every replacement — the prompt that LANDS, and the reason the
+        /// document's own counter never spends its budget.
+        const BRIEF: &str = "you are the debt loop; the milestone is …";
+
+        assert_eq!(
+            loops.retyping(WEDGED),
+            Retyped::First,
+            "⚠⚠⚠ THE STAGING: the first refusal of a text is a fresh fact, and the replacement it \
+             buys is the recovery register item 446 measured working. A run that failed here would \
+             have lost that recovery for every cause but this one",
+        );
+
+        // ⚠⚠⚠ AND A DIFFERENT TEXT IS REFUSED IN BETWEEN, which is the ALTERNATION this memory has
+        // to survive as well as the replacement. A one-slot memory answers *the same as the
+        // refusal immediately before* and this line is what evicts the answer it needs: A refused,
+        // B refused, A again reads as new, and the cycle runs for ever with two prompts instead of
+        // one. It is also the control that stops this memory being a latch on everything.
+        assert_eq!(
+            loops.retyping(BRIEF),
+            Retyped::First,
+            "⚠⚠ A DIFFERENT TEXT IS A DIFFERENT FACT: a run must still buy the replacement that \
+             works for a text it has not delivered before",
+        );
+
+        // ── THE SESSION IS REPLACED, EXACTLY AS `restarting` REPLACES IT ──
+        loops.driving = loops.driving.replacing(PaneId(loops.driving.pane.0 + 1));
+
+        assert_eq!(
+            loops.retyping(WEDGED),
+            Retyped::Again(WEDGED.len()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 719: this run has already spent a session on these exact \
+             bytes and it must say so. Answered `First`, the document is told nothing has changed, \
+             the counter it would consult was handed its budget back by the brief that landed, and \
+             the loop buys a SECOND replacement to retype the same text into — which is the cycle \
+             measured on the owner's daemon at two replacements in about nine minutes. **If this \
+             is red, the memory is on `Session` and `Session::replacing` threw it away**",
+        );
+
+        assert_eq!(
+            loops.retyping("a milestone nobody has been asked for yet"),
+            Retyped::First,
+            "⚠⚠⚠ AND THE CONTROL AFTER THE REPLACEMENT, which is what stops the arm above being \
+             satisfied by a memory that answers `Again` to everything: a text this run has not \
+             delivered still buys the replacement that works",
         );
 
         WorkspacePaneAccess::new(Arc::clone(&workspace))

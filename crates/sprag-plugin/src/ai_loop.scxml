@@ -4753,6 +4753,55 @@
   </state>
 
   <!--
+    ⛔⛔⛔⛔⛔ THE FIRST QUESTION IS NOT *HOW MANY* BUT *THE SAME TEXT AGAIN* —
+    register item 719, whose whole finding is that the counter below cannot be
+    tuned into this one.
+
+    THE CHURN, MEASURED 2026-08-27 ON THE OWNER'S OWN DAEMON. A prompt is
+    refused, this run buys a replacement, `priming` re-types the WHOLE BRIEF
+    into the fresh session, the brief lands — and the turn prompt one step
+    later is refused again. Two replacements in about nine minutes, 9,025 bytes
+    retyped into each, and no ending anywhere: the period of that cycle is ONE
+    TURN and it runs for as long as the run does.
+
+    ⚠⚠⚠⚠ WHY THE GUARD BELOW LET IT THROUGH, WHICH IS NOT A DEFECT IN IT. That
+    counter asks *will this peer take a question AT ALL* and is cleared the
+    moment any prompt lands, for the reason written under it: a question that
+    landed makes the next refusal a NEW fact. In this cycle a question lands
+    every time — the brief — so the budget is spent and handed straight back.
+    A bound on refusals IN A ROW cannot express *the same text coming back*,
+    however it is tuned, and the gate
+    `the_bound_on_a_refused_prompt_is_spent_and_returned_by_every_brief_that_lands`
+    pins that arithmetic against the day somebody tries.
+
+    ⚠⚠⚠ SO THE DRIVER ANSWERS IT, because only the driver holds the earlier
+    reading — the bytes it put on the pane last time this happened. It says
+    `again` or `false` on the event, exactly as it says `produced` and
+    `checked`, and this document decides what that is worth. A word and never a
+    count: this datamodel is Lua, where `0` is TRUE.
+
+    ⚠⚠⚠⚠⚠ AND IT IS `failed` RATHER THAN A CLEVERER RECOVERY. The remedies this
+    loop can perform are *replace the session* and *ask again*, and the run has
+    just proved that neither reaches this: the replacement was bought, the text
+    was retyped, the composer refused it a second time. What is left — split the
+    prompt, or shorten it — is a decision about somebody's BRIEF, which nothing
+    here is entitled to edit. So the run ends and the driver's notice names the
+    text and its size, which is what the person who wrote the brief has to act
+    on. `orchestrate` saying what size it accepted is the other half and is
+    registered separately.
+
+    ⚠⚠ IT IS FIRST, AND THAT ORDER IS THE RULE. Text that has already cost a
+    session must not buy another one on the strength of a counter that reads
+    zero — and in the measured churn it reads zero EVERY TIME.
+
+    ⚠ `closing` and `stopping` still win by depth, unchanged: a run that is
+    already ending must not buy a session, and it must not be failed by one
+    either — the account it is asking for is a courtesy on top of a verdict
+    already reached.
+  -->
+  <transition event="prompt.unasked" cond="_event.data.retyped" target="failed"/>
+
+  <!--
     ⚠⚠⚠⚠⚠ **A QUESTION THE PEER NEVER TOOK IS ANSWERED ONCE, FOR THE WHOLE
     REGION** — register item 446's remedy, made total.
 

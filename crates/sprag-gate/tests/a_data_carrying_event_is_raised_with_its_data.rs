@@ -47,10 +47,22 @@ use sprag_gate::sources::{Source, rust_sources, workspace_root};
 /// `ai_loop.rs`: a guard evaluated against a nil `_event.data` is W3C SCXML 3.8's abandoned block,
 /// which is a state half-entered in the voice of one that worked — and both of those gates were
 /// GREEN. That is the whole reason this list is written down rather than discovered.
+///
+/// # ⚠⚠⚠⚠⚠ `prompt.unasked` JOINED THE SET on 2026-08-27, and it is `peer.silent`'s shape again
+///
+/// Register item 719 gave it a guard — `cond="_event.data.retyped"` — because a prompt the peer
+/// refused is not one fact but two: text this run has never delivered before (a session
+/// replacement, which was measured to work) and text a replacement has ALREADY been spent on,
+/// which no further restart reaches. Its payload is `{retyped}`, a word or `false`, composed by
+/// `Retyped::wire` so the document's own gates can spell theirs against the one the driver sends.
+/// **And announcing it named the same defect as last time**: every fixture in `ai_loop.rs` raised
+/// this event bare, and the moment the guard existed each of them ended its run `failed` on an
+/// `error.execution` nobody meant — `priming` reporting `Failed` where `Restarting` was expected.
 const CARRYING: &[&str] = &[
     "brief",
     "judge",
     "peer.silent",
+    "prompt.unasked",
     "reflect.applied",
     "reflect.done",
     "reflect.none",
@@ -458,10 +470,20 @@ fn the_states_that_tolerate_a_bare_raise_are_the_ones_the_driver_was_written_aga
     /// ⚠ `reflecting`/`turn.blocked` is the load-bearing one: `OuterLoop::reflect` hands that event
     /// on with no payload. The rest are pinned because a set that quietly grew or shrank would say
     /// nothing, which is how this class hides.
+    ///
+    /// ⚠⚠ THE TWO `prompt.unasked` PAIRS ARRIVED ON 2026-08-27 (register item 719) AND ARE THE
+    /// HARMLESS DIRECTION. `closing` and `stopping` answer that event with one unconditional edge
+    /// each — a run that is already ending must not buy a session and must not be failed by one —
+    /// so neither indexes `_event.data`, and the region's rule underneath them is where the guard
+    /// lives. The driver carries a payload on every raise of it regardless (`Retyped::wire`), so
+    /// nothing here is load-bearing the way `reflecting`/`turn.blocked` is; they are pinned so a
+    /// later `cond` on either child is announced rather than discovered by a live run.
     const TOLERANT: &[(&str, &str)] = &[
+        ("closing", "prompt.unasked"),
         ("closing", "turn.blocked"),
         ("closing", "turn.done"),
         ("reflecting", "turn.blocked"),
+        ("stopping", "prompt.unasked"),
         ("stopping", "turn.blocked"),
         ("stopping", "turn.done"),
     ];

@@ -824,7 +824,31 @@ impl AiLoop {
                     // restart reaches. Measured on a live run: the text lands on the pane, the
                     // submit never becomes a question, and Enter, `Ctrl-C` and an interrupt all
                     // leave the draft standing while ordinary typed text in the same pane submits.
-                    Some(Noticed::Unasked { attempts, written }) => format!(
+                    // ⛔⛔⛔⛔⛔ AND THE OTHER WAY IN IS THE OPPOSITE FINDING — register item 719.
+                    // The arm above says two SESSIONS refused and nobody can say the text is why;
+                    // this one says the TEXT is why, because these exact bytes were refused, bought
+                    // a replacement, and were typed into the fresh session verbatim. The remedies
+                    // differ completely — go and look at that pane, against go and shorten that
+                    // brief — so they are two sentences and not one with a clause.
+                    Some(Noticed::Unasked {
+                        attempts,
+                        written,
+                        retyped: crate::outer::Retyped::Again(bytes),
+                    }) => format!(
+                        "it delivered the same {bytes} bytes of text that had already cost it a \
+                         session: {written} bytes went on the pane, it pressed {attempts} time(s), \
+                         and the composer would not take this text the second time either. \
+                         Replacing the session is the only recovery this loop has for a question \
+                         that was never asked, and it has now been spent on these exact bytes and \
+                         changed nothing — so what is left is the PROMPT. Shorten it, or split it: \
+                         a brief that a composer folds away is one nobody can submit, whichever \
+                         session it is typed into"
+                    ),
+                    Some(Noticed::Unasked {
+                        attempts,
+                        written,
+                        retyped: crate::outer::Retyped::First,
+                    }) => format!(
                         "it put {written} bytes on the pane and pressed {attempts} time(s), and \
                          neither the session it started with nor the one it opened to replace it \
                          ever reported being asked — a peer that will not take a question is not \
@@ -8605,6 +8629,26 @@ mod tests {
     /// rule).
     const TURN: &str = r#"{"context": 0, "cold": 0, "floor": 0, "produced": false}"#;
 
+    /// **WHAT THE DRIVER PUTS ON `prompt.unasked`** — whether these exact bytes have already cost
+    /// this run a session (register item 719), and `false` for the ordinary first refusal.
+    ///
+    /// ⚠⚠ EVERY RAISE OF THIS EVENT CARRIES IT, which is why the constant exists rather than an
+    /// empty string at nine call sites. The document's first `prompt.unasked` edge reads
+    /// `_event.data.retyped`, and W3C SCXML has nothing to index when the payload is empty: the
+    /// entry raises `error.execution`, `work`'s own error edge answers it, and the run ends
+    /// `failed` — measured here the moment the edge was added, with `priming` reporting `Failed`
+    /// where `Restarting` was expected. [`TURN`] one doc up learned the same lesson under register
+    /// item 505.
+    ///
+    /// ⚠ `false` and never `""`: this datamodel is Lua, where the empty string is TRUE, so an
+    /// empty spelling would make every refusal look like a repeat.
+    const UNASKED: &str = r#"{"retyped":false}"#;
+
+    /// **THE SAME EVENT SAYING THE TEXT HAS BEEN HERE BEFORE** — [`UNASKED`] with the word the
+    /// driver publishes when the bytes it just delivered are the bytes a replacement was already
+    /// spent on. See `Retyped`.
+    const UNASKED_AGAIN: &str = r#"{"retyped":"again"}"#;
+
     /// **WHAT THE DRIVER PUTS ON `judge` AFTER AN ORDINARY TURN** — five keys, every one of them
     /// `false`, which is `OuterLoop::pump`'s own shape for *the agent worked and declared nothing*.
     ///
@@ -9991,7 +10035,11 @@ mod tests {
                 "the walk must reach `{state}` or the claim below is about somewhere else: {walk:?}",
             );
             assert_eq!(
-                walked(&then(&walk, (AiLoopEvent::PromptUnasked, ""))),
+                // ⚠ CARRYING ITS WORD, for `TO_JUDGING`'s reason one screen up: the first
+                // `prompt.unasked` edge reads `_event.data.retyped`, so an empty payload makes the
+                // guard index nil and every case here ends `failed` on an error nobody meant. This
+                // is the ordinary refusal — a text this run has not had refused before.
+                walked(&then(&walk, (AiLoopEvent::PromptUnasked, UNASKED))),
                 answer,
                 "⚠⚠⚠⚠⚠ `{state}` OWES THE PEER A PROMPT, SO IT MUST ANSWER FOR ONE THAT NEVER WENT \
                  IN. Staying put is what five of these six did: the event is raised at the state the \
@@ -10004,12 +10052,15 @@ mod tests {
         //
         // ⚠⚠⚠ THE SECOND REFUSAL IN A ROW IS A PERSON'S. A peer that will not take the question in
         // the session opened to fix exactly that is not something a further restart reaches.
+        // ⚠⚠ AND BOTH REFUSALS SAY THE TEXT IS NEW, which is what keeps this arm about the
+        // COUNTER. A second refusal carrying `retyped` would end the run through the edge above
+        // it and this assertion would be green about somewhere else entirely.
         let twice = [
             (AiLoopEvent::Start, ""),
-            (AiLoopEvent::PromptUnasked, ""),
+            (AiLoopEvent::PromptUnasked, UNASKED),
             (AiLoopEvent::SessionReplaced, ""),
             (AiLoopEvent::SessionReady, ""),
-            (AiLoopEvent::PromptUnasked, ""),
+            (AiLoopEvent::PromptUnasked, UNASKED),
         ];
         assert_eq!(
             walked(&twice),
@@ -10024,7 +10075,7 @@ mod tests {
         // would end the second real outage of every long run.
         let cleared = [
             (AiLoopEvent::Start, ""),
-            (AiLoopEvent::PromptUnasked, ""),
+            (AiLoopEvent::PromptUnasked, UNASKED),
             (AiLoopEvent::SessionReplaced, ""),
             (AiLoopEvent::SessionReady, ""),
             (AiLoopEvent::PromptSent, ""),
@@ -10032,7 +10083,7 @@ mod tests {
             // `judging`'s entry index nil and this walk ends `failed` on an error nobody meant.
             (AiLoopEvent::TurnDone, TURN),
             (AiLoopEvent::Judge, "{\"done\": false}"),
-            (AiLoopEvent::PromptUnasked, ""),
+            (AiLoopEvent::PromptUnasked, UNASKED),
         ];
         assert_eq!(
             walked(&cleared),
@@ -10082,16 +10133,44 @@ mod tests {
     /// asserted is the machine's own arithmetic, and a pane fixture would put a delivery, a
     /// supervisor and a peer's timing between the claim and the answer.
     ///
-    /// ⚠ **IT ASSERTS THE PRESENT BEHAVIOUR, WHICH IS THE CHURN.** That is deliberate: item 719 is
-    /// open, and a gate that demanded the repair before it exists would be a red nobody can read as
-    /// anything but "not done yet". The day the loop stops repeating itself, this gate is what says
-    /// exactly which sentence changed.
+    /// # ⚠⚠⚠⚠⚠ AND THIS IS THAT DAY — what changed, said by the gate that predicted it
+    ///
+    /// This doc used to end *"it asserts the PRESENT behaviour, which is the churn … the day the
+    /// loop stops repeating itself, this gate is what says exactly which sentence changed."* The
+    /// answer is: **not one sentence of the arithmetic above.** The counter still spends its budget
+    /// and still has it handed back by every brief that lands, and the loop below still asserts
+    /// exactly that, because it is still the right answer to the question that counter asks.
+    ///
+    /// What ended the churn is a SIBLING EDGE keyed on the TEXT — `prompt.unasked` carrying
+    /// `_event.data.retyped`, read from the driver's own memory of what it last delivered and
+    /// failed to get asked (`OuterLoop::retyping`). The final arm of this gate drives the identical
+    /// cycle with that word set and finds the run ENDED, which is the announcement this doc
+    /// promised: the repair is a second question, not a tuning of the first.
+    ///
+    /// ⚠ So the loop below is no longer a pin on an open defect. It is the CONTROL for the arm
+    /// under it — the proof that what stops the cycle is the text and not the count.
     #[test]
     fn the_bound_on_a_refused_prompt_is_spent_and_returned_by_every_brief_that_lands() {
         /// How many replacement cycles to drive. Three rather than two: the guard's own budget is
         /// ONE, so a second replacement already exceeds it and a third says the excess is not a
         /// fencepost.
         const CYCLES: usize = 3;
+
+        // ⚠⚠⚠⚠⚠ **THE WIRE, PINNED FIRST, BECAUSE NOTHING ELSE JOINS ITS TWO HALVES.** Every gate
+        // in this file drives the document BY HAND and every gate in `outer.rs` asks the driver
+        // directly, so a key renamed on one side leaves both green while every real refusal
+        // evaluates a nil — `error.execution`, answered by `work`'s own edge, and the run ends
+        // `failed` on a fault nobody meant. That is not hypothetical: it is what these gates did
+        // the moment the guard was added and their payloads were still empty.
+        assert_eq!(
+            (UNASKED, UNASKED_AGAIN),
+            (
+                crate::outer::Retyped::First.wire().as_str(),
+                crate::outer::Retyped::Again(9_025).wire().as_str(),
+            ),
+            "⚠⚠⚠⚠⚠ THE PAYLOADS BELOW MUST BE THE ONES `OuterLoop::pump` SENDS, or every \
+             assertion in this file is about a wire the product does not have",
+        );
 
         let (mut engine, host, _lua, _session) = started();
         carried(&mut engine, &host, AiLoopEvent::Start, "");
@@ -10105,7 +10184,9 @@ mod tests {
             carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
             carried(&mut engine, &host, AiLoopEvent::Judge, "{\"done\": false}");
             // ⚠ AND THE TURN PROMPT DOES NOT. Same peer, same session, one prompt later.
-            carried(&mut engine, &host, AiLoopEvent::PromptUnasked, "");
+            // ⚠⚠ SAYING THE TEXT IS NEW EVERY TIME, which is what keeps this loop about the
+            // COUNTER: the arm at the foot of this gate is where the same cycle says otherwise.
+            carried(&mut engine, &host, AiLoopEvent::PromptUnasked, UNASKED);
             walked.push(format!("cycle {cycle}: {:?}", engine.get_current_state()));
             assert_eq!(
                 engine.get_current_state(),
@@ -10125,14 +10206,14 @@ mod tests {
         // refusals ends the run — one refusal, one replacement, and the second is a person's. So
         // the guard is real, it fires, and every cycle above is it being handed back its budget.
         let (mut spun, host, _lua, _session) = started();
-        for event in [
-            AiLoopEvent::Start,
-            AiLoopEvent::PromptUnasked,
-            AiLoopEvent::SessionReplaced,
-            AiLoopEvent::SessionReady,
-            AiLoopEvent::PromptUnasked,
+        for (event, data) in [
+            (AiLoopEvent::Start, ""),
+            (AiLoopEvent::PromptUnasked, UNASKED),
+            (AiLoopEvent::SessionReplaced, ""),
+            (AiLoopEvent::SessionReady, ""),
+            (AiLoopEvent::PromptUnasked, UNASKED),
         ] {
-            carried(&mut spun, &host, event, "");
+            carried(&mut spun, &host, event, data);
         }
         assert_eq!(
             spun.get_current_state(),
@@ -10140,6 +10221,61 @@ mod tests {
             "⚠⚠⚠⚠ THE CONTROL: two refusals with nothing taken between them must END the run. \
              Without this the loop above would be reporting that `prompt.unasked` is unbounded, \
              which is false and is what item 719 assumed",
+        );
+
+        // ── AND THE REPAIR: THE SAME CYCLE, WITH THE DRIVER SAYING IT IS THE SAME TEXT ──
+        //
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 719's DONE-WHEN. Everything above is unchanged and every step of
+        // this walk is the loop's above, one key different: the refusal says these bytes have
+        // already cost this run a session. The FIRST cycle must now end the run, where the loop
+        // above buys a replacement on all three.
+        //
+        // ⚠⚠⚠ IT IS THE SAME WALK ON PURPOSE. A shorter one — refuse, refuse — would be green
+        // against the counter alone and would prove nothing about the churn, because two refusals
+        // in a row already end the run (the control just above). What makes this a measurement is
+        // that the brief LANDS in between, handing the counter back its budget exactly as it does
+        // in the cycle this item measured on a live daemon.
+        let (mut same, host, _lua, _session) = started();
+        for (event, data) in [
+            (AiLoopEvent::Start, ""),
+            (AiLoopEvent::PromptSent, ""),
+            (AiLoopEvent::TurnDone, TURN),
+            (AiLoopEvent::Judge, "{\"done\": false}"),
+            (AiLoopEvent::PromptUnasked, UNASKED_AGAIN),
+        ] {
+            carried(&mut same, &host, event, data);
+        }
+        assert_eq!(
+            same.get_current_state(),
+            AiLoopState::Failed,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 719: the run must END on text it has already bought a session \
+             for. A `Restarting` here is the churn itself — the replacement re-types the same \
+             bytes into the same composer, meets the same refusal, and buys another replacement, \
+             with a period of ONE TURN and no ending anywhere. Measured on the owner's daemon: two \
+             replacements in about nine minutes at 9,025 bytes each",
+        );
+
+        // ⚠⚠⚠⚠⚠ AND THE CONTROL THAT SAYS THE WORD IS WHAT DID IT, not the walk. The identical
+        // five steps with `retyped: false` — the loop at the top of this gate, on its first cycle —
+        // still buy a replacement. Without this arm the assertion above would be green against a
+        // document that had simply stopped restarting at all.
+        let (mut fresh, host, _lua, _session) = started();
+        for (event, data) in [
+            (AiLoopEvent::Start, ""),
+            (AiLoopEvent::PromptSent, ""),
+            (AiLoopEvent::TurnDone, TURN),
+            (AiLoopEvent::Judge, "{\"done\": false}"),
+            (AiLoopEvent::PromptUnasked, UNASKED),
+        ] {
+            carried(&mut fresh, &host, event, data);
+        }
+        assert_eq!(
+            fresh.get_current_state(),
+            AiLoopState::Restarting,
+            "⚠⚠⚠⚠ THE CONTROL: a refusal of text this run has NOT delivered before must still buy \
+             the replacement that was measured to work — a fresh session took the identical prompt \
+             where the wedged one would not. A run that failed here would have lost the recovery \
+             register item 446 built, which is a real one for every cause but this",
         );
     }
 
@@ -11592,7 +11728,10 @@ mod tests {
             carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
             carried(&mut engine, &host, AiLoopEvent::Judge, ORDINARY);
         }
-        carried(&mut engine, &host, AiLoopEvent::PromptUnasked, "");
+        // ⚠ AND THIS ONE CARRIES ITS WORD FOR THE SAME REASON, one edge further on: the first
+        // `prompt.unasked` guard reads `_event.data.retyped`, so an empty raise fails the guard's
+        // own expression and this walk would end `failed` instead of reaching the replacement.
+        carried(&mut engine, &host, AiLoopEvent::PromptUnasked, UNASKED);
         carried(&mut engine, &host, AiLoopEvent::SessionReplaced, "");
         carried(&mut engine, &host, AiLoopEvent::SessionReady, "");
         assert_eq!(
