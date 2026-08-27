@@ -6947,11 +6947,26 @@ fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
 /// the run walks to its wall clock and reports `exhausted(duration)` where the gate demands
 /// `exhausted(turns)`. That is the shape four plugin gates were measured coming back wrong in
 /// before `standin_agent` learned to answer both endings.
+///
+/// # ⚠⚠⚠⚠ AND IT ANSWERS THE REFLECTION, which is what lets a run REPLACE ITS SESSION
+///
+/// `reflecting` is a `Settles` turn like any other (`OuterLoop::reflect` calls `watch` and refuses
+/// anything but `turn.done`), and its answer is two labelled rows the driver reads back off the
+/// pane. A stand-in that ignored it would end the turn and name no successor, so the run would take
+/// `reflect.none`, keep its session, and **nothing downstream of `reviewing` would ever be walked**
+/// — which is the shape `standin_agent` was given this clause for.
+///
+/// ⚠⚠ **THE ANSWER TEXT MUST NOT APPEAR IN THE PROMPT.** `OuterLoop::proposed` rejects a candidate
+/// row the prompt just delivered contains — the echo rule — and the prompt names both labels
+/// mid-sentence. So the caller's milestone and reference are what keep the two apart, and the gate
+/// asserts the driver really took them.
 fn standin_that_reports_itself(
     sprag: &Path,
     log: &Path,
     state: &Path,
     states_asked: bool,
+    next: (&str, &str),
+    record: Option<&Path>,
 ) -> String {
     // ⚠⚠ THE ONE THING THE TWO ARMS DIFFER BY, and it is the whole of item 730 on the product's
     // side: the prompt the turn opened on, stated by the peer that was asked it.
@@ -6960,12 +6975,40 @@ fn standin_that_reports_itself(
     } else {
         ""
     };
+    let (milestone, reference) = next;
+    // ⚠⚠⚠⚠ **A SESSION THAT KEEPS A RECORD, AND SAYS SO** — the second half of item 730's absence.
+    // `--transcript` is how a reporter makes its spend readable at all, and this peer writes the
+    // file it names: one billed request per turn, appended BEFORE the `idle` that ends the turn, so
+    // the reading the driver takes at `turn.done` already includes it.
+    //
+    // ⚠⚠⚠ THE MESSAGE ID CARRIES THE SHELL'S PID (`$$`) AND MUST. `spend_in` deduplicates by id —
+    // a streamed reply repeats its envelope — and a REPLACED session re-runs this script from the
+    // top with `s` back at 1, so ids without the pid would collide with the predecessor's rows and
+    // the total would stop growing exactly where this gate needs it to grow.
+    let (states_record, writes_row) = match record {
+        Some(path) => (
+            format!(" --transcript '{}'", path.display()),
+            format!(
+                "printf '{{\"type\":\"assistant\",\"message\":{{\"id\":\"m%s-%s\",\"usage\":\
+                 {{\"input_tokens\":0,\"cache_read_input_tokens\":9000,\
+                 \"cache_creation_input_tokens\":300,\"output_tokens\":7}}}}}}\\n' \"$$\" \"$s\" \
+                 >> '{}'\n",
+                path.display(),
+            ),
+        ),
+        None => (String::new(), String::new()),
+    };
     // ⚠ EVERY PATH IS QUOTED. They are `/tmp` names this test composes, and one of them carrying a
     // shell metacharacter killed the stand-in before its first line — see the caller's own note.
     //
-    // ⚠⚠ THE TWO CLAUSES IN THE `case` ARE THE DOCUMENT'S OWN: `exactly:` is what every WORK prompt
-    // ends with (`done_instruction`) and *where you got to* is what `stopping` asks. See the type's
-    // doc for why they are spelled and what catches them drifting.
+    // ⚠⚠ THE THREE CLAUSES IN THE `case`s ARE THE DOCUMENT'S OWN: `exactly:` is what every WORK
+    // prompt ends with (`done_instruction`), *where you got to* is what `stopping` asks, and
+    // `NEXT MILESTONE:` is the label `reflecting` authors. See the type's doc for why they are
+    // spelled and what catches each of them drifting.
+    //
+    // ⚠⚠⚠ THE REFLECTION CLAUSE IS FIRST AND ENDS IN `continue`, which is not tidiness: its prompt
+    // may carry the work clause's words too, and a stand-in that fell through would answer one
+    // question with the other's reply.
     format!(
         "export XDG_STATE_HOME='{state}'\n\
          stty -echo\n\
@@ -6974,11 +7017,23 @@ fn standin_that_reports_itself(
          printf 'AGENT-READY\\n'\n\
          while IFS= read -r line; do\n\
          printf '%s\\n' \"$line\"\n\
+         case \"$line\" in\n\
+         *'NEXT MILESTONE:'*)\n\
+         s=$((s+1))\n\
+         '{sprag}' report-agent working --name sh --seq $s{asked}{states_record} >> '{log}' 2>&1\n\
+         printf 'NEXT MILESTONE: {milestone}\\n'\n\
+         printf 'NEXT REFERENCE: {reference}\\n'\n\
+         s=$((s+1))\n\
+         {writes_row}\
+         '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
+         continue;;\n\
+         esac\n\
          case \"$line\" in *exactly:*|*'where you got to'*) ;; *) continue;; esac\n\
          s=$((s+1))\n\
-         '{sprag}' report-agent working --name sh --seq $s{asked} >> '{log}' 2>&1\n\
+         '{sprag}' report-agent working --name sh --seq $s{asked}{states_record} >> '{log}' 2>&1\n\
          printf 'ACK\\n'\n\
          s=$((s+1))\n\
+         {writes_row}\
          '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
          done\n",
         sprag = sprag.display(),
@@ -7078,6 +7133,13 @@ fn a_host_run_drives_its_turns_on_the_turn_contract_that_ships() {
                         &log,
                         &state,
                         states_asked,
+                        // ⚠ This run never reflects (`reflect_every` equals the budget and the
+                        // budget guard is above the cadence), so the clause is inert here — named
+                        // rather than left blank so a run that DID reach it would be diagnosable.
+                        ("this run does not reflect", "nor does it carry a reference"),
+                        // ⚠ AND IT KEEPS NO RECORD. This gate's subject is the turn CONTRACT, and a
+                        // readable spend would put a second moving part into a two-arm comparison.
+                        None,
                     ),
                 ],
                 SPAWN_COLS_KEY: 80,
@@ -7241,6 +7303,349 @@ fn a_host_run_drives_its_turns_on_the_turn_contract_that_ships() {
         "⚠⚠ and it must have banked NO turn at all: the peer answered on its screen every time, \
          and the contract is what refused to call any of it a completed turn. The walk: \
          {control_walk:?}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A HOST RUN REPLACES ITS OWN INNER SESSION, AND KEEPS WORKING** — the first time the
+/// loop's session lifecycle has been walked outside `sprag_plugin`, and what register item 730
+/// unblocked.
+///
+/// # ⚠⚠⚠⚠⚠ Why the lifecycle had never been measured here
+///
+/// `reflecting → reviewing → restarting → resuming → priming` is the sequence that makes this loop
+/// more than one agent's context wearing a longer life: the session is CLOSED, a fresh one is
+/// spawned in its place, and the run briefs it with what the last one said should happen next. Every
+/// gate over it was a `sprag_plugin` unit test against that crate's `#[cfg(test)]` supervisor
+/// double, because a host test could not end a single `Settles` turn — so nothing had ever driven a
+/// replacement through the daemon that actually respawns the pane
+/// ([`RESPAWN_ACTION`](sprag_host::wire::RESPAWN_ACTION), over the socket).
+///
+/// # ⚠⚠⚠ What each leg of the sequence needs, and what would silently skip it
+///
+/// * **`reflecting`** is a turn, and its answer is READ BACK off the pane rather than reported. A
+///   peer that ends the turn saying nothing takes `reflect.none` — a legal, quiet ending in which
+///   the session is KEPT. So *the run reached `reflecting`* and *the run replaced its session* are
+///   two different facts and this gate asserts the second.
+/// * **`reviewing`** decides. With no `context_ceiling` authored and a peer whose spend nothing can
+///   read, it takes the `nobody_could_say` door to `restarting` — the document's own *"a caller who
+///   has not thought about capacity is not given a number somebody guessed for them"*.
+/// * **`restarting`** is the one that needs a real daemon: `PaneLifecycle::respawn` closes the pane
+///   and opens another running the same command, and the fresh pane's id is a NEW one.
+/// * **`resuming`** waits for that pane to become an agent — which is the stand-in's own boot
+///   report, made over the CLI in a pane it has just been born into.
+///
+/// # ⚠⚠⚠⚠ The premises, asserted inside, because each one alone makes the claim vacuous
+///
+/// * **The replacement is a DIFFERENT pane.** `Plugin::driving` is read before and after and the
+///   two must differ — a run that walked the states while staying on one pane has replaced nothing,
+///   and the walk alone cannot tell those apart.
+/// * **The fresh session really worked.** Turns must be banked AFTER the replacement, not just
+///   before it: a run that respawned and then stalled would still show every edge this gate names.
+/// * **The successor was the AGENT's**, not the brief's. The milestone the replacement is briefed
+///   with must be the one the stand-in named — `reflect.applied` carries the agent's answer and
+///   `reflect.none` carries nothing, and only the first of those replaces a session for a reason.
+#[test]
+fn a_host_run_replaces_its_inner_session_and_the_fresh_one_works() {
+    /// The document's turn budget. Four rather than three: two turns before the cadence comes
+    /// round and **two after the replacement**, so *the fresh session works* is a repeated fact.
+    const TURNS: i64 = 4;
+    /// The cadence, deliberately BELOW the budget — which is the whole staging. Equal (item 730's
+    /// gate) keeps `reflecting` unreachable, because `judging` tests the budget first.
+    const EVERY: i64 = 2;
+    /// What the stand-in names when it is asked where the work goes next.
+    ///
+    /// ⚠⚠ NEITHER STRING MAY APPEAR IN THE PROMPT THAT ASKS FOR IT. `OuterLoop::proposed` discounts
+    /// a candidate row the delivered prompt contains — the echo rule, which exists because the
+    /// prompt names the label mid-sentence and a terminal wraps where it likes — so an answer
+    /// borrowed from the question would be read as the loop's own words and thrown away.
+    const NEXT: &str = "the successor the stand-in itself named";
+    /// Its other half, on the same terms.
+    const CARRY: &str = "read this rather than the checkpoint it replaced";
+    /// The run's wall clock. The whole of item 730's gate is ~50ms; this one buys a respawn and a
+    /// second agent coming up, so it is generous — and an `exhausted(duration)` is a red here.
+    const CEILING: Duration = Duration::from_secs(60);
+
+    let (_host, sock) = spawn_host();
+    let (driving, mut setup) = remote_driver(&sock);
+
+    // ⚠ NO THREAD ID IN THIS NAME — it is interpolated into a shell script, and `ThreadId(12)`
+    // killed the stand-in of item 730's gate before its first line. See that gate's own note.
+    let under = std::env::temp_dir().join(format!("sprag-replace-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&under);
+    std::fs::create_dir_all(&under).expect("a directory of this run's own");
+    let log = under.join("what-the-daemon-said-to-each-report");
+    let state = under.join("state");
+    let record = under.join("what-the-standin-says-it-is-writing.jsonl");
+    std::fs::create_dir_all(&state).expect("a state home of this run's own");
+
+    // ⚠⚠⚠⚠⚠ **THE PANE SET IS ASKED OF THE DAEMON, AND THIS READER IS A REPAIR.** The first draft
+    // read `Plugin::driving` after the run and compared it with the pane the run began on — and
+    // that is VACUOUS: `AiLoop::driving`'s own doc says the two endings that follow a completed
+    // turn answer `None`, so the comparison was `None != Some(pane)` and passed for free. Measured
+    // rather than reasoned about: a mutation making `replace` keep the SAME pane left this gate
+    // GREEN. The daemon's own list cannot be fooled that way — `respawn` is *a pane was born and
+    // another died*, in the daemon's words.
+    let listed = |conn: &mut HostConn| -> Vec<u64> {
+        conn.call(
+            "scene/query",
+            json!({ "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("panes query")
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry["id"].as_u64())
+        .collect()
+    };
+
+    let pane = spawn_pane(
+        &mut setup,
+        json!({
+            SPAWN_CMD_KEY: [
+                "/bin/sh",
+                "-c",
+                standin_that_reports_itself(
+                    Path::new(env!("CARGO_BIN_EXE_sprag")),
+                    &log,
+                    &state,
+                    true,
+                    (NEXT, CARRY),
+                    // ⚠⚠⚠ THE SAME FILE ACROSS THE REPLACEMENT, and that is a stronger staging than
+                    // a fresh one: it removes the alternative explanation. With a NEW record the
+                    // successor's first turn could read `Unmeasured` because the total went
+                    // BACKWARDS (two records compared), which is a different arm of `Made`. Sharing
+                    // the file means the reading is readable, larger and still `Unmeasured` — which
+                    // only the baseline having been dropped can explain.
+                    Some(&record),
+                ),
+            ],
+            SPAWN_COLS_KEY: 80,
+            SPAWN_ROWS_KEY: 16,
+        }),
+    );
+    let before_panes = listed(&mut setup);
+    assert!(
+        before_panes.contains(&pane.0),
+        "⚠⚠ THE PREMISE: the daemon must list the pane this run is about to drive, or the reading \
+         below is about a set this test cannot see. Panes: {before_panes:?}",
+    );
+
+    let script: std::sync::Arc<dyn sce_rust_runtime::IScriptEngine> =
+        std::sync::Arc::new(sce_rust_lua::LuaEngine::new());
+    let brief = sprag_plugin::Brief {
+        north_star: "the stand-in keeps working across a replacement".to_string(),
+        milestone: "the checkpoint this run starts on".to_string(),
+        reference: "register item 730's fixture".to_string(),
+        closing_rules: None,
+        // ⚠⚠ NOT AUTHORED, and that is the door this run takes: the document's own answer to an
+        // unauthored ceiling is that every reflection replaces the session, and `reviewing` says so
+        // in the `restart_reason` it writes. A number here would make this gate about capacity.
+        context_ceiling: None,
+        reflect_after_refusals: None,
+        milestone_check: None,
+        service: None,
+        max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
+        reflect_every: Some(EVERY),
+        screen_rules: None,
+        may_answer: None,
+        await_person_ms: Some(0),
+        handback_still_ms: None,
+        hold_within_ms: Some(3_600_000),
+        ready_timeout_ms: Some(15_000),
+        turn_within_ms: Some(5_000),
+    };
+    let mut spec = sprag_plugin::AiLoopSpec::driving("sh");
+    spec.shows_the_prompt = false;
+    assert_eq!(
+        spec.done_when,
+        sprag_plugin::INNER_SESSION_ENDS,
+        "⚠⚠⚠⚠ THE PREMISE: the constructor the daemon uses must still choose the shipped turn \
+         contract — a replacement driven on some other contract is not the lifecycle a live run has",
+    );
+
+    let mut loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
+        .expect("a well-briefed loop over a live pane starts");
+    let progress = sprag_plugin::ProgressCell::default();
+    let began = std::time::Instant::now();
+    let outcome = Driver::new(Guardrails {
+        max_iterations: 8_000,
+        max_cost: None,
+        max_duration: Some(CEILING),
+    })
+    .reporting_to(std::sync::Arc::clone(&progress))
+    .run(&mut loops, &driving, &RunContext::uncancellable());
+    let walk: Vec<String> = progress
+        .lock()
+        .expect("the progress cell")
+        .journal
+        .iter()
+        .filter_map(|step| step.note.clone())
+        .collect();
+    let after_panes = listed(&mut setup);
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    println!(
+        "== a host run replacing its session: {:?}, {} iteration(s), in {:?} ==",
+        outcome.state,
+        outcome.iterations,
+        began.elapsed(),
+    );
+    let _ = std::fs::remove_dir_all(&under);
+
+    // ── ⚠⚠ THE PREMISES ──────────────────────────────────────────────────────────────────────
+    assert!(
+        said.contains("accepted") && !said.contains("REFUSED"),
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: the stand-in's own reports did not all land, so a turn that \
+         did not end below is this fixture's fault rather than the product's. What the CLI said: \
+         {said:?}; the walk: {walk:?}",
+    );
+    assert_eq!(
+        outcome.state,
+        sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Turns),
+        "⚠⚠⚠⚠ THE PREMISE FAILED: this run did not spend the turns its document was given, so \
+         everything below is about a run that stalled. An `exhausted(duration)` is a turn that \
+         never ended — item 730's own subject, one layer down. The walk: {walk:?}",
+    );
+
+    // ── ⛔⛔⛔ THE CLAIM: THE SESSION WAS REPLACED ────────────────────────────────────────────
+    let replaced: Vec<&String> = walk
+        .iter()
+        .filter(|note| note.contains("Restarting --SessionReplaced--> Resuming"))
+        .collect();
+    assert_eq!(
+        replaced.len(),
+        1,
+        "⛔⛔⛔⛔⛔ A HOST RUN MUST BE ABLE TO REPLACE ITS INNER SESSION. This is the lifecycle the \
+         whole loop is built around — a fresh agent, briefed with what the last one said should \
+         happen next — and until item 730 no test outside `sprag_plugin` could reach it, because \
+         none of them could end a single turn. The walk: {walk:?}",
+    );
+    for leg in [
+        "Judging --Judge--> Reflecting",
+        "Reflecting --ReflectApplied--> Reviewing",
+        "Reviewing --",
+        "Resuming --SessionReady--> Priming",
+    ] {
+        assert!(
+            walk.iter().any(|note| note.contains(leg)),
+            "⚠⚠⚠ and every leg of the sequence must be walked, not just its ends — `{leg}` is \
+             missing, so the run reached a replacement by some road this gate does not describe. \
+             The walk: {walk:?}",
+        );
+    }
+
+    // ── ⚠⚠⚠ AND IT REALLY IS A DIFFERENT PANE, BY THE DAEMON'S OWN COUNT ────────────────────
+    assert!(
+        !after_panes.contains(&pane.0),
+        "⛔⛔⛔⛔⛔ THE RUN WALKED THE STATES AND STAYED ON ONE PANE. `restarting` CLOSES the inner \
+         session and opens another in its place — the daemon calls it *a pane was born and another \
+         died* — and a walk cannot tell that from a machine that merely visited the states. The \
+         pane this run began on ({}) is still listed. Panes before: {before_panes:?}; after: \
+         {after_panes:?}",
+        pane.0,
+    );
+    let fresh: Vec<&u64> = after_panes
+        .iter()
+        .filter(|id| !before_panes.contains(id))
+        .collect();
+    assert_eq!(
+        fresh.len(),
+        1,
+        "⚠⚠⚠ and exactly one pane must have been BORN — the replacement. A run that closed its \
+         session without opening another has ended the loop rather than replaced its agent, and \
+         the assertion above cannot tell those apart. Panes before: {before_panes:?}; after: \
+         {after_panes:?}",
+    );
+
+    // ── ⚠⚠⚠ AND THE SUCCESSOR WAS THE AGENT'S OWN ANSWER ────────────────────────────────────
+    //
+    // `reflect.applied` is the edge that carries what the agent named; `reflect.none` keeps the
+    // session and carries nothing. Asserting the milestone MOVED is what separates a replacement
+    // the agent steered from one that happened to fire.
+    //
+    // ⚠⚠ READ OFF THE PROMPT THE FRESH SESSION IS GREETED WITH, which is a stronger reading than
+    // the datamodel slot: `priming` composes `start` out of the milestone, so this says the answer
+    // reached the sentence the replacement was actually spoken to with.
+    let greeting = loops
+        .authored()
+        .expect("a machine mid-run answers with its strings")
+        .start;
+    assert!(
+        greeting.contains(NEXT),
+        "⛔⛔⛔ THE REPLACEMENT WAS NOT BRIEFED WITH WHAT THE AGENT SAID. `reflecting` exists so the \
+         party doing the work says where it goes next — a run that replaced its session and kept \
+         the caller's original checkpoint is bounded by one agent's context wearing a longer life, \
+         which is this state's own reason for existing. What it was greeted with: {greeting:?}; \
+         the walk: {walk:?}",
+    );
+
+    // ── ⛔⛔ AND THE FRESH SESSION DID THE WORK ──────────────────────────────────────────────
+    //
+    // The sharp one: a run that respawned and then stalled walks every edge above and banks
+    // nothing after it. `turns` is the DOCUMENT's counter and moves only on `turn.done`.
+    let after: usize = walk
+        .iter()
+        .skip_while(|note| !note.contains("Restarting --SessionReplaced--> Resuming"))
+        .filter(|note| note.contains("--TurnDone--> Judging"))
+        .count();
+    assert!(
+        after >= 2,
+        "⛔⛔⛔⛔ THE FRESH SESSION DID NOT WORK. Replacing a session is only worth anything if the \
+         replacement then takes turns — and a run that respawned and stalled walks every edge \
+         asserted above. Turns judged after the replacement: {after}. The walk: {walk:?}",
+    );
+    assert_eq!(
+        outcome.banked.as_ref().map(|banked| banked.completed),
+        Some(u32::try_from(TURNS).expect("a small budget fits a u32")),
+        "⚠⚠⚠ and the run must have banked its whole budget across the two sessions — the count is \
+         the RUN's and a replacement does not reset it. The walk: {walk:?}",
+    );
+
+    // ── ⛔⛔⛔⛔ AND REGISTER ITEM 719's BASELINE IS DROPPED WITH THE SESSION ──────────────────
+    //
+    // `Made` is the difference between what a session had produced when its LAST turn ended and
+    // what it has produced now, and the earlier reading is a field of `Session` precisely so that
+    // `Session::replacing` forgets it. Carried over, the replacement's first turn would be measured
+    // against its PREDECESSOR's output — which is the failure that field's neighbours already
+    // refuse in their own words (*"the spend would freeze … and look like an agent doing nothing"*).
+    //
+    // ⚠⚠⚠ THE PREMISE FIRST, because `Unmeasured` says nothing at all and a run whose record could
+    // not be read answers it for every turn. The turns BEFORE the replacement must have produced a
+    // measured amount, or the claim below is satisfied by an instrument that never worked.
+    let produced: Vec<&String> = walk
+        .iter()
+        .filter(|note| note.contains("tokens of output"))
+        .collect();
+    assert!(
+        produced.len() >= 2,
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: this run never measured what a single turn produced, so *the \
+         baseline was dropped* below is true of an instrument that read nothing. `--transcript` is \
+         what makes a reporter's spend readable; a run that states none reads zeros the document \
+         defines as *do not decide on this*. The walk: {walk:?}",
+    );
+    // ⚠ The turn ENDINGS, in order, each labelled with whether the loop could measure what it
+    // produced. `Made::Unmeasured` says nothing, which is the absence this reads.
+    let measured: Vec<bool> = walk
+        .iter()
+        .skip_while(|note| !note.contains("Restarting --SessionReplaced--> Resuming"))
+        .filter(|note| note.contains("--TurnDone--> Judging"))
+        .map(|note| note.contains("tokens of output") || note.contains("PRODUCED NOTHING"))
+        .collect();
+    assert_eq!(
+        measured.first(),
+        Some(&false),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 719: THE REPLACEMENT'S FIRST TURN WAS MEASURED AGAINST ITS \
+         PREDECESSOR. The record is the same file and it is readable and growing — the premise \
+         above says so — and a fresh session has no earlier reading of its OWN, so the only honest \
+         answer is *nothing could be compared*. A number here is the successor being credited with, \
+         or accused of, what the session before it wrote. The walk: {walk:?}",
+    );
+    assert_eq!(
+        measured.get(1),
+        Some(&true),
+        "⚠⚠⚠⚠ AND THE TURN AFTER IT MUST BE MEASURED, which is what stops the claim above being \
+         vacuous: if the record had simply become unreadable at the replacement, EVERY later turn \
+         would answer *nothing could be compared* too. Readable, growing, and unmeasured for \
+         exactly one turn is a dropped baseline and nothing else. The walk: {walk:?}",
     );
 }
 
