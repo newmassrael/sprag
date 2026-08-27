@@ -6580,6 +6580,14 @@ impl OuterLoop {
         // this in the same breath; a retry the ceiling turned away pays nothing, so it stands — and
         // it must, because `blocked` cannot say WHY it was reached and its two causes want opposite
         // things from whoever finds them.
+        //
+        // ⚠⚠⚠⚠⚠ **THAT SENTENCE WAS COMPLETE UNTIL ITEM 715 AND THEN NAMED TWO CASES OF THREE** —
+        // register item 727, and it is corrected here rather than rewritten because a rule that
+        // went stale by having a door added under it is worth recognising next time. The third case
+        // is the door 715 opened: it reaches `working` and pays NOTHING, so neither half of the
+        // sentence above applies and the notice stood over a run that had recovered. What retires
+        // it is [`outage_ended`](Self::outage_ended), on the completed turn — the proof, and the
+        // moment item 729 named in the document.
         self.noticed = Some(Noticed::ServiceDown {
             retried: self.authored_number(SERVICE_RETRIED).unwrap_or_default(),
             waited: since.elapsed(),
@@ -6599,6 +6607,42 @@ impl OuterLoop {
         // this one's elapsed time.
         self.outage = None;
         AiLoopEvent::ServiceRetry.into()
+    }
+
+    /// **THE OUTAGE IS OVER, AND A COMPLETED TURN IS THE ONLY PROOF THIS LOOP EVER GETS** —
+    /// register item 727, and the clearing [`say`](Self::say) structurally cannot do.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the prompt rule was not enough, and why the answer is not to change it
+    ///
+    /// `say` empties [`noticed`](Self#structfield.noticed) at every prompt, on the rule *a new turn
+    /// is a new question*, and the block above records the notice knowing it. That covered every
+    /// outage until register item 715 opened the second door: the edge back from `service_down` for
+    /// a peer that printed it is resuming **types nothing on purpose**, because the word that ends
+    /// the other outage would CANCEL the recovery this one is waiting for. So that retry reaches
+    /// `working`, no prompt is said, and nothing retires the notice.
+    ///
+    /// ⚠⚠ WHAT THAT COSTS IS NOT COSMETIC. [`crate::ai_loop`]'s `left_behind` reads this field at
+    /// the ending and files it as THE RUN'S ACCOUNT, so a run that recovered, worked on, and was
+    /// then cancelled reports *"the peer said it was continuing on its own … so nothing was
+    /// asked"* — a confident sentence about an outage that had ended, which is items 718 and 720's
+    /// class read on the outage axis.
+    ///
+    /// # ⚠⚠⚠ What makes the notice stale is the TURN, not the prompt
+    ///
+    /// Reaching `working` proves nothing, and that is item 715's own argument rather than a
+    /// concession: the peer may still be quiet, the turn contract is still armed, and this state
+    /// can be reached again. **The peer ANSWERING is the proof** — register item 729 named the same
+    /// moment one layer down, where `judging`'s entry marks the budget's watermark for exactly this
+    /// reason. This is that moment on the driver, which is why the two are one idea and two rounds.
+    ///
+    /// ⚠⚠⚠⚠ **ONE ARM, LEAVING EVERY OTHER NOTICE WHERE IT IS** —
+    /// [`took_screening`](Self::took_screening)'s contract, for its reason. A completed turn says
+    /// the SERVICE came back and says nothing about a question the peer stopped to ask or a person
+    /// who took the pane; clearing those here would be a second hand on somebody else's fact.
+    fn outage_ended(&mut self) {
+        if matches!(self.noticed, Some(Noticed::ServiceDown { .. })) {
+            self.noticed = None;
+        }
     }
 
     /// **WAIT FOR THE PERSON** — `awaiting_human`'s whole effect, and the last state of
@@ -7836,6 +7880,23 @@ impl OuterLoop {
         // `watch` answers when nothing happened, and the machine stays put.
         if event == AiLoopEvent::Null {
             return Ok((self.state(), 0));
+        }
+        // ⚠⚠⚠⚠⚠ **A TURN THAT ENDED RETIRES THE OUTAGE NOTICE** — register item 727, and see
+        // [`outage_ended`](Self::outage_ended) for why the peer's answer is the proof and the
+        // prompt is not.
+        //
+        // ⚠⚠⚠ ASKED HERE AND NOT AT THE THREE PLACES THAT RAISE THIS EVENT. `pumping` funnels
+        // every raised event through this function, so this is the one place the rule can live
+        // once; three copies of it — `watch`'s ending, and the two `Over::Yes` arms — would be
+        // three chances for a later fourth raiser to be added without one, and a notice that
+        // failed to clear is SILENT until it is published as some other run's reason for ending.
+        //
+        // ⚠⚠ BEFORE THE WALK, because the fact it acts on is already true: the peer answered, and
+        // that is so whatever state the machine is about to be in. Doing it after would also make
+        // it race the `<onentry>` acts below, one of which is a `prompt.say` that clears the whole
+        // field anyway — and a rule whose effect depends on losing that race is not a rule.
+        if event == AiLoopEvent::TurnDone {
+            self.outage_ended();
         }
         // ⚠⚠ `process_event` CANNOT SEND DATA — it is `raise_external(event, "", "")` followed by a
         // macrostep — so an event whose guard or assignments read `_event.data` has to go through
@@ -19714,6 +19775,152 @@ mod tests {
              two spellings of one bug, and only this control tells them apart. Got {authored} \
              byte(s) for a {} byte word",
             AUTHORED.len(),
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A RUN THAT RECOVERED THROUGH THE DOOR THAT SAYS NOTHING STOPS CARRYING THE OUTAGE**
+    /// — register item 727: the residue register item 724 found, whose moment register item 729
+    /// named one layer down.
+    ///
+    /// # ⚠⚠⚠⚠ The defect is one clearing rule meeting a third door
+    ///
+    /// [`OuterLoop::say`] empties `noticed` at every prompt, on the rule *a new turn is a new
+    /// question*, and that covered both outages until register item 715 opened a door whose way
+    /// back **types nothing on purpose** — the word that ends the other outage would CANCEL this
+    /// peer's own recovery. So the retry reaches `working`, no prompt is ever said, and
+    /// `Noticed::ServiceDown` rides on. [`crate::ai_loop`]'s `left_behind` then files that field as
+    /// THE RUN'S ACCOUNT at whatever ending arrives next: *"the peer said it was continuing on its
+    /// own … so nothing was asked"*, published about a run that was asked plenty and answered.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Four arms, and what each one alone would let through
+    ///
+    /// * ⚠⚠ **THE PREMISE, ASSERTED INSIDE RATHER THAN ASSUMED**: the way back must type ZERO
+    ///   bytes. If it ever spoke, `say` would clear the notice and every arm below would pass over
+    ///   a driver that fixed nothing — register item 657's lesson, and why the bytes are counted.
+    /// * ⚠⚠⚠⚠ **THE INTERIM, AND IT IS WHAT SEPARATES THE REPAIR FROM THE WORKAROUND**: on arrival
+    ///   at `working` the notice must STILL STAND. Reaching work proves nothing — that is item
+    ///   715's own argument, the peer may still be quiet and this run can be back in the outage on
+    ///   the next pump — so a driver that cleared the notice on the EDGE passes the headline and
+    ///   then reports *no outage* through the whole window where it does not yet know.
+    /// * **THE HEADLINE**: once a turn COMPLETES, the notice is gone.
+    /// * ⚠⚠ **AND EVERY OTHER NOTICE SURVIVES THAT SAME TURN**: a repair that emptied the field
+    ///   wholesale passes the three above and destroys the question a `blocked` ending exists to
+    ///   publish — [`OuterLoop::took_screening`]'s contract, read as a gate.
+    #[test]
+    fn a_run_that_recovered_without_saying_anything_stops_carrying_the_outage() {
+        /// Drive a real loop into the outage **by the door that says it is resuming**, retry, then
+        /// let a turn COMPLETE — handing back the bytes the retry typed and the notice at each of
+        /// the two moments that matter.
+        ///
+        /// ⚠ The notice held at the retry is AUTHORED rather than waited for, for `retried_with`'s
+        /// reason one gate up: `wait_out_service`'s own bound is ten minutes, and what is under
+        /// test is what the RETRY and the TURN do with a notice, not how long a clock takes to set
+        /// one.
+        fn recovered_holding(standing: Noticed) -> (u64, Option<Noticed>, Option<Noticed>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let access = crate::access::WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_millis(200))
+                .expect("the document's datamodel must carry its four authored strings");
+            let run = RunContext::uncancellable();
+            loops
+                .advance(&access, &run, AiLoopEvent::Start.into())
+                .expect("the pane stays readable");
+            loops
+                .advance(&access, &run, AiLoopEvent::PromptSent.into())
+                .expect("the pane stays readable");
+            // ⚠⚠ THE SELF-RESUMING DOOR, OPENED BY THE DOCUMENT'S OWN ROUTING KEY. The `<assign>`
+            // on that edge is what makes the retry below the silent one, so writing
+            // `service_resumes_itself` here instead would be this gate agreeing with itself about
+            // which door it came through.
+            loops
+                .advance(
+                    &access,
+                    &run,
+                    Raise::carrying(
+                        AiLoopEvent::PeerSilent,
+                        serde_json::json!({"service": true}),
+                    ),
+                )
+                .expect("the pane stays readable");
+            assert_eq!(
+                loops.state(),
+                AiLoopState::ServiceDown,
+                "the fixture: the outage must be entered by the door that resumes itself",
+            );
+            loops.noticed = Some(standing);
+            let (working, spent) = loops
+                .advance(&access, &run, AiLoopEvent::ServiceRetry.into())
+                .expect("the pane stays readable");
+            assert_eq!(
+                working,
+                AiLoopState::Working,
+                "the fixture: the retry must reach work, or nothing below is about a recovery",
+            );
+            let on_arrival = loops.noticed.clone();
+            // ⚠⚠ THE PEER ANSWERED — driven through the real event rather than by emptying the
+            // field, because *which moment retires the notice* is the whole claim under test.
+            loops
+                .advance(
+                    &access,
+                    &run,
+                    Raise::carrying(
+                        AiLoopEvent::TurnDone,
+                        serde_json::json!({"context": 0, "cold": 0, "floor": 0}),
+                    ),
+                )
+                .expect("the pane stays readable");
+            let after_a_turn = loops.noticed.clone();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (spent, on_arrival, after_a_turn)
+        }
+
+        let outage = Noticed::ServiceDown {
+            retried: 20,
+            waited: Duration::from_secs(600),
+            // ⚠ THE DOOR ITEM 715 OPENED, which is this gate's whole subject: the other one is
+            // spoken to on the way back and was never broken.
+            resumes: true,
+        };
+        let (typed, at_work, after) = recovered_holding(outage.clone());
+
+        assert_eq!(
+            typed, 0,
+            "⚠⚠⚠⚠⚠ THE PREMISE FAILED, AND WITHOUT IT EVERY ARM BELOW IS VACUOUS. The way back \
+             from this door types nothing on purpose — the word that ends the other outage would \
+             CANCEL this peer's own recovery — and the instant it speaks, `say` clears the notice \
+             and this gate goes green over a driver that does nothing at all. Typed {typed} byte(s)",
+        );
+
+        assert_eq!(
+            at_work,
+            Some(outage.clone()),
+            "⚠⚠⚠⚠⚠ THE NOTICE MUST STILL STAND ON ARRIVAL AT WORK, and this arm is what separates \
+             the repair from clearing it on the edge — the workaround this item was registered \
+             forbidding. Reaching `working` proves NOTHING: item 715's own argument is that the \
+             peer may still be quiet, the turn contract is still armed from the sentence that \
+             opened it, and this run can be back in `service_down` on the very next pump",
+        );
+
+        assert_eq!(
+            after, None,
+            "⛔⛔⛔⛔⛔ THE RUN RECOVERED AND IS STILL CARRYING THE OUTAGE. The peer ANSWERED, which \
+             is the only proof this loop ever gets that the service came back and the moment \
+             register item 729 marked one layer down. Whatever ending arrives next files this \
+             notice as the run's account, so a run that recovered and worked on reports «the peer \
+             said it was continuing on its own … so nothing was asked»",
+        );
+
+        // ── ⚠⚠ THE CONTROL: the SAME completed turn, over a notice that is not an outage ──
+        let (_, _, question) =
+            recovered_holding(Noticed::Asking(crate::consent::Unanswered::unreadable()));
+        assert_eq!(
+            question,
+            Some(Noticed::Asking(crate::consent::Unanswered::unreadable())),
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, AND IT IS WHAT STOPS THIS BEING «THE FIELD IS EMPTIED ON \
+             EVERY TURN». A completed turn says the SERVICE came back; it says nothing about a \
+             question the peer stopped to ask, and a repair that cleared the whole field passes \
+             every arm above while destroying the one fact a `blocked` ending exists to publish",
         );
     }
 
