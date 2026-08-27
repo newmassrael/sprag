@@ -210,6 +210,25 @@ pub const RUN_ANSWERED_KEY: &str = "answered";
 /// two different things to tell somebody who just stood a run down, and
 /// `crate::plugins::stand_down_sentence` says two different sentences for them.
 pub const RUN_BANKED_KEY: &str = "banked";
+/// ⛔⛔⛔⛔⛔ **HOW BIG THE BRIEF A LOOP WAS STARTED WITH IS** — register item 719's second
+/// direction. A SENTENCE on the row (composed by [`briefing_sentence`]) and the three byte counts
+/// under [`REPORTED_BESIDE_KEY`]; ABSENT for a run nobody briefs.
+///
+/// # The door took any size and nothing ever said so
+///
+/// A loop's brief becomes the prompt every session it opens is greeted with, and is re-typed in
+/// full into every replacement. Item 719 measured one at **9,025 bytes** being refused by a peer's
+/// composer and retyped every turn, unbounded — and the caller who wrote it had no channel that
+/// would have told them it was large. `orchestrate` answers a run id, and until this key the row it
+/// points at said nothing about what had been accepted.
+///
+/// ⚠⚠⚠ **IT REPORTS RATHER THAN REFUSING, AND THAT IS MEASURED RATHER THAN CAUTIOUS.** Briefs at
+/// 9,025, 8,271, 4,532 **and 2,816** bytes were all folded away by a composer, so folding is not a
+/// size line and any threshold would be invented. See [`sprag_plugin::Briefing`].
+///
+/// ⚠ It follows [`RUN_BANKED_KEY`]'s omit-rather-than-null rule for that key's reason: *no loop was
+/// briefed here* is a fact about the plugin, not a gap in the row.
+pub const RUN_BRIEFED_KEY: &str = "briefed";
 /// The key a driver's [`REPORT_PROGRESS_ACTION`] carries its counters under.
 ///
 /// ⚠⚠ **THE WHOLE OBJECT UNDER ONE KEY, not its fields spread across the request.** What is inside
@@ -3301,6 +3320,16 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
             "completed": banked.completed,
             "unit": banked.unit.as_ref(),
         })),
+        // ⚠⚠⚠ AND HOW BIG THE BRIEF IS — register item 719's second direction. The THREE PARTS and
+        // not the sentence, which is the division every level here keeps: a driver in another
+        // process reports what it measured, and the one composer of the prose is
+        // `briefing_sentence`, at the row (item 663). Two composers would be two ways to name the
+        // largest part.
+        RUN_BRIEFED_KEY: progress.briefed.map(|briefed| json!({
+            "north_star": briefed.north_star,
+            "milestone": briefed.milestone,
+            "reference": briefed.reference,
+        })),
         // ⚠⚠⚠⚠⚠ **AND THE WALK ITSELF** — register item 544's default flip is what found this. The
         // row publishes a run's per-step journal beside its state, out of the cell, so a run driven
         // in another process had an EMPTY walk however many steps it took — and nine tests that
@@ -3367,6 +3396,12 @@ pub struct ReportedProgress {
     /// read for is one whose cell is empty by construction. A caller that could tell them apart
     /// would have nothing different to do.
     pub banked: Option<sprag_plugin::Banked>,
+    /// How big it said the brief it was started with is — items 663 / 719.
+    ///
+    /// ⚠ The three parts WHOLE or nothing, `deliveries`' rule: the sentence a reader gets names the
+    /// LARGEST of them, which is a comparison, so a half-read value would point confidently at the
+    /// wrong part.
+    pub briefed: Option<sprag_plugin::Briefing>,
     /// What it said it did, step by step — items 663 / 544, and **the one field here that is
     /// already JSON**.
     ///
@@ -3417,6 +3452,15 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             unit: std::borrow::Cow::Owned(banked.get("unit")?.as_str()?.to_owned()),
         })
     })();
+    // ⚠ WHOLE OR NOTHING, the two above's rule — see `ReportedProgress::briefed`.
+    let briefed = (|| {
+        let briefed = beside.get(RUN_BRIEFED_KEY)?;
+        Some(sprag_plugin::Briefing {
+            north_star: bytes(briefed.get("north_star"))?,
+            milestone: bytes(briefed.get("milestone"))?,
+            reference: bytes(briefed.get("reference"))?,
+        })
+    })();
     ReportedProgress {
         iterations: reported
             .get("iterations")
@@ -3450,6 +3494,7 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             .and_then(Value::as_u64)
             .map(PaneId),
         banked,
+        briefed,
         journal: beside
             .get(RUN_JOURNAL_KEY)
             .and_then(Value::as_array)
@@ -3464,6 +3509,15 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
 /// a large count, and the only honest one.
 fn small(held: Option<&Value>) -> Option<u32> {
     u32::try_from(held?.as_u64()?).ok()
+}
+
+/// A BYTE COUNT a report carried, or [`None`] when it is absent or not a number this build can
+/// hold — [`small`]'s rule for the one quantity here that is a length rather than a tally.
+///
+/// ⚠ Separate from [`small`] because these are `usize` and those are `u32`, and widening `small`
+/// would let a tally be read into a length's slot without anybody choosing that.
+fn bytes(held: Option<&Value>) -> Option<usize> {
+    usize::try_from(held?.as_u64()?).ok()
 }
 
 /// The `running` state a row shows for a run whose driver REPORTED `progress` from another process.
@@ -3676,6 +3730,17 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     // ⚠ The report's TALLY, and the sentence composed here from it — one composer, item 663.
     if let Some(said) = checks_sentence(reported.checks.as_ref().unwrap_or(&run.progress.checks)) {
         entry[RUN_CHECKS_KEY] = json!(said);
+    }
+    // ⚠⚠⚠⚠⚠ AND HOW BIG THE BRIEF IT WAS STARTED WITH IS — register item 719's second direction,
+    // beside the state on the terms every level above it is published under: the report first, the
+    // cell as the fallback, and the SENTENCE rather than the numbers, because what a reader acts on
+    // is *which part to shorten* and that is a comparison. Absent for a run nobody briefed.
+    if let Some(said) = reported
+        .briefed
+        .or(run.progress.briefed)
+        .and_then(briefing_sentence)
+    {
+        entry[RUN_BRIEFED_KEY] = json!(said);
     }
     // ⚠⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register item 540, present only once a step has said so,
     // which is `RUN_CEILING_KEY`'s presence-is-the-claim rule. ⚠ The NUMBER and not the label's
@@ -4253,6 +4318,27 @@ pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
     ))
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT THE DOOR TOOK, SAID ONCE, WHERE THE CALLER WILL READ IT** — register item 719's
+/// second direction, and the row's counterpart to [`checks_sentence`] beside it.
+///
+/// # ⚠⚠⚠ Why the row composes the prose and the driver does not
+///
+/// [`checks_sentence`]'s rule, item 663: the LEVEL crosses as numbers and there is exactly one
+/// composer of the sentence made from them. A driver in another process reports the three byte
+/// counts it measured; this is the only place that turns them into a reading, so the answer to
+/// *which part should I shorten* cannot be given two different ways by two builds.
+///
+/// ⚠⚠ **A BRIEF OF NOTHING SAYS NOTHING.** A run whose three parts are all empty is a run nobody
+/// briefed in any sense a reader acts on, and a line about zero bytes on such a row is noise on the
+/// common path — the discipline `checks_sentence` applies to `asked == 0` one function up.
+///
+/// ⚠ [`sprag_plugin::Briefing::describe`] is what it delegates to, because the caveat that makes
+/// the number readable is the plugin's measurement and not this layer's opinion.
+#[must_use]
+pub fn briefing_sentence(briefed: sprag_plugin::Briefing) -> Option<String> {
+    (briefed.bytes() > 0).then(|| briefed.describe())
+}
+
 /// A run's OUTCOME as a client receives it — the projection both mouths render from.
 ///
 /// ⚠ `pub` for the reason [`outcome_word`] beside it is: a mouth's gate has to drive the DAEMON's
@@ -4488,6 +4574,7 @@ mod tests {
                 // ⚠ And item 616's, for that reason exactly — absent reads as *nobody counted*,
                 // which is the honest answer for a log written before the column existed.
                 banked: None,
+                briefed: None,
                 // ⚠ An older log carries no place, which is this fixture's shape — item 543.
                 place: None,
             }],
@@ -4733,6 +4820,7 @@ mod tests {
                 cancelled_by: None,
                 deliveries,
                 banked: None,
+                briefed: None,
                 // ⚠ An older log carries no place, which is this fixture's shape — item 543.
                 place: None,
             }
@@ -6740,6 +6828,8 @@ mod tests {
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
             // that does not count — the distinction `Banked` exists to keep.
             banked: None,
+            // ⚠ `None` on `banked`'s terms: not a run briefed with nothing, one nobody briefs.
+            briefed: None,
         }
     }
 
@@ -8580,6 +8670,7 @@ mod tests {
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(banked),
+            briefed: None,
         };
 
         // The sentence an IN-PROCESS run gets — the standard this reported one must meet.
@@ -8623,6 +8714,7 @@ mod tests {
                 completed: 0,
                 unit: std::borrow::Cow::Borrowed("turn"),
             }),
+            briefed: None,
         };
         let said = stand_down_sentence(&RunState::Reported(Box::new(outcome_to_json(&nothing))));
         assert!(
@@ -8865,6 +8957,7 @@ mod tests {
                     cancelled_by: None,
                     deliveries: None,
                     banked: None,
+                    briefed: None,
                     place,
                 }],
             }
@@ -9354,6 +9447,7 @@ mod tests {
         assert!(
             older.get(RUN_DELIVERED_KEY).is_none()
                 && older.get(RUN_CHECKS_KEY).is_none()
+                && older.get(RUN_BRIEFED_KEY).is_none()
                 && older.get(RUN_DRIVING_KEY).is_none(),
             "⚠⚠⚠ A CONTROL FAILED: a report that mentioned none of these left the row publishing \
              them anyway. Absence must keep meaning *nobody said* — a row that answered `0 of 0` \
@@ -9372,9 +9466,10 @@ mod tests {
                 silence.deliveries,
                 silence.checks,
                 silence.driving,
-                silence.banked
+                silence.banked,
+                silence.briefed
             ),
-            (None, None, None, None),
+            (None, None, None, None, None),
             "⚠⚠⚠ A CONTROL FAILED AT THE DOOR: a report carrying none of these was read as though \
              it carried zeros. `None` here is what makes the caller's fallback reachable — with a \
              value in its place, an older driver's silence would overwrite a cell that knew the \
@@ -9413,6 +9508,16 @@ mod tests {
                             completed: 4,
                             unit: std::borrow::Cow::Borrowed("turn"),
                         }),
+                        // ⚠⚠ REGISTER ITEM 719's SECOND DIRECTION, on this gate's terms exactly:
+                        // it is a level fed from the cell for an in-process run, so a driver in
+                        // another process would publish nothing about it unless the transport
+                        // carries it — and *what was that run handed?* is asked about runs that
+                        // are over, which is when the cell is all zeros.
+                        briefed: Some(sprag_plugin::Briefing {
+                            north_star: 41,
+                            milestone: 1_984,
+                            reference: 7_000,
+                        }),
                         ..sprag_plugin::Progress::default()
                     }),
                 })),
@@ -9450,6 +9555,19 @@ mod tests {
             "⛔⛔⛔⛔ REGISTER ITEM 663 / 540: the row did not say which pane this run is driving, \
              so a person looking at a busy pane cannot find out what is typing into it",
         );
+        let briefed = row
+            .get(RUN_BRIEFED_KEY)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            briefed.contains("9025") && briefed.contains("reference") && briefed.contains("2,816"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 663 / 719: what the door ACCEPTED did not reach a reader. \
+             `orchestrate` answers a run id and points at this row, so a size that dies here is \
+             item 719's second direction unpaid — the caller who wrote 9,025 bytes still has no \
+             way to learn it, and the caveat that stops them reading a small number as a safe one \
+             goes with it. Said: {briefed:?}",
+        );
         assert!(
             row[RUN_JOURNAL_KEY].as_array().is_some_and(
                 |walk| walk.len() == 1 && walk[0]["note"] == json!("A-STEP-THIS-DRIVER-TOOK")
@@ -9482,6 +9600,19 @@ mod tests {
             }),
             "⛔⛔⛔⛔ REGISTER ITEM 663 / 616: how much of the work was kept is what a stand-down \
              sentence weighs, and it did not survive. Saved: {saved:?}",
+        );
+        assert_eq!(
+            saved.briefed,
+            Some(crate::runs::PersistedBriefing {
+                north_star: 41,
+                milestone: 1_984,
+                reference: 7_000,
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 663 / 719: how big the brief was did not survive the daemon \
+             that took it — and this level needs the file MORE than the two above, because *what \
+             was that run handed?* is asked almost only about a run that is already over. Item \
+             606's measurement is the general form: thirteen live runs, every one restored. \
+             Saved: {saved:?}",
         );
 
         // ── CONTROL 1: a fact is published EXACTLY ONCE ──────────────────────────────────────

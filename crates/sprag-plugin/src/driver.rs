@@ -527,6 +527,14 @@ pub struct Outcome {
     /// from `Some(Banked { completed: 0, .. })` and has to stay different: one is *nothing was
     /// finished* and the other is *nobody was counting*.
     pub banked: Option<crate::plugin::Banked>,
+    /// ⚠⚠⚠⚠⚠ **HOW BIG THE BRIEF THIS RUN WAS STARTED WITH IS** — register item 719's second
+    /// direction, and [`None`] for a plugin nobody briefs.
+    ///
+    /// It is on the ENDING as well as on [`Progress::briefed`] because the question it answers is
+    /// asked most often about a run that is already over: *why did that one churn?* — and item 719's
+    /// own diagnosis had to be written by hand, after the fact, because nothing on the row said what
+    /// the run had been handed.
+    pub briefed: Option<crate::Briefing>,
 }
 
 /// Runs a [`Plugin`] over a [`PaneAccess`] to a terminal [`Outcome`], owning the
@@ -630,6 +638,15 @@ pub struct Driver {
     /// machine has reached a final state may stop being able to count, and a run's ending is
     /// exactly when the sentence a person reads is composed.
     banked: Option<crate::plugin::Banked>,
+    /// ⚠⚠⚠ **HOW BIG THE BRIEF THIS RUN WAS STARTED WITH IS** — register item 719's second
+    /// direction, held and read exactly as the totals above are.
+    ///
+    /// ⚠⚠ It is the one of these that does NOT move: a brief is taken once, at the door. It is
+    /// asked per step anyway, on the rule the three above it are asked under — *one place a step
+    /// reports what a run is* — because a constant fetched by a second road is a constant two
+    /// roads can disagree about, and the run that would expose the disagreement is the one nobody
+    /// is watching.
+    briefed: Option<crate::Briefing>,
     /// ⚠⚠⚠ **WHICH PANE THE PLUGIN LAST SAID IT WAS DRIVING** — register items 540 and 595, held
     /// and read exactly as the two totals above are.
     driving: Option<sprag_terminal::PaneId>,
@@ -757,6 +774,16 @@ pub struct Progress {
     /// (register item 616: the answer has to survive the restart, since a run is read after it
     /// ends and its daemon is usually gone by then).
     pub banked: Option<crate::plugin::Banked>,
+    /// ⚠⚠⚠⚠⚠ **HOW BIG THE BRIEF THIS RUN WAS STARTED WITH IS** — register item 719's second
+    /// direction, published as a LEVEL beside the four above and for their reason.
+    ///
+    /// ⚠⚠ **IT HAS TO BE A LEVEL AND NOT A LINE IN THE WALK**, which is the whole reason it is
+    /// here rather than in a step's note. The journal is BOUNDED ([`JOURNAL_LIMIT`]) and a brief is
+    /// said once, at the start — so on exactly the runs this exists for, the long ones that churn,
+    /// the line would have been evicted by the time anybody read the row. [`Progress::deliveries`]
+    /// exists for the same reason, and says so in its own words: a supervisor who arrives mid-run
+    /// can only read a level.
+    pub briefed: Option<crate::Briefing>,
 }
 
 /// HOW MANY STEPS A RUN REMEMBERS.
@@ -836,6 +863,7 @@ impl Driver {
             deliveries: Deliveries::NONE,
             checks: Checks::NONE,
             banked: None,
+            briefed: None,
             driving: None,
             winding: false,
         }
@@ -883,6 +911,7 @@ impl Driver {
             deliveries: self.deliveries,
             checks: self.checks.clone(),
             banked: self.banked.clone(),
+            briefed: self.briefed,
             driving: self.driving,
         };
         if let Some(cell) = &self.progress {
@@ -1137,6 +1166,12 @@ impl Driver {
         // ⚠⚠ It is `None` for a plugin with no unit of completed work either way, so the two
         // answers stay distinguishable: *nobody counts* and *counted, and it was nothing*.
         self.banked = plugin.banked();
+        // ⚠⚠⚠⚠ **AND HOW BIG ITS BRIEF IS, ASKED IN THE SAME BREATH AND FOR A SHARPER VERSION OF
+        // THE SAME REASON** — register item 719. This one is already true before the first step:
+        // the door took the brief, and a run cancelled or refused before a step completed is
+        // exactly the run whose reader most wants to know what it was handed. Read here, that row
+        // says so; read only per-step, it would say nothing about the run that never stepped.
+        self.briefed = plugin.briefed();
         // `running` is the only non-final state in the loop.
         while !self.engine.is_in_final_state() {
             // Cancel is checked before each step (and again by the plugin's own
@@ -1221,6 +1256,11 @@ impl Driver {
                     // be able to answer: what is wanted is the last answer it COULD give, which is
                     // what a per-step read leaves behind.
                     self.banked = plugin.banked().or_else(|| self.banked.take());
+                    // ⚠⚠ AND THE BRIEF'S SIZE, on the same terms — kept where the plugin stops
+                    // being able to answer, for `banked`'s reason one line up. A brief is taken
+                    // once and never re-read, so this can only ever confirm what the pre-step read
+                    // already had; asking anyway is what keeps every level on one road.
+                    self.briefed = plugin.briefed().or(self.briefed);
                     // ⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register items 540 and 595, in the same
                     // breath as the three above. A pane read a moment apart from the counters is a
                     // fact about a different moment, and this one is compared against the LIVE
@@ -1621,6 +1661,7 @@ impl Driver {
             deliveries: self.deliveries,
             checks: self.checks.clone(),
             banked: self.banked,
+            briefed: self.briefed,
         }
     }
 }

@@ -5755,6 +5755,17 @@ fn render_run(run: &Value) -> String {
     let verified = run[sprag_host::plugins::RUN_CHECKS_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⛔⛔⛔ AND WHAT THE DOOR ACCEPTED — register item 719's second direction, in the same place and
+    // under the same constraint as the clauses above.
+    //
+    // ⚠⚠ THIS IS THE WHOLE OF WHAT *`orchestrate` STOPS ACCEPTING A BRIEF SILENTLY* COMES TO for a
+    // person: `orchestrate` answers a run id and points at this row, so this row is where the size
+    // it took has to appear. It is a LEVEL and not a journal line for a reason the churning run
+    // proves — the journal is bounded, a brief is said once at the start, and the runs this exists
+    // for are the long ones that would have evicted it.
+    let briefed = run[sprag_host::plugins::RUN_BRIEFED_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     // ⚠⚠⚠⚠ AND WHO RAISED THE CANCEL — register item 596, in the same place and under the same
     // constraint as the three clauses above. This is the one whose absence from the mouth would
     // cost the most: `cancelled` alone is the word item 594 measured a person reading and being
@@ -5805,7 +5816,7 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{}{order}{walk_to}{prompts}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -5822,7 +5833,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{walk_to}{prompts}{verified}{canceller}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -9625,6 +9636,9 @@ mod tests {
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
             // that does not count — the distinction `Banked` exists to keep.
             banked: None,
+            // ⚠ `None` on `banked`'s terms: this fixture is not a run briefed with nothing, it is
+            // one nobody briefs — the distinction `Briefing` keeps.
+            briefed: None,
         }
     }
 
@@ -9972,6 +9986,15 @@ mod tests {
             (
                 sprag_host::plugins::RUN_CANCELLED_BY_KEY,
                 "a person cancelled this run, so the turn it was in the middle of was thrown away",
+            ),
+            // ⛔⛔⛔ AND WHAT THE DOOR ACCEPTED — register item 719's second direction. This is the
+            // whole of *`orchestrate` stops accepting a brief silently* for a person: the door
+            // answers a run id and points at this row, so a size that dies here is a size nobody
+            // ever reads. ⚠ Level and not journal: the journal is bounded and a brief is said once
+            // at the start, so on the long churning runs this exists for it would be evicted.
+            (
+                sprag_host::plugins::RUN_BRIEFED_KEY,
+                "briefed with 9025 bytes (reference is the largest at 7000)",
             ),
         ];
 

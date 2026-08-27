@@ -1025,6 +1025,109 @@ impl AiLoopSpec {
     }
 }
 
+/// **HOW BIG THE BRIEF THIS RUN WAS STARTED WITH IS**, part by part — register item 719's second
+/// direction, and the answer `orchestrate` had no way to give.
+///
+/// # ⚠⚠⚠⚠⚠ The defect: a door that takes any size and says nothing about it
+///
+/// A caller writes a milestone and a reference and hands them over. `priming` composes them into
+/// the prompt every session of the run is opened with, and **re-types the whole of it into every
+/// replacement**. Item 719 measured that prompt at **9,025 bytes**, refused by the peer's composer
+/// and retyped into a fresh session every turn — and the caller who wrote it, this repository's own
+/// watcher, had no way to know it was large: the door took it without a word, and the only place
+/// the number ever appeared was in a diagnosis written afterwards by hand.
+///
+/// # ⛔⛔⛔⛔⛔ Why this REPORTS and does not REFUSE, which is the whole shape of it
+///
+/// The obvious repair is a `max_bytes` the door turns down, and **there is no number to put in
+/// it.** Measured 2026-08-27 across four live runs: 9,025 B folded, 8,271 B folded, 4,532 B folded
+/// — and **2,816 B folded too**, a brief deliberately shortened to a single sentence plus a pointer.
+/// A threshold anywhere under that rejects work that would have gone through, and one above it lets
+/// through the size that was measured failing. **Folding is not a size line**, so a constant here
+/// would be one somebody invented and every caller would then be arguing with.
+///
+/// So the door says what it took and says that nothing here can promise a composer will submit it.
+/// What actually became of the prompts made from it is a different question with its own answer
+/// already published — [`Deliveries`](crate::plugin::Deliveries), which counts what folded and what
+/// was left sitting in a composer.
+///
+/// # ⚠⚠ What it measures, stated exactly
+///
+/// The three parts a CALLER writes and can shorten, in bytes of UTF-8, read back out of the
+/// datamodel rather than off the request — the same read that catches a crossing which mangled the
+/// text (see [`Briefed::NotHeld`], and SCE PR-87). **The prompt typed at the peer is larger than
+/// this**, by whatever the document composes around the parts, and that surplus is fixed for a
+/// given `ai_loop.scxml` where these three are what varies per run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Briefing {
+    /// Bytes of `north_star` — never rewritten, so this part is the same in every session the run
+    /// opens.
+    pub north_star: usize,
+    /// Bytes of `milestone`. ⚠ A reflection may REWRITE this mid-run, so it is the size the door
+    /// took and not necessarily the size a later session is briefed with — see
+    /// [`OuterLoop::briefed`], which says why the reading is not refreshed.
+    pub milestone: usize,
+    /// Bytes of `reference` — prior art at the door, and what the last session had to work out
+    /// after a reflection. Item 719's own 9,025 bytes were mostly here.
+    pub reference: usize,
+}
+
+/// ⚠ **THERE IS NO CONSTRUCTOR FROM A [`Brief`], DELIBERATELY.** One was written and deleted the
+/// same round: it measured the REQUEST, and the only honest measurement is of what the datamodel
+/// HELD — the read-back in `OuterLoop::held_as_briefed`, which is also the one place a crossing
+/// that mangled the text is caught (SCE PR-87). A second road to this value would be a second
+/// authority on one quantity, and the one that cannot see the failure the first exists for.
+impl Briefing {
+    /// What the caller wrote, in total.
+    ///
+    /// ⚠ NOT the size of the prompt this becomes — see the type. A reader who needs that number
+    /// reads the run's deliveries, which say what happened to the real thing.
+    #[must_use]
+    pub const fn bytes(&self) -> usize {
+        self.north_star + self.milestone + self.reference
+    }
+
+    /// **THE PART TO SHORTEN FIRST** — its name and its size.
+    ///
+    /// ⚠⚠ It is here rather than left to a reader's arithmetic because *shorten your brief* is not
+    /// an instruction anybody can act on: three parts are written by three different hands at three
+    /// different times, and item 719's own case was **one of them** carrying a diagnosis in full
+    /// while the other two were a line each.
+    ///
+    /// ⚠ Ties go to the earlier part in this order, which is deliberate and stated rather than
+    /// silently arbitrary: naming the same part twice for one run is better than naming a different
+    /// one on each look at equal sizes.
+    #[must_use]
+    pub fn largest(&self) -> (&'static str, usize) {
+        [
+            ("reference", self.reference),
+            ("milestone", self.milestone),
+            ("north_star", self.north_star),
+        ]
+        .into_iter()
+        .max_by_key(|(_, bytes)| *bytes)
+        .unwrap_or(("north_star", 0))
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD MAKE OF IT** — the sentence the door owes its caller.
+    ///
+    /// ⚠⚠ It carries the CAVEAT and not only the number, because a number with no scale attached
+    /// invites the reader to invent one — and the measurement above says every scale they could
+    /// invent is wrong. What it can honestly say is *this is what a composer will be asked to
+    /// swallow, and nothing here can promise it will*.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let (part, bytes) = self.largest();
+        format!(
+            "briefed with {} bytes ({part} is the largest at {bytes}), re-typed in full into every \
+             session this run opens — no size is known to be safe here, a 2,816-byte brief was \
+             measured folded away by a peer's composer, so read this run's delivery line for what \
+             became of it rather than trusting the number",
+            self.bytes(),
+        )
+    }
+}
+
 /// **WHAT THE MACHINE DID WITH A [`Brief`]** — see [`OuterLoop::brief`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
@@ -3664,6 +3767,21 @@ pub struct OuterLoop {
     ///
     /// ⚠ Empty until a prompt has been refused, which is every healthy run for its whole life.
     refused: Vec<String>,
+    /// ⚠⚠⚠⚠⚠ **HOW BIG THE BRIEF THIS RUN WAS STARTED WITH IS** — register item 719's second
+    /// direction. Written once, by [`brief`](Self::brief), out of what the datamodel HELD; see
+    /// [`Briefing`], which holds why the door reports this rather than refusing on it.
+    ///
+    /// ⚠⚠⚠ **TAKEN AT THE DOOR AND NEVER REFRESHED, WHICH IS THE READING A CALLER CAN ACT ON.**
+    /// `reflecting` may rewrite `milestone` and `reference` mid-run, so a value re-read every step
+    /// would drift into *what this loop most recently wrote for itself* — and the question item 719
+    /// is about is **what the caller handed over**, which is a fact about the request and does not
+    /// change. A reader who wants the current composition has the prompts themselves
+    /// ([`authored`](Self::authored)).
+    ///
+    /// ⚠ [`None`] before a brief has been taken, which is the moment between construction and the
+    /// door's own call — and for a loop whose brief was REFUSED, where reporting a size would be
+    /// reporting one about a run that never started.
+    briefed: Option<Briefing>,
     /// ⚠⚠⚠ **WHAT THE JUDGE SAW ON THIS JUDGEMENT** — the reading behind `_event.data.unheard`,
     /// kept so the edge out of `judging` can say which of its two meanings it had. Register item
     /// 423; see [`Because::Judged`].
@@ -3965,6 +4083,9 @@ impl OuterLoop {
             // the field, and [`Retyped`] for why the memory belongs to the run rather than to the
             // session beside it.
             refused: Vec::new(),
+            // ⚠ Nobody has briefed this loop yet — the door does that one call later, and a size
+            // invented here would be one about a request that has not arrived.
+            briefed: None,
             saw: None,
             verdict: None,
             explained: None,
@@ -4378,14 +4499,26 @@ impl OuterLoop {
             return Briefed::TooLate(at);
         }
 
-        let held = self.held_as_briefed(brief, rules.as_ref(), (turns, reflect));
-        if held != Briefed::Took {
-            // The mangled or missing part is already in the datamodel; there is no un-assigning it
-            // from out here. `fail` is what the document says happens to a run that cannot go on,
-            // and it is what stops a caller pumping past this answer.
-            self.machine.process_event(AiLoopEvent::Fail);
-            return held;
-        }
+        let briefing = match self.held_as_briefed(brief, rules.as_ref(), (turns, reflect)) {
+            Ok(briefing) => briefing,
+            Err(held) => {
+                // The mangled or missing part is already in the datamodel; there is no un-assigning
+                // it from out here. `fail` is what the document says happens to a run that cannot
+                // go on, and it is what stops a caller pumping past this answer.
+                self.machine.process_event(AiLoopEvent::Fail);
+                return held;
+            }
+        };
+        // ⚠⚠⚠⚠⚠ **AND HOW BIG WHAT IT TOOK IS** — register item 719's second direction, and the one
+        // fact this door used to discard. The read-back above is the only place the three parts
+        // exist as the MACHINE holds them, so the size is taken from it rather than measured again
+        // out here; see [`Briefing`] for why the door REPORTS it instead of refusing on it.
+        //
+        // ⚠⚠ WRITTEN ONLY ON THE PATH THAT SUCCEEDS. A refused brief is a run that is going to
+        // `failed`, and a size published about it would be a measurement of a request nobody is
+        // acting on. ⚠ A LATE brief returns above this line for the same reason: it assigned
+        // nothing, so there is nothing of its to be the size of.
+        self.briefed = Some(briefing);
         // ⚠⚠⚠ THE LINE A RESUME IS MEASURED FROM, taken here because this is where construction
         // ends — see [`as_briefed`](Self#structfield.as_briefed). A refused brief takes the branch
         // above and never reaches it: that run is going to `failed`, and a baseline for a machine
@@ -4401,7 +4534,15 @@ impl OuterLoop {
                 )
             })
             .collect();
-        held
+        Briefed::Took
+    }
+
+    /// **HOW BIG THE BRIEF THIS RUN WAS STARTED WITH IS** — register item 719, and [`None`] for a
+    /// loop nobody has briefed yet or whose brief was refused. See
+    /// [`briefed`](Self#structfield.briefed) and [`Briefing`].
+    #[must_use]
+    pub const fn briefed(&self) -> Option<Briefing> {
+        self.briefed
     }
 
     /// Whether every part of `brief` came back out of the datamodel unchanged — with `rules` the
@@ -4420,23 +4561,38 @@ impl OuterLoop {
         brief: &Brief,
         rules: Option<&ScreenRules>,
         counts: (Counted, Counted),
-    ) -> Briefed {
-        for (part, sent) in [
+    ) -> Result<Briefing, Briefed> {
+        // ⚠⚠⚠⚠⚠ **MEASURED HERE, OFF WHAT THE DATAMODEL HELD, AND NOWHERE ELSE** — register item
+        // 719's second direction. This loop is the one place in the product that has the three
+        // parts as the MACHINE holds them, and a size taken anywhere else would be a second
+        // authority on one quantity: off the request it would miss a crossing that mangled the
+        // text (which is what this very read exists to catch — SCE PR-87), and off a later read it
+        // would be the reflection's rewrite rather than the caller's brief.
+        let mut sizes = [0_usize; 3];
+        for (at, (part, sent)) in [
             ("north_star", &brief.north_star),
             (MILESTONE, &brief.milestone),
             (REFERENCE, &brief.reference),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             match self.script.get_variable(&self.session, part) {
-                Ok(ScriptValue::String(held)) if &held == sent => {}
+                Ok(ScriptValue::String(held)) if &held == sent => sizes[at] = held.len(),
                 Ok(ScriptValue::String(held)) => {
-                    return Briefed::NotHeld {
+                    return Err(Briefed::NotHeld {
                         part,
                         held: Some(held),
-                    };
+                    });
                 }
-                _ => return Briefed::NotHeld { part, held: None },
+                _ => return Err(Briefed::NotHeld { part, held: None }),
             }
         }
+        let briefing = Briefing {
+            north_star: sizes[0],
+            milestone: sizes[1],
+            reference: sizes[2],
+        };
         // ⚠⚠⚠ THE READ-BACK COVERS THE DECLINE TOO, and it has to: the whole point of item 316 is
         // that a number crossing unverified is a run bounded by something nobody asked for, and a
         // WORD crossing unverified is a run bounded by nothing at all — the louder half of the same
@@ -4446,18 +4602,18 @@ impl OuterLoop {
                 (Ok(ScriptValue::Int(held)), Counted::Of(count)) if held == count => {}
                 (Ok(ScriptValue::String(held)), Counted::Never) if held == Self::NEVER => {}
                 (Ok(ScriptValue::Int(held)), _) => {
-                    return Briefed::NotHeld {
+                    return Err(Briefed::NotHeld {
                         part,
                         held: Some(held.to_string()),
-                    };
+                    });
                 }
                 (Ok(ScriptValue::String(held)), _) => {
-                    return Briefed::NotHeld {
+                    return Err(Briefed::NotHeld {
                         part,
                         held: Some(held),
-                    };
+                    });
                 }
-                _ => return Briefed::NotHeld { part, held: None },
+                _ => return Err(Briefed::NotHeld { part, held: None }),
             }
         }
         // ⚠⚠⚠⚠ **AND THE FOUR NUMERIC DECISIONS, WHICH CROSSED UNVERIFIED** — register item 316.
@@ -4487,12 +4643,12 @@ impl OuterLoop {
             match self.script.get_variable(&self.session, part) {
                 Ok(ScriptValue::Int(held)) if held == sent => {}
                 Ok(ScriptValue::Int(held)) => {
-                    return Briefed::NotHeld {
+                    return Err(Briefed::NotHeld {
                         part,
                         held: Some(held.to_string()),
-                    };
+                    });
                 }
-                _ => return Briefed::NotHeld { part, held: None },
+                _ => return Err(Briefed::NotHeld { part, held: None }),
             }
         }
         // ⚠⚠⚠ AND THE STANDING INSTRUCTIONS, READ BACK THROUGH THE PRODUCT'S OWN READER — the one
@@ -4505,19 +4661,19 @@ impl OuterLoop {
         match (self.screening(), rules) {
             (Ok(held), wanted) if held.as_ref() == wanted => {}
             (Ok(held), _) => {
-                return Briefed::NotHeld {
+                return Err(Briefed::NotHeld {
                     part: ScreenRules::WIRE_KEY,
                     held: Some(format!("{held:?}")),
-                };
+                });
             }
             (Err(why), _) => {
-                return Briefed::NotHeld {
+                return Err(Briefed::NotHeld {
                     part: ScreenRules::WIRE_KEY,
                     held: Some(format!("{why:?}")),
-                };
+                });
             }
         }
-        Briefed::Took
+        Ok(briefing)
     }
 
     /// One of the document's own strings, as the datamodel holds it NOW.
@@ -11458,6 +11614,184 @@ mod tests {
             .lifecycle()
             .expect("lifecycle")
             .close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE DOOR SAYS HOW BIG THE BRIEF IT TOOK IS, AND SAYS NOTHING ABOUT A BRIEF IT
+    /// REFUSED** — register item 719's second direction.
+    ///
+    /// # ⚠⚠⚠⚠ The defect: `orchestrate` accepted any size in silence
+    ///
+    /// A brief becomes the prompt every session a run opens is greeted with, and is re-typed in
+    /// full into every replacement. Item 719 measured one at **9,025 bytes**, refused by the peer's
+    /// composer and retyped every turn — and the caller who wrote it had no channel that would have
+    /// told them it was large. The door took it, answered a run id, and the number appeared nowhere
+    /// until somebody measured it by hand afterwards.
+    ///
+    /// # ⚠⚠⚠ Why the REFUSED case is the assertion that matters
+    ///
+    /// A size is a claim about a run, and a run whose brief did not hold is one that is going to
+    /// `failed` before it prompts anybody. Publishing a size for it would put a measurement on a
+    /// row nobody is acting on — and worse, it would be a measurement of the request rather than of
+    /// what the machine holds, which is precisely the distinction the read-back exists to make
+    /// (`Briefed::NotHeld`, and SCE PR-87's mangled crossing). **The mutation is one line**: move
+    /// the write above the read-back's refusal arm, and only this arm goes red.
+    ///
+    /// ⚠⚠ **PER PART, NOT A TOTAL**, because the instruction a reader can act on is *shorten this
+    /// one* — item 719's own brief was one part carrying a diagnosis in full while the other two
+    /// were a line each. A gate on the total alone is green against a driver that measured the same
+    /// bytes into the wrong slots.
+    #[test]
+    fn the_door_says_how_big_the_brief_it_took_is_and_nothing_about_one_it_refused() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+
+        assert_eq!(
+            loops.briefed(),
+            None,
+            "⚠⚠⚠ THE STAGING: a loop nobody has briefed must answer nothing. A size here would be \
+             one about a request that has not arrived, and every assertion below would be about a \
+             constant",
+        );
+
+        // ⚠ THREE DIFFERENT LENGTHS, so a driver that measured one part into another's slot cannot
+        // pass. `a_brief`'s own strings are close in length and would not separate the three.
+        let brief = Brief {
+            north_star: "n".repeat(11),
+            milestone: "m".repeat(222),
+            reference: "r".repeat(3333),
+            ..a_brief()
+        };
+        assert_eq!(
+            loops.brief(&brief),
+            Briefed::Took,
+            "the staging: the brief must be TAKEN, or what is read below is about a refusal",
+        );
+        assert_eq!(
+            loops.briefed(),
+            Some(Briefing {
+                north_star: 11,
+                milestone: 222,
+                reference: 3333,
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 719: the door took this brief and must say how big it is, part \
+             by part. A `None` here is `orchestrate` accepting any size in silence, which is the \
+             whole of this item's second direction — and a caller who cannot see the number cannot \
+             know that 9,025 bytes is what their run will re-type into every session it opens",
+        );
+        assert_eq!(
+            loops.briefed().map(|held| held.bytes()),
+            Some(3566),
+            "⚠⚠ AND THE TOTAL IS THE THREE PARTS, which is what the sentence leads with",
+        );
+        assert_eq!(
+            loops.briefed().map(|held| held.largest()),
+            Some(("reference", 3333)),
+            "⚠⚠⚠ AND IT NAMES THE PART TO SHORTEN. *Shorten your brief* is not an instruction \
+             anybody can act on: three parts are written by three hands, and item 719's own case \
+             was ONE of them carrying a whole diagnosis",
+        );
+
+        // ── AND A BRIEF THE DATAMODEL DOES NOT HOLD PUBLISHES NOTHING ──
+        //
+        // ⚠⚠⚠ A FRESH LOOP, because a brief only reaches one in `idle`: briefing this one again
+        // would be refused as LATE, which is a different refusal and would prove nothing about the
+        // read-back arm this is here for.
+        let (refused_workspace, refused_pane) = quiet_pane();
+        let mut refused = bounded_at(lua, refused_pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+        let held = refused.brief(&Brief {
+            // ⚠ A ZERO HOLD CEILING IS REFUSED OUTRIGHT (register item 534) — a real `NotHeld`
+            // reached without a lying script engine, and reached BEFORE anything is assigned,
+            // which is the arm a size must never be published for.
+            hold_within_ms: Some(0),
+            ..a_brief()
+        });
+        assert!(
+            matches!(held, Briefed::NotHeld { .. }),
+            "the staging for the arm below: this brief must be REFUSED, or the assertion after it \
+             is about a run that started perfectly well. Got {held:?}",
+        );
+        assert_eq!(
+            refused.briefed(),
+            None,
+            "⛔⛔⛔⛔ A SIZE PUBLISHED FOR A REFUSED BRIEF IS A MEASUREMENT OF A RUN THAT NEVER \
+             STARTED. This one is going to `failed` without prompting anybody, and a row carrying \
+             *briefed with N bytes* would send its reader to shorten a prompt nothing ever typed",
+        );
+
+        for (holder, gone) in [(&workspace, pane), (&refused_workspace, refused_pane)] {
+            WorkspacePaneAccess::new(Arc::clone(holder))
+                .lifecycle()
+                .expect("lifecycle")
+                .close(gone);
+        }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND WHAT IT SAYS NAMES THE PART TO SHORTEN AND REFUSES TO IMPLY A SAFE SIZE** —
+    /// register item 719's second direction, driven on the sentence itself.
+    ///
+    /// # ⛔⛔⛔⛔ Why the caveat is part of the claim rather than decoration
+    ///
+    /// The obvious repair for item 719 is a `max_bytes` the door turns down, and **there is no
+    /// number to put in it.** Measured 2026-08-27 across four live runs: 9,025 B folded, 8,271 B
+    /// folded, 4,532 B folded — and **2,816 B folded too**, a brief deliberately cut to one
+    /// sentence plus a pointer. So a bare number on a row invites exactly the reading the
+    /// measurement refutes (*mine is small, mine is fine*), and the sentence has to carry the fact
+    /// that closes it.
+    ///
+    /// ⚠⚠ **THE LARGEST PART IS A COMPARISON, WHICH IS WHY IT IS GATED THREE WAYS.** One case is
+    /// satisfied by a renderer that always names the same part; three, each with a different
+    /// winner, are not. **Measured by mutation**: `max_by_key` to `min_by_key` reds all three.
+    #[test]
+    fn what_the_door_says_about_a_brief_names_the_part_to_shorten() {
+        for (part, briefing) in [
+            (
+                "north_star",
+                Briefing {
+                    north_star: 90,
+                    milestone: 5,
+                    reference: 7,
+                },
+            ),
+            (
+                "milestone",
+                Briefing {
+                    north_star: 5,
+                    milestone: 90,
+                    reference: 7,
+                },
+            ),
+            (
+                "reference",
+                Briefing {
+                    north_star: 5,
+                    milestone: 7,
+                    reference: 90,
+                },
+            ),
+        ] {
+            assert_eq!(
+                briefing.largest(),
+                (part, 90),
+                "⚠⚠⚠ THE LARGEST PART IS THE ONE TO SHORTEN, and a renderer that named a fixed \
+                 one would be green on whichever case it happened to match: {briefing:?}",
+            );
+            let said = briefing.describe();
+            assert!(
+                said.contains(part) && said.contains("102 bytes"),
+                "⚠⚠ AND THE SENTENCE CARRIES BOTH — the total a caller compares against and the \
+                 part they can do something about. Said {said:?}",
+            );
+            assert!(
+                said.contains("2,816"),
+                "⛔⛔⛔⛔⛔ AND IT MUST REFUSE TO IMPLY A SAFE SIZE. Briefs at 9,025, 8,271, 4,532 \
+                 AND 2,816 bytes were all folded away by a composer, so a bare number here invites \
+                 the one reading the measurement refutes — *mine is small, so mine is fine*. \
+                 Said {said:?}",
+            );
+        }
     }
 
     /// ⚠⚠⚠⚠⚠ **`reviewing` KEEPS ITS COUNTS WHERE THE RUN SAID, AND NOWHERE AT ALL WHEN IT SAID

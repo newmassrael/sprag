@@ -857,6 +857,29 @@ pub trait Plugin {
         None
     }
 
+    /// ⚠⚠⚠⚠⚠ **HOW BIG THE BRIEF THIS RUN WAS STARTED WITH IS** — register item 719's second
+    /// direction, and [`None`] for a plugin nobody briefs.
+    ///
+    /// # The door took any size and said nothing, and the caller could not find out
+    ///
+    /// A loop's brief is composed into the prompt every session it opens is greeted with, and
+    /// **re-typed in full into every replacement**. Item 719 measured one at 9,025 bytes being
+    /// refused by a peer's composer and retyped every turn — and the person who wrote it had no
+    /// channel that would have told them it was large. `orchestrate` answers a run id; nothing on
+    /// the row said what it had accepted.
+    ///
+    /// ⚠⚠⚠ **IT REPORTS AND DOES NOT REFUSE**, and [`Briefing`](crate::Briefing) holds the
+    /// measurement that settles why: briefs at 9,025, 8,271, 4,532 **and 2,816** bytes were all
+    /// folded away, so there is no threshold to reject on and any constant would be invented.
+    ///
+    /// ⚠⚠ **A LEVEL THAT DOES NOT MOVE, asked every step anyway.** It is fixed at the door, unlike
+    /// [`deliveries`](Self::deliveries) and [`checks`](Self::checks) beside it — but asking it the
+    /// same way they are asked is what keeps *one place a step reports what it is* true, and a
+    /// second road for the one constant would be the shape [`at`](Self::at)'s doc argues against.
+    fn briefed(&self) -> Option<crate::Briefing> {
+        None
+    }
+
     /// ⚠⚠⚠⚠⚠ **HOW MANY PROMPTS THIS PLUGIN HAS PUT INTO ITS PANE, AND HOW MANY OF THEM THE PEER'S
     /// COMPOSER FOLDED AWAY** — register item 591.
     ///

@@ -2246,7 +2246,13 @@ fn orchestrate_description() -> String {
          enforces an iteration ceiling, a cost ceiling in the run's own unit, a wall-clock \
          deadline, and a cancel flag, \
          and it ends a turn on the agent's MEASURED state rather than on a timer. Your loop has \
-         none of that. It returns at once — poll list_runs for the outcome. Every pane it touches \
+         none of that. It returns at once — poll list_runs for the outcome. \
+         ⚠ A LOOP'S BRIEF IS RE-TYPED IN FULL INTO EVERY SESSION THE RUN OPENS, and this door \
+         takes any size: the row list_runs answers says how many bytes it accepted and which part \
+         is the largest, so read that rather than assuming. There is no safe size to write to — \
+         briefs at 9,025 and at 2,816 bytes have both been measured folded away by an agent's \
+         composer, so a short one is not a submitted one; what actually happened to the prompts is \
+         the same row's delivery line. Every pane it touches \
          must be one YOU opened. Forms:",
     );
     for form in run_forms() {
@@ -8843,6 +8849,8 @@ mod tests {
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
             // that does not count — the distinction `Banked` exists to keep.
             banked: None,
+            // ⚠ `None` on `banked`'s terms: not a run briefed with nothing, one nobody briefs.
+            briefed: None,
         }
     }
 

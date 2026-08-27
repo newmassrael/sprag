@@ -1412,6 +1412,22 @@ pub struct PersistedRun {
     /// nothing was banked. [`RUN_LOG_VERSION`] does not move, [`build`](Self::build)'s argument.
     #[serde(default)]
     pub banked: Option<PersistedBanked>,
+    /// ⚠⚠⚠⚠⚠ **HOW BIG THE BRIEF IT WAS STARTED WITH IS** — register item 719's second direction,
+    /// and it crosses a restart on [`banked`](Self::banked)'s argument, which applies here harder
+    /// than anywhere.
+    ///
+    /// The question this answers — *what was that run handed?* — is asked almost exclusively about
+    /// a run that has already ended, and item 719's own diagnosis had to be reconstructed by hand
+    /// because nothing on the row said. Item 606's measurement is the general form: thirteen live
+    /// runs, **every one restored**. A level that does not survive the daemon is a level nobody
+    /// reads.
+    ///
+    /// ⚠ Three byte counts and nothing else — no document vocabulary, so there is nothing for a
+    /// fingerprint to disagree about ([`PersistedBanked`]'s line). [`None`] for a plugin nobody
+    /// briefs and for a log written before this field existed; the two read alike and neither is a
+    /// claim that a brief was empty. [`RUN_LOG_VERSION`] does not move.
+    #[serde(default)]
+    pub briefed: Option<PersistedBriefing>,
     /// ⚠⚠⚠⚠⚠ **THE REQUEST THIS RUN WAS ASKED WITH** — the map `crate::plugins::drive_request`
     /// builds a plugin from, so a successor daemon can build the SAME plugin and put it back at
     /// [`place`](Self::place). Register item 543's sixth brick.
@@ -1524,6 +1540,44 @@ impl From<PersistedBanked> for sprag_plugin::Banked {
         Self {
             completed: stored.completed,
             unit: std::borrow::Cow::Owned(stored.unit),
+        }
+    }
+}
+
+/// [`sprag_plugin::Briefing`] as the run log carries it — register item 719's second direction.
+///
+/// ⚠⚠ **THE THREE CROSS AS ONE VALUE**, [`PersistedBanked`]'s argument verbatim: the sentence a
+/// reader is shown names the LARGEST part, which is a comparison — so a later writer that filled in
+/// two of three would produce a sentence pointing at the wrong one, confidently.
+///
+/// ⚠ Its own type rather than `sprag_plugin::Briefing` directly, for that neighbour's reason: the
+/// plugin crate is `serde`-free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedBriefing {
+    /// [`sprag_plugin::Briefing::north_star`], in bytes.
+    pub north_star: usize,
+    /// [`sprag_plugin::Briefing::milestone`], in bytes.
+    pub milestone: usize,
+    /// [`sprag_plugin::Briefing::reference`], in bytes.
+    pub reference: usize,
+}
+
+impl From<sprag_plugin::Briefing> for PersistedBriefing {
+    fn from(live: sprag_plugin::Briefing) -> Self {
+        Self {
+            north_star: live.north_star,
+            milestone: live.milestone,
+            reference: live.reference,
+        }
+    }
+}
+
+impl From<PersistedBriefing> for sprag_plugin::Briefing {
+    fn from(stored: PersistedBriefing) -> Self {
+        Self {
+            north_star: stored.north_star,
+            milestone: stored.milestone,
+            reference: stored.reference,
         }
     }
 }
@@ -2213,6 +2267,14 @@ impl RunRegistry {
                             .banked
                             .map(Into::into)
                             .or_else(|| run.progress.banked.clone().map(Into::into)),
+                        // ⚠⚠⚠⚠⚠ AND HOW BIG THE BRIEF WAS — register item 719's second direction,
+                        // written on the line above's terms exactly: the report first, the cell as
+                        // the fallback, and a `None` that is the PLUGIN's own answer (*nobody
+                        // briefs me*) rather than this daemon's silence.
+                        briefed: reported
+                            .briefed
+                            .map(Into::into)
+                            .or_else(|| run.progress.briefed.map(Into::into)),
                         // ⚠ AND HERE `None` REALLY IS *no cancel*, unlike the field above — item
                         // 596. A stand-down is a bool and needs `Some(false)` to distinguish a
                         // silent daemon from an old log; a canceller is an option already, so the
@@ -2346,6 +2408,11 @@ impl RunRegistry {
                         // every one restored). See `PersistedBanked` for why a count may cross
                         // where a state name may not.
                         banked: saved.banked.clone().map(Into::into),
+                        // ⚠⚠⚠⚠ AND SO IS THIS, on the line above's argument and one of its own —
+                        // register item 719. *What was that run handed?* is asked about runs that
+                        // are OVER, which after a restart is all of them; a level dropped here
+                        // would be readable only on the rows nobody has a question about.
+                        briefed: saved.briefed.map(Into::into),
                     }),
                     output: saved.output.clone(),
                 }
@@ -2449,6 +2516,10 @@ impl RunRegistry {
                     // and `"turn"` is a plain noun rather than a document symbol. An older log
                     // still reads as `None`, which claims nothing.
                     banked: saved.banked.clone().map(Into::into),
+                    // ⚠⚠⚠⚠ AND SO IS THE BRIEF'S SIZE — register item 719, on the line above's
+                    // argument. It is a level that never moved, so restoring it is restoring the
+                    // whole of what it ever said.
+                    briefed: saved.briefed.map(Into::into),
                     // ⚠⚠⚠ AND NOT WHICH PANE IT WAS DRIVING — register items 540 and 595, and here
                     // the absence is the CORRECT answer rather than a lossy one: this run's driver
                     // died with its daemon, so nothing is driving that pane now. Restoring a pane
@@ -2705,6 +2776,7 @@ mod tests {
                 deliveries: sprag_plugin::Deliveries::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
+                briefed: None,
             };
             let read_back = crate::plugins::outcome_from_words(
                 Some(crate::plugins::outcome_word(&outcome)),
@@ -2747,6 +2819,7 @@ mod tests {
                     deliveries: sprag_plugin::Deliveries::NONE,
                     checks: sprag_plugin::Checks::NONE,
                     banked: None,
+                    briefed: None,
                 }),
                 output: None,
             };
@@ -2845,6 +2918,7 @@ mod tests {
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
+            briefed: None,
         }
     }
 
@@ -3430,6 +3504,91 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **HOW BIG A BRIEF WAS COMES BACK AFTER THE DAEMON THAT TOOK IT DIED** — register
+    /// item 719's second direction, and the RESTORE half of a claim whose write half is gated one
+    /// crate over (`a_run_driven_somewhere_else_shows_what_it_delivered_and_banked`).
+    ///
+    /// # Why this level needs the restart more than its neighbours do
+    ///
+    /// *Was my work kept?* is at least asked of a run still going. **_What was that run handed?_ is
+    /// asked almost only about a run that is over** — it is the question somebody asks while
+    /// looking at a churn and wondering why, and item 719's own answer had to be measured by hand
+    /// afterwards for exactly that reason. Item 606's finding is the general form: thirteen live
+    /// runs on this machine, **every one of them restored**. A level that dies at the first restart
+    /// is one nobody is ever holding when they need it.
+    ///
+    /// ⚠⚠ **THROUGH THE FILE AND INTO BOTH SLOTS.** `restore` fills an ending AND a live cell, and
+    /// the row reads the report-or-cell pair while a stand-down-style reader reads the ending — so
+    /// a restore that filled one of them would be green against whichever reader the gate happened
+    /// to pick. Both are asserted.
+    ///
+    /// ⚠ Three byte counts and no document vocabulary, so unlike [`PersistedRun::at`] there is
+    /// nothing here for a fingerprint to disagree about — [`PersistedBanked`]'s line, one value
+    /// over.
+    #[test]
+    fn how_big_a_brief_was_comes_back_after_the_daemon_that_took_it_died() {
+        let briefed = sprag_plugin::Briefing {
+            north_star: 41,
+            milestone: 1_984,
+            reference: 7_000,
+        };
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let progress = ProgressCell::default();
+        lock(&progress).briefed = Some(briefed);
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(sprag_plugin::Outcome {
+                    // ⚠ NOT a convergence: the run this question is asked about is the one that
+                    // went wrong, which is the neighbour gate's argument too.
+                    state: sprag_plugin::OutcomeState::Failed,
+                    briefed: Some(briefed),
+                    ..an_outcome()
+                }),
+                output: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress,
+        });
+
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        assert!(
+            on_disk.contains("7000"),
+            "⚠⚠⚠ THE STAGING: the size has to be IN THE FILE, or whatever comes back below came \
+             out of memory and this gate is about nothing: {on_disk}",
+        );
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+
+        let restored = successor.snapshot();
+        let ended = match &restored[0].state {
+            RunState::Done { outcome, .. } => outcome.briefed,
+            other => panic!("the fixture's run must come back finished, not {other:?}"),
+        };
+        assert_eq!(
+            ended,
+            Some(briefed),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 719: this run was handed 9,025 bytes and the restart lost the \
+             number, so the one question anybody asks about a churn — *what was it given?* — is \
+             unanswerable on exactly the rows people read. A run is read after it ends, when the \
+             daemon that took its brief is already gone. From {on_disk}",
+        );
+        assert_eq!(
+            restored[0].progress.briefed,
+            Some(briefed),
+            "⚠⚠⚠⚠ AND INTO THE LIVE CELL TOO, because the ROW reads the report-or-cell pair while \
+             an ending's reader reads the outcome — a restore that filled one slot would be green \
+             against whichever reader a gate happened to choose, and silent for the other",
+        );
+    }
+
     /// An outcome for a run whose ending is not what the gate is about.
     fn an_outcome() -> sprag_plugin::Outcome {
         sprag_plugin::Outcome {
@@ -3443,6 +3602,7 @@ mod tests {
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
+            briefed: None,
         }
     }
 
@@ -3489,6 +3649,7 @@ mod tests {
                 deliveries: None,
                 // ⚠ `None` is what an OLDER LOG reads as, which is what these fixtures are about.
                 banked: None,
+                briefed: None,
                 place: None,
             }],
         };
@@ -3726,6 +3887,7 @@ mod tests {
             deliveries: None,
             // ⚠ `None` is what an OLDER LOG reads as, which is what this fixture is about.
             banked: None,
+            briefed: None,
             // ⚠ This fixture is about the WORD, so it carries no place — which is also the
             // shape of every log written before item 543's field existed.
             place: None,
@@ -3827,6 +3989,7 @@ mod tests {
             cancelled_by: None,
             deliveries: None,
             banked: None,
+            briefed: None,
             place,
         };
         // ⚠ THE WORDS ARE THE PLUGIN'S OWN, taken from a real place rather than spelled here — a
@@ -4213,6 +4376,7 @@ mod tests {
                 deliveries: None,
                 // ⚠ Nor how much it banked — item 616's field, absent for that field's reason.
                 banked: None,
+                briefed: None,
                 place: None,
             }],
         });

@@ -1041,6 +1041,14 @@ impl Plugin for AiLoop {
         self.inner.checks()
     }
 
+    /// ⚠ DELEGATED for `deliveries`' reason — register item 719. The driver that put the brief in
+    /// is the only thing that read it back out of the datamodel, and a size measured at this layer
+    /// would be measuring the REQUEST rather than what the machine holds — a second authority on
+    /// one quantity, and the one that cannot see a crossing which mangled the text.
+    fn briefed(&self) -> Option<crate::Briefing> {
+        self.inner.briefed()
+    }
+
     /// ⚠⚠⚠⚠⚠ **BOTH, AND THIS IS THE ONLY PLUGIN THAT MAY SAY SO** — register items 539 and 597.
     ///
     /// `OuterLoop::pump` is the single reader of `RunContext::held` and `RunContext::stood_down` in
