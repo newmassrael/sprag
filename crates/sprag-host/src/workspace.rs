@@ -2958,6 +2958,34 @@ impl WorkspaceExternal {
                             .collect()
                     })
                     .unwrap_or_default();
+                // ⚠⚠⚠⚠⚠ **AND WHICH RUN'S CONVERSATION EACH PANE IS** — register item 619, keyed on
+                // the CONVERSATION rather than on a pane id.
+                //
+                // ⚠ EVERY run counts here, unlike `driven` above, and the difference is the whole
+                // point: `driven` asks *is somebody driving this pane RIGHT NOW*, so a finished run
+                // must not answer it. This asks *whose work is this pane*, which an ENDED run
+                // answers perfectly well — and after a restart every run is ended, which is exactly
+                // the moment the question is asked.
+                //
+                // ⚠⚠ `PersistedRun::opened_by_session` is what survives a restart; a pane id does
+                // not (*"pane 3 comes back as pane 3, but the successor has no way to know whether
+                // the thing sitting in it is the asker or a stranger who booted into the same
+                // seat"*). So the join is session → run, and the pane brings its own session.
+                let borne: std::collections::HashMap<String, u64> = self
+                    .runs
+                    .as_ref()
+                    .map(|runs| {
+                        crate::lock(runs)
+                            .snapshot()
+                            .iter()
+                            .filter_map(|run| {
+                                run.opened_by_session
+                                    .clone()
+                                    .map(|session| (session, run.id.0))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let entries = panes
                     .iter()
                     .map(|p| {
@@ -3175,6 +3203,18 @@ impl WorkspaceExternal {
                         // place the difference survives.
                         if p.revived {
                             entry[crate::wire::PANE_REVIVED_KEY] = serde_json::json!(true);
+                        }
+                        // ⚠⚠⚠⚠⚠ **AND WHAT IT BELONGS TO** — register item 619, the half the two
+                        // keys above cannot reach. A revived pane could say it came back and not
+                        // whose work it was; this answers with the run whose conversation it is,
+                        // and stays ABSENT for a pane no run ever asked for — which is the honest
+                        // *belongs to no run*, and the presence-is-the-claim rule its siblings use.
+                        //
+                        // ⚠ Asked of EVERY pane rather than only revived ones: a pane's owner is a
+                        // fact about the pane, not about how it was born, and a key that appeared
+                        // only after a restart would make a reader infer the restart from it.
+                        if let Some(run) = p.agent_session.as_deref().and_then(|s| borne.get(s)) {
+                            entry[crate::wire::PANE_BORNE_BY_KEY] = serde_json::json!(run);
                         }
                         entry
                     })
@@ -4461,6 +4501,177 @@ mod tests {
             "⚠⚠⚠⚠⚠ THE CONTROL: a person opened this one, and the key must be ABSENT rather than \
              `false` — the neighbouring `driven` states the rule and the reason, and a key that \
              said `true` here would be reporting the daemon's restart rather than this pane's birth",
+        );
+    }
+
+    /// **A REVIVED PANE SAYS WHOSE WORK IT IS, AND ONE NOBODY ASKED FOR SAYS NOTHING** — register
+    /// item 619, the half `revived` was filed leaving open.
+    ///
+    /// # ⛔⛔⛔⛔⛔ *It came back* and *whose it is* are two questions
+    ///
+    /// The gate above proves a revived pane says it was revived. That is a BIRTH. What it cannot
+    /// say is what the pane belongs to — and after a restart `driven` cannot either, because runs
+    /// come back ENDED while panes come back ALIVE. So a conversation a person opened by hand and
+    /// one a run asked for are the same undriven `claude`, and **only one of them is somebody's
+    /// work**.
+    ///
+    /// # ⚠⚠⚠⚠ BOTH PANES ARE REVIVED AGENTS, and that is what makes the claim about OWNERSHIP
+    ///
+    /// A control that was hand-opened, or that was not an agent, would let this key pass by
+    /// answering *was it revived* or *is it an agent* a second time. Both panes here come back from
+    /// the same snapshot running the same program; the only difference is the conversation each
+    /// holds, and one of those is the conversation a run recorded as having asked for it.
+    ///
+    /// ⚠⚠ **THE SESSION IS DERIVED BY THE RESTORE, NOT WRITTEN BY THE FIXTURE.** `spawn_restored`
+    /// fills `Pane::agent_session` by reading the BUILT command, so a snapshot field alone is
+    /// ignored — a fixture that set it by hand would pass over a restore that had stopped resuming.
+    /// Hence the allowlisted `claude` stand-in: what is under test is the birth the daemon performs.
+    #[test]
+    fn a_revived_pane_says_which_runs_conversation_it_is_and_an_unclaimed_one_does_not() {
+        const ASKED: &str = "d8be3b14-3f26-4220-96f5-c57a462ea383";
+        const NOBODYS: &str = "11111111-2222-3333-4444-555555555555";
+
+        // A program BASENAMED `claude`, linked rather than copied — register item 467's `ETXTBSY`
+        // window. `cat` stands in: this gate is about which conversation comes back, and a real
+        // agent would answer identically while costing a model call.
+        let dir = std::env::temp_dir().join(format!("sprag-619-{}", std::process::id()));
+        let agent =
+            sprag_gate::doubles::linked_as(std::path::Path::new("/bin/cat"), &dir.join("claude"));
+        let pane_at = |id: u64, session: &str| sprag_terminal::PaneSnapshot {
+            id: sprag_terminal::PaneId(id),
+            cwd: None,
+            start_dir: None,
+            command_label: "claude".to_owned(),
+            argv: vec![agent.to_string_lossy().into_owned()],
+            agent_session: Some(session.to_owned()),
+            remote: None,
+            opened_by: None,
+            name: None,
+            cols: 80,
+            rows: 24,
+        };
+        let snapshot = sprag_terminal::Snapshot {
+            version: sprag_terminal::SNAPSHOT_VERSION,
+            next_id: 2,
+            default_size: (80, 24),
+            sessions: vec![sprag_terminal::SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "0".to_owned(),
+                windows: vec![sprag_terminal::WindowSnapshot {
+                    name: "0".to_owned(),
+                    layout: sprag_terminal::LayoutWire::default(),
+                    floating: vec![],
+                    panes: vec![pane_at(0, ASKED), pane_at(1, NOBODYS)],
+                    manual_size: None,
+                    active: None,
+                    zoomed: None,
+                    opened_by: None,
+                }],
+            }],
+        };
+        // ⚠ WITH AN IDENTITY SOURCE, which is what lets the restore build a RESUMING command — and
+        // without it the panes come back with no conversation at all, which the premise below
+        // catches rather than letting the control pass by emptiness.
+        let host =
+            crate::Host::new((80, 24)).with_pane_identity(crate::host::pane_identity_source());
+        assert_eq!(
+            host.restore(
+                snapshot,
+                &["claude".to_owned()].into_iter().collect(),
+                |_| None,
+                || None,
+                || None,
+                |_| Vec::new(),
+            )
+            .expect("a valid snapshot restores"),
+            2,
+            "both recorded panes came back, which is the precondition and not the claim",
+        );
+
+        // ── A RUN THAT RECORDS WHICH CONVERSATION ASKED FOR IT ────────────────────────────────
+        let runs = Arc::new(Mutex::new(crate::runs::RunRegistry::default()));
+        let id = crate::lock(&runs).reserve();
+        crate::lock(&runs).submit(crate::runs::NewRun {
+            id,
+            label: "ai_loop".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            // ⚠ THE WHOLE VARIABLE. It is the one name that survives a restart, and matching it is
+            // what makes pane 0's answer about ownership rather than about a seat number.
+            opened_by_session: Some(ASKED.to_owned()),
+            state: Arc::new(Mutex::new(crate::runs::RunState::Running)),
+            run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
+            progress: sprag_plugin::ProgressCell::default(),
+        });
+
+        let scope = SessionScope::unscoped(host.registry());
+        let mut ext = WorkspaceExternal::new(
+            Arc::clone(host.registry()),
+            scope,
+            Arc::new(ChannelRegistry::default()),
+            crate::DaemonShared {
+                on_pane_exit: None,
+                attachments: None,
+                attention: None,
+                agents: None,
+                samplers: sampler(),
+                spawn_driver: None,
+                seats_elsewhere: None,
+                runs: Some(Arc::clone(&runs)),
+            },
+        );
+
+        // ── THE PREMISE: BOTH CAME BACK, AND BOTH RESUMED A CONVERSATION ──────────────────────
+        //
+        // ⚠⚠⚠ Without this the claim below is vacuous in the quietest way: if the restore had NOT
+        // derived a session, both panes would answer nothing and the control would pass by being
+        // as empty as the subject.
+        for at in 0..2 {
+            assert_eq!(
+                pane_entry(&mut ext, at)[crate::wire::PANE_REVIVED_KEY],
+                json!(true),
+                "the fixture's premise: pane {at} came back from the snapshot",
+            );
+        }
+        // ⚠ Read off the POOL rather than the wire: the panes slot publishes no `agent_session`
+        // key, and this premise is about what the restore DERIVED, which is a fact about the pane.
+        let resumed = |id: u64| {
+            let ws = host.workspace();
+            let pool = crate::lock(&ws);
+            pool.pane(sprag_terminal::PaneId(id))
+                .and_then(sprag_terminal::Pane::agent_session)
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            resumed(1).as_deref(),
+            Some(NOBODYS),
+            "⚠⚠⚠⚠⚠ THE PREMISE THAT MAKES THE CONTROL A CONTROL: the unclaimed pane really did \
+             resume a conversation of its own. If the restore derived nothing, the `None` below \
+             would be an empty pane rather than an unowned one",
+        );
+        assert_eq!(
+            resumed(0).as_deref(),
+            Some(ASKED),
+            "and the claimed pane resumed the conversation the run recorded — the join's left half, \
+             established before the join is asked about",
+        );
+
+        assert_eq!(
+            pane_entry(&mut ext, 0)[crate::wire::PANE_BORNE_BY_KEY],
+            json!(id.0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 619: a revived pane must say WHICH RUN's conversation it is. \
+             `revived` says the daemon brought it back and `driven` says nobody is driving it — \
+             and after a restart that is true of every agent pane, so neither can tell the \
+             conversation somebody's work is happening in from one a person opened by hand",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 1).get(crate::wire::PANE_BORNE_BY_KEY),
+            None,
+            "⚠⚠⚠⚠⚠ THE CONTROL, AND IT IS A REVIVED AGENT TOO: no run ever recorded this \
+             conversation, so the honest answer is *belongs to no run* — carried by ABSENCE, on \
+             the rule `driven` and `revived` beside it already state. A key here would mean the \
+             join matched on something every restored agent has, and the claim would be empty",
         );
     }
 

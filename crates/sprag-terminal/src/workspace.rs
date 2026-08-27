@@ -611,6 +611,17 @@ pub struct PaneInfo {
     /// rests on it is register item 595 — telling an agent somebody opened from one the daemon
     /// re-ran unasked, which no question about live runs can answer after a restart.
     pub revived: bool,
+    /// **WHICH CONVERSATION THE OCCUPANT IS** — see [`Pane::agent_session`], which this republishes
+    /// verbatim, and [`None`] for a pane running anything else.
+    ///
+    /// ⚠⚠⚠ Republished for register item 619: it is the one name that survives a daemon restart
+    /// when a pane id does not, so it is what a successor joins a revived pane to the run whose
+    /// conversation it is. `PersistedRun::opened_by_session` is the other half of that join.
+    ///
+    /// ⚠ Unlike [`Self::revived`] and [`Self::opened_by`] beside it this is NOT fixed at birth — a
+    /// loop replaces its agent's session on purpose — so a reader must take it as *the conversation
+    /// in this pane now* rather than as a fact about how the pane started.
+    pub agent_session: Option<String>,
 }
 
 /// [`PaneHooks`] for a pane that DOES NOT EXIST YET — the form a spawn site can supply, where the
@@ -1711,6 +1722,7 @@ impl Workspace {
                     images: p.images(),
                     opened_by: p.opened_by.map(|opener| opener.0),
                     revived: p.revived,
+                    agent_session: p.agent_session.clone(),
                 }
             })
             .collect()

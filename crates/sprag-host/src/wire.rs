@@ -5003,6 +5003,31 @@ pub const PANE_DRIVEN_KEY: &str = "driven";
 /// reason: a `revived: true` on every pane after a restart would be reporting that the daemon had
 /// restarted, which the daemon knows without asking a pane.
 pub const PANE_REVIVED_KEY: &str = "revived";
+/// **WHICH RUN'S CONVERSATION THIS PANE IS** — the run id, or ABSENT for a pane that belongs to no
+/// run. Register item 619, and the half [`PANE_REVIVED_KEY`] was filed leaving open.
+///
+/// # ⛔⛔⛔⛔⛔ *It came back* is a birth; *whose it is* is a different question
+///
+/// [`PANE_REVIVED_KEY`] says the daemon brought this pane back unasked. It cannot say what the pane
+/// BELONGS to, and after a restart neither can [`PANE_DRIVEN_KEY`] — runs come back ENDED, so
+/// nothing is driving anything. **A conversation a person opened by hand and one a run asked for
+/// are the same revived `claude` prompt**, and only one of them is somebody's work.
+///
+/// # ⚠⚠⚠⚠ It joins on the CONVERSATION, never on a pane id
+///
+/// `PersistedRun::opened_by_session`'s own doc settles this: *"the pane id is deliberately not here
+/// — it would decode cleanly and answer wrongly: pane 3 comes back as pane 3, but the successor has
+/// no way to know whether the thing sitting in it is the asker or a stranger who booted into the
+/// same seat. The conversation carries the identity."* So this is `Pane::agent_session` matched
+/// against that field, which is the one name stable across the restart.
+///
+/// ⚠⚠ ABSENT rather than `null`, on [`PANE_DRIVEN_KEY`]'s stated terms: the answer is a claim when
+/// it is there, and a key on every shell in the workspace is noise on the common path.
+///
+/// ⚠ It is the mirror of a resolution the runs slot already publishes — `runs` answers *the pane
+/// currently holding this run's `opened_by_session`* — so nothing new is being derived, only asked
+/// from the side that could not ask it.
+pub const PANE_BORNE_BY_KEY: &str = "borne_by";
 /// The member of a [`PANES_SLOT`] entry that is an ADDRESS: the pane's id, which is what a client
 /// puts back into [`pane_input_path`] to read or drive that pane.
 ///
