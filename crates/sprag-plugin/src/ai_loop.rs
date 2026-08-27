@@ -567,7 +567,19 @@ impl AiLoop {
     /// took the pane. So this is exactly *"the account's turn did not finish, and here is who has
     /// the pane"* — the two facts nothing downstream can recover once the run is over.
     fn left_behind(&self) -> Option<String> {
-        match self.inner.noticed() {
+        Self::account_of(self.inner.noticed())
+    }
+
+    /// [`left_behind`](Self::left_behind)'s words, as a function of the notice ALONE.
+    ///
+    /// ⚠⚠⚠ **SPLIT OUT SO THE SENTENCES CAN BE ASKED FOR DIRECTLY** — register item 724. The notice
+    /// is the driver's private field one module over, so a gate on the WORDS had either to widen
+    /// that field's visibility for a test or to drive a whole run to reach a format string; the
+    /// first trades production encapsulation for a gate and the second measures the clock and calls
+    /// it the report. Nothing here reads `self`, which is the point: these sentences are a pure
+    /// function of what was noticed, and now they are written as one.
+    fn account_of(noticed: Option<&Noticed>) -> Option<String> {
+        match noticed {
             Some(Noticed::Asking(unanswered)) => Some(format!(
                 " — no account: the agent stopped to ask ({unanswered:?}) and the question is still \
                  on the pane, unanswered by this run"
@@ -588,9 +600,22 @@ impl AiLoop {
             // agent's work is intact and its session is where it left it; what ran out is patience
             // with an upstream service. A reader told only *blocked* would go looking for a
             // question, and there is none.
-            Some(Noticed::ServiceDown { retried, waited }) => Some(format!(
-                " — no account: the peer's service was down and this run had already waited it out \
-                 {retried} time(s), the last for {waited:?}, so nothing was asked"
+            // ⚠⚠⚠ AND WHICH OUTAGE IT WAS, since register item 724 gave the two doors budgets that
+            // differ by a factor of six. The count alone stopped being readable that day: twelve is
+            // twice past one ceiling and a third of the way to the other, and the reader this
+            // sentence exists for has no other page to check.
+            Some(Noticed::ServiceDown {
+                retried,
+                waited,
+                resumes,
+            }) => Some(format!(
+                " — no account: {} and this run had already waited it out {retried} time(s), the \
+                 last for {waited:?}, so nothing was asked",
+                if *resumes {
+                    "the peer said it was continuing on its own"
+                } else {
+                    "the peer's service was down"
+                }
             )),
             _ => None,
         }
@@ -1382,7 +1407,7 @@ mod tests {
     // ⚠ `OuterLoop` and `Pumped` are gone from here, and their going is a fact: the gate that used
     // them drove the layer UNDER the door in order to reach a state the door refused. The door no
     // longer refuses it, so the PLUGIN reaches it, which is the only height a caller has.
-    use crate::outer::{AiLoopSpec, Brief, Checked, Evidence, INNER_SESSION_ENDS};
+    use crate::outer::{AiLoopSpec, Brief, Checked, Evidence, INNER_SESSION_ENDS, Noticed};
     use crate::plugin::{Accounting, Cost, Plugin, Resumption, Verdict};
     use crate::readiness::ReadyWhen;
     use crate::run::RunContext;
@@ -10760,6 +10785,229 @@ mod tests {
              guard promises the same word; a comparison that read the string as a number would \
              ceiling on the first retry of every run that asked for no ceiling — the opposite of \
              what its author wrote",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PEER THAT SAID IT IS COMING BACK IS WAITED FOR PAST THE HOUR A REFUSING SERVER
+    /// GETS** — register item 724, which is the SURVIVAL item 715 named and did not pay.
+    ///
+    /// # ⚠⚠⚠⚠ What 715 left, in one paragraph
+    ///
+    /// 715 made a usage limit REACH `service_down`: the peer prints that it is continuing
+    /// automatically, `peer.silent` carries it in, and the way back out types nothing because a
+    /// keystroke would cancel the recovery. Both doors were then counted by ONE ceiling whose
+    /// argument, written above its `<data>`, is the shape of a 529 — six waits of ten minutes,
+    /// because *a server refusing for an hour is not a hiccup*. Measured 2026-08-27 in the peer's
+    /// own transcripts, a usage-limit window runs to FIVE hours. So the run got the outage's name
+    /// right and still walked out on it after one, which is the whole of item 724.
+    ///
+    /// # ⚠⚠⚠ The three arms, and what each alone would let through
+    ///
+    /// * **THE HEADLINE**: at a count that exhausts the 529 ceiling, the self-resuming door is
+    ///   still at work. ⚠ The count is READ OFF THE SHIPPED DOCUMENT rather than written here, so
+    ///   nobody can make this arm vacuous by lowering `service_retry_max` underneath it.
+    /// * ⚠⚠⚠ **AND IT IS A CEILING, NOT AN ABSENCE**: at `service_resumes_max` the same door
+    ///   reaches a person. A repair that simply dropped the guard for this door passes the headline
+    ///   and then burns a night on a peer that printed the notice and died — the failure the older
+    ///   ceiling exists to stop, moved one door over rather than answered.
+    /// * ⚠⚠⚠⚠ **THE CONTROL (R27), AND IT IS WHAT MAKES THE HEADLINE MEAN ANYTHING**: the OTHER
+    ///   door, at the same count, still reaches a person. Without it, raising the single shared
+    ///   ceiling from six to thirty-six passes both arms above — and that is the workaround item
+    ///   724 forbids by name, because it would report *the server never came back* six times later
+    ///   for the case the number was actually written for.
+    ///
+    /// ⚠⚠ The two ceilings' PRODUCT with the wait — *how many hours is this, really* — is not
+    /// asked here, because the wait lives in the kind's document and not this one. It is ratcheted
+    /// where both are in scope: `the_budget_for_a_peer_that_resumes_itself_outlasts_the_longest_limit_measured`.
+    #[test]
+    fn a_peer_that_resumes_itself_is_waited_for_past_the_hour_a_refusing_server_gets() {
+        /// Reach `service_down` by one of the two doors, author the counter, retry — and say where
+        /// it landed, alongside the two ceilings AS THE DOCUMENT SHIPS THEM.
+        ///
+        /// `resumes` picks the door, and it is the same distinction `service_resumes_itself`
+        /// records: `true` is `peer.silent` carrying a service, the peer that printed it is
+        /// continuing on its own; `false` is `turn.blocked`, which is the 529's door and means the
+        /// turn ENDED.
+        /// **THE OUTAGE THAT ACTUALLY HAPPENED**, 2026-08-27: run 5 was cut off at 01:0x and its
+        /// peer printed an 03:30 reset. It is the arm's subject rather than a round number — item
+        /// 724's done-when is that a MEASURED window is survived, and a fixture picked for
+        /// convenience would leave that unsaid.
+        const RUN_5_OUTAGE: Duration = Duration::from_secs(2 * 60 * 60 + 30 * 60);
+
+        fn retried_at(resumes: bool, retried: i64) -> (AiLoopState, i64, i64, i64) {
+            let (mut engine, host, lua, session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            if resumes {
+                carried(
+                    &mut engine,
+                    &host,
+                    AiLoopEvent::PeerSilent,
+                    &serde_json::json!({"service": true}).to_string(),
+                );
+            } else {
+                carried(
+                    &mut engine,
+                    &host,
+                    AiLoopEvent::TurnBlocked,
+                    &serde_json::json!({"service": true, "judged": false, "rule": ""}).to_string(),
+                );
+            }
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::ServiceDown,
+                "the fixture: BOTH doors must reach the outage state, or no arm below is about a \
+                 ceiling at all",
+            );
+            // ⚠⚠ READ, NOT RESTATED. An arm that wrote `6` here would keep passing the day the
+            // document changed its mind, which is the failure this whole register calls a stale
+            // fixture. The names are literals because the DRIVER does not read these — the
+            // document decides both ceilings alone — and a typo reads as nil and panics by name.
+            let held = |name: &str| match lua.get_variable(&session, name) {
+                Ok(ScriptValue::Int(held)) => held,
+                other => panic!("the document must declare `{name}` as a number: {other:?}"),
+            };
+            let ceilings = (held("service_retry_max"), held("service_resumes_max"));
+            // ⚠⚠ AND HOW MANY RETRIES A MEASURED OUTAGE IS, computed from the document's own wait
+            // rather than written down: item 724's arms are about HOURS, and a count only means
+            // hours through this number.
+            let waits_in_run_5 = RUN_5_OUTAGE.as_millis() as i64 / held("service_retry_ms");
+            lua.set_variable(&session, "service_retried", ScriptValue::Int(retried))
+                .expect("the document's own counter is writable");
+            carried(&mut engine, &host, AiLoopEvent::ServiceRetry, "");
+            (
+                engine.get_current_state(),
+                ceilings.0,
+                ceilings.1,
+                waits_in_run_5,
+            )
+        }
+
+        // ── THE PREMISE, asked of the document before any arm leans on it ──
+        let (fresh, typed_at, resumes_max, run_5_waits) = retried_at(true, 0);
+        assert_eq!(
+            fresh,
+            AiLoopState::Working,
+            "the fixture: an outage nowhere near either ceiling goes back to work",
+        );
+        assert!(
+            resumes_max > typed_at,
+            "⚠⚠⚠⚠⚠ THE PREMISE OF EVERY ARM BELOW: the two doors must hold DIFFERENT budgets. \
+             Given one number wearing two names, the headline and the control below cannot \
+             disagree, and the gate would be green over exactly the defect item 724 registered — \
+             a usage limit measured in hours paid out of a budget argued from a 529. Got \
+             {typed_at} and {resumes_max}",
+        );
+
+        // ── THE HEADLINE: the hour that ends a 529 does not end a limit ──
+        let (outlasting, _, _, _) = retried_at(true, typed_at);
+        assert_eq!(
+            outlasting,
+            AiLoopState::Working,
+            "⛔⛔⛔⛔⛔ THE PEER SAID IT IS COMING BACK AND THE RUN MUST STILL BE THERE WHEN IT \
+             DOES. At this count a 529 is out of budget and rightly so — the loop has been typing \
+             at a service that keeps refusing. This peer was typed at NOTHING and is returning on \
+             its own; leaving over it is item 715's measured divergence, where the agent resumed \
+             at 3:30 and worked two hours with no run driving it, so nothing judged the work",
+        );
+
+        // ── AND THE WINDOW THAT ACTUALLY HAPPENED IS SURVIVED, which is item 724's done-when ──
+        //
+        // ⚠⚠ The count above is the OLD CEILING, which proves the split fires; this one is RUN 5,
+        // which is the only thing that proves the split is big enough. A budget raised to seven
+        // would pass the headline and lose the very outage the item was registered on.
+        assert!(
+            run_5_waits > typed_at,
+            "⚠⚠⚠⚠⚠ THE PREMISE OF THE ARM BELOW, and the measurement item 724 exists for: run 5's \
+             outage must be LONGER than the budget it was paid out of, or surviving it says \
+             nothing. {run_5_waits} waits against a ceiling of {typed_at}",
+        );
+        let (survived, _, _, _) = retried_at(true, run_5_waits);
+        assert_eq!(
+            survived,
+            AiLoopState::Working,
+            "⛔⛔⛔⛔⛔ THE MEASURED OUTAGE MUST BE SURVIVED, not merely named. Run 5 was cut off at \
+             01:0x for an 03:30 reset — {run_5_waits} waits of the document's own length — and the \
+             run must still be at work at the end of it, because the peer was",
+        );
+
+        // ── AND IT IS A CEILING: a peer that printed the notice and died still reaches a person ──
+        let (exhausted, _, _, _) = retried_at(true, resumes_max);
+        assert_eq!(
+            exhausted,
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠ AN UNBOUNDED WAIT IS THE OTHER WAY TO LOSE A NIGHT, and the ceiling above this \
+             door exists for the same reason the older one does. Six hours is long enough that a \
+             measured limit window cannot outlast it and short enough that the run still fails \
+             VISIBLY, well inside `max_seconds`",
+        );
+
+        // ── ⚠⚠⚠ THE CONTROL (R27): the other door is unchanged, so this is a split and not a raise ──
+        let (refusing, _, _, _) = retried_at(false, typed_at);
+        assert_eq!(
+            refusing,
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, AND IT IS THE ONE THAT SEPARATES THE REPAIR FROM THE \
+             WORKAROUND. Raising the single shared ceiling would pass both arms above while \
+             telling a morning reader six times later than it used to that a server never came \
+             back. The 529's number is argued from the 529's shape and must not move because a \
+             DIFFERENT failure needed longer",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **AND THE SENTENCE A PERSON READS SAYS WHICH OUTAGE THE COUNT IS AGAINST** — register
+    /// item 724's own residue, paid in the same round rather than registered.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The defect this exists to stop was CREATED by the repair above it
+    ///
+    /// Before 724 both doors were counted by one ceiling of six, so *waited it out N time(s)*
+    /// carried its own scale: a reader who knew the ceiling knew what N meant. The split gives the
+    /// self-resuming door thirty-six, and the two now differ by a factor of six — so **twelve** is
+    /// twice past the budget at one door and a third of the way through it at the other, printed
+    /// into the same slot of the same sentence. That is register item 718's shape exactly (*two
+    /// quantities wearing one slot, and both watchers read it wrong*), and it would have been minted
+    /// by the item that fixed the budget.
+    ///
+    /// ⚠⚠ **`assert_ne` IS THE LOAD-BEARING ONE.** A branch that named the door in a comment, or
+    /// that produced the same words for both, would satisfy a `contains` for either half; what a
+    /// reader needs is that the two situations do not read alike. The `contains` arms then say
+    /// which is which, so a build that merely made them differ cannot pass by swapping them.
+    #[test]
+    fn the_account_of_an_outage_says_which_of_the_two_it_was() {
+        /// The sentence this build leaves behind for an outage that arrived at one of the doors.
+        ///
+        /// ⚠ Asked of [`AiLoop::account_of`] rather than driven: these words are a pure function of
+        /// the notice, and driving six hours of outage to reach a format string would measure the
+        /// clock and call it the report. That the notice's `resumes` is READ OFF THE DOCUMENT
+        /// rather than guessed by the driver is a different claim, gated where the retry is.
+        fn left_after(resumes: bool) -> String {
+            AiLoop::account_of(Some(&Noticed::ServiceDown {
+                retried: 12,
+                waited: Duration::from_secs(600),
+                resumes,
+            }))
+            .expect("an outage the run walked away from leaves an account behind")
+        }
+
+        let (resuming, refusing) = (left_after(true), left_after(false));
+        assert_ne!(
+            resuming, refusing,
+            "⛔⛔⛔⛔⛔ TWELVE MEANS TWO DIFFERENT THINGS AND THE PAGE MUST SAY WHICH. Since item \
+             724 the doors hold ceilings of thirty-six and six, so one of these runs is a third of \
+             the way through its budget and the other is twice past it — and a reader given the \
+             same sentence for both has item 718's defect, freshly minted by the item that made \
+             the budgets differ",
+        );
+        assert!(
+            resuming.contains("continuing on its own") && resuming.contains("12 time(s)"),
+            "⚠⚠⚠ the self-resuming door's account must say the peer is COMING BACK, which is what \
+             makes twelve waits read as patience rather than as a run flogging a dead service: \
+             {resuming:?}",
+        );
+        assert!(
+            refusing.contains("service was down") && refusing.contains("12 time(s)"),
+            "⚠⚠ and the other must still say what it always said, or this repair traded one \
+             unreadable sentence for another: {refusing:?}",
         );
     }
 

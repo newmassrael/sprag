@@ -423,6 +423,17 @@ const SERVICE_RETRY_TEXT: &str = "service_retry_text";
 /// document's own guard, and register item 447 is why the two are separate.
 const SERVICE_RETRIED: &str = "service_retried";
 
+/// **WHETHER THE PEER SAID IT IS COMING BACK ON ITS OWN**, as the document spells it — which of the
+/// two doors into `service_down` this outage arrived at.
+///
+/// ⚠⚠ Read by the driver only to REPORT it, on [`SERVICE_RETRIED`]'s own terms and for a reason
+/// register item 724 created: since that item the two doors hold ceilings that differ by a factor
+/// of six, so the COUNT alone stopped being readable. *Waited it out twelve times* is a run twice
+/// past its budget at one door and a third of the way through it at the other, and a sentence that
+/// gave a morning reader the number without the door would be item 718's defect — two quantities
+/// wearing one slot — newly minted by the item that fixed the budget.
+const SERVICE_RESUMES_ITSELF: &str = "service_resumes_itself";
+
 /// The wait [`OuterLoop::wait_out_service`] falls back to when the document holds no readable
 /// number — the same ten minutes `ai_loop.scxml` ships, so the fallback and the default agree.
 ///
@@ -2274,10 +2285,11 @@ pub enum Noticed {
     /// question, the other wants somebody to ask whether an upstream service is ever coming back.
     /// **Filing an outage under the first is what cost a live run 28 minutes on 2026-08-19.**
     ///
-    /// ⚠⚠ The walk names it too (`ServiceDown --ServiceRetry--> AwaitingHuman` is the only edge
-    /// between those states), and this is the same fact for the reader who has a REPORT and not a
-    /// journal. That is not a second authority: the notice is where the driver puts what it
-    /// measured, and the document is where the decision about it lives.
+    /// ⚠⚠ The walk names it too (`ServiceDown --ServiceRetry--> AwaitingHuman` is the only PAIR
+    /// between those states, carried since register item 724 by either of two edges — one per
+    /// door), and this is the same fact for the reader who has a REPORT and not a journal. That is
+    /// not a second authority: the notice is where the driver puts what it measured, and the
+    /// document is where the decision about it lives.
     ServiceDown {
         /// How many outages this run had already waited out when this one began — the document's
         /// own `service_retried`, read rather than counted here.
@@ -2285,6 +2297,20 @@ pub enum Noticed {
         /// How long THIS wait lasted, which is the number `service_retry_ms` was authored as and
         /// the one a reader compares against it.
         waited: Duration,
+        /// **WHICH OUTAGE IT WAS** — true where the peer printed that it is continuing on its own.
+        ///
+        /// ⚠⚠⚠ **IT IS HERE TO MAKE THE `retried` COUNT BESIDE IT READABLE, AND THAT IS A DEBT
+        /// REGISTER ITEM 724 INCURRED RATHER THAN INHERITED.** Until 724 both doors were counted by
+        /// one ceiling of six, so a count carried its own scale. They now differ by a factor of six
+        /// — a limit window measured at five hours cannot be paid out of a budget argued from a 529
+        /// — and *waited it out twelve times* became a sentence meaning either «twice past the
+        /// ceiling» or «a third of the way to it» with nothing on the page to say which.
+        ///
+        /// ⚠⚠ **NOT THE CEILING ITSELF**, though that is what the reader ultimately wants: the
+        /// ceilings are the document's and copying one here would give one fact two authorities,
+        /// which is the mistake `service_retried`'s own comment above was written to avoid. The
+        /// DOOR is what the driver actually observed; the budget follows from it.
+        resumes: bool,
     },
     // ⚠⚠⚠ AND THERE IS DELIBERATELY NO `PeerGone` ARM, though the first draft of that round wrote
     // one. Every notice here exists because the state it leads to CANNOT say the thing itself —
@@ -6497,6 +6523,13 @@ impl OuterLoop {
     /// nor consults it — see the `<data>`), and what it buys is that the run's ending says a person
     /// was needed rather than that the work took too long.
     ///
+    /// ⚠⚠⚠ **AND THERE ARE TWO OF THEM SINCE REGISTER ITEM 724** — `service_retry_max` for a peer
+    /// that must be TYPED at to resume, `service_resumes_max` for one that printed it is returning
+    /// on its own. Neither is read here either; the point of saying so is that this function's
+    /// `Noticed::ServiceDown` reports `retried` against a ceiling it does not name, and a reader who
+    /// assumed the one ceiling would misjudge a count of twelve as twice over budget when the door
+    /// it came in at allows thirty-six.
+    ///
     /// # ⚠⚠ Why `Null` and not a self-loop
     ///
     /// [`attend`](Self::attend)'s rule, for its reason: a state machine with no input STAYS IN THE
@@ -6545,6 +6578,17 @@ impl OuterLoop {
         self.noticed = Some(Noticed::ServiceDown {
             retried: self.authored_number(SERVICE_RETRIED).unwrap_or_default(),
             waited: since.elapsed(),
+            // ⚠⚠ THE DOOR, READ OFF THE DOCUMENT LIKE THE COUNT BESIDE IT — register item 724. A
+            // driver that remembered which event it had raised would be a second authority on a
+            // fact `service_down`'s own two edges already act on, and the day the two disagreed the
+            // report would describe a budget the run was not actually spending. ⚠ Anything that is
+            // not an explicit `true` reads as the typed-at door, which is what every outage was
+            // before item 715 and therefore the safe way to be wrong.
+            resumes: matches!(
+                self.script
+                    .get_variable(&self.session, SERVICE_RESUMES_ITSELF),
+                Ok(ScriptValue::Bool(true))
+            ),
         });
         // ⚠ CLEARED ON THE WAY OUT, so the next outage starts its own clock rather than inheriting
         // this one's elapsed time.
@@ -19017,6 +19061,82 @@ mod tests {
         drop(access);
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE BUDGET FOR A PEER THAT RESUMES ITSELF OUTLASTS THE LONGEST LIMIT THIS
+    /// REPOSITORY HAS MEASURED** — register item 724, and the reason its number is not a guess.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What this holds that a comment could not
+    ///
+    /// `service_resumes_max` is a COUNT, and the wait it multiplies lives in a DIFFERENT document —
+    /// the kind's `service_retry_ms`. So the quantity that actually decides whether a run survives
+    /// the night, *how long it will wait for a peer that said it is coming back*, is a product
+    /// across two files no reader sees at once. The older ceiling has exactly this hazard and
+    /// answers it with a sentence — *"the two are edited together or not at all"* — which is a
+    /// hazard a person has to remember. This is the same claim ratcheted: halve the kind's wait
+    /// without raising the template's count and this goes RED the same afternoon.
+    ///
+    /// # ⚠⚠⚠ The five hours are MEASURED and dated, which is the whole weight of the assertion
+    ///
+    /// 2026-08-27, read out of the peer's own transcripts (`~/.claude/projects/*.jsonl`): the reset
+    /// time the notice prints lands anywhere in the day — TEN distinct ones — and the window from
+    /// being cut off to that reset runs to five hours. Run 5 of this repository was cut off at
+    /// 01:0x for an 03:30 reset, which is two and a half.
+    ///
+    /// ⚠⚠ **AND THE DEFECT IS ASSERTED, NOT REMEMBERED.** The arm below that fails the OLD budget
+    /// against the same window is what stops this becoming a tautology: it says in the gate that
+    /// six waits of ten minutes could not have covered a limit, which is the measurement item 724
+    /// was registered on, and it will keep saying it after everyone who read the register is gone.
+    #[test]
+    fn the_budget_for_a_peer_that_resumes_itself_outlasts_the_longest_limit_measured() {
+        /// The longest usage-limit window measured on this machine, 2026-08-27 — see the doc above.
+        const MEASURED_LIMIT: Duration = Duration::from_secs(5 * 60 * 60);
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let outage = crate::kind::LoopKind::debt(Arc::clone(&lua))
+            .expect("the debt kind's document must open a script session")
+            .service_outage()
+            .expect("this repository's kind must name what its peer prints when its service fails");
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its authored strings");
+
+        // ⚠ THE NAMES ARE LITERALS BECAUSE THE DRIVER DOES NOT READ THEM — both ceilings are the
+        // document's own, so there is no production constant to borrow, and a misspelling reads as
+        // nil and fails here by name rather than silently skipping the assertion.
+        let covered = |retries: i64| {
+            u64::try_from(retries)
+                .ok()
+                .and_then(|retries| outage.every_ms.checked_mul(retries))
+                .map(Duration::from_millis)
+                .expect("a ceiling times a wait must be a duration this machine can hold")
+        };
+        let typed_at = loops
+            .authored_number("service_retry_max")
+            .expect("the template must declare the ceiling for a service that must be typed at");
+        let resumes_max = loops
+            .authored_number("service_resumes_max")
+            .expect("the template must declare the ceiling for a peer that resumes itself");
+
+        assert!(
+            covered(resumes_max) >= MEASURED_LIMIT,
+            "⛔⛔⛔⛔⛔ THE SHIPPED PRODUCT MUST OUTLAST A MEASURED USAGE LIMIT. {resumes_max} \
+             waits of {}ms is {:?}, and the longest window read out of the peer's own transcripts \
+             is {MEASURED_LIMIT:?}. A run under this budget goes to a person in the middle of an \
+             outage its own peer already said it would return from",
+            outage.every_ms,
+            covered(resumes_max),
+        );
+        assert!(
+            covered(typed_at) < MEASURED_LIMIT,
+            "⚠⚠⚠⚠ THE PREMISE, AND ITEM 724's WHOLE MEASUREMENT: the older ceiling must NOT cover \
+             a limit window, or the split this gate guards was never needed and the assertion \
+             above is a tautology. {typed_at} waits of {}ms is {:?}",
+            outage.every_ms,
+            covered(typed_at),
+        );
+        drop(access);
+    }
+
     #[test]
     fn the_authored_screen_rules_cross_the_datamodel_as_a_readable_list() {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
@@ -19482,6 +19602,11 @@ mod tests {
             loops.noticed = Some(Noticed::ServiceDown {
                 retried,
                 waited: Duration::from_secs(600),
+                // ⚠ THE TYPED-AT DOOR, which is this gate's subject: every arm here arrives by
+                // `turn.blocked` and the whole point of the ceiling it drives is that a service
+                // being asked again is a service being asked again. Item 724's other door is
+                // driven where its own budget is.
+                resumes: false,
             });
             let (landed, spent) = loops
                 .advance(&access, &run, AiLoopEvent::ServiceRetry.into())
@@ -19530,6 +19655,7 @@ mod tests {
             Some(Noticed::ServiceDown {
                 retried: 6,
                 waited: Duration::from_secs(600),
+                resumes: false,
             }),
             "⚠⚠⚠⚠ AND THE NOTICE STANDS, which is the same mechanism read the other way: nothing \
              was paid, so nothing cleared it, and `blocked` — the word this run is heading for — \

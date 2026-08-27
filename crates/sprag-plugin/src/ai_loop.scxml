@@ -417,6 +417,63 @@
     <data id="service_retry_max" expr="6"/>
 
     <!--
+      ⚠⚠⚠⚠⚠ AND THE CEILING FOR THE OTHER DOOR, WHICH IS A DIFFERENT NUMBER
+      BECAUSE GIVING UP COSTS SOMETHING DIFFERENT THERE — register item 724, and
+      the residue item 715 wrote down rather than hid.
+
+      715 gave a usage limit a NAME: the peer prints that it is continuing
+      automatically, `peer.silent` carries it to `service_down`, and nothing is
+      typed at it. What 715 did not give it is SURVIVAL. Both doors were counted
+      by `service_retry_max`, whose argument one block up is the shape of a 529 —
+      «a server refusing for an hour is not a hiccup» — and a usage limit is not
+      that shape at all.
+
+      ⚠⚠⚠ MEASURED, 2026-08-27, IN THE PEER'S OWN TRANSCRIPTS
+      (`~/.claude/projects/*.jsonl`): the reset time it prints lands anywhere in
+      the day — TEN distinct ones, `3:30am` `2:30am` `8:30am` `12:30pm` `7pm`
+      `12pm` `8:10pm` `7:40pm` `11pm` `1:30pm` — and the window from being cut
+      off to that reset runs to FIVE HOURS. Run 5 of this repository was cut off
+      at 01:0x for an 03:30 reset: two and a half. Six waits of ten minutes is
+      one. **The budget was short by a factor of five, and the run called for a
+      person over a peer that came back by itself.**
+
+      ⚠⚠⚠⚠ WHY THIS DOOR FAILS IN THE OPPOSITE DIRECTION, which is the argument
+      and not a preference. `service_retry_max` fails toward STOPPING, on purpose,
+      because stopping is visible. That is right where the loop must TYPE to
+      resume: each retry puts a word into a service that refused the last one, and
+      after an hour the honest report is that nobody could work. THIS door types
+      nothing and the peer is returning on its own, so waiting costs wall-clock
+      and nothing else — while giving up costs the DIVERGENCE item 715 measured:
+      the peer resumed at 3:30, worked two hours, and no run was driving it, so
+      nothing judged the work and no milestone accounting saw it. **The invisible
+      failure is the one to fail away from, and here that means waiting.**
+
+      ⚠⚠ THIRTY-SIX, DERIVED RATHER THAN CHOSEN: thirty-six waits of ten minutes
+      is six hours, covering the measured five-hour window with an hour to spare.
+      The spare hour IS a judgement and is said to be one — a bound equal to the
+      longest window measured decides by rounding the day a window ends on it.
+      What it is not is unbounded: six hours still fails visible well inside
+      `max_seconds`, so a peer that printed the notice and then died still reaches
+      a person the same day.
+
+      ⚠ AND THIRTY-SIX RETRIES SPEND NO TURNS — measured here rather than hoped:
+      `turns` moves only on `turn.done`, and this budget's retries reach `working`
+      without one, so a long outage cannot eat the run's own `max_turns`.
+
+      ⚠⚠⚠⚠⚠ THE PRODUCT IS RATCHETED RATHER THAN COMMENTED. The block above warns
+      that `service_retry_max` and `service_retry_ms` are edited together or not
+      at all — a hazard a reader has to remember. This one is held by a gate:
+      `the_budget_for_a_peer_that_resumes_itself_outlasts_the_longest_limit_measured`
+      reads the shipped kind's own wait alongside this count and refuses a product
+      under five hours, so halving the wait without raising this count is RED.
+
+      ⚠ `'never'` IS NO CEILING here as everywhere in this document, and it is the
+      same regression guard on the engine that `service_retry_max`'s is rather
+      than a load-bearing clause: the numeric half already decides at the pin.
+    -->
+    <data id="service_resumes_max" expr="36"/>
+
+    <!--
       ⚠⚠⚠ AND WHAT THE AGENT SAYS WHEN THERE IS NOTHING LEFT TO DO AT ALL.
 
       `done_marker` ends a MILESTONE; this ends the RUN. Until both existed a
@@ -3009,8 +3066,8 @@
       who does not, reaches `blocked` through `unattended`, on the caller's own
       `await_person_ms` rather than on a clock invented for outages.
 
-      ⚠⚠ AND THE WALK NAMES IT WITHOUT A WORD OF ITS OWN, because this is the
-      ONLY edge from `service_down` to `awaiting_human`: a reader meeting that
+      ⚠⚠ AND THE WALK NAMES IT WITHOUT A WORD OF ITS OWN, because these are the
+      only edges from `service_down` to `awaiting_human`: a reader meeting that
       pair in the morning knows a server was down and nobody came, where the same
       state reached from `screening` by `screen.none` says a question really
       needed a person. Telling those two apart is the whole of what a morning
@@ -3019,9 +3076,27 @@
       ⚠ The walk's own arrow notation is deliberately NOT written out here:
       `sce-build` refuses an XML comment containing a double hyphen, and reports
       it against line 0 of the whole file (register item 341).
+
+      ⚠⚠⚠⚠⚠ AND THERE ARE TWO OF THEM, ONE PER DOOR — register item 724. Which
+      door the outage came in at is already decided and already written down
+      (`service_resumes_itself`), and the two want budgets that differ by a factor
+      of six: see `service_resumes_max`, where the argument lives. The split is
+      here rather than in a single guard reading a chosen number because a reader
+      asking «how long will this run wait» must find TWO answers and be told
+      which is which, not one expression that is quietly both.
+
+      ⚠⚠ THE WALK STILL TELLS THEM APART WITHOUT A WORD OF ITS OWN, because the
+      door is upstream of here: an outage that reached this state by `PeerSilent`
+      and then a person is a limit that outlasted six hours, and one that reached
+      it by `TurnBlocked` is a server that refused for an hour. The morning reader
+      gets the distinction from the pair it arrived by, which is where item 715
+      put it.
     -->
     <transition event="service.retry"
-                cond="service_retry_max != 'never' &amp;&amp; service_retried &gt;= service_retry_max"
+                cond="service_resumes_itself &amp;&amp; service_resumes_max != 'never' &amp;&amp; service_retried &gt;= service_resumes_max"
+                target="awaiting_human"/>
+    <transition event="service.retry"
+                cond="service_resumes_itself == false &amp;&amp; service_retry_max != 'never' &amp;&amp; service_retried &gt;= service_retry_max"
                 target="awaiting_human"/>
     <!--
       ⚠⚠⚠⚠⚠ AND THE WAY BACK THAT SAYS NOTHING — register item 715, and the
