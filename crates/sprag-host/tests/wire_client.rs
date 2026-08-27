@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::plugins::{PluginWorld, drive_request};
-use sprag_host::remote_access::{RemotePaneAccess, RemotePluginWorld};
+use sprag_host::remote_access::{RemotePaneAccess, RemotePluginWorld, Unseen};
 use sprag_host::wire::events_slot_since;
 use sprag_host::wire::{
     ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, ArgGrammar, BREAK_PANE_ACTION, CLIENTS_SLOT,
@@ -10790,11 +10790,44 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
     );
     let refused = remote.inject(pane, &KeyStroke::text("no"));
     assert!(
-        matches!(refused, Err(PaneError::Write(_))),
+        matches!(refused, Err(PaneError::Unreachable(_))),
         "⛔⛔⛔⛔ REGISTER ITEM 544 stage 1d: the write door must REFUSE. *I cannot see it* and *I \
          typed into something* are not interchangeable when the something may be a stranger's \
          shell — and the assertion above has just established that this id NAMES one. Got \
          {refused:?}",
+    );
+    // ⚠⚠⚠⚠⚠ **AND IT REFUSES WITH A SENTENCE THAT IS TRUE** — register item 556. This assertion
+    // read `PaneError::Write(_)` until that item was paid, and the reading was FALSE twice over:
+    // nothing was written, and nothing about a pane failed. A caller told *writing to the pane
+    // failed* inspects the pane, its program and its terminal — all three of which are fine — while
+    // the thing to repair is the connection it is driving through. The variant is what carries that
+    // remedy; the payload says which of the two unreachable cases it was.
+    assert!(
+        refused.as_ref().err().is_some_and(|why| why
+            .to_string()
+            .contains("repair the connection rather than")),
+        "⚠⚠⚠ and the SENTENCE must send its reader to the connection rather than to the pane, \
+         because that sentence is all an agent gets: {refused:?}",
+    );
+
+    // ── AND THE READ DOOR NAMES THE SAME CAUSE, WHICH IS ITEM 556's OTHER HALF ─────────────────
+    // ⚠⚠⚠⚠⚠ The `None` a read answers here is the SAFE reading and does not change — a driver that
+    // cannot see a pane stops rather than types. What changes is that a supervisor can now ask WHY,
+    // and the four answers send four different people to four different places. This is the one
+    // cause with a live fixture: a second daemon really did take this socket.
+    assert_eq!(
+        remote.pane_collapsed(pane),
+        None,
+        "⚠⚠ THE PREMISE OF THE READING BELOW: a surface whose daemon was replaced must see nothing, \
+         or the cause it reports is about a read that succeeded",
+    );
+    assert_eq!(
+        remote.unseen(),
+        Some(Unseen::Replaced),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 556: a lost daemon and a closed pane must be tellable apart at the \
+         READ door too. Both answer `None`; only this says which — and `Gone` here would send an \
+         operator to look at a run whose pane is fine, while the actual repair is that every pane \
+         id this driver holds now names a stranger's",
     );
 
     // ── AND THE DRIVER RE-ADOPTS BY NAME, WHICH IS THE ONLY ADDRESS THAT SURVIVED ──────────────
@@ -10810,6 +10843,20 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
         !remote.world_changed(),
         "⚠⚠⚠⚠ a latch that could not be cleared would trade a silent corruption for a permanent \
          stop — the driver has looked and said the world is its own",
+    );
+    // ⚠⚠⚠ AND THE CAUSE CLEARS WITH THE LATCH — register item 556. It is a LEVEL, not a log: a
+    // supervisor arriving now must be told the surface can see again, not handed the reason it
+    // could not a moment ago. A cause that outlived its condition would be the stale-reading defect
+    // this workspace keeps paying for, in a reading built to end one.
+    assert!(
+        remote.pane_collapsed(renamed).is_some(),
+        "the re-adopted surface reads the pane it recognised",
+    );
+    assert_eq!(
+        remote.unseen(),
+        None,
+        "⚠⚠⚠ a read that SAW something must leave no cause behind: {:?}",
+        remote.unseen(),
     );
     assert_eq!(
         remote
@@ -11557,6 +11604,154 @@ fn a_state_word_this_build_cannot_spell_stops_the_driver_claiming_to_supervise()
          could not read must answer *ask a person, nothing here can look* — NOT *this pane is a \
          shell*. The second is what it used to say, and it makes a supervisor drive straight past \
          a pane running an agent it has never heard of",
+    );
+
+    let _ = std::fs::remove_file(&upstream);
+}
+
+/// ⚠⚠⚠⚠⚠ **AN EMPTY ADDRESS, A REFUSED ONE AND A DEAD SOCKET ARE THREE FACTS AND ONE `None`** —
+/// register item 556's read door, one cause at a time.
+///
+/// # ⚠⚠⚠⚠ Why the `None` must NOT be what tells them apart
+///
+/// Every reader of `PaneAccess` answers `None` for *I cannot see that pane*, and a driver meeting
+/// one stops rather than types — the safe reading, and the one every consumer in this workspace is
+/// written against. Discriminating in the RETURN would hand each of them the decision *is this
+/// absence the kind I may type through*, and the answer is **no** for all four. So the cause rides
+/// beside the answer, and this gate is what holds the pairing: the `Option` stays the decision and
+/// `RemotePaneAccess::unseen` becomes the explanation.
+///
+/// # ⚠⚠⚠ A gate PER CAUSE, because a vocabulary is only as good as its narrowest arm
+///
+/// One assertion over one cause would be green against a surface that answered that cause for
+/// everything — which is precisely the collapse this item is about, moved one level up. Three
+/// causes here and the fourth (`Replaced`) beside its own live two-daemon fixture in
+/// `a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_to`, because that
+/// one needs a second daemon to be true at all.
+#[test]
+fn a_remote_read_that_saw_nothing_says_which_of_the_three_reasons_it_was() {
+    // ── CAUSE 1: THE PANE IS GONE — a live daemon that simply has no such pane ─────────────────
+    let (_host, upstream) = spawn_host();
+    let (remote, mut setup) = remote_driver(&upstream);
+    let pane = spawn_pane(&mut setup, json!({ "cmd": ["cat"] }));
+    assert!(
+        remote.pane_collapsed(pane).is_some(),
+        "⚠⚠ THE CONTROL: this surface can see a pane that exists, or every `None` below is about a \
+         surface that sees nothing at all",
+    );
+    assert_eq!(
+        remote.unseen(),
+        None,
+        "⚠⚠⚠ and a read that SAW something leaves no cause behind — the level is cleared by \
+         success, or a supervisor would be handed the last failure for ever",
+    );
+
+    // ⚠⚠⚠⚠⚠ THE ADDRESS EXISTS AND HOLDS NOTHING. Register item 556 calls this cause *"the pane is
+    // gone"* and **that turned out to be wrong, measured here**: a read of a pane id nobody holds is
+    // REFUSED on this wire (the whole subtree under a missing id is absent), so it lands in
+    // `Unaddressed` below. What actually reaches `Empty` is an address the daemon really serves
+    // whose answer is null — and `agent.<pane>` on a plain `cat` is exactly one: the daemon has the
+    // address, this pane has no verdict.
+    let supervisor = remote
+        .supervision()
+        .expect("this daemon supervises, so the agent address is served");
+    assert_eq!(
+        supervisor.pane_agent_state(pane),
+        None,
+        "the premise: a `cat` is not an agent, so the address the daemon serves holds nothing",
+    );
+    assert_eq!(
+        remote.unseen(),
+        Some(Unseen::Empty),
+        "⛔⛔⛔ REGISTER ITEM 556: an address the daemon ANSWERED with nothing must say so. It is a \
+         fact about the world the daemon holds, and the one the other three get mistaken for — if \
+         a dead socket cannot be told from this, it ends a run whose pane was fine",
+    );
+
+    // ── CAUSE 2: THE DAEMON REFUSED THE ADDRESS — and TWO causes share this word ───────────────
+    // ⚠⚠⚠⚠⚠ Asserted TWICE, on two fixtures that are different facts, because the sharing is
+    // deliberate and has to be visible. `UnknownIntrospectPath` is pinion's one word for both, and
+    // separating them inside the read would mean a second call from a failure mapping — the
+    // deadlock `RemotePaneAccess::read` documents and the write door's first draft hit. A gate that
+    // showed only one of the two would let a later round "fix" the other silently.
+    let absent = PaneId(pane.0 + 4242);
+    assert_eq!(
+        remote.pane_collapsed(absent),
+        None,
+        "the premise: no pane has that id",
+    );
+    assert_eq!(
+        remote.unseen(),
+        Some(Unseen::Unaddressed),
+        "⛔⛔⛔ REGISTER ITEM 556, FLAVOUR ONE: a pane this daemon does not hold. The daemon is \
+         healthy and answering — which is the half that matters, because the remedy is not a \
+         socket and not a build",
+    );
+
+    // ⚠⚠⚠⚠ FLAVOUR TWO: a daemon that refuses an address it OUGHT to serve. No `cargo build` can
+    // make this build refuse its own address, so the fixture is the peer this repository keeps for
+    // exactly that: a REAL daemon behind it, every byte its own, and the named address refused with
+    // `UNKNOWN_SLOT_FAULT`. The path is built with the same helper the client addresses it through,
+    // so a wire that moves the address moves both.
+    let refused_path = pane_input_path(pane.0, sprag_host::wire::SCREEN_COLLAPSED_SLOT);
+    let older = sprag_peer::OldDaemon::proxying(
+        &socket_path(),
+        &upstream,
+        sprag_peer::Missing::addresses(&[refused_path]),
+    );
+    let (through_older, _older_setup) = remote_driver(older.sock());
+    assert_eq!(
+        through_older.pane_collapsed(pane),
+        None,
+        "the premise: the peer refuses this address, so the read cannot succeed",
+    );
+    assert_eq!(
+        through_older.unseen(),
+        Some(Unseen::Unaddressed),
+        "⛔⛔⛔⛔ REGISTER ITEM 556, FLAVOUR TWO, AND THE RESIDUE STATED AS AN ASSERTION: this is a \
+         BUILD to upgrade and the one above is a pane that is not there, and they arrive as one \
+         fault word. Splitting them needs a query-side `NoExternalAtPath` from the daemon that \
+         mints the fault — upstream — so the two share a variant DELIBERATELY, and this pair is \
+         what says so out loud instead of leaving it to a comment",
+    );
+
+    drop(older);
+
+    // ── CAUSE 3: THE WIRE FAILED — the host this driver was talking to is not there ────────────
+    // ⚠⚠⚠⚠⚠ A DAEMON OF ITS OWN, KILLED. Stopping the proxy peer above is not enough and that was
+    // measured rather than assumed: its already-accepted connection goes on answering, so the read
+    // succeeds and this arm would be green for the wrong reason. What produces a transport failure
+    // is the process at the other end DYING — which is also the real shape of the fact, and the
+    // socket goes with it, so the redial has nowhere to go either.
+    let (dying, dying_sock) = spawn_host();
+    let (over_dying, mut dying_setup) = remote_driver(&dying_sock);
+    let doomed = spawn_pane(&mut dying_setup, json!({ "cmd": ["cat"] }));
+    assert!(
+        over_dying.pane_eof(doomed).is_some(),
+        "⚠⚠⚠ THE PREMISE: this surface READS while its daemon is alive, so a `None` afterwards is \
+         the socket and not the address or the pane",
+    );
+    assert_eq!(
+        over_dying.unseen(),
+        None,
+        "and that read saw something, so nothing is left over to confuse the reading below",
+    );
+
+    drop(dying_setup);
+    drop(dying);
+    assert_eq!(
+        over_dying.pane_eof(doomed),
+        None,
+        "the premise: the host that was answering is gone",
+    );
+    assert_eq!(
+        over_dying.unseen(),
+        Some(Unseen::Unreachable),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 556, AND THE ARM THAT COSTS THE MOST WHEN IT IS FOLDED: a socket \
+         that died says NOTHING about the pane, which may be perfectly healthy. Answered as \
+         `Empty` it ends a run over a hiccup; answered as `Unaddressed` it sends somebody to \
+         upgrade a build that was never wrong. It is the DRIVER's own failure and neither of the \
+         two above is true of it",
     );
 
     let _ = std::fs::remove_file(&upstream);

@@ -151,6 +151,117 @@ const PATH_PARAM: &str = "path";
 /// The parameter [`INVOKE_METHOD`] carries an action's arguments under.
 const ARGS_PARAM: &str = "args";
 
+sprag_vt::closed_set! {
+/// **WHY A READ THROUGH A REMOTE SURFACE SAW NOTHING** — register item 556, and the four facts one
+/// [`None`] used to be.
+///
+/// # ⚠⚠⚠⚠⚠ Four remedies, and only one of them is the run's own business
+///
+/// [`RemotePaneAccess::read`] answers `None` for every one of these because *I cannot see that
+/// pane* is the safe reading and a driver must stop on all four. But a supervisor asking WHY is
+/// asking a different question, and the four answers send four different people to four different
+/// places:
+///
+/// | | what it is | who repairs it |
+/// |---|---|---|
+/// | [`Empty`](Self::Empty) | the daemon ANSWERED, and there is nothing at that address | the run — what it asked for is not there |
+/// | [`Unaddressed`](Self::Unaddressed) | the daemon REFUSED the address: no such pane here, or no such slot in this build | whoever deploys, or the run — see that variant |
+/// | [`Unreachable`](Self::Unreachable) | the wire failed and a redial did not recover it | whoever holds the socket |
+/// | [`Replaced`](Self::Replaced) | a different daemon now answers this path | the caller — re-adopt, do not reuse pane ids |
+///
+/// ⚠⚠ **THE SPLIT THAT MATTERS IS THE HORIZONTAL LINE THROUGH THE MIDDLE.** The top two are a
+/// daemon that ANSWERED and a fact about what it holds; the bottom two are this DRIVER's own
+/// failure, wearing the sentence of a fact about somebody's pane. That is the whole complaint
+/// register item 556 was filed for, and the same argument produced
+/// `sprag_terminal::Unstopped::Unreachable`.
+///
+/// ⚠ A CLOSED SET rather than a bare `bool` per cause, on this workspace's standing rule: a fifth
+/// way to see nothing is then a variant the compiler asks about, not a fifth flag somebody forgets
+/// to raise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unseen {
+    /// The daemon ANSWERED and there was nothing at the address — a fact about the world it holds.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It is NOT *"the pane is gone"*, and register item 556 said it was
+    ///
+    /// That item's first cause reads *the pane is gone*, and the measurement that paid it says
+    /// otherwise: a read of a pane this daemon does not hold is **refused**, not emptied, because
+    /// the whole subtree under a missing id is absent — so it lands in
+    /// [`Unaddressed`](Self::Unaddressed) beside the skew. What reaches here is an address the
+    /// daemon really serves whose answer is null: *this pane has no agent verdict*, *nothing is
+    /// called that*. **A gone pane and an empty answer are different facts and the register had
+    /// them the other way round.**
+    ///
+    /// ⚠ It is also what a SUCCESSFUL read clears the level with, because a read that saw something
+    /// is a read with no cause to report.
+    Empty,
+    /// The daemon REFUSED the address — it serves no such path.
+    ///
+    /// # ⛔⛔⛔⛔⛔ TWO CAUSES SHARE THIS WORD, and that is the wire's limit rather than a choice
+    ///
+    /// *This daemon holds no such pane* and *this daemon is older than this driver and never served
+    /// that slot* arrive as **one fault word**, pinion's `UnknownIntrospectPath`, and nothing else
+    /// in the answer separates them. Register item 556 asked for them apart and this is where the
+    /// asking stops: the split has to be made by whoever MINTS the fault.
+    ///
+    /// ⚠⚠⚠ **AND ASKING A SECOND QUESTION IS NOT AVAILABLE HERE**, which is why this is not simply
+    /// laziness. The obvious repair — read the pane list and see whether the id exists — is a
+    /// second call from inside a failure mapping, and [`RemotePaneAccess::read`] documents what
+    /// that costs: the scrutinee holds the connection's guard for the whole match, so the arm that
+    /// asked would deadlock, and **only on the path that has something to report**. The write
+    /// door's first draft did exactly this. So the honest word is the one the wire can support.
+    ///
+    /// ⚠⚠ THE INVOKE SIDE ALREADY HAS THE SPLIT AND IS THE MODEL FOR IT: `NoExternalAtPath` means
+    /// *there is no surface at that path* and `UnknownIntrospectPath`'s acting twin means *the
+    /// surface is there and has no such verb*. A query-side `NoExternalAtPath` would let this
+    /// become two variants with no second round trip. **That is an upstream change (pinion owns
+    /// the scene layer's `QueryError`), so it is a request rather than an edit here.**
+    ///
+    /// ⚠ Meanwhile the remedy a reader is given covers both: check that the pane still exists, and
+    /// if it does, the two builds disagree. The skew sentence naming the second half already exists
+    /// (`unknown_slot`) and is logged where it happens.
+    Unaddressed,
+    /// The wire FAILED and a redial did not recover it, so nothing was learned about the pane.
+    ///
+    /// ⚠⚠⚠ This is the arm that most needs separating from [`Empty`](Self::Empty): the pane may be
+    /// perfectly healthy and driving it may be perfectly possible a second from now. Reported as
+    /// *gone*, it would end a run over a socket hiccup.
+    Unreachable,
+    /// A DIFFERENT daemon answers this path now, so this surface sees nothing until its caller
+    /// re-adopts — [`RemotePaneAccess::world_changed`], read as a cause.
+    ///
+    /// ⚠⚠⚠⚠ The most dangerous of the four to misread, and the reason `world_changed` latches at
+    /// all: pane ids are minted from a counter that starts at ZERO, so a fresh daemon's own boot
+    /// pane **is pane 0**. A driver that treated this as [`Empty`](Self::Empty) and re-opened would
+    /// be handed a stranger's shell and told it succeeded.
+    Replaced,
+}
+}
+
+impl std::fmt::Display for Unseen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str(
+                "the daemon answered and there is nothing at that address — it holds no such \
+                 thing, which is a fact about the world and not about this connection",
+            ),
+            Self::Unaddressed => f.write_str(
+                "this daemon serves no such address — either it holds no such pane, or it is older \
+                 than this driver and never served that slot; check the pane still exists, and if \
+                 it does the two builds disagree",
+            ),
+            Self::Unreachable => f.write_str(
+                "the host holding this pane could not be reached and a redial did not recover it, \
+                 so nothing at all was learned about the pane — it may be perfectly healthy",
+            ),
+            Self::Replaced => f.write_str(
+                "a different daemon answers this path now, so every pane id this driver holds \
+                 names somebody else's pane — re-adopt before driving anything",
+            ),
+        }
+    }
+}
+
 /// A [`PaneAccess`] served by a daemon on the other end of a socket.
 ///
 /// # One connection, taken in turn
@@ -188,6 +299,9 @@ pub struct RemotePaneAccess {
     /// The agent state word this daemon published that this build cannot spell, once one has been
     /// met — see [`unspellable_state`](Self::unspellable_state). Register item 564.
     unspellable: Mutex<Option<String>>,
+    /// WHY the most recent read saw nothing, or [`None`] while the last one saw something — see
+    /// [`unseen`](Self::unseen) and [`saw`](Self::saw). Register item 556.
+    unseen: Mutex<Option<Unseen>>,
     /// **A SECOND CONNECTION, KEPT FOR PARKS ONLY** — [`None`] until a caller supplies one with
     /// [`parking_on`](Self::parking_on), and what makes [`changes`](PaneAccess::changes) answer
     /// anything but [`None`]. Register item 631.
@@ -324,6 +438,7 @@ impl RemotePaneAccess {
             adopted: Mutex::new(None),
             changed: AtomicBool::new(false),
             unspellable: Mutex::new(None),
+            unseen: Mutex::new(None),
             parks: Mutex::new(None),
         }
     }
@@ -421,6 +536,31 @@ impl RemotePaneAccess {
     #[must_use]
     pub fn unspellable_state(&self) -> Option<String> {
         lock(&self.unspellable).clone()
+    }
+
+    /// **WHY THE LAST READ THROUGH THIS SURFACE SAW NOTHING**, or [`None`] while the last one saw
+    /// something — register item 556, and the fact four different failures used to share.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The `None` a driver stops on is not the fact a supervisor needs
+    ///
+    /// Every reader of [`PaneAccess`] answers [`None`] for *I cannot see that pane*, and a driver
+    /// meeting one stops rather than types — which is the safe reading and must not change. But a
+    /// pane that is GONE and a daemon that is LOST are not one fact, and **only one of them is
+    /// somebody's to fix**: a closed pane is the run's own business, a skew is a build to upgrade,
+    /// an unreachable host is a connection to repair, and a replaced daemon is a world to re-adopt.
+    /// Four remedies, one `None`, and until this existed nothing anywhere could tell them apart.
+    ///
+    /// ⚠⚠ ASK IT AFTER A `None`, not instead of one. The `Option` a read returns is the DECISION —
+    /// stop — and this is the EXPLANATION. A caller that branched its driving on this would be
+    /// deciding that some absences are safe to type through, which is the one conclusion none of
+    /// the four supports.
+    ///
+    /// ⚠ A LEVEL: the most recent cause, cleared by any read that succeeds. So a supervisor
+    /// arriving after the fact gets the same answer as one watching every call, and there is no
+    /// stream to have missed — [`world_changed`](Self::world_changed)'s stance, for its reason.
+    #[must_use]
+    pub fn unseen(&self) -> Option<Unseen> {
+        *lock(&self.unseen)
     }
 
     /// **WHETHER THE DAEMON UNDER THIS SURFACE HAS BEEN REPLACED** — register item 544, stage 1d.
@@ -571,7 +711,7 @@ impl RemotePaneAccess {
         // is the FIRST statement rather than a late check because every answer below would
         // otherwise be about a world the caller never chose — see `world_changed`.
         if self.world_changed() {
-            return None;
+            return self.saw(None, Unseen::Replaced);
         }
         // ⚠⚠⚠⚠⚠ ADOPTED BEFORE ANYTHING IS DRIVEN, AND FROM BOTH DOORS. The first draft adopted
         // only on a successful READ, and the gate caught what that means: a driver whose first act
@@ -589,15 +729,15 @@ impl RemotePaneAccess {
         // question, which is why this shape is load-bearing rather than stylistic.
         let outcome = lock(&self.conn).try_call(QUERY_METHOD, json!({ PATH_PARAM: path }));
         match outcome {
-            Ok(value) if value.is_null() => None,
-            Ok(value) => Some(value),
+            Ok(value) if value.is_null() => self.saw(None, Unseen::Empty),
+            Ok(value) => self.saw(Some(value), Unseen::Empty),
             Err(CallError::Fault(fault)) => {
                 // Reported at DEBUG rather than swallowed: an address this daemon does not serve is
                 // a skew a person can fix, and the sentence naming the remedy already exists.
                 if let Some(skew) = unknown_slot(path, &fault) {
                     tracing::debug!(target: "sprag_host", %skew, "a remote read found a skew");
                 }
-                None
+                self.saw(None, Unseen::Unaddressed)
             }
             Err(CallError::Transport(error)) => {
                 tracing::debug!(target: "sprag_host", %error, %path, "a remote read did not complete");
@@ -606,16 +746,42 @@ impl RemotePaneAccess {
                 // that answered is the one this surface adopted; a different daemon latches instead
                 // and this returns the `None` every consumer stops on.
                 if !self.recover() {
-                    return None;
+                    return self.saw(None, Unseen::Unreachable);
                 }
                 let retried = lock(&self.conn).try_call(QUERY_METHOD, json!({ PATH_PARAM: path }));
                 match retried {
-                    Ok(value) if value.is_null() => None,
-                    Ok(value) => Some(value),
-                    Err(_) => None,
+                    Ok(value) if value.is_null() => self.saw(None, Unseen::Empty),
+                    Ok(value) => self.saw(Some(value), Unseen::Empty),
+                    // ⚠ The RETRY's failure is still `Unreachable` and not the first attempt's
+                    // cause: a socket that failed twice with a recovery in between is a host this
+                    // driver cannot talk to, whatever the second fault said.
+                    Err(_) => self.saw(None, Unseen::Unreachable),
                 }
             }
         }
+    }
+
+    /// **RECORD WHY THIS READ SAW NOTHING, AND HAND THE ANSWER STRAIGHT BACK** — register item 556,
+    /// and the read door's half of it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The `None` does not change, and that is the design rather than a limitation
+    ///
+    /// All four causes collapse to *I cannot see that pane from here*, which is the SAFE reading: a
+    /// driver that cannot see a pane stops rather than types, and every consumer of [`PaneAccess`]
+    /// is written against exactly that. Discriminating in the RETURN would mean each of them
+    /// deciding which absences are fatal — a decision this surface must not push outward, because
+    /// the answer is *all of them* for driving and *none of them* for reporting.
+    ///
+    /// So the cause rides beside the answer: the reading below is what a supervisor asks, and the
+    /// `Option` is what a driver stops on. **Two readers, two facts, one call.**
+    ///
+    /// ⚠⚠ A LEVEL, [`world_changed`](Self::world_changed)'s stance and the one this workspace uses
+    /// for anything a supervisor may arrive late to: it is the cause of the MOST RECENT read that
+    /// answered nothing, and a read that succeeds clears it — so *why can I not see this pane* is
+    /// answered by the state of the surface rather than by a stream nobody was watching.
+    fn saw(&self, answer: Option<Value>, cause: Unseen) -> Option<Value> {
+        *lock(&self.unseen) = answer.is_none().then_some(cause);
+        answer
     }
 
     /// Read one address of one pane.
@@ -677,7 +843,12 @@ impl RemotePaneAccess {
     /// the gate's unknown-pane arm, on the round the mapping was written.
     fn injection_failed(id: PaneId, path: &str, error: CallError) -> PaneError {
         let fault = match error {
-            CallError::Transport(error) => return PaneError::Write(error.to_string()),
+            // ⚠⚠⚠⚠⚠ NOT `Write` — register item 556. *Writing to the pane failed* claims the bytes
+            // reached a pane and it refused them; a socket that died on the way claims nothing of
+            // the kind, and the pane may be fine. It is also the ONE failure here whose outcome is
+            // unknown (the daemon may have taken every byte and died before answering), which is
+            // why the caller above never retries and why the variant says so.
+            CallError::Transport(error) => return PaneError::Unreachable(error.to_string()),
             CallError::Fault(fault) => fault,
         };
         if fault.refusal() == Some(PEER_GONE_REFUSAL) {
@@ -1065,7 +1236,14 @@ impl PaneAccess for RemotePaneAccess {
         // and a driver stops; this one has to REFUSE, because "I cannot see it" and "I typed into
         // something" are not interchangeable when the something might be a stranger's shell.
         if self.world_changed() {
-            return Err(PaneError::Write(format!(
+            // ⚠⚠⚠ ALSO NOT `Write` — register item 556, and for a sharper reason than the transport
+            // arm: nothing was typed anywhere, so *writing to the pane failed* is false twice over.
+            // It shares [`PaneError::Unreachable`] with the dead socket because a caller's remedy is
+            // the same one — repair the connection you are driving through, never the pane — and the
+            // payload is what says which of the two happened. ⚠ The alternative, a fifth variant of
+            // its own, is stated rather than hidden: it was not taken because no reader would DO
+            // anything different, which is this workspace's test for a word rather than a sentence.
+            return Err(PaneError::Unreachable(format!(
                 "the daemon behind this connection was replaced, so {path} names a pane this \
                  driver never adopted"
             )));

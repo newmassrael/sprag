@@ -183,7 +183,38 @@ pub enum PaneError {
     /// A keystroke had no PTY-byte encoding (the offending key).
     Encode(String) = (String::new()),
     /// Writing the encoded bytes to the pane failed (the IO error message).
+    ///
+    /// ⚠⚠ **IN PROCESS THIS IS THE PANE'S OWN IO. ACROSS A SOCKET IT IS NOT** — see
+    /// [`Unreachable`](Self::Unreachable), which is the fact this variant used to carry as well.
     Write(String) = (String::new()),
+    /// ⚠⚠⚠⚠ **THE HOST HOLDING THIS PANE COULD NOT BE REACHED FROM HERE, SO NOTHING WAS TYPED AND
+    /// NOTHING WAS LEARNED ABOUT THE PANE** — register item 556, and a fact about this DRIVER
+    /// rather than about anybody's pane.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why borrowing [`Write`](Self::Write) for it was a false statement
+    ///
+    /// *Writing to the pane failed* says the bytes reached a pane and the pane refused them. A
+    /// socket that died on the way says nothing of the kind: **the pane may be perfectly healthy,
+    /// and the run's own remedy is the opposite one.** A caller told `Write` looks at the pane, its
+    /// program and its terminal — and every one of those is fine. It reaches for a shell on a host
+    /// it can already talk to, while the thing to repair is the connection it no longer has.
+    ///
+    /// ⚠⚠⚠ **AND THE FATE OF THE WRITE IS UNKNOWN, WHICH NO OTHER VARIANT HERE ADMITS.** A
+    /// transport failure on an injection is not *nothing was typed* — the daemon may have taken
+    /// every byte and died before answering. [`crate::access::PaneAccess::inject`]'s remote surface
+    /// never retries for exactly that reason, and this variant is where that uncertainty is finally
+    /// said out loud instead of being folded into a sentence that claims a failed write.
+    ///
+    /// ⚠⚠ THE PRECEDENT IS IN THIS WORKSPACE ALREADY: `sprag_terminal::Unstopped::Unreachable`
+    /// exists because *"every choice available is a false statement about somebody's pane"*, and
+    /// this is the same refusal at the typing door. The two doors now say the same thing in the
+    /// same voice, which is what a driver reading both needs.
+    ///
+    /// ⚠ It carries the transport's own SENTENCE rather than being a bare word (where `Unstopped`
+    /// is `Copy` and logs its sentence where it happens): a `PaneError` is already the thing a run
+    /// hands its caller, so the detail has somewhere to ride and a person debugging a dropped
+    /// socket wants it.
+    Unreachable(String) = (String::new()),
     /// ⚠⚠⚠⚠ **THE PANE'S PROGRAM HAS EXITED, SO NOTHING WAS TYPED INTO IT.**
     ///
     /// # ⚠⚠⚠ Why this is a refusal and not a write that happens to go nowhere
@@ -518,6 +549,16 @@ impl std::fmt::Display for PaneError {
             Self::UnknownPane(id) => write!(f, "there is no pane {}", id.0),
             Self::Encode(key) => write!(f, "the key {key:?} has no bytes to send to a terminal"),
             Self::Write(why) => write!(f, "writing to the pane failed: {why}"),
+            // ⚠⚠ IT SAYS WHAT IS UNKNOWN, not only what failed. A caller told the host could not be
+            // reached would otherwise assume nothing was typed and send the stimulus again — which
+            // is how a peer is asked its question twice, because the daemon may have taken every
+            // byte before it died. The remedy named is the connection, never the pane.
+            Self::Unreachable(why) => write!(
+                f,
+                "the host holding this pane could not be reached from here, so nothing was learned \
+                 about the pane and whether anything was typed into it is unknown — repair the \
+                 connection rather than the pane: {why}"
+            ),
             // ⚠⚠ IT SAYS WHY REFUSING IS THE SERVICE. A caller told only *"the program has
             // exited"* reads a run that gave up on a technicality; the wall is the part that makes
             // typing anyway the worse answer, and it is what stops them adding a retry.
