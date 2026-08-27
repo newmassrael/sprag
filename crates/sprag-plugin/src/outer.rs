@@ -9375,12 +9375,14 @@ impl OuterLoop {
             // agent did not declare*, which is the fail-safe direction (one more turn, never a
             // convergence nobody earned) and is also a claim about an agent nobody asked.
             //
-            // ⚠⚠⚠ `read: 0` IS HONEST HERE — nothing was read — but it is the SAME `0` a turn that
-            // printed nothing leaves, so this world is narrowed rather than separated. Giving it a
-            // reading of its own changes what the DOCUMENT does with it, and that is a decision
-            // with its own measurement rather than a rider on this one. **Registered.**
+            // ⚠⚠⚠ `read: 0` USED TO STAND HERE, with a comment saying it was the SAME `0` a turn
+            // that printed nothing leaves and that separating it was **Registered**. It is register
+            // item 431 and it is separated now: `None` says NO READING WAS TAKEN, which is what
+            // this world is — no pane was looked at, because there was nothing to look for. The
+            // document is unchanged (an unheard marker still costs one more turn); what changed is
+            // that the walk no longer calls this an ordinary quiet turn.
             return Heard::NotSaid {
-                read: 0,
+                read: None,
                 // ⚠⚠ AND IT SAYS SO NOW — register item 486. No peer was asked and no pane was
                 // read, so `Unsupervised` would be a claim about a supervisor nobody consulted.
                 // This NARROWS the world the comment above registers; it does not close it.
@@ -9424,7 +9426,10 @@ impl OuterLoop {
                     Heard::Said(Evidence::Statement)
                 } else {
                     Heard::NotSaid {
-                        read: lines.len() as u64,
+                        // ⚠ A STATEMENT IN HAND IS A READING TAKEN — the peer said something and
+                        // this is how much of it there was. `Some(0)` here is an agent that stated
+                        // an empty answer, which is a measurement and not an absence of one.
+                        read: Some(lines.len() as u64),
                         from: Evidence::Statement,
                     }
                 };
@@ -9483,8 +9488,15 @@ impl OuterLoop {
             // is exactly what the predicate above looked at, so the number is the reading's own and
             // not a second look at the pane; a caller told `0` knows the turn printed nothing, and
             // one told sixty knows the marker was REJECTED rather than missing.
+            // ⛔⛔⛔⛔⛔ AND THE PANE READ THAT NEVER HAPPENED ANSWERS `None` — register item 431.
+            // `Since::taken`'s address arm falls back to an EMPTY `Produced` when the host serves
+            // no line stream or the stream will not answer for this pane, and that fallback was
+            // byte-identical to a quiet turn: same `lines`, same `lost: 0`, same `restarted:
+            // false`. Five hours of a live run were judged on it. `produced.unread` is the one bit
+            // that separates the fallback from the measurement, and it is read here rather than
+            // re-derived, so the two cannot come to disagree.
             (false, 0) => Heard::NotSaid {
-                read: lines.len() as u64,
+                read: (!produced.unread).then_some(lines.len() as u64),
                 from: Evidence::Pane(why),
             },
             (false, lost) => Heard::Unheard { lost },
@@ -9915,8 +9927,30 @@ pub enum Heard {
     /// walk's prose, which is free. **What the document decides is unchanged** — an unheard marker
     /// still costs one more turn.
     NotSaid {
-        /// Complete lines the judge read since this turn's prompt was delivered.
-        read: u64,
+        /// Complete lines the judge read since this turn's prompt was delivered, or [`None`] when
+        /// **no read was taken at all** — register item 431.
+        ///
+        /// # ⛔⛔⛔⛔⛔ `None` is not `Some(0)`, and five hours of a live run turned on it
+        ///
+        /// A `0` had two meanings and the document routes on the difference. *The agent printed
+        /// nothing since its prompt* is an ordinary quiet turn: prompt again. *Nothing here could
+        /// look at the pane* is a broken instrument, and prompting again is exactly the wrong act —
+        /// **measured 2026-08-28**: one run judged ~400 turns on `0 line(s)` between 01:11 and
+        /// 06:00 while its agent was working, committing nothing the whole time; another read `0`
+        /// on six of its last eleven judgements and died `exhausted (cost) after 183 iterations`.
+        /// **An empty judgement burns the budget at full price.**
+        ///
+        /// ⚠⚠ TWO WORLDS ANSWER `None`, and neither of them looked at anything: the datamodel
+        /// could not say what the marker IS (so no pane was read, and the old code wrote a literal
+        /// `0` here with a comment saying it was registered), and the pane's line stream could not
+        /// be reached at all — `report::Produced::unread`, named rather than linked because it is
+        /// crate-private and a public item's doc may not point at one. Both are instruments to
+        /// repair, not agents to re-prompt.
+        ///
+        /// ⚠ `Some(0)` is still a real and ordinary reading — a turn that printed nothing — and it
+        /// stays exactly as trustworthy as it was. What changed is that it is now a MEASUREMENT
+        /// rather than the union of a measurement and its absence.
+        read: Option<u64>,
         /// ⚠⚠⚠⚠ WHICH READER PRODUCED THAT NUMBER — see [`Evidence`]. Without it a `0` is two
         /// completely different facts wearing one word: *the peer answered nothing* and *this pane
         /// can no longer report anything*, the second of which was measured lasting a whole run.
@@ -9977,7 +10011,23 @@ impl Heard {
             // sixty-line reply and rejected the marker in it are the same word and completely
             // different problems — register item 441, where nine of these in a row said nothing
             // about which.
-            Self::NotSaid { read, from } => format!(
+            // ⛔⛔⛔⛔⛔ **THE JUDGE THAT COULD NOT LOOK SAYS SO, AND DOES NOT CALL IT AN ORDINARY
+            // TURN** — register item 431. The sentence below ends *nothing here needs acting on*,
+            // which is true of a quiet turn and false of a broken instrument; a run printed the
+            // reassuring half of it ~400 times over five hours while nothing was reading anything.
+            // The remedy is the opposite of the ordinary one: do not prompt again, repair the read.
+            Self::NotSaid { read: None, from } => format!(
+                "THE JUDGE TOOK NO READING AT ALL — {} answered nothing to look at, so *the agent \
+                 did not declare* is this run's DEFAULT and not its finding. Prompting again \
+                 spends a turn on a question nobody can hear the answer to: repair the reader \
+                 first. Register item 431.{}",
+                from.named(),
+                from.unstated().and_then(Unstated::remedy).unwrap_or(""),
+            ),
+            Self::NotSaid {
+                read: Some(read),
+                from,
+            } => format!(
                 "the judge read {} — {read} line(s) of it — and the agent had not declared, which \
                  is what an ordinary turn looks like; nothing here needs acting on.{}",
                 from.named(),
@@ -14445,7 +14495,7 @@ mod tests {
             // is what separates *the agent said nothing* from *nobody looked*; a `0` here would be
             // the same word about a completely different failure.
             Heard::NotSaid {
-                read: 1,
+                read: Some(1),
                 // ⚠ This double reports no supervisor, which is the world the word names — item 486.
                 from: Evidence::Pane(Unstated::Unsupervised),
             },
@@ -14559,7 +14609,11 @@ mod tests {
     fn an_unsaid_marker_says_how_many_lines_the_judge_read() {
         /// A pane that produced exactly the lines it was given, lost nothing, and never says the
         /// marker.
-        struct Printed(Vec<String>);
+        ///
+        /// ⚠ The second field SEVERS the turn's read (register item 431) while leaving the mark
+        /// answerable — one stand-in, one field, three arms, which is what keeps the readings
+        /// comparable.
+        struct Printed(Vec<String>, bool);
         impl PaneAccess for Printed {
             fn pane_ids(&self) -> Vec<PaneId> {
                 vec![PaneId(1)]
@@ -14590,7 +14644,17 @@ mod tests {
             }
         }
         impl crate::access::PaneOutputLines for Printed {
-            fn pane_lines_since(&self, _id: PaneId, _cursor: u64) -> Option<sprag_vt::LinesSince> {
+            fn pane_lines_since(&self, _id: PaneId, cursor: u64) -> Option<sprag_vt::LinesSince> {
+                // ⛔⛔⛔⛔⛔ **THE SEVERED READ, AND IT IS SEVERED AT THE READ AND NOT AT THE MARK**
+                // — register item 431. `Since::mark` asks with `u64::MAX` (its own documented
+                // contract: *"marks without taking"*), and a double that refused THAT would send
+                // the session down the ROW-TRAIL fallback instead, which has no unreadable world
+                // at all and would make this arm measure a different mechanism. So the mark is
+                // answered and the turn's read is not — which is also the live shape: the stream
+                // was there when the turn started and would not answer when the judge looked.
+                if self.1 && cursor != u64::MAX {
+                    return None;
+                }
                 Some(sprag_vt::LinesSince {
                     lines: self.0.clone(),
                     next: 10,
@@ -14624,9 +14688,12 @@ mod tests {
         loops.pump(&access, &run).expect("idle to priming");
 
         assert_eq!(
-            loops.said_done(&Printed(Vec::new())),
+            loops.said_done(&Printed(Vec::new(), false)),
             Heard::NotSaid {
-                read: 0,
+                // ⚠ `Some(0)` and not `None` — register item 431. This stand-in DOES answer a line
+                // stream; it answers an empty one, which is a measurement of a quiet turn and the
+                // very reading the new `None` had to be separated from.
+                read: Some(0),
                 from: Evidence::Pane(Unstated::Unsupervised),
             },
             "⚠⚠⚠ A TURN THAT PRINTED NOTHING MUST SAY SO. This is the world where the peer never \
@@ -14634,20 +14701,70 @@ mod tests {
              must act on differently: prompting again is right here and useless when the agent DID \
              reply and its marker was rejected",
         );
-        assert_eq!(
-            loops.said_done(&Printed(vec![
+        // ⚠⚠⚠⚠⚠ **THE PREMISE OF THE THIRD ARM, ASSERTED HERE RATHER THAN ASSUMED** — register
+        // item 431's done-when asks for exactly this. These three lines are what the severed arm
+        // below WOULD have read: same double, same pane, same session, one field different. Without
+        // a reading that is non-empty, `Some(0)` and `None` would be the only two answers in play
+        // and the gate could not tell a separated reading from a product fallback that happens to
+        // be empty — the vacuity this item was re-registered for.
+        let content = || {
+            vec![
                 "● I looked at the file and it is unchanged.".to_string(),
                 String::new(),
                 "Nothing further is required.".to_string(),
-            ])),
+            ]
+        };
+        assert_eq!(
+            loops.said_done(&Printed(content(), false)),
             Heard::NotSaid {
-                read: 3,
+                read: Some(3),
                 from: Evidence::Pane(Unstated::Unsupervised),
             },
             "⚠⚠⚠⚠ AND A TURN THE JUDGE READ THREE LINES OF MUST SAY THREE — the same word as the \
              arm above and a completely different problem. ⚠ The number is `lines`' own length, so \
              a reading that answered `0` here would be claiming the judge never reached a pane it \
              plainly did, which is register item 441's nine judgements exactly",
+        );
+
+        // ── ⛔⛔⛔⛔⛔ AND THE READ THAT NEVER HAPPENED — REGISTER ITEM 431 ───────────────────────
+        //
+        // The same double holding the SAME THREE LINES, refusing only the turn's read. Everything
+        // a consumer can see is otherwise identical to the empty arm at the top: no lines, nothing
+        // evicted, nothing restarted. That identity is the defect — five hours of a live run were
+        // judged on it (2026-08-28, ~400 turns of `0 line(s)` while the agent worked and committed
+        // nothing), and a second run died `exhausted (cost) after 183 iterations` with six of its
+        // last eleven judgements reading the same 0. **An empty judgement is charged full price.**
+        let unread = loops.said_done(&Printed(content(), true));
+        assert_eq!(
+            unread,
+            Heard::NotSaid {
+                read: None,
+                from: Evidence::Pane(Unstated::Unsupervised),
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 431: A JUDGEMENT THAT COULD NOT LOOK MUST NOT REPORT ZERO. \
+             This double holds the same three lines the arm above read; only the turn's read is \
+             refused. A `Some(0)` here is the product saying *the agent printed nothing* about a \
+             pane nobody managed to open — the same word as the first arm, and the opposite \
+             remedy: that one says prompt again, this one says repair the reader. Got {unread:?}",
+        );
+
+        // ⚠⚠⚠ AND THE SENTENCE A PERSON GETS MUST DIFFER TOO, because the walk's prose is the only
+        // channel this reading has (`read` is deliberately off the wire). The old sentence ended
+        // *nothing here needs acting on* — printed ~400 times at judgements where everything did.
+        let said_of = |heard: Heard| heard.noted();
+        let quiet = said_of(Heard::NotSaid {
+            read: Some(0),
+            from: Evidence::Pane(Unstated::Unsupervised),
+        });
+        let blind = said_of(unread);
+        assert!(
+            quiet.contains("nothing here needs acting on")
+                && !blind.contains("nothing here needs acting on")
+                && blind.contains("TOOK NO READING AT ALL"),
+            "⛔⛔⛔⛔ REGISTER ITEM 431: the two readings must reach a PERSON as two sentences. A \
+             reader told *nothing here needs acting on* about a judge that read nothing is told \
+             the one thing that is false, and it is what a live run was told for five hours.\n  \
+             quiet: {quiet}\n  blind: {blind}",
         );
 
         access.lifecycle().expect("lifecycle").close(pane);
@@ -14802,7 +14919,7 @@ mod tests {
                 said_seq: 0,
             }),
             Heard::NotSaid {
-                read: 0,
+                read: Some(0),
                 // ⛔⛔⛔⛔⛔ **THE `NotYet` WORLD, AND THIS FIXTURE WAS ALREADY STAGING IT** —
                 // register item 486. A supervisor answers for this pane and its statement count
                 // has not moved past the arming, which is the ONE case run 31 was measured in and
@@ -14929,7 +15046,7 @@ mod tests {
         // ── AND THE REMEDIES DIFFER, WHICH IS WHAT A PERSON ACTUALLY GETS ──
         let said_about = |why: Unstated| {
             Heard::NotSaid {
-                read: 0,
+                read: Some(0),
                 from: Evidence::Pane(why),
             }
             .noted()
@@ -14995,11 +15112,11 @@ mod tests {
             (late, empty),
             (
                 Heard::NotSaid {
-                    read: 0,
+                    read: Some(0),
                     from: Evidence::Pane(Unstated::NotYet),
                 },
                 Heard::NotSaid {
-                    read: 0,
+                    read: Some(0),
                     from: Evidence::Pane(Unstated::Empty),
                 },
             ),
@@ -18854,7 +18971,7 @@ mod tests {
                     &access,
                     &run,
                     Heard::NotSaid {
-                        read: 0,
+                        read: Some(0),
                         from: Evidence::Pane(Unstated::Unsupervised),
                     },
                 ),

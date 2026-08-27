@@ -106,12 +106,26 @@ impl Since {
             Self::Line(cursor) => panes
                 .output_lines()
                 .and_then(|stream| stream.pane_lines_since(pane, *cursor))
-                .map_or_else(Produced::default, |since| Produced {
-                    lines: since.lines,
-                    partial: since.partial,
-                    lost: since.lost,
-                    restarted: since.restarted,
-                }),
+                .map_or_else(
+                    // ⚠⚠⚠⚠⚠ **THE FALLBACK IS NOT AN EMPTY READ, IT IS NO READ** — register item
+                    // 431. This arm is reached when the host serves no line stream at all or the
+                    // stream would not answer for this pane, and `Produced::default()` alone made
+                    // it byte-identical to a turn that printed nothing. Every consumer then read
+                    // *the agent was silent* about a pane nobody managed to look at.
+                    || Produced {
+                        unread: true,
+                        ..Produced::default()
+                    },
+                    |since| Produced {
+                        lines: since.lines,
+                        partial: since.partial,
+                        lost: since.lost,
+                        restarted: since.restarted,
+                        // ⚠ The read HAPPENED, whatever it found — a `since` in hand is the proof,
+                        // and an empty one is a genuine measurement of a quiet turn.
+                        unread: false,
+                    },
+                ),
             Self::Rows(trail) => Produced {
                 lines: trail.fresh(panes, pane),
                 // ⚠ A rendering comparison cannot report a loss it cannot see — a scrolled-away row
@@ -123,6 +137,9 @@ impl Since {
                 // ⚠ And a rendering comparison has no address space to lose, so there is nothing
                 // here that COULD restart — `false` is the truth rather than a default.
                 restarted: false,
+                // ⚠ Nor a world in which the look did not happen: the grid is always there to be
+                // compared, so this is the truth here too. See the field's own doc.
+                unread: false,
             },
         }
     }
@@ -140,6 +157,27 @@ pub(crate) struct Produced {
     /// Complete lines the retained history evicted before this read — `0` in the ordinary case, and
     /// `0` also means UNKNOWN through [`Since::Rows`].
     pub(crate) lost: u64,
+    /// **THE READ DID NOT HAPPEN AT ALL** — register item 431, and the difference between *the pane
+    /// produced nothing* and *nothing here could look at the pane*.
+    ///
+    /// # ⛔⛔⛔⛔⛔ An empty `lines` is two facts and this is the one that says which
+    ///
+    /// [`Since::taken`]'s address arm falls back to [`Default`] when the pane's line stream cannot
+    /// be reached — no `output_lines` surface, or a `pane_lines_since` that answered nothing — and
+    /// that fallback is byte-identical to a turn in which the agent printed nothing. **Measured
+    /// 2026-08-28**: a live run judged ~400 turns on `0 line(s)` over five hours while its agent
+    /// was demonstrably working and committing nothing, and a second run burned its whole budget
+    /// (`exhausted (cost) after 183 iterations`) with six of its last eleven judgements reading 0.
+    ///
+    /// ⚠⚠ It is the workspace's own standing rule in a fourth place: **`None` (not counted) is not
+    /// `Some(0)`**. A zero that could not be read and a zero that was read are the same word to
+    /// every consumer, and this run's document routes on the difference — a judgement told *the
+    /// agent printed nothing* prompts again as if the turn were ordinary.
+    ///
+    /// ⚠ `false` through [`Since::Rows`]: a rendering comparison always has a grid to compare, so
+    /// there is no world there in which the look did not happen. That is the truth rather than a
+    /// default, exactly as [`restarted`](Self::restarted) beside it.
+    pub(crate) unread: bool,
     /// **THE ADDRESSES CHANGED UNDER THIS READER**, so `lines` starts from what the pane retains
     /// rather than from where this mark left off — [`sprag_vt::LinesSince::restarted`].
     ///
@@ -344,6 +382,9 @@ mod tests {
             // ⚠ This fixture varies `lost` alone. A restart is the other discontinuity (item 366)
             // and staging it here would blur which one the account's sentence is about.
             restarted: false,
+            // ⚠ The read HAPPENED here — `lines` above is the proof — so this fixture is staging an
+            // evicted opening rather than register item 431's absent reader.
+            unread: false,
         };
         let whole = produced(0);
         let cut = produced(7);
