@@ -14319,6 +14319,123 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE CHECKER THE PRODUCT SPAWNS REALLY STANDS IN THE COPY** — register item 705's
+    /// last link, and the one nothing but a running check can say.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was still resting on the compiler
+    ///
+    /// Item 705's chain had three gates and one bare assumption. `a_check_is_sent_to_a_copy…` holds
+    /// that the driver RESOLVES the copy and names it in the question; `sprag_host::checkout`'s gate
+    /// holds that a real copy isolates a mutation; `wire_client`'s seam gate holds that the live
+    /// surface hands back that real mechanism. **What none of them touched is whether
+    /// [`checked`](OuterLoop::checked) hands the directory it resolved to the process it spawns** —
+    /// that link was a call and an argument, believed because it compiles.
+    ///
+    /// So this gate calls `checked` itself and asks the CHECKER where it woke up. A run that
+    /// resolved a copy perfectly and then spawned in the agent's tree passes every other gate in
+    /// this item and fails only here.
+    ///
+    /// # ⚠⚠⚠ How the answer survives the copy being deleted
+    ///
+    /// The copy is removed when the check ends, so evidence left inside it dies with it. The
+    /// stand-in checker therefore writes **where it is standing** to a path OUTSIDE the copy, and
+    /// this gate reads that afterwards. That is also what makes the premise checkable: a file that
+    /// is not there means the checker never ran, and *the checker stood in the copy* would
+    /// otherwise be vacuously true of a check that never happened.
+    ///
+    /// ⚠⚠ The argv is `sh <script>` because `milestone_check` is split on WHITESPACE — a quoted
+    /// one-liner would arrive as a handful of separate words. Measured, not assumed.
+    #[test]
+    fn the_checker_the_product_spawns_stands_in_the_copy() {
+        // ⚠⚠ NO PARENTHESES IN THIS PATH, and it is not fussiness: a thread id rendered with `{:?}`
+        // reads `ThreadId(2)`, and this directory's name ends up inside the checker's argv — where
+        // a `(` is a shell metacharacter. Measured: the checker answered with its own path and the
+        // run reported `Silent`, saying in `why_silent` that the reply was not YES or NO.
+        let under = std::env::temp_dir().join(format!("sprag-705-spawn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&under);
+        std::fs::create_dir_all(&under).expect("somewhere to put the fixture");
+        let repo = under.join("the-agents-tree");
+        std::fs::create_dir_all(&repo).expect("the run's repository");
+        let copy = under.join("the-copy");
+        std::fs::create_dir_all(&copy).expect("the copy the check should stand in");
+
+        // ⚠ The checker records WHERE IT WOKE UP, outside the copy so the record outlives it, and
+        // answers the question it was handed. `YES` first, because that is the vocabulary the
+        // verdict is read in — this gate is about the directory, and a reply the judge cannot read
+        // would end the check somewhere before the fact under test.
+        let told = under.join("where-the-checker-stood");
+        let script = under.join("checker.sh");
+        std::fs::write(
+            &script,
+            format!("pwd > {}\necho YES it holds\n", told.display()),
+        )
+        .expect("the stand-in checker");
+
+        let (workspace, pane) = pane_born_in(&repo);
+        let isolating = Isolating {
+            inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            copy: copy.clone(),
+        };
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(20))
+            .expect("the document's four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "the checker stands where it was put".to_string(),
+                milestone: "reach it".to_string(),
+                reference: String::new(),
+                closing_rules: None,
+                context_ceiling: None,
+                reflect_after_refusals: None,
+                milestone_check: Some(format!("/bin/sh {}", script.display())),
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                reflect_every: Some(99),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        // ── THE PRODUCT'S OWN CHECK, not a re-enactment of it ─────────────────────────────────
+        let run = RunContext::uncancellable();
+        let (verdict, why, _shown) =
+            loops.checked(&isolating, &run, Heard::Said(Evidence::Statement));
+
+        // ── ⚠⚠ THE PREMISE: the check really ran ──────────────────────────────────────────────
+        let stood_in = std::fs::read_to_string(&told).unwrap_or_default();
+        assert!(
+            !stood_in.trim().is_empty(),
+            "⚠⚠⚠⚠⚠ THE PREMISE FAILED: no checker ever woke up, so «it stood in the copy» below is \
+             true of nothing. Verdict {verdict:?}, and what the run says about the silence: {why:?}",
+        );
+
+        // ── THE CLAIM ─────────────────────────────────────────────────────────────────────────
+        assert_eq!(
+            std::path::Path::new(stood_in.trim()),
+            copy.as_path(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 705: the run resolved a working copy and then spawned the \
+             checker somewhere else. Every other gate in this item passes over that — the copy is \
+             cut, the question names it — and the process that actually mutates things woke up in \
+             the tree the AGENT is working in, which is the whole defect",
+        );
+        assert_ne!(
+            std::path::Path::new(stood_in.trim()),
+            repo.as_path(),
+            "⚠⚠⚠ and it is not the agent's tree, said the other way round so a fixture whose two \
+             directories ever collapsed into one could not pass this by accident",
+        );
+
+        isolating.lifecycle().expect("lifecycle").close(pane);
+        let _ = std::fs::remove_dir_all(&under);
+    }
+
     /// ⚠⚠⚠⚠⚠ **THE INDEPENDENT CHECK IS SHOWN THE WORK, AND ON A FROZEN PANE THE WORK IS WHAT THE
     /// AGENT SAID** — register item 428's artifact, read through item 441's seam.
     ///
