@@ -40,7 +40,17 @@ const NEEDLES: [&str; 2] = [".stdin.take()", ".stdin.as_mut()"];
 /// ⚠⚠⚠ Every entry is re-measured by [`every_exemption_is_still_load_bearing`]: an exemption whose
 /// line has gone is a hole held open for a file that no longer needs one, and this project's
 /// standing lesson is that a list nobody re-measures ages silently.
-const EXEMPT: [(&str, &str); 5] = [
+const EXEMPT: [(&str, &str); 6] = [
+    (
+        "crates/sprag-host/src/checkout.rs",
+        "feeding a patch to `git apply` when cutting a check its own working copy (register item \
+         705). PRODUCT code, so `feeding::feed` is the wrong door for the reason the daemon's own \
+         entry below gives — and this child is one that really does refuse mid-write, because a \
+         patch git rejects ends the process while the write is still going. It carries what this \
+         gate is about: the BrokenPipe arm is matched by name and forgiven so the EXIT STATUS is \
+         what decides, every other error answers `false`, and the handle is dropped before the \
+         wait",
+    ),
     (
         "crates/sprag-gate/src/feeding.rs",
         "the one place: it takes the handle, tolerates the child having gone, and closes it so a \

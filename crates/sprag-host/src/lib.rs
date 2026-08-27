@@ -50,6 +50,7 @@
 pub mod agent;
 pub mod attach;
 pub mod attention;
+pub mod checkout;
 pub mod chooser;
 pub mod config;
 /// Asking systemd for the cgroup subtree a pane's share is enforced in (R336). Linux-only: it is
