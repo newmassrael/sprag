@@ -15829,9 +15829,26 @@ mod tests {
         // reads `ThreadId(2)`, and this directory's name ends up inside the checker's argv — where
         // a `(` is a shell metacharacter. Measured: the checker answered with its own path and the
         // run reported `Silent`, saying in `why_silent` that the reply was not YES or NO.
+        // ⛔⛔⛔⛔⛔ **THE FIXTURE ROOT IS A SYMLINK, AND THAT IS REGISTER ITEM 734** — it is how a
+        // Linux machine is made to stage the one condition that broke this gate on macOS.
+        //
+        // There, `std::env::temp_dir()` answers `/var/folders/…` while `/var` is a symlink to
+        // `/private/var`, so the checker's own `pwd` reports the RESOLVED path and the comparison
+        // below was `/private/var/…` against `/var/…`: **two spellings of one directory, and the
+        // gate called them different.** The checker had woken up in exactly the right place. On
+        // Linux `/tmp` is not a symlink, so the defect was invisible here for ever — which is the
+        // same shape register item 675 is about (*"there was one platform nobody measured"*), one
+        // day later and in the round that fixed believing something because it compiled.
+        //
+        // ⚠ Staging it rather than only canonicalising means the repair is MEASURABLE on this
+        // machine: with the raw string comparison this fixture goes red here, exactly as macOS did.
+        let real = std::env::temp_dir().join(format!("sprag-705-real-{}", std::process::id()));
         let under = std::env::temp_dir().join(format!("sprag-705-spawn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&real);
+        let _ = std::fs::remove_file(&under);
         let _ = std::fs::remove_dir_all(&under);
-        std::fs::create_dir_all(&under).expect("somewhere to put the fixture");
+        std::fs::create_dir_all(&real).expect("somewhere to put the fixture");
+        std::os::unix::fs::symlink(&real, &under).expect("the fixture reached through a symlink");
         let repo = under.join("the-agents-tree");
         std::fs::create_dir_all(&repo).expect("the run's repository");
         let copy = under.join("the-copy");
@@ -15845,13 +15862,29 @@ mod tests {
         let script = under.join("checker.sh");
         std::fs::write(
             &script,
-            format!("pwd > {}\necho YES it holds\n", told.display()),
+            // ⚠⚠ `pwd -P` — the PHYSICAL directory, register item 734. A bare `pwd` may print the
+            // logical path a shell was handed, and this gate's whole question is *which directory
+            // did it wake up in*, which only the resolved answer settles.
+            format!("pwd -P > {}\necho YES it holds\n", told.display()),
         )
         .expect("the stand-in checker");
+
+        // ⚠⚠⚠⚠ **RESOLVED WHILE THEY STILL EXIST** — register item 734, and the reason this is
+        // taken here rather than at the assertion: the product DELETES the copy when the check
+        // ends, so `copy.canonicalize()` down there would answer an error on the very path under
+        // test. The checker's own `pwd -P` is already physical; these are the other half of the
+        // pair, and comparing two resolved paths is what asks *the same directory* instead of
+        // *the same spelling*.
+        let copy_is = copy
+            .canonicalize()
+            .expect("the copy exists now, whatever the check does to it later");
+        let repo_is = repo.canonicalize().expect("the agent's tree exists now");
 
         let (workspace, pane) = pane_born_in(&repo);
         let isolating = Isolating {
             inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            // ⚠ The product is handed the path a CALLER would have — unresolved, through the
+            // symlink — because that is its real input. Only the comparison resolves.
             copy: copy.clone(),
         };
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
@@ -15897,21 +15930,25 @@ mod tests {
         // ── THE CLAIM ─────────────────────────────────────────────────────────────────────────
         assert_eq!(
             std::path::Path::new(stood_in.trim()),
-            copy.as_path(),
+            copy_is.as_path(),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 705: the run resolved a working copy and then spawned the \
              checker somewhere else. Every other gate in this item passes over that — the copy is \
              cut, the question names it — and the process that actually mutates things woke up in \
-             the tree the AGENT is working in, which is the whole defect",
+             the tree the AGENT is working in, which is the whole defect. \
+             ⚠ REGISTER ITEM 734: both sides are RESOLVED, so this asks *the same directory* and \
+             not *the same spelling* — it read `/private/var/…` against `/var/…` on macOS and \
+             called a checker that had woken up in the right place wrong",
         );
         assert_ne!(
             std::path::Path::new(stood_in.trim()),
-            repo.as_path(),
+            repo_is.as_path(),
             "⚠⚠⚠ and it is not the agent's tree, said the other way round so a fixture whose two \
              directories ever collapsed into one could not pass this by accident",
         );
 
         isolating.lifecycle().expect("lifecycle").close(pane);
-        let _ = std::fs::remove_dir_all(&under);
+        let _ = std::fs::remove_file(&under);
+        let _ = std::fs::remove_dir_all(&real);
     }
 
     /// ⚠⚠⚠⚠⚠ **THE INDEPENDENT CHECK IS SHOWN THE WORK, AND ON A FROZEN PANE THE WORK IS WHAT THE
