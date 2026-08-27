@@ -27,8 +27,9 @@ use sprag_host::wire::{
     PANES_SLOT, PASTE_ACTION, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
     RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SCREEN_COLLAPSED_SLOT,
     SCREEN_ROWS_SLOT, SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPAWN_CWD_KEY, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    agent_slot_for, cells_slot_at, pane_processes_at, project_slot_for, recent_input_has,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_CWD_KEY, SPAWN_ROWS_KEY,
+    SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, agent_slot_for, cells_slot_at, pane_processes_at,
+    project_slot_for, recent_input_has,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
@@ -6540,6 +6541,370 @@ fn the_surface_a_run_uses_cuts_a_copy_and_the_agents_tree_does_not_move() {
         "⚠⚠ and removing the copy is not a write to the agent's tree either",
     );
     let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// ⛔⛔⛔⛔⛔ **A WHOLE RUN, DRIVEN, CUTS A REAL COPY AND WAKES ITS CHECKER UP INSIDE IT** —
+/// register item 705's last link, and the one its four other gates leave to the compiler and to
+/// each other.
+///
+/// # ⚠⚠⚠⚠⚠ What was still unmeasured, stated exactly
+///
+/// Item 705 is one sentence — *the milestone checker must not mutate the tree the agent is working
+/// in* — and it was held by four gates that each own a different piece of it:
+///
+/// * `sprag_plugin`'s `a_check_is_sent_to_a_copy…` drives the product's own resolution, over a
+///   STAND-IN copy: no `git` anywhere in it;
+/// * `sprag_host::checkout`'s own gate cuts a REAL copy, and never meets a loop;
+/// * the seam gate above holds that the surface a live run holds hands back that real mechanism —
+///   and cuts the copy ITSELF rather than watching a run do it;
+/// * `sprag_plugin`'s `the_checker_the_product_spawns_stands_in_the_copy` calls `checked` directly,
+///   which is the real spawn, over a stand-in copy again.
+///
+/// **The two halves could not meet inside one test, and the reason was structural**:
+/// [`OuterLoop::checked`] is private to `sprag_plugin`, and `IsolatedCheckout` lives in this crate.
+/// Re-implementing either of them in a fixture is measuring one's own variable — which is the
+/// mistake item 705's FIRST gate made, and it stayed green under a mutation that made the product
+/// name the shared tree. So the only road left was a REAL RUN: build the loop through the same door
+/// the daemon builds it through, drive it with the [`Driver`] over the same remote surface a live
+/// run holds, and let the PRODUCT decide, on its own, to cut a copy and spawn a checker in it.
+///
+/// # ⚠⚠⚠ Why the plugin is BUILT here rather than requested
+///
+/// `milestone_check` is a loop KIND's field and appears **zero times in `wire.rs`**: no request can
+/// carry a checker, so `drive_request` cannot stage this at all — the neighbouring `ai_loop` gates
+/// go through that door precisely because they do not need one. `AiLoop::new` is `pub`, and this
+/// takes the same four arguments `plugins.rs` hands it.
+///
+/// # ⚠⚠ The peer is a ONE-SHOT, and that is a product contract rather than a convenience
+///
+/// [`DoneWhen::Exits`] is `claude -p`'s contract, and it is chosen over `INNER_SESSION_ENDS`
+/// because this daemon supervises no `/bin/sh`: a `Settles` turn asks a supervisor whether the
+/// agent came back to rest, nobody reports for a shell, and the turn would never end. Said plainly
+/// rather than hidden — **the claim under test is where the checker WAKES UP, and no turn contract
+/// touches that.** The barrier is [`ReadyWhen::Runs`] for the same reason: it asks the operating
+/// system which program owns the pane's terminal, which is a fact about a shell.
+///
+/// # ⛔⛔⛔⛔⛔ The reading is taken WHILE THE CHECK IS RUNNING, and that is the item's own words
+///
+/// Item 705's «done when» is a sentence about a WINDOW: *while a check that inserts and reverts a
+/// mutation runs, the shared tree's `git diff HEAD` keeps reading the same, and a gate asserts it*.
+/// Every gate before this one read the tree AFTERWARDS — and **run 0's checker put back exactly
+/// what it found**, so an afterwards-reading is green about the very defect this item was filed
+/// on. The two costs it caused were both paid inside that window: a watcher attributed the
+/// mutation to the agent and told the owner the agent's report was false (it was true), and then
+/// ran `git checkout --` over it, a no-op only because the check had already finished.
+///
+/// So the checker here mutates, **holds its own mutation standing** until this gate has looked,
+/// and only then puts back what it found. The reading is not a sample — it answers the checker's
+/// own signal — so *the tree did not move* is measured at the one instant that can disprove it.
+///
+/// # What reddens it, measured rather than reasoned about
+///
+/// | mutation | verdict |
+/// |---|---|
+/// | `a_check_to_put` resolves the SHARED tree instead of the copy | **red — in the window** |
+/// | `checked` spawns in the agent's tree while the sentence names the copy | **red — in the window** |
+/// | `RemotePaneAccess::checkout` answers `None`, so the live run degrades | **red — in the window** |
+/// | `IsolatedCheckout::of` skips the diff, so the copy holds `HEAD` alone | **red — what it was given** |
+///
+/// ⚠⚠ The first three land on the WINDOW reading and not on the directory arm below it, which is
+/// what says the window is the load-bearing one: the checker puts back what it found, so the tree
+/// reads identical afterwards in every one of them.
+///
+/// ⚠ The directory arm is kept beside it rather than folded in, and it is a DIFFERENT claim: a
+/// checker standing in the agent's tree that happened to write nothing moves no diff and is still
+/// the defect. It is second in the file because the window's failure is the more informative one.
+///
+/// # ⚠⚠⚠⚠ The premises, asserted inside, because each one alone makes the claim vacuous
+///
+/// * **A check was really asked** — `Checks::asked` counts the one place a claim is put to an
+///   independent process. Zero means nothing was spawned and every path below is about a check that
+///   never happened.
+/// * **The window really opened.** A check that finished without standing a mutation up never gave
+///   the reading above anything to be about.
+/// * **The checker really woke up.** It writes `pwd` to a file OUTSIDE the copy, so the record
+///   outlives the copy's removal; an absent file is *no checker ran*, not *it stood in the copy*.
+/// * **The repository is mid-claim.** A clean tree would be satisfied by a copy of `HEAD` alone,
+///   and the arm about carrying the agent's in-flight work would be about nothing.
+/// * **The check really writes**, and what it wrote is carried OUT of the copy the same way — so
+///   *the agent's tree did not move* cannot be satisfied by a check that touched nothing at all
+///   (register item 280's fifth lesson).
+#[test]
+fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
+    // ⚠⚠ NO PARENTHESES IN ANY OF THESE PATHS, and it is not fussiness: `milestone_check` is split
+    // on WHITESPACE and its words reach a shell, where `(` is a metacharacter. Measured in
+    // `sprag_plugin`'s spawn gate — a `{:?}` thread id rendered `ThreadId(2)` into the argv, and
+    // the checker answered with its own path instead of a verdict.
+    let under = std::env::temp_dir().join(format!("sprag-705-driven-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&under);
+    std::fs::create_dir_all(&under).expect("somewhere to put the fixture");
+    let repo = under.join("the-agents-tree");
+    std::fs::create_dir_all(&repo).expect("the run's repository");
+
+    // ── THE AGENT'S REPOSITORY, MID-CLAIM ────────────────────────────────────────────────────
+    assert!(
+        git(&repo, &["init", "-q", "."]),
+        "the fixture needs a `git`"
+    );
+    assert!(git(&repo, &["config", "user.email", "gate@example"]));
+    assert!(git(&repo, &["config", "user.name", "gate"]));
+    std::fs::write(repo.join("door.txt"), "door returns 1\n").expect("the committed file");
+    assert!(git(&repo, &["add", "door.txt"]));
+    assert!(git(&repo, &["commit", "-qm", "base"]));
+    // ⚠⚠ THE WORK THE MILESTONE IS ABOUT, and it is not in `HEAD`.
+    std::fs::write(repo.join("door.txt"), "door returns 2\n").expect("the uncommitted edit");
+    let before = diff_head(&repo);
+    assert!(
+        !before.is_empty(),
+        "⚠⚠⚠⚠ THE PREMISE: the agent must hold work that is not yet committed, or a copy of `HEAD` \
+         alone would satisfy the arm below and this gate would be about nothing",
+    );
+
+    // ── THE CHECKER: it says where it woke, reads what it was given, and MUTATES-AND-REVERTS ──
+    //
+    // ⚠⚠⚠ EVERY RECORD IT LEAVES IS OUTSIDE THE COPY, because the copy is removed the moment the
+    // check ends — evidence left inside it dies with it, and this gate would then be asserting
+    // about files that are gone for a reason it cannot tell from *the checker never ran*.
+    //
+    // ⛔⛔⛔⛔⛔ **IT PUTS BACK EXACTLY WHAT IT FOUND, WHICH IS WHAT RUN 0's CHECKER DID** — and
+    // that is what makes the reading below load-bearing rather than decorative. A checker that
+    // mutated and LEFT is caught by any read afterwards; the one item 705 was filed on left the
+    // tree byte-identical and was still the cause of two misattributions and a `git checkout --`.
+    // **So the tree has to be read WHILE the mutation is standing**, which is what the window
+    // below is: the checker holds its own mutation open until this gate has looked.
+    let stood_at = under.join("where-the-checker-stood");
+    let read_back = under.join("what-the-checker-was-given");
+    let landed = under.join("what-the-checks-write-left");
+    let saved = under.join("what-the-checker-found");
+    let window = under.join("the-mutation-is-standing");
+    let go = under.join("the-gate-has-looked");
+    let over = under.join("the-run-is-over");
+    let checker = under.join("checker.sh");
+    std::fs::write(
+        &checker,
+        format!(
+            // ⚠⚠ IT ONLY WRITES WHERE THE FILE IT IS JUDGING ALREADY IS, so a build whose origin
+            // regressed — the checker then lands in `$HOME`, which is item 710's measured defect —
+            // fails the premise below instead of leaving a `door.txt` in somebody's home directory.
+            "pwd > {stood}\n\
+             cat door.txt > {given} 2>&1\n\
+             if [ -f door.txt ]; then cp door.txt {saved}; \
+             printf 'MUTATED BY THE CHECK\\n' > door.txt; fi\n\
+             cat door.txt > {landed} 2>&1\n\
+             : > {window}\n\
+             i=0\n\
+             while [ ! -f {go} ] && [ $i -lt 600 ]; do \
+             i=$((i+1)); sleep 0.1 2>/dev/null || sleep 1; done\n\
+             if [ -f {saved} ]; then cp {saved} door.txt; fi\n\
+             printf 'YES the work is on disk\\n'\n",
+            stood = stood_at.display(),
+            given = read_back.display(),
+            saved = saved.display(),
+            landed = landed.display(),
+            window = window.display(),
+            go = go.display(),
+        ),
+    )
+    .expect("the stand-in checker");
+
+    // ── THE DAEMON, AND A PANE BORN IN THE REPOSITORY ────────────────────────────────────────
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host_at(&sock, &["cat"]);
+    let (driving, mut setup) = remote_driver(&sock);
+
+    // ⚠⚠⚠ THE PEER PAINTS WHAT IT READS, and that line is a fix rather than decoration: with echo
+    // off and nothing painted, `deliver` can never confirm the prompt arrived and RETYPES it, so a
+    // peer counting prompts sees two where the driver sent one. `sprag_plugin`'s own stand-in
+    // carries the same line for the same measured reason.
+    // ⚠⚠ IT KEYS ON `exactly:`, which is the PRODUCT's own contract — `done_instruction` ends
+    // *"reply exactly: MILESTONE REACHED"* — rather than on a private word no real agent would see.
+    let peer = "stty -echo; while IFS= read -r line; do printf '%s\\n' \"$line\"; \
+                case \"$line\" in *exactly:*) printf 'MILESTONE REACHED\\n'; exit 0;; esac; done";
+    let pane = spawn_pane(
+        &mut setup,
+        json!({
+            SPAWN_CMD_KEY: ["/bin/sh", "-c", peer],
+            SPAWN_CWD_KEY: repo.to_string_lossy(),
+            SPAWN_COLS_KEY: 80,
+            SPAWN_ROWS_KEY: 16,
+        }),
+    );
+
+    // ── THE RUN: the daemon's own construction, one argument at a time ───────────────────────
+    let script: std::sync::Arc<dyn sce_rust_runtime::IScriptEngine> =
+        std::sync::Arc::new(sce_rust_lua::LuaEngine::new());
+    let brief = sprag_plugin::Brief {
+        north_star: "the checker judges a copy and leaves the agent's tree alone".to_string(),
+        milestone: "the door is open".to_string(),
+        reference: "register item 705".to_string(),
+        closing_rules: None,
+        context_ceiling: None,
+        reflect_after_refusals: None,
+        // ⛔⛔⛔ THE WHOLE REASON THIS RUN IS BUILT HERE RATHER THAN REQUESTED.
+        milestone_check: Some(format!("/bin/sh {}", checker.display())),
+        service: None,
+        max_turns: Some(sprag_plugin::Counted::Of(4)),
+        // ⚠ EQUAL to the turn budget, which is what keeps `reflecting` unreachable: `judging` tests
+        // the turn budget first.
+        reflect_every: Some(4),
+        screen_rules: None,
+        // ⚠ NOBODY IS ASKED and nobody is waited for — this peer raises no dialog, and inheriting
+        // the shipped document's patience would hang the suite at the first one it did raise.
+        may_answer: None,
+        await_person_ms: Some(0),
+        handback_still_ms: None,
+        hold_within_ms: Some(3_600_000),
+        ready_timeout_ms: Some(10_000),
+        turn_within_ms: Some(20_000),
+    };
+    let mut spec = sprag_plugin::AiLoopSpec::driving("sh");
+    spec.ready_when = Some(ReadyWhen::Runs("sh".to_string()));
+    spec.done_when = sprag_plugin::DoneWhen::Exits;
+    // ⚠ A `/bin/sh` peer paints only once it holds a whole LINE, so a delivery cannot be confirmed
+    // on screen before the newline that submits it. `driving` is the real-agent shape.
+    spec.shows_the_prompt = false;
+    let mut loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
+        .expect("a well-briefed loop over a live pane starts");
+
+    // ── ⚠⚠⚠⚠⚠ THE READER THAT LOOKS *WHILE THE CHECK IS RUNNING* ─────────────────────────────
+    //
+    // Item 705's «done when» is a sentence about a WINDOW — *the shared tree's `git diff HEAD`
+    // stays put while a check that inserts and reverts a mutation runs* — and the run is driven on
+    // this thread, so nothing on it can look during that window. This is not a SAMPLER either: it
+    // waits for the checker's own signal and answers it, so the reading is taken with the mutation
+    // provably standing rather than whenever a poll happened to land.
+    let watching = {
+        let repo = repo.clone();
+        let window = window.clone();
+        let go = go.clone();
+        let over = over.clone();
+        std::thread::spawn(move || -> Option<Vec<u8>> {
+            loop {
+                if window.exists() {
+                    // ⚠⚠ READ FIRST, RELEASE SECOND. The checker is holding its mutation open
+                    // until `go` exists, so this order is what makes the reading in-window.
+                    let seen = diff_head(&repo);
+                    let _ = std::fs::write(&go, b"looked\n");
+                    return Some(seen);
+                }
+                // ⚠ THE RUN ENDING IS THE OTHER ANSWER, so a check that never ran ends this thread
+                // instead of holding the gate for the checker's whole bound.
+                if over.exists() {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        })
+    };
+
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = Driver::new(Guardrails {
+        max_iterations: 40,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(120)),
+    })
+    .reporting_to(std::sync::Arc::clone(&progress))
+    .run(&mut loops, &driving, &RunContext::uncancellable());
+    let _ = std::fs::write(&over, b"over\n");
+    let in_window = watching.join().expect("the in-window reader");
+    let walk: Vec<String> = progress
+        .lock()
+        .expect("the progress cell")
+        .journal
+        .iter()
+        .filter_map(|step| step.note.clone())
+        .collect();
+
+    // ── ⚠⚠ THE PREMISES ──────────────────────────────────────────────────────────────────────
+    assert_eq!(
+        outcome.checks.asked, 1,
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: this run never put its milestone claim to an independent \
+         process, so every claim below is about a check that did not happen. Ended {:?} after {} \
+         pumps; the walk: {walk:?}",
+        outcome.state, outcome.iterations,
+    );
+    assert_eq!(
+        outcome.checks.silent, 0,
+        "⚠⚠⚠ THE PREMISE FAILED: the check was asked and said nothing back, which is a fixture \
+         that did not start rather than a verdict. What the run says about the silence: {:?}",
+        outcome.checks.why_silent,
+    );
+    let stood_in = std::fs::read_to_string(&stood_at).unwrap_or_default();
+    assert!(
+        !stood_in.trim().is_empty(),
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: no checker ever woke up, so «it stood in the copy» below is \
+         true of nothing. Ended {:?}; the walk: {walk:?}",
+        outcome.state,
+    );
+    let stood_in = std::path::Path::new(stood_in.trim()).to_path_buf();
+    assert_eq!(
+        std::fs::read_to_string(&landed).ok().as_deref(),
+        Some("MUTATED BY THE CHECK\n"),
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: the check never wrote anything, so «the agent's tree did not \
+         move» below is satisfied by a check that touched nothing at all — register item 280's \
+         fifth lesson, and the reason this fixture carries its own write out of the copy",
+    );
+    let Some(in_window) = in_window else {
+        panic!(
+            "⚠⚠⚠⚠⚠ THE PREMISE FAILED: the check finished without ever standing a mutation up, so \
+             the one reading item 705's «done when» asks for was never taken. The checker woke up \
+             in {}; the walk: {walk:?}",
+            stood_in.display(),
+        )
+    };
+
+    // ── THE CLAIM, IN THE WINDOW ITEM 705's «DONE WHEN» NAMES ────────────────────────────────
+    //
+    // ⚠ COMPARED AS TEXT, which is not a weakening: `diff_head` answers a diff, and a reader
+    // meeting this failure needs to see WHICH hunk moved. The byte vectors are the same values
+    // and render as a hundred and forty numbers.
+    assert_eq!(
+        String::from_utf8_lossy(&in_window),
+        String::from_utf8_lossy(&before),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 705, VERBATIM: WHILE the check was running, with its mutation \
+         standing, the tree the AGENT is working in had moved. This is the reading nothing could \
+         take before — the checker puts back exactly what it found, so every look AFTERWARDS is \
+         green about it. Measured 2026-08-26 on run 0: a watcher read that mutation as the \
+         agent's leftover, told the owner one sentence of the agent's report was false — it was \
+         true — and then ran `git checkout --` over it, which was a no-op only because the check \
+         had already finished. The checker stood in {}",
+        stood_in.display(),
+    );
+    assert_ne!(
+        stood_in, repo,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 705: a whole driven run spawned its milestone checker into the \
+         tree the AGENT is working in. Measured 2026-08-26 on run 0: the checker mutates what it \
+         judges, a watcher read that mutation as the agent's leftover, told the owner one sentence \
+         of the agent's report was false — it was true — and ran `git checkout --` over it",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&read_back).ok().as_deref(),
+        Some("door returns 2\n"),
+        "⛔⛔⛔⛔ THE CHECKER JUDGED THE WRONG TREE: the claim is about work that is not in `HEAD`, \
+         and a copy without it lets a careful checker open real files, reason correctly, and \
+         answer about something else. It stood in {}",
+        stood_in.display(),
+    );
+    // ⚠⚠ AND AFTERWARDS TOO, which is a WEAKER claim than the window above and still its own: it
+    // is what catches a check that mutated and did not put back, and a «revert» that put back
+    // something other than what it found — the shape that would leave the agent's uncommitted work
+    // silently rewritten by the process sent to judge it.
+    assert_eq!(
+        String::from_utf8_lossy(&diff_head(&repo)),
+        String::from_utf8_lossy(&before),
+        "⛔⛔⛔⛔ REGISTER ITEM 705: the agent's tree does not read the same after the check as it \
+         did before it. The checker stood in {}",
+        stood_in.display(),
+    );
+    assert!(
+        !stood_in.exists(),
+        "⚠⚠⚠⚠ A COPY OUTLIVED ITS CHECK — a second tree holding a half-applied mutation, which is \
+         the confusion this item exists to end, re-created by the repair. It is still at {}",
+        stood_in.display(),
+    );
+
+    let _ = std::fs::remove_dir_all(&under);
 }
 
 /// ⛔⛔⛔⛔⛔ **A DRIVER OUTSIDE THE DAEMON CAN SAY WHERE ITS RUN'S WORK IS** — register item 722,
