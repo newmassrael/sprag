@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ⚠⚠⚠⚠⚠ WHAT HAPPENS TO A MACROSTEP THAT CANNOT END?
+
+  W3C SCXML 3.13's Principles and Constraints say a macrostep *may not
+  terminate*, and that this "is currently allowed". A document with a cyclic
+  eventless transition is therefore not malformed — it is a document whose
+  macrostep is infinite, and an engine that ran it to the letter would never
+  return.
+
+  SCE does not run it to the letter. It stops at a microstep ceiling and reports
+  through `truncated_macrosteps` + `last_truncated_macrostep_state`, because
+  **every other reading a host takes says the opposite**: `get_current_state`
+  answers, `is_running` is true, and the call returned in microseconds. The
+  configuration behind those answers is not the stable one 3.13 promises.
+
+  ⚠⚠⚠⚠ REGISTER ITEM 551, AND THIS IS THE PICTURE WITH NO ERRORS IN IT.
+  `document::faults` already reads the cascade — *"the document DOES match the
+  error, the handler fails the same way, and the drain never empties … a core at
+  full tilt with a configuration that never moves"*. That sentence is true of
+  this document too, and NOT ONE `error.*` IS RAISED HERE. So the two counters
+  `faults` used to read are both zero on a machine that is exactly the failure
+  they were written to catch.
+
+  ⚠⚠ THE DATAMODEL IS `null` ON PURPOSE, and it is what makes the control
+  structural rather than observed. With no `<data>`, no `cond`, no `<send>` and
+  no `<invoke>`, this document has nothing that COULD raise an error — so a gate
+  reading `unanswered == 0 && cascaded == 0` here is reading a fact about the
+  document rather than about how the run happened to go. `probe_unanswered.scxml`
+  is the opposite corner of the same axis: an error and no truncation, against a
+  truncation and no error.
+
+  ⚠ ASKED BY COMPILING AND RUNNING, this crate's probe convention: whether a
+  NULL-transition cycle truncates on THIS engine at THIS pin is a fact about the
+  engine, and reading the specification is not measuring it.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="probe_truncated"
+       datamodel="null"
+       initial="spinning">
+
+  <!--
+    ⚠⚠⚠ THE SUBJECT: two eventless transitions pointing at each other. Neither
+    carries an event, so both are enabled by NULL, and the drain that runs them
+    has work again the moment it finishes — which is the definition of a
+    macrostep that cannot reach a stable configuration.
+
+    ⚠ TWO STATES RATHER THAN ONE SELF-TRANSITION, deliberately: a self-transition
+    is a shape an engine may special-case (SCE's own suite records one swallowing
+    a `<parallel>` root — see `probe_parallel.scxml`), and a cycle through two
+    distinct states cannot be mistaken for that. It also makes
+    `last_truncated_macrostep_state` a reading with something to say: the state
+    named is one the cycle actually passes through.
+  -->
+  <state id="spinning">
+    <transition target="turning"/>
+  </state>
+
+  <state id="turning">
+    <transition target="spinning"/>
+  </state>
+
+</scxml>

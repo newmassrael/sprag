@@ -77,6 +77,15 @@ const STATECHARTS: &[&str] = &[
     // consuming it needs a document that raises one and leaves it unanswered, which is this file,
     // and `probe_send_type` is its control because that one ANSWERS. See `probe_unanswered.scxml`.
     "probe_unanswered",
+    // ⚠⚠ THE SIXTH PROBE, and the corner `probe_unanswered` cannot reach: a macrostep that CANNOT
+    // END. W3C SCXML 3.13 allows a document whose eventless chain is infinite; SCE stops it at a
+    // microstep ceiling and reports through `truncated_macrosteps`, because every other reading a
+    // host takes says the run is fine. Register item 551 — `document::faults` read two of the
+    // engine's loss signals and this is the third, the same *"core at full tilt with a
+    // configuration that never moves"* picture with NO ERRORS IN IT, so neither counter it already
+    // read can see it. `datamodel="null"`, so the document has nothing that could raise one.
+    // See `probe_truncated.scxml`.
+    "probe_truncated",
 ];
 
 /// The Event I/O Processor / invoker types THIS CRATE serves, declared to codegen so a

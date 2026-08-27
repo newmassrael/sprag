@@ -142,6 +142,15 @@ pub(crate) mod sm {
         #![allow(unused_imports)]
         include!(concat!(env!("OUT_DIR"), "/probe_unanswered_sm.include.rs"));
     }
+
+    // ⚠⚠ THE OPPOSITE CORNER OF THE ONE ABOVE — register item 551. That probe raises an `error.*`
+    // nobody answers; this one raises NOTHING and never settles, which W3C SCXML 3.13 allows and
+    // which no error counter can see. Compiled here for the same reason as every probe: whether a
+    // NULL-transition cycle truncates on THIS generator at THIS pin is a fact to measure.
+    pub(crate) mod probe_truncated_sm {
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/probe_truncated_sm.include.rs"));
+    }
 }
 
 /// What this crate has PROVEN about the engine it runs on — see [`probe`].

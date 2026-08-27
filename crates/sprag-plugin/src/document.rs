@@ -56,8 +56,8 @@ pub struct Faulted {
     /// 3.12.2's *ignored*, counted.
     pub unanswered: u32,
     /// **WHICH ERROR THE LAST ONE WAS**, in the document's own event vocabulary
-    /// (`"error.execution"`, `"error.communication"`), or [`None`] when the fault is a cascade
-    /// rather than an unanswered event.
+    /// (`"error.execution"`, `"error.communication"`), or [`None`] when the fault is a cascade or a
+    /// [`truncation`](Self::truncated) rather than an unanswered event.
     ///
     /// ⚠⚠ The CLASS is the whole diagnosis and a count cannot carry it: `error.execution` is the
     /// document's own content failing — a repair in the `.scxml` — and `error.communication` is a
@@ -72,10 +72,65 @@ pub struct Faulted {
     /// A run in that state is not idle and not stopped — it is a core at full tilt with a
     /// configuration that never moves.
     pub cascaded: u32,
+    /// **HOW MANY MACROSTEPS THE ENGINE HAD TO CUT SHORT** because the document's eventless chain
+    /// was still going at the microstep ceiling — register item 551.
+    ///
+    /// # ⚠⚠⚠⚠⚠ [`cascaded`](Self::cascaded)'s picture WITH NO ERRORS IN IT
+    ///
+    /// Read that field's sentence again: *a core at full tilt with a configuration that never
+    /// moves*. It is true of this one too, and nothing here raised an `error.*` — W3C SCXML 3.13
+    /// says a macrostep *may not terminate* and that this "is currently allowed", so a document
+    /// with a cyclic eventless transition is not malformed and produces no error to count. **Both
+    /// of the readings above are therefore ZERO on a machine in exactly the state they exist to
+    /// catch**, which is what left this signal unread while the two beside it were consumed.
+    ///
+    /// ⚠⚠ AND IT IS THE ONE FAULT EVERY OTHER READING DENIES. An unanswered error at least leaves
+    /// the machine somewhere the document meant it to be; here `get_current_state` answers,
+    /// `is_running` is `true`, and the call returned in microseconds — but the configuration behind
+    /// those answers is wherever the last microstep landed, not the stable one 3.13 promises. This
+    /// is `document.rs`'s own quarry: *a run that looks like an agent thinking slowly*.
+    pub truncated: u32,
+    /// **WHICH STATE THE CHAIN WAS CUT IN**, or [`None`] when [`truncated`](Self::truncated) is
+    /// zero — the repair, where the count is only the alarm.
+    ///
+    /// ⚠⚠ An endless chain is a closed walk through the state graph and this names one state on
+    /// it: the source of the transition that was refused, or where the drain stood when it stopped
+    /// taking internal events. A reader with the count alone knows some document somewhere cannot
+    /// settle; a reader with this knows where to look. It is [`error`](Self::error)'s counterpart
+    /// exactly — a class beside a count, because a count with neither is half a diagnosis.
+    pub truncated_at: Option<&'static str>,
 }
 
 impl fmt::Display for Faulted {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // ⚠⚠⚠⚠⚠ THE TRUNCATION SPEAKS FIRST, AND NOT BY SENIORITY — register item 551. It is the
+        // one fault that makes the OTHER readings untrustworthy rather than merely joining them:
+        // the counts below are taken off a configuration the engine stopped mid-chain, so an
+        // `error.*` counted there may be an artefact of where the cut landed. A reader told about
+        // the error first would go and repair a block that never finished running.
+        if self.truncated > 0 {
+            return match self.truncated_at {
+                Some(state) => write!(
+                    f,
+                    "its eventless chain through {state:?} never settles, so the engine cut the \
+                     macrostep short ({} time(s)) — the configuration it is showing you is \
+                     wherever that cut landed, not a stable one, and the state named is on the \
+                     cycle to break",
+                    self.truncated,
+                ),
+                // ⚠ The engine reports the state whenever it reports the count, so this arm is the
+                // one that says a build compiled the diagnostics out — a fact worth a sentence
+                // rather than a `?`, since the alternative reading (a truncation with nowhere to
+                // look) would send somebody hunting through the whole document.
+                None => write!(
+                    f,
+                    "the engine cut {} macrostep(s) short on an eventless chain that never \
+                     settles, and could not say in which state — read it against a build with \
+                     macrostep diagnostics compiled in",
+                    self.truncated,
+                ),
+            };
+        }
         if self.cascaded > 0 {
             return write!(
                 f,
@@ -133,9 +188,14 @@ impl fmt::Display for Faulted {
 ///
 /// # Errors
 ///
-/// [`Faulted`] when initialising raised an `error.*` this document answered nowhere, or when its own
-/// error handling failed in a chain the engine had to cut. Both mean the values a caller is about to
-/// read are values nobody can vouch for.
+/// [`Faulted`] when initialising raised an `error.*` this document answered nowhere, when its own
+/// error handling failed in a chain the engine had to cut, or — register item 551 — when its
+/// eventless chain never settled and the engine cut the MACROSTEP instead. All three mean the values
+/// a caller is about to read are values nobody can vouch for.
+///
+/// ⚠⚠ The third is the one with no error in it, and it refuses a document that would otherwise open
+/// perfectly: `initialize` returns in microseconds, the machine reports running, and the
+/// configuration it is holding is wherever the cut landed. See [`Faulted::truncated`].
 pub fn opened<P: StatePolicy>(
     policy: P,
     serving: &crate::act::Serving,
@@ -156,17 +216,44 @@ pub fn opened<P: StatePolicy>(
 /// and an error raised once the machine has left them — in a `<final>`, or after the run is over —
 /// has nobody left to answer it. [`crate::outer::OuterLoop::errors_nobody_answered`] is the loop's
 /// own window onto the same fact, and the run's closing note is where it reaches a person.
+///
+/// # ⚠⚠⚠⚠⚠ Which of the engine's loss signals this reads, and why the list is the claim
+///
+/// Register item 551 was filed because this function's NAME promises every way a machine can lose
+/// something and its body read two of them. It reads three now — the two errors and the
+/// [`truncation`](Faulted::truncated) — and the two still outside are outside **by decision rather
+/// than by oversight**, which is what that item asked for:
+///
+/// * `discarded_external_events` is a stimulus the engine DROPPED, not one it swallowed. For this
+///   crate a dropped one is a turn the loop never saw, and it already has its own answer with its
+///   own vocabulary — [`crate::outer::Briefed::TooLate`] — because *the brief arrived while the
+///   machine was somewhere that does not take briefs* is a different sentence from *this document
+///   cannot vouch for its own values*, and folding it in here would make one reader of two facts.
+/// * `unattended_scheduler_steps` is about a HOST that stopped calling `tick`, which is a fact
+///   about the driver rather than about the document. Nothing here can repair it and this function
+///   is read to decide whether a document's values can be trusted.
 #[must_use]
 pub fn faults<P: StatePolicy>(machine: &Engine<P>) -> Option<Faulted> {
     let unanswered = machine.unhandled_error_events();
     let cascaded = machine.error_cascade_events();
-    if unanswered == 0 && cascaded == 0 {
+    // ⚠⚠ A CHAIN THE ENGINE HAD TO CUT — the third loss signal, and the one no error accompanies.
+    // W3C SCXML 3.13 permits a macrostep that never terminates, so the document is not malformed
+    // and raises nothing; the engine's ceiling is the only event, and this count is the only place
+    // it is reported. See `probe_truncated.scxml`, which is that document with nothing else in it.
+    let truncated = machine.truncated_macrosteps();
+    if unanswered == 0 && cascaded == 0 && truncated == 0 {
         return None;
     }
     Some(Faulted {
         unanswered,
         error: machine.last_unhandled_error().map(P::get_event_name),
         cascaded,
+        truncated,
+        // ⚠ The state comes from the same read as the count, so the pair cannot disagree about
+        // whether there WAS a truncation — `error` beside `unanswered` has the same shape.
+        truncated_at: machine
+            .last_truncated_macrostep_state()
+            .map(P::get_state_name),
     })
 }
 

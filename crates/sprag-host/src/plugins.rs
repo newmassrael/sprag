@@ -4531,6 +4531,11 @@ mod tests {
                 unanswered: 1,
                 error: Some("error.execution"),
                 cascaded: 0,
+                // ⚠ ZERO, and it is what keeps this case about the UNANSWERED error: register item
+                // 551's truncation speaks FIRST in `Faulted`'s `Display`, so a non-zero here would
+                // silently retarget the assertions below at a different sentence.
+                truncated: 0,
+                truncated_at: None,
             },
         ));
         let sessionless = ai_loop_refusal(&sprag_plugin::NotStarted::Sessionless);

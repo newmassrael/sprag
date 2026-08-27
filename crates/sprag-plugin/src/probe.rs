@@ -86,7 +86,7 @@
 mod tests {
     use std::sync::Arc;
 
-    use sce_rust_runtime::{Engine, IScriptEngine, ScriptValue};
+    use sce_rust_runtime::{Engine, IScriptEngine, ScriptValue, StatePolicy};
 
     use crate::sm::probe_parallel_sm::{
         ProbeParallelEvent, ProbeParallelPolicy, ProbeParallelState,
@@ -1241,6 +1241,137 @@ mod tests {
              nothing serves) and has a transition for it — so it must read ZERO here. A `1` would \
              mean this count is counting errors RAISED rather than errors UNANSWERED, and the \
              assertion above would be about the engine instead of about the document",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A MACROSTEP THAT CANNOT END IS A FACT THE HOST CAN NOW READ** — register item 551,
+    /// consuming SCE's `truncated_macrosteps` and `last_truncated_macrostep_state`.
+    ///
+    /// # ⚠⚠⚠⚠ The sibling above is the same picture WITH an error in it
+    ///
+    /// [`crate::document::Faulted::cascaded`] already carried this sentence — *the drain never
+    /// empties … a core at full tilt with a configuration that never moves* — and it reaches that
+    /// state through a handler that keeps failing. **W3C SCXML 3.13 gets there with no error at
+    /// all**: it says a macrostep *may not terminate* and that this "is currently allowed", so a
+    /// document whose eventless chain is cyclic is well-formed and raises nothing. Both error
+    /// counters read ZERO on a machine in exactly the state they were written to catch, which is
+    /// why `document::faults` could read two of the engine's loss signals for months and look
+    /// complete.
+    ///
+    /// # ⚠⚠⚠ Why the CONTROLS here are the assertions that every other reading says *fine*
+    ///
+    /// An unanswered error at least leaves the machine where the document meant it to be. This
+    /// leaves every reading a host takes actively misleading: `is_running` is `true`,
+    /// `get_current_state` answers, and the call returned in microseconds. So the gate asserts
+    /// those FIRST — not as scenery, but because a failure that announced itself in any of them
+    /// would need no counter, and this whole signal would be redundant.
+    #[test]
+    fn a_macrostep_that_cannot_end_is_still_a_fact_the_host_can_read() {
+        let mut engine = Engine::new(crate::sm::probe_truncated_sm::ProbeTruncatedPolicy::new());
+        engine.initialize();
+        for _ in 0..8 {
+            engine.tick();
+        }
+
+        // ── THE CONTROLS FIRST: every ordinary reading says this run is healthy ──
+        assert!(
+            engine.is_running(),
+            "⚠⚠⚠⚠⚠ THE MACHINE MUST STILL BE RUNNING, and this is the control the whole signal \
+             rests on. A document that had STOPPED would be visible to any host without a counter, \
+             and then `truncated_macrosteps` would be reporting something already reported. It is \
+             worth reading because the machine looks alive",
+        );
+
+        // ── THE SUBJECT ──
+        let cut = engine.truncated_macrosteps();
+        assert!(
+            cut >= 1,
+            "⚠⚠⚠⚠⚠ THE ENGINE MUST HAVE CUT A MACROSTEP SHORT. `probe_truncated.scxml` is two \
+             eventless transitions pointing at each other, so the drain has work again the moment \
+             it finishes and no stable configuration exists to reach. A zero means either that \
+             this engine settles a NULL cycle somehow — and then the document is not the probe it \
+             claims to be — or that the build compiled the diagnostics out, which would make every \
+             reading below a `0` meaning *not counted* worn as *did not happen*. Got {cut}",
+        );
+        let at = engine.last_truncated_macrostep_state();
+        assert!(
+            at.is_some(),
+            "⚠⚠⚠⚠ and WHICH STATE it was cut in, because the count alone is half a diagnosis: an \
+             endless chain is a closed walk through the state graph and this names one state on \
+             it — where to break the cycle. A count with no state is the shape item 510 is about",
+        );
+
+        // ── AND NOT ONE ERROR, WHICH IS WHAT MAKES THIS A THIRD SIGNAL RATHER THAN A SPELLING ──
+        assert_eq!(
+            engine.unhandled_error_events(),
+            0,
+            "⚠⚠⚠⚠⚠ THE POINT OF THE `null` DATAMODEL. With no `<data>`, no `cond`, no `<send>` and \
+             no `<invoke>`, this document has nothing that COULD raise an error — so this zero is \
+             structural rather than lucky. A non-zero would mean the reading above is reachable \
+             through the counter `faults` ALREADY had, and register item 551 would be a duplicate",
+        );
+        assert_eq!(
+            engine.error_cascade_events(),
+            0,
+            "⚠⚠⚠ and no cascade either, which is the closer of the two: a cascade is this same \
+             *drain that never empties* reached through a failing handler. If it read non-zero \
+             here the two would be one fact under two names, and folding them would be right",
+        );
+
+        // ── AND THE DOCUMENT'S OWN DOOR ANSWERS IT — `faults` reads three signals now, not two ──
+        let faulted = crate::document::faults(&engine).expect(
+            "⚠⚠⚠⚠⚠ REGISTER ITEM 551: `document::faults` claims to answer *what this machine has \
+             swallowed* and must say `Some` for a machine whose chain the engine had to cut. A \
+             `None` here is the whole item — two of the engine's loss signals read, and the third \
+             one, the same picture with no errors in it, invisible to the function named for it",
+        );
+        assert_eq!(
+            (faulted.unanswered, faulted.cascaded),
+            (0, 0),
+            "⚠⚠⚠⚠ and it must be answering on the TRUNCATION, not on something else it found: \
+             both readings it had before this item are zero, so a `Some` built from them would \
+             mean this gate is measuring the old behaviour: {faulted:?}",
+        );
+        assert_eq!(
+            (faulted.truncated, faulted.truncated_at),
+            (
+                cut,
+                at.map(
+                    <crate::sm::probe_truncated_sm::ProbeTruncatedPolicy as StatePolicy>::get_state_name,
+                ),
+            ),
+            "⚠⚠⚠ and the door must carry the ENGINE's two readings rather than a second opinion \
+             about them — a `faults` that recounted would be a second authority on whether a \
+             chain was cut: {faulted:?}",
+        );
+
+        // ── AND WHAT IT SAYS TO A PERSON NAMES THE STATE, NOT JUST THE COUNT ──
+        let said = faulted.to_string();
+        assert!(
+            said.contains("never settles") && said.contains("not a stable one"),
+            "⚠⚠⚠⚠ the sentence must tell a reader that the configuration in front of them is \
+             UNTRUSTWORTHY, which is the one thing that separates this from every other fault: \
+             here the machine is showing a configuration the document never meant to be in. \
+             Got {said:?}",
+        );
+
+        // ── THE CONTROL DOCUMENT: an error and NO truncation, the opposite corner ──
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let mut raises = Engine::new(crate::sm::probe_unanswered_sm::ProbeUnansweredPolicy::new(
+            Arc::clone(&lua),
+        ));
+        raises.initialize();
+        for _ in 0..8 {
+            raises.tick();
+        }
+        assert_eq!(
+            raises.truncated_macrosteps(),
+            0,
+            "⚠⚠⚠⚠⚠ THE CONTROL, and without it the assertion at the top of this gate could be \
+             about the ENGINE rather than about the document. `probe_unanswered.scxml` raises an \
+             `error.*` nobody answers and its macrosteps all settle; if it truncated too, this \
+             counter would be counting something every document does and the reading would say \
+             nothing about a chain that cannot end",
         );
     }
 

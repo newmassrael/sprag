@@ -21345,6 +21345,10 @@ mod tests {
         // above: it asks what happens to an `error.*` nobody answers, and the answer is a fact
         // about SCE rather than a decision another repository would copy.
         "probe_unanswered",
+        // ⚠⚠ AND ITS OPPOSITE CORNER (register item 551): what happens to a macrostep that cannot
+        // END. Here for `probe_unanswered`'s reason exactly — the answer is SCE's behaviour under
+        // W3C SCXML 3.13's *"may not terminate"*, not a decision another repository would copy.
+        "probe_truncated",
         "session",
     ];
 
