@@ -413,6 +413,45 @@ impl AiLoop {
         self.inner.screened()
     }
 
+    /// **WHAT THIS RUN'S OWN DOCUMENT RAISED THAT NOTHING WAS LEFT TO ANSWER** — register item 511,
+    /// and the reading a LIVE run had no door to be asked for.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why two delegations were the whole of what was owed
+    ///
+    /// Register item 505 made an unanswered `error.execution` END a run that used to limp through
+    /// it — a live behaviour change on an unattended loop. What that payment did NOT cover, and
+    /// registered as item 511, was the READING: one real run driven end to end with this and
+    /// [`fault`](Self::fault) both taken off it, because the paths a stand-in never takes are
+    /// `screening` with a real dialog, `service_down`, and `reviewing` over a real transcript.
+    /// **Every live gate in this tree holds an `AiLoop`, and an `AiLoop` answered neither** — the
+    /// two readings existed only on the driver behind it, so the run a person can actually drive
+    /// had no way to be asked. The item was owed for a week for the want of these two lines.
+    ///
+    /// ⚠ A LEVEL rather than an event, [`OuterLoop::swallowed`]'s stance: the machine is read each
+    /// time it is asked, so a supervisor arriving mid-run gets the same answer as one who watched
+    /// from the start.
+    ///
+    /// ⚠⚠ [`None`] is the healthy reading and what every run of today's document takes — its
+    /// `error.execution` edge covers every state that runs content (register item 509), so this is
+    /// the NET under that edge rather than a live path. `Some` is the day the document stopped
+    /// covering itself, and the payload names the class, the count, and that the rest of the block
+    /// that raised it never ran.
+    #[must_use]
+    pub fn swallowed(&self) -> Option<crate::document::Faulted> {
+        self.inner.swallowed()
+    }
+
+    /// **WHICH ERROR OF ITS OWN PUT THIS RUN'S MACHINE IN `failed`** — [`OuterLoop::fault`] at the
+    /// door, and register item 511's other half.
+    ///
+    /// ⚠ The COUNTERPART of [`swallowed`](Self::swallowed) rather than a second spelling of it:
+    /// that counts what nobody answered, this names what the document DID answer. A run can carry
+    /// one, both, or — every healthy run — neither.
+    #[must_use]
+    pub fn fault(&self) -> Option<String> {
+        self.inner.fault()
+    }
+
     /// **WHAT THE MACHINE ACTUALLY DID**, in the journal's own words — and nothing it did not do.
     ///
     /// # ⚠⚠⚠ A LOOK IS NOT A STEP, AND THIS USED TO WRITE IT DOWN AS ONE
@@ -2659,6 +2698,48 @@ mod tests {
              dropped, and the line would have named the driver's own `Judge` rather than the \
              engine's error anyway. The class with no place to look is half a diagnosis: {said:?} \
              — walked {walk:?}",
+        );
+
+        // ── ⚠⚠⚠⚠⚠ AND THE DOOR REGISTER ITEM 511 OPENED CARRIES THIS, NOT JUST A ZERO ──
+        //
+        // `AiLoop::fault` and `AiLoop::swallowed` exist so a LIVE run can be asked what its own
+        // document raised, and every live gate that asks reads the healthy answer — `None`. A
+        // delegation guarded only by `assert_eq!(x, None)` is guarded by nothing: a body replaced
+        // with a bare `None` leaves all three of those gates green. This is the run where the
+        // reading is NOT empty, so it is the only one that can tell the door from a constant.
+        assert_eq!(
+            loops.fault().as_deref(),
+            Some("error.execution"),
+            "⚠⚠⚠⚠⚠ THE DOOR MUST REACH THE MACHINE. This run's document answered its own failing \
+             guard by stopping, so the class is there to be read — and an `AiLoop` is what every \
+             live gate holds, so a door that does not carry it here carries nothing there either, \
+             silently and for ever. Walked {walk:?}",
+        );
+        assert_eq!(
+            loops.fault(),
+            loops.inner.fault(),
+            "⚠⚠⚠ and the two spellings of one fact must agree: a second authority on which error \
+             stopped a run is the failure register item 505 built `fault` to end, not one to \
+             re-create at the door. Walked {walk:?}",
+        );
+        // ⚠⚠ `swallowed` is the COUNTERPART and reads `None` here on purpose: this document DOES
+        // answer `error.execution`, so nothing was left unanswered and nothing cascaded. Register
+        // item 509 is the open debt for making that reading FIRE in a shipped document, and it is
+        // that item's to pay — what is asserted here is that the door reaches the same machine.
+        assert_eq!(
+            loops.swallowed(),
+            loops.inner.swallowed(),
+            "⚠⚠⚠ and item 511's other door must reach the same machine — {:?} at the door against \
+             {:?} behind it. Walked {walk:?}",
+            loops.swallowed(),
+            loops.inner.swallowed(),
+        );
+        assert_eq!(
+            loops.swallowed(),
+            None,
+            "⚠⚠ a run whose error the document ANSWERED must have swallowed nothing: a reading \
+             here would mean the `error.execution` edge had stopped covering the state that \
+             raised, which is the shape register item 509 is about. Walked {walk:?}",
         );
     }
 

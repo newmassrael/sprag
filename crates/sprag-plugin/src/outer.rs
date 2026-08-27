@@ -17057,6 +17057,14 @@ mod tests {
     /// ⚠ Cheap on purpose — one stand-in, a handful of passes, no fixtures. The reading is free
     /// (a `u32` the engine already counts) and the day it is not zero, whichever gate is running
     /// says so instead of passing over a swallowed failure.
+    ///
+    /// ⚠⚠⚠ **AND THE SAME READING WHERE THE PEER IS REAL** — register item 511, which is the scope
+    /// this gate does NOT cover and said so when it was filed. `sprag-host`'s
+    /// `live_agent::a_briefed_loop_converges_against_a_live_agent` takes this reading and
+    /// [`OuterLoop::fault`] off a LIVE run carried to its ending: the passes a stand-in makes are
+    /// written ones, and `screening` with a real dialog, `service_down` and `reviewing` over a real
+    /// transcript are paths only a real agent walks. Two peers, one reading — this is the cheap one
+    /// that runs every sweep, and that is the one that runs where nobody wrote the answers.
     #[test]
     fn a_healthy_run_swallows_no_error_of_its_own() {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());

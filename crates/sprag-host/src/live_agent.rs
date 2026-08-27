@@ -468,6 +468,56 @@ fn step(began: Instant, what: &str) {
     println!("[{:>7.2}s] {what}", began.elapsed().as_secs_f64());
 }
 
+/// **WHAT A LIVE RUN'S OWN DOCUMENT RAISED THAT NOTHING WAS LEFT TO ANSWER, AND WHETHER IT FAULTED**
+/// — register item 511, asked of every live run this module carries to an ending.
+///
+/// # ⚠⚠⚠⚠⚠ Why a LIVE run is the only place this reading is worth taking
+///
+/// Register item 505 made an unanswered `error.execution` END a run that used to limp through one.
+/// That is a behaviour change on an UNATTENDED loop, and until this existed it had been measured
+/// against a stand-in and nothing else: `outer::tests::a_healthy_run_swallows_no_error_of_its_own`
+/// drives the same document against a peer somebody WROTE, and every pass it makes was written to
+/// be made. The passes only these gates make are a real model's screen, a real permission dialog
+/// and a real transcript read back — and register item 507 is the standing proof that a path can
+/// raise for a year with nobody knowing.
+///
+/// # ⚠⚠ The zero is READ rather than inferred from the run's silence
+///
+/// The count is deliberately not a wire key (see `OuterLoop::errors_nobody_answered`'s own doc), and
+/// the note `AiLoop::ended` writes is attached ONLY when the reading is non-empty. So a run that
+/// published nothing looks exactly like a channel that has rotted — the shape register item 453
+/// warns about — and asking the door is the only reading that tells the two apart.
+///
+/// ⚠ `swallowed` rather than the bare count, on purpose: it answers [`None`] exactly when nothing
+/// was unanswered AND nothing cascaded, so it carries the count's whole claim plus the failure a
+/// count cannot see — a handler that answers its own error for ever, at a core's full tilt, with a
+/// configuration that never moves.
+fn nothing_the_document_left_unanswered(
+    loops: &sprag_plugin::AiLoop,
+    began: Instant,
+    walked: &dyn std::fmt::Debug,
+) {
+    let swallowed = loops.swallowed();
+    let fault = loops.fault();
+    step(
+        began,
+        &format!("nothing answered: {swallowed:?} — the document's own fault: {fault:?}"),
+    );
+    assert_eq!(
+        swallowed, None,
+        "⛔⛔⛔⛔⛔ ITEM 511: a LIVE run of the shipped document raised an error no state of it was \
+         left to answer. Since register item 505 that ENDS a run instead of limping through it, so \
+         this is a live path stopping where it used to continue — and the class named here says \
+         which clause. Walked: {walked:?}",
+    );
+    assert_eq!(
+        fault, None,
+        "⛔⛔⛔⛔ ITEM 511: the document declared a fault of its own on a live run this gate has \
+         just read as ended the way it asserts. A machine that reached `failed` is not in that \
+         ending, so one of the two readings is about a different run. Walked: {walked:?}",
+    );
+}
+
 /// ⚠⚠⚠ **THE TWO CONTRACTS, ASKED ABOUT A PEER THAT TAKES SECONDS** — debt 64c's first half.
 ///
 /// The barrier at the START of a turn ([`ReadyWhen::Settles`]) and the contract at its END
@@ -1622,6 +1672,11 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         loops.turns(),
     );
 
+    // ⚠⚠⚠⚠⚠ **AND WHAT THIS RUN'S OWN DOCUMENT RAISED, READ OFF A LIVE RUN THAT WENT END TO END**
+    // — register item 511, which register item 505 left open the day it changed what an unanswered
+    // error DOES. This is the CONVERGING path: the ending a person gets when everything worked.
+    nothing_the_document_left_unanswered(&loops, began, &walked);
+
     // ⚠⚠⚠ **AND THE RUN HANDS BACK WHAT ITS AGENT WROTE** — register item 121, asserted here
     // because this is the only gate in the tree where the report is a REAL agent's prose rather
     // than a shell script's. Every rule the capture applies was measured off a live `claude`
@@ -2517,6 +2572,11 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
         "⚠⚠ and the run's JOURNAL must carry the refusal in its own words, or a person auditing \
          this run finds a converged loop and no record of what it turned down: {walked:?}",
     );
+
+    // ⚠⚠⚠⚠ **AND THE `screening` PATH IS ONE OF THE THREE REGISTER ITEM 511 NAMED** — a real
+    // permission dialog, raised by a real agent, answered by a standing instruction. It is a path
+    // no stand-in walks, and since register item 505 an error raised on it ends the run.
+    nothing_the_document_left_unanswered(&loops, began, &walked);
 }
 
 /// ⚠⚠⚠ **A LIVE LOOP REPLACES ITS AGENT'S SESSION AND TELLS THE REPLACEMENT WHAT IT LEARNED** —
@@ -2857,6 +2917,12 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
          Got {:?}",
         loops.state(),
     );
+
+    // ⚠⚠⚠⚠ **AND `reviewing` OVER A REAL TRANSCRIPT IS THE SECOND OF THE THREE PATHS REGISTER ITEM
+    // 511 NAMED** — this run reflected, replaced its session, and briefed the replacement out of
+    // what it read back. The states that do that are ones a stand-in's written script never enters,
+    // and the prose they read is a live model's.
+    nothing_the_document_left_unanswered(&loops, began, &walked);
 }
 
 /// ⚠⚠⚠ **WHAT A REAL AGENT ASKS WHILE IT IS WORKING** — the instrument register item 137 is about,
