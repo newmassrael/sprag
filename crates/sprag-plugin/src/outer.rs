@@ -14865,6 +14865,66 @@ mod tests {
             );
         }
 
+        // ── ⛔⛔⛔⛔⛔ AND THE ITEM'S OWN SENTENCE, DRIVEN: A LATE HOOK AND AN EMPTY ACCOUNT ARE
+        //    TWO DIFFERENT READINGS OF ONE JUDGEMENT ─────────────────────────────────────────
+        //
+        // Everything above this line proves the two halves apart: `stated_this_turn` returns two
+        // different worlds, and `Unstated::remedy` renders two different sentences. **Neither is
+        // the claim item 486 makes.** Its words are *whether the hook is late or absent* — a
+        // question about what a JUDGEMENT says, and a judgement is `said_done`, not a return value
+        // and not a renderer called on a value this gate typed out itself.
+        //
+        // ⚠⚠⚠ SO BOTH READINGS COME OFF `said_done`, THROUGH THE ROAD A RUN TAKES, from two peers
+        // that differ in ONE thing each: whether the reporter's count moved, and whether what it
+        // carried had any text. An assertion built on a hand-made `Heard` cannot fail if
+        // `said_marker` ever stops threading the reason down its pane path — which is exactly the
+        // joint a `_` in one match arm would quietly cut.
+        let late = loops.said_done(&Stating {
+            said: Some("I am still working on it.".to_owned()),
+            said_seq: 0,
+        });
+        let empty = loops.said_done(&Stating {
+            said: None,
+            said_seq: 1,
+        });
+        assert_eq!(
+            (late, empty),
+            (
+                Heard::NotSaid {
+                    read: 0,
+                    from: Evidence::Pane(Unstated::NotYet),
+                },
+                Heard::NotSaid {
+                    read: 0,
+                    from: Evidence::Pane(Unstated::Empty),
+                },
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 486, ITS OWN SENTENCE: *a LATE hook* and *an empty account* must \
+             be two different readings of a judgement. Both peers report, both leave the run on the \
+             pane road, and both used to arrive as one word — so a person could not tell *the hook \
+             has not spoken yet* from *the hook spoke and said nothing*, which are a wait and a \
+             broken reporter",
+        );
+        let (late_note, empty_note) = (
+            Because::Judged(late).noted(),
+            Because::Judged(empty).noted(),
+        );
+        assert_ne!(
+            late_note, empty_note,
+            "⚠⚠⚠⚠ AND THE TWO MUST NOT RENDER ALIKE, or the distinction dies at the mouth: the \
+             reading a person is handed is this sentence, and two facts told apart only inside a \
+             type are two facts nobody outside it can act on",
+        );
+        assert!(
+            late_note.contains("HOOK IS INSTALLED AND REPORTING")
+                && empty_note.contains("REPORTER MOVED ITS STATEMENT COUNT")
+                && !late_note.contains("install the agent's hook")
+                && !empty_note.contains("install the agent's hook"),
+            "⚠⚠⚠ AND EACH MUST CARRY ITS OWN REPAIR — neither is fixed by installing a hook, and \
+             `Because::Judged` is the door these reach a walk through. late {late_note:?}; empty \
+             {empty_note:?}",
+        );
+
         WorkspacePaneAccess::new(Arc::clone(&workspace))
             .lifecycle()
             .expect("lifecycle")
