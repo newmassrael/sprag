@@ -3606,6 +3606,13 @@ fn a_daemon_restarted_under_a_live_loop_brings_that_loop_back_running() {
 ///
 /// ⚠ `driver_pids` is read while the first daemon is alive for the reason its own doc gives.
 ///
+/// ⚠⚠⚠⚠ **AND THE READ AFTERWARDS WAITS, WHICH IT DID NOT UNTIL REGISTER ITEM 728.** Every premise
+/// in this gate waits for its own condition to settle and the CONCLUSION did not — so a killed
+/// daemon's drivers, which are re-parented to init and exit a moment later, were still in the
+/// table when the count was taken under load, and this gate read four where three is right. The
+/// bound is what makes that a wait rather than a `sleep`, and it is short enough that the thing
+/// this gate exists to catch — a leftover that goes on typing, which never settles — still fails.
+///
 /// # ⚠⚠ The control is a run with no machine, and it must still come back dead
 ///
 /// Without it this gate would pass against a daemon that marked everything `running` on boot —
@@ -3748,19 +3755,48 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
     // pick a DRIVER as the daemon; that helper's own doc says it is honest only while the daemon
     // is alive. A total needs no such judgement: one replacement daemon, one driver per loop, and
     // no driver for the control because a run with no machine has nowhere to be put back.
-    let after = sprag_term_pids(&sock);
     let want = 1 + loops.len();
+    // ⚠⚠⚠⚠⚠ **AND IT WAITS FOR THE CONDITION IT IS ABOUT, WHICH EVERY PREMISE IN THIS GATE ALREADY
+    // DID AND THE CONCLUSION ALONE DID NOT** — register item 728, measured 2026-08-27 inside a
+    // 142-target sweep: this assertion read FOUR where three is right, and passed on its own in
+    // the same tree seconds later. The premises above wait 10s, 30s, 90s, 60s and 10s; the one
+    // place a RACE is actually being measured read the process table once, immediately. A killed
+    // daemon's drivers are re-parented to init and exit a moment afterwards, so under load the
+    // leftovers were simply still there when the count was taken.
+    //
+    // ⛔ NOT A `sleep`, and not on grounds of taste: a fixed pause is the same race on a slower
+    // machine, which is why register item 725's done-when names it as the workaround to refuse.
+    //
+    // ⚠⚠⚠⚠ **THE WAIT CANNOT HIDE WHAT THIS GATE CATCHES, AND THAT IS THE POINT OF BOUNDING IT.**
+    // What item 526 is looking for — a leftover that KEEPS TYPING — never settles; only a dying
+    // process does. So the bound expires on a real defect and the assertions below run on a FRESH
+    // read regardless of what the wait returned. A red that survives the bound is still a red.
+    //
+    // ⚠⚠⚠ **AND THE COUNT ALONE WOULD NOT DO, BECAUSE TWO ASSERTIONS READ THIS ONE MOMENT.**
+    // `want` is three, and the replacement daemon beside TWO surviving leftovers is also three:
+    // the exactly-wrong state wearing the right number, reachable before the boot has spawned
+    // anything. A wait on the count by itself can return THERE — and PART TWO below, which takes
+    // its own reading, would then fire on leftovers that were merely on their way out. That is the
+    // same defect this item is about pointed the other way: a gate flaking RED on a transient
+    // instead of green on one. Naming both halves is what makes the moment the wait stops at the
+    // moment both assertions are entitled to describe.
+    let settled = wait_for(Duration::from_secs(30), || {
+        loops.iter().all(|pid| !still_running(*pid)) && sprag_term_pids(&sock).len() == want
+    });
+    let after = sprag_term_pids(&sock);
     assert_eq!(
         after.len(),
         want,
         "⛔⛔⛔⛔⛔ REGISTER ITEM 526: A PROMOTION LEFT THE WRONG NUMBER OF PROCESSES DRIVING. \
          Wanted the replacement daemon and one driver for each of the {} loops, which is {want}; \
-         found {:?}. MORE means a pane with two drivers — the leftover kept typing and the boot \
-         started another beside it, which no ROW can show because a row deliberately cannot say \
-         which kind of driver filled it in. FEWER means somebody's loop is not being driven at \
-         all, which is the promotion killing other people's work that this item was filed for.",
+         found {:?}, and the shape {} within the bound. MORE means a pane with two drivers — the \
+         leftover kept typing and the boot started another beside it, which no ROW can show \
+         because a row deliberately cannot say which kind of driver filled it in. FEWER means \
+         somebody's loop is not being driven at all, which is the promotion killing other \
+         people's work that this item was filed for.",
         loops.len(),
         after,
+        if settled { "settled" } else { "NEVER settled" },
     );
 
     // ── THE CLAIM, PART TWO: and the leftovers are GONE rather than still typing ─────────────
@@ -3787,7 +3823,9 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
          {alive:?} of {loops:?} outlived the daemon that spawned them and were not ended by the \
          boot, so the agent they are driving now has two processes talking to it and the older \
          one's outcome goes to a pipe nobody holds. `put_back_inherited_runs` is where this is \
-         supposed to be decided.",
+         supposed to be decided. ⚠ They were given thirty seconds to go and did not, which is the \
+         distinction register item 728 put in front of this arm: a re-parented process on its way \
+         out settles inside that bound, and one that is still typing never does.",
     );
 
     // ── AND THE ROWS AGREE, in both directions ───────────────────────────────────────────────
