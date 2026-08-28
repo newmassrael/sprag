@@ -2584,6 +2584,126 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE TWO FACTS A CANCEL IS ABOUT, HELD OF ONE PROCESS AT ONCE** — register item
+    /// 696, and the arrangement this product actually drives.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What the gates on either side of this one could not see
+    ///
+    /// `Driver::stop_the_work` records a decision with TWO facts in it: *what is being ended is a
+    /// TURN*, and *the program that was taking it — an agent CLI, a shell's job — is meant to still
+    /// be there for the next run*. The gate above drives the first with `sleep 300` as a JOB (it
+    /// dies, correctly); the gate below drives the second with `exec sleep 300` as the pane's own
+    /// program (it is refused, correctly). **In neither is the thing that took the turn the thing
+    /// that has to survive** — and in the real arrangement they are one process: `claude` takes the
+    /// turn and `claude` has to still be there afterwards. Two fixtures in which the facts happen
+    /// to be about different processes cannot say which one wins when they are about the same one.
+    ///
+    /// # ⚠⚠⚠ Asking the product is what found the collision is reachable at all
+    ///
+    /// The item left it open whether the second fact was simply false of a real agent. It is not.
+    /// `sprag_terminal::stop_foreground_job` refuses a foreground group that IS the pane's program
+    /// **only when the kernel says the signal would end it** — a `cat` under `SIGINT`. A program
+    /// that TRAPS `SIGINT` is signalled and lives, so the collision is real and this is the fixture
+    /// that reaches it: a shell that traps the signal and says so on its own screen.
+    ///
+    /// ⚠⚠ THE SCREEN IS THE WITNESS FOR (a), not the outcome: an outcome that said *stopped* would
+    /// only be the daemon repeating its own intention. `GOT-INT` is the PEER saying it received the
+    /// signal, which is the only evidence that the turn was actually reached.
+    ///
+    /// ⚠ `sleep` in the loop rather than a spin: a POSIX shell runs a trap after the current
+    /// command returns, so the handler needs something to return from — and a busy wait would make
+    /// this gate a CPU load on every sweep, which is register item 683's own axis.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_cancelled_turn_reaches_the_peer_that_traps_it_and_leaves_it_running() {
+        use crate::access::PaneAccess;
+        use std::sync::atomic::AtomicBool;
+
+        // ⚠⚠ THE PEER ANNOUNCES ITS OWN READINESS, and it has to: the job table cannot say this.
+        // A `sh -c` runs with job control OFF, so every child stays in the SHELL's process group
+        // and the foreground leader reads as `sh` from the first instant — before the trap exists.
+        // Waiting on that would have started the stop against a shell still parsing, which dies of
+        // `SIGINT` and would measure the opposite of the claim. `ARMED` is printed AFTER the trap
+        // is installed, so it is the one witness that the handler is in place.
+        let (access, pane) = sh_access(
+            "trap 'echo GOT-INT' INT; echo ARMED; while :; do sleep 1; done",
+            40,
+            6,
+        );
+        let panes: &dyn PaneAccess = &access;
+        let screen = || access.pane_collapsed(pane).unwrap_or_default();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline && !screen().contains("ARMED") {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            screen().contains("ARMED"),
+            "the peer must have installed its trap, or the stop below lands on a shell that dies \
+             of it and this gate measures the opposite: {:?}",
+            screen(),
+        );
+
+        let mut agent = Agent::new(
+            pane,
+            AgentSpec {
+                eof: Some(false),
+                ..AgentSpec::new("anything")
+            },
+        );
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 1,
+            max_cost: None,
+            max_duration: None,
+        })
+        .run(
+            &mut agent,
+            &access,
+            &RunContext::new(Arc::new(AtomicBool::new(true))),
+        );
+        assert_eq!(outcome.state, OutcomeState::Cancelled);
+
+        // ── (a) THE TURN'S OWN PROGRAM WAS INTERRUPTED, AND SAID SO ────────────────────────────
+        let said_so = || {
+            access
+                .pane_collapsed(pane)
+                .unwrap_or_default()
+                .contains("GOT-INT")
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline && !said_so() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            said_so(),
+            "⚠⚠⚠⚠⚠ THE TURN WAS NOT REACHED. `stop_the_work`'s first fact is that a TURN ends, and \
+             this peer traps `SIGINT` rather than dying of it — so the kernel permits the delivery \
+             and there is nothing else for a refusal to protect. A run that leaves the peer mid-turn \
+             hands the next run a pane that is still answering the last one. Screen: {:?}",
+            access.pane_collapsed(pane),
+        );
+
+        // ── (b) AND IT IS STILL THERE FOR THE NEXT RUN ─────────────────────────────────────────
+        //
+        // ⚠⚠ THIS IS THE HALF THE FIRST GATE ASSERTS THE OPPOSITE OF, and correctly: there the
+        // interrupted thing is a JOB and its absence is the proof. Here it is the PEER, and its
+        // absence would be the defect — the same assertion would be wrong in both places, which is
+        // exactly why the two facts had to meet in one fixture.
+        //
+        // ⚠⚠⚠ **AND IT IS NOT INDEPENDENTLY MUTABLE, which is a fact about the peer rather than a
+        // gap here.** Reaching this clause needs a world where the signal ARRIVES and the program
+        // dies of it — and a program that traps `SIGINT` cannot die of `SIGINT` by construction.
+        // Driving `Stop::Kill` instead reddens the clause ABOVE (a killed peer runs no handler, so
+        // `GOT-INT` never appears) and execution never gets here. So this records the SHAPE the
+        // decision is about, the way item 682's third arm does, and saying so is cheaper than a
+        // later reader assuming a mutation proved it.
+        assert_eq!(
+            panes.pane_eof(pane),
+            Some(false),
+            "⚠⚠⚠⚠ AND THE PEER MUST SURVIVE ITS OWN INTERRUPT. `Stop::Interrupt` was chosen over \
+             the harder two precisely so the next run finds the agent it was given",
+        );
+    }
+
     /// ⚠⚠⚠ **A RUN CUT SHORT AGAINST A PANE WHOSE OWN PROGRAM IS THE PEER LEAVES THE PANE STANDING,
     /// AND SAYS THE WORK IS STILL RUNNING.**
     ///

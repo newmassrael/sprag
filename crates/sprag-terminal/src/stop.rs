@@ -292,8 +292,23 @@ sprag_vt::closed_set! {
 /// second.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reach {
-    /// Only work the pane's own program STARTED. A foreground group that IS the pane's program is
-    /// left alone and reported as [`Unstopped::IsTheProgram`].
+    /// Work the pane's own program started — **and the program ITSELF when the kernel says the
+    /// signal cannot end it.**
+    ///
+    /// # ⛔⛔⛔⛔⛔ Not *"left alone"*, which is what this said until register item 696
+    ///
+    /// [`stop_foreground_job`] asks `crate::procfs::signal_ends` before refusing: a foreground
+    /// group that IS the pane's program is refused as [`Unstopped::WouldEndThePane`] **only when
+    /// the signal would kill it** (a `cat` under `SIGINT`), and is SIGNALLED when it would not (a
+    /// shell, an agent CLI that traps it). So the two facts a cancel is about — *the turn ends* and
+    /// *the program is still there for the next run* — are not divided between two kinds of pane.
+    /// On the arrangement this product actually drives they hold of ONE process at once, which is
+    /// what `a_cancelled_turn_reaches_the_peer_that_traps_it_and_leaves_it_running` measures.
+    ///
+    /// ⚠⚠ The old wording also named `Unstopped::IsTheProgram`, **a variant that does not exist** —
+    /// and the rustdoc gate did not catch it. Measured 2026-08-28: a link whose leading path
+    /// resolves stays quiet even when the member does not, which is register item 638's fourth
+    /// blind spot. Written as plain code above for that reason.
     ///
     /// What an automatic stop wants: a run that ran out of time ends the work it caused and never
     /// the pane it was given.
