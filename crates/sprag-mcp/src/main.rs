@@ -2182,7 +2182,10 @@ fn argument_help(name: &str) -> &'static str {
         "reference" => {
             "PRIOR ART THE AGENT SHOULD CONSULT FIRST (ai_loop) — paths, URLs or repositories, as \
              free text. It is carried into every prompt, so name the things that would otherwise \
-             have to be rediscovered on every turn."
+             have to be rediscovered on every turn. ⚠ Leaving it out reaches the LOOP KIND's own \
+             document, which is where a repository writes down where its runs start reading — so \
+             omit it unless this run should start somewhere else, and a daemon whose kind names \
+             none refuses the call rather than guessing."
         }
         "max_turns" => {
             "HOW MANY TURNS OF THE AGENT THIS RUN MAY TAKE (ai_loop) — the loop's own budget, and \
@@ -2229,9 +2232,11 @@ fn argument_help(name: &str) -> &'static str {
         "agent" => {
             "WHICH PROGRAM IS IN THE PANE (ai_loop) — `claude`, or whatever list_panes reports \
              running there. The loop waits for that agent to be up and at rest before it types its \
-             first prompt: without it a loop types into whatever the pane happens to be running, \
-             which was measured costing a whole run against a `claude` that had been alive for ten \
-             milliseconds."
+             first prompt: without a barrier a loop types into whatever the pane happens to be \
+             running, which was measured costing a whole run against a `claude` that had been \
+             alive for ten milliseconds. ⚠ Leaving it out reaches the LOOP KIND's own barrier — \
+             the peer that repository's document already names — so say it when the pane is running \
+             something else, and a daemon whose kind authors none refuses rather than typing blind."
         }
         _ => "See `sprag show-grammar run` for what this daemon says about this argument.",
     }
