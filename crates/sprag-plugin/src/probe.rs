@@ -2441,28 +2441,36 @@ mod tests {
     /// [`sce_publishes_no_door_to_enter_a_machine_at_a_configuration`]'s six spellings against the
     /// new revision — that is the whole transaction the gate below exists to force.
     ///
-    /// # ⚠⚠ WHAT WAS READ AT `035c2dae`, so the next reader can tell a reading from a bump
+    /// # ⚠⚠ WHAT WAS READ AT `d3db11c4`, so the next reader can tell a reading from a bump
     ///
     /// The whole `impl<P: StatePolicy> Engine<P>` block was enumerated rather than the six names
     /// searched for, because the gate's own limit 1 is that a SEVENTH spelling is invisible to a
     /// name list. `enter_at` is there and is item 549 delivered (already consumed by
     /// `a_saved_configuration_is_entered_without_re_running_onentry`); **nothing else in the block
-    /// takes a configuration.** This rev's additions are all one subject and it is not a door:
-    /// `register_invoker`, `has_invoker`, `perform_host_invoke`, `cancel_host_invoke`,
-    /// `perform_host_send`, `has_event_processor`, `schedule_host_send` — a host serving `<invoke>`
-    /// and `<send>`.
+    /// takes a configuration.**
+    ///
+    /// ⚠⚠ **THIS REV ADDED NOTHING TO THE ENGINE — and that is a MEASUREMENT, not an assumption.**
+    /// `git diff 035c2dae d3db11c4 -- backends/rust/runtime/` is EMPTY across the 127 commits of
+    /// the range, so the block enumerated above is byte-identical to the one read at `035c2dae`
+    /// (whose own additions were all one subject and not a door: `register_invoker`, `has_invoker`,
+    /// `perform_host_invoke`, `cancel_host_invoke`, `perform_host_send`, `has_event_processor`,
+    /// `schedule_host_send` — a host serving `<invoke>` and `<send>`). ⚠ The range is NOT small
+    /// elsewhere — 1939 files, the Rust CODEGEN templates among them — but what those move is the
+    /// machine sprag GENERATES, which sprag's own build judges, and a generated machine is not a
+    /// door on the engine.
     ///
     /// ⚠ And the second half the gate's message asks for: **no trait is implemented for `Engine`
-    /// at all** at this rev, so nothing shadows the method resolution the probe's verdict is made
-    /// of.
+    /// at all** at this rev — `git grep -E "^impl.* for Engine" -- '*.rs'` returns nothing — so
+    /// nothing shadows the method resolution the probe's verdict is made of.
     ///
-    /// ⚠⚠⚠ **THE DOOR THIS REV DID ADD IS ON THE POLICY, NOT THE ENGINE** —
-    /// `StatePolicy::get_state_from_name` (SCE `ef6c6d4c`), which is sprag's own SCE-PR92 delivered
-    /// and is what makes `enter_at`'s argument buildable from a recorded name. The reading above
-    /// stands unchanged BECAUSE of where it landed: the probe asks about `Engine`, and this is the
-    /// second time a door has arrived on the policy instead — the blind spot the `set_active_states`
-    /// note below already named. **That is the finding to carry forward, not a name to add here.**
-    const DOORS_READ_AT_SCE_REV: &str = "035c2dae1e37c00540b31fe00653ca5423c96339";
+    /// ⚠⚠⚠ **THE LAST DOOR TO ARRIVE CAME ON THE POLICY, NOT THE ENGINE** —
+    /// `StatePolicy::get_state_from_name` (SCE `ef6c6d4c`, in the range that ended at `035c2dae`),
+    /// which is sprag's own SCE-PR92 delivered and is what makes `enter_at`'s argument buildable
+    /// from a recorded name. The reading above stands unchanged BECAUSE of where it landed: the
+    /// probe asks about `Engine`, and that was the second time a door arrived on the policy
+    /// instead — the blind spot the `set_active_states` note below already named. **That is the
+    /// finding to carry forward, not a name to add here.**
+    const DOORS_READ_AT_SCE_REV: &str = "d3db11c41555e085cb5b6eed17130bce1854c1e8";
 
     /// ⛔⛔⛔⛔ **THE DOOR PROBE'S NAME LIST IS RE-READ WHENEVER THE ENGINE PIN MOVES** — register
     /// item 583, and the mechanism its `Done when` asked for.
@@ -2480,16 +2488,18 @@ mod tests {
     /// workspace manifest at COMPILE time. A ratchet that held only its own copy would agree with
     /// itself forever.
     ///
-    /// # What the last reading found, at `87f4b1d8` on 2026-08-23
+    /// # ⚠⚠⚠⚠ WHERE THE READING LIVES — [`DOORS_READ_AT_SCE_REV`]'s doc, and NOWHERE ELSE
     ///
-    /// * `enter_at` EXISTS (item 549, delivered and consumed — the probe's own arm says so).
-    /// * The other four spellings do not exist on `Engine`.
-    /// * ⚠⚠ `set_active_states` exists — on `StatePolicy`, NOT on `Engine`. So the probe is right
-    ///   not to see it as a door on the engine, and wrong to imply nothing wears that name: a door
-    ///   arriving on the POLICY is a shape the probe does not look at at all.
-    /// * ⚠⚠ **NO EXTENSION TRAIT IS IMPLEMENTED FOR `Engine`** at this revision — item 583 recorded
-    ///   that blind spot as UNMEASURED and this is the measurement. It is true of THIS pin only,
-    ///   which is exactly why it has to be re-taken when the pin moves.
+    /// This doc used to carry its own copy of the findings, dated at a rev (`87f4b1d8`). **The copy
+    /// rotted while the gate stayed green**: two pin bumps moved the const and its doc, and this
+    /// second record was left naming a revision the tree had not built for weeks — a reader landing
+    /// here was told the measurement was fresher than it was. A reading has ONE home, and it is the
+    /// const the gate compares against, because that is the artefact a bump is forced to touch.
+    ///
+    /// What the reading is OF has not changed: the five spellings, whether any extension trait is
+    /// implemented for `Engine`, and the standing blind spot that `set_active_states` exists on
+    /// `StatePolicy` and a door arriving on the POLICY is a shape this probe does not look at at
+    /// all (item 583).
     #[test]
     fn the_door_probes_name_list_is_re_read_whenever_the_engine_pin_moves() {
         // ⚠ The workspace manifest, from three directories up: `crates/sprag-plugin/src` → root.
