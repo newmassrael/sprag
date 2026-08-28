@@ -439,6 +439,17 @@ pub const RUN_PANE_KEY: &str = "pane";
 /// ⚠ `null` is **cannot say**; `0` is **clean**. Never folded — see
 /// [`crate::runs::RunState::Done`].
 pub const RUN_UNCOMMITTED_KEY: &str = "uncommitted";
+/// The answer key carrying **WHY A RUN'S DRIVER ENDED WITHOUT REPORTING ANYTHING** — the sentence
+/// [`crate::runs::RunState::Panicked`] holds, register item 685.
+///
+/// ⚠⚠ A constant because THREE readers spell it: this file's `run_to_json`, the CLI's
+/// `render_why_it_ended`, and the gate that drives one through the other. It was a literal in the
+/// first two, and a literal read by a mouth is how *a fact that reaches the wire and dies at the
+/// mouth somebody actually reads* happened in the first place.
+///
+/// ⚠ It names the exit status, so when a SIGNAL killed the driver the signal is in it — which is
+/// the whole difference between *my run hit a bug* and *somebody ran `kill-server`*.
+pub const RUN_ERROR_KEY: &str = "error";
 /// **WHERE A RELAY READS FROM** — the `pipe` form's own spelling of a pane, and the reason
 /// [`RUN_PANE_KEY`] is not the only one.
 ///
@@ -4385,7 +4396,7 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
             })
         }
         RunState::Panicked(message) => {
-            json!({ "status": RunStatus::Panicked.wire_str(), "error": message })
+            json!({ "status": RunStatus::Panicked.wire_str(), RUN_ERROR_KEY: message })
         }
         // ⚠ A FOURTH STATUS WORD, which is why `WIRE_PROTOCOL` moved: `status` is a value space a
         // peer decodes whole, so an added word is a break no address or shape pin can see (R342).
@@ -6766,6 +6777,49 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&repo).expect("the fixture repository is removed");
+    }
+
+    /// ⛔⛔⛔⛔ **A DRIVER THAT DIED SILENTLY STILL SAYS WHY, AND THE WIRE CARRIES IT** — register
+    /// item 685's first half, and the half that was already true.
+    ///
+    /// # ⚠⚠⚠ Why this is worth a gate even though nothing here was broken
+    ///
+    /// The item's whole cost was at the MOUTH: `render_run` printed the bare word and threw this
+    /// away, so a watcher read `panicked` as *my run hit a bug* when a `kill-server` had killed the
+    /// driver. Repairing the mouth without pinning the wire would leave the repair standing on a
+    /// key nothing measures — and this key is exactly the kind that gets dropped in a render
+    /// refactor, because it appears on one arm of one match.
+    ///
+    /// ⚠ The reason is the DAEMON's sentence, composed by `driver_ending`, and it names the exit
+    /// status — so when a signal killed the driver the signal is in it. That is the whole
+    /// difference the mouth has to be able to show.
+    #[test]
+    fn a_panicked_runs_reason_reaches_the_wire() {
+        let why = "a run's driver process ended signal: 9 (SIGKILL) without reporting an outcome";
+        let row = run_to_json(
+            &crate::runs::RunSummary {
+                id: RunId(7),
+                label: "ai_loop pane=3".to_owned(),
+                opened_by: None,
+                opened_by_session: None,
+                state: RunState::Panicked(why.to_owned()),
+                progress: sprag_plugin::Progress::default(),
+                reported: None,
+                build: Some(crate::wire::BUILD.to_owned()),
+                stood_down: false,
+                held: false,
+                cancelled_by: None,
+                withheld: None,
+            },
+            None,
+        );
+        assert_eq!(
+            row["state"][RUN_ERROR_KEY],
+            json!(why),
+            "⚠⚠⚠⚠⚠ THE REASON A DRIVER DIED MUST REACH THE WIRE WHOLE. Without it `panicked` is a \
+             word that reads as an accusation — item 685 was filed by another repository's watcher \
+             doing exactly that — and no mouth downstream can tell a signal from a bug: {row:?}",
+        );
     }
 
     #[test]

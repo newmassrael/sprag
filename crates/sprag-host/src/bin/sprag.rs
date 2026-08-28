@@ -5722,6 +5722,34 @@ fn render_build(run: &Value) -> String {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHY A RUN ENDED THE WAY IT DID**, for the two endings that are a bare word without it
+/// — register item 685, and register item 594's twin one word over.
+///
+/// # ⚠⚠⚠⚠⚠ The word that reads as an accusation
+///
+/// `panicked` is the right word and is not what needs fixing: a driver that died reporting nothing
+/// cannot honestly be read as any other ending (`driver_ending`'s own doc — *"SILENCE IS AN OUTCOME
+/// AND IT IS NOT `converged`"*). What was wrong is that the word arrived ALONE. A watcher in another
+/// repository read it as *my run hit a bug* when a `kill-server` had killed the driver — and the
+/// difference was already on the wire, in the sentence `RunState::Panicked` carries, which names
+/// the exit status and therefore the SIGNAL.
+///
+/// # ⚠⚠ Read off the state rather than composed here
+///
+/// The daemon wrote that sentence and it is the one authority on it; a second phrasing at this
+/// mouth would be two authors of one fact — the drift `outcome_to_json` is `pub` to prevent. This
+/// only decides WHERE it goes.
+///
+/// ⚠ Empty for `interrupted`, which carries no such key and needs none: what a person has to learn
+/// about that ending is whether anybody will pick the run back up, and `withheld` beside this says
+/// so (register item 737).
+fn render_why_it_ended(state: &Value) -> String {
+    match state[sprag_host::plugins::RUN_ERROR_KEY].as_str() {
+        Some(why) if !why.trim().is_empty() => format!("\n  {}", why.trim()),
+        _ => String::new(),
+    }
+}
+
 /// One run as a person reads it: what it is, who asked for it, and where it got to.
 fn render_run(run: &Value) -> String {
     let id = run["id"].as_u64().unwrap_or_default();
@@ -5888,9 +5916,17 @@ fn render_run(run: &Value) -> String {
         // ⚠⚠ `interrupted` AND `panicked` COME THROUGH HERE, and item 594 was MEASURED on the
         // first of them: a daemon restarted under a standing order left a person a bare word and
         // no way to learn that what they asked for had never happened.
+        //
+        // ⛔⛔⛔⛔⛔ AND ITEM 685 IS THE SECOND OF THEM: `panicked` reaches the wire carrying WHY —
+        // `RunState::Panicked` holds the sentence `driver_ending` composed, which names the exit
+        // status and so names the SIGNAL when one killed the driver — and this arm printed the word
+        // alone. A watcher of another repository read `panicked` as *my run hit a bug* when what
+        // had happened was a `kill-server`. **A fact that reaches the wire and dies at the mouth
+        // somebody actually reads** is the sentence the `Reported` arm above already wrote down.
         _ => format!(
-            "{head}  {}{withheld}{order}{prompts}{verified}{canceller}\n",
+            "{head}  {}{}{withheld}{order}{prompts}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("?"),
+            render_why_it_ended(state),
         ),
     }
 }
@@ -9664,6 +9700,84 @@ mod tests {
             // one nobody briefs — the distinction `Briefing` keeps.
             briefed: None,
         }
+    }
+
+    /// A row as the daemon publishes one whose driver died saying `why`.
+    ///
+    /// ⚠⚠ The KEY comes from the host — `run_to_json` is private, so this cannot go through it, and
+    /// a literal here would make the fixture a second author of the very word item 685 is about.
+    /// `a_panicked_runs_reason_reaches_the_wire` over there pins that the daemon fills it.
+    fn a_driver_that_died(why: &str) -> Value {
+        serde_json::json!({
+            "id": 12,
+            "label": "ai_loop pane=3",
+            "state": {
+                "status": sprag_host::plugins::RunStatus::Panicked.wire_str(),
+                sprag_host::plugins::RUN_ERROR_KEY: why,
+            },
+        })
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A `panicked` RUN TELLS A PERSON WHAT KILLED ITS DRIVER** — register item 685, and
+    /// register item 594's twin one word over.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The word that reads as an accusation
+    ///
+    /// Filed 2026-08-25 by another repository's watcher, which paid for it: two of its runs ended
+    /// `panicked` and it read the word as *my run hit a bug*. A `kill-server` had killed the
+    /// drivers. The difference was **already on the wire** — `RunState::Panicked` carries the
+    /// sentence `driver_ending` composed, which names the exit status and so names the signal — and
+    /// this mouth printed the status word alone. *A fact that reaches the wire and dies at the
+    /// mouth somebody actually reads* is the sentence the `Reported` arm beside it already wrote.
+    ///
+    /// # ⚠⚠⚠ The two rows have to say DIFFERENT things, or this gate measures nothing
+    ///
+    /// A renderer that appended one fixed clause to every `panicked` run would satisfy *the word is
+    /// not alone* and still leave the reader unable to tell a signal from a bug — which is the
+    /// whole of what the item is about. So the claim is a DIFFERENCE, driven with two reasons that
+    /// a real daemon composes differently.
+    ///
+    /// ⚠ The third arm is the control: `interrupted` comes through the same match arm and carries
+    /// no such key, so it must gain no clause at all. Without it, a mouth that printed a sentence
+    /// unconditionally would pass the two arms above.
+    #[test]
+    fn a_panicked_run_tells_a_person_what_killed_its_driver() {
+        let signalled = render_run(&a_driver_that_died(
+            "a run's driver process ended signal: 9 (SIGKILL) without reporting an outcome",
+        ));
+        let crashed = render_run(&a_driver_that_died(
+            "a run's driver process ended exit status: 101 without reporting an outcome: thread \
+             'main' panicked at crates/sprag-host/src/drive.rs:1:1",
+        ));
+
+        assert!(
+            signalled.contains("SIGKILL"),
+            "⚠⚠⚠⚠⚠ A RUN WHOSE DRIVER WAS KILLED MUST SAY SO. `panicked` alone is read as *this \
+             run hit a bug*, which is what item 685 was filed for: {signalled}",
+        );
+        assert!(
+            crashed.contains("101") && crashed.contains("panicked at"),
+            "⚠⚠⚠ and a driver that really crashed must carry ITS reason, not a generic clause: \
+             {crashed}",
+        );
+        assert_ne!(
+            signalled, crashed,
+            "⚠⚠⚠⚠ AND THE TWO MUST DIFFER, or this gate is vacuous: one fixed sentence appended to \
+             every `panicked` run would satisfy both assertions above while leaving the reader \
+             exactly where item 685 found them",
+        );
+
+        // ── THE CONTROL: the other word through this same arm gains nothing ──
+        let parked = render_run(&serde_json::json!({
+            "id": 12,
+            "label": "ai_loop pane=3",
+            "state": { "status": sprag_host::plugins::RunStatus::Interrupted.wire_str() },
+        }));
+        assert!(
+            !parked.contains("without reporting"),
+            "⚠⚠ THE CONTROL: `interrupted` carries no reason and must gain no clause — a mouth \
+             that printed one unconditionally would pass every assertion above: {parked}",
+        );
     }
 
     /// ⚠⚠⚠ **A BLOCKED RUN SHOWS THE QUESTION, ITS OPTIONS, AND WHICH ONE A BARE ENTER TAKES.**
