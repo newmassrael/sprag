@@ -855,7 +855,14 @@ fn tools_list() -> Value {
                     `list_runs` for what they said: the row carries `stood_down` and \
                     `cancelled_by`. One event for all three because the act you take is the same \
                     one either way, and a hold can be taken back so it has no stable word of its \
-                    own. It fires when the order is ACCEPTED, never when it is refused) — each \
+                    own. It fires when the order is ACCEPTED, never when it is refused), \
+                    `run_stepped` (a run you are watching TOOK A STEP — the `run` key is its id. \
+                    This is what to wait on while a loop is still going, and it is the reason you \
+                    never have to poll: re-read `list_runs` on each wake and the row carries the \
+                    walk, including why the loop reflected. Before it existed a watcher diffed \
+                    snapshots on a clock and LOST whatever happened between two looks — measured \
+                    at a quarter to a third of a run's transitions, one of them a checker refusing \
+                    a milestone claim) — each \
                     naming its SUBJECT, not its new value, except the three that MOVE AN ADDRESS: a \
                     rename and a pane's move also carry the one fact no later read could recover. \
                     Follow up with agent_state, pane_processes or list_panes to read the subject a \

@@ -673,7 +673,7 @@ pub type DriverSpawns = Arc<dyn Fn(&str, &str) -> plugins::DriverSpawn + Send + 
 pub fn run_announcers(
     channels: &Arc<ChannelRegistry>,
     session: &str,
-) -> (RunAnnounce, RunAnnounce) {
+) -> (RunAnnounce, RunAnnounce, RunAnnounce) {
     let on_end = {
         let channels = Arc::clone(channels);
         let session = session.to_owned();
@@ -688,7 +688,17 @@ pub fn run_announcers(
             channels.announce(&session, vec![events::Event::RunOrdered(id.0)]);
         }) as RunAnnounce
     };
-    (on_end, on_ordered)
+    // ⛔⛔⛔⛔⛔ AND THE ONE BETWEEN THEM — register item 706. A run's ending and its orders were
+    // announced and its WALK was not, so every watcher of a live run polled `runs` and diffed;
+    // measured, such a differ loses a quarter to a third of the transitions it exists to catch.
+    let on_stepped = {
+        let channels = Arc::clone(channels);
+        let session = session.to_owned();
+        Arc::new(move |id: crate::runs::RunId| {
+            channels.announce(&session, vec![events::Event::RunStepped(id.0)]);
+        }) as RunAnnounce
+    };
+    (on_end, on_ordered, on_stepped)
 }
 
 #[must_use]
@@ -784,7 +794,7 @@ pub fn plugin_host(
     channels: &Arc<ChannelRegistry>,
     daemon: &DaemonShared,
 ) -> plugins::PluginsExternal {
-    let (on_end, on_ordered) = run_announcers(channels, session);
+    let (on_end, on_ordered, on_stepped) = run_announcers(channels, session);
     let host = plugins::PluginsExternal::new(
         workspace,
         Arc::clone(runs),
@@ -793,7 +803,10 @@ pub fn plugin_host(
         daemon.agents.clone(),
         Some(on_end),
         Some(on_ordered),
-    );
+    )
+    // ⛔⛔⛔ AND ITS STEPS — register item 706, installed here rather than in the constructor for
+    // the reason `announcing_run_steps` states: seven arguments is already the ceiling.
+    .announcing_run_steps(on_stepped);
     // ⚠⚠⚠⚠⚠ AND HOW IT ASKS ABOUT A SEAT THIS POOL DOES NOT HOLD — register item 689, carried on
     // the announcements' exact terms: a run's ASKER is not obliged to sit in the window the run
     // drives, and checking it against this pool made it obliged. The hook arrives already made,

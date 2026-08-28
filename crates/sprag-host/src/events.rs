@@ -574,6 +574,37 @@ pub enum Event {
     /// for a run to stop learns it HAS stopped from the same event it would have been woken by if
     /// the run had converged, which is what makes one wait sufficient.
     RunFinished(u64),
+    /// **THIS RUN TOOK A STEP** — register item 706, and the event whose absence made every watcher
+    /// of a run write a poller.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What its absence cost, measured by two repositories
+    ///
+    /// `events` published nine kinds and **not one of them was a run's walk**, so the only way to
+    /// watch a run move was to poll `runs` and diff the snapshots — which is what `watch.sh` is and
+    /// why it exists. A watcher in another repository sat through **twenty minutes with no
+    /// notification** while its run finished a turn, was judged, and went back to work: *a run alive
+    /// and moving looked exactly like a dead one*.
+    ///
+    /// ⛔⛔ **And the poller that replaced this LOSES transitions, at the place that decides.**
+    /// `watch.sh` reads the last walk line per poll, so two transitions inside one interval leave
+    /// the middle one gone for ever. Measured against full logs: **25%** lost in one run and **32%**
+    /// in another — and one of the lost lines was *the independent checker refusing a milestone
+    /// claim*, the single most important step that run took. A stream cannot lose it; a differ can.
+    ///
+    /// # It carries the id and nothing else, which is this module's standing rule
+    ///
+    /// [`RunFinished`](Self::RunFinished)'s reason, one variant up, and it applies here harder: a
+    /// step has a FROM, a TO, an iteration, a cost and — since register item 517 — a reason it
+    /// reflected. Putting any of that here would be a second copy of the walk's vocabulary on the
+    /// event stream, and the walk is already published on the run's own row. **What a watcher
+    /// lacked was never the words — it was being told when to look.**
+    ///
+    /// ⚠⚠ **EMITTED WHERE A STEP ARRIVES, WHICH IS THE DRIVER'S PROGRESS REPORT** — the default
+    /// driver is out of process (`RUN_DRIVER_PROCESS` is `on`), so `report_progress` is the one
+    /// place this daemon learns a run moved at all. A run driven on a worker THREAD writes its
+    /// counters straight into the shared cell and this daemon is never called; such a run announces
+    /// its ending and not its steps, and that is stated rather than hidden.
+    RunStepped(u64),
     /// **A PERSON SAID SOMETHING TO THIS RUN** — a cancel, a stand-down, or a hold taken up or
     /// given back. Register item 648.
     ///
@@ -675,6 +706,7 @@ impl Event {
             Self::LayoutUpdated => EventKind::LayoutUpdated,
             Self::WindowsReordered => EventKind::WindowsReordered,
             Self::RunFinished(_) => EventKind::RunFinished,
+            Self::RunStepped(_) => EventKind::RunStepped,
             Self::RunOrdered(_) => EventKind::RunOrdered,
         }
     }
@@ -691,7 +723,9 @@ impl Event {
             | Self::AgentStateChanged(id)
             | Self::PaneJobChanged(id) => Some(Subject::Pane(*id)),
             Self::PaneMoved { pane, .. } => Some(Subject::Pane(*pane)),
-            Self::RunFinished(id) | Self::RunOrdered(id) => Some(Subject::Run(*id)),
+            Self::RunFinished(id) | Self::RunOrdered(id) | Self::RunStepped(id) => {
+                Some(Subject::Run(*id))
+            }
             Self::WindowCreated(name) | Self::WindowClosed(name) | Self::WindowSelected(name) => {
                 Some(Subject::Window(name.clone()))
             }
@@ -1095,6 +1129,8 @@ sprag_terminal::closed_set! {
         WindowsReordered,
         /// [`Event::RunFinished`].
         RunFinished,
+        /// [`Event::RunStepped`].
+        RunStepped,
         /// [`Event::RunOrdered`].
         RunOrdered,
     }
@@ -1131,6 +1167,7 @@ impl EventKind {
             Self::LayoutUpdated => "layout_updated",
             Self::WindowsReordered => "windows_reordered",
             Self::RunFinished => "run_finished",
+            Self::RunStepped => "run_stepped",
             Self::RunOrdered => "run_ordered",
         }
     }
@@ -1176,7 +1213,7 @@ impl EventKind {
             Self::SessionCreated | Self::SessionClosed | Self::SessionRenamed => {
                 Some(Subject::SESSION_KEY)
             }
-            Self::RunFinished | Self::RunOrdered => Some(Subject::RUN_KEY),
+            Self::RunFinished | Self::RunOrdered | Self::RunStepped => Some(Subject::RUN_KEY),
             // An arrangement is ONE object: see `Event::LayoutUpdated` and
             // `Event::WindowsReordered`, which is the same argument one level up.
             Self::LayoutUpdated | Self::WindowsReordered => None,
@@ -2079,6 +2116,7 @@ mod tests {
             EventKind::LayoutUpdated => Event::LayoutUpdated,
             EventKind::WindowsReordered => Event::WindowsReordered,
             EventKind::RunFinished => Event::RunFinished(7),
+            EventKind::RunStepped => Event::RunStepped(7),
             EventKind::RunOrdered => Event::RunOrdered(7),
         }
     }
@@ -2250,6 +2288,14 @@ mod tests {
             (
                 EventKind::RunOrdered,
                 json!({ "type": "run_ordered", "run": 7 }),
+            ),
+            // ⛔ Register item 706: the run subject's THIRD kind, and the one that finally makes a
+            // LIVE run watchable — its ending and its orders were announced and its walk was not,
+            // so every watcher polled `runs` and diffed. Same `run` key, carrying nothing, on this
+            // module's standing rule: the walk's vocabulary stays on the row a wake sends you to.
+            (
+                EventKind::RunStepped,
+                json!({ "type": "run_stepped", "run": 7 }),
             ),
         ];
         assert_eq!(

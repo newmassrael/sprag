@@ -1013,6 +1013,19 @@ pub struct PluginsExternal {
     /// every reader to re-read a row to find out which. That is the same reason the hooks above it
     /// are separate.
     on_run_ordered: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
+    /// **ANNOUNCE THAT A RUN MOVED** — register item 706, and [`on_run_end`](Self::on_run_end)'s
+    /// sibling at the other end of a run's life.
+    ///
+    /// ⚠⚠ That one says a run is OVER, which a watcher needs once. This one says a run took a step,
+    /// which is the thing every watcher of a live run was polling for — nine event kinds and not
+    /// one of them a run's walk, so `watch.sh` diffed snapshots and lost a quarter to a third of
+    /// the transitions it was watching for.
+    ///
+    /// ⚠ Installed through [`announcing_run_steps`](Self::announcing_run_steps) rather than taken
+    /// by the constructor, which already takes seven arguments — the arrangement
+    /// [`reading_seats_elsewhere`](Self::reading_seats_elsewhere) and its neighbours already use
+    /// for everything a host may or may not have.
+    on_run_stepped: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
     /// The daemon's agent-state memory ([`crate::AgentClock`]), or `None` off a daemon — what lets
     /// a plugin SUPERVISE the agent in a pane instead of guessing from its text.
     ///
@@ -1082,6 +1095,25 @@ impl PluginsExternal {
         self
     }
 
+    /// ⛔⛔⛔⛔⛔ **TELL THIS SESSION'S CLIENTS THAT A RUN MOVED** — register item 706.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What a host without it forces on every watcher
+    ///
+    /// A poller. `events` carried a run's ENDING and its ORDERS and nothing in between, so watching
+    /// a live run meant reading `runs` on a clock and diffing — and a differ that reads one line per
+    /// interval loses whatever happened between two of them. Measured against full logs: a quarter
+    /// of one run's transitions and a third of another's, including *the independent checker
+    /// refusing a milestone claim*.
+    ///
+    /// ⚠⚠ A HOST WITHOUT THIS IS STILL CORRECT, which is why it is optional: an in-process host with
+    /// no channel registry has nobody to announce to, and a run whose steps nothing publishes is the
+    /// behaviour every test fixture here already relies on.
+    #[must_use]
+    pub fn announcing_run_steps(mut self, on_stepped: Arc<dyn Fn(RunId) + Send + Sync>) -> Self {
+        self.on_run_stepped = Some(on_stepped);
+        self
+    }
+
     /// ⛔⛔⛔⛔⛔ **LET A RUN KEEP THE PANE IT IS DRIVING WHEN SOMEBODY MOVES IT** — register item
     /// 682, and [`reading_seats_elsewhere`](Self::reading_seats_elsewhere)'s shape one fact over.
     ///
@@ -1118,6 +1150,9 @@ impl PluginsExternal {
             on_attention,
             on_run_end,
             on_run_ordered,
+            // ⚠ A HOST BUILT WITHOUT SAYING OTHERWISE ANNOUNCES NO STEPS — register item 706, on
+            // the terms every other optional here is installed under. See `announcing_run_steps`.
+            on_run_stepped: None,
             agents,
             // ⚠ A POOL THAT IS THE WHOLE WORLD is what a host built without saying otherwise has —
             // see `reading_seats_elsewhere`, and `SeatElsewhere` for what a daemon installs there.
@@ -1332,6 +1367,17 @@ impl PluginsExternal {
             _ => return Err(InvokeError::TypeMismatch),
         };
         if lock(&self.runs).report(RunId(id), progress) {
+            // ⛔⛔⛔⛔⛔ AND THIS IS WHERE A RUN'S STEP BECOMES SOMETHING A WATCHER CAN BE WOKEN BY —
+            // register item 706. The default driver is out of process, so this call is the one
+            // moment this daemon learns a run moved at all; before it announced, every consumer
+            // rebuilt the same `runs` poller and lost transitions between its polls.
+            //
+            // ⚠ AFTER the report is stored, never before — `on_run_end`'s rule one hook over: a
+            // client woken by this asks `runs` immediately, and an announcement that raced the
+            // write would hand it the step it was woken FOR as not yet there.
+            if let Some(announce) = &self.on_run_stepped {
+                announce(RunId(id));
+            }
             Ok(IntrospectValue::Null)
         } else {
             Err(refused(format!("this daemon holds no run {id}")))
@@ -6820,6 +6866,174 @@ mod tests {
              word that reads as an accusation — item 685 was filed by another repository's watcher \
              doing exactly that — and no mouth downstream can tell a signal from a bug: {row:?}",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THAT STEPS WAKES THE STREAM, SO NOBODY HAS TO POLL IT** — register item 706.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What its absence cost, and why the lower bound below is the whole gate
+    ///
+    /// `events` published nine kinds and **not one was a run's walk**, so every watcher of a live
+    /// run rebuilt the same `runs` poller. A watcher in another repository sat through twenty
+    /// minutes of silence while its run took a turn, was judged, and went back to work — *alive and
+    /// moving looked exactly like dead*. And the poller that stood in for this **loses**: it reads
+    /// one walk line per interval, so two transitions inside one interval leave the middle one gone.
+    /// Measured against full logs, **25%** of one run's transitions and **32%** of another's,
+    /// including the checker refusing a milestone claim.
+    ///
+    /// ⚠⚠⚠ **THE LOWER BOUND IS ASSERTED BECAUSE THE COUNT WAS ZERO.** A gate that merely said
+    /// *some run events reach the stream* would have passed on the build this item was filed
+    /// against — there were none at all — and would keep passing if a refactor reduced them to one.
+    /// So this drives a fixed number of steps and demands that number back, and asserts the ZERO
+    /// first: without the control the count could be met by events some other part of the run
+    /// produced.
+    ///
+    /// # ⚠⚠ What it does NOT assert, and why that is this module's rule rather than a shortfall
+    ///
+    /// The event carries an id and nothing else. `events`' standing rule is *name the subject,
+    /// carry nothing* — putting the walk's vocabulary on the stream would be a second copy of it —
+    /// so what a watcher gets is **a wake**, and the reason it reflected is on the row it then
+    /// reads. This gate holds both halves: the wake arrives N times, and the reason is in the row.
+    #[test]
+    fn a_run_that_steps_wakes_the_stream_rather_than_a_poller() {
+        const SESSION: &str = "the-session-watching-this-run";
+        // ⚠ The one the document authors, quoted rather than invented: item 706's requirement ① is
+        // that a step says why it reflected, and the ledger's own correction found the product
+        // already does it — on the transition COMING IN. So the fixture carries that sentence and
+        // the assertion below is that a woken reader finds it without parsing prose.
+        const WHY: &str = "milestone: the agent said the milestone was reached";
+
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let channels = Arc::new(crate::notify::ChannelRegistry::default());
+        let (_on_end, _on_ordered, on_stepped) = crate::run_announcers(&channels, SESSION);
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .announcing_run_steps(on_stepped);
+
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "hello",
+                    "sentinel": "NO-SUCH-WORD-WILL-APPEAR",
+                })),
+            )
+            .expect("the run is accepted");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a started run answers its id: {started:?}");
+        };
+        let id = u64::try_from(id).expect("a run id is not negative");
+
+        let steps_so_far = || {
+            channels
+                .journal(SESSION)
+                .since(0)
+                .events
+                .iter()
+                .filter(|event| matches!(event, crate::events::Event::RunStepped(_)))
+                .count()
+        };
+
+        // ── THE CONTROL, AND IT COMES FIRST: nothing else in a run's life produces this ──
+        assert_eq!(
+            steps_so_far(),
+            0,
+            "⚠⚠⚠⚠ THE PREMISE: a run that has reported no progress must have produced no step \
+             events, or the count below could be met by something else entirely and this gate \
+             would measure nothing",
+        );
+
+        // ── THREE STEPS, ONE OF WHICH SAYS WHY IT REFLECTED, EACH READ WHERE A WOKEN CLIENT READS
+        //
+        // ⚠⚠⚠⚠⚠ THE READ IS INSIDE THE LOOP, AND THAT IS THE CLAIM RATHER THAN A CONVENIENCE. A
+        // run's reported progress is REPLACED by its successor, so a reader that arrives after
+        // three steps sees the third — which is exactly what the poller this item is about does,
+        // and exactly how it lost a quarter of what it was watching. **Being woken per step is what
+        // makes every step readable**, and asserting it here is the difference between the two.
+        for (iteration, note) in [(1_u64, "Idle --Start--> Priming"), (2, WHY), (3, "and on")] {
+            external
+                .invoke(
+                    REPORT_PROGRESS_ACTION,
+                    IntrospectValue::Json(json!({
+                        RUN_ID_KEY: id,
+                        PROGRESS_KEY: { "iterations": iteration, "at": "working", "note": note },
+                    })),
+                )
+                .expect("a driver's progress report is accepted");
+            let woken = row_of(&mut external, i64::try_from(id).expect("a run id fits"));
+            assert!(
+                format!("{woken}").contains(note),
+                "⚠⚠⚠⚠ A WAKE IS ONLY WORTH ONE READ IF THE READ ANSWERS. Step {iteration} \
+                 announced itself and the row a woken client reads must carry that step — \
+                 including the one that says WHY it reflected, which is item 706's requirement ①: \
+                 {woken}",
+            );
+        }
+
+        assert_eq!(
+            steps_so_far(),
+            3,
+            "⚠⚠⚠⚠⚠ EVERY STEP MUST REACH THE STREAM. A run's walk was the one thing `events` did \
+             not carry, and the cost was not a missing feature — it was every watcher rebuilding a \
+             poller that LOSES a quarter of what it watches for. A number lower than the steps \
+             driven is a stream a watcher still has to poll around",
+        );
+
+        // ── AND A REPORT THIS DAEMON REFUSES ANNOUNCES NOTHING ──
+        //
+        // ⚠⚠⚠ REGISTER RULE SIX, at the place it would actually be broken: the announcement sits
+        // beside a call that can FAIL, and a hook moved one line out of that branch would wake
+        // every watcher of this session for a run nobody here holds. Without this clause the gate
+        // above is green either way, because it only ever drives reports that succeed.
+        let stranger = id + 4242;
+        external
+            .invoke(
+                REPORT_PROGRESS_ACTION,
+                IntrospectValue::Json(json!({
+                    RUN_ID_KEY: stranger,
+                    PROGRESS_KEY: { "iterations": 1, "at": "working" },
+                })),
+            )
+            .expect_err("a report about a run this daemon does not hold is refused");
+        assert_eq!(
+            steps_so_far(),
+            3,
+            "⚠⚠⚠⚠ A REFUSED REPORT MUST ANNOUNCE NOTHING. An event says *go and read this run*, and \
+             there is no run to read — a watcher woken by it spends a call to learn that",
+        );
+
+        // ── AND THE POLLER'S OWN FAILURE, STAGED: ARRIVING LATE SEES ONLY THE LAST ──
+        //
+        // ⚠⚠ This is not a defect being asserted, it is the ALTERNATIVE being measured. A reader
+        // that was not woken per step arrives here and finds the third step only — the middle one,
+        // the one that said why it reflected, is simply gone from the row. That is the 25–32% this
+        // item measured, reproduced in three lines, and it is what the assertions above buy.
+        let late = row_of(&mut external, i64::try_from(id).expect("a run id fits"));
+        assert!(
+            !format!("{late}").contains(WHY),
+            "⚠⚠⚠ THE STAGING: a late reader must NOT still see the middle step, or the wake above \
+             bought nothing and this gate would pass on a build that kept every report: {late}",
+        );
+
+        // ⚠⚠ AND THE RUN IS ENDED, because this fixture started one that never stops on its own —
+        // its sentinel is a word the peer cannot produce. A gate that walks away from it leaves a
+        // driver thread typing at a pane for the rest of the suite, which is a CPU load on every
+        // other test in the same binary: register item 683's own axis, added by the gate rather
+        // than measured by it.
+        external
+            .invoke(CANCEL_ACTION, IntrospectValue::Json(json!({ "id": id })))
+            .expect("the cancel is accepted");
+        ended(&registry, id, Duration::from_secs(20));
     }
 
     #[test]
