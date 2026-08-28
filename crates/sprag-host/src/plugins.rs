@@ -1003,7 +1003,7 @@ impl PluginsExternal {
         // Build the plugin first: it determines the run's cost UNIT, which the
         // guardrails are then sized in (a bare `max_cost` is read in that unit).
         let (plugin, label) = self.build_plugin(map)?;
-        let guardrails = parse_guardrails(map, plugin.default_cost())?;
+        let guardrails = parse_guardrails(map, plugin.cost_unit(), plugin.own_bounds())?;
         let opened_by = self.parse_opener(map)?;
         // WHO is in that seat, asked of the daemon rather than taken from the request — see
         // `session_in`. This is what survives the daemon, so it is resolved while the pane is still
@@ -1344,7 +1344,7 @@ pub fn drive_request(
             }
         }
     }
-    let guardrails = parse_guardrails(request, plugin.default_cost())?;
+    let guardrails = parse_guardrails(request, plugin.cost_unit(), plugin.own_bounds())?;
     let outcome =
         Driver::new(guardrails)
             .forwarding_to(report)
@@ -1608,10 +1608,21 @@ fn plugin_from_request(
             // ⚠⚠⚠ IT IS ON THE BRIEF NOW, not the spec: a consent is a decision somebody made
             // in advance and in writing, which is what this document holds — the same move
             // `screen_rules` made, and the end of refusal and approval living in two worlds.
+            // ⚠⚠⚠⚠⚠ THE BOUNDS THIS REPOSITORY'S DOCUMENT NAMES, read HERE because this is where
+            // the kind document is open — register item 738, layer 1. `parse_guardrails` runs one
+            // call later with the kind long dropped, so what travels to it is the answer rather
+            // than a second read of somebody's clause.
+            //
+            // ⚠⚠ THE UNIT IS THE PLUGIN'S OWN AND IS NAMED BEFORE THE PLUGIN EXISTS, which is the
+            // one awkward line here and is stated rather than hidden: a loop spends BYTES, the
+            // enum's `cost_unit` says so, and reading the clause after construction would mean
+            // building a plugin that might have to be thrown away because its own document names a
+            // guardrail no run of it can have.
+            let authored = kind_guardrails(&kind, Cost::Bytes(DEFAULT_MAX_BYTES))?;
             let label = format!("ai_loop pane={}", pane.0);
             let loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
                 .map_err(|why| refused(ai_loop_refusal(&why)))?;
-            Ok((PluginKind::AiLoop(Box::new(loops)), label))
+            Ok((PluginKind::AiLoop(Box::new(loops), authored), label))
         }
     }
 }
@@ -1965,7 +1976,8 @@ impl PluginsExternal {
     /// a row that stopped being resumable between [`crate::runs::RunRegistry::inherited`] and here.
     pub fn put_back(&self, inherited: &crate::runs::InheritedRun) -> Result<(), InvokeError> {
         let (mut plugin, _label) = plugin_from_request(self, &inherited.request)?;
-        let guardrails = parse_guardrails(&inherited.request, plugin.default_cost())?;
+        let guardrails =
+            parse_guardrails(&inherited.request, plugin.cost_unit(), plugin.own_bounds())?;
         // ⚠⚠⚠⚠ THE SAME FOUR ANSWERS `drive_request` READS, and they are worth spelling separately
         // here rather than collapsing to *it did not work*: the person who meets one of these is
         // holding a run log and a daemon that has just decided not to bring their run back.
@@ -2467,7 +2479,46 @@ enum PluginKind {
     Answer(sprag_plugin::Answer),
     // Boxed for the `Dialogue` reason above: an `AiLoop` owns a compiled `ai_loop.scxml` engine
     // and the script interpreter its datamodel lives in.
-    AiLoop(Box<sprag_plugin::AiLoop>),
+    //
+    // ⚠⚠⚠⚠⚠ AND THE BOUNDS ITS KIND DOCUMENT NAMED — register item 738, layer 1. They are read
+    // where the kind document is opened (`build_plugin`) and carried here because
+    // `parse_guardrails` runs one call later, with the plugin in hand and the kind long dropped.
+    // Re-opening the document there would be a SECOND read of one author's clause, which is what
+    // `LoopKind`'s own doc says a kind must never become — so what travels is the answer.
+    AiLoop(Box<sprag_plugin::AiLoop>, AuthoredGuardrails),
+}
+
+/// **THE THREE GUARDRAILS A PLUGIN'S OWN DOCUMENT NAMED**, each [`None`] where it named nothing —
+/// register item 738, layer 1.
+///
+/// # ⚠⚠⚠ Why it is three `Option`s and not a [`Guardrails`]
+///
+/// A [`Guardrails`] is a run's RESOLVED bounds: every field decided, nothing left to fall through.
+/// This is the middle step, and *the document said nothing about this one* has to survive it — a
+/// zero or a daemon default sitting where a document's silence belongs is exactly how item 492's
+/// ceiling read as *authored* on every run while nothing carried it.
+///
+/// ⚠⚠ **THE COST FIELD IS A [`Cost`] AND NOT A NUMBER**, so a bound cannot be misloaded into the
+/// wrong currency on this road either. `parse_max_cost` already refuses that of a caller; a
+/// document that named `max_tokens` for a byte-spending plugin is the same mistake and is refused
+/// in the same words, by the same publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+struct AuthoredGuardrails {
+    max_iterations: Option<u32>,
+    max_cost: Option<Cost>,
+    max_duration: Option<Duration>,
+}
+
+impl AuthoredGuardrails {
+    /// What a plugin with no document of its own to read answers — every field the caller's or
+    /// this daemon's, which is what every plugin here did before this type existed.
+    const fn none() -> Self {
+        Self {
+            max_iterations: None,
+            max_cost: None,
+            max_duration: None,
+        }
+    }
 }
 
 impl PluginKind {
@@ -2478,7 +2529,7 @@ impl PluginKind {
             PluginKind::Agent(agent) => agent,
             PluginKind::Dialogue(dialogue) => dialogue.as_mut(),
             PluginKind::Answer(answer) => answer,
-            PluginKind::AiLoop(loops) => loops.as_mut(),
+            PluginKind::AiLoop(loops, _) => loops.as_mut(),
         }
     }
 
@@ -2496,14 +2547,17 @@ impl PluginKind {
             PluginKind::Agent(_) => PluginName::Agent,
             PluginKind::Dialogue(_) => PluginName::Dialogue,
             PluginKind::Answer(_) => PluginName::Answer,
-            PluginKind::AiLoop(_) => PluginName::AiLoop,
+            PluginKind::AiLoop(..) => PluginName::AiLoop,
         }
     }
 
-    /// This plugin's default cost ceiling, in its natural unit: the byte-relay
-    /// plugins spend injected bytes; the dialogue spends LLM tokens. The unit
-    /// also sizes a bare `max_cost` from the wire.
-    fn default_cost(&self) -> Cost {
+    /// This plugin's cost UNIT, in which a bare `max_cost` from the wire is sized: the byte-relay
+    /// plugins spend injected bytes; the dialogue spends LLM tokens.
+    ///
+    /// ⚠ The magnitude carried here is this DAEMON's default and no longer decides on its own —
+    /// see [`own_bounds`](Self::own_bounds), which is what a plugin whose document names a ceiling
+    /// answers with instead.
+    fn cost_unit(&self) -> Cost {
         match self {
             PluginKind::Orchestrator(_)
             | PluginKind::Pipe(_)
@@ -2516,8 +2570,46 @@ impl PluginKind {
             // `ai_loop` spends on its peer is the prompts it types, and the model's tokens are
             // spent by the AGENT in the pane, which this daemon neither bills nor can count. The
             // budget that bounds an agent's spend is `max_turns`, and it is in the brief.
-            | PluginKind::AiLoop(_) => Cost::Bytes(DEFAULT_MAX_BYTES),
+            | PluginKind::AiLoop(..) => Cost::Bytes(DEFAULT_MAX_BYTES),
             PluginKind::Dialogue(_) => Cost::Tokens(DEFAULT_MAX_TOKENS),
+        }
+    }
+
+    /// **THE BOUNDS THIS PLUGIN'S OWN DOCUMENT NAMES**, before any caller's — register item 738,
+    /// layer 1.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The defect: three ceilings, and a document could reach none of them
+    ///
+    /// A run is bounded by five things ([`Ceiling`]). Two were the plugin
+    /// document's already — `max_turns` and `hold_within_ms`, which the driver does not own. The
+    /// other three are [`Guardrails`], and **their only authors were the caller and this daemon's
+    /// constants.** Measured in this daemon's own registry on 2026-08-28: of 49 recorded runs, **8
+    /// ended `exhausted (cost)`**, every one between 65,809 and 68,658 bytes — the 64 KiB default —
+    /// while the largest run that CONVERGED spent 516,020. So for a debt loop the daemon's backstop
+    /// is not a backstop, it is the ceiling that bites first, and it bites mid-round with the work
+    /// uncommitted.
+    ///
+    /// ⚠⚠ What stood in for this was a guard chain in an untracked launcher script, refusing any
+    /// launch that did not name all three by hand. **A copy of somebody's memory is not a spec**,
+    /// and it is the reason the item exists.
+    ///
+    /// # ⚠⚠⚠ Why every plugin is asked and only one answers
+    ///
+    /// [`AuthoredGuardrails::none`] is what a plugin with no document to read says, which is what
+    /// every one of these did before this method existed. Asking them all is what keeps the
+    /// fall-through in ONE place — [`parse_guardrails`], which every form goes through — rather
+    /// than putting a loop-shaped branch inside a function that bounds six kinds of run.
+    fn own_bounds(&self) -> AuthoredGuardrails {
+        match self {
+            PluginKind::Orchestrator(_)
+            | PluginKind::Pipe(_)
+            | PluginKind::Agent(_)
+            | PluginKind::Answer(_)
+            | PluginKind::Dialogue(_) => AuthoredGuardrails::none(),
+            // ⚠ READ AT BUILD TIME AND CARRIED, not read again here: the kind document is opened
+            // once per run in `build_plugin`, and re-opening it would be a second read of one
+            // author's clause — the thing `LoopKind`'s own doc says a kind must never become.
+            PluginKind::AiLoop(_, authored) => *authored,
         }
     }
 }
@@ -2853,6 +2945,111 @@ fn opt_count(map: &Map<String, Value>, key: &str) -> Result<Option<i64>, InvokeE
 /// sentence when nothing at all names a barrier — which is a refusal rather than a `None`, because
 /// [`AiLoopSpec::ready_when`](sprag_plugin::AiLoopSpec::ready_when) CAN hold nothing and nothing
 /// means *go ahead immediately*, which is R379's failure bought back in silence.
+/// **THE GUARDRAILS THIS REPOSITORY'S KIND DOCUMENT NAMES** — register item 738, layer 1.
+///
+/// # ⚠⚠⚠⚠⚠ The keys are the WIRE's, checked against the publication rather than a list here
+///
+/// `sprag-plugin` hands back the clause as a map of name → number and reads no meaning into it
+/// ([`LoopKind::authored_numbers`](sprag_plugin::kind::LoopKind::authored_numbers)), because the
+/// field names belong to [`PluginGrammar::guardrail_fields`](crate::wire::PluginGrammar::guardrail_fields)
+/// and that crate cannot see them. **This is where the vocabulary lives, so this is where the
+/// clause is judged** — and a fourth guardrail added to the publication is admitted here in the
+/// same compile rather than silently dropped.
+///
+/// ⛔⛔ **A KEY NO GUARDRAIL ADMITS IS REFUSED, NAMING WHAT THE OBJECT TAKES.** That is
+/// [`parse_guardrails`]'s own rule turned on a document, and its reason is unchanged: ignoring an
+/// ordinary argument makes a verb do less than asked and the caller can see it; **ignoring a BOUND
+/// makes the run do more, without limit, and answers success.** A document that spelled
+/// `max_byte` would otherwise get the daemon's 64 KiB while plainly naming two megabytes.
+///
+/// ⚠ The cost key is unit-dependent — `max_bytes` for a byte-spending plugin, `max_tokens` for a
+/// token-spending one — so it is not spelled here either: whichever the publication offers for
+/// this unit is the one a document may name, and naming the other one is an unknown key.
+///
+/// # Errors
+///
+/// [`refused`]'s sentence for a clause this driver cannot read, and for a key no guardrail admits.
+fn kind_guardrails(
+    kind: &sprag_plugin::kind::LoopKind,
+    unit: Cost,
+) -> Result<AuthoredGuardrails, InvokeError> {
+    let Some(named) = kind.authored_numbers("guardrails").map_err(|why| {
+        refused(format!(
+            "this repository's loop-kind document holds a `guardrails` clause this driver cannot \
+             read ({why:?}); it must be an object of whole numbers, and a run cannot start on a \
+             bound nobody can check"
+        ))
+    })?
+    else {
+        return Ok(AuthoredGuardrails::none());
+    };
+    let declared = crate::wire::PluginGrammar::guardrail_fields(unit.unit());
+    if let Some(unknown) = named
+        .keys()
+        .find(|key| !declared.iter().any(|field| field.name == key.as_str()))
+    {
+        return Err(refused(format!(
+            "this repository's loop-kind document names {unknown:?} in its `guardrails` clause, \
+             and that is not a guardrail of a run that spends {}. It takes: {}. A bound this \
+             daemon does not know would have been ignored, and an ignored bound is not a bound — \
+             the run would take this daemon's own default while the document plainly named \
+             something else.",
+            unit.unit(),
+            declared
+                .iter()
+                .map(|field| field.name)
+                .collect::<Vec<_>>()
+                .join(", "),
+        )));
+    }
+    // ⚠ A NEGATIVE OR OUT-OF-RANGE NUMBER IS REFUSED rather than clamped, on the same terms: a
+    // document that arrived at one by arithmetic is the author who needs telling, and a clamp
+    // would run under a bound nobody wrote.
+    let out_of_range = |name: &str| {
+        refused(format!(
+            "this repository's loop-kind document names a `{name}` its runs cannot be bounded by; \
+             a guardrail is a whole number of at least one"
+        ))
+    };
+    let max_iterations = match named.get("max_iterations") {
+        Some(&held) => Some(
+            u32::try_from(held)
+                .ok()
+                .filter(|it| *it > 0)
+                .ok_or_else(|| out_of_range("max_iterations"))?,
+        ),
+        None => None,
+    };
+    let max_duration = match named.get("max_seconds") {
+        Some(&held) => Some(Duration::from_secs(
+            u64::try_from(held)
+                .ok()
+                .filter(|it| *it > 0)
+                .ok_or_else(|| out_of_range("max_seconds"))?,
+        )),
+        None => None,
+    };
+    // ⚠⚠ THE COST KEY IS THE UNIT'S OWN, so the same clause read for a token-spending plugin looks
+    // for `max_tokens` — and `Cost::sized` is what keeps the currency from being crossed.
+    let cost_key = unit.bound_key();
+    let max_cost = match named.get(cost_key) {
+        Some(&held) => Some(
+            unit.sized(
+                u64::try_from(held)
+                    .ok()
+                    .filter(|it| *it > 0)
+                    .ok_or_else(|| out_of_range(cost_key))?,
+            ),
+        ),
+        None => None,
+    };
+    Ok(AuthoredGuardrails {
+        max_iterations,
+        max_cost,
+        max_duration,
+    })
+}
+
 fn ai_loop_barrier(
     map: &Map<String, Value>,
     kind: &sprag_plugin::kind::LoopKind,
@@ -3055,7 +3252,15 @@ fn ai_loop_brief(
         // *hold this run and end it at once* is `cancel` spelled wrong, and a caller who reached
         // zero by arithmetic gets told rather than obeyed. ⚠ Absent means THE DOCUMENT DECIDES,
         // like the two keys above and unlike their pre-item-300 selves.
-        hold_within_ms: opt_hold_within(map)?.map(|held| held.as_millis() as i64),
+        // ⚠⚠⚠⚠⚠ AND IT REACHES THE KIND DOCUMENT SINCE ITEM 738, on the same three-step chain as
+        // every judgement above it: the caller's number, then THIS repository's kind, then the
+        // template's own four hours. It arrived because a GATE asked — `Ceiling::ALL` names five
+        // things that end a run, the item's gate walks that set with no exemption arm, and this
+        // was the one ceiling a kind still could not author. ⚠ Zero is still malformed at
+        // `opt_hold_within`, which is the caller's rule and not a fall-through.
+        hold_within_ms: opt_hold_within(map)?
+            .map(|held| held.as_millis() as i64)
+            .or_else(|| kind.hold_within_ms()),
         // ⚠⚠⚠ AND THE LAST TWO JUDGEMENTS, ON THE SAME ROUTE. Each of them arrived
         // paired with a PREDICATE — `ready_timeout_ms` with `ready_when`,
         // `turn_within_ms` with `done_when` — and register item 300 measured that the
@@ -3276,15 +3481,30 @@ fn parse_reply_format(
 fn parse_guardrails(
     map: &Map<String, Value>,
     default_cost: Cost,
+    authored: AuthoredGuardrails,
 ) -> Result<Guardrails, InvokeError> {
+    // ⚠⚠⚠⚠⚠ THE THREE FALL-THROUGHS, IN ONE PLACE — register item 738, layer 1. Each bound is the
+    // CALLER's number, then the number this run's own PLUGIN DOCUMENT authored, then this daemon's
+    // constant. It is the same three-step chain `max_turns`, `context_ceiling` and
+    // `reflect_after_refusals` already travel, arriving at the only bounds that had no document
+    // step at all — and those are the three that actually kill runs here (measured: 8 of this
+    // daemon's 49 recorded runs ended `exhausted (cost)` at the 64 KiB default, while the largest
+    // run that converged spent 516,020 bytes).
+    let iterations = || authored.max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
+    let cost = || authored.max_cost.unwrap_or(default_cost);
+    let duration = || {
+        authored
+            .max_duration
+            .unwrap_or_else(|| Duration::from_secs(DEFAULT_MAX_SECONDS))
+    };
     // ⚠ DECLINED, not merely absent — see [`declined`](crate::external::declined). A client whose
     // language serialises an absent optional as `null` sends `"guardrails": null` on every
     // unguarded run, and answering `TypeMismatch` there refuses a well-formed call.
     if declined(map, "guardrails") {
         return Ok(Guardrails {
-            max_iterations: DEFAULT_MAX_ITERATIONS,
-            max_cost: Some(default_cost),
-            max_duration: Some(Duration::from_secs(DEFAULT_MAX_SECONDS)),
+            max_iterations: iterations(),
+            max_cost: Some(cost()),
+            max_duration: Some(duration()),
         });
     }
     let Value::Object(g) = &map["guardrails"] else {
@@ -3309,23 +3529,26 @@ fn parse_guardrails(
         )));
     }
     // ⚠ The SAME declined rule inside the nest. A nested optional is an optional.
+    // ⚠⚠ AND A DECLINED FIELD NOW MEANS *WHAT THIS RUN'S DOCUMENT SAYS*, then the daemon's — the
+    // three closures above, and the same widening `screen_rules` and `may_answer` took when a kind
+    // acquired a voice. A caller who names a bound still overrides it.
     let max_iterations = if declined(g, "max_iterations") {
-        DEFAULT_MAX_ITERATIONS
+        iterations()
     } else {
         g["max_iterations"]
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
             .ok_or(InvokeError::TypeMismatch)?
     };
-    let max_seconds = if declined(g, "max_seconds") {
-        DEFAULT_MAX_SECONDS
+    let max_duration = if declined(g, "max_seconds") {
+        duration()
     } else {
-        g["max_seconds"].as_u64().ok_or(InvokeError::TypeMismatch)?
+        Duration::from_secs(g["max_seconds"].as_u64().ok_or(InvokeError::TypeMismatch)?)
     };
     Ok(Guardrails {
         max_iterations,
-        max_cost: parse_max_cost(g, default_cost)?,
-        max_duration: Some(Duration::from_secs(max_seconds)),
+        max_cost: parse_max_cost(g, cost())?,
+        max_duration: Some(max_duration),
     })
 }
 
@@ -5509,7 +5732,7 @@ mod tests {
         let (built, _label) = external
             .build_plugin(asked.as_object().expect("an object"))
             .expect("a plain ai_loop request is well-formed");
-        let PluginKind::AiLoop(loops) = built else {
+        let PluginKind::AiLoop(loops, _) = built else {
             panic!("the control: an `ai_loop` request builds an ai_loop");
         };
 
@@ -5565,7 +5788,7 @@ mod tests {
         let (built, _label) = external
             .build_plugin(asked.as_object().expect("an object"))
             .expect("a run that names no consents is well-formed");
-        let PluginKind::AiLoop(loops) = built else {
+        let PluginKind::AiLoop(loops, _) = built else {
             panic!("the control: an `ai_loop` request builds an ai_loop");
         };
         let carried = loops
@@ -5602,7 +5825,7 @@ mod tests {
         let (built, _label) = external
             .build_plugin(named.as_object().expect("an object"))
             .expect("a run that names its own consents is well-formed");
-        let PluginKind::AiLoop(loops) = built else {
+        let PluginKind::AiLoop(loops, _) = built else {
             panic!("the control: an `ai_loop` request builds an ai_loop");
         };
         let carried = loops
@@ -6788,6 +7011,271 @@ mod tests {
              satisfy every assertion above, and it would ALSO delete what a caller wrote — which \
              for this key is the whole of what `reflecting` hands a replacement session",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY CEILING THAT CAN END A RUN IS ONE THIS REPOSITORY'S DOCUMENT SET** —
+    /// register item 738, layer 1, and the gate the item asked for in exactly these words: *walk
+    /// `Ceiling::ALL` and ask the document*.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was true until this round, measured in this daemon's own registry
+    ///
+    /// `state/sprag/sprag-loop.runs.json` holds 49 runs. **Eight ended `exhausted (cost)`**, every
+    /// one between 65,809 and 68,658 bytes — [`DEFAULT_MAX_BYTES`], which is 64 KiB — while the
+    /// largest run that CONVERGED spent **516,020** bytes over 1,231 iterations. So this daemon's
+    /// backstop was not a backstop for a debt loop, it was the ceiling that bit first, and it bit
+    /// mid-round with the work uncommitted in the tree. Nothing in any document could say
+    /// otherwise: `max_turns` and `hold_within_ms` were a kind's, and the three [`Guardrails`] were
+    /// the caller's or this daemon's constants.
+    ///
+    /// ⚠⚠ What stood in for it was a guard chain in an untracked launcher script — refuse the
+    /// launch unless a person names all three by hand. **A copy of somebody's memory is not a
+    /// spec**, and it is the owner's judgement of that copy that filed this item.
+    ///
+    /// # ⚠⚠⚠⚠ Why the population is [`Ceiling::ALL`] and why there is NO exemption arm
+    ///
+    /// A gate over a hand-written list of three would have been green on the day a fourth ceiling
+    /// arrived, saying nothing — item 470's *a list with no glob decides alone*, and
+    /// [`Ceiling`]'s own doc records that exact failure happening to `Hold`. So the loop walks the
+    /// closed set and the `match` inside it is EXHAUSTIVE: a sixth ceiling does not slip past this
+    /// gate, it fails to compile until somebody says which bound fires it and who authors that.
+    ///
+    /// ⛔ **AND EVERY ARM MUST ANSWER WITH THE DOCUMENT'S OWN VALUE.** An arm that answered *this
+    /// one is nobody's* would be the escape hatch that disarms the gate — rule: an unclassified
+    /// ceiling is a RED, not a pass. `Hold` was that ceiling until this round, and the honest way
+    /// to keep the gate strict was to give the kind a channel for it rather than to write the
+    /// exemption.
+    ///
+    /// ⚠ The numbers themselves are NOT pinned here. What `debt_loop.scxml` says is that document's
+    /// business and a number in this file would be a second place it lives; what must hold is that
+    /// a launch naming nothing is bounded by what that document says, and that it is not this
+    /// daemon's default.
+    #[test]
+    fn every_ceiling_that_can_end_a_run_is_one_this_repositorys_document_set() {
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+            .expect("this repository's kind document opens");
+
+        // ⚠⚠⚠⚠⚠ THE PREMISE. Every assertion below is about a bound the CALLER DID NOT NAME, and
+        // against the shared fixture — which names guardrails and a turn budget — they are all
+        // vacuously satisfied by a door that never consults a document. So the keys come out and
+        // their absence is checked here rather than assumed from the removal.
+        let mut declining = ai_loop_request(PaneId(1), json!({}));
+        for key in ["guardrails", "max_turns"] {
+            declining
+                .as_object_mut()
+                .expect("an object")
+                .remove(key)
+                .unwrap_or_else(|| panic!("the fixture supplies {key}, which this gate declines"));
+        }
+        let map = declining.as_object().expect("an object");
+        for key in ["guardrails", "max_turns", sprag_plugin::HOLD_WITHIN_KEY] {
+            assert!(
+                !map.contains_key(key),
+                "⚠⚠⚠⚠ THIS GATE IS VACUOUS IF THE REQUEST NAMES {key:?}: the question is which \
+                 ceiling bounds a launch that named none, and a fixture that names one answers a \
+                 different question with the same green",
+            );
+        }
+
+        // ⚠⚠⚠⚠⚠ THE WHOLE ROAD, NOT THE LAST STEP OF IT — and this is the shape a mutation
+        // demanded rather than a preference. The first draft called `parse_guardrails` with the
+        // kind's clause handed straight to it, and **deleting the wiring that carries that clause
+        // out of `build_plugin` left this gate GREEN**: it was measuring the fall-through and not
+        // the channel that feeds it, which is precisely the defect items 312 and 492 each measured
+        // once. So the run is BUILT the way the door builds it, and what its bounds are asked of is
+        // the plugin the door produced.
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut on_the_pane = declining.clone();
+        on_the_pane
+            .as_object_mut()
+            .expect("an object")
+            .insert("pane".to_string(), json!(pane.0));
+        let built_from = on_the_pane.as_object().expect("an object");
+        let (plugin, _label) = external
+            .build_plugin(built_from)
+            .expect("a request naming no bounds is well-formed");
+        assert!(
+            matches!(plugin, PluginKind::AiLoop(..)),
+            "the control: this request must build a loop, or `own_bounds` is answering for \
+             something else",
+        );
+
+        // The three roads a bound travels, all asked of the REAL functions rather than restated:
+        // the kind's own clause, the brief the door resolves, and the guardrails the door resolves
+        // FROM THE PLUGIN IT BUILT.
+        let unit = plugin.cost_unit();
+        let authored = plugin.own_bounds();
+        assert_eq!(
+            authored,
+            kind_guardrails(&kind, unit).expect("its guardrail clause must be readable"),
+            "⛔⛔⛔⛔⛔ THE PLUGIN THE DOOR BUILT DOES NOT CARRY WHAT ITS OWN DOCUMENT SAID. The \
+             clause is readable and the run will not be bounded by it — a channel broken between \
+             the document and the driver, which is item 492's shape and is silent",
+        );
+        let brief = ai_loop_brief(map, &kind).expect("a well-formed request resolves");
+        let resolved =
+            parse_guardrails(built_from, unit, authored).expect("its guardrails resolve");
+
+        for ceiling in Ceiling::ALL {
+            // ⚠⚠⚠ EXHAUSTIVE, AND THAT IS THE GATE'S SPINE. Each arm answers with what the run is
+            // BOUND BY and what the document SAID, rendered through one type so the comparison
+            // cannot be between two readers. A sixth ceiling stops the build here.
+            let (bound, said) = match ceiling {
+                Ceiling::Iterations => (
+                    Some(u64::from(resolved.max_iterations)),
+                    authored.max_iterations.map(u64::from),
+                ),
+                Ceiling::Cost => (
+                    resolved.max_cost.map(Cost::amount),
+                    authored.max_cost.map(Cost::amount),
+                ),
+                Ceiling::Duration => (
+                    resolved.max_duration.map(|it| it.as_secs()),
+                    authored.max_duration.map(|it| it.as_secs()),
+                ),
+                // ⚠ The plugin's own budget, which this kind DECLINES with a word rather than a
+                // number — so the pair compared is the decision, not an amount. `Counted::Never`
+                // is the only value here that is not a count, and folding it to one would be the
+                // `probe_absent` defect this document's own comment records.
+                Ceiling::Turns => {
+                    assert_eq!(
+                        brief.max_turns,
+                        kind.turn_budget(),
+                        "⚠⚠⚠⚠ {ceiling:?}: a run that named no budget must be bounded by what this \
+                         repository's document decided, and this one DECLINES the count — a debt \
+                         run's job is a list nobody has finished",
+                    );
+                    assert!(
+                        kind.turn_budget().is_some(),
+                        "⚠⚠⚠ and the document must really decide it: a `None` here is this gate \
+                         comparing two absences and calling them agreement",
+                    );
+                    continue;
+                }
+                Ceiling::Hold => (
+                    brief.hold_within_ms.map(|it| it as u64),
+                    kind.hold_within_ms().map(|it| it as u64),
+                ),
+            };
+            let said = said.unwrap_or_else(|| {
+                panic!(
+                    "⛔⛔⛔ {ceiling:?} CAN END A RUN OF THIS KIND AND THIS KIND'S DOCUMENT DOES NOT \
+                     SET IT. That is register item 738's whole subject: the number then comes from \
+                     this daemon's constants or from whoever remembered to type it, and the \
+                     measurement says what that costs — 8 of 49 runs here ended `exhausted (cost)` \
+                     at a 64 KiB default while a converging run spends half a megabyte. Author it \
+                     in `debt_loop.scxml`; do NOT add an exemption arm above."
+                )
+            });
+            assert_eq!(
+                bound,
+                Some(said),
+                "⚠⚠⚠⚠⚠ {ceiling:?}: the document names a bound and the run did not get it, so the \
+                 channel is broken somewhere between the clause and the driver — which is item \
+                 492's shape and is SILENT, because a run bounded by a default looks exactly like \
+                 a run bounded by a decision",
+            );
+        }
+
+        // ⚠⚠⚠ THE CONTROL, and for this item it is the sharpest assertion in the gate: the value
+        // that arrives must not be the daemon's own. Without it, a document that happened to
+        // author 64 KiB and a door that ignored the document entirely are the same green — and
+        // that green is the defect, not the fix.
+        assert_ne!(
+            resolved.max_cost,
+            Some(Cost::Bytes(DEFAULT_MAX_BYTES)),
+            "⛔⛔⛔⛔⛔ THE RUN CAME UP ON THIS DAEMON'S OWN 64 KiB, which is the number that ended \
+             eight of this daemon's forty-nine recorded runs mid-round. A debt run that converges \
+             spends 516,020 bytes",
+        );
+        assert!(
+            resolved.max_cost.map(Cost::amount).unwrap_or_default() > 516_020,
+            "⚠⚠⚠⚠ and it must exceed the largest run this daemon has ever recorded CONVERGING \
+             (run 17: 1,231 iterations, 516,020 bytes), or the ceiling still cuts the work this \
+             loop exists to do. Read {:?}",
+            resolved.max_cost,
+        );
+
+        // ⚠⚠ AND THE OTHER DIRECTION: a caller who names a bound still wins, or *the document is
+        // consulted* and *the document always wins* are one green and the second silently discards
+        // what somebody asked for.
+        let named = ai_loop_request(
+            PaneId(1),
+            json!({ "guardrails": { "max_bytes": 4096, "max_iterations": 7, "max_seconds": 11 } }),
+        );
+        let over = parse_guardrails(named.as_object().expect("an object"), unit, authored)
+            .expect("a caller naming guardrails resolves");
+        assert_eq!(
+            (over.max_iterations, over.max_cost, over.max_duration),
+            (
+                7,
+                Some(Cost::Bytes(4096)),
+                Some(std::time::Duration::from_secs(11))
+            ),
+            "⚠⚠⚠ a caller's own bounds must still win over the kind document's, on every one of \
+             the three",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **AND A GUARDRAIL A DOCUMENT NAMES THAT NO RUN OF IT CAN HAVE IS REFUSED, NAMING WHAT
+    /// THE CLAUSE TAKES** — register item 738, layer 1, and rule: an unclassified key is a RED and
+    /// not a pass.
+    ///
+    /// [`parse_guardrails`] has always refused an unknown key inside a CALLER's `guardrails`, on an
+    /// argument that is about bounds rather than about tidiness: *ignoring an ordinary argument
+    /// makes a verb do less than asked and the caller can see it; ignoring a BOUND makes the run do
+    /// more, without limit, and answers success.* A document is now a second author of the same
+    /// object, so it meets the same refusal — a `debt_loop.scxml` that spelled `max_byte` would
+    /// otherwise get 64 KiB while plainly naming two megabytes.
+    ///
+    /// ⚠⚠ **THE KEYS ARE THE PUBLICATION'S**, so this also holds the pairing that made the refusal
+    /// possible: a token bound named for a byte-spending run is an unknown key rather than a
+    /// crossed currency, because [`PluginGrammar::guardrail_fields`](crate::wire::PluginGrammar::guardrail_fields)
+    /// offers each unit only its own.
+    #[test]
+    fn a_guardrail_a_kind_document_names_that_no_run_of_it_can_have_is_refused() {
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+            .expect("this repository's kind document opens");
+
+        // THE CONTROL: the real document is read without complaint, or the refusal below is about
+        // a reader that refuses everything.
+        kind_guardrails(&kind, Cost::Bytes(DEFAULT_MAX_BYTES))
+            .expect("this repository's own clause must be admitted");
+
+        // ⚠ THE SAME CLAUSE, ASKED FOR A RUN THAT SPENDS TOKENS. `max_bytes` is not a guardrail of
+        // one, so the document's own key becomes the unknown one — which is how this gate reaches
+        // the refusal without editing the shipped document.
+        let why = kind_guardrails(&kind, Cost::Tokens(0))
+            .expect_err("a byte bound cannot guard a run that spends tokens");
+        let sentence = why.reason().map(ToString::to_string).unwrap_or_else(|| {
+            panic!("a document's own key must be REFUSED with a sentence: {why:?}")
+        });
+        for named in [
+            Cost::Bytes(0).bound_key(),
+            Cost::Tokens(0).bound_key(),
+            "max_iterations",
+        ] {
+            assert!(
+                sentence.contains(named),
+                "⚠⚠⚠ the refusal must name the offending key AND what the clause does take, \
+                 because an author cannot act on a sentence that names neither — missing \
+                 {named:?} in {sentence:?}",
+            );
+        }
     }
 
     /// ⚠⚠⚠⚠⚠ **A LAUNCH THAT NAMES NEITHER `agent` NOR `ready_when` IS STILL BEHIND A BARRIER, AND

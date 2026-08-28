@@ -626,6 +626,100 @@
     -->
     <data id="ready_when"
           expr="{ match: 'settles', marker: 'claude' }"/>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════════════
+      ⚠⚠⚠⚠⚠ WHAT ACTUALLY KILLS A RUN OF THIS KIND — register item 738, layer 1,
+      and the layer that had cost real work rather than only real typing.
+
+      ⚠⚠⚠⚠⚠ MEASURED IN THIS DAEMON'S OWN RUN REGISTRY, 2026-08-28, and the
+      measurement is the whole argument. `state/sprag/sprag-loop.runs.json` holds
+      **49 runs**:
+
+        exhausted (cost)         **8**   every one at 65,809 to 68,658 bytes
+        exhausted (iterations)   4
+        the largest run that CONVERGED   run 17: 1,231 iterations, 516,020 bytes
+        next four by spend       505,759 (38) - 362,422 (29) - 340,343 (39) - 215,328 (19)
+
+      ⇒ **ONE RUN IN SIX WAS KILLED BY A NUMBER NOBODY CHOSE.** The daemon's
+      `DEFAULT_MAX_BYTES` is 64 KiB, and a debt run that finishes its work spends
+      HALF A MEGABYTE — eight times that. So the default is not a backstop for
+      this kind, it is the ceiling that bites first, and it bites mid-round with
+      the work uncommitted in the tree.
+
+      ⚠⚠ AND THE PEER'S REPORT WAS ABOUT A RUN IN THIS FILE. The item was filed
+      from another repository's watcher quoting *"run 41, exhausted (cost) after
+      49 iterations, 65809 bytes"*. Run 41 of THIS registry is
+      `exhausted / cost / 49 / 65809`. One daemon drives all four loops, so the
+      evidence was never somebody else's — it was here, unread.
+
+      ⛔ WHAT WAS DEFENDING AGAINST IT: a bash `if` chain in an untracked launcher
+      script, refusing any launch that did not name all three ceilings by hand.
+      That is the thing the owner rejected and the reason this item exists — a
+      copy of somebody's memory is not a spec. These three clauses are the spec.
+
+      ⚠⚠⚠ THE KEYS ARE THE WIRE'S OWN, and the reader checks them against the
+      PUBLICATION (`PluginGrammar::guardrail_fields`) rather than a list of its
+      own, so a key this document spells that no guardrail admits is REFUSED
+      naming what it takes. An unclassified key is not a pass — it is the whole
+      failure mode `parse_guardrails` already refuses on the caller's side, and a
+      document silently granted the looser bound would be worse.
+      ══════════════════════════════════════════════════════════════════════════
+
+      ⚠⚠⚠⚠ **max_bytes — TWO MEBIBYTES.** Four times the largest run this daemon
+      has ever recorded converging (516,020), and at that run's own measured rate
+      of 419 bytes per iteration it is about five thousand iterations of typing.
+      It is a real bound rather than a formality: a loop that has stopped making
+      progress and is still typing meets it, and a loop doing four times the most
+      work ever recorded does not.
+
+      ⚠⚠⚠ **max_iterations — FIVE THOUSAND**, and it agrees with the line above
+      rather than being a second guess. The largest converged run took 1,231
+      steps; five thousand is four times that, and 5,000 x 419 bytes is 2.1 MB —
+      so the two ceilings bite at about the same place. **That agreement is the
+      argument**: two bounds that fire far apart mean one of them is decorative,
+      and a run stopped by a decorative bound is stopped by a number nobody
+      reasoned about.
+
+      ⚠⚠ **max_seconds — SIX HOURS, AND IT IS THE ONE NUMBER HERE NOTHING
+      MEASURED.** Stated rather than derived, on `context_ceiling`'s own terms.
+      The registry records no timestamps at all — `finished` is a boolean and `at`
+      is a state name — so nothing in this workspace can say how long a debt run
+      takes. Six hours is the number the launcher has carried in its usage line
+      since it was written, which makes it a decision somebody took rather than a
+      default nobody saw. ⚠ The residue, stated: the day a run is cut by
+      `duration` with work uncommitted, this is the clause to re-measure, and the
+      thing to measure first is whether the registry can be made to hold a
+      timestamp at all.
+    -->
+    <data id="guardrails"
+          expr="{
+            max_bytes:      2097152,
+            max_iterations: 5000,
+            max_seconds:    21600
+          }"/>
+
+    <!--
+      ⚠⚠⚠⚠ HOW LONG A PERSON MAY HOLD A RUN OF THIS KIND — SIX HOURS, DERIVED
+      FROM THE CLAUSE ABOVE RATHER THAN COPIED FROM THE TEMPLATE.
+
+      ⚠⚠⚠ WHY IT IS HERE AT ALL, WHICH IS THE GATE'S DOING. `Ceiling::ALL` names
+      five things that can end a run, and the gate this item builds walks that set
+      and asks THIS DOCUMENT for the bound each one fires on. There is no
+      exemption arm: a ceiling nobody classified is a RED, not a pass. `Hold` was
+      the fifth, and leaving it to the template would have been exactly the escape
+      hatch that disarms the gate.
+
+      ⚠⚠ AND THE NUMBER IS NOT THE TEMPLATE'S FOUR HOURS RE-SPELLED. It is
+      `max_seconds` above: **a hold longer than the run's own wall-clock budget
+      can never be handed back to a live run** — the run would be gone before the
+      person returned, so a larger number here would promise something the clause
+      above has already refused. Equal is the largest value that is not a lie.
+
+      ⚠ MILLISECONDS, because that is the unit the id carries. Six hours is
+      21,600,000.
+    -->
+    <data id="hold_within_ms" expr="21600000"/>
   </datamodel>
 
   <!--

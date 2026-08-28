@@ -55,9 +55,16 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// because **the caller was required to make them on every launch** — so they lived in a person's
 /// memory, were retyped by hand into each firing, and vanished with the session that held them.
 /// The road is the same four steps and this pin is what says a fifth claim cannot arrive quietly.
+/// ⚠⚠⚠⚠⚠ FIVE since 2026-08-28's second round, and the fifth arrived because a DIFFERENT gate
+/// asked for it — register item 738, layer 1. `Ceiling::ALL` names five things that can end a run,
+/// and `sprag-host`'s `every_ceiling_that_can_end_a_run_is_one_this_repositorys_document_set` walks
+/// that set with **no exemption arm**. `hold_within_ms` was the one ceiling a kind still could not
+/// author, so the honest way to keep that gate strict was to open the channel rather than to write
+/// the exemption — and opening it put the claim in the template, where this pin sees it.
 const CLAIMED: &[&str] = &[
     "reference",
     "working_rules",
+    "hold_within_ms",
     "reflect_after_refusals",
     "context_ceiling",
 ];

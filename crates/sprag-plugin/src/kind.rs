@@ -297,6 +297,77 @@ impl LoopKind {
             .map(Some)
     }
 
+    /// **THE NUMBERS THIS KIND AUTHORS UNDER `id`**, as the document spells them — or [`None`]
+    /// where this kind declares no such clause.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this hands back a MAP where every other reader here hands back a decision
+    ///
+    /// Register item 738, layer 1. The clause it exists for is `guardrails`, and its field names
+    /// are **the wire's**, published by `PluginGrammar::guardrail_fields` one crate up — which this
+    /// crate cannot see and must not guess at. A reader here that named `max_bytes` and its two
+    /// neighbours would be a second author of a set the wire already publishes, and the day a
+    /// fourth guardrail is added the two spellings would drift with nothing saying so.
+    ///
+    /// So the split is: **this crate reads the SHAPE, the crate that owns the vocabulary reads the
+    /// MEANING.** A key no guardrail admits is refused up there, naming what the object takes —
+    /// which is the same refusal `parse_guardrails` already makes of a caller, applied to a
+    /// document. ⚠ An unclassified key must never be a pass: a bound silently dropped is a run
+    /// with no bound at all, and it answers success.
+    ///
+    /// ⚠⚠ **NUMBERS ONLY, AND A NON-NUMBER IS AN ERROR RATHER THAN A SKIP.** A clause a person
+    /// edits is a clause a person mistypes, and a value this reader could not carry would otherwise
+    /// leave the caller with the daemon's default while the document plainly names something else
+    /// — the exact shape item 492 measured on `context_ceiling`.
+    ///
+    /// # Errors
+    ///
+    /// [`NotScreenable::Unreadable`] when the id holds something that is not an object of numbers.
+    pub fn authored_numbers(
+        &self,
+        id: &str,
+    ) -> Result<Option<std::collections::BTreeMap<String, i64>>, NotScreenable> {
+        let Ok(held) = self.script.get_variable(&self.session, id) else {
+            return Err(NotScreenable::Unreadable);
+        };
+        let fields = match held {
+            ScriptValue::Object(fields) => fields,
+            ScriptValue::Null | ScriptValue::Undefined => return Ok(None),
+            _ => return Err(NotScreenable::Unreadable),
+        };
+        let mut read = std::collections::BTreeMap::new();
+        for (name, value) in &fields {
+            let number = match value {
+                ScriptValue::Int(held) => *held,
+                // ⚠ A script datamodel holds a bare integer literal as a double on some engines,
+                // so refusing one here would refuse a document that is written correctly.
+                ScriptValue::Double(held) if held.fract() == 0.0 => *held as i64,
+                _ => return Err(NotScreenable::Unreadable),
+            };
+            read.insert(name.clone(), number);
+        }
+        Ok(Some(read))
+    }
+
+    /// **HOW LONG A PERSON MAY HOLD A RUN OF THIS KIND**, in milliseconds — or [`None`] where this
+    /// kind says nothing and the template's own number stands.
+    ///
+    /// # ⚠⚠⚠⚠ Register item 738, layer 1, and it is here because the GATE asked
+    ///
+    /// [`crate::driver::Ceiling`] names five things that can end a run, and this item's gate walks
+    /// that set and asks this document for the bound each one fires on — with **no exemption arm**,
+    /// because a ceiling nobody classified is a red rather than a pass. Four of the five were
+    /// reachable by a kind once the guardrails were; `Hold` was the fifth, and leaving it to the
+    /// template would have been the escape hatch that disarms the gate.
+    ///
+    /// ⚠⚠ It reads as a plain number on [`context_ceiling`](Self::context_ceiling)'s terms: there
+    /// is already a spelling for *decline* (declare nothing) and a second one would be two ways to
+    /// say one thing. ⚠ Zero is refused at the door, where `hold_within_ms`'s own rule lives —
+    /// *hold this run and end it at once* is `cancel` spelled wrong.
+    #[must_use]
+    pub fn hold_within_ms(&self) -> Option<i64> {
+        self.machine.policy().hold_within_ms()
+    }
+
     /// **HOW MANY TURNS A RUN OF THIS KIND MAY TAKE**, or [`None`] where this kind says nothing and
     /// the template's own number stands.
     ///
@@ -1023,6 +1094,94 @@ mod tests {
             !barrier.marker().is_empty(),
             "⚠⚠ and a marker `ReadyWhen::parse` would have refused cannot arrive here: an empty \
              one names no process, so the barrier could never clear",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THIS KIND SAYS WHAT ACTUALLY KILLS ITS RUNS** — register item 738, layer 1, and
+    /// the layer that had cost real work rather than only real typing.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The measurement, taken in this daemon's own registry
+    ///
+    /// `state/sprag/sprag-loop.runs.json`, 2026-08-28, 49 runs: **eight ended `exhausted (cost)`**,
+    /// every one between 65,809 and 68,658 bytes — the daemon's 64 KiB default — while the largest
+    /// run that CONVERGED spent **516,020** bytes over 1,231 iterations. A backstop that ends one
+    /// run in six is not a backstop; it is the ceiling that bites first, and it bites mid-round
+    /// with the work uncommitted in the tree.
+    ///
+    /// # ⚠⚠⚠ What is asserted, and what is deliberately NOT
+    ///
+    /// Not the numbers. What `debt_loop.scxml` chooses is that document's business and a figure
+    /// pinned here would be a second place it lives — `context_ceiling`'s gate makes the same
+    /// choice. What must hold is the property the item was filed on: **the clause exists, it names
+    /// all three, and its cost bound is bigger than the largest run this daemon has ever recorded
+    /// converging.** The last is the only one that would have caught the defect, so it is the one
+    /// with the number in it.
+    ///
+    /// ⚠⚠ The MEANING of the keys is `sprag-host`'s, checked against the wire's own publication —
+    /// see [`LoopKind::authored_numbers`]. This gate reads the shape, which is all this crate can
+    /// honestly claim about a vocabulary it does not own.
+    #[test]
+    fn the_debt_kind_says_what_actually_kills_its_runs() {
+        let named = debt()
+            .authored_numbers("guardrails")
+            .expect("its guardrail clause must be an object of numbers")
+            .expect(
+                "⛔⛔⛔⛔⛔ ITEM 738: a debt run is ended by three bounds this document could not \
+                 reach, so it was ended by this daemon's constants — 8 of 49 recorded runs died at \
+                 the 64 KiB default, mid-round, with their work uncommitted",
+            );
+        for key in ["max_bytes", "max_iterations", "max_seconds"] {
+            assert!(
+                named.contains_key(key),
+                "⚠⚠⚠⚠ ALL THREE OR THE GATE IS HALF A GATE: a clause that names two leaves the \
+                 third to whoever remembered to type it, which is the whole failure. Missing \
+                 {key:?} in {named:?}",
+            );
+        }
+        let bytes = named["max_bytes"];
+        assert!(
+            bytes > 516_020,
+            "⛔⛔⛔ AND THE COST BOUND MUST EXCEED THE LARGEST RUN THIS DAEMON HAS EVER RECORDED \
+             CONVERGING — run 17, 1,231 iterations, 516,020 bytes. A ceiling under that cuts the \
+             work this loop exists to do, which is what the 64 KiB default did eight times. Read \
+             {bytes}",
+        );
+        // ⚠⚠ AND THE TWO BOUNDS MUST AGREE RATHER THAN ONE BEING DECORATIVE. At the rate that same
+        // run measured — 516,020 bytes over 1,231 steps, about 419 a step — the step ceiling and
+        // the byte ceiling should bite at roughly the same place. Two bounds that fire an order of
+        // magnitude apart mean one of them is not a decision, and a run stopped by a number nobody
+        // reasoned about is this item's own defect wearing the other ceiling's name.
+        let implied = named["max_iterations"].saturating_mul(419);
+        assert!(
+            implied * 4 > bytes && bytes * 4 > implied,
+            "⚠⚠⚠ the step and byte ceilings must bite within a factor of four of each other at \
+             this loop's own measured 419 bytes per step: {} steps implies {implied} bytes against \
+             a bound of {bytes}",
+            named["max_iterations"],
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **AND HOW LONG SOMEBODY MAY HOLD ONE** — register item 738, layer 1's fifth ceiling,
+    /// and it is in the document because a GATE asked rather than because anybody noticed.
+    ///
+    /// `Ceiling::ALL` names five things that end a run, and this item's gate walks that set with no
+    /// exemption arm: a ceiling nobody classified is a RED and not a pass. Four became reachable by
+    /// a kind once its guardrails did; `Hold` was the fifth, and writing the exemption instead
+    /// would have been the escape hatch that disarms the gate.
+    ///
+    /// ⚠⚠ The assertion is that it is READABLE and is a bound a hold can actually end on. What the
+    /// number is, and why it equals this kind's own wall-clock budget, is argued where it is
+    /// authored — a hold longer than the run's own life can never be handed back to a live run.
+    #[test]
+    fn the_debt_kind_bounds_how_long_a_person_may_hold_it() {
+        let held = debt().hold_within_ms().expect(
+            "⚠⚠⚠⚠ ITEM 738: a kind that names no hold ceiling leaves the fifth thing that can end \
+             its runs to a number nobody in this repository chose",
+        );
+        assert!(
+            held > 0,
+            "⚠⚠ zero is `cancel` spelled wrong and the door refuses it, so a document that meant \
+             it has said something no run can obey: {held}",
         );
     }
 }

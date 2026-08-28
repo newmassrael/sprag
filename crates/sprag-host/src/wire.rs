@@ -1624,7 +1624,11 @@ impl PluginGrammar {
         &[
             Self::MAX_ITERATIONS,
             Self::MAX_SECONDS,
-            ArgGrammar::open("max_bytes", "int").optional(),
+            // ⚠⚠ THE KEY IS THE COST TYPE'S OWN — register item 738. A loop KIND authors a
+            // guardrail clause now, so this key is spelled by this grammar, by the request parser
+            // and by a document's reader; three hand-written copies of one name is how a published
+            // shape and an admitted one come apart.
+            ArgGrammar::open(sprag_plugin::Cost::Bytes(0).bound_key(), "int").optional(),
         ],
     )
     .optional();
@@ -1636,7 +1640,7 @@ impl PluginGrammar {
         &[
             Self::MAX_ITERATIONS,
             Self::MAX_SECONDS,
-            ArgGrammar::open("max_tokens", "int").optional(),
+            ArgGrammar::open(sprag_plugin::Cost::Tokens(0).bound_key(), "int").optional(),
         ],
     )
     .optional();

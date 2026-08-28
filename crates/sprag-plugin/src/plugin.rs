@@ -299,6 +299,41 @@ impl Cost {
         }
     }
 
+    /// **THE GUARDRAIL KEY THAT SETS A BOUND IN THIS UNIT** — `max_bytes` for a byte-spending run,
+    /// `max_tokens` for a token-spending one.
+    ///
+    /// # ⚠⚠ Why it lives beside [`unit`](Self::unit) rather than in the wire grammar
+    ///
+    /// [`unit`](Self::unit)'s own reason, at the other name this type has: **the ONE place a
+    /// variant → name mapping lives**, so nothing outside spells a `Cost` variant. It earned the
+    /// move when a THIRD party started reading this key — register item 738 gave a loop KIND a
+    /// guardrail clause of its own, so `max_bytes` is now spelled by a wire grammar, by the
+    /// request parser and by a document's reader, and three hand-written copies of one key is how
+    /// a published shape and an admitted one come apart.
+    ///
+    /// ⚠ Exhaustive, so a third cost unit cannot reach the wire without a key: there is no
+    /// hand-written list for it to be left out of.
+    #[must_use]
+    pub const fn bound_key(self) -> &'static str {
+        match self {
+            Cost::Bytes(_) => "max_bytes",
+            Cost::Tokens(_) => "max_tokens",
+        }
+    }
+
+    /// This cost's UNIT carrying `amount` — the way to build a bound in a run's own currency
+    /// without naming the variant.
+    ///
+    /// ⚠ `none_of`'s shape at a number that is not zero, and for the same reason: a bound built by
+    /// naming a variant is a bound that can be built in the wrong one.
+    #[must_use]
+    pub const fn sized(self, amount: u64) -> Self {
+        match self {
+            Self::Bytes(_) => Self::Bytes(amount),
+            Self::Tokens(_) => Self::Tokens(amount),
+        }
+    }
+
     /// THIS COST'S UNIT AT NOTHING SPENT — what a record the Driver writes about ITSELF costs.
     ///
     /// ⚠ Derived from an existing cost rather than defaulted to bytes, because a run's unit is
