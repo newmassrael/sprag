@@ -1570,7 +1570,8 @@ fn plugin_from_request(
             // measured it again with the same answer. A `Brief` is the observable that fixes
             // that, and this is the only call site.
             let brief = ai_loop_brief(map, &kind)?;
-            let mut spec = sprag_plugin::AiLoopSpec::behind(ai_loop_barrier(map, &kind)?);
+            let mut spec =
+                sprag_plugin::AiLoopSpec::behind(ai_loop_barrier(map, kind_barrier(&kind)?)?);
             // ⚠⚠ READ AS TWO INDEPENDENT KEYS, where the `agent` form's `opt_turn` refuses a
             // bound with no `done_when` beside it. That rule is right there and wrong here:
             // an `agent` run's default contract is `exits`, so a bare bound would be bounding
@@ -3052,7 +3053,7 @@ fn kind_guardrails(
 
 fn ai_loop_barrier(
     map: &Map<String, Value>,
-    kind: &sprag_plugin::kind::LoopKind,
+    authored: Option<sprag_plugin::ReadyWhen>,
 ) -> Result<sprag_plugin::ReadyWhen, InvokeError> {
     if let Some(spelled) = opt_ready_when(map)? {
         return Ok(spelled);
@@ -3063,23 +3064,92 @@ fn ai_loop_barrier(
         // `""` is not a caller deferring, and reading it as absence would let a launcher's bug
         // silently acquire this repository's default barrier.
         Some(_) => Err(InvokeError::TypeMismatch),
-        None => kind
-            .ready_when()
-            .map_err(|why| {
-                refused(format!(
-                    "this repository's loop-kind document holds a readiness barrier this driver \
-                     cannot read ({why:?}); a run cannot start on a barrier nobody can check"
-                ))
-            })?
-            .ok_or_else(|| {
-                refused(
-                    "this run named neither `agent` nor `ready_when`, and this repository's \
-                     loop-kind document authors no barrier either — so nothing says when this pane \
-                     is ready to be typed into. Name the program in the pane (`agent`), spell the \
-                     barrier (`ready_when`), or author one in the kind document: a loop with no \
-                     barrier types its first prompt into whatever the pane happens to be running",
-                )
-            }),
+        None => authored.ok_or_else(|| {
+            refused(
+                "this run named neither `agent` nor `ready_when`, and this repository's loop-kind \
+                 document authors no barrier either — so nothing says when this pane is ready to \
+                 be typed into. Name the program in the pane (`agent`), spell the barrier \
+                 (`ready_when`), or author one in the kind document: a loop with no barrier types \
+                 its first prompt into whatever the pane happens to be running",
+            )
+        }),
+    }
+}
+
+/// **THE BARRIER THIS REPOSITORY'S KIND DOCUMENT NAMES**, read and turned into a refusal a caller
+/// can act on — the half of [`ai_loop_barrier`] that knows what a kind is.
+///
+/// ⚠⚠ Split off for register item 739's reason: reading a document and deciding precedence are two
+/// jobs, and while they were one function the *nobody named a barrier* arm could not be reached by
+/// any gate — this repository's document always names one. See [`ai_loop_reference`], which carries
+/// the whole argument.
+///
+/// # Errors
+///
+/// [`refused`]'s sentence when the document holds a barrier this driver cannot carry out.
+fn kind_barrier(
+    kind: &sprag_plugin::kind::LoopKind,
+) -> Result<Option<sprag_plugin::ReadyWhen>, InvokeError> {
+    kind.ready_when().map_err(|why| {
+        refused(format!(
+            "this repository's loop-kind document holds a readiness barrier this driver cannot \
+             read ({why:?}); a run cannot start on a barrier nobody can check"
+        ))
+    })
+}
+
+/// **WHERE A RUN STARTS READING, AND WHO SAYS SO** — register item 738, layer 2.
+///
+/// This was `require_str`, so the kind document could not answer it: a launch that named no
+/// reference was MALFORMED rather than deferring, which is item 312's own finding about `max_turns`
+/// at a string instead of a count. **A required judgement is a decision the document is
+/// structurally forbidden from making**, and what filled the gap was a person retyping the ledger's
+/// path into every launch out of a memory that dies with the session.
+///
+/// ⛔ **THE FALL-THROUGH STOPS AT `authored`.** The template ships `'(edit me) paths, URLs or repos
+/// to consult'` and R380 measured that placeholder reaching a live agent, so a run with neither is
+/// REFUSED naming the key rather than briefing an agent with an instruction to edit a file.
+///
+/// ⚠ A PRESENT-BUT-EMPTY VALUE IS STILL MALFORMED, which is what `require_str` answered before and
+/// must go on answering: `""` is not a caller deferring, it is a caller sending a reference that
+/// says nothing, and reading it as absence would let a bug in a launcher silently acquire this
+/// repository's default.
+///
+/// # ⚠⚠⚠⚠⚠ Why it takes the KIND'S ANSWER and not the kind — register item 739
+///
+/// There is one loop kind and its constructor always opens the real `debt_loop.scxml`, so a
+/// function reading `LoopKind` directly has a refusal arm **nothing can reach**: the document
+/// always names a reference, and a green gate then means *the refusal was never run* rather than
+/// *the refusal is right*. That is items 706 and 482's shape, and the only witness this arm had was
+/// a mutation that happened to trip it.
+///
+/// Taking the ANSWER fixes it and is better factoring on its own terms: **precedence is not the
+/// business of whoever knows what a kind is.** What this function decides is *the caller's, else
+/// the author's, else refuse* — a statement with no `LoopKind` in it. ⚠ The other half of the claim
+/// stays where it was: that `ai_loop_brief` passes THIS document's answer and not something else is
+/// held by `a_kind_documents_judgements_reach_a_run_that_named_none_of_them`, and neither gate is
+/// the whole claim.
+///
+/// # Errors
+///
+/// [`InvokeError::TypeMismatch`] for a present-but-empty value, and [`refused`]'s sentence when
+/// neither the caller nor the author names one.
+fn ai_loop_reference(
+    map: &Map<String, Value>,
+    authored: Option<String>,
+) -> Result<String, InvokeError> {
+    match opt_str(map, "reference")? {
+        Some(named) if !named.is_empty() => Ok(named.to_string()),
+        Some(_) => Err(InvokeError::TypeMismatch),
+        None => authored.ok_or_else(|| {
+            refused(
+                "this run named no `reference` and this repository's loop-kind document authors \
+                 none, so nothing says where its first session should start reading. Name one, or \
+                 author it in the kind document — the loop template's own value is the placeholder \
+                 `(edit me) paths, URLs or repos to consult`, and briefing an agent with that is \
+                 worse than not starting",
+            )
+        }),
     }
 }
 
@@ -3103,35 +3173,7 @@ fn ai_loop_brief(
                          read ({why:?}); a run cannot start on decisions nobody can check"
         ))
     })?;
-    // ⚠⚠⚠⚠⚠ WHERE A RUN STARTS READING, AND WHO SAYS SO — register item 738, layer 2.
-    //
-    // This was `require_str`, so the kind document could not answer it: a launch that named no
-    // reference was MALFORMED rather than deferring, which is item 312's own finding about
-    // `max_turns` at a string instead of a count. **A required judgement is a decision the document
-    // is structurally forbidden from making**, and what filled the gap was a person retyping the
-    // ledger's path into every launch out of a memory that dies with the session.
-    //
-    // ⛔ THE FALL-THROUGH STOPS AT THE KIND. The template ships `'(edit me) paths, URLs or repos to
-    // consult'` and R380 measured that placeholder reaching a live agent, so a run with neither is
-    // REFUSED naming the key rather than briefing an agent with an instruction to edit a file.
-    //
-    // ⚠ A PRESENT-BUT-EMPTY VALUE IS STILL MALFORMED, which is what `require_str` answered before
-    // and must go on answering: `""` is not a caller deferring, it is a caller sending a reference
-    // that says nothing, and reading it as absence would let a bug in a launcher silently acquire
-    // this document's default.
-    let reference = match opt_str(map, "reference")? {
-        Some(named) if !named.is_empty() => named.to_string(),
-        Some(_) => return Err(InvokeError::TypeMismatch),
-        None => kind.reference().ok_or_else(|| {
-            refused(
-                "this run named no `reference` and this repository's loop-kind document authors \
-                 none, so nothing says where its first session should start reading. Name one, or \
-                 author it in the kind document — the loop template's own value is the placeholder \
-                 `(edit me) paths, URLs or repos to consult`, and briefing an agent with that is \
-                 worse than not starting",
-            )
-        })?,
-    };
+    let reference = ai_loop_reference(map, kind.reference())?;
     Ok(Brief {
         // ⚠⚠ NO WIRE KEY, DELIBERATELY. What a repository asks its own runs at the end
         // is its document's business; a caller that could override it could delete the
@@ -7256,6 +7298,131 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A LAUNCH NOBODY AND NO DOCUMENT ANSWERED IS REFUSED, NAMING EVERY KEY THAT WOULD
+    /// FIX IT** — register item 739, and the two arms nothing could reach until this round.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why they could not be reached, and why that made a green worthless
+    ///
+    /// There is ONE loop kind and its constructor always opens the real `debt_loop.scxml` — the
+    /// door's own comment says so: *"WHICH KIND IS NOT A WIRE ARGUMENT YET … There is one kind"*.
+    /// That document names a `reference` and names a barrier, so every gate driving the resolution
+    /// through a `LoopKind` took the SUCCESS path and the refusals ran for nobody. **A green then
+    /// means *this arm was never entered*, not *this arm is right*** — items 706 and 482's shape,
+    /// and their sentences could rot for as long as they liked.
+    ///
+    /// ⚠⚠ **THE ONLY WITNESS EITHER ARM HAD WAS A MUTATION.** Item 738's round tripped the
+    /// reference refusal by accident while proving a different gate, read its sentence out of a
+    /// log, and moved on. **A mutation that happens to trip an arm is not a gate** — nothing runs
+    /// it again, and nothing will notice when the sentence stops naming the key.
+    ///
+    /// # ⚠⚠⚠ What was actually wrong, which is not what item 739 was filed as
+    ///
+    /// It was filed as *`LoopKind` has one constructor*, with the remedy *let it choose which
+    /// document to open*. Re-measured: **both of that item's directions cost more than the defect.**
+    /// A document selector needs a second document to select, which the same item forbids (a
+    /// test-only copy of the kind is 710 and 722's shape); and making `LoopKind` generic over the
+    /// compiled policy would cost the SEVEN readers that go through the generated accessors, whose
+    /// whole purpose is that a renamed `<data>` stops the build.
+    ///
+    /// ⇒ The defect was one function doing two jobs: reading a document AND deciding precedence.
+    /// **Precedence is not the business of whoever knows what a kind is.** Split, each resolution
+    /// takes the author's ANSWER — and *the author answered nothing* is then a value, not a
+    /// document nobody can write.
+    ///
+    /// ⚠ The half this cannot hold is stated rather than left: that the door passes THIS
+    /// repository's answer and not something else is held by
+    /// [`a_kind_documents_judgements_reach_a_run_that_named_none_of_them`](Self) and by the barrier
+    /// gate below. Neither is the whole claim; a fix that satisfied one and drifted on the other
+    /// would not pass both.
+    #[test]
+    fn a_launch_no_document_answered_is_refused_naming_every_key_that_would_fix_it() {
+        // ⚠⚠⚠⚠⚠ THE PREMISE IS THE ARGUMENT ITSELF: `None` is *the author named nothing*, which is
+        // the state no `LoopKind` in this repository can be in. Asserting it is asserting what the
+        // gate is about, so there is nothing here for a fixture to quietly supply.
+        let silent_reference: Option<String> = None;
+        let silent_barrier: Option<sprag_plugin::ReadyWhen> = None;
+
+        // ── the reference arm: a launch that named none, against an author who named none ──
+        let mut declining = ai_loop_request(PaneId(1), json!({}));
+        for key in ["reference", "agent", "ready_when"] {
+            declining
+                .as_object_mut()
+                .expect("an object")
+                .remove(key)
+                .unwrap_or_else(|| panic!("the fixture supplies {key}, which this gate declines"));
+        }
+        let map = declining.as_object().expect("an object");
+        for key in ["reference", "agent", "ready_when"] {
+            assert!(
+                !map.contains_key(key),
+                "⚠⚠⚠⚠ THIS GATE IS VACUOUS IF THE REQUEST NAMES {key:?}: both arms are about a \
+                 launch that named nothing, and a fixture that names one takes the success path",
+            );
+        }
+
+        let why = ai_loop_reference(map, silent_reference.clone())
+            .expect_err("⛔ a run with no reference from anybody must NOT start");
+        let sentence = why
+            .reason()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| panic!("the refusal must carry a sentence: {why:?}"));
+        assert!(
+            sentence.contains("reference"),
+            "⚠⚠⚠⚠ 455's RULE: a refusal must name the key that would fix it, because the whole \
+             value of refusing early is that the caller can fix it and call again. Got \
+             {sentence:?}",
+        );
+        assert!(
+            sentence.contains("edit me"),
+            "⚠⚠⚠ and it must say WHY the fall-through stops here rather than reaching the \
+             template: the template's own value is a placeholder R380 measured reaching a live \
+             agent, and a reader who does not know that will 'fix' this by making it optional \
+             again. Got {sentence:?}",
+        );
+
+        // ── the barrier arm: the same launch, against an author who named no peer ──
+        let why = ai_loop_barrier(map, silent_barrier)
+            .expect_err("⛔ a run with no barrier from anybody must NOT start");
+        let sentence = why
+            .reason()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| panic!("the refusal must carry a sentence: {why:?}"));
+        for key in ["agent", "ready_when"] {
+            assert!(
+                sentence.contains(key),
+                "⚠⚠⚠⚠ BOTH KEYS, because either one would fix it and a caller told about only one \
+                 is told about the wrong one half the time: missing {key:?} in {sentence:?}",
+            );
+        }
+        assert!(
+            sentence.contains("kind document"),
+            "⚠⚠⚠ and the third road must be named too — authoring it — or a repository that drives \
+             one peer is told to retype that peer on every launch, which is item 738's whole \
+             subject. Got {sentence:?}",
+        );
+
+        // ⚠⚠⚠ THE CONTROL, and without it this gate would pass over a resolution that refuses
+        // EVERYTHING. The SAME silent author, plus a caller who said one thing, must start — and
+        // it is built from the same declining request so the only difference is the one key.
+        let mut speaking = declining.clone();
+        let object = speaking.as_object_mut().expect("an object");
+        object.insert("reference".to_string(), json!("what this caller wrote"));
+        object.insert("agent".to_string(), json!("claude"));
+        let spoke = speaking.as_object().expect("an object");
+        assert_eq!(
+            ai_loop_reference(spoke, silent_reference)
+                .expect("a caller who names one still starts"),
+            "what this caller wrote",
+            "⚠⚠ a silent author must not make a caller's own value unusable",
+        );
+        assert_eq!(
+            ai_loop_barrier(spoke, None).expect("a caller who names the program still starts"),
+            sprag_plugin::ReadyWhen::Settles("claude".to_string()),
+            "⚠⚠ and naming the PROGRAM must still derive a barrier with no document at all — that \
+             road is item 300's and this item did not touch it",
+        );
+    }
+
     /// ⚠⚠⚠⚠ **AND A GUARDRAIL A DOCUMENT NAMES THAT NO RUN OF IT CAN HAVE IS REFUSED, NAMING WHAT
     /// THE CLAUSE TAKES** — register item 738, layer 1, and rule: an unclassified key is a RED and
     /// not a pass.
@@ -7364,9 +7531,49 @@ mod tests {
             );
         }
 
-        let resolved = ai_loop_barrier(map, &kind).expect(
-            "⚠⚠⚠⚠⚠ ITEM 738: a launch that named neither key must reach the document's own",
+        // ⛔⛔⛔⛔⛔ THE DOOR ITSELF FIRST, AND A MUTATION IS WHY. Register item 739 split the
+        // reading of the document from the deciding of precedence, which is right — and it left
+        // this gate measuring only the second half: **replacing the door's `kind_barrier(&kind)`
+        // with `None` kept every assertion below GREEN**, because they hand the document's answer
+        // in themselves. That is exactly the hole item 738's round found with N1 one function over,
+        // arriving through the very split that fixed something else.
+        //
+        // A request naming NEITHER key is the observable that closes it: with the wiring intact the
+        // kind supplies the barrier and the door BUILDS; with it cut there is nothing left to
+        // supply one and the door refuses. No new accessor is needed — the refusal is the reading.
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
         );
+        let mut on_the_pane = declining.clone();
+        on_the_pane
+            .as_object_mut()
+            .expect("an object")
+            .insert("pane".to_string(), json!(pane.0));
+        external
+            .build_plugin(on_the_pane.as_object().expect("an object"))
+            .expect(
+                "⛔⛔⛔⛔⛔ THE DOOR REFUSED A LAUNCH ITS OWN KIND DOCUMENT ANSWERS. Naming neither \
+                 `agent` nor `ready_when` is the whole point of layer 3 — the document names the \
+                 peer — so a refusal here means the door is not asking it",
+            );
+        assert!(
+            lock(&workspace).close(pane).is_some(),
+            "the pane this gate opened was there to close",
+        );
+
+        let resolved = ai_loop_barrier(map, kind_barrier(&kind).expect("its barrier is readable"))
+            .expect(
+                "⚠⚠⚠⚠⚠ ITEM 738: a launch that named neither key must reach the document's own",
+            );
         assert_eq!(
             resolved, authored,
             "⚠⚠⚠⚠⚠ and it must be the KIND'S barrier rather than one this door invented: the \
@@ -7385,8 +7592,11 @@ mod tests {
         // to wait for a `claude` that is not in the pane.
         let named = ai_loop_request(PaneId(1), json!({ "agent": "codex", "ready_when": null }));
         assert_eq!(
-            ai_loop_barrier(named.as_object().expect("an object"), &kind)
-                .expect("a caller naming a program resolves"),
+            ai_loop_barrier(
+                named.as_object().expect("an object"),
+                kind_barrier(&kind).expect("its barrier is readable")
+            )
+            .expect("a caller naming a program resolves"),
             sprag_plugin::ReadyWhen::Settles("codex".to_string()),
             "⚠⚠⚠⚠ A CALLER SAYING WHICH PROGRAM IS IN THEIR PANE IS MORE SPECIFIC THAN A \
              DOCUMENT'S STANDING DEFAULT, and this key's whole meaning is that derivation",
@@ -7398,8 +7608,11 @@ mod tests {
             json!({ "agent": "codex", "ready_when": { "match": "shows", "marker": "READY" } }),
         );
         assert_eq!(
-            ai_loop_barrier(spelled.as_object().expect("an object"), &kind)
-                .expect("a caller spelling a barrier resolves"),
+            ai_loop_barrier(
+                spelled.as_object().expect("an object"),
+                kind_barrier(&kind).expect("its barrier is readable")
+            )
+            .expect("a caller spelling a barrier resolves"),
             sprag_plugin::ReadyWhen::Shows("READY".to_string()),
             "⚠⚠⚠ the most specific thing anybody said about this pane is the caller's own words, \
              and a resolution that let the derivation or the document past them would silently \
