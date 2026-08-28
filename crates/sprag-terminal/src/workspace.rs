@@ -679,6 +679,27 @@ pub struct PaneRebirth {
     /// The pane's display label — DERIVED from what actually re-ran, so a pane that fell back to a
     /// shell is labelled a shell.
     pub label: String,
+    /// **WHAT A REPLACEMENT OF THIS PANE RE-RUNS** — the rebuilt argv WITHOUT whatever the restore
+    /// added so the child could come back to its own conversation. Register item 695.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why it is a field and not [`command`](Self::command)'s own argv
+    ///
+    /// This used to be `argv_of(&command)`, taken here. The caller's command carries `--resume
+    /// <uuid>` when the pane was a named agent — correctly, because a restore is a pane coming BACK
+    /// — and [`Pane::argv`] is *what a replacement re-runs*. So every session replacement after a
+    /// reboot re-entered the same conversation, which is the exact thing `ai_loop.scxml`'s
+    /// `restarting` exists to prevent: it replaces the inner session to throw the accumulated
+    /// context away.
+    ///
+    /// ⚠⚠ **RESTORING AND REPLACING WANT OPPOSITE ANSWERS OUT OF ONE REBUILD**, and this is
+    /// [`start_dir`](Self::start_dir)'s shape exactly — item 684 split *where the child comes back*
+    /// from *where the pane belongs* for the same reason and in the same struct. Two questions, two
+    /// fields.
+    ///
+    /// ⚠ Measured in the field with a control: a restored pane's replacements carried one uuid five
+    /// times while its transcript grew from 2.78 MB to 6.6 MB, and a pane made fresh in the same
+    /// daemon minted a new id at every replacement. The only variable was *had it been restored*.
+    pub replacement_argv: Vec<String>,
     /// **WHERE THE PANE WAS POINTED**, out of the snapshot
     /// ([`PaneRestore::start_dir`](crate::PaneRestore::start_dir)) — what the reborn pane REMEMBERS,
     /// and therefore where its first replacement starts.
@@ -1360,17 +1381,23 @@ impl Workspace {
             id,
             mut command,
             label,
+            replacement_argv,
             start_dir: pointed_at,
             size: (cols, rows),
             hooks,
             history,
         } = pane;
-        let argv = argv_of(&command);
+        // ⚠⚠⚠⚠⚠ TWO ARGVS, AND THIS IS THE ONE THAT IS ABOUT TO RUN — register item 695. It carries
+        // whatever the restore added so the child comes back to its own conversation, and the
+        // instrumenting below has to see it: `identity_args` stands down when it sees a resume, so
+        // a restored agent is instrumented afresh and named not at all. Handing this step the
+        // REPLACEMENT's argv would mint an identity beside a resume and name one pane twice.
+        let launched = argv_of(&command);
         // Re-derived from THIS daemon rather than restored, exactly as the environment below is and
         // for a sharper version of its reason: the recorded argv names what the pane ran, and the
         // flag this adds names an endpoint that did not survive the reboot. A restore that replayed
         // a stored instrumentation would point a fresh agent at a dead socket.
-        instrument(&mut command, &(self.pane_args)(&argv));
+        instrument(&mut command, &(self.pane_args)(&launched));
         // ⚠⚠ AND WHAT THAT LAUNCH IS CALLED, on the fresh-spawn path's terms. The caller's `command`
         // may already carry a RESUME of the recorded name (`Host::restore` puts one there), in which
         // case the instrumenting above mints nothing and this reads back the name being resumed — so
@@ -1429,7 +1456,12 @@ impl Workspace {
             id,
             pty,
             command_label: label,
-            argv,
+            // ⛔⛔⛔⛔⛔ THE CALLER'S, NOT `argv_of(&command)` — register item 695. This field is
+            // what a REPLACEMENT re-runs, and the command that just spawned carries a resume so the
+            // child could come back to its own conversation. Taking it from there made every
+            // session replacement after a reboot re-enter the same conversation, defeating the
+            // state `ai_loop.scxml` replaces a session in order to reach.
+            argv: replacement_argv,
             // ⚠ A RESTORED PANE RECORDS NONE, and that is the snapshot's shape rather than an
             // omission: it stores argv and cwd, so there is nothing here to restore. What it costs is
             // stated on [`Pane::env`] — a restored pane's REPLACEMENT is the program without its
@@ -1859,6 +1891,7 @@ mod tests {
             id: PaneId(7),
             command: cmd(),
             label: "sh".to_string(),
+            replacement_argv: Vec::new(),
             start_dir: None,
             size: (80, 24),
             hooks: PaneBirthHooks::default(),
@@ -2279,6 +2312,7 @@ mod tests {
             id: PaneId(41),
             command: echoes("WS_TEST_PANE"),
             label: "sh".to_owned(),
+            replacement_argv: Vec::new(),
             start_dir: None,
             size: (20, 4),
             hooks: PaneBirthHooks::default(),
@@ -2374,6 +2408,7 @@ mod tests {
             id: PaneId(41),
             command: echoes_extra_args(),
             label: "sh".to_owned(),
+            replacement_argv: Vec::new(),
             start_dir: None,
             size: (40, 4),
             hooks: PaneBirthHooks::default(),
@@ -2679,6 +2714,7 @@ mod tests {
             id: PaneId(5),
             command: cmd(),
             label: "sh".into(),
+            replacement_argv: Vec::new(),
             start_dir: None,
             size: (80, 24),
             hooks: PaneBirthHooks::default(),
@@ -2689,6 +2725,7 @@ mod tests {
             id: PaneId(1),
             command: cmd(),
             label: "sh".into(),
+            replacement_argv: Vec::new(),
             start_dir: None,
             size: (80, 24),
             hooks: PaneBirthHooks::default(),

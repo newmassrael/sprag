@@ -2196,7 +2196,13 @@ impl Host {
             //
             // ⚠ A remote reconnect takes none: its argv is an `ssh` login, not an agent this daemon
             // named, so there is nothing a resume would answer for — said here rather than found out.
-            let (command, label) = match &pane.remote {
+            // ⛔⛔⛔⛔⛔ AND THE COMMENT ABOVE WAS TRUE OF THE SNAPSHOT AND SILENTLY FALSE ONE STEP
+            // LATER — register item 695. The name is kept out of the SNAPSHOT's `pane.argv`, which
+            // is what that paragraph is about; what it did not say is that `spawn_restored` then
+            // recorded the BUILT command as the pane's argv, resume and all. So the promise
+            // *restoring and replacing read different fields* was prose, and the field they read
+            // was the same one. `Restored::replacement_argv` is the second field it needed.
+            let rebuilt = match &pane.remote {
                 Some(remote) => crate::reconnect_command(remote),
                 None => crate::restore_command(
                     &pane.argv,
@@ -2205,6 +2211,11 @@ impl Host {
                     pane.agent_session.as_deref(),
                 ),
             };
+            let crate::durability::Restored {
+                command,
+                label,
+                replacement_argv,
+            } = rebuilt;
             // Bind the spawn result so the pool lock RELEASES at the `;` — a `match` scrutinee's
             // temporary lock would live across the arms, and the `Ok` arm re-locks to mark the pane
             // remote, which on a non-reentrant `Mutex` would self-deadlock.
@@ -2212,6 +2223,7 @@ impl Host {
                 id: pane.id,
                 command,
                 label,
+                replacement_argv,
                 // ⚠⚠⚠ AND WHERE THE PANE WAS POINTED, which is NOT where the command above spawns —
                 // register item 684. That one is the snapshot's `/proc` reading, so a person's shell
                 // comes back in the directory they were working in (item 417). This is the intent the
@@ -4617,6 +4629,139 @@ mod tests {
             "⚠⚠ THE RESIDUE, ASSERTED: the restored CHILD comes back in $HOME, because a pane whose \
              child had exited has no working directory to return to (item 417's default, unchanged). \
              The two are DIFFERENT FIELDS and this is what makes that visible: {restored_screen:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PANE THAT CAME BACK FROM A SNAPSHOT STILL REPLACES INTO A FRESH SESSION** —
+    /// register item 695, and the road it takes is restore → REPLACE in one line.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was measured, in the field, with a control
+    ///
+    /// A restored pane's replacements carried `--resume eaf76ebf-…` five times running while the
+    /// conversation's transcript grew **2.78 MB → 6.6 MB**; a pane made fresh in the SAME daemon,
+    /// same build, same document minted a new id at every replacement. **The only variable was
+    /// whether the pane had been through a restore.** So a loop that had survived one reboot could
+    /// never again throw its context away — which is the single thing `ai_loop.scxml`'s
+    /// `restarting` replaces a session in order to do.
+    ///
+    /// ⚠⚠ **THE COST IS A FINITE CHURN AND NOT A LIVELOCK**, and the two must not be folded into
+    /// one word: replacements came 3, 43 and 31 minutes apart with real turns and a completed
+    /// milestone between them. Saying *loop* once overstated it and saying *not a loop* once
+    /// understated the mechanism, which IS self-sustaining — the handover fires on `capacity` and
+    /// cannot lower the context it fires on.
+    ///
+    /// # ⚠⚠⚠ And the intent was written down, in prose, and nothing measured it
+    ///
+    /// `Host::restore`'s own comment said *"the name is kept OUT of `pane.argv` on purpose … a
+    /// replacement must be a FRESH session … restoring and replacing want opposite answers, so they
+    /// read different fields."* True of the SNAPSHOT's argv, and silently false one step later,
+    /// where `spawn_restored` recorded the BUILT command. **This repository's rule 10 in its own
+    /// code**, and this gate is the predicate that sentence never had.
+    ///
+    /// ⛔ **A FRESHLY-MADE PANE WOULD BE VACUOUS HERE.** That road captures its argv BEFORE the
+    /// instrumenting, so it is clean already and always was — the field measurement's clean arm.
+    /// The fixture therefore has to MAKE the restoration, which is what the lines below do.
+    #[test]
+    fn a_pane_that_came_back_from_a_snapshot_still_replaces_into_a_fresh_session() {
+        const NAME: &str = "eaf76ebf-73c5-458f-bff9-a31d3c09a46e";
+        // ⚠⚠ A PROGRAM **NAMED** `claude`, because the product's rule is the program's BASENAME —
+        // that is what decides whether a resume is owed at all.
+        //
+        // ⚠⚠⚠ IT IS A SYMLINK TO ONE THAT EXISTS, NOT A SCRIPT THIS FIXTURE WRITES — register item
+        // 467, whose gate caught the first draft of this very line. A file a process holds open for
+        // writing cannot be executed and this harness forks from threads, so a manufactured program
+        // is a flake waiting for load. What is needed here is a NAME at a computed path, which is
+        // the symlink case that gate names as the answer rather than the one it refuses.
+        const REAL: &str = "/bin/cat";
+        assert!(
+            std::path::Path::new(REAL).exists(),
+            "the fixture needs a real program to point at",
+        );
+        let bin = std::env::temp_dir().join(format!("sprag-695-{}", std::process::id()));
+        std::fs::create_dir_all(&bin).expect("a directory for the stand-in agent");
+        let agent = bin.join("claude");
+        let _ = std::fs::remove_file(&agent);
+        std::os::unix::fs::symlink(REAL, &agent).expect("a program NAMED claude");
+
+        let mut command = CommandBuilder::new(agent.to_string_lossy().into_owned());
+        command.env("TERM", "dumb");
+        let host = Host::new((80, 24));
+        let id = lock(&host.workspace())
+            .spawn(command, "claude".to_owned(), 80, 24)
+            .expect("the agent pane this gate is about");
+        lock(host.registry())
+            .window_mut("0", "0")
+            .expect("the default window")
+            .reconcile_layout(&[id]);
+
+        // ⚠⚠⚠ THE CONVERSATION, WRITTEN INTO THE SNAPSHOT WHERE A REAL DAEMON WRITES IT. A live
+        // `claude` is named by the instrumenting at its birth; this fixture cannot run one, so the
+        // name is put in the field the product itself fills — and the assertion below is about what
+        // the RESTORE then does with it, which is the step under test.
+        let mut snap = sprag_terminal::snapshot(host.registry());
+        snap.sessions[0].windows[0].panes[0].agent_session = Some(NAME.to_owned());
+        let json = serde_json::to_string(&snap).expect("a snapshot serializes");
+        let back: Snapshot = serde_json::from_str(&json).expect("and round-trips");
+
+        let allow: std::collections::HashSet<String> = ["claude".to_owned()].into_iter().collect();
+        // ⚠⚠ WITH THE IDENTITY SOURCE THE DAEMON PASSES, because that is what makes *did the
+        // restore resume?* observable at all: `spawn_restored` reads the name back off the command
+        // it is about to run, so a pane that came back to its own conversation says so. A bare
+        // `Host::new` names nothing and the premise below could not be checked.
+        let rebooted = Host::new((80, 24)).with_pane_identity(crate::pane_identity_source());
+        assert_eq!(
+            rebooted
+                .restore(back, &allow, |_| None, || None, || None, |_| Vec::new())
+                .expect("the snapshot restores"),
+            1,
+        );
+
+        // ⚠⚠⚠⚠⚠ THE PREMISE, ASSERTED: the restore really did put the pane back into its own
+        // conversation. Without this the gate below passes on a build where the resume was never
+        // added at all, which is a different product and not a fixed one.
+        assert_eq!(
+            lock(&rebooted.workspace())
+                .pane(id)
+                .expect("the pane came back under its old id")
+                .agent_session(),
+            Some(NAME),
+            "⚠⚠⚠ THIS GATE IS VACUOUS UNLESS THE RESTORE RESUMED: a pane that came back naming no \
+             conversation has nothing for a replacement to wrongly inherit",
+        );
+
+        // ── restore → REPLACE, in one line ──
+        let access = sprag_plugin::WorkspacePaneAccess::new(rebooted.workspace());
+        let replacement = sprag_plugin::PaneAccess::lifecycle(&access)
+            .expect("this surface can replace a pane")
+            .respawn(id)
+            .expect("the replacement spawns");
+        let replays = lock(&rebooted.workspace())
+            .pane(replacement)
+            .expect("the replacement is in the pool")
+            .argv()
+            .to_vec();
+        assert!(
+            !replays.iter().any(|arg| arg == "--resume" || arg == NAME),
+            "⛔⛔⛔⛔⛔ THE REPLACEMENT RE-ENTERED THE CONVERSATION ITS RUN REPLACED THE SESSION TO \
+             LEAVE. `Pane::argv` is what a replacement re-runs, and a restore had baked the resume \
+             into it — so after one reboot a loop can never throw its context away again. Measured \
+             in the field at 2.78 MB growing to 6.6 MB across five replacements. Got {replays:?}",
+        );
+        assert_eq!(
+            replays.first().map(String::as_str),
+            Some(agent.to_string_lossy().as_ref()),
+            "⚠⚠ AND IT IS STILL THE SAME PROGRAM — the repair must strip the conversation, not the \
+             command. A replacement that ran something else would be a different defect wearing \
+             this one's green: {replays:?}",
+        );
+        assert_eq!(
+            lock(&rebooted.workspace())
+                .pane(replacement)
+                .expect("the replacement is in the pool")
+                .agent_session(),
+            None,
+            "⚠⚠⚠ and the seat's own identity does not follow either — `Pane::agent_session`'s own \
+             rule, which held all along and is what made the argv copy the only road in",
         );
     }
 

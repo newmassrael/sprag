@@ -418,7 +418,8 @@ fn basename(program: &str) -> Option<&str> {
 /// command inherits the DAEMON's environment (via `command_from_parts` / `default_shell_command`),
 /// so a restored agent gets its API keys from the daemon, not from a plaintext state file.
 ///
-/// Returns the [`CommandBuilder`] (with `cwd` set) and the pane's display label.
+/// Returns a [`Restored`] — the [`CommandBuilder`] (with `cwd` set), the pane's display label, and
+/// **the argv a REPLACEMENT of that pane re-runs**, which is deliberately not the command's.
 ///
 /// # ⚠⚠⚠ `session`: the conversation the pane's agent was in, and why the decision is HERE
 ///
@@ -438,15 +439,18 @@ pub fn restore_command(
     cwd: Option<&Path>,
     allowlist: &HashSet<String>,
     session: Option<&str>,
-) -> (CommandBuilder, String) {
+) -> Restored {
     let (mut command, label) = exact_or_shell(argv, allowlist);
+    // ⚠⚠⚠⚠⚠ READ OFF WHAT WAS BUILT, NEVER OFF `argv` — see this function's own note. **And it is
+    // taken BEFORE the resume, because this is also what a REPLACEMENT re-runs** (register item
+    // 695): restoring and replacing want opposite answers out of the same rebuild, so the two are
+    // separated at the moment the difference exists rather than reconstructed later.
+    let built: Vec<String> = command
+        .get_argv()
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     if let Some(session) = session {
-        // Read off what was BUILT, never off `argv` — see this function's own note.
-        let built: Vec<String> = command
-            .get_argv()
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
         for arg in crate::hooks::resume_args(&built, session) {
             command.arg(arg);
         }
@@ -454,7 +458,47 @@ pub fn restore_command(
     if let Some(cwd) = cwd {
         command.cwd(cwd);
     }
-    (command, label)
+    Restored {
+        command,
+        label,
+        replacement_argv: built,
+    }
+}
+
+/// **WHAT A RESTORE REBUILT** — the command to run now, what to call it, and the argv a REPLACEMENT
+/// of that pane re-runs, which is a different question with a different answer.
+///
+/// # ⛔⛔⛔⛔⛔ Why the third field exists — register item 695
+///
+/// [`restore_command`] appends `--resume <uuid>` so a restored agent comes back to its own
+/// conversation, which is right. What was wrong is where that argv then went: `spawn_restored`
+/// recorded the BUILT command as the pane's argv, and `Pane::argv` is *what a replacement re-runs*
+/// — so **every session replacement after a reboot re-entered the same conversation**, defeating
+/// the one thing `ai_loop.scxml`'s `restarting` exists to do.
+///
+/// ⚠⚠ **AND THE INTENT WAS ALREADY WRITTEN DOWN, IN PROSE, AND NOBODY MEASURED IT.**
+/// `Host::restore`'s own comment said *"the name is kept OUT of `pane.argv` on purpose … restoring
+/// and replacing want opposite answers, so they read different fields"* — true of the SNAPSHOT's
+/// argv, and silently false one step later. That is this repository's rule 10 in its own code.
+///
+/// ⚠⚠⚠ **MEASURED IN THE FIELD, WITH A CONTROL.** A restored pane's replacements carried
+/// `--resume eaf76ebf-…` five times running while its transcript grew 2.78 MB → 6.6 MB; a pane
+/// made fresh in the same daemon, same build, same document minted a new id at every replacement.
+/// The only variable was *had this pane been through a restore*. ⚠ The cost is a finite churn
+/// rather than a livelock — the run kept converging between replacements — and the two must not be
+/// folded into one word, because doing that once overstated it and once understated it.
+pub struct Restored {
+    /// What to run NOW, carrying the resume when the pane had a conversation to come back to.
+    pub command: CommandBuilder,
+    /// The pane's display label — DERIVED from what actually re-ran, so a pane that fell back to a
+    /// shell is labelled a shell.
+    pub label: String,
+    /// **WHAT A REPLACEMENT RE-RUNS** — the rebuilt argv WITHOUT the resume.
+    ///
+    /// ⚠ It is what was BUILT rather than what was recorded, so a non-allowlisted argv that fell
+    /// back to a shell replaces as that shell. A replacement that re-ran the recording would
+    /// execute what the allowlist had just refused.
+    pub replacement_argv: Vec<String>,
 }
 
 /// Build the command to RECONNECT a sanctioned remote workspace pane on restore: `ssh -t [-p PORT]
@@ -467,11 +511,20 @@ pub fn restore_command(
 /// [`SshTarget::from_remote`]), so only the connection comes back — never a recorded side-effect. The
 /// local cwd is irrelevant to a remote login shell, so none is set.
 #[must_use]
-pub fn reconnect_command(remote: &SshRemote) -> (CommandBuilder, String) {
+pub fn reconnect_command(remote: &SshRemote) -> Restored {
     let argv = SshTarget::from_remote(remote).ssh_argv();
     // `ssh_argv` always yields at least `["ssh", "-t", dest]`, so the split is total.
     let (program, args) = argv.split_first().expect("ssh_argv is never empty");
-    command_from_parts(program, args)
+    let (command, label) = command_from_parts(program, args);
+    Restored {
+        command,
+        label,
+        // ⚠ A RECONNECT'S REPLACEMENT IS THE SAME LOGIN, and there is nothing to strip: an `ssh`
+        // login is not an agent this daemon named, so no resume was ever appended. Said as a value
+        // rather than left to a reader — register item 695's whole subject is a field that carried
+        // one answer where two were owed.
+        replacement_argv: argv,
+    }
 }
 
 /// The exact-vs-shell decision (cwd applied by [`restore_command`]).
@@ -651,7 +704,8 @@ mod tests {
     fn restore_command_reruns_an_allowlisted_program_exactly() {
         let allow = parse_allowlist(None); // the default includes vim; no env read (hermetic)
         let argv = vec!["/usr/bin/vim".to_owned(), "notes.txt".to_owned()];
-        let (command, label) = restore_command(&argv, Some(Path::new("/tmp")), &allow, None);
+        let Restored { command, label, .. } =
+            restore_command(&argv, Some(Path::new("/tmp")), &allow, None);
         assert_eq!(label, "/usr/bin/vim");
         assert_eq!(argv_of(&command), argv, "the exact argv is re-run");
         assert_eq!(
@@ -671,7 +725,7 @@ mod tests {
             "-c".to_owned(),
             "rm -rf /tmp/precious".to_owned(),
         ];
-        let (command, _label) = restore_command(&argv, None, &allow, None);
+        let Restored { command, .. } = restore_command(&argv, None, &allow, None);
         let got = argv_of(&command);
         assert!(
             !got.contains(&"-c".to_owned()),
@@ -705,9 +759,9 @@ mod tests {
         let recorded = vec!["/usr/local/bin/claude".to_owned()];
 
         let allow: HashSet<String> = ["claude".to_owned()].into_iter().collect();
-        let (command, _) = restore_command(&recorded, None, &allow, Some(NAME));
+        let resumed = restore_command(&recorded, None, &allow, Some(NAME));
         assert_eq!(
-            argv_of(&command),
+            argv_of(&resumed.command),
             vec![
                 "/usr/local/bin/claude".to_owned(),
                 "--resume".to_owned(),
@@ -718,23 +772,51 @@ mod tests {
              under a name nothing points at any more",
         );
 
+        // ⛔⛔⛔⛔⛔ AND WHAT A REPLACEMENT OF THAT PANE RE-RUNS IS THE SAME REBUILD WITHOUT IT —
+        // register item 695, and this is the arm the defect lived in. `Pane::argv` is *what a
+        // replacement re-runs*, and it used to be taken off the command above; so every session
+        // replacement after a reboot re-entered this conversation, which is the one thing
+        // `ai_loop.scxml`'s `restarting` replaces a session in order to prevent.
+        //
+        // ⚠⚠ THE PREMISE IS THE LINE ABOVE: the command really does carry the resume, so *with* and
+        // *without* are two different values here rather than the same one twice.
+        assert_eq!(
+            resumed.replacement_argv, recorded,
+            "⚠⚠⚠⚠⚠ A REPLACEMENT MUST BE A FRESH SESSION. Measured in the field: a restored pane's \
+             replacements carried one uuid five times running while its transcript grew from \
+             2.78 MB to 6.6 MB, and a pane made fresh in the same daemon minted a new id every \
+             time — the only variable was whether the pane had been through a restore",
+        );
+
         // The SAME recorded argv, refused by the allowlist -> a plain shell.
-        let (fallen_back, _) = restore_command(&recorded, None, &HashSet::new(), Some(NAME));
-        let got = argv_of(&fallen_back);
+        let fallen_back = restore_command(&recorded, None, &HashSet::new(), Some(NAME));
+        let got = argv_of(&fallen_back.command);
         assert!(
             !got.iter().any(|arg| arg == "--resume" || arg == NAME),
             "⚠⚠⚠ A SHELL TOOK THE AGENT'S RESUME. The recorded argv still names an agent here — only \
              what re-ran differs — so a decision read from the recording appends `--resume {NAME}` to \
              a shell, which is an argument meant for something else. Got {got:?}",
         );
+        assert_eq!(
+            fallen_back.replacement_argv, got,
+            "⚠⚠⚠ AND ITS REPLACEMENT IS THAT SHELL, not the recording the allowlist refused. A \
+             replacement that re-ran what was recorded would execute exactly what this fall-back \
+             exists to decline — the recorded argv is not a safe thing to replay",
+        );
 
         // And a pane with no recorded conversation is untouched, which is nearly every pane.
-        let (unnamed, _) = restore_command(&recorded, None, &allow, None);
+        let unnamed = restore_command(&recorded, None, &allow, None);
         assert_eq!(
-            argv_of(&unnamed),
+            argv_of(&unnamed.command),
             recorded,
             "⚠ a pane that recorded no conversation takes nothing — the case before this field \
              existed, and the one every older snapshot loads as",
+        );
+        assert_eq!(
+            unnamed.replacement_argv,
+            argv_of(&unnamed.command),
+            "⚠⚠ and with nothing to strip the two answers coincide, which is the case that makes \
+             the assertion above evidence rather than an accident of shape",
         );
     }
 
@@ -743,7 +825,7 @@ mod tests {
     fn restore_command_falls_back_to_a_shell_for_a_non_allowlisted_program() {
         let allow = parse_allowlist(None); // default: cargo is NOT in it
         let argv = vec!["cargo".to_owned(), "build".to_owned()];
-        let (command, _) = restore_command(&argv, None, &allow, None);
+        let Restored { command, .. } = restore_command(&argv, None, &allow, None);
         assert!(
             !argv_of(&command).iter().any(|a| a == "build"),
             "cargo build is not re-run",
@@ -755,7 +837,7 @@ mod tests {
     #[test]
     fn restore_command_restores_a_shell_for_empty_argv() {
         let allow = parse_allowlist(None);
-        let (command, _) = restore_command(&[], Some(Path::new("/tmp")), &allow, None);
+        let Restored { command, .. } = restore_command(&[], Some(Path::new("/tmp")), &allow, None);
         let argv = argv_of(&command);
         let base = argv
             .first()
@@ -775,7 +857,7 @@ mod tests {
             host: "srv".to_owned(),
             port: Some(2222),
         };
-        let (command, label) = reconnect_command(&remote);
+        let Restored { command, label, .. } = reconnect_command(&remote);
         assert_eq!(
             argv_of(&command),
             vec![
@@ -838,7 +920,7 @@ mod tests {
         crate::config::with_config(Some("[options]\ndefault-command = \"exec htop\"\n"), || {
             let allow = HashSet::new();
             let argv = vec!["rm".to_owned(), "-rf".to_owned(), "/".to_owned()];
-            let (_command, label) = restore_command(&argv, None, &allow, None);
+            let Restored { label, .. } = restore_command(&argv, None, &allow, None);
             let (_shell, shell_label) = sprag_terminal::default_shell_command();
             assert_eq!(
                 label, shell_label,
