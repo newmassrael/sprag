@@ -5881,11 +5881,36 @@ fn render_run(run: &Value) -> String {
         Some("done") => {
             let outcome = &state["outcome"];
             let unit = outcome["unit"].as_str().unwrap_or("steps");
+            // ⛔⛔⛔⛔⛔ AND WHICH ENDING IT CLOSED UNDER — register item 706's third requirement, in
+            // the same place and under the same constraint as the clauses above.
+            //
+            // ⚠⚠⚠⚠ WITHOUT IT THIS ROW COLLAPSES ITEM 594 AGAIN, AT THE ONE MOUTH A PERSON HAS.
+            // All three endings an `ai_loop` closes under publish `converged`, and `runs` has no
+            // machine form — so the word that separates them reached an agent through `list_runs`
+            // and reached a person nowhere. `stood_down`'s sentence covers ONE of the three and
+            // only when somebody gave an order, which leaves *the agent declared the north star
+            // reached* and *the reflection named no successor* byte-identical here.
+            //
+            // ⚠⚠⚠ THE WORD IS THE PLUGIN'S AND THIS MOUTH FRAMES IT WITHOUT SPELLING IT. A match
+            // over `declared` / `no_successor` / `stood_down` would make this renderer a second
+            // authority on a set `sprag_plugin` owns — `RUN_DONE_REASON_KEY`'s doc refuses exactly
+            // that — and it would fall silent on a fourth ending instead of carrying it. So the
+            // word travels verbatim and the sentence claims only what the host can know: that the
+            // state word above does not answer this question.
+            let closed_under = outcome[sprag_host::plugins::RUN_DONE_REASON_KEY]
+                .as_str()
+                .map_or_else(String::new, |word| {
+                    format!(
+                        "\n  it closed under `{word}` — the ending its own plugin named, which `{}` \
+                         above does not say",
+                        outcome["state"].as_str().unwrap_or("?"),
+                    )
+                });
             let output = state["output"]
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{walk_to}{briefed}{prompts}{verified}{uncommitted}{canceller}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{order}{walk_to}{briefed}{prompts}{verified}{uncommitted}{canceller}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -9699,7 +9724,103 @@ mod tests {
             // ⚠ `None` on `banked`'s terms: this fixture is not a run briefed with nothing, it is
             // one nobody briefs — the distinction `Briefing` keeps.
             briefed: None,
+            // ⚠ A run BLOCKED on its peer's question has not ended on its own terms, so no ending
+            // is named — see `sprag_plugin::Outcome::done_reason`.
+            done_reason: None,
         }
+    }
+
+    /// A run that closed on its own terms, naming `ending` — or naming none when that is [`None`].
+    ///
+    /// ⚠ `Converged` in every arm on purpose: that is the whole premise of the gate below, and a
+    /// fixture free to vary the state word could pass it while `state` was still doing the work.
+    fn a_run_that_closed(ending: Option<&'static str>) -> sprag_plugin::Outcome {
+        sprag_plugin::Outcome {
+            state: sprag_plugin::OutcomeState::Converged,
+            iterations: 9,
+            cost: Some(sprag_plugin::Cost::Bytes(31)),
+            failure: None,
+            stopped: None,
+            answered: 0,
+            screened: 0,
+            deliveries: sprag_plugin::Deliveries::NONE,
+            checks: sprag_plugin::Checks::NONE,
+            banked: None,
+            briefed: None,
+            done_reason: ending.map(std::borrow::Cow::Borrowed),
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ROW A PERSON READS SAYS WHICH ENDING CLOSED THE RUN** — register item 706's
+    /// third requirement at the one mouth that is not an agent's, and register item 594's collapse
+    /// arriving one surface over.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The wire gained the word and this mouth dropped it
+    ///
+    /// `RUN_DONE_REASON_KEY` puts the ending on the row, and `list_runs` hands it to an agent. But
+    /// `sprag runs` has **no machine form** — `render_run` is its only mouth — so a person had the
+    /// word available nowhere at all. *A fact that reaches the wire and dies at the mouth somebody
+    /// actually reads* is the sentence this file has already written twice, for items 594 and 685.
+    ///
+    /// # ⚠⚠⚠ The two rows have to DIFFER, or this gate measures nothing
+    ///
+    /// `stood_down` already had a sentence here, and it appears only when somebody GAVE an order.
+    /// So the pair that proves the point is `declared` against `no_successor`: both converge,
+    /// neither was ordered, and before this clause their rows were byte-identical. A renderer that
+    /// appended one fixed sentence to every converged run would satisfy *the word is not alone* and
+    /// leave that pair exactly as indistinguishable as it found them.
+    ///
+    /// ⚠⚠ **AND THE CONTROL IS THE ABSENCE**: a run that named no ending must gain no clause, or a
+    /// mouth printing unconditionally would pass both arms above.
+    ///
+    /// # ⚠ Why the POSITION is asserted rather than described
+    ///
+    /// `render_run`'s own comment records the constraint every detail clause here is written under:
+    /// this repository's outer-loop watcher reads a run's STATUS as the line right after the
+    /// heading and its walk as the block's LAST line, so a clause landing at either end silently
+    /// moves a reader that already exists. That was prose nobody could re-run. Here it is a
+    /// predicate: the ending's clause is neither of those two lines.
+    #[test]
+    fn the_row_a_person_reads_says_which_ending_closed_the_run() {
+        const CLAUSE: &str = "it closed under";
+
+        let quiet = render_run(&run_entry(&a_run_that_closed(None)));
+        assert!(
+            !quiet.contains(CLAUSE),
+            "⚠⚠⚠⚠⚠ THE CONTROL: a run that named no ending must gain no clause — absence is how \
+             this row says *nobody named one*. Without this the assertions below would pass on a \
+             mouth that printed a sentence for every converged run: {quiet}",
+        );
+
+        let declared = render_run(&run_entry(&a_run_that_closed(Some("declared"))));
+        let no_successor = render_run(&run_entry(&a_run_that_closed(Some("no_successor"))));
+        assert!(
+            declared.contains("`declared`") && no_successor.contains("`no_successor`"),
+            "⛔⛔⛔⛔⛔ ITEM 706 ③ AT THE MOUTH: each row must carry its own ending's word, \
+             verbatim as the plugin spelled it. Read {declared} and {no_successor}",
+        );
+        assert_ne!(
+            declared, no_successor,
+            "⛔⛔⛔⛔⛔ ITEM 594 ONE SURFACE OVER: these two runs both converged and neither was \
+             ordered to stand down, so before this clause their rows were identical — a person \
+             could not tell an agent claiming the north star reached from a reflection that ran \
+             out of things to propose. Read {declared}",
+        );
+
+        // ── AND IT LANDS WHERE THE WATCHER'S TWO POSITIONAL READS ARE NOT ──
+        let lines: Vec<&str> = declared.trim_end().lines().collect();
+        let carrying = lines
+            .iter()
+            .position(|line| line.contains(CLAUSE))
+            .expect("the clause is on the row the assertion above just read");
+        assert!(
+            carrying > 1 && carrying + 1 < lines.len(),
+            "⚠⚠⚠⚠ `render_run`'s constraint, as a predicate rather than a paragraph: the \
+             outer-loop watcher reads the STATUS as the line after the heading and the walk as the \
+             LAST line, so a clause at either end moves a reader that already exists. This one is \
+             at line {carrying} of {}: {declared}",
+            lines.len(),
+        );
     }
 
     /// A row as the daemon publishes one whose driver died saying `why`.

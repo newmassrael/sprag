@@ -946,6 +946,37 @@ pub trait Plugin {
         None
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHY THIS RUN ENDED ON ITS OWN TERMS, AS ONE WORD** — register item 706's third
+    /// requirement, and [`None`] for every run that has not ended on its own terms yet.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The word existed and only a SENTENCE carried it
+    ///
+    /// A loop that converges knows which of its endings it took, and said so — inside the walk's
+    /// note, as prose composed for a person. So a consumer asking *did my stand-down land, or did
+    /// this run simply run out of things to propose?* had a string to parse and a vocabulary to
+    /// re-spell, which is register item 594's cost arriving one field over. **The repair is not to
+    /// build a fact that was missing — it is to lift the word out of the sentence and give it a
+    /// key.**
+    ///
+    /// ⚠⚠⚠ **A WORD AND NOT A TYPE, BECAUSE THE VOCABULARY IS THE PLUGIN'S.** A driver that owned
+    /// a closed set here would be a second authority on a distinction it cannot check: the endings
+    /// a loop closes under are facts about that loop's own document, and the next plugin's are its
+    /// own. This is [`at`](Self::at)'s arrangement exactly — the state name is the plugin's word,
+    /// carried and never interpreted — and it is why the gate that keeps the vocabulary honest
+    /// belongs beside the plugin that spells it, not here.
+    ///
+    /// ⚠⚠ **IT IS NOT [`OutcomeState`](crate::driver::OutcomeState) AND MUST NOT BE READ AS ONE.**
+    /// That word says what BECAME of the run — `converged`, `cancelled` — and all three endings a
+    /// loop can close under converge. Item 594 measured what collapsing the two costs: a
+    /// stood-down run printed `converged`, byte-identical to one that finished on its own.
+    ///
+    /// ⚠ `'static`, so it cannot be a value assembled per call: an ending is chosen from a closed
+    /// set the plugin already holds, and anything a `format!` could produce here would be prose
+    /// again.
+    fn ended_because(&self) -> Option<&'static str> {
+        None
+    }
+
     /// ⚠⚠⚠⚠⚠ **HOW BIG THE BRIEF THIS RUN WAS STARTED WITH IS** — register item 719's second
     /// direction, and [`None`] for a plugin nobody briefs.
     ///

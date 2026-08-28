@@ -1531,6 +1531,13 @@ fn orchestration_tools() -> Vec<Value> {
                 carries the pane that asked for it, and this answers about yours. Poll this after \
                 orchestrate rather than watching the pane — a run's outcome is a level, so it is \
                 still here whether or not you were looking when it finished. \
+                ⚠⚠ A CONVERGED RUN ALSO SAYS WHICH CLOSE IT WAS, under `done_reason`: `declared` \
+                (the agent said the north star itself was reached — weigh its closing account \
+                against what you asked for), `no_successor` (a milestone was reached and the \
+                reflection named nothing to do next, so NOBODY claimed the job was done) or \
+                `stood_down` (somebody's stand-down order landed, and the run finished the \
+                milestone first). All three publish `converged`, so that word alone cannot tell \
+                them apart — and the key is absent for a run that named no ending at all. \
                 ⚠ READ THE RUN'S OWN LINE — the one that starts `Run <id>` — for how a run ended. \
                 The steps listed under it are printed in the SAME words (`converged`, `exhausted`, \
                 `blocked`, `taken_over`) and a step is published WHILE THE RUN IS STILL GOING, so \
@@ -8901,6 +8908,9 @@ mod tests {
             banked: None,
             // ⚠ `None` on `banked`'s terms: not a run briefed with nothing, one nobody briefs.
             briefed: None,
+            // ⚠ A run BLOCKED on its peer's question has not ended on its own terms, so no ending
+            // is named — see `sprag_plugin::Outcome::done_reason`.
+            done_reason: None,
         }
     }
 

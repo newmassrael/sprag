@@ -4389,6 +4389,9 @@ mod tests {
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
+                // ⚠ This gate measures a STATE filter, so the run names no ending — see
+                // `sprag_plugin::Outcome::done_reason`.
+                done_reason: None,
             }),
             output: None,
             uncommitted: None,

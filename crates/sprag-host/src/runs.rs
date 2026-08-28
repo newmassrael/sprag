@@ -1558,6 +1558,25 @@ pub struct PersistedRun {
     /// nothing was banked. [`RUN_LOG_VERSION`] does not move, [`build`](Self::build)'s argument.
     #[serde(default)]
     pub banked: Option<PersistedBanked>,
+    /// ⛔⛔⛔⛔⛔ **WHICH ENDING THE RUN CLOSED UNDER** — register item 706's third requirement, and
+    /// it has to cross a restart for the reason that item's third cost measured.
+    ///
+    /// A run's WALK does not survive the daemon that recorded it: read across one restart,
+    /// **every run before the boundary held zero walk lines and every run after it kept them**. So
+    /// the sentence the word used to live inside is exactly what a restore cannot get back — *how
+    /// it ended* survives and *how it got there* does not. A word left out here would therefore be
+    /// a word gone for good the moment the daemon is replaced, and item 606 measured how ordinary
+    /// that is: thirteen live runs, **every one restored**.
+    ///
+    /// ⚠⚠ [`None`] is *nobody wrote that down* — a run that named no ending, and a log written
+    /// before this field existed — and never *it ended for no reason*. Same distinction the live
+    /// [`sprag_plugin::Outcome::done_reason`] keeps, arriving here by the other road.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move, on [`build`](Self::build)'s argument: an optional field
+    /// with a default is readable in both directions, and bumping it would throw away every run
+    /// record the running daemon holds.
+    #[serde(default)]
+    pub done_reason: Option<String>,
     /// ⚠⚠⚠⚠⚠ **HOW BIG THE BRIEF IT WAS STARTED WITH IS** — register item 719's second direction,
     /// and it crosses a restart on [`banked`](Self::banked)'s argument, which applies here harder
     /// than anywhere.
@@ -2378,8 +2397,15 @@ impl RunRegistry {
                 .iter()
                 .zip(self.snapshot())
                 .map(|(record, run)| {
-                    let (finished, outcome, ceiling, output) = match &run.state {
-                        RunState::Running | RunState::Interrupted => (false, None, None, None),
+                    // ⛔⛔⛔ THE FIFTH IS THE ENDING'S OWN WORD — register item 706. It joins the
+                    // four here rather than being read somewhere else because these arms are the
+                    // one place that knows WHICH kind of driver produced the ending, and the word
+                    // lives in a different place for each: in the `Outcome` this process computed,
+                    // and in the report a driver on the far side of a socket sent back.
+                    let (finished, outcome, ceiling, output, done_reason) = match &run.state {
+                        RunState::Running | RunState::Interrupted => {
+                            (false, None, None, None, None)
+                        }
                         // ⚠ `uncommitted` is NOT persisted, and the omission is stated rather than
                         // an oversight: what a tree was holding is a fact about a moment that has
                         // passed, and a successor daemon publishing it would be vouching for a
@@ -2391,6 +2417,10 @@ impl RunRegistry {
                             Some(crate::plugins::outcome_word(outcome).to_owned()),
                             crate::plugins::outcome_ceiling(outcome).map(str::to_owned),
                             output.clone(),
+                            // ⛔ AND WHICH ENDING IT CLOSED UNDER — register item 706. Owned here
+                            // and borrowed live, which is the `Cow`'s whole point: the log is the
+                            // one reader that outlives the plugin that spelled the word.
+                            outcome.done_reason.as_deref().map(str::to_owned),
                         ),
                         // ⚠⚠⚠⚠ A RUN THAT ENDED IN ANOTHER PROCESS — register items 650 / 544, and
                         // the durable log loses NOTHING here: what it keeps of an ending is the
@@ -2416,8 +2446,18 @@ impl RunRegistry {
                                 .get("output")
                                 .and_then(Value::as_str)
                                 .map(str::to_owned),
+                            // ⛔ THE SAME WORD OUT OF THE REPORT — register item 706. The driver
+                            // on the far side wrote it with THIS daemon's own `outcome_to_json`,
+                            // so there is one spelling and this side reads rather than recomputes.
+                            reported
+                                .get(crate::plugins::RUN_DONE_REASON_KEY)
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
                         ),
-                        RunState::Panicked(why) => (true, Some(why.clone()), None, None),
+                        // ⚠ A DRIVER THAT DIED NAMED NO ENDING, and `why` is not one: it is the
+                        // exit status of a process that stopped saying anything, which is the
+                        // opposite of a run closing on its own terms.
+                        RunState::Panicked(why) => (true, Some(why.clone()), None, None, None),
                     };
                     // ⚠⚠⚠⚠⚠ **A DRIVER'S REPORT IS PREFERRED OVER THE CELL, AND THE ROW HAD ALREADY
                     // DECIDED THIS** — register item 662. For a run driven in another process the
@@ -2454,6 +2494,7 @@ impl RunRegistry {
                         outcome,
                         ceiling,
                         output,
+                        done_reason,
                         build: run.build.clone(),
                         // ⚠⚠⚠ ASKED OF THE HANDLE, NOT OF THE SNAPSHOT — register item 526. The
                         // snapshot is what a READER is told about a run, and where its driver lives
@@ -2667,6 +2708,18 @@ impl RunRegistry {
                         // are OVER, which after a restart is all of them; a level dropped here
                         // would be readable only on the rows nobody has a question about.
                         briefed: saved.briefed.map(Into::into),
+                        // ⛔⛔⛔⛔⛔ **AND SO IS THE ENDING'S WORD** — register item 706's third
+                        // requirement, restored on `banked`'s argument at its strongest. A run's
+                        // WALK does not survive its daemon (that item's third cost: every run
+                        // before a restart held zero walk lines), and the walk's note is where
+                        // this word used to live. So a restore that dropped it would leave a
+                        // reader with `converged` and nothing beside it — register item 594's
+                        // collapse, reappearing on exactly the rows anybody actually reads.
+                        //
+                        // ⚠ Owned, which is the arm of the `Cow` that exists for this line: the
+                        // plugin that spelled the word is gone, and a `&'static str` cannot come
+                        // out of a file. `PersistedBanked`'s `unit` crosses by the same road.
+                        done_reason: saved.done_reason.clone().map(std::borrow::Cow::Owned),
                     }),
                     output: saved.output.clone(),
                     // ⛔ **CANNOT SAY, and this is the honest answer rather than a gap** — register
@@ -3048,6 +3101,9 @@ mod tests {
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
+                // ⚠ This gate is about the outcome WORD, and every ending it walks is one no
+                // plugin names a reason for — see `Outcome::done_reason`.
+                done_reason: None,
             };
             let read_back = crate::plugins::outcome_from_words(
                 Some(crate::plugins::outcome_word(&outcome)),
@@ -3091,6 +3147,8 @@ mod tests {
                     checks: sprag_plugin::Checks::NONE,
                     banked: None,
                     briefed: None,
+                    // ⚠ A run out of iterations named no ending — see `Outcome::done_reason`.
+                    done_reason: None,
                 }),
                 output: None,
                 uncommitted: None,
@@ -3192,6 +3250,9 @@ mod tests {
             checks: sprag_plugin::Checks::NONE,
             banked: None,
             briefed: None,
+            // ⚠ A CANCEL IS NOT AN ENDING A PLUGIN NAMES — see `Outcome::done_reason`, which is
+            // `None` for exactly the runs that did not close on their own terms.
+            done_reason: None,
         }
     }
 
@@ -3779,6 +3840,126 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHICH ENDING A RUN CLOSED UNDER REACHES THE ROW AS A WORD, AND OUTLIVES THE
+    /// DAEMON THAT HEARD IT** — register item 706's third requirement, the half that lives on this
+    /// side of the crate boundary.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What a reader had, and why it was not enough
+    ///
+    /// The word existed. `sprag_plugin::DoneReason` renders `word(): describe()` into the walk, so
+    /// a consumer asking *did the stand-down I gave land?* could get an answer — **by parsing a
+    /// sentence somebody else composed, against a vocabulary it had to re-spell.** Item 594
+    /// measured the same collapse from the other side: all three endings publish `converged`, so a
+    /// stood-down run's row was byte-identical to one nobody had ordered anything of.
+    ///
+    /// So this asserts the KEY: the word is on the row, under its own name, and a reader reaches it
+    /// without a parse. ⚠ The other half — that the word on the ending is the one the DOCUMENT
+    /// took, not a fixture's invention — is `the_walk_and_the_ending_both_say_which_close_it_was`
+    /// in `sprag-plugin`, which drives three real runs to three real closes. Neither half is worth
+    /// anything alone: that one cannot see a wire, and this one cannot see a document.
+    ///
+    /// # ⚠⚠⚠ Why the restart is part of the claim rather than a nicety
+    ///
+    /// **A run's WALK does not survive its daemon** — item 706's own third cost, measured across a
+    /// restart: every run before the boundary held zero walk lines and every run after it kept
+    /// them. The sentence this word used to live inside is therefore exactly what a restore cannot
+    /// get back. So a `done_reason` that died with its daemon would leave a restored row saying
+    /// `converged` with nothing beside it and no prose to fall back on — a strictly worse position
+    /// than before this field existed. Item 606's finding is the general form: thirteen live runs
+    /// on this machine, **every one of them restored**.
+    ///
+    /// ⚠⚠ **THROUGH THE FILE**, not through `persistable` alone — the neighbouring gates'
+    /// argument: a field `serde` never writes would still satisfy an in-process round trip.
+    ///
+    /// ⚠⚠⚠ **AND THE CONTROL IS THE ABSENCE.** A run that named no ending must publish NO KEY —
+    /// not a `null`, which a reader would have to have an opinion about. Without that clause a
+    /// `done_reason` hard-wired to any constant would satisfy the assertion above, and the
+    /// distinction *nobody named an ending* / *it ended for no reason* would be gone.
+    #[test]
+    fn which_ending_closed_a_run_is_a_word_on_the_row_and_survives_the_daemon() {
+        /// The ending this fixture's run closed under — a person's order, which is the arm item
+        /// 594 measured being lost and the one a reader is likeliest to be asking about.
+        const STOOD_DOWN: &str = "stood_down";
+
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let ended = sprag_plugin::Outcome {
+            // ⚠⚠⚠ CONVERGED, and that is the whole reason the word beside it has to exist: this
+            // row is byte-identical to a run nobody ordered anything of until `done_reason`
+            // separates them.
+            state: sprag_plugin::OutcomeState::Converged,
+            done_reason: Some(std::borrow::Cow::Borrowed(STOOD_DOWN)),
+            ..an_outcome()
+        };
+
+        // ── THE CONTROL COMES FIRST: a run that named no ending publishes no key at all ──
+        let quiet = crate::plugins::outcome_to_json(&an_outcome());
+        assert!(
+            quiet.get(crate::plugins::RUN_DONE_REASON_KEY).is_none(),
+            "⚠⚠⚠⚠⚠ THE PREMISE: an outcome that names no ending must carry NO key — absent is how \
+             this wire says *nobody named one*, and a `null` would be a value every reader then \
+             needs an opinion about. Without this the assertion below would pass on a build that \
+             published a constant: {quiet}",
+        );
+
+        // ── AND THE WORD IS ON THE LIVE ROW ──
+        let live = crate::plugins::outcome_to_json(&ended);
+        assert_eq!(
+            live.get(crate::plugins::RUN_DONE_REASON_KEY)
+                .and_then(Value::as_str),
+            Some(STOOD_DOWN),
+            "⛔⛔⛔⛔⛔ ITEM 706 ③: this run closed because a person's order landed, and the row must \
+             say so in one word. `state` cannot — all three of this loop's endings converge — so a \
+             row without this key sends every consumer back into the walk's prose, which is where \
+             the word already was: {live}",
+        );
+
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            // ⚠ Item 543's door refuses a finished run whatever it carries, so there is nothing
+            // here to put back with — the neighbouring restore gates' shape.
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(ended),
+                output: None,
+                uncommitted: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress: ProgressCell::default(),
+        });
+
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+
+        let restored = successor.snapshot();
+        let RunState::Done { outcome, .. } = &restored[0].state else {
+            panic!(
+                "a finished run comes back finished: {:?}",
+                restored[0].state
+            );
+        };
+        // ⚠⚠ ASSERTED THROUGH `outcome_to_json` AND NOT OFF THE FIELD, because the row is what a
+        // person reads and a restore that filled the struct without reaching the wire would be
+        // green against the field and silent for every reader.
+        let after = crate::plugins::outcome_to_json(outcome);
+        assert_eq!(
+            after
+                .get(crate::plugins::RUN_DONE_REASON_KEY)
+                .and_then(Value::as_str),
+            Some(STOOD_DOWN),
+            "⛔⛔⛔⛔⛔ ITEM 706 ③ ACROSS A RESTART: the walk this word used to live inside does NOT \
+             survive the daemon, so a `done_reason` that died with it would leave a restored row \
+             saying `converged` with no prose left to parse — worse than the position this field \
+             was written to repair. Restored {after} from {on_disk}",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **HOW BIG A BRIEF WAS COMES BACK AFTER THE DAEMON THAT TOOK IT DIED** — register
     /// item 719's second direction, and the RESTORE half of a claim whose write half is gated one
     /// crate over (`a_run_driven_somewhere_else_shows_what_it_delivered_and_banked`).
@@ -3879,6 +4060,9 @@ mod tests {
             checks: sprag_plugin::Checks::NONE,
             banked: None,
             briefed: None,
+            // ⚠ The ending these gates are about is not a loop's, so no word is named — see
+            // `Outcome::done_reason`.
+            done_reason: None,
         }
     }
 
@@ -3926,6 +4110,8 @@ mod tests {
                 // ⚠ `None` is what an OLDER LOG reads as, which is what these fixtures are about.
                 banked: None,
                 briefed: None,
+                // ⚠ Item 706's field, absent on the line above's argument.
+                done_reason: None,
                 place: None,
             }],
         };
@@ -4164,6 +4350,8 @@ mod tests {
             // ⚠ `None` is what an OLDER LOG reads as, which is what this fixture is about.
             banked: None,
             briefed: None,
+            // ⚠ Item 706's field, absent on the line above's argument.
+            done_reason: None,
             // ⚠ This fixture is about the WORD, so it carries no place — which is also the
             // shape of every log written before item 543's field existed.
             place: None,
@@ -4266,6 +4454,9 @@ mod tests {
             deliveries: None,
             banked: None,
             briefed: None,
+            // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
+            // that never closed names no ending.
+            done_reason: None,
             place,
         };
         // ⚠ THE WORDS ARE THE PLUGIN'S OWN, taken from a real place rather than spelled here — a
@@ -4358,6 +4549,9 @@ mod tests {
             deliveries: None,
             banked: None,
             briefed: None,
+            // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
+            // that never closed names no ending.
+            done_reason: None,
             place,
         };
         let words = vec![
@@ -4775,6 +4969,8 @@ mod tests {
                 // ⚠ Nor how much it banked — item 616's field, absent for that field's reason.
                 banked: None,
                 briefed: None,
+                // ⚠ Nor which ending it closed under — item 706's field, on the same argument.
+                done_reason: None,
                 place: None,
             }],
         });

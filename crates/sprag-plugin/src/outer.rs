@@ -6839,7 +6839,22 @@ impl OuterLoop {
     /// [`None`] for a datamodel that has stopped answering, and — unreachably, because the only
     /// producer is [`DoneReason::raised`] — for a word this driver has no ending for. ⚠ Not a
     /// failure either way, for [`reflecting_because`](Self::reflecting_because)'s reason.
-    fn closing_because(&self) -> Option<DoneReason> {
+    ///
+    /// ⚠⚠⚠ **`pub(crate)` SINCE REGISTER ITEM 706's THIRD REQUIREMENT**, and for the reason this
+    /// method's own doc gives one paragraph up: it is the ONE authority on which ending a run took.
+    /// The word reached a reader only folded into a walk note's prose, so a consumer asking *did my
+    /// stand-down land* parsed a sentence; publishing that consumer's answer from anywhere but here
+    /// would have been the second authority this method exists to prevent. See
+    /// [`crate::plugin::Plugin::ended_because`], which is the caller and lives in this crate.
+    ///
+    /// ⚠⚠ **AND `pub(crate)` RATHER THAN `pub`, WHICH THE DOC GATE DECIDED RATHER THAN A TASTE.**
+    /// A `pub` here promotes THIS COMMENT to public documentation, and rustdoc then refuses its
+    /// three links to items that are private — `stopping_because`, `reflecting_because` and
+    /// `DoneReason::raised`. The links are not the mistake: a method whose whole argument is *these
+    /// three read the document the same way* has to be able to point at the other two. **The reach
+    /// was.** Nothing outside this crate calls this, so `pub` published an internal authority to
+    /// the world and broke a gate to do it.
+    pub(crate) fn closing_because(&self) -> Option<DoneReason> {
         DoneReason::named(&self.text_of(DONE_REASON)?)
     }
 

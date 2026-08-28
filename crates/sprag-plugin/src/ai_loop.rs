@@ -48,7 +48,7 @@ use crate::act::Publishes;
 use crate::consent::Unanswered;
 use crate::driver::Ceiling;
 use crate::outer::{
-    AiLoopEvent, AiLoopSpec, AiLoopState, Brief, Briefed, Noticed, OuterLoop, Pumped,
+    AiLoopEvent, AiLoopSpec, AiLoopState, Brief, Briefed, DoneReason, Noticed, OuterLoop, Pumped,
 };
 use crate::plugin::{Accounting, Cost, Plugin, Step, Verdict};
 use crate::readiness::Reached;
@@ -1195,6 +1195,32 @@ impl Plugin for AiLoop {
                 }
             })
         })
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHICH OF THIS LOOP'S THREE ENDINGS IT CLOSED UNDER** — register item 706's third
+    /// requirement, and the word that until now existed only inside a sentence.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why lifting a word out of prose is the whole repair
+    ///
+    /// [`DoneReason::noted`](crate::outer::DoneReason::noted) already renders `word(): describe()`
+    /// into the walk, so every consumer HAD the word — inside a line of prose, behind a parse, and
+    /// spelled by a vocabulary they would have to keep in step by hand. Register item 594 measured
+    /// what that costs one field over: `sprag stand-down` promises *its work is kept*, and the row
+    /// a person then read said `converged`, byte-identical to a run nobody had ordered anything of.
+    ///
+    /// ⚠⚠⚠ **READ FROM THE DOCUMENT, NEVER REMEMBERED FROM THE RAISE** —
+    /// `OuterLoop::closing_because`'s rule, which is what makes this a report and not a claim: what
+    /// a reader is told is what the machine was told, so a run whose transition never fired cannot
+    /// be published as having declared anything. ⚠ Named rather than linked, because that method is
+    /// `pub(crate)` and this doc is public — the reach it needed was into this crate, not out of it.
+    ///
+    /// ⚠⚠ [`None`] for every run that has not reached `closing` — which is every live run, every
+    /// cancelled one, and every one that hit a ceiling — and for a datamodel that has stopped
+    /// answering. Both are *this loop names no ending*, which is the honest answer in each case;
+    /// [`crate::driver::Outcome::done_reason`] carries that distinction to the wire by omitting the
+    /// key rather than publishing a null.
+    fn ended_because(&self) -> Option<&'static str> {
+        self.inner.closing_because().map(DoneReason::word)
     }
 
     fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
@@ -7047,7 +7073,7 @@ mod tests {
         // EQUALITY, which is what made it the canary for the defect: the moment the ending's own
         // word was added it went red, printing the very walk that proves the clause is there. What
         // it holds now is the same claim plus the one it could not make — that a run which ended
-        // for THIS reason says so. `the_walk_says_which_ending_closed_the_run` holds the other
+        // for THIS reason says so. `the_walk_and_the_ending_both_say_which_close_it_was` holds the other
         // ending against it; here the point is that the livelock's own exit is the one named.
         let ended = format!(
             "Reflecting --ReflectDone--> Closing — {}",
@@ -7100,8 +7126,24 @@ mod tests {
     ///
     /// ⚠⚠ AND THE TWO ARMS MUST COVER THE WHOLE VOCABULARY, asserted rather than assumed — a
     /// `DoneReason` arm no run here reaches is a sentence nobody has ever read.
+    ///
+    /// # ⛔⛔⛔⛔⛔ And since register item 706's third requirement, the ENDING carries the word too
+    ///
+    /// Everything above is about the walk — a SENTENCE, composed for a person. That left every
+    /// consumer parsing prose for a word the loop already knew, and register item 594 measured
+    /// what it costs: `sprag stand-down` promises *its work is kept*, and the row the person then
+    /// read said `converged`, byte-identical to a run nobody had ordered anything of.
+    ///
+    /// So each arm now asserts twice — the walk still says which ending in its own sentence, and
+    /// [`crate::driver::Outcome::done_reason`] says which ending in one word a reader takes as a
+    /// key. ⚠⚠ The two assertions sit beside the `Converged` control on purpose: that control is
+    /// the reason the second one is needed at all, because it is what proves `state` cannot tell
+    /// these three runs apart.
+    ///
+    /// ⚠ And the echo control gained a clause of its own: a run that never reached `closing` must
+    /// name NO ending, or a word hard-wired anywhere would satisfy all three arms.
     #[test]
-    fn the_walk_says_which_ending_closed_the_run() {
+    fn the_walk_and_the_ending_both_say_which_close_it_was() {
         use crate::outer::DoneReason;
 
         /// The one edge this gate is about — one arrow, two runs.
@@ -7111,8 +7153,15 @@ mod tests {
         /// And where it says the replacement should start reading.
         const READ_NEXT: &str = "the register entry for it";
 
-        /// Drive a loop to its ending and hand back what it wrote down, with its outcome.
-        fn run_of<A: PaneAccess>(loops: &mut AiLoop, access: &A) -> (OutcomeState, Vec<String>) {
+        /// Drive a loop to its ending and hand back what it wrote down, with its whole outcome.
+        ///
+        /// ⚠⚠ The WHOLE outcome since register item 706's third requirement, not just its state
+        /// word: the ending now carries the reason as a key of its own, and a fixture that kept
+        /// only `state` could not tell whether it did.
+        fn run_of<A: PaneAccess>(
+            loops: &mut AiLoop,
+            access: &A,
+        ) -> (crate::driver::Outcome, Vec<String>) {
             let progress = ProgressCell::default();
             let outcome = Driver::new(Guardrails {
                 max_iterations: 60,
@@ -7131,7 +7180,7 @@ mod tests {
             for live in access.pane_ids() {
                 access.lifecycle().expect("lifecycle").close(live);
             }
-            (outcome.state, walk)
+            (outcome, walk)
         }
 
         // ── ARM 1: THE AGENT SAID THE NORTH STAR WAS REACHED ──
@@ -7141,7 +7190,7 @@ mod tests {
         let access = supervised(&workspace);
         let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
-        let (declared_state, declared_walk) = run_of(&mut loops, &access);
+        let (declared_end, declared_walk) = run_of(&mut loops, &access);
 
         // ── ARM 2: A REACHED MILESTONE WHOSE REFLECTION NAMED NO SUCCESSOR ──
         // ⚠ The ORDINARY peer — it says the milestone marker and has no opinion about what is next,
@@ -7150,14 +7199,27 @@ mod tests {
         let access = supervised(&workspace);
         let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
-        let (no_successor_state, no_successor_walk) = run_of(&mut loops, &access);
+        let (no_successor_end, no_successor_walk) = run_of(&mut loops, &access);
 
         // ── THE CONTROL: THE SAME PROMPT, THE SAME ECHO, NO MARKER ──
         let (workspace, pane) = crate::testing::standin_agent_reflecting(2, NEXT, READ_NEXT);
         let access = supervised(&workspace);
         let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
-        let (_, echoed_walk) = run_of(&mut loops, &access);
+        let (echoed_end, echoed_walk) = run_of(&mut loops, &access);
+        // ⛔⛔⛔⛔⛔ AND ITS ENDING NAMES NO REASON — register item 706's third requirement, and this
+        // is the control that makes the three assertions below mean anything. A run that did NOT
+        // close on its own terms must publish no word at all: without this clause a `done_reason`
+        // hard-wired to any constant would satisfy all three arms and say nothing.
+        //
+        // ⚠⚠ `None` here is *this run named no ending* and never *it ended for no reason* — the
+        // distinction the wire keeps by OMITTING the key rather than publishing a null.
+        assert_eq!(
+            echoed_end.done_reason, None,
+            "⚠⚠⚠⚠ THE CONTROL FOR THE WORD: this peer answers with a successor, so its run never \
+             reaches `closing` — and an ending that names a reason anyway is one reporting a \
+             transition that never fired. Walked {echoed_walk:?}",
+        );
         assert!(
             !echoed_walk.iter().any(|note| note.starts_with(THE_EDGE)),
             "⚠⚠⚠ THE CONTROL: this peer is asked the SAME reflection and paints the SAME echo of \
@@ -7185,7 +7247,7 @@ mod tests {
         let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
         loops.stand_down();
-        let (stood_down_state, stood_down_walk) = run_of(&mut loops, &access);
+        let (stood_down_end, stood_down_walk) = run_of(&mut loops, &access);
 
         // ⚠⚠⚠ EACH ARM CARRIES THE ARROW IT ARRIVES BY, because they are not all the same one any
         // more. The two reflection endings pass through `reflecting` — the run asked what was next
@@ -7215,11 +7277,17 @@ mod tests {
         ];
 
         // ── BOTH REALLY CONVERGED, which is what makes the ambiguity worth closing ──
-        for (label, state, walk) in [
-            ("the agent declared it", declared_state, &declared_walk),
+        for (label, ending, end, walk) in [
+            (
+                "the agent declared it",
+                DoneReason::Declared,
+                &declared_end,
+                &declared_walk,
+            ),
             (
                 "no successor was named",
-                no_successor_state,
+                DoneReason::NoSuccessor,
+                &no_successor_end,
                 &no_successor_walk,
             ),
             // ⚠⚠⚠ A STAND-DOWN CONVERGES TOO, and that is the claim, not an accident of the loop.
@@ -7229,16 +7297,39 @@ mod tests {
             // reader the turn was thrown away when it was finished.
             (
                 "a person asked it to stand down",
-                stood_down_state,
+                DoneReason::StoodDown,
+                &stood_down_end,
                 &stood_down_walk,
             ),
         ] {
             assert_eq!(
-                state,
+                end.state,
                 OutcomeState::Converged,
                 "⚠⚠⚠ the control for {label}: BOTH endings publish `Verdict::Converged` — that is \
                  exactly why the walk had to be the thing that tells them apart. An arm that ended \
                  any other way is not the run this gate is describing. Walked {walk:?}",
+            );
+            // ⛔⛔⛔⛔⛔ **AND THE ENDING ITSELF CARRIES THE WORD, NOT ONLY THE SENTENCE** — register
+            // item 706's third requirement, asserted on the line that has just proved the three
+            // runs are indistinguishable by `state`.
+            //
+            // ⚠⚠⚠⚠ THE PREVIOUS LINE IS THIS ONE'S WHOLE ARGUMENT. All three converge, so a
+            // consumer asking *did the stand-down I gave land?* had `converged` and a walk note to
+            // parse — register item 594's collapse, and the reason every watcher rebuilt a parser
+            // over prose somebody else composed. The walk clauses below still hold the SENTENCE to
+            // its wording; this holds the KEY, and a reader needs no parse to reach it.
+            //
+            // ⚠⚠ It is `Plugin::ended_because` that is being measured here and not a fixture's
+            // hand: these outcomes came out of `Driver::run` over a real `AiLoop` whose document
+            // took the transition a moment ago, so a wiring deleted anywhere between the datamodel
+            // and this field turns this red.
+            assert_eq!(
+                end.done_reason.as_deref(),
+                Some(ending.word()),
+                "⚠⚠⚠⚠⚠ ITEM 706 ③: this run closed because {label}, and its ENDING must say so in \
+                 one word — every one of these three publishes `converged`, so a reader with only \
+                 `state` cannot tell a person's order landing from a run running out of things to \
+                 propose. Walked {walk:?}",
             );
         }
 
@@ -7701,7 +7792,7 @@ mod tests {
     ///
     /// # ⚠⚠⚠ What the control above proves, and what it does not
     ///
-    /// `the_walk_says_which_ending_closed_the_run` carries a peer that is asked the same reflection,
+    /// `the_walk_and_the_ending_both_say_which_close_it_was` carries a peer asked the same reflection,
     /// paints the same echo and never says the marker — and its own note says what that leaves
     /// open: *"a control proves this pane's width is safe and not that every width is."* **This is
     /// every other width**, or the one that matters: `reflect_prompt`'s last line is 152 characters

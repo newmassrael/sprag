@@ -498,6 +498,61 @@ pub const PIPE_DST_KEY: &str = "dst";
 /// say* — see `crate::runs::PersistedRun::stood_down`, which is `Option<bool>` for exactly that
 /// reason and does not move `crate::runs::RUN_LOG_VERSION` either.
 pub const RUN_STOOD_DOWN_KEY: &str = "stood_down";
+/// The answer key carrying **WHICH ENDING A RUN CLOSED UNDER**, as one word — register item 706's
+/// third requirement, and [`RUN_STOOD_DOWN_KEY`]'s neighbour rather than its double.
+///
+/// # ⛔⛔⛔⛔⛔ The word was there and only a SENTENCE carried it
+///
+/// `sprag_plugin::DoneReason` renders `word(): describe()` into the walk, so the vocabulary
+/// (`declared` / `no_successor` / `stood_down`) reached every consumer — inside a line of prose,
+/// behind a parse, spelled by a list each consumer had to keep in step by hand. A stream that says
+/// *this run took a step* (item 706's first requirement, landed) wakes a reader who then has to
+/// read a row; **this is the key that makes that read answer**, instead of sending them back into
+/// the sentence.
+///
+/// # ⚠⚠⚠ Why it is not `state`, and not [`RUN_STOOD_DOWN_KEY`] either
+///
+/// `state` says what BECAME of the run, and **all three endings are `converged`** — the collapse
+/// item 594 measured from the other side. This says which of the three, which is a different
+/// question with a different remedy: *the agent declared the north star reached* invites a person
+/// to check the claim, *no successor was named* says the run ran out of things to propose with
+/// nobody claiming anything, and *stood down* says an order landed.
+///
+/// [`RUN_STOOD_DOWN_KEY`] is a SENTENCE about ONE of those three, and it answers *did the order I
+/// gave take effect* by weighing the order against the ending. This answers *which ending*, for a
+/// run nobody ordered anything of as much as for one somebody did. Two readers, two questions —
+/// and a consumer that had only the sentence could learn nothing about the other two endings.
+///
+/// # Why this earns no [`sprag_rpc::WIRE_PROTOCOL`] bump
+///
+/// [`RUN_STOOD_DOWN_KEY`]'s argument, unchanged and for the same reasons: it is an ADDED ANSWER
+/// KEY, no request argument moved, no address was withdrawn, and the handshake refuses a protocol
+/// mismatch outright — so there is no *new client, old daemon* pair for whom the absence of this
+/// key could mean *this daemon cannot say*. To every reader that got an answer at all, absence
+/// means what it says: **this run named no ending.**
+///
+/// # ⚠⚠⚠⚠ And why its VALUE joins neither value-space pin — said out loud, which is what those
+/// pins ask for rather than silence
+///
+/// The value comes from a closed vocabulary (`sprag_plugin::DoneReason::ALL`), and this repository
+/// has two pins over such things. Neither owns this one, and the reasons are their own:
+///
+/// * `wire::…::a_published_value_space_cannot_widen_under_the_protocol_number` holds the REQUEST
+///   half — the words a caller picks a value FROM. No verb takes this word; it travels outward
+///   only.
+/// * `wire::…::an_answers_value_space_cannot_widen_under_the_protocol_number` holds the answer
+///   words **a peer DECODES WHOLE**, where a widened set fails a decode, plus `ceiling:`, which
+///   joined because `outcome_from_words` reads that word BACK and answers a wrong arm for one it
+///   does not know. Nothing does either with this key: it is published as a string and carried
+///   verbatim — through the durable log too, where `crate::runs::PersistedRun::done_reason` is a
+///   `String` that is never re-parsed into an arm.
+///
+/// ⚠⚠ **SO THE CONDITION THAT WOULD MOVE IT IS NAMED RATHER THAN LEFT TO BE NOTICED**: the day any
+/// reader turns this word back into a `DoneReason` — a client that decodes it, or a restore that
+/// resolves it to an arm instead of passing it along — it becomes `ceiling:`'s case exactly, and it
+/// joins that pin in the same round. Until then a fourth ending widens what a reader may SEE and
+/// breaks nothing that reads.
+pub const RUN_DONE_REASON_KEY: &str = "done_reason";
 
 /// **WHAT A PERSON HAS ORDERED, AS DATA A MACHINE READS** — register item 699, and the key
 /// [`StandingOrders`] travels under.
@@ -5420,6 +5475,21 @@ pub fn outcome_to_json(outcome: &Outcome) -> Value {
             "unit": banked.unit.as_ref(),
         });
     }
+    // ⛔⛔⛔⛔⛔ AND WHY IT ENDED ON ITS OWN TERMS — register item 706's third requirement, and the
+    // one key here whose value the daemon does not compose: the word is the PLUGIN's, carried.
+    //
+    // ⚠⚠ Present only when the plugin named an ending, the presence-is-the-claim rule every
+    // optional key above follows. Absent means *this run named no ending* — it was cancelled, or
+    // hit a ceiling, or its plugin has no endings to name — and never *it ended for no reason*.
+    //
+    // ⚠⚠⚠ IT DOES NOT REPEAT `state`, IT DISAMBIGUATES IT. All three endings an `ai_loop` closes
+    // under are `converged`, so the word beside it is the only thing that separates *the agent
+    // said the north star was reached*, *a milestone with no successor left* and *a person's
+    // stand-down landed*. Register item 594 measured the collapse from the other side: a
+    // stood-down run printed `converged`, byte-identical to one nobody had ordered anything of.
+    if let Some(done_reason) = &outcome.done_reason {
+        answer[RUN_DONE_REASON_KEY] = json!(done_reason.as_ref());
+    }
     answer
 }
 
@@ -5733,6 +5803,9 @@ mod tests {
                 // which is the honest answer for a log written before the column existed.
                 banked: None,
                 briefed: None,
+                // ⚠ And item 706's, on the same argument: an older log names no ending, which
+                // reads as *nobody wrote that down* rather than as a run that ended for no reason.
+                done_reason: None,
                 // ⚠ An older log carries no place, which is this fixture's shape — item 543.
                 place: None,
             }],
@@ -5979,6 +6052,9 @@ mod tests {
                 deliveries,
                 banked: None,
                 briefed: None,
+                // ⚠ And item 706's, on the same argument: an older log names no ending, which
+                // reads as *nobody wrote that down* rather than as a run that ended for no reason.
+                done_reason: None,
                 // ⚠ An older log carries no place, which is this fixture's shape — item 543.
                 place: None,
             }
@@ -9793,6 +9869,9 @@ mod tests {
             banked: None,
             // ⚠ `None` on `banked`'s terms: not a run briefed with nothing, one nobody briefs.
             briefed: None,
+            // ⚠ AND `None` ON THE SAME TERMS: not a run that ended for no reason, one whose
+            // plugin names no endings — see `sprag_plugin::Outcome::done_reason`.
+            done_reason: None,
         }
     }
 
@@ -11665,6 +11744,9 @@ mod tests {
             checks: sprag_plugin::Checks::NONE,
             banked: Some(banked),
             briefed: None,
+            // ⚠ A run out of iterations closed under no ending of its own — see
+            // `sprag_plugin::Outcome::done_reason`.
+            done_reason: None,
         };
 
         // The sentence an IN-PROCESS run gets — the standard this reported one must meet.
@@ -11710,6 +11792,9 @@ mod tests {
                 unit: std::borrow::Cow::Borrowed("turn"),
             }),
             briefed: None,
+            // ⚠ A run out of iterations closed under no ending of its own — see
+            // `sprag_plugin::Outcome::done_reason`.
+            done_reason: None,
         };
         let said = stand_down_sentence(&RunState::Reported(Box::new(outcome_to_json(&nothing))));
         assert!(
@@ -11953,6 +12038,8 @@ mod tests {
                     deliveries: None,
                     banked: None,
                     briefed: None,
+                    // ⚠ Item 706's field, absent for the reason every field above it is.
+                    done_reason: None,
                     place,
                 }],
             }

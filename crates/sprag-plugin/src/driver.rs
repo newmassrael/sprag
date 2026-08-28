@@ -555,6 +555,24 @@ pub struct Outcome {
     /// own diagnosis had to be written by hand, after the fact, because nothing on the row said what
     /// the run had been handed.
     pub briefed: Option<crate::Briefing>,
+    /// ⛔⛔⛔⛔⛔ **WHY THIS RUN ENDED ON ITS OWN TERMS, AS ONE WORD** — register item 706's third
+    /// requirement. See [`crate::plugin::Plugin::ended_because`], which is where the word comes
+    /// from and where the argument for its being a word lives.
+    ///
+    /// ⚠⚠⚠ **IT ANSWERS A QUESTION [`state`](Self::state) CANNOT.** All three endings a loop closes
+    /// under are [`OutcomeState::Converged`], so a reader asking *did the stand-down I gave land?*
+    /// got one word for three different facts — register item 594's cost — and until this field the
+    /// word existed only inside a walk note's prose, where every consumer had to parse for it.
+    ///
+    /// ⚠⚠ [`None`] is **the plugin named no ending**: every run that did not end on its own terms
+    /// (cancelled, failed, out of iterations) and every plugin that has no endings to name. Never
+    /// *it ended for no reason* — [`banked`](Self::banked)'s distinction, and the reason the wire
+    /// omits the key rather than publishing `null`.
+    ///
+    /// ⚠ A [`Cow`](std::borrow::Cow) for [`crate::plugin::Banked::unit`]'s reason, and the case it
+    /// documents is exactly this one: a LIVE plugin names an ending out of a closed set it already
+    /// holds and pays nothing, and only a word read back from a daemon's durable log arrives owned.
+    pub done_reason: Option<std::borrow::Cow<'static, str>>,
 }
 
 /// Runs a [`Plugin`] over a [`PaneAccess`] to a terminal [`Outcome`], owning the
@@ -667,6 +685,15 @@ pub struct Driver {
     /// roads can disagree about, and the run that would expose the disagreement is the one nobody
     /// is watching.
     briefed: Option<crate::Briefing>,
+    /// ⛔⛔⛔ **WHICH ENDING THE PLUGIN LAST NAMED** — register item 706's third requirement, held
+    /// and read exactly as the totals above are, and never invented here.
+    ///
+    /// ⚠⚠ Kept as the last answer that EXISTED, on [`banked`](Self::banked)'s rule and for a
+    /// sharper reason: the ending is named by the very step that reaches the machine's final
+    /// state, and a plugin asked again afterwards may have no datamodel left to read it out of.
+    /// A read that replaced an answer with [`None`] would lose the one word this field is for, at
+    /// the exact moment it becomes true.
+    done_reason: Option<&'static str>,
     /// ⚠⚠⚠ **WHICH PANE THE PLUGIN LAST SAID IT WAS DRIVING** — register items 540 and 595, held
     /// and read exactly as the two totals above are.
     driving: Option<sprag_terminal::PaneId>,
@@ -884,6 +911,9 @@ impl Driver {
             checks: Checks::NONE,
             banked: None,
             briefed: None,
+            // ⚠ A RUN THAT HAS NOT ENDED HAS NAMED NO ENDING — register item 706. Never a word
+            // standing in for *not yet*; see `Outcome::done_reason` for what `None` promises.
+            done_reason: None,
             driving: None,
             winding: false,
         }
@@ -1281,6 +1311,19 @@ impl Driver {
                     // once and never re-read, so this can only ever confirm what the pre-step read
                     // already had; asking anyway is what keeps every level on one road.
                     self.briefed = plugin.briefed().or(self.briefed);
+                    // ⛔⛔⛔⛔⛔ AND WHICH ENDING IT NAMED, IF IT HAS NAMED ONE — register item
+                    // 706's third requirement, in the same breath as the totals above and for
+                    // `banked`'s reason at its sharpest. The step that names an ending is the step
+                    // that reaches the machine's final state, so this read is the ONLY one that
+                    // can see it: a plugin asked once more afterwards may have no datamodel left
+                    // to read the word out of, and `or_else` is what keeps the answer it could
+                    // still give.
+                    //
+                    // ⚠⚠ It is a WORD the plugin owns and this driver never interprets — see
+                    // `Plugin::ended_because`. Nothing here compares it to `OutcomeState`, because
+                    // all three of a loop's endings converge and a driver that tried to check one
+                    // against the other would be inventing a second authority on the distinction.
+                    self.done_reason = plugin.ended_because().or_else(|| self.done_reason.take());
                     // ⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register items 540 and 595, in the same
                     // breath as the three above. A pane read a moment apart from the counters is a
                     // fact about a different moment, and this one is compared against the LIVE
@@ -1682,6 +1725,13 @@ impl Driver {
             checks: self.checks.clone(),
             banked: self.banked,
             briefed: self.briefed,
+            // ⛔⛔⛔ AND THE WORD THE PLUGIN CLOSED UNDER — register item 706. Carried, never
+            // derived from `state` above: three endings share `Converged`, which is the collapse
+            // this field exists to undo.
+            //
+            // ⚠ Borrowed, which is the half of the `Cow` a live run always takes: the word came
+            // out of the plugin's own closed set a moment ago. Only a restore owns one.
+            done_reason: self.done_reason.map(std::borrow::Cow::Borrowed),
         }
     }
 }
