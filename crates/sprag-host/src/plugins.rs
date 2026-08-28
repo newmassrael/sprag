@@ -7516,6 +7516,172 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE LAUNCH THAT STARTS THIS REPOSITORY'S DEBT LOOP IS FOUR ARGUMENTS** — register
+    /// item 738's last layer, and the sentence this workspace had been asserting in PROSE.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the four gates beside this one do not say it
+    ///
+    /// Each of them declines TWO keys from a shared fixture that supplies everything else, so each
+    /// answers *whose value arrives for this key*. **None answers the question the item was filed
+    /// about**, which is a claim about the WHOLE request: *what does a launch have to type?* That
+    /// number is what the item is: the launcher this repository actually fires types
+    /// `--reference --match --marker --max-bytes --max-iterations --max-seconds` on every run, out
+    /// of a person's memory, and the item's own done-when is that it stops having to.
+    ///
+    /// # ⚠⚠⚠⚠ Two halves, and only together do they mean anything
+    ///
+    /// 1. **The PUBLISHED form's required set is exactly the four.** A client builds its call from
+    ///    what the daemon publishes, so the day a key goes back to `required` a launcher has to
+    ///    type it again — and nothing anywhere would have said so. This half reads the grammar,
+    ///    which is the only artefact a caller on the other side of the wire can consult.
+    /// 2. **A request holding exactly those four BUILDS a loop.** It builds *only* because the
+    ///    document answers every other value: cut the `reference` fall-through and the door refuses
+    ///    naming the key, cut the barrier and it refuses naming `agent` and `ready_when`. So the
+    ///    door SUCCEEDING here is the end-to-end observation register item 739 arrived at the hard
+    ///    way — over the whole set at once rather than one key at a time.
+    ///
+    /// ⚠⚠ The ceilings are read off **the plugin the door built**, never re-derived, which is what
+    /// [`every_ceiling_that_can_end_a_run_is_one_this_repositorys_document_set`](Self) paid a
+    /// mutation to learn: a gate handed the document's own answer stays green with the wiring cut.
+    ///
+    /// ⚠ What is NOT pinned here is any VALUE `debt_loop.scxml` chose — that document's business,
+    /// and a number in this file would be a second place it lives. What is pinned is the SIZE of
+    /// what a launcher must know, which is the thing that was living in a session's memory.
+    #[test]
+    fn the_launch_that_starts_this_repositorys_debt_loop_is_four_arguments() {
+        // ── HALF ONE: what a caller reading the published grammar has to fill in ────────────
+        //
+        // ⚠ In declared order, because that is the order a client reading `to_answer` meets them,
+        // and an assertion over a SET would go green on a form that had reshuffled into something
+        // no launcher could follow.
+        let required: Vec<&str> = crate::wire::PluginGrammar::AI_LOOP_FORM
+            .args
+            .iter()
+            .filter(|arg| !arg.optional)
+            .map(|arg| arg.name)
+            .collect();
+        assert_eq!(
+            required,
+            vec!["plugin", "pane", "north_star", "milestone"],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 738: the launch is no longer four arguments. Every key that \
+             becomes required here is a value somebody has to type on every firing — and the place \
+             they type it from is a memory that dies with their session, which is the whole of \
+             what this item measured. A value with an author belongs in `debt_loop.scxml`; a key \
+             this form insists on has no author but the caller.",
+        );
+
+        // ── HALF TWO: and a request that fills in exactly those four builds a loop ──────────
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+            .expect("this repository's kind document opens");
+
+        // ⚠⚠⚠⚠⚠ THE DOCUMENT MUST REALLY ANSWER EACH OF THEM, asserted BEFORE the door is asked.
+        // Every claim below is *the caller named nothing and got the document's value*, and against
+        // a kind that authored nothing they are all satisfied by two absences agreeing.
+        assert!(
+            kind.reference().is_some(),
+            "⚠⚠⚠ the control: this kind must author a `reference`, or *the launcher stopped typing \
+             it* means the run reads nothing rather than reads the ledger",
+        );
+        assert!(
+            kind.working_rules().is_some(),
+            "⚠⚠⚠ and the standing rules — about 2 KB that used to be retyped into `north_star`",
+        );
+        let barrier = kind
+            .ready_when()
+            .expect("its barrier must be readable")
+            .expect(
+                "⚠⚠⚠ and the barrier the launcher spelled as `--match settles --marker claude`, or \
+                 the door below is falling through to nothing",
+            );
+
+        // ⚠ BUILT FROM SCRATCH rather than stripped from `ai_loop_request`: the claim is *these \
+        // four and nothing else*, and a fixture the gates share is free to grow a key tomorrow —
+        // which would leave this gate answering a different question with the same green.
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let launch = json!({
+            "plugin": "ai_loop",
+            "pane": pane.0,
+            "north_star": "SPRAG-NORTH-STAR-CROSSED-THE-WIRE",
+            "milestone": "say the marker",
+        });
+        let map = launch.as_object().expect("an object");
+        let mut named: Vec<&str> = map.keys().map(String::as_str).collect();
+        named.sort_unstable();
+        assert_eq!(
+            named,
+            vec!["milestone", "north_star", "pane", "plugin"],
+            "⚠⚠⚠⚠ THIS GATE IS VACUOUS IF THE LAUNCH NAMES ANYTHING ELSE: the question is what a \
+             caller has to send, and a request carrying a fifth key answers a different one",
+        );
+
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let (plugin, label) = external.build_plugin(map).expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 738: THE DOOR REFUSED THE FOUR-ARGUMENT LAUNCH. Every value it \
+             is missing has an author in `debt_loop.scxml`, so a refusal here means a channel \
+             between that document and this door is cut — and the only way to fire a run again \
+             would be for a person to type the value back in, which is the state this item exists \
+             to leave behind",
+        );
+        assert!(
+            matches!(plugin, PluginKind::AiLoop(..)),
+            "the control: this request must build a LOOP, or the assertions below are about \
+             something else. Built {label:?}",
+        );
+        assert!(
+            lock(&workspace).close(pane).is_some(),
+            "the pane this gate opened was there to close",
+        );
+
+        // ── AND EVERY VALUE THE LAUNCHER USED TO TYPE CAME FROM THE DOCUMENT ────────────────
+        //
+        // ⚠⚠ THE THREE CEILINGS OFF THE PLUGIN THE DOOR BUILT — `--max-bytes --max-iterations
+        // --max-seconds`, which is half of what the launcher types and the half that was measured
+        // costing a round: run 41 named two of the three and died on the one it forgot.
+        assert_eq!(
+            plugin.own_bounds(),
+            kind_guardrails(&kind, plugin.cost_unit()).expect("its guardrail clause is readable"),
+            "⛔⛔⛔⛔ the plugin the door built does not carry the ceilings its own document set, so \
+             a launcher that stopped naming them would put its runs back on this daemon's defaults \
+             — silently, because a run bounded by a default looks exactly like one bounded by a \
+             decision",
+        );
+        assert!(
+            plugin.own_bounds() != AuthoredGuardrails::none(),
+            "⚠⚠⚠ and the document must really set them: comparing two empty sets and calling it \
+             agreement is how this gate would pass over a kind that authors nothing",
+        );
+
+        // ⚠⚠ AND THE OTHER THREE — `--reference`, and the `--match`/`--marker` pair — resolved by
+        // the same functions the door used, against the request that named none of them.
+        let brief = ai_loop_brief(map, &kind).expect("the four-argument launch resolves a brief");
+        assert_eq!(
+            (Some(brief.reference.clone()), brief.working_rules.clone()),
+            (kind.reference(), kind.working_rules()),
+            "⚠⚠⚠⚠⚠ ITEM 738: where a run starts reading, and the rules it is held to, must be the \
+             DOCUMENT'S. These were typed by hand into every launch — the ledger's path, and 2 KB \
+             of standing rules out of one session's context",
+        );
+        assert_eq!(
+            ai_loop_barrier(map, kind_barrier(&kind).expect("its barrier is readable"))
+                .expect("a launch naming neither `agent` nor `ready_when` reaches the document's"),
+            barrier,
+            "⚠⚠⚠⚠ and the barrier the launcher spelled twice — `--match settles --marker claude` — \
+             must be the one its author wrote beside what this peer prints when its service fails",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **A LOOP IS NOT BUILT OVER A PANE STANDING OUTSIDE THE TREE ITS KIND WORKS IN** —
     /// register item 738, layer 4, and item 684's remaining half.
     ///
