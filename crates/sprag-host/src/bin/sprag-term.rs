@@ -629,12 +629,52 @@ fn put_back_inherited_runs(
 ) {
     // ⚠ The list is taken and the lock released before anything is built: putting one run back
     // takes the registry again (`put_back`), and a workspace lock before that.
-    let inherited = runs
+    let inheritance = runs
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .inherited();
+        .inheritance();
+    // ⛔⛔⛔⛔⛔ **AND WHAT THIS BOOT IS NOT PUTTING BACK IS SAID FIRST** — register item 737. A
+    // promotion is usually a DOCUMENT change (`sprag-plugin/build.rs`: *"the dangerous case is the
+    // common one"*), a changed document makes a new run by construction (item 544), and until this
+    // existed the whole of that arrived as an empty list — indistinguishable from a predecessor
+    // that had no runs to leave. The person who promoted the build learned it by reading rows one
+    // at a time and guessing.
+    //
+    // ⚠ Per run and NOT as a total: *two runs stayed behind* cannot be acted on, and the reasons
+    // are not interchangeable — a foreign fingerprint is somebody's promotion, and a missing
+    // request is a predecessor that never wrote one down.
     let endpoint = sprag_rpc::socket_path(HOST_SOCKET);
-    for run in inherited {
+    for run in &inheritance.withheld {
+        // ⛔⛔⛔ AND WHETHER SOMETHING IS STILL DRIVING IT, which is the half a person can act on.
+        // The loop below ends the leftover driver of every run it puts back (item 526); a run that
+        // is NOT put back is never reached by it, so its driver — a process of its own since item
+        // 544's stage 1 — goes on typing into that pane with its answer bound for a pipe that
+        // closed with the dead daemon.
+        //
+        // ⚠⚠ IT IS REPORTED AND NOT ENDED, and that is a decision rather than an omission: killing
+        // it stops a loop that is still working, and this boot has no way to know whether the
+        // person promoting the build wanted that. What is not defensible is the third option, which
+        // is what this was before item 737 — neither deciding nor saying.
+        let leftover = run
+            .driver
+            .filter(|pid| leftover_driver(*pid, &endpoint))
+            .map_or_else(String::new, |pid| {
+                format!(
+                    "; and the process its dead daemon left driving it ({pid}) is STILL TYPING \
+                     into that pane, with nothing able to read what it does"
+                )
+            });
+        tracing::warn!(
+            target: "sprag_host::runs",
+            run = run.id.0,
+            label = %run.label,
+            documents = sprag_plugin::STATECHARTS_FINGERPRINT,
+            "this boot is not putting a predecessor's run back, and it stays interrupted: {}{}",
+            sprag_host::plugins::withheld_sentence(&run.why),
+            leftover,
+        );
+    }
+    for run in inheritance.resumed {
         // ⛔⛔⛔⛔⛔ **FIRST, END WHAT THE PREDECESSOR LEFT DRIVING THIS RUN** — register item 526,
         // and it is the difference between a promotion and two processes typing at one agent.
         //

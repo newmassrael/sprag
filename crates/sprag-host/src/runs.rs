@@ -1013,6 +1013,20 @@ struct RunRecord {
     /// image, a request its own door refuses — where respawning is a spin nobody asked for and the
     /// honest answer is to leave the run failed and say so.
     revived_at: Option<u64>,
+    /// ⚠⚠⚠⚠⚠ **WHY THE PREDECESSOR'S RECORD OF THIS RUN DID NOT COME BACK WHOLE** — register item
+    /// 737, read once by [`RunRegistry::restore`] and kept.
+    ///
+    /// [`None`] for every run this daemon started itself (nothing was withheld from a run nobody
+    /// inherited) and for a restored one whose place and request both crossed the file.
+    ///
+    /// # ⚠⚠⚠ Why it is stored rather than answered on demand
+    ///
+    /// Because the evidence is deliberately dropped one line later: a restored record carries
+    /// neither the foreign place nor the fingerprint that refused it (see [`RunRegistry::restore`],
+    /// which is where item 544's *a changed document makes a new run* is taken by construction), so
+    /// nothing downstream could re-derive this. The log is read once, at boot, and this is what is
+    /// kept out of that reading. It is [`PersistedRun::withheld`]'s answer and nobody else's.
+    withheld: Option<Withheld>,
 }
 
 /// **WHAT A DAEMON SHOULD DO ABOUT A RUN WHOSE DRIVER PROCESS DIED WITHOUT AN OUTCOME** — register
@@ -1125,6 +1139,16 @@ pub struct RunSummary {
     /// them all correct and merely less informed, which is this repository's shape at
     /// `RUN_CEILING_KEY` and `RUN_STOPPED_KEY` already.
     pub cancelled_by: Option<Canceller>,
+    /// ⚠⚠⚠⚠⚠ **WHY THIS RUN DID NOT COME BACK WHOLE FROM A PREDECESSOR'S LOG** — register item
+    /// 737, and [`None`] both for a run this daemon started and for one it inherited whole.
+    ///
+    /// ⚠⚠ **IT IS ON THE ROW BECAUSE THE ROW IS WHERE A PERSON MEETS THE RUN.** The boot writes the
+    /// same fact to the operator's log, which is read by whoever was watching the terminal the
+    /// daemon was restarted in — and a promotion's whole point is that nobody has to be. The person
+    /// who comes back to `sprag runs` sees `interrupted`, and without this there is nothing to
+    /// distinguish *your loop is waiting for a daemon to pick it up* from *no daemon ever will*.
+    /// `Revival::not_put_back` is the same shape one door over, for a run whose driver died.
+    pub withheld: Option<Withheld>,
 }
 
 /// EVERYTHING A RUN BRINGS WITH IT — the argument list of [`RunRegistry::submit`], as a struct.
@@ -1212,6 +1236,105 @@ pub struct InheritedRun {
     /// finish work nobody will ever be able to read. The run log is the channel that survives a
     /// restart, which is why the run comes back through the log and the leftover process does not.
     pub driver: Option<u32>,
+}
+
+/// ⚠⚠⚠⚠⚠ **WHY A RUN A SUCCESSOR FOUND IN ITS PREDECESSOR'S LOG IS NOT COMING BACK** — register
+/// item 737, and the half of [`RunRegistry::inheritance`] that used to be an empty list.
+///
+/// # ⛔⛔⛔⛔⛔ *Nothing was withheld* and *everything was* were the same answer
+///
+/// A promotion swaps the binary, and **the reason to promote is usually a changed document** —
+/// `sprag-plugin`'s own `build.rs` says so in as many words: *"the restart that motivates
+/// persisting a run at all is a document change, so the dangerous case is the common one rather
+/// than the rare one."* A changed `.scxml` changes [`sprag_plugin::STATECHARTS_FINGERPRINT`], and
+/// [`PersistedRun::resumable_place`] compares that fingerprint for EQUALITY — so every run in the
+/// log is withheld at once and [`RunRegistry::inheritance`] used to answer `[]`, which is precisely
+/// what it answers for a daemon that had no runs to leave.
+///
+/// **Measured on this machine 2026-08-28**, before any of this existed: the loop daemon's log held
+/// six unfinished runs, two of them carrying a place recorded against `091c26165f46a34d`, and the
+/// tree they would have been promoted into fingerprints `3eabd86deafd4848`. The next promotion puts
+/// back none of them and **nothing anywhere said so** — not the boot, not the run's row, not the
+/// person who ran it.
+///
+/// # ⚠⚠ Withholding them is the DECISION, and this type is not an apology for it
+///
+/// Item 544 chose it: a configuration read against a document it did not come from decodes cleanly
+/// and is WRONG, so a changed document makes a NEW run deliberately. What was missing is that the
+/// decision was taken in silence — so a reader took item 526's *a promotion does not kill somebody
+/// else's loop* for an unconditional promise, which it never was.
+///
+/// ⚠ Every arm is a REASON a caller can act on, and there is no catch-all: a fifth way of failing
+/// to come back gets an arm on the day it exists rather than being folded into an existing one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Withheld {
+    /// **ITS PLACE WAS SPELLED IN DOCUMENTS THIS IMAGE DID NOT COMPILE** — what a promotion causes,
+    /// and the only arm whose cause is somebody else's act rather than an absence.
+    ForeignDocuments {
+        /// The fingerprint the log recorded, which is the predecessor's own — compare it against
+        /// [`sprag_plugin::STATECHARTS_FINGERPRINT`], which is this image's.
+        theirs: String,
+    },
+    /// The log recorded no position at all: a run that had completed no step, or a plugin that
+    /// walks no statechart. There is nothing to put back rather than something being refused.
+    NoPlace,
+    /// A place with no fingerprint beside it — a log older than the pair. Nothing can say which
+    /// documents those words came from, so they are words from an unknown vocabulary.
+    NoDocument,
+    /// A place this image CAN read, and nothing recorded what the run was asked with, so no plugin
+    /// could be rebuilt to enter at it.
+    NoRequest,
+}
+
+/// **ONE RUN A SUCCESSOR IS NOT PUTTING BACK, AND WHY** — register item 737, the members of
+/// [`Inheritance::withheld`].
+///
+/// ⚠ It carries the id and the label because a reason nobody can attach to a run is a reason nobody
+/// can act on: *two runs stayed behind* is a different message from *run 46, the loop on pane 219,
+/// stayed behind*.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WithheldRun {
+    /// The id it had, which is the id its row still shows.
+    pub id: RunId,
+    /// What it was, in a reader's terms — the predecessor's own label.
+    pub label: String,
+    /// Why it is not coming back.
+    pub why: Withheld,
+    /// ⛔⛔⛔ **THE PROCESS THE DEAD DAEMON HAD DRIVING IT, IF THE LOG RECORDED ONE** — the same
+    /// field [`InheritedRun::driver`] carries, and it matters MORE here than there.
+    ///
+    /// A run that comes back has its leftover driver ended by the boot (see
+    /// `put_back_inherited_runs`, register item 526), because two processes over one pane is the
+    /// failure that gate was built for. A run that does NOT come back is never reached by that
+    /// loop, so its leftover — a process of its own since item 544's stage 1 — is still there,
+    /// still typing into somebody's pane, and reporting its outcome down the stdout pipe of a
+    /// daemon that no longer exists. **Nobody will ever read what it does.**
+    ///
+    /// ⚠⚠ Whether a boot should END such a process is a decision this type does not take: stopping
+    /// it stops a loop that is still working, and leaving it costs an unreadable answer. What is
+    /// NOT defensible is the third option this repository was in — not deciding, and not saying.
+    pub driver: Option<u32>,
+}
+
+/// **WHAT A BOOT INHERITED FROM ITS PREDECESSOR, AND WHAT IT DID NOT** — register item 737.
+///
+/// # ⚠⚠⚠⚠⚠ Why one door answers both halves
+///
+/// Because a caller that could ask only the first cannot tell *there was nothing there* from
+/// *everything was refused*, and those are opposite facts about a promotion. `inherited()` returned
+/// a `Vec` and every caller that read it — the boot included — treated an empty one as *this
+/// predecessor left nothing*. A second, separate reader for the refusals would be worse: it would
+/// be optional, and the reader who most needs it is the one who did not think to ask.
+///
+/// ⚠ So the two travel together and neither can be read without the other being in reach.
+/// ⚠ No `Debug`: [`InheritedRun`] holds a live progress cell and has none, deliberately — a run's
+/// counters are read through the lock that owns them.
+#[derive(Clone, Default)]
+pub struct Inheritance {
+    /// Every run this daemon CAN pick up, in submit order — both halves of a resume survived.
+    pub resumed: Vec<InheritedRun>,
+    /// Every unfinished run that stayed behind, in submit order, each with its reason.
+    pub withheld: Vec<WithheldRun>,
 }
 
 /// ONE RUN AS IT SURVIVES ITS DAEMON — the durable mirror of a live run record.
@@ -1638,13 +1761,73 @@ impl PersistedRun {
     /// answer, not this one. This says only *these words are in my vocabulary*.
     #[must_use]
     pub fn resumable_place(&self) -> Option<&[String]> {
-        let place = self.place.as_deref().filter(|words| !words.is_empty())?;
-        let document = self.document.as_deref()?;
-        (document == sprag_plugin::STATECHARTS_FINGERPRINT).then_some(place)
+        // ⚠ THE REASON IS DISCARDED HERE AND NOWHERE ELSE — see `read_place`, which is the one
+        // reading. A caller that wants it asks `withheld`.
+        self.read_place().ok()
+    }
+
+    /// **THE ONE READING OF A RECORDED PLACE**, which either hands back words this image can spell
+    /// or says why it cannot — register item 737, and the authority both
+    /// [`resumable_place`](Self::resumable_place) and [`withheld`](Self::withheld) are written from.
+    ///
+    /// # ⚠⚠⚠⚠ Why the refusal is a value and not a second function's re-derivation
+    ///
+    /// The reason a place is refused and the refusal itself are the same decision, and a second
+    /// reader that computed the reason separately would be free to drift from the door — it would
+    /// say *another build's documents* about a run the door had dropped for having no place at all,
+    /// which is a report that sends somebody to look at the wrong thing. One `match`, and the
+    /// caller that wants a `bool` gets it by discarding the reason rather than by asking again.
+    fn read_place(&self) -> Result<&[String], Withheld> {
+        // ⚠ AN EMPTY LIST IS NOT A PLACE — `resumable_place`'s own rule, kept here where the
+        // reading happens. It is `NoPlace` rather than an arm of its own because a caller cannot
+        // act differently on the two: neither is a position, and neither is anybody's fault.
+        let Some(place) = self.place.as_deref().filter(|words| !words.is_empty()) else {
+            return Err(Withheld::NoPlace);
+        };
+        let Some(document) = self.document.as_deref() else {
+            return Err(Withheld::NoDocument);
+        };
+        if document != sprag_plugin::STATECHARTS_FINGERPRINT {
+            return Err(Withheld::ForeignDocuments {
+                theirs: document.to_owned(),
+            });
+        }
+        Ok(place)
+    }
+
+    /// ⚠⚠⚠⚠⚠ **WHY THIS RUN IS NOT COMING BACK, FOR A RUN A READER EXPECTS BACK** — register item
+    /// 737, and [`None`] exactly when [`resumable_request`](Self::resumable_request) answers with
+    /// something.
+    ///
+    /// # ⚠⚠⚠ The population is UNFINISHED runs, and that is a claim rather than an exemption
+    ///
+    /// A run whose ending was recorded is over: its row already says what became of it, and *it is
+    /// not coming back* about a converged run is noise that would bury the one line that matters.
+    /// The runs this answers about are the ones a person left RUNNING and expects to find running —
+    /// which is the whole population [`RunRegistry::inheritance`] walks, since an unfinished run
+    /// restores as [`RunState::Interrupted`] and a finished one never does.
+    ///
+    /// ⚠ It is read at RESTORE time and kept, because the log is the only place the answer exists:
+    /// a restored record deliberately carries neither the foreign place nor the fingerprint that
+    /// refused it (see [`RunRegistry::restore`]), so a later reader could not re-derive this.
+    #[must_use]
+    pub fn withheld(&self) -> Option<Withheld> {
+        if self.finished {
+            return None;
+        }
+        match self.read_place() {
+            Err(why) => Some(why),
+            // ⚠ THE SECOND HALF, on `resumable_request`'s own rule: a place with nothing to rebuild
+            // the plugin from is a configuration nothing can be entered into, and a run held back
+            // for THAT is held back for a reason a reader can act on — the request is what a
+            // predecessor failed to write down, and no promotion caused it.
+            Ok(_) if self.request.is_none() => Some(Withheld::NoRequest),
+            Ok(_) => None,
+        }
     }
 
     /// ⚠⚠⚠⚠⚠ **THE REQUEST TO REBUILD THIS RUN'S PLUGIN FROM, IF THERE IS ANYTHING TO PUT BACK** —
-    /// register item 543's sixth brick, and the door [`RunRegistry::inherited`] reads.
+    /// register item 543's sixth brick, and the door [`RunRegistry::inheritance`] reads.
     ///
     /// # Why it is guarded by the PLACE and not merely by its own presence
     ///
@@ -1763,39 +1946,81 @@ impl RunRegistry {
             // ⚠ A FRESH RUN HAS SAID NOTHING AND HAS LOST NOTHING — register item 671.
             reports: AtomicU64::new(0),
             revived_at: None,
+            // ⚠ NOTHING WAS WITHHELD FROM A RUN NOBODY INHERITED — register item 737. This daemon
+            // is starting it, so there is no predecessor's record for anything to have been kept
+            // out of, and the absence is that fact rather than an unanswered question.
+            withheld: None,
         });
         id
     }
 
-    /// **EVERY RUN A PREDECESSOR LEFT THAT THIS DAEMON COULD PICK UP** — register item 543's sixth
-    /// brick, in submit order.
+    /// **EVERY RUN A PREDECESSOR LEFT THAT THIS DAEMON COULD PICK UP, AND EVERY ONE IT COULD NOT**
+    /// — register item 543's sixth brick and register item 737's other half, both in submit order.
     ///
-    /// A run appears here exactly when [`restore`](Self::restore) kept both halves of what a resume
-    /// needs — a place spelled in this image's documents and the request that built the plugin —
-    /// which is `PersistedRun::resumable_request`'s rule, taken once at read time. Everything else
-    /// a predecessor left is a record of something that is over.
+    /// A run appears in [`Inheritance::resumed`] exactly when [`restore`](Self::restore) kept both
+    /// halves of what a resume needs — a place spelled in this image's documents and the request
+    /// that built the plugin — which is `PersistedRun::resumable_request`'s rule, taken once at read
+    /// time. Everything else a predecessor left is a record of something that is over.
     ///
-    /// ⚠ It says nothing about whether any of them CAN be resumed: the pane may be gone, the brief
-    /// may name a plugin this build no longer has, and the machine may refuse the place. Those are
-    /// answers only the layer holding a workspace can give — see
+    /// ⚠⚠⚠⚠⚠ **AND THE UNFINISHED RUNS THAT STAYED BEHIND ARE NAMED RATHER THAN OMITTED** —
+    /// register item 737. This used to return a bare `Vec`, so *the predecessor left nothing* and
+    /// *a promotion changed the documents and took every run with it* were the same empty list. The
+    /// second is the COMMON case, because changing a document is what a promotion is usually for.
+    ///
+    /// ⚠ It says nothing about whether any of the resumed ones CAN be resumed: the pane may be
+    /// gone, the brief may name a plugin this build no longer has, and the machine may refuse the
+    /// place. Those are answers only the layer holding a workspace can give — see
     /// [`crate::plugins::PluginsExternal::put_back`], which gives them one at a time.
     #[must_use]
-    pub fn inherited(&self) -> Vec<InheritedRun> {
-        self.runs
+    pub fn inheritance(&self) -> Inheritance {
+        let restored = self
+            .runs
             .iter()
-            .filter(|record| matches!(*lock(&record.state), RunState::Interrupted))
-            .filter_map(|record| {
-                let place = lock(&record.progress).place.clone()?;
-                Some(InheritedRun {
+            .filter(|record| matches!(*lock(&record.state), RunState::Interrupted));
+        let mut answer = Inheritance::default();
+        for record in restored {
+            // ⚠⚠ THE REASON IS PREFERRED OVER THE CELL, and the two cannot disagree: `withheld` is
+            // `None` exactly when `resumable_request` handed the record both halves, which is
+            // exactly when the two reads below are `Some`. Written this way round so a run that is
+            // held back is reported ONCE, under the reason the log gave, rather than falling
+            // through to a silent `continue` the way it did before this existed.
+            if let Some(why) = record.withheld.clone() {
+                answer.withheld.push(WithheldRun {
                     id: record.id,
                     label: record.label.clone(),
-                    place,
-                    request: record.request.clone()?,
-                    progress: Arc::clone(&record.progress),
+                    why,
                     driver: record.run.driver_pid(),
-                })
-            })
-            .collect()
+                });
+                continue;
+            }
+            // ⚠⚠⚠ AND A RECORD WITH NO REASON MUST HAVE BOTH HALVES — `PersistedRun::withheld`
+            // answers `None` exactly when `resumable_request` handed them over, so this pair is
+            // present by that function's own rule. It is CHECKED rather than trusted because the
+            // alternative is the silence this door was filed for: a run that fell through here
+            // unclassified would vanish from both lists and be indistinguishable from a
+            // predecessor that left nothing.
+            let (Some(place), Some(request)) =
+                (lock(&record.progress).place.clone(), record.request.clone())
+            else {
+                tracing::error!(
+                    target: "sprag_host::runs",
+                    run = record.id.0,
+                    "a restored run named no reason for staying behind and carries no place or \
+                     request either, so this boot can neither put it back nor say why — \
+                     `PersistedRun::withheld` and `resumable_request` have stopped agreeing",
+                );
+                continue;
+            };
+            answer.resumed.push(InheritedRun {
+                id: record.id,
+                label: record.label.clone(),
+                place,
+                request,
+                progress: Arc::clone(&record.progress),
+                driver: record.run.driver_pid(),
+            });
+        }
+        answer
     }
 
     /// **THIS RESTORED RUN HAS A DRIVER AGAIN** — register item 543's sixth brick, and the one door
@@ -1832,7 +2057,7 @@ impl RunRegistry {
     /// cancel, because the flags a cancel reaches would be the new handle's.
     ///
     /// ⚠ The progress cell is NOT replaced: the caller was handed it by
-    /// [`inherited`](Self::inherited) precisely so the new driver writes where the row already
+    /// [`inheritance`](Self::inheritance) precisely so the new driver writes where the row already
     /// reads.
     pub fn put_back(
         &mut self,
@@ -1909,7 +2134,7 @@ impl RunRegistry {
     ///
     /// # ⚠⚠⚠⚠ The place is read from what the driver REPORTED, not from the cell
     ///
-    /// [`Self::inherited`] reads `progress.place` because a restored record's cell is filled from
+    /// [`Self::inheritance`] reads `progress.place` because a restored record's cell is filled from
     /// the log. A run driven in another process never moves that cell at all — its counters arrive
     /// by [`report`](Self::report) and the row prefers them (register item 662) — so reading the
     /// cell here would answer *no place* for every live run there is. The fallback is kept for the
@@ -2556,6 +2781,13 @@ impl RunRegistry {
                 // record at zero is what keeps the two from being counted as one.
                 reports: AtomicU64::new(0),
                 revived_at: None,
+                // ⚠⚠⚠⚠⚠ **AND WHAT THIS READING KEPT OUT, KEPT** — register item 737. Every field
+                // above takes the log's answer or refuses it; this is the refusal itself, held
+                // because the two lines that refuse it (`resumable_request` above and
+                // `resumable_place` below) drop the evidence they judged. A boot that puts nothing
+                // back can now say whether there was nothing to put back or whether a promotion
+                // took the documents out from under all of it.
+                withheld: saved.withheld(),
             });
         }
     }
@@ -2588,6 +2820,10 @@ impl RunRegistry {
                 // ⚠ SAME PASS, SAME REASON — item 596. The sentence a mouth prints weighs this
                 // against `state`, so the two must not be read a moment apart either.
                 cancelled_by: record.run.cancelled_by(),
+                // ⚠ A LEVEL THAT NEVER MOVES — item 737. It is decided once, by the boot that read
+                // the log, and a row that showed it changing would be showing a fact about the
+                // reading rather than about the run.
+                withheld: record.withheld.clone(),
             })
             .collect()
     }
@@ -4037,6 +4273,128 @@ mod tests {
             None,
             "⚠⚠ and a fingerprint vouching for no place must answer nothing rather than an empty \
              something — `Some(&[])` would be a place the engine is entitled to be handed",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY WAY OF NOT COMING BACK IS A REASON A READER CAN ACT ON, AND THEY ARE FOUR
+    /// DIFFERENT ANSWERS** — register item 737, the gate over [`PersistedRun::withheld`].
+    ///
+    /// # What was measured, and why the sibling gate above could not see it
+    ///
+    /// The gate above proves the refusals happen. This one proves they are SAYABLE. Until item 737
+    /// they were not: `resumable_place` answered `None` four different ways, the boot turned all
+    /// four into an empty list, and an empty list is also what a predecessor with no runs at all
+    /// leaves behind. **Measured on this machine 2026-08-28**: the loop daemon's log held two
+    /// unfinished runs whose places were recorded against `091c26165f46a34d` while the tree they
+    /// were about to be promoted into fingerprints `3eabd86deafd4848` — so the next promotion was
+    /// going to discard both, and every channel a person has said `interrupted`.
+    ///
+    /// ⚠⚠ **THE `None` ARM IS THE ONE THAT KEEPS THIS FROM BEING A RUBBER STAMP.** A reporter that
+    /// named every restored run as withheld satisfies four assertions and answers nothing, which is
+    /// why the run that comes through whole is asserted to name no reason at all.
+    #[test]
+    fn a_run_that_is_not_coming_back_says_which_of_the_four_reasons_kept_it() {
+        let saved = |place: Option<Vec<String>>,
+                     document: Option<&str>,
+                     request: Option<serde_json::Map<String, serde_json::Value>>,
+                     finished: bool| PersistedRun {
+            id: 9,
+            label: "a loop that was interrupted mid-turn".to_string(),
+            request,
+            iterations: 12,
+            cost: None,
+            unit: None,
+            finished,
+            outcome: None,
+            ceiling: None,
+            output: None,
+            build: None,
+            driver: None,
+            opened_by_session: None,
+            at: None,
+            document: document.map(str::to_owned),
+            stood_down: None,
+            cancelled_by: None,
+            deliveries: None,
+            banked: None,
+            briefed: None,
+            place,
+        };
+        let words = vec![
+            "working".to_owned(),
+            "work".to_owned(),
+            "working".to_owned(),
+        ];
+        let here = sprag_plugin::STATECHARTS_FINGERPRINT;
+        let asked = || {
+            serde_json::json!({ "plugin": "orchestrator", "pane": 3 })
+                .as_object()
+                .cloned()
+                .expect("an object")
+        };
+
+        // ⚠⚠ THE PREMISE, ASSERTED INSIDE: the foreign fingerprint must really be foreign. Against
+        // a fixture that happened to spell this build's own documents, the arm below is unreachable
+        // and its assertion passes by never being tested — which is the shape item 737 was filed
+        // about in the first place, one level down.
+        assert_ne!(
+            "0000000000000000", here,
+            "⚠⚠ this build's documents must have a fingerprint of their own",
+        );
+
+        // ── THE ONE A PROMOTION CAUSES, and the only arm whose cause is somebody's act ───────
+        assert_eq!(
+            saved(
+                Some(words.clone()),
+                Some("0000000000000000"),
+                Some(asked()),
+                false,
+            )
+            .withheld(),
+            Some(Withheld::ForeignDocuments {
+                theirs: "0000000000000000".to_owned()
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 737: a run held back because a promotion changed the documents \
+             must SAY so, carrying the fingerprint the log recorded. Without the number a reader \
+             cannot tell this from a run that recorded nothing, and the remedy is different for \
+             each.",
+        );
+        // ── AND THE THREE ABSENCES, which are three different things to go and look at ──────
+        assert_eq!(
+            saved(Some(words.clone()), None, Some(asked()), false).withheld(),
+            Some(Withheld::NoDocument),
+            "⚠⚠⚠ a place with no fingerprint beside it is a vocabulary nobody can check, and that \
+             is not the same fact as a place from a build somebody named",
+        );
+        assert_eq!(
+            saved(None, Some(here), Some(asked()), false).withheld(),
+            Some(Withheld::NoPlace),
+            "⚠⚠ a run that recorded no position has nothing to be put back AT, which is not a \
+             refusal and must not read as one",
+        );
+        assert_eq!(
+            saved(Some(words.clone()), Some(here), None, false).withheld(),
+            Some(Withheld::NoRequest),
+            "⚠⚠⚠ a place this build can read with nothing to rebuild the plugin from is a \
+             predecessor that never wrote the request down — pointing that reader at documents \
+             would send them after something that is not wrong",
+        );
+
+        // ── THE CONTROL: a run that comes back whole names NO reason ────────────────────────
+        assert_eq!(
+            saved(Some(words.clone()), Some(here), Some(asked()), false).withheld(),
+            None,
+            "⚠⚠⚠ A CONTROL FAILED: a run whose place and request both crossed the log was reported \
+             as staying behind. `withheld` would then be a second name for *restored* and every \
+             assertion above would be satisfied by a function that always answers.",
+        );
+        // ── AND SO DOES A RUN THAT IS OVER, on a claim rather than an exemption ─────────────
+        assert_eq!(
+            saved(None, None, None, true).withheld(),
+            None,
+            "⚠⚠ a FINISHED run is not waiting for anybody: its row already says what became of it, \
+             and *it is not coming back* printed over a converged run buries the one line that \
+             matters on every row a person reads",
         );
     }
 

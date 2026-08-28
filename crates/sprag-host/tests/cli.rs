@@ -3906,6 +3906,241 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
     drop(guard);
 }
 
+/// ⛔⛔⛔⛔⛔ **A PROMOTION THAT CHANGES THE DOCUMENTS SAYS WHICH RUNS IT IS NOT BRINGING BACK** —
+/// register item 737, and the arm the gate above structurally cannot reach.
+///
+/// # ⚠⚠⚠⚠⚠ The gate above measures a promotion that almost never happens
+///
+/// It re-spawns THE SAME TEST BINARY, so the successor's
+/// [`sprag_plugin::STATECHARTS_FINGERPRINT`] is the predecessor's and every run comes back. But the
+/// reason to promote a loop's daemon is usually a changed `.scxml` — `sprag-plugin/build.rs` says
+/// so in as many words (*"the restart that motivates persisting a run at all is a document change,
+/// so the dangerous case is the common one rather than the rare one"*) — and a changed document
+/// makes `PersistedRun::resumable_place` answer `None` for every run in the log at once.
+///
+/// **Measured on this machine 2026-08-28**, before this gate existed: the live loop daemon's log
+/// carried two unfinished runs whose places were recorded against `091c26165f46a34d`, and the tree
+/// they were about to be promoted into fingerprints `3eabd86deafd4848`. So the next promotion would
+/// bring back neither — while the gate above went on reporting that a promotion brings every loop
+/// back, because the one thing it cannot vary is the fingerprint of the binary it spawns.
+///
+/// # ⚠⚠⚠⚠ How a document change is staged from inside one binary, and why it is the real thing
+///
+/// A test cannot compile a second image whose documents differ. It does not have to: from a
+/// SUCCESSOR's point of view a document change has exactly one observable — **the fingerprint the
+/// log recorded is not the fingerprint this binary carries** — and the log is the only channel
+/// between a dead daemon and its replacement. So one run's recorded `document` is rewritten and the
+/// other's is left exactly as the daemon wrote it, which makes the fingerprint the ONLY variable
+/// between two runs that are otherwise the same loop.
+///
+/// ⚠ A log holding runs from more than one predecessor is not a contrivance either: the real loop
+/// daemon's log carries records from three different builds, 44 of them with no fingerprint at all.
+///
+/// # ⚠⚠⚠ What it asserts, and what it deliberately does not
+///
+/// NOT *the run comes back* — it must not, and item 544 chose that on purpose: a configuration read
+/// against a document it did not come from decodes cleanly and is WRONG. The claim is that the
+/// product **says so**, in the row a person actually opens, naming both fingerprints — so the
+/// remedy follows from the sentence instead of from somebody remembering item 544.
+///
+/// ⚠⚠ The premise is asserted inside: the two fingerprints must really differ, and the untouched
+/// run's record must really carry this build's. Against a fixture where they matched, every claim
+/// below would be true without being tested — which is the vacuity item 737 was filed about, one
+/// level up.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_back() {
+    /// A fingerprint no build of these documents has — the log's word for *another image wrote
+    /// this*. Sixteen hex digits, the shape `stamp_fingerprint` emits.
+    const FOREIGN: &str = "0000000000000000";
+
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-promoted-past-its-documents-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    assert_ne!(
+        FOREIGN,
+        sprag_plugin::STATECHARTS_FINGERPRINT,
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: the word this gate writes into the log must not be the one \
+         this binary's documents hash to, or the promotion it stages is not a promotion at all.",
+    );
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    // ── THE PROMOTED REPOSITORY'S LOOP, and a second one whose record is left alone ──────────
+    let promoted = loop_session(&mut conn, "promoted");
+    start_loop(
+        &mut conn,
+        "promoted",
+        promoted,
+        "the loop whose documents are about to change under it",
+    );
+    let untouched = loop_session(&mut conn, "untouched");
+    start_loop(
+        &mut conn,
+        "untouched",
+        untouched,
+        "the control, whose record keeps the fingerprint the daemon wrote",
+    );
+    assert!(
+        wait_for(Duration::from_secs(90), || resumable_runs(&state, 2)),
+        "⚠⚠ THE PREMISE FAILED: the daemon never persisted TWO live loops each carrying a place \
+         and a request, so there is nothing for a promotion to withhold and this gate would be \
+         measuring an empty log.",
+    );
+    let runs_dir = state.join("sprag");
+    assert!(
+        wait_for(Duration::from_secs(60), || std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".snapshot.json"))),
+        "⚠⚠ THE PREMISE FAILED: the daemon never wrote a workspace snapshot, so its successor \
+         would boot with no panes and NEITHER run could be put back — which would make the control \
+         below agree with the claim for the wrong reason",
+    );
+    drop(conn);
+
+    // THE PROMOTION: outright, so nothing writes a tidy terminal state on the way out.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+
+    // ── AND THE DOCUMENTS CHANGE UNDERNEATH ONE OF THEM ─────────────────────────────────────
+    //
+    // ⚠⚠ THE LABEL IS WHAT NAMES THE RUN HERE, and it is allowed to be: a run's label is composed
+    // once, when it opens (`ai_loop pane=N`), so at THIS moment — before any successor exists — it
+    // still spells the pane the loop was started over. Nothing downstream derives anything from it.
+    let log_file = std::fs::read_dir(&runs_dir)
+        .expect("the state directory exists")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(".runs.json"))
+        })
+        .expect("the daemon wrote a run log");
+    let mut log = sprag_host::load_runs(&log_file).expect("and it decodes");
+    let mine = format!("pane={promoted}");
+    let mut rewritten = 0;
+    for run in &mut log.runs {
+        assert_eq!(
+            run.document.as_deref(),
+            Some(sprag_plugin::STATECHARTS_FINGERPRINT),
+            "⚠⚠⚠ THE PREMISE FAILED: run {} was persisted without this build's fingerprint beside \
+             its place, so rewriting one below would not be the only difference between the two \
+             records — and the control would differ from the claim in more than the promotion.",
+            run.id,
+        );
+        if run.label.contains(&mine) {
+            run.document = Some(FOREIGN.to_owned());
+            rewritten += 1;
+        }
+    }
+    assert_eq!(
+        rewritten, 1,
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: exactly one of the two records must be moved to another \
+         build's documents. Rewriting both leaves no control; rewriting none stages no promotion.",
+    );
+    std::fs::write(
+        &log_file,
+        serde_json::to_string(&log).expect("the run log encodes"),
+    )
+    .expect("the predecessor's log is left where its successor reads it");
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the replacement daemon never started serving",
+    );
+
+    // ── THE CLAIM: the row a person opens says it is not coming back, and names both builds ──
+    //
+    // ⚠⚠⚠⚠ ONE RUN'S BLOCK AND NOT THE WHOLE LISTING, which is not tidiness: `runs` prints every
+    // run this daemon holds, so a `contains` over the lot is satisfied by the OTHER loop's row —
+    // and the control below would then be asserting the claim's own text is absent from a listing
+    // that necessarily contains it. Measured: the first form of this gate failed exactly there.
+    let block_for = |listed: &str, pane: u64| -> String {
+        let heading = format!("ai_loop pane={pane}");
+        listed
+            .split("\nrun ")
+            .map(|chunk| chunk.trim_end().to_owned())
+            .find(|chunk| {
+                chunk
+                    .lines()
+                    .next()
+                    .is_some_and(|head| head.trim_end().ends_with(&heading))
+            })
+            .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
+    };
+    let listed = sprag(&sock, &["runs", "-t", "promoted"]);
+    assert!(listed.ok, "{}", listed.stderr);
+    let moved = block_for(&listed.stdout, promoted);
+    assert!(
+        moved.contains("interrupted"),
+        "⚠⚠ THE PREMISE FAILED: the run whose documents moved is not even reported as interrupted, \
+         so what follows would be about a row nobody is looking at: {moved:?}",
+    );
+    assert!(
+        moved.contains(FOREIGN) && moved.contains(sprag_plugin::STATECHARTS_FINGERPRINT),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 737: a promotion that changed the documents put NONE of the \
+         predecessor's runs back, and the row still says only `interrupted` — the same word it \
+         says about a run that is waiting to be picked up. Both fingerprints have to be in the \
+         sentence, because what a reader acts on is the COMPARISON: half of it sends them off to \
+         find what this build's documents hash to before they can tell whether anything is wrong. \
+         Row: {moved:?}",
+    );
+    assert!(
+        moved.contains("no successor can put it back"),
+        "⛔⛔⛔ REGISTER ITEM 737: the row carries the numbers and not the DECISION. A person \
+         reading two hex words has been shown evidence, not told what happened to their loop — and \
+         the thing they must not go on believing is that some daemon will pick it up. Row: \
+         {moved:?}",
+    );
+
+    // ── THE CONTROL: the run whose record was left alone comes back, and says none of this ───
+    //
+    // ⚠⚠⚠⚠ WITHOUT IT THIS GATE PASSES AGAINST A BOOT THAT RESUMES NOTHING AT ALL — a successor
+    // whose panes never came back, or one that had simply stopped putting runs back, would leave
+    // both rows `interrupted`, and a sentence printed over every restored run would satisfy every
+    // assertion above. The control is what makes the FINGERPRINT the cause.
+    let came_back = wait_for(Duration::from_secs(30), || {
+        let control = sprag(&sock, &["runs", "-t", "untouched"]);
+        control.ok && !block_for(&control.stdout, untouched).contains("interrupted")
+    });
+    let control = sprag(&sock, &["runs", "-t", "untouched"]);
+    let kept = block_for(&control.stdout, untouched);
+    assert!(
+        came_back,
+        "⚠⚠⚠ THE CONTROL FAILED: the loop whose record kept this build's fingerprint did not come \
+         back either, so *nothing was resumed* is the explanation for the claim above rather than \
+         *the documents moved*. Row: {kept:?}",
+    );
+    assert!(
+        !kept.contains("no successor can put it back"),
+        "⚠⚠⚠ THE CONTROL FAILED: a run that WAS put back is carrying the sentence that says \
+         nothing will pick it up, so the clause is printed about restoration itself rather than \
+         about the refusal. Row: {kept:?}",
+    );
+    drop(guard);
+}
+
 /// ⚠⚠⚠⚠⚠ **A RUN WHOSE DRIVER PROCESS DIES UNDER A LIVING DAEMON IS PUT BACK ON A NEW ONE, AND A
 /// RUN THAT CANNOT BE IS TOLD SO** — register item 671, the first of the two residues item 544 left
 /// behind when it moved a driver out of the daemon.

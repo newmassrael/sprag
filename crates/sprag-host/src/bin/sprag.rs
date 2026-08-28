@@ -5773,6 +5773,17 @@ fn render_run(run: &Value) -> String {
     let canceller = run[sprag_host::plugins::RUN_CANCELLED_BY_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⛔⛔⛔⛔⛔ AND WHETHER ANY DAEMON IS GOING TO PICK THIS RUN UP — register item 737, in the same
+    // place and under the same constraint as the clauses above.
+    //
+    // ⚠⚠ THIS IS THE CLAUSE THE WORD `interrupted` MOST NEEDS. That word covers two opposite
+    // futures — *waiting to be put back* and *no successor can put it back, because the documents
+    // it recorded its position against are not this build's* — and the second is what a PROMOTION
+    // causes, which makes it the common one rather than the rare one. A person reading a bare
+    // `interrupted` after promoting a build waits for a resume that was decided against.
+    let withheld = run[sprag_host::plugins::RUN_WITHHELD_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     // ⚠⚠⚠⚠⚠ AND WHICH PANE A PERSON SHOULD ACTUALLY WALK TO — register item 726, in the same place
     // and under the same constraint as the four clauses above.
     //
@@ -5865,7 +5876,7 @@ fn render_run(run: &Value) -> String {
         // first of them: a daemon restarted under a standing order left a person a bare word and
         // no way to learn that what they asked for had never happened.
         _ => format!(
-            "{head}  {}{order}{prompts}{verified}{canceller}\n",
+            "{head}  {}{withheld}{order}{prompts}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("?"),
         ),
     }

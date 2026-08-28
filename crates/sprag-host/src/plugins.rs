@@ -229,6 +229,25 @@ pub const RUN_BANKED_KEY: &str = "banked";
 /// ⚠ It follows [`RUN_BANKED_KEY`]'s omit-rather-than-null rule for that key's reason: *no loop was
 /// briefed here* is a fact about the plugin, not a gap in the row.
 pub const RUN_BRIEFED_KEY: &str = "briefed";
+/// ⛔⛔⛔⛔⛔ **WHY AN INTERRUPTED RUN IS NOT COMING BACK** — register item 737. A SENTENCE on the
+/// row (composed by [`withheld_sentence`]), and ABSENT for every run that is not one a boot read out
+/// of a predecessor's log and declined to put back.
+///
+/// # The one thing `interrupted` could not say is whether anybody would pick it up
+///
+/// A restored run's row reads `interrupted`, and that word covers two opposite futures: *waiting
+/// for a daemon that will put it back* and *no daemon ever will, because the documents it recorded
+/// its position against are not this build's*. The second is what a PROMOTION causes — the reason
+/// to promote is usually a changed `.scxml`, and `crate::runs::PersistedRun::resumable_place`
+/// compares that fingerprint for equality — so the common case was the unsayable one.
+///
+/// ⚠⚠ It is the same shape as [`RUN_STOOD_DOWN_KEY`] and [`RUN_CHECKS_KEY`]: a fact one layer knows
+/// and every reader above it needed, published as a sentence because what a person does about it is
+/// a comparison (*these documents against those*) rather than a value.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_STOOD_DOWN_KEY`]'s argument unchanged: an added
+/// answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_WITHHELD_KEY: &str = "withheld";
 /// The key a driver's [`REPORT_PROGRESS_ACTION`] carries its counters under.
 ///
 /// ⚠⚠ **THE WHOLE OBJECT UNDER ONE KEY, not its fields spread across the request.** What is inside
@@ -2014,7 +2033,8 @@ impl PluginsExternal {
     ///
     /// Whatever the builder refuses (a pane this daemon no longer holds, a plugin word this build
     /// no longer spells, a malformed guardrail), whatever the machine refuses about the place, and
-    /// a row that stopped being resumable between [`crate::runs::RunRegistry::inherited`] and here.
+    /// a row that stopped being resumable between [`crate::runs::RunRegistry::inheritance`] and
+    /// here.
     pub fn put_back(&self, inherited: &crate::runs::InheritedRun) -> Result<(), InvokeError> {
         let (mut plugin, _label) = plugin_from_request(self, &inherited.request)?;
         let guardrails =
@@ -4269,6 +4289,21 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
     {
         entry[RUN_BRIEFED_KEY] = json!(said);
     }
+    // ⛔⛔⛔⛔⛔ AND WHETHER ANY SUCCESSOR IS GOING TO PUT THIS RUN BACK — register item 737, beside
+    // the state on the terms every clause above it is published under, and absent for every run
+    // that is not one a boot declined to resume.
+    //
+    // ⚠⚠ IT IS THE ONE CLAUSE HERE THAT IS ABOUT THIS DAEMON'S OWN DECISION rather than about what
+    // the run did, which is exactly why the row has to carry it: the run did nothing wrong and its
+    // own account cannot mention that the documents moved underneath it.
+    //
+    // ⚠⚠⚠ AND IT IS SAID ONLY WHILE THE CLAIM IS TRUE, which is what the state guard is for rather
+    // than tidiness: the sentence asserts *no successor is going to pick this up*, and that is a
+    // statement about a run that is still `interrupted`. A run this daemon somehow got moving again
+    // would carry a claim that had stopped being true, which is worse than not carrying one.
+    if let (Some(why), RunState::Interrupted) = (&run.withheld, &run.state) {
+        entry[RUN_WITHHELD_KEY] = json!(withheld_sentence(why));
+    }
     // ⚠⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register item 540, present only once a step has said so,
     // which is `RUN_CEILING_KEY`'s presence-is-the-claim rule. ⚠ The NUMBER and not the label's
     // prose: a reader that had to parse `ai_loop pane=3` would be deriving a fact from a name.
@@ -4795,6 +4830,52 @@ fn delivered_clause(deliveries: sprag_plugin::Deliveries) -> Option<String> {
         "⚠ {} of {} prompts were folded away by its peer's composer and are not on that pane",
         deliveries.folded, deliveries.made,
     ))
+}
+
+/// **WHY A RUN A BOOT READ OUT OF A PREDECESSOR'S LOG IS NOT COMING BACK** — register item 737, and
+/// the sentence [`RUN_WITHHELD_KEY`] carries.
+///
+/// # ⚠⚠⚠⚠⚠ One spelling, read twice, exactly as `Revival::not_put_back` is
+///
+/// The boot writes it to the operator's log beside the run id, and the row carries it to whoever
+/// opens `sprag runs` afterwards — and a promotion's whole point is that the second person need not
+/// be the first. Two compositions of *why did my loop not come back* would be free to disagree
+/// about the same run, which is the shape `crate::runs::Revival::not_put_back` already refuses one
+/// door over.
+///
+/// # ⚠⚠⚠ Why the foreign-document arm names BOTH fingerprints
+///
+/// Because the fact a reader acts on is a COMPARISON — [`delivery_sentence`]'s argument two
+/// functions down — and half of it is useless: *your run was recorded against `091c2616…`* leaves
+/// the person to go and find what this build's documents hash to before they know whether anything
+/// is wrong. With both, the row itself says *these are two different builds' documents*, and the
+/// remedy (start it again; it is a new run by construction) follows from the sentence.
+///
+/// ⚠ It says what was DECIDED and not that something failed: item 544 chose this — a configuration
+/// read against a document it did not come from decodes cleanly and is wrong — so the sentence
+/// carries the decision rather than an apology for it.
+#[must_use]
+pub fn withheld_sentence(why: &crate::runs::Withheld) -> String {
+    match why {
+        crate::runs::Withheld::ForeignDocuments { theirs } => format!(
+            "its machine's position was recorded against documents this build does not have \
+             (it recorded {theirs}; this build's documents are {}), so no successor can put it \
+             back — a changed document makes a NEW run, deliberately. Start it again",
+            sprag_plugin::STATECHARTS_FINGERPRINT,
+        ),
+        // ⚠ NOT A FAULT AND SAID AS ONE FACT: a run that completed no step, and a plugin that walks
+        // no statechart at all, are the same thing to a reader — there is no position to return to.
+        crate::runs::Withheld::NoPlace => "the daemon that held it never recorded where its \
+             machine was, so there is no position to put it back at"
+            .to_owned(),
+        crate::runs::Withheld::NoDocument => "its position was recorded with no fingerprint \
+             beside it, so nothing can say which documents those words came from and reading them \
+             here would be a guess"
+            .to_owned(),
+        crate::runs::Withheld::NoRequest => "its position is one this build can read, and nothing \
+             recorded what the run was asked with, so no plugin could be rebuilt to enter at it"
+            .to_owned(),
+    }
 }
 
 /// **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES**, or [`None`] for a run that put
@@ -10587,26 +10668,67 @@ mod tests {
         };
 
         // ── CONTROL 1: a place from ANOTHER build's documents is not inherited ───────────────
+        //
+        // ⚠⚠ THE FINGERPRINTS REALLY DIFFER, asserted rather than assumed: a fixture whose foreign
+        // word happened to equal this image's would make every claim below vacuously true.
+        assert_ne!(
+            "0000000000000000",
+            sprag_plugin::STATECHARTS_FINGERPRINT,
+            "⚠⚠ THE FIXTURE'S OWN PREMISE: the foreign fingerprint must not be this build's",
+        );
         let foreign = inheriting(&saved(
             Some(place.clone()),
             Some("0000000000000000"),
             Some(asked.clone()),
         ));
         assert!(
-            lock(&foreign).inherited().is_empty(),
+            lock(&foreign).inheritance().resumed.is_empty(),
             "⚠⚠⚠ A CONTROL FAILED: a run whose place was recorded against a document this build \
              does not have was offered for resuming. Nothing migrates a configuration between \
              documents, so putting that run back would enter it into a document it never ran in — \
              register item 544's whole finding.",
         );
+        // ⛔⛔⛔⛔⛔ AND IT IS NAMED RATHER THAN DROPPED — register item 737. An empty `resumed` on
+        // its own is the same answer a predecessor with no runs at all produces, and a promotion is
+        // usually a DOCUMENT change, so this is the common way for a boot to inherit nothing.
+        assert_eq!(
+            lock(&foreign).inheritance().withheld,
+            vec![crate::runs::WithheldRun {
+                id: crate::runs::RunId(7),
+                label: label.clone(),
+                why: crate::runs::Withheld::ForeignDocuments {
+                    theirs: "0000000000000000".to_owned()
+                },
+                // ⚠ THE LOG RECORDED NONE, which is this fixture's own record rather than a
+                // property of withholding: a restored run's handle answers whatever the file said.
+                driver: None,
+            }],
+            "⛔⛔⛔ REGISTER ITEM 737: a boot that puts none of a predecessor's runs back must say \
+             WHICH runs stayed behind and why. Silence here is what let a promotion discard every \
+             loop on the machine while the only thing anybody could read was `interrupted`.",
+        );
 
         // ── CONTROL 2: a place with no request is not inherited ──────────────────────────────
         let placeless = inheriting(&saved(Some(place.clone()), Some(here), None));
         assert!(
-            lock(&placeless).inherited().is_empty(),
+            lock(&placeless).inheritance().resumed.is_empty(),
             "⚠⚠⚠ A CONTROL FAILED: a run with a place and nothing to rebuild its plugin from was \
              offered for resuming. If this passes while the claim below does too, *the request \
              crossed the log* is a statement about a field nobody reads.",
+        );
+        // ⚠⚠⚠ AND ITS REASON IS THE OTHER ONE — register item 737. The two refusals arrive at the
+        // same empty list and send a reader to opposite places: a foreign fingerprint is somebody's
+        // promotion, and a missing request is a predecessor that never wrote one down.
+        assert_eq!(
+            lock(&placeless)
+                .inheritance()
+                .withheld
+                .first()
+                .map(|run| run.why.clone()),
+            Some(crate::runs::Withheld::NoRequest),
+            "⛔⛔⛔ REGISTER ITEM 737: a run held back for want of a REQUEST was reported under \
+             another reason, or not at all — which sends whoever reads it to look at documents \
+             that are perfectly fine.",
         );
 
         // ── CONTROL 3: a place this build cannot spell is refused, and the row does not move ──
@@ -10619,7 +10741,7 @@ mod tests {
         let mut forged = place.clone();
         forged[0] = "a-state-no-document-in-this-build-has".to_owned();
         let unreadable = inheriting(&saved(Some(forged), Some(here), Some(asked.clone())));
-        let offered = lock(&unreadable).inherited();
+        let offered = lock(&unreadable).inheritance().resumed;
         assert_eq!(
             offered.len(),
             1,
@@ -10668,7 +10790,7 @@ mod tests {
             }
         };
         let elsewhere = inheriting(&saved(Some(place.clone()), Some(here), Some(asked.clone())));
-        let offered = lock(&elsewhere).inherited();
+        let offered = lock(&elsewhere).inheritance().resumed;
         let mut out_of_process = over(&elsewhere).driving_out_of_process(Arc::new(spawning));
         out_of_process
             .put_back(&offered[0])
@@ -10755,7 +10877,17 @@ mod tests {
 
         // ── THE CLAIM: the run this daemon inherited is driven again, under its own id ────────
         let runs = inheriting(&saved(Some(place.clone()), Some(here), Some(asked)));
-        let offered = lock(&runs).inherited();
+        let inheritance = lock(&runs).inheritance();
+        // ⚠⚠ AND NOTHING IS HELD BACK ON THE ARM THAT COMES THROUGH — register item 737's control.
+        // A reporter that named every restored run as withheld would satisfy the two assertions
+        // above while saying nothing at all.
+        assert!(
+            inheritance.withheld.is_empty(),
+            "⚠⚠⚠ A CONTROL FAILED: a run whose place and request BOTH crossed the log was reported \
+             as staying behind, so `withheld` is not reading the refusal — it is a second name for \
+             *restored*.",
+        );
+        let offered = inheritance.resumed;
         assert_eq!(offered.len(), 1, "the log's one resumable run is offered");
         assert_eq!(offered[0].id.0, 7, "and it keeps the id its log gave it");
         assert_eq!(

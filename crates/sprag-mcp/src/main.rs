@@ -2741,6 +2741,17 @@ fn render_run(run: &Value) -> String {
     let canceller = run[sprag_host::plugins::RUN_CANCELLED_BY_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!(" {said}."));
+    // ⛔⛔⛔⛔⛔ AND WHETHER ANY DAEMON IS GOING TO PICK THIS RUN UP — register item 737, from the
+    // host's own renderer for the reason every clause above is.
+    //
+    // ⚠⚠⚠ **THIS IS THE ONE THAT COSTS AN AGENT THE MOST**, and the clause above it already names
+    // why: a supervising agent meets a restarted host every time this build is promoted. Handed a
+    // bare `interrupted` it waits — which is right when a successor is going to put the run back
+    // and is waiting for ever when the promotion changed the documents, and the second is the
+    // common case rather than the rare one.
+    let withheld = run[sprag_host::plugins::RUN_WITHHELD_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!(" {said}."));
     match state["status"].as_str() {
         // The counters, for the reason the person's renderer prints them: an agent that polls a
         // long run and sees the same numbers twice has learned it is stuck, and `still running`
@@ -2794,7 +2805,7 @@ fn render_run(run: &Value) -> String {
         // under a standing order left a reader a bare word and no way to learn that what was asked
         // for had never happened.
         _ => format!(
-            "Run {id} ({label}): {}.{order}{prompts}{verified}{canceller}\n",
+            "Run {id} ({label}): {}.{withheld}{order}{prompts}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("in an unknown state"),
         ),
     }
@@ -8834,6 +8845,33 @@ mod tests {
                  decides without it. Missing: {sentence:?}\nGot:\n{said}",
             );
         }
+
+        // ── AND THE ONE THAT ONLY AN `interrupted` RUN CARRIES — register item 737 ───────────
+        //
+        // ⚠⚠ IT NEEDS ITS OWN ARM RATHER THAN A ROW IN THE TABLE ABOVE, and the reason is the
+        // decision at the writer: `run_to_json` publishes this key ONLY beside `interrupted`,
+        // because the sentence claims *no successor is going to pick this up* and that stops being
+        // true the moment a run is anything else. A row in the table would ask a `done` run to
+        // print a clause the daemon will never send it.
+        const NOT_COMING_BACK: &str = "its machine's position was recorded against documents this \
+                                       build does not have";
+        let mut stopped = run_entry(&blocked_run(sprag_plugin::Refusal::NoConsent, 0));
+        stopped["state"] = serde_json::json!({ "status": "interrupted" });
+        assert!(
+            !render_run(&stopped).contains(NOT_COMING_BACK),
+            "⚠⚠⚠ THE CONTROL: an interrupted run that publishes no `{}` must say nothing about \
+             being abandoned — a mouth printing this sentence unconditionally would tell every \
+             supervisor to give up on runs a successor is about to put back",
+            sprag_host::plugins::RUN_WITHHELD_KEY,
+        );
+        stopped[sprag_host::plugins::RUN_WITHHELD_KEY] = Value::String(NOT_COMING_BACK.to_owned());
+        assert!(
+            render_run(&stopped).contains(NOT_COMING_BACK),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 737: a supervising agent reading `interrupted` is told nothing \
+             about whether any daemon will pick the run up — so it waits, and after a promotion \
+             that changed the documents it waits for ever. Got:\n{}",
+            render_run(&stopped),
+        );
     }
 
     /// A run that stopped on its peer's question, refused for `why`.
