@@ -715,6 +715,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,

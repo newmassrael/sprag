@@ -1561,6 +1561,36 @@ pub struct AgentObservation {
     /// ⚠ `None` is *nobody told us*, never *the peer wants nothing*: a pane whose state was scraped
     /// off the screen has no reporter, and neither has an agent with no hooks installed.
     pub noticed: Option<String>,
+    /// **WHAT THIS PANE'S AGENT SAID IT IS RUNNING RIGHT NOW** — the tool named by the event that
+    /// OPENS a tool call, and [`None`] where nothing has said so.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why [`reports`](Self::reports) needed a second half, measured (register item 721)
+    ///
+    /// That counter is what separates *the peer is working* from *the peer has stopped speaking*,
+    /// and it does it per EVENT — so it holds for exactly as long as the events keep arriving. **A
+    /// single tool call is a gap in the stream.** The event that begins it is the last thing said
+    /// until the tool returns, so inside that gap a peer running a long build and a peer whose turn
+    /// was abandoned present the identical frozen reading, and a
+    /// [`Quiet`](crate::completion::Quiet) bound fires on both.
+    ///
+    /// What that cost, live: a run went `Working --PeerSilent--> AwaitingHuman` at 05:56:33 while
+    /// its agent was running `cargo check` on screen, and died `Unattended` exactly 3,600 s later —
+    /// with the turn still in flight. Re-measured 2026-08-29 over this workspace's own wrapped
+    /// builds (`target/bx-logs`, n=6536): **p50 21 s, p90 148 s, p99 263 s, max 5,647 s**, and
+    /// **16 runs past the ten-minute bound**. The gap is what a build looks like here.
+    ///
+    /// ⚠⚠ **[`None`] IS *NOBODY SAID*, NEVER *NOTHING IS RUNNING*.** A pane read off its screen, a
+    /// daemon older than the key and an agent whose tool-begin payload named no tool all answer it,
+    /// and every one of them must keep the behaviour that shipped before this field existed — the
+    /// silence bound still fires. Reading the absence as *and therefore working* would let the
+    /// commonest case switch the safety net off, which is the inversion
+    /// [`Authority::is_exact`](crate::access::Authority::is_exact) exists to prevent one door over.
+    ///
+    /// ⚠ Present-tense and needing no counter to date it, on [`noticed`](Self::noticed)'s reason:
+    /// the tracker REPLACES it on every report rather than carrying it, so every report that is not
+    /// a tool-begin retires it — the tool's own end, the turn's rest, the idle nag. A dropped
+    /// end-of-tool payload therefore costs one window and not every window after it.
+    pub running: Option<String>,
     /// **WHERE THE AGENT SAID IT IS WRITING ITS TRANSCRIPT**, and `None` where none has said so.
     ///
     /// Stated rather than derived. The spend reader resolves this path from a session id and was

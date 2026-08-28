@@ -1542,11 +1542,43 @@
       ran** (2026-08-19): p50 = 7 s, p90 = 107 s, p99 = 273 s, and the LONGEST
       EVER = 447 s. Ten minutes clears the measured maximum by two and a half.
 
+      ⛔⛔⛔⛔⛔ AND THAT MEASUREMENT AGED OUT IN TEN DAYS — register item 721.
+      RE-MEASURED 2026-08-29 over the same population (`target/bx-logs`, every
+      wrapped command this repository has run, n = **6,536**, each one's duration
+      taken as its log's last write against the timestamp in its own name):
+
+          p50 = 21 s   p90 = 148 s   p95 = 180 s   p99 = 263 s
+          LONGEST = 5,647 s          PAST TEN MINUTES = 16
+
+      The maximum this number was chosen against is **12.6x larger** than it was,
+      and sixteen real commands crossed the bound. What that cost, live: a run
+      took `peer.silent` at 05:56:33 with a wrapped `cargo check -p sprag-plugin`
+      running on its agent's screen, and was killed `Unattended` an hour later
+      with the turn still in flight and the agent still working after the run had
+      gone.
+
+      ⛔⛔⛔ SO THE BOUND NO LONGER MEANS *HOW LONG NOTHING MAY SPEAK*. It means
+      **how long nothing may speak WITH NOTHING RUNNING**, and the narrowing is
+      the repair rather than a larger number — because raising it would have to
+      be done again the next time this repository's build got slower, while the
+      DISCRIMINATION does not age. The event that opens a tool call NAMES the
+      tool; the driver carries that name beside the report counter; and a peer
+      that crosses this bound with a tool named is quiet BECAUSE a child is
+      running, which is not silence. A peer that crosses it with nothing named
+      still raises `peer.silent`, exactly as it always did.
+
+      ⚠⚠ THE RESIDUE, NAMED RATHER THAN HIDDEN: a tool call that never returns is
+      never called silent. That is bounded and not unbounded — `turn_within_ms`
+      above ends the wait at *the turn did not finish*, which the next pump asks
+      about again — and it is the trade this item asks for: the answer being
+      traded away was killing runs whose agents were working.
+
       ⚠⚠ AN AUTHOR WHOSE AGENT DOES SOMETHING SLOWER RE-MEASURES THIS, and the
       measurement is the same one: the longest single tool call the work makes.
       A loop that compiles a large tree, waits on a remote job or sleeps on a
-      deploy has a longer one, and this number is the only thing that has to
-      move.
+      deploy has a longer one. ⚠ Since the narrowing above, this number matters
+      LESS than it did — a slow tool call is now recognised rather than merely
+      out-waited — but it still bounds a turn that goes quiet between tools.
 
       ⚠⚠⚠⚠ AND THE HONEST DIRECTION TO BE WRONG IN IS *SHORT*, WHICH IS THE
       OPPOSITE OF `turn_within_ms` ABOVE — so the two numbers must not be reasoned
@@ -3157,9 +3189,10 @@
     <!-- A watching person can halt the loop between turns. -->
     <transition event="hold" target="awaiting_human"/>
     <!--
-      ⚠⚠⚠⚠⚠ NOTHING HAS SPOKEN FOR THE PANE FOR THE WHOLE OF `quiet_within_ms`.
-      See that `<data>` for what was measured; this is where the decision about
-      it lives.
+      ⚠⚠⚠⚠⚠ NOTHING HAS SPOKEN FOR THE PANE FOR THE WHOLE OF `quiet_within_ms`
+      AND NOTHING IS RUNNING TO EXPLAIN IT. See that `<data>` for what was
+      measured, and for why the second half of that sentence had to be added;
+      this is where the decision about it lives.
 
       ⚠⚠⚠ TO `awaiting_human` AND NOT TO `peer_gone`, WHICH IS THE WHOLE
       DISTINCTION. A gone process cannot come back and its state is final. A

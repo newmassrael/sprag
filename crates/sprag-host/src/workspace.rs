@@ -1388,6 +1388,16 @@ impl WorkspaceExternal {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
         };
+        // ⚠⚠⚠ AND WHAT IT IS RUNNING, on `noticed`'s terms exactly — absent and `null` both mean
+        // *this report said nothing about a tool*, and because this field is REPLACED rather than
+        // carried that silence also retires whatever the last one named. See
+        // `crate::wire::AGENT_RUNNING_KEY`: the absence must be read as *unclassified*, never as
+        // *and therefore working*, or every reporter too old to send it would switch off a silence
+        // bound it never knew about.
+        let running = match map.get(crate::wire::AGENT_RUNNING_KEY) {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
+        };
         let transcript = match map.get(crate::wire::AGENT_TRANSCRIPT_KEY) {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
@@ -1420,6 +1430,7 @@ impl WorkspaceExternal {
                 asked,
                 said,
                 noticed,
+                running,
                 transcript,
                 build,
             },
@@ -10151,11 +10162,12 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            35,
+            36,
             "one probe per open string argument of every form — the window and pane NAMES are most \
              of them, plus the two anchors a move may name, a working directory on each spawning \
              verb, a message's text and audience, a report's source, name, BUILD, what the agent \
-             SAID (item 441) and why it says it wants a PERSON (item 452), and a dropped path",
+             SAID (item 441), why it says it wants a PERSON (item 452), what it is RUNNING (item \
+             721), and a dropped path",
         );
     }
 
@@ -10170,7 +10182,7 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            68,
+            69,
             "one probe per OPTIONAL declared argument of every form — required ones are not \
              driven, because `null` for something the grammar demands is malformed rather than \
              declined",
@@ -10184,11 +10196,13 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            109,
+            110,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
-             per form rather than per verb. The newest is `stop_job`'s `reach` (item 654), which \
-             decides whether a stop may take the pane with the job; before it came `respawn`'s \
-             `pane` (item 557), `report_agent`'s `build` (item 412), `said` (441), `noticed` (452). \
+             per form rather than per verb. The newest is `report_agent`'s `running` (item 721), \
+             which is what tells a peer quiet inside a tool call from one that has stopped; before \
+             it came `stop_job`'s `reach` (item 654), which decides whether a stop may take the \
+             pane with the job, `respawn`'s `pane` (item 557), `report_agent`'s `build` (item 412), \
+             `said` (441), `noticed` (452). \
              ⚠ THE PER-HALF SPLIT THIS SENTENCE USED TO GIVE — «31 ask-backed and 67 inline» — WAS \
              ALREADY WRONG WHEN IT SAID 107: the two do not add up to the number beside them, and \
              nobody noticed because only the number is asserted. Removed rather than re-guessed; \

@@ -8554,6 +8554,83 @@ fn a_blocked_pane_says_what_its_agent_asked_a_person_for() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **A PANE THAT IS QUIET BECAUSE A CHILD IS RUNNING SAYS SO TO A PERSON** — register
+/// item 721, driven through the doors the product uses: a real hook process, a real socket, a real
+/// daemon and a real `sprag agent`.
+///
+/// # ⚠⚠⚠⚠⚠ Why this surface needs its own gate rather than inheriting the ones below the socket
+///
+/// The repair item 721 bought is that a run does NOT hand a quiet-but-working peer to a person. The
+/// cost of getting that right is that the pane a person now hears nothing about is exactly the one
+/// they used to be called to — so if the reason is not on this surface, the repair is a silence a
+/// person cannot distinguish from the product having forgotten them. The in-process gates assert
+/// the DECISION; this asserts that somebody asked to trust it can see what it was made of.
+///
+/// # ⚠⚠⚠ The control is the tool ENDING, and it is a real payload rather than an edited one
+///
+/// `PostToolUse` carries a `tool_name` of its own — a different one here, so the two arms cannot
+/// agree by accident. A reader keyed on the NAME's presence rather than on the EVENT answers
+/// `Some("Write")` and leaves a finished tool standing on this surface for the rest of the turn.
+///
+/// ⚠⚠ **AND THE CONTROL IS NOT VACUOUS, WHICH THE ITEM 452 GATE ABOVE PAID TO LEARN.** Its
+/// person-facing line is printed only for a `blocked` pane, so a `working` pane could not have
+/// shown it either way and the assertion passed under the very mutation it named. This line is
+/// printed OUTSIDE that branch, for any pane whose report named a tool — so the pane in arm two is
+/// one that WOULD still print it if the field had been carried, and its absence is a fact about the
+/// tracker rather than about the renderer.
+#[test]
+fn a_pane_quiet_because_a_child_is_running_says_so_to_a_person() {
+    let (_host, sock) = spawn_host();
+    let pane = [("SPRAG_PANE", "0")];
+    // Captured live 2026-08-28 from `claude 2.1.250`, trimmed to the keys this door reads.
+    let began = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"toolu_01Ab"}"#;
+    // The REAL ending, which names a tool too — and deliberately a different one.
+    let ended = r#"{"hook_event_name":"PostToolUse","tool_name":"Write","duration_ms":12}"#;
+    let hook = |payload: &str| {
+        let run = sprag_stdin(&sock, &["hook", "claude"], &pane, payload);
+        assert!(run.ok, "the hook must succeed: {}", run.stderr);
+        sprag(&sock, &["agent", "0"]).stdout
+    };
+
+    // ── 1. THE TOOL BEGINS, and the reason for the quiet reaches a person.
+    let inside = hook(began);
+    assert!(
+        inside.contains("running \"Bash\""),
+        "⛔⛔⛔⛔⛔ THE PERSON IS NOT TOLD WHY THE PANE IS QUIET. This is the pane a run now \
+         deliberately does NOT call anybody to, so the account left for whoever looks is the whole \
+         of what they get — and `bx-logs` says sixteen of this workspace's own commands ran past \
+         the bound this decides, the longest 5,647 s. Drop `running_in` from `deliver_hook` and \
+         every other test in this file stays green: {inside}",
+    );
+    assert!(
+        inside.contains("silence bound does not fire"),
+        "⚠⚠⚠ AND IT SAYS WHAT THE PRODUCT DID ABOUT IT, not merely what it saw. A name with no \
+         consequence beside it leaves the reader to guess whether the run noticed: {inside}",
+    );
+
+    // ── 2. THE TOOL ENDS — a real `PostToolUse`, which NAMES a tool of its own.
+    let after = hook(ended);
+    assert!(
+        !after.contains("running \"Bash\""),
+        "⚠⚠⚠⚠⚠ A REPORT THAT NAMES NO TOOL RETIRES THE ONE IN FORCE. Carry this field the way its \
+         neighbours are carried — one `or_else` in `Tracker::report` — and one dropped end-of-tool \
+         payload leaves this pane claiming a child for the rest of the turn, which switches off the \
+         very bound this fact exists to keep honest: {after}",
+    );
+    assert!(
+        !after.contains("running \"Write\""),
+        "⚠⚠⚠⚠ AND THE ENDING IS NOT A BEGINNING. This payload carries `tool_name` as well, so a \
+         door keyed on the NAME rather than on the EVENT answers `Write` here and a finished tool \
+         stands for ever: {after}",
+    );
+    assert!(
+        after.contains("0: working  claude"),
+        "⚠ THE PREMISE, ASSERTED INSIDE THE GATE: this pane is still one the line WOULD be printed \
+         for — it is not blocked, and the renderer asks for no state at all — so the absence above \
+         is about the tracker and not about which branch ran: {after}",
+    );
+}
+
 /// A state home two daemon GENERATIONS share, removed when the test ends.
 ///
 /// [`isolated_state_home`] derives one from a socket, which is right for every gate that has a

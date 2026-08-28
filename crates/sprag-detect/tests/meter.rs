@@ -259,6 +259,7 @@ fn a_reported_pane_costs_no_evaluation() {
         asked: None,
         said: None,
         noticed: None,
+        running: None,
         transcript: None,
         build: None,
     });

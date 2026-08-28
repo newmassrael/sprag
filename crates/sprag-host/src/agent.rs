@@ -225,6 +225,18 @@ pub struct AgentFacts {
     /// on every report rather than carrying it, so a sentence standing here belongs to the report in
     /// force. See `sprag_detect::Report::noticed`.
     pub noticed: Option<String>,
+    /// **WHAT THE AGENT ITSELF SAID IT IS RUNNING RIGHT NOW**, carried from the hook that opens a
+    /// tool call — `None` where nothing has said so, which includes every event but that one.
+    ///
+    /// ⚠⚠⚠⚠ It is [`reports`](Self::reports)' missing half. That counter moves once per EVENT, so
+    /// it tells a working turn from a dead one only while events keep arriving — and ONE tool call
+    /// is a gap in the stream in which the two readings are identical again. This names the tool
+    /// inside the gap, so a reader can say which kind of quiet a pane is in.
+    ///
+    /// ⚠ NOT undated the way [`said`](Self::said) is and needing no counter, on
+    /// [`noticed`](Self::noticed)'s reason: the tracker replaces it on every report rather than
+    /// carrying it, so a name standing here belongs to the report in force.
+    pub running: Option<String>,
     /// **WHERE THE AGENT SAID IT IS WRITING ITS TRANSCRIPT** — stated, never derived from an id.
     pub transcript: Option<String>,
     /// **WHEN THIS VERDICT CHANGES WITH NO FURTHER OUTPUT** — [`Tracker::pending_deadline`] as it
@@ -411,6 +423,12 @@ pub fn verdict_json(facts: &AgentFacts) -> serde_json::Value {
     if let Some(noticed) = &facts.noticed {
         value[crate::wire::AGENT_NOTICED_KEY] = serde_json::json!(noticed);
     }
+    // ⚠⚠ AND WHAT IT IS RUNNING — the tool a quiet peer is inside, which is what tells that quiet
+    // from the quiet of a turn nothing will ever speak for again. Additive like its neighbours: a
+    // pane with no tool call in flight is byte-identical to the shape before this key existed.
+    if let Some(running) = &facts.running {
+        value[crate::wire::AGENT_RUNNING_KEY] = serde_json::json!(running);
+    }
     // WHERE IT WRITES, stated rather than derived from a session id — the derivation that was
     // measured answering `0` for a transcript that existed (register item 431).
     if let Some(transcript) = &facts.transcript {
@@ -580,6 +598,10 @@ pub fn verdict_of(value: &serde_json::Value, sent: Sent) -> Verdict {
         asked: text(crate::wire::AGENT_ASKED_KEY),
         said: text(crate::wire::AGENT_SAID_KEY),
         noticed: text(crate::wire::AGENT_NOTICED_KEY),
+        // ⚠⚠ An ABSENT key is *this reporter did not say what it is running* and NEVER *and so it
+        // is working*. See `crate::wire::AGENT_RUNNING_KEY`: read the other way, every reporter too
+        // old to send it would silently disable a silence bound it has never heard of.
+        running: text(crate::wire::AGENT_RUNNING_KEY),
         transcript: text(crate::wire::AGENT_TRANSCRIPT_KEY),
         // ⚠⚠⚠⚠⚠ **THE DEADLINE CROSSES NOW — register item 640, and this line is the one items
         // 630 and 631 both said would have to move first.** It read `Settling::Unknown`
@@ -832,6 +854,7 @@ impl AgentRegistry {
             asked: tracker.reported_asked().map(str::to_owned),
             said: tracker.reported_said().map(str::to_owned),
             noticed: tracker.reported_noticed().map(str::to_owned),
+            running: tracker.reported_running().map(str::to_owned),
             transcript: tracker.reported_transcript().map(str::to_owned),
             // ⚠⚠⚠⚠⚠ READ AFTER THE POLICY CORRECTION ABOVE, NOT BEFORE IT. Case 3 can have just
             // re-read the user's window and moved this candidate's deadline EARLIER; a value taken
@@ -1362,6 +1385,7 @@ mod tests {
                 asked: None,
                 said: None,
                 noticed: None,
+                running: None,
                 transcript: None,
                 build: None,
             },
@@ -1491,6 +1515,7 @@ mod tests {
                 asked: None,
                 said: None,
                 noticed: None,
+                running: None,
                 transcript: None,
                 build: None,
             },
@@ -1792,6 +1817,7 @@ mod tests {
                     asked: None,
                     said: None,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     build: build.map(str::to_owned),
                 },
@@ -1855,6 +1881,7 @@ mod tests {
                     asked: None,
                     said: None,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     build: None,
                 },
@@ -1905,6 +1932,7 @@ mod tests {
                 asked: None,
                 said: None,
                 noticed: None,
+                running: None,
                 transcript: None,
                 build: None,
             },
@@ -2227,6 +2255,7 @@ mod clock_tests {
                 asked: None,
                 said: None,
                 noticed: None,
+                running: None,
                 transcript: None,
                 build: None,
             },

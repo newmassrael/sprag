@@ -2632,6 +2632,12 @@ pub(crate) fn agent_state_source(
                 // untouched on the same terms: this layer states, the plugin decides what to do about
                 // it, and neither invents a sentence the peer did not say.
                 noticed: facts.noticed,
+                // ⚠⚠⚠⚠⚠ AND WHAT IT IS RUNNING — register item 721, and the same both-mouths rule
+                // as the reporter's voice below: the IN-PROCESS driver reads this observation while
+                // a remote one reads `agent::verdict_of`'s, so a fact carried by one and not the
+                // other would make a run's silence bound behave differently depending on which side
+                // of a socket it happened to be driving from.
+                running: facts.running,
                 transcript: facts.transcript,
                 // ⚠⚠⚠⚠ AND WHETHER THE REPORTER CAN STILL DELIVER — register item 709. The
                 // IN-PROCESS driver reads this observation and the remote one reads
@@ -10172,6 +10178,7 @@ mod tests {
                 asked: None,
                 said: None,
                 noticed: None,
+                running: None,
                 transcript: None,
                 build: None,
             },
@@ -10228,6 +10235,7 @@ mod tests {
                 asked: None,
                 said: None,
                 noticed: None,
+                running: None,
                 transcript: None,
                 build: None,
             },
@@ -10279,6 +10287,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         };
@@ -10402,6 +10411,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         };
@@ -10483,6 +10493,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         };
@@ -10531,6 +10542,95 @@ mod tests {
              supervisor that never receives it is back where the fourteen measured minutes were: \
              `working seq=6 asked=2 said=0`, indistinguishable from a turn nothing will ever end. \
              Got {first:?} then {second:?}",
+        );
+
+        let closed = lock(&workspace).close(id);
+        assert!(
+            closed.is_some(),
+            "the pane this test opened was there to close"
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND A SUPERVISOR IS TOLD WHAT THE PANE IS RUNNING, SO IT CAN READ THE GAP THE
+    /// COUNTER LEAVES** — register item 721, the hop the fact has to survive.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the counter above is not enough on its own
+    ///
+    /// It moves once per REPORT, so it separates a working turn from a dead one for exactly as long
+    /// as reports keep arriving. **One tool call is a gap in that stream**: the begin event is the
+    /// last thing said until the tool returns, and inside the gap `working seq=N asked=M reports=K`
+    /// is frozen — the same reading a turn nobody will ever hear from again gives. Measured
+    /// 2026-08-27, a run was killed at exactly that reading with `cargo check` on its agent's
+    /// screen; re-measured 2026-08-29 over `target/bx-logs` (n=6536), **16 wrapped commands ran
+    /// past ten minutes and the longest ran 5,647 s**, each of them one tool call.
+    ///
+    /// # ⚠⚠⚠ The second half is what makes the first safe
+    ///
+    /// The field is REPLACED and never carried, so the ending retires it — and that has to be
+    /// measured, because carrying it would turn one dropped end-of-tool payload into a silence
+    /// bound that never fires again for the rest of the turn.
+    #[test]
+    fn a_supervisor_is_told_what_the_pane_is_running_so_a_quiet_turn_can_be_read() {
+        let (workspace, id) = pane_painting_in_turn(&[
+            CLAUDE_AT_REST.replace("%s", "one"),
+            CLAUDE_WORKING.to_owned(),
+        ]);
+        let agents = Arc::new(crate::AgentClock::new(Ruleset::new(built_ins())));
+        let read = source(&workspace, &agents);
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let hook = |seq: u64, running: Option<&str>| Report {
+            state: AgentState::Working,
+            agent: Some("claude".to_owned()),
+            source: "claude-hook".to_owned(),
+            seq: Some(seq),
+            owner: None,
+            asked: None,
+            said: None,
+            noticed: None,
+            running: running.map(str::to_owned),
+            transcript: None,
+            build: None,
+        };
+
+        wait_for_screen(&access, id, "GO");
+        advance(&access, id);
+        wait_for_screen(&access, id, "at rest one");
+
+        // ── THE TOOL BEGINS: the one event that names what is running ──
+        agents.report(id, hook(1, Some("Bash")), instant_window);
+        let inside = read(id).expect("an agent");
+        assert_eq!(
+            inside.running.as_deref(),
+            Some("Bash"),
+            "⛔⛔⛔⛔⛔ THE NAME MUST REACH THE SUPERVISOR. Without it a waiter has only the report \
+             counter, which stands still for the whole of a tool call — and a run was killed at \
+             exactly that reading while its agent was building. Got {inside:?}",
+        );
+
+        // ── AND THE TOOL ENDS: the next report says nothing about a tool, which RETIRES it ──
+        //
+        // ⚠⚠⚠⚠ Same state, same everything — this is the `working` that a `PostToolUse` produces.
+        // The verdict does not move, so nothing but this field can say the tool is over.
+        agents.report(id, hook(2, None), instant_window);
+        let after = read(id).expect("an agent");
+        assert_eq!(
+            (after.seq, after.state),
+            (inside.seq, inside.state),
+            "⚠⚠⚠ THE FIXTURE: these two reports must publish NOTHING, or this gate is about `seq` \
+             after all — a tool call and its ending are both `working`",
+        );
+        assert_eq!(
+            after.running, None,
+            "⚠⚠⚠⚠⚠ AND A REPORT THAT NAMES NO TOOL RETIRES THE ONE IN FORCE. Carried instead, a \
+             single dropped end-of-tool payload would leave this pane claiming a child for ever \
+             and would switch off the silence bound for the rest of the turn — the safety net \
+             disabled by the very thing it protects against. Got {after:?}",
+        );
+        assert_eq!(
+            (inside.reports, after.reports),
+            (1, 2),
+            "⚠⚠ and the counter beside it still moves on both, because these are two accepted \
+             reports: the two facts are one message, not two",
         );
 
         let closed = lock(&workspace).close(id);

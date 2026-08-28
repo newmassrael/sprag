@@ -1247,6 +1247,22 @@ const REST_STATEMENT: &str = "last_assistant_message";
 /// event NAME alone is not enough to say what it wants them for.
 const NOTICE_EVENT: &str = "Notification";
 
+/// The event that OPENS a tool call — [`running_in`]'s subject, and a row in both
+/// [`Target::events`] tables where it means *the agent is working*.
+///
+/// ⚠ ONE constant for both targets, exactly as [`SUBMIT_EVENT`] and [`REST_EVENT`] are: the two
+/// tables agree on this row, and a per-target field would invite them to disagree about a word they
+/// already share. The day a target spells it differently it becomes a [`Target`] field and each
+/// table answers for itself — not before.
+const TOOL_EVENT: &str = "PreToolUse";
+
+/// What the agent calls the tool it is about to run, inside a [`TOOL_EVENT`] payload.
+///
+/// ⚠ Its spelling is the AGENT's, on [`REST_STATEMENT`]'s terms: the wire key this ends up under is
+/// [`crate::wire::AGENT_RUNNING_KEY`], and the two are deliberately different words — one is a
+/// schema this crate reads and the other a name it publishes.
+const TOOL_NAME: &str = "tool_name";
+
 /// **THE AGENT'S OWN CLASSIFICATION OF WHY IT RAISED A NOTICE**, inside a [`NOTICE_EVENT`] payload.
 ///
 /// # ⚠⚠⚠⚠⚠ The field this product was throwing away, and what that cost
@@ -1362,6 +1378,53 @@ pub fn noticed_in(payload: &Value) -> Option<String> {
         return None;
     }
     Some(payload.get(NOTICE_TEXT)?.as_str()?.to_owned())
+}
+
+/// **WHAT THE AGENT SAYS IT IS ABOUT TO RUN** — the tool named by the one event that OPENS a tool
+/// call, and [`None`] for every other payload.
+///
+/// # ⚠⚠⚠⚠⚠ The fact that separates a QUIET peer that is working from one that has stopped
+///
+/// [`report_for`] answers the same word — *working* — for the event that begins a tool call and for
+/// the one that ends it, and a waiter counting reports (`sprag_detect::Tracker::reports`) sees only
+/// that something spoke. That works while the events keep coming. **It stops working inside ONE
+/// tool call**: the begin event is the last thing said until the tool returns, so a peer running a
+/// long command and a peer whose turn was abandoned present the identical frozen reading, and a
+/// silence bound fires on both.
+///
+/// Re-measured 2026-08-29 over this workspace's own wrapped builds (`target/bx-logs`, n=6536):
+/// **p50 21 s, p90 148 s, p99 263 s, max 5,647 s**, with **16 runs past ten minutes**. Each of
+/// those is one tool call, so the gap is not exotic — it is what a build looks like here.
+///
+/// This is the half the payload was already carrying and nobody read. A peer that is quiet with a
+/// tool NAMED is running a child; a peer that is quiet with nothing named is quiet with nothing.
+///
+/// ⚠⚠ **AN UNNAMED TOOL CALL IS NOT PROTECTED, WHICH IS THE SAFE DIRECTION AND IS SAID OUT LOUD.**
+/// A payload that omits `TOOL_NAME` has not stated what it is running, and this answers [`None`]
+/// rather than inventing a word — so the silence bound keeps behaving exactly as it did before this
+/// existed. The failure is toward NOTICING a peer, never toward ignoring one, which is the
+/// direction register item 721 argues a mis-classification must fall.
+///
+/// ⚠ A subagent's tool call is not the pane's, the exclusion [`report_for`], [`asked_in`],
+/// [`said_in`] and [`noticed_in`] all open with. It has to match `report_for`'s: a subagent event
+/// produces no report at all, so one read here would name a tool no report could ever clear.
+#[must_use]
+pub fn running_in(payload: &Value) -> Option<String> {
+    if payload.get("hook_event_name")?.as_str()? != TOOL_EVENT {
+        return None;
+    }
+    if payload
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty())
+    {
+        return None;
+    }
+    payload
+        .get(TOOL_NAME)?
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
 }
 
 /// Whether this payload is the agent saying it is merely IDLE — see [`IDLE_NOTICE`].
@@ -2405,6 +2468,147 @@ mod tests {
             "message": "Claude is waiting for your input",
             "notification_type": "idle_prompt",
         })
+    }
+
+    /// **A TOOL CALL BEGINNING**, captured live 2026-08-28 from `claude 2.1.250` with a recording
+    /// hook at the path the agent's own `--settings` names — the same method the notice above was
+    /// captured by, and for the same reason: a fixture shaped by hand is a fixture that has decided
+    /// the question.
+    ///
+    /// ⚠ `tool_input` and `tool_use_id` are carried even though nothing here reads them. They are
+    /// what the payload HAS, and a fixture trimmed to what the code wants cannot notice a key
+    /// moving underneath it.
+    fn captured_tool_call() -> Value {
+        serde_json::json!({
+            "session_id": "f237e78c-21e0-4aeb-aa29-7f94f363178e",
+            "transcript_path": "/home/user/.claude/projects/-home-user-sprag/f237e78c.jsonl",
+            "cwd": "/home/user/sprag",
+            "prompt_id": "b5cec298-4fab-43c2-be2c-cca4f9847d63",
+            "permission_mode": "acceptEdits",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "echo sprag-capture", "description": "Echo sprag-capture" },
+            "tool_use_id": "toolu_01AbosW2dYedZNVvvdgEePfN",
+        })
+    }
+
+    /// **THE SAME TOOL CALL ENDING**, captured in the same session and seconds later.
+    ///
+    /// ⚠⚠⚠⚠ It is the CONTROL that matters most, and it is a real payload rather than the one
+    /// above with its event swapped: this event carries `tool_name` TOO — plus `duration_ms` and
+    /// `tool_response` — so a reader that answered *a tool is running* off the presence of a NAME
+    /// would keep a finished tool standing for ever. The event is what decides, and only this
+    /// capture can say so.
+    fn captured_tool_end() -> Value {
+        serde_json::json!({
+            "session_id": "f237e78c-21e0-4aeb-aa29-7f94f363178e",
+            "transcript_path": "/home/user/.claude/projects/-home-user-sprag/f237e78c.jsonl",
+            "cwd": "/home/user/sprag",
+            "prompt_id": "b5cec298-4fab-43c2-be2c-cca4f9847d63",
+            "permission_mode": "acceptEdits",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Write",
+            "tool_input": { "file_path": "/home/user/sprag/marker.txt" },
+            "tool_response": { "type": "create" },
+            "duration_ms": 12,
+            "tool_use_id": "toolu_01AbosW2dYedZNVvvdgEePfN",
+        })
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A TOOL CALL BEGINNING SAYS WHAT IT IS RUNNING, AND EVERYTHING ELSE SAYS NOTHING**
+    /// — register item 721, at the layer where the fact enters this product.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What the report COUNTER cannot see
+    ///
+    /// [`report_for`] answers the same word — *working* — for the event that opens a tool call and
+    /// for the one that closes it, and a waiter counting accepted reports learns only that
+    /// something spoke. That holds while the events keep coming. **Inside ONE tool call it does
+    /// not**: the begin event is the last thing said until the tool returns, so a peer running a
+    /// long build and a peer whose turn was abandoned stand at the same frozen number, and a
+    /// silence bound fires on both. Measured 2026-08-27 — a run killed at exactly that reading with
+    /// `cargo check` on its agent's screen — and re-measured 2026-08-29 over this workspace's own
+    /// wrapped builds (`target/bx-logs`, n=6536): **16 past ten minutes, longest 5,647 s**.
+    ///
+    /// # ⚠⚠⚠ The controls, and why the second one is a CAPTURE rather than an edited copy
+    ///
+    /// The end-of-tool payload carries `tool_name` as well, so *does a name appear* is not the
+    /// question and a control built by swapping the event on the begin payload could not show it.
+    /// The real ending is staged instead, and it must answer [`None`] — which is what retires the
+    /// tool in force, because the tracker REPLACES this field on every report.
+    #[test]
+    fn a_tool_call_states_what_the_agent_is_running_and_its_ending_states_nothing() {
+        assert_eq!(
+            running_in(&captured_tool_call()).as_deref(),
+            Some("Bash"),
+            "⛔⛔⛔⛔⛔ THE AGENT NAMES THE TOOL IT IS ABOUT TO RUN, and this is the only fact that \
+             tells a quiet peer running a child from a quiet peer that has stopped. Without it a \
+             run is killed for the silence of its own build",
+        );
+
+        // ⚠⚠⚠⚠⚠ THE CONTROL THAT COULD NOT BE FAKED — a REAL end-of-tool payload, which carries a
+        // `tool_name` of its own. A reader keyed on the name rather than on the event answers
+        // `Some("Write")` here and leaves a finished tool standing, which would switch the silence
+        // bound off for the rest of the turn.
+        assert_eq!(
+            running_in(&captured_tool_end()),
+            None,
+            "⚠⚠⚠⚠ A TOOL THAT ENDED IS NOT A TOOL THAT IS RUNNING — and this payload NAMES a tool, \
+             so a reader that answered off the name would carry a dead one for ever",
+        );
+
+        // Every other event says nothing about a tool, including the two that open and close a
+        // TURN. The idle notice is the one that arrives when no boundary does, and it must clear a
+        // tool rather than preserve it — that is precisely the case a dead turn presents.
+        for other in [
+            captured_idle_notice(),
+            serde_json::json!({ "hook_event_name": SUBMIT_EVENT, "prompt": "go" }),
+            serde_json::json!({ "hook_event_name": REST_EVENT }),
+        ] {
+            assert_eq!(
+                running_in(&other),
+                None,
+                "⚠⚠ only the event that OPENS a tool call states one: {other}",
+            );
+        }
+
+        // A subagent's tool call is not the pane's — the exclusion `report_for` opens with, and it
+        // has to MATCH that one: a subagent event produces no report at all, so a tool read here
+        // would be one no later report could ever clear.
+        let mut subagent = captured_tool_call();
+        subagent["agent_id"] = serde_json::json!("sub-1");
+        assert_eq!(
+            running_in(&subagent),
+            None,
+            "⚠⚠⚠ and it must be the SAME exclusion `report_for` makes, or this names a tool that \
+             nothing will ever retire",
+        );
+
+        // ⚠⚠ A tool call that names no tool has not stated one, and the SAFE direction is that the
+        // silence bound goes on behaving exactly as it did before this fact existed. Failing toward
+        // NOTICING a peer is the direction register item 721 argues for.
+        let mut nameless = captured_tool_call();
+        nameless
+            .as_object_mut()
+            .expect("an object")
+            .remove(TOOL_NAME);
+        assert_eq!(
+            running_in(&nameless),
+            None,
+            "⚠ absent is not empty — and unclassified must never read as *and therefore working*",
+        );
+
+        // ⚠⚠⚠⚠ AND THE EVENT IS STILL A ROW IN THE TABLE, which is what makes the two facts one
+        // report rather than two messages. If this row ever left `CLAUDE.events`, the tool would be
+        // named on a payload that produces no report and the name would never reach a pane.
+        assert!(
+            CLAUDE
+                .events
+                .iter()
+                .any(|(name, outcome)| *name == TOOL_EVENT
+                    && matches!(outcome, Outcome::Report(AgentState::Working))),
+            "⚠⚠⚠⚠⚠ the tool-begin event must still REPORT, or `running_in` states a fact on a \
+             payload this crate throws away",
+        );
     }
 
     /// **THE KIND A PERMISSION DIALOG CARRIES**, captured live 2026-08-19 — the word register item

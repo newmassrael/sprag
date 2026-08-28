@@ -11014,6 +11014,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -11349,6 +11350,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -11541,6 +11543,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -11712,6 +11715,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: said.clone(),
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -11819,6 +11823,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: said.clone(),
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -11910,6 +11915,7 @@ mod tests {
                 said: None,
                 said_seq: 0,
                 noticed: None,
+                running: None,
                 transcript: Some(said.clone()),
                 settling: crate::access::Settling::Nothing,
                 reporter: crate::access::ReporterVoice::Speaking,
@@ -11987,6 +11993,7 @@ mod tests {
                 said: None,
                 said_seq: 0,
                 noticed: None,
+                running: None,
                 transcript: stated.lock().expect("what the agent says").clone(),
                 settling: crate::access::Settling::Nothing,
                 reporter: crate::access::ReporterVoice::Speaking,
@@ -15390,6 +15397,7 @@ mod tests {
                 said: self.said.clone(),
                 said_seq: self.said_seq,
                 noticed: None,
+                running: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
                 reporter: crate::access::ReporterVoice::Speaking,
@@ -18001,6 +18009,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -21690,6 +21699,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: stated.lock().expect("the statement").clone(),
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -22748,6 +22758,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -22926,6 +22937,7 @@ mod tests {
                 said: None,
                 said_seq: 0,
                 noticed: None,
+                running: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
                 reporter: crate::access::ReporterVoice::Speaking,
@@ -23068,8 +23080,15 @@ mod tests {
         ///
         /// `quiet_ms` is written into the DOCUMENT, never passed to the driver — which is what
         /// makes the third run below a statement about the author's number rather than about an
-        /// argument. `speaking` decides whether anything reports for the pane while it waits.
-        fn ran(quiet_ms: i64, speaking: bool) -> (AiLoopState, Vec<String>, Option<Noticed>) {
+        /// argument. `speaking` decides whether anything reports for the pane while it waits, and
+        /// `running` is what the agent says it is RUNNING while it says nothing else (register item
+        /// 721) — the third staging this fixture could not express, and the one a real turn is in
+        /// for as long as a tool call lasts.
+        fn ran(
+            quiet_ms: i64,
+            speaking: bool,
+            running: Option<&str>,
+        ) -> (AiLoopState, Vec<String>, Option<Noticed>) {
             let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
             let (workspace, pane) = quiet_pane();
             // ⚠ `working` FOR EVER and named, so the completion contract is armed (it needs an
@@ -23095,6 +23114,10 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    // ⚠⚠⚠ THE ONE FIELD THAT SEPARATES THE HEADLINE FROM THE FOURTH ARM — register
+                    // item 721. Everything else about those two runs is identical, which is what
+                    // makes the pair a discrimination rather than two anecdotes.
+                    running: running.map(str::to_string),
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -23188,7 +23211,7 @@ mod tests {
         }
 
         // ── THE HEADLINE: nothing speaks, and the run reaches the one remedy silence has ──
-        let (silent, silent_walk, noticed) = ran(QUIET_MS, false);
+        let (silent, silent_walk, noticed) = ran(QUIET_MS, false, None);
         assert_eq!(
             silent,
             AiLoopState::AwaitingHuman,
@@ -23225,7 +23248,7 @@ mod tests {
         // peer is identical — same pane, same never-ending turn, same bounds — and differs in one
         // thing: something is still speaking for it. That is a turn calling tool after tool, which
         // is the commonest thing a real loop does.
-        let (talking, talking_walk, _) = ran(QUIET_MS, true);
+        let (talking, talking_walk, _) = ran(QUIET_MS, true, None);
         assert_eq!(
             talking,
             AiLoopState::Working,
@@ -23240,7 +23263,7 @@ mod tests {
         // constant*. Zero is how a `<data>` spells «I declare no bound of my own» — `Quiet::of`
         // refuses it — so this run must behave exactly as every run did before this existed, with
         // a peer that is every bit as silent as the headline's.
-        let (declined, declined_walk, _) = ran(0, false);
+        let (declined, declined_walk, _) = ran(0, false, None);
         assert_eq!(
             declined,
             AiLoopState::Working,
@@ -23248,6 +23271,43 @@ mod tests {
              is silent in exactly the way the headline's is; the only difference is that its \
              document declined to bound silence. A driver holding a constant of its own passes the \
              headline and fails here: {declined_walk:?}",
+        );
+
+        // ── CONTROL THREE: NOTHING SPEAKS, BUT A CHILD IS RUNNING ──
+        //
+        // ⛔⛔⛔⛔⛔ Register item 721, at the door the product calls. This peer is the HEADLINE's,
+        // byte for byte — same pane, same never-ending turn, same document, same bounds, and the
+        // same reporter that says nothing at all while the wait runs. It differs in one field: the
+        // agent has NAMED the tool it is inside.
+        //
+        // The headline's staging cannot reach this case. `speaking` is a reporter that ticks all
+        // the way through, which is a turn calling tool after tool — quick ones. **A turn inside
+        // ONE long tool call is quiet exactly like a dead turn**, and the counter that separates
+        // the other two says the same number for both.
+        //
+        // Measured 2026-08-27: a run took `peer.silent` at 05:56:33 with `bx -- cargo check`
+        // running on its agent's screen and was killed `Unattended` an hour later, with that turn
+        // still in flight and its agent still working after the run had gone. Re-measured
+        // 2026-08-29 on this workspace's own wrapped builds (`target/bx-logs`, n=6536): 16 of them
+        // ran past the ten-minute bound and the longest ran 5,647 s — each one tool call.
+        //
+        // ⚠⚠ A run that reaches `awaiting_human` here is the defect, and unattended it is fatal:
+        // `awaiting_human` has been measured leaving by `unattended` 7 times out of 7 and by
+        // nothing else, so this is not a pause a working peer recovers from.
+        let (child, child_walk, _) = ran(QUIET_MS, false, Some("Bash"));
+        assert_eq!(
+            child,
+            AiLoopState::Working,
+            "⛔⛔⛔⛔⛔ THE CONTROL FAILED, AND THIS IS THE ONE THAT KILLED A REAL RUN. Nothing has \
+             spoken for this pane — and the agent has said what it is running, which is why. \
+             `peer.silent` here calls a person to a peer that is working, and an unattended loop \
+             then dies an hour later with the turn still going: {child_walk:?}",
+        );
+        assert!(
+            !child_walk.iter().any(|edge| edge.contains("PeerSilent")),
+            "and it must not raise the event AT ALL rather than merely landing somewhere else — \
+             `peer.silent` is what `awaiting_human` is reached BY, and a walk carrying it has \
+             already made the classification this item is about: {child_walk:?}",
         );
     }
 
@@ -23332,6 +23392,7 @@ mod tests {
                     // Staging it in `noticed` would test the channel item 452 already gates and
                     // would not test this one at all.
                     noticed: None,
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,

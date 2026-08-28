@@ -524,6 +524,7 @@ pub(crate) fn peer_settling(script: String, settle: Duration) -> (WorkspacePaneA
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     // ⚠ A double SEES everything it models, so it can say `Nothing` rather than
                     // `Unknown`: its verdict is whatever this closure computes from the fixture,
@@ -663,6 +664,7 @@ fn settling_peer(settle: Duration, publishes: bool) -> (WorkspacePaneAccess, Pan
                 said: None,
                 said_seq: 0,
                 noticed: None,
+                running: None,
                 transcript: None,
             })
         }) as AgentStateSource
@@ -2263,6 +2265,7 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     // ⚠ A double SEES everything it models, so it can say `Nothing` rather than
                     // `Unknown`: its verdict is whatever this closure computes from the fixture,
@@ -2342,6 +2345,7 @@ impl DialogBetweenTheReads {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     // ⚠ A double SEES everything it models, so it can say `Nothing` rather than
                     // `Unknown`: its verdict is whatever this closure computes from the fixture,
@@ -2420,6 +2424,7 @@ pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAcce
                 said: None,
                 said_seq: 0,
                 noticed: None,
+                running: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
                 reporter: crate::access::ReporterVoice::Speaking,
@@ -2465,6 +2470,7 @@ pub(crate) fn supervised_writing(
                 said: None,
                 said_seq: 0,
                 noticed: None,
+                running: None,
                 transcript: Some(said.clone()),
                 settling: crate::access::Settling::Nothing,
                 reporter: crate::access::ReporterVoice::Speaking,

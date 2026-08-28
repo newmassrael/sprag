@@ -3781,6 +3781,12 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
     // `blocked` and a run that stopped for a person could not tell them what for, while the sentence
     // had been in this process's stdin (register item 452).
     let noticed = hooks::noticed_in(&payload);
+    // ⚠⚠⚠⚠ AND WHAT IT IS ABOUT TO RUN, off the one event that OPENS a tool call — see
+    // [`hooks::running_in`]. The fourth of the same kind, and the one that fills the gap the report
+    // COUNTER leaves: that counter moves per event, so a tool call longer than a waiter's silence
+    // bound reads exactly like a turn nothing will ever speak for again. Register item 721 is a run
+    // killed inside such a gap while `cargo check` was on its screen.
+    let running = hooks::running_in(&payload);
     let pane = std::env::var(sprag_host::PANE_ENV_VAR)
         .ok()?
         .parse::<u64>()
@@ -3814,6 +3820,7 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
                 sprag_host::wire::AGENT_ASKED_KEY: asked.as_ref().map(|a| a.prompt.clone()),
                 sprag_host::wire::AGENT_SAID_KEY: said.clone(),
                 sprag_host::wire::AGENT_NOTICED_KEY: noticed.clone(),
+                sprag_host::wire::AGENT_RUNNING_KEY: running.clone(),
                 sprag_host::wire::AGENT_TRANSCRIPT_KEY: asked
                     .as_ref()
                     .and_then(|a| a.transcript.as_ref())
@@ -6557,6 +6564,20 @@ fn agent(args: Vec<String>) -> io::Result<()> {
                      edit up on its own.",
                     rule.unwrap_or("(none)"),
                 ),
+            }
+            // ⚠⚠⚠⚠⚠ AND WHAT IT IS RUNNING, WHICH IS WHY IT IS QUIET — register item 721. Without
+            // this line the repair that item bought is INVISIBLE to a person: a pane that has said
+            // nothing for twenty minutes and a pane that is twenty minutes into one build read
+            // identically here, and the second is now the one a run deliberately does NOT hand to
+            // anybody. Somebody asked to trust that has to be able to see the reason.
+            //
+            // ⚠ OUTSIDE the `blocked` branch below, because a tool call in flight is what a
+            // WORKING pane has — that branch is about a pane which stopped to ask.
+            if let Some(running) = agent[sprag_host::wire::AGENT_RUNNING_KEY].as_str() {
+                println!(
+                    "    it says it is running {running:?} — so a pane that looks quiet is quiet \
+                     because of that, and a run's silence bound does not fire while it stands."
+                );
             }
             // ⚠⚠⚠ AND WHAT IT IS ASKING, when it is asking. R367 put the question on this surface
             // and only the agent-facing mouth read it, so a person was told their agent was

@@ -358,6 +358,30 @@ struct Reported {
     /// ⚠ This is also why no `noticed_seq` sits beside [`Tracker::said_seq`]: nothing here is ever
     /// older than the report in force, so there is no gap for a counter to date.
     noticed: Option<String>,
+    /// **WHAT THIS PANE'S AGENT SAID IT IS RUNNING RIGHT NOW**, or `None` where the report in force
+    /// said nothing about it — which is every report but the one that OPENS a tool call.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the counters beside it cannot answer *is this quiet peer working?*
+    ///
+    /// [`Tracker::reports`] exists because it is the only number that moves while a turn merely
+    /// WORKS. It answers *has anything spoken*, and it answers it per EVENT — so it separates a
+    /// live turn from a dead one for exactly as long as the events keep coming. **One tool call
+    /// that outlasts a waiter's silence bound is a gap in that stream**, and inside the gap a
+    /// working turn and an abandoned one read identically again.
+    ///
+    /// This is the fact that fills the gap, and it is the agent's own: the event that BEGINS a tool
+    /// call names the tool, and the next event of any kind is the evidence that call is over. So a
+    /// quiet peer with something standing here is running a child, and a quiet peer with `None`
+    /// here is quiet with nothing.
+    ///
+    /// ⚠⚠⚠⚠⚠ **NOT CARRIED — and here that is the SAFETY property rather than a nicety.** It has
+    /// [`noticed`](Self::noticed)'s treatment for a sharper reason: every report that is not a
+    /// tool-begin CLEARS it, so a lost end-of-tool event cannot strand a pane in *working for
+    /// ever*. The next event of any kind — the tool's own end, the turn's rest, the idle nag, a
+    /// person's `report-agent` — takes it back. Carried, one dropped payload would disable a
+    /// silence bound permanently, which is the safety net this exists to protect being switched off
+    /// by the very thing it protects against.
+    running: Option<String>,
     /// **WHERE THIS PANE'S AGENT SAID IT IS WRITING**, carried forward for [`asked`](Self::asked)'s
     /// reason exactly: a transcript path is stated on the turn's first event and on no other, while
     /// the file goes on existing for the whole session.
@@ -430,6 +454,20 @@ pub struct Report {
     /// the field it is stored in for why a request that has been dealt with must not outlive the
     /// report that dealt with it.
     pub noticed: Option<String>,
+    /// **WHAT THE AGENT SAYS IT IS RUNNING**, on the one event that OPENS a tool call, and `None`
+    /// on every other — which is most of them.
+    ///
+    /// ⚠⚠⚠⚠⚠ It is the fact that separates *quiet because a child is running* from *quiet because
+    /// nothing is left to speak*, and no counter beside it can: [`Tracker::reports`] moves once per
+    /// EVENT, so a single tool call longer than a waiter's silence bound is a gap in the stream and
+    /// reads exactly like an abandoned turn. Measured on this workspace's own build logs
+    /// (2026-08-29, `target/bx-logs`, n=6536): **16 wrapped commands ran past ten minutes and the
+    /// longest ran 5,647 s** — every one of them one tool call.
+    ///
+    /// ⚠ REPLACED and never carried, on [`noticed`](Self::noticed)'s terms and for a stricter
+    /// reason — see `Reported::running`, the private field this is held in, which says why the
+    /// clearing is a safety property rather than tidiness.
+    pub running: Option<String>,
     /// **WHERE THE AGENT SAYS IT IS WRITING ITS TRANSCRIPT.**
     ///
     /// Stated rather than resolved from an id — see the wire key's own doc for what resolving it
@@ -714,6 +752,7 @@ impl Tracker {
             asked,
             said,
             noticed,
+            running,
             transcript,
             build,
         } = report;
@@ -795,6 +834,13 @@ impl Tracker {
             // let a supervisor quote a dealt-with question at a pane blocked on something else, in
             // the peer's own voice, which is what would make the quote believed.
             noticed,
+            // ⚠⚠⚠⚠⚠ REPLACED, ON `noticed`'S TERMS AND FOR A STRICTER REASON. A tool call is
+            // outstanding or it is over, and EVERY event that is not a tool-begin is the evidence
+            // it is over — the tool's own end, the turn's rest, the idle nag, a person's report. So
+            // the clearing is what makes a lost end-of-tool payload cost one window rather than
+            // every window after it: carried, a single dropped `PostToolUse` would leave the pane
+            // claiming a child for ever and switch off the silence bound permanently.
+            running,
             transcript: transcript
                 .or_else(|| carried.as_ref().and_then(|held| held.transcript.clone())),
             // ⚠⚠⚠⚠⚠ REPLACED, NEVER CARRIED — the opposite of its two neighbours above, and the
@@ -1018,6 +1064,20 @@ impl Tracker {
         self.reported
             .as_ref()
             .and_then(|held| held.noticed.as_deref())
+    }
+
+    /// **WHAT THIS PANE'S AGENT SAYS IT IS RUNNING**, or `None` where the report in force did not
+    /// say — which is every report but the one that opens a tool call.
+    ///
+    /// ⚠⚠⚠ UNDATED, and it needs no dating for [`reported_noticed`](Self::reported_noticed)'s
+    /// reason: it is not carried, so anything standing here belongs to the report in force. That is
+    /// what makes it readable as a PRESENT-TENSE fact — *a child is running now* — rather than as a
+    /// record of one that was.
+    #[must_use]
+    pub fn reported_running(&self) -> Option<&str> {
+        self.reported
+            .as_ref()
+            .and_then(|held| held.running.as_deref())
     }
 
     /// **WHERE THIS PANE'S AGENT SAID IT IS WRITING**, or `None` if none ever has.
@@ -1767,6 +1827,7 @@ mod tests {
             asked: asked.map(str::to_owned),
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         };
@@ -1839,6 +1900,7 @@ mod tests {
                 asked: None,
                 said: said.map(str::to_owned),
                 noticed: noticed.map(str::to_owned),
+                running: None,
                 transcript: None,
                 build: None,
             };
@@ -1922,6 +1984,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         };
@@ -2007,6 +2070,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });
@@ -2072,6 +2136,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });
@@ -2166,6 +2231,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });
@@ -2227,6 +2293,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });
@@ -2313,6 +2380,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });
@@ -2351,6 +2419,7 @@ mod tests {
                     asked: None,
                     said: None,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     build: None,
                 })
@@ -2366,6 +2435,7 @@ mod tests {
                 asked: None,
                 said: None,
                 noticed: None,
+                running: None,
                 transcript: None,
                 build: None,
             }),
@@ -2390,6 +2460,7 @@ mod tests {
                 asked: None,
                 said: None,
                 noticed: None,
+                running: None,
                 transcript: None,
                 build: None,
             }),
@@ -2410,6 +2481,7 @@ mod tests {
                     asked: None,
                     said: None,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     build: None,
                 })
@@ -2430,6 +2502,7 @@ mod tests {
                     asked: None,
                     said: None,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     build: None,
                 })
@@ -2449,6 +2522,7 @@ mod tests {
                     asked: None,
                     said: None,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     build: None,
                 })
@@ -2465,6 +2539,7 @@ mod tests {
                     asked: None,
                     said: None,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     build: None,
                 })
@@ -2487,6 +2562,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });
@@ -2501,6 +2577,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });
@@ -2528,6 +2605,7 @@ mod tests {
                     asked: None,
                     said: None,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     build: None,
                 })
@@ -2558,6 +2636,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });
@@ -2573,6 +2652,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });
@@ -2589,6 +2669,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });
@@ -2608,6 +2689,7 @@ mod tests {
             asked: None,
             said: None,
             noticed: None,
+            running: None,
             transcript: None,
             build: None,
         });

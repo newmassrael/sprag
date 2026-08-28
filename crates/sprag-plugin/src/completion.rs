@@ -528,23 +528,70 @@ impl Listening {
         }
     }
 
-    /// **HAS NOTHING SPOKEN FOR THE WHOLE BOUND?** — fed whatever [`Stands::spoken`] carried.
+    /// **HAS NOTHING SPOKEN FOR THE WHOLE BOUND, WITH NOTHING RUNNING TO EXPLAIN IT?** — fed
+    /// whatever [`Stands::spoken`] carried — both halves of it, [`Heard::reports`] and
+    /// [`Heard::running`].
     ///
-    /// ⚠⚠ [`None`] RESTARTS THE ANCHOR AND ANSWERS NO, which is the arm that keeps a scraped pane
-    /// out of this for ever. It is not *nothing spoke*; it is *nothing here can be silent*, and the
-    /// two must not collapse — a pane whose reporter was RELEASED mid-turn goes back to being one of
-    /// those, and calling that silence would publish a fact about a reporter that no longer exists.
-    fn silent(&mut self, spoken: Option<u64>) -> bool {
-        let Some(count) = spoken else {
+    /// ⚠⚠ [`None`] for `spoken` RESTARTS THE ANCHOR AND ANSWERS NO, which is the arm that keeps a
+    /// scraped pane out of this for ever. It is not *nothing spoke*; it is *nothing here can be
+    /// silent*, and the two must not collapse — a pane whose reporter was RELEASED mid-turn goes
+    /// back to being one of those, and calling that silence would publish a fact about a reporter
+    /// that no longer exists.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The second term, and why the bound could not be answered without it — item 721
+    ///
+    /// The count above moves once per EVENT, so it tells a working turn from a dead one for exactly
+    /// as long as the events keep arriving. **One tool call is a gap in that stream**, and inside
+    /// the gap the two readings are identical: a peer running a fifteen-minute build and a peer
+    /// whose turn was abandoned both stand at the same number. Measured — a run went
+    /// `Working --PeerSilent--> AwaitingHuman` while `cargo check` was on its agent's screen, and
+    /// died `Unattended` an hour later with that turn still in flight; and this workspace's own
+    /// wrapped builds (2026-08-29, `target/bx-logs`, n=6536) put **16 commands past the ten-minute
+    /// bound, the longest at 5,647 s**.
+    ///
+    /// So the crossing is not the answer — it is the QUESTION, and `running` is what answers it. A
+    /// peer that has crossed the bound with a tool named is quiet BECAUSE a child is running, which
+    /// is not silence; a peer that has crossed it with nothing named is quiet with nothing left to
+    /// speak, which is.
+    ///
+    /// ⚠⚠⚠ **THE ANCHOR RESTARTS ON THE WORKING ARM, AND IT HAS TO.** [`due`](Self::due) is what
+    /// this wait PARKS to, so answering *not silent* while leaving the anchor behind would publish a
+    /// deadline already in the past and turn a parked wait into a spin. Restarting says the honest
+    /// thing as well: the bound is *how long may nothing speak WITH NOTHING RUNNING*, and the clock
+    /// for that started when the tool was last seen running.
+    ///
+    /// ⚠⚠ **THE RESIDUE, BOUNDED AND NAMED: a tool that never returns is never called silent.**
+    /// That is not unbounded — the wait's own `within` ([`Turn`]'s bound, thirty minutes in the
+    /// shipped document against ten here) ends it at [`Over::NotYet`], which is the answer *the turn
+    /// did not finish* rather than *the peer went quiet*. Trading a frozen CHILD for a frozen PEER
+    /// is the trade item 721 asks for: the second was killing runs whose agent was working, and the
+    /// first still ends.
+    ///
+    /// ⚠ Consulted ONLY at the crossing, never before it. Nothing is decided while the bound is
+    /// unspent, so asking earlier would buy an answer nobody reads.
+    fn silent(&mut self, spoken: Option<&Heard>) -> bool {
+        let Some(heard) = spoken else {
             self.heard = None;
             self.since = Instant::now();
             return false;
         };
-        if self.heard != Some(count) {
-            self.heard = Some(count);
+        if self.heard != Some(heard.reports) {
+            self.heard = Some(heard.reports);
             self.since = Instant::now();
         }
-        self.since.elapsed() >= self.within
+        if self.since.elapsed() < self.within {
+            return false;
+        }
+        // ⚠⚠⚠ THE BOUND IS SPENT — and `None` here is *nobody said what is running*, which keeps
+        // the behaviour that shipped before this term existed. A scraped pane, a daemon older than
+        // the key and a tool-begin payload that named no tool all reach this line, and every one of
+        // them is UNCLASSIFIED rather than working. Reading the absence the other way would let the
+        // commonest case switch off the notice this bound exists to raise.
+        if heard.running.is_some() {
+            self.since = Instant::now();
+            return false;
+        }
+        true
     }
 
     /// **WHEN THIS LISTENER'S SILENCE FALLS DUE** — the instant [`silent`](Self::silent) turns true
@@ -655,8 +702,8 @@ pub(crate) struct Stands {
     /// [`over`](Self::over) with a clock of its own would have to be answered here in the same
     /// edit.
     pub(crate) settles: crate::access::Settling,
-    /// **HOW MANY TIMES ANYTHING HAS SPOKEN FOR THIS PANE**, or [`None`] where nothing here CAN be
-    /// silent — no supervisor, no observation, or an observation nothing reported.
+    /// **WHAT THIS PANE'S REPORTER SAID** — see [`Heard`] — or [`None`] where nothing here CAN be
+    /// silent: no supervisor, no observation, or an observation nothing reported.
     ///
     /// # ⚠⚠⚠⚠⚠ Why the absence is a third answer and not a zero
     ///
@@ -671,7 +718,38 @@ pub(crate) struct Stands {
     /// other end: *did this answer come from the pane itself*. Register item 441 is the round that
     /// learned the cost of asking a scraped pane for a number only a reported one has, and this is
     /// that lesson applied before the fact rather than after.
-    pub(crate) spoken: Option<u64>,
+    pub(crate) spoken: Option<Heard>,
+}
+
+/// **WHAT THIS PANE'S REPORTER SAID, AT THE ONE LOOK [`Stands`] TOOK** — the two facts a silence
+/// bound weighs, carried as one value.
+///
+/// # ⚠⚠⚠⚠⚠ Why one struct and not two fields beside each other — register item 721
+///
+/// The count answers *has anything spoken*, and it answers it per EVENT. That separates a working
+/// turn from an abandoned one for exactly as long as the events keep arriving — and **one tool call
+/// is a gap in the stream**, inside which a peer running a fifteen-minute build and a peer whose
+/// turn died stand at the same frozen number. [`running`](Self::running) is what tells them apart,
+/// so the two are not neighbours: they are one question, and neither half decides anything alone.
+///
+/// ⚠⚠ **AND THE ARMING IS THEREFORE ONE ARMING.** Both facts are the AGENT's, and only a pane whose
+/// answer came from the pane itself can have either — see
+/// [`Authority::is_exact`](crate::access::Authority::is_exact) and register item 441, the round
+/// that paid for asking a scraped pane for a number only a reported one has. Two fields would have
+/// meant two guards, one of which could be got wrong with nothing able to observe it; one value has
+/// one guard, on the [`Option`] that wraps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Heard {
+    /// **HOW MANY TIMES ANYTHING HAS SPOKEN FOR THIS PANE** — see
+    /// [`AgentObservation::reports`](crate::access::AgentObservation::reports).
+    pub(crate) reports: u64,
+    /// **WHAT THE AGENT SAYS IT IS RUNNING RIGHT NOW**, or [`None`] where it said nothing — see
+    /// [`AgentObservation::running`](crate::access::AgentObservation::running).
+    ///
+    /// ⚠ [`None`] is *nobody said*, never *nothing is running*. It is the reading every agent
+    /// without the hook, and every daemon older than the key, produces — and each of them must keep
+    /// the behaviour that shipped before this fact existed.
+    pub(crate) running: Option<String>,
 }
 
 /// WHO this turn was given to, and what the pane's two counters read when it was.
@@ -909,9 +987,15 @@ impl Completion {
 
     /// [`Stands::spoken`], folded from the one reading — the ARGUMENT for the arming, including why
     /// the absence is a third answer rather than a zero, lives on that field.
-    fn spoken_of(seen: Option<&AgentObservation>) -> Option<u64> {
+    fn spoken_of(seen: Option<&AgentObservation>) -> Option<Heard> {
         let seen = seen?;
-        seen.authority.is_exact().then_some(seen.reports)
+        // ⚠⚠ ONE ARMING FOR BOTH FACTS — see [`Heard`]. They are the agent's own, so a verdict
+        // inferred from a SCREEN has neither, and a build that guarded them separately would carry
+        // a guard nothing could observe being wrong.
+        seen.authority.is_exact().then(|| Heard {
+            reports: seen.reports,
+            running: seen.running.clone(),
+        })
     }
 
     /// Wait for this turn to END, bounded by `within`, by `quiet` and by the RUN's own deadline —
@@ -1007,7 +1091,7 @@ impl Completion {
                 // ⚠ No silence bound: the only clock inside this predicate is the supervisor's.
                 return stands.settles.not_yet();
             };
-            if listening.silent(stands.spoken) {
+            if listening.silent(stands.spoken.as_ref()) {
                 ending = Over::Silent(listening.silence());
                 return Look::Holds;
             }
@@ -1074,6 +1158,7 @@ mod tests {
             said: None,
             said_seq: 0,
             noticed: None,
+            running: None,
             transcript: None,
             settling: crate::access::Settling::Nothing,
             reporter: crate::access::ReporterVoice::Speaking,
@@ -1113,6 +1198,7 @@ mod tests {
             said: None,
             said_seq: 0,
             noticed: None,
+            running: None,
             transcript: None,
             settling: crate::access::Settling::Nothing,
             reporter: crate::access::ReporterVoice::Speaking,
@@ -1197,6 +1283,28 @@ mod tests {
     fn spoke(reported: &Reported) {
         let mut seen = reported.lock().expect("the reported mutex");
         seen.reports += 1;
+    }
+
+    /// **THE AGENT BEGAN A TOOL CALL** — one report that also NAMES what it started.
+    ///
+    /// ⚠⚠⚠ It is [`spoke`] plus a name, and both halves are real: the event that opens a tool call
+    /// is an accepted report like any other, so it advances the counter, AND it is the only event
+    /// that states a tool. Staging the name without the tick would be a pane no hook can produce.
+    fn began(reported: &Reported, tool: &str) {
+        let mut seen = reported.lock().expect("the reported mutex");
+        seen.reports += 1;
+        seen.running = Some(tool.to_string());
+    }
+
+    /// **THE TOOL CALL ENDED** — one report that states no tool, which RETIRES the last one.
+    ///
+    /// ⚠⚠ The clearing is not an extra step a caller could forget: the tracker REPLACES the field
+    /// on every report, so every event that is not a tool-begin arrives with nothing to say about a
+    /// tool and thereby ends the one in force. This helper is that fact, staged.
+    fn ended(reported: &Reported) {
+        let mut seen = reported.lock().expect("the reported mutex");
+        seen.reports += 1;
+        seen.running = None;
     }
 
     /// ⚠⚠⚠⚠⚠ **A PEER THAT HAS STOPPED SPEAKING IS TOLD APART FROM ONE THAT IS STILL WORKING** —
@@ -1356,6 +1464,201 @@ mod tests {
             Over::NotYet,
             "⚠⚠ THE CONTROL FAILED — `Over::Silent` must be unreachable for a caller that declared \
              no silence bound, by construction and not by arithmetic. Got {unasked:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A QUIET PEER THAT IS RUNNING A CHILD IS NOT A PEER THAT HAS STOPPED** — register
+    /// item 721, and the gap the gate above leaves open.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What the counter cannot see, and it is not an exotic case
+    ///
+    /// [`Stands::spoken`]'s count moves once per EVENT, so it tells a working turn from a dead one
+    /// for exactly as long as the events keep arriving. **One tool call is a gap in that stream.**
+    /// The event that begins it is the last thing said until the tool returns, so inside the gap a
+    /// peer running a fifteen-minute build and a peer whose turn was abandoned stand at the same
+    /// frozen number — and the gate above, staged with a reporter that either speaks throughout or
+    /// never speaks again, cannot tell them apart because it never stages the third thing.
+    ///
+    /// **Measured, 2026-08-27**: a run went `Working --PeerSilent--> AwaitingHuman` at 05:56:33
+    /// with `bx -- cargo check -p sprag-plugin` on its agent's screen, and died `Unattended`
+    /// exactly 3,600 s later — with that turn still in flight, and the agent still working after
+    /// the run was gone. **Re-measured 2026-08-29** over this workspace's own wrapped builds
+    /// (`target/bx-logs`, n=6536, by log mtime against the timestamp in each name):
+    ///
+    /// | p50 | p90 | p95 | p99 | max | past 600 s |
+    /// |---|---|---|---|---|---|
+    /// | 21 s | 148 s | 180 s | 263 s | **5,647 s** | **16** |
+    ///
+    /// The bound that decides this is ten minutes, and the number it was chosen against was a
+    /// measured maximum of 447 s. **That maximum is now 12.6x larger**, which is why raising the
+    /// bound is not the repair: the population moved once and will move again, while the
+    /// DISCRIMINATION does not age.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THE TWO FIXTURES BOTH CROSS THE WINDOW, and they differ in exactly ONE field
+    ///
+    /// That is the whole design of this gate, and staging only the first would prove nothing: a
+    /// rule that never answers `Silent` again passes a *the working peer survived* arm perfectly.
+    /// Both peers here are quiet for the whole bound, on the same pane, with the same counters and
+    /// the same clocks; one of them has named a tool.
+    ///
+    /// * **A CHILD IS RUNNING** — quiet past the bound with `running: Some("Bash")`, and the wait
+    ///   must run out at [`Over::NotYet`] instead. That is *the turn did not finish*, which is a
+    ///   fact the next pump can ask about again — not *the peer went quiet*, which sends a run to a
+    ///   person and, unattended, kills it an hour later.
+    /// * **NOTHING IS RUNNING** — the same peer with that one field `None`, and [`Over::Silent`]
+    ///   still fires, on the silence bound rather than on the turn's. ⚠ Without this arm the repair
+    ///   would have swallowed register item 458 whole.
+    /// * ⚠⚠⚠ **AND THE TOOL ENDS MID-WAIT** — the arm that makes the first one MEAN something. The
+    ///   first arm's premise is *the window was crossed and the crossing was suppressed*, and a
+    ///   passing `NotYet` cannot on its own tell that from a wait that never reached the bound at
+    ///   all. Here the same run has its tool end while it waits, and silence fires one bound after
+    ///   THAT — so the window was demonstrably live the whole time, and one field was holding it.
+    #[test]
+    fn a_quiet_peer_that_is_running_a_child_is_not_a_peer_that_has_stopped() {
+        /// The TURN's bound. Long enough to hold a tool call, its ending, and a whole silence bound
+        /// after it.
+        const BOUND: Duration = Duration::from_millis(2_000);
+        /// The SILENCE bound — well inside `BOUND`, and far outside the 10 ms poll so neither
+        /// reading is an artefact of the cadence.
+        const QUIET: Duration = Duration::from_millis(300);
+        /// What a silent answer must beat to be *silence decided* rather than *the bound ran out*.
+        const WELL_INSIDE: Duration = Duration::from_millis(900);
+        /// How long the third arm holds its tool open — more than two silence bounds, so a wait
+        /// that leaked a `Silent` while the tool ran would answer far too early to be mistaken for
+        /// the one this arm is about.
+        const HELD: Duration = Duration::from_millis(700);
+        /// The count the pane's reporter had reached before the tool call — NOT zero, so no piece
+        /// of evidence below can be a default.
+        const SPOKEN: u64 = 6;
+        /// What the agent says it is running. A real tool name, because the field carries the
+        /// agent's own word and a fixture that invented one would be describing nothing.
+        const TOOL: &str = "Bash";
+
+        // ── ARM ONE: quiet for the whole bound, with a child running ──
+        //
+        // The peer speaks SPOKEN times, opens a tool call, and then says nothing at all. That is
+        // exactly what `PreToolUse` followed by a fifteen-minute build looks like from here.
+        let (access, pane, reported) = supervised(AgentState::Working, 7);
+        for _ in 0..SPOKEN {
+            spoke(&reported);
+        }
+        began(&reported, TOOL);
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+        let started = Instant::now();
+        let working = done.wait(
+            &access,
+            pane,
+            BOUND,
+            Quiet::of(QUIET),
+            &RunContext::uncancellable(),
+        );
+        let cost = started.elapsed();
+        assert_eq!(
+            working,
+            Over::NotYet,
+            "⛔⛔⛔⛔⛔ THIS PEER IS QUIET BECAUSE A CHILD IS RUNNING, AND THAT IS NOT SILENCE. \
+             `Silent` here is the measured defect: a run took this answer at 05:56:33 with \
+             `cargo check` on its agent's screen and was killed an hour later while the turn was \
+             still going. The wait's own bound is what ends a turn that overruns — an answer the \
+             next pump can ask about again. Got {working:?}",
+        );
+        assert!(
+            cost >= QUIET,
+            "and the premise has to hold inside the gate: this wait must actually have CROSSED the \
+             silence bound with nothing speaking, or it is not the case under test at all. \
+             {cost:?} against a silence bound of {QUIET:?}",
+        );
+        assert_eq!(
+            reported.lock().expect("the reported mutex").reports,
+            SPOKEN + 1,
+            "⚠⚠ AND NOTHING SPOKE WHILE IT WAITED — the other half of the premise. A fixture whose \
+             counter moved would be the gate above's CONTROL ONE, which is a different case and \
+             already passes without any of this",
+        );
+
+        // ── ARM TWO: the identical peer with nothing running ──
+        //
+        // ⚠⚠⚠⚠⚠ ONE FIELD DIFFERENT. Without this arm the repair is passed by a rule that never
+        // answers `Silent` again, which trades a run killed while working for a run that waits out
+        // a dead peer until its own clock ends it — register item 458, undone.
+        let (access, pane, reported) = supervised(AgentState::Working, 7);
+        for _ in 0..SPOKEN {
+            spoke(&reported);
+        }
+        spoke(&reported);
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+        let started = Instant::now();
+        let stopped = done.wait(
+            &access,
+            pane,
+            BOUND,
+            Quiet::of(QUIET),
+            &RunContext::uncancellable(),
+        );
+        let cost = started.elapsed();
+        assert_eq!(
+            stopped,
+            Over::Silent(Silence {
+                reports: SPOKEN + 1,
+                within: QUIET,
+            }),
+            "⚠⚠⚠⚠⚠ AND A PEER THAT IS QUIET WITH NOTHING RUNNING IS STILL SILENT. This pane is the \
+             one above with a single field cleared, so a build that answers `NotYet` here has not \
+             learned to discriminate — it has stopped noticing. Got {stopped:?}",
+        );
+        assert!(
+            cost < WELL_INSIDE,
+            "and it must decide on the SILENCE bound rather than on the turn's: {cost:?} against a \
+             silence bound of {QUIET:?} inside a turn bound of {BOUND:?}",
+        );
+
+        // ── ARM THREE: the tool ends while the wait is still running ──
+        //
+        // ⚠⚠⚠ THE ARM THAT MAKES ARM ONE MEAN SOMETHING. Arm one's `NotYet` is also what a wait
+        // that never reached its bound would answer, and no assertion inside that arm can see the
+        // suppression itself. Here the window is demonstrably live: the same peer, held open past
+        // two silence bounds by the tool alone, goes silent one bound after the tool ends.
+        let (access, pane, reported) = supervised(AgentState::Working, 7);
+        for _ in 0..SPOKEN {
+            spoke(&reported);
+        }
+        began(&reported, TOOL);
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+        let finishing = Arc::clone(&reported);
+        let tool = std::thread::spawn(move || {
+            std::thread::sleep(HELD);
+            ended(&finishing);
+        });
+        let started = Instant::now();
+        let after = done.wait(
+            &access,
+            pane,
+            BOUND,
+            Quiet::of(QUIET),
+            &RunContext::uncancellable(),
+        );
+        let cost = started.elapsed();
+        tool.join().expect("the tool thread");
+        assert_eq!(
+            after,
+            Over::Silent(Silence {
+                reports: SPOKEN + 2,
+                within: QUIET,
+            }),
+            "⚠⚠⚠⚠ A TOOL THAT ENDED IS NOT A TOOL THAT IS RUNNING, and the field is REPLACED on \
+             every report precisely so that a peer which goes on saying nothing afterwards is \
+             noticed. A build that carried the name forward would answer `NotYet` here and would \
+             have switched the silence bound off for the rest of the turn. Got {after:?}",
+        );
+        assert!(
+            cost >= HELD,
+            "⛔⛔⛔ AND THE SILENCE MUST BE THE ONE AFTER THE TOOL, NOT ONE THAT LEAKED THROUGH \
+             WHILE IT RAN. The tool was held open for {HELD:?}, which is more than two silence \
+             bounds of {QUIET:?} — an answer inside that window would mean arm one passes for a \
+             wait that was never suppressed at all. Got {cost:?}",
         );
     }
 
@@ -2191,6 +2494,7 @@ mod tests {
                 said: None,
                 said_seq: 0,
                 noticed: None,
+                running: None,
                 transcript: None,
                 settling: crate::access::Settling::Nothing,
                 reporter: crate::access::ReporterVoice::Speaking,
@@ -2281,6 +2585,7 @@ mod tests {
             said: None,
             said_seq: 0,
             noticed: None,
+            running: None,
             transcript: None,
             settling: crate::access::Settling::Nothing,
             reporter: crate::access::ReporterVoice::Speaking,

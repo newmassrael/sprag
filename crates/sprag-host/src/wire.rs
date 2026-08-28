@@ -1557,6 +1557,7 @@ impl InlineGrammar {
         ArgGrammar::open(AGENT_ASKED_KEY, "string").optional(),
         ArgGrammar::open(AGENT_SAID_KEY, "string").optional(),
         ArgGrammar::open(AGENT_NOTICED_KEY, "string").optional(),
+        ArgGrammar::open(AGENT_RUNNING_KEY, "string").optional(),
         ArgGrammar::open(AGENT_TRANSCRIPT_KEY, "string").optional(),
         ArgGrammar::open(AGENT_BUILD_KEY, "string").optional(),
     ])];
@@ -2680,6 +2681,40 @@ pub const AGENT_SAID_KEY: &str = "said";
 /// reads an ABSENT notice as evidence about the AGENT — *it wants nothing* rather than *it did not
 /// say* — an older reporter starts meaning something it never meant and the number is owed.
 pub const AGENT_NOTICED_KEY: &str = "noticed";
+/// [`REPORT_AGENT_ACTION`]'s key carrying **WHAT THE AGENT SAYS IT IS RUNNING RIGHT NOW** — the tool
+/// named by the event that OPENS a tool call, and absent on every other event.
+///
+/// # ⚠⚠⚠⚠⚠ The gap in [`AGENT_REPORTS_KEY`] this closes, measured
+///
+/// That counter answers *has anything spoken for this pane*, one tick per event, and it is what
+/// separates a working turn from an abandoned one — for as long as the events keep arriving. **One
+/// tool call is a gap in that stream**: the begin event is the last thing said until the tool
+/// returns, so a peer running a long build and a peer whose turn died read identically, and a
+/// waiter's silence bound fires on both. Re-measured 2026-08-29 on this workspace's own wrapped
+/// builds (`target/bx-logs`, n=6536): **p50 21 s, p90 148 s, p99 263 s, max 5,647 s, 16 runs past
+/// ten minutes** — each of them one tool call.
+///
+/// So a reader holding this and that counter can say which kind of quiet it is looking at: quiet
+/// with a tool named is a child running, quiet with nothing named is nothing left to speak.
+///
+/// ⚠ NOT CARRIED across reports — held by `sprag_detect::track`, where the field says why the
+/// clearing is a safety property rather than tidiness: every event that is not a tool-begin retires
+/// it, so a dropped end-of-tool payload costs one window instead of switching the silence bound off
+/// for good.
+///
+/// # ⚠⚠⚠⚠ Why this earns NO [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`AGENT_NOTICED_KEY`]'s terms
+///
+/// **NEW hook → OLD daemon.** An undeclared key is IGNORED at this surface rather than refused, so
+/// the report lands and the old daemon never reads the name.
+///
+/// **OLD hook → NEW daemon.** The key is absent, which is `None` — *this reporter did not say what
+/// it is running*. A wait then behaves exactly as it did before this key existed: the silence bound
+/// fires. ⚠⚠ **THE EXEMPTION IS CONDITIONAL, and the condition is sharper here than for its
+/// neighbours**: the absence must never be read as *and therefore this peer is working*. It means
+/// *unclassified*, and unclassified keeps the old, noticing behaviour — the moment a surface reads
+/// it the other way, every older reporter starts silently disabling the safety net and the number
+/// is owed.
+pub const AGENT_RUNNING_KEY: &str = "running";
 /// [`REPORT_AGENT_ACTION`]'s key carrying **WHERE THE AGENT SAYS IT IS WRITING ITS TRANSCRIPT**.
 ///
 /// ⚠⚠⚠ Stated rather than resolved. The spend reader finds a transcript by deriving a path from a
@@ -5229,7 +5264,7 @@ const AGENT_ARGS: &[SchemaArg] = &[SchemaArg::open("pane", "int")];
 /// * an object — [`AGENT_STATE_KEY`], [`AGENT_SEQ_KEY`], [`AGENT_ASKED_SEQ_KEY`],
 ///   [`AGENT_SAID_SEQ_KEY`] and [`AGENT_REPORTS_KEY`] always; [`AGENT_NAME_KEY`],
 ///   [`AGENT_RULE_KEY`], [`AGENT_SOURCE_KEY`], [`AGENT_BUILD_KEY`], [`ASKING_KEY`],
-///   [`AGENT_ASKED_KEY`], [`AGENT_SAID_KEY`], [`AGENT_NOTICED_KEY`] and
+///   [`AGENT_ASKED_KEY`], [`AGENT_SAID_KEY`], [`AGENT_NOTICED_KEY`], [`AGENT_RUNNING_KEY`] and
 ///   [`AGENT_TRANSCRIPT_KEY`] where they were stated.
 pub const AGENT_FIELD: SchemaField = SchemaField::parametric("agent.<pane>", "object", AGENT_ARGS);
 
@@ -10255,7 +10290,7 @@ mod tests {
                 "sprag_workspace/sprag_mux/rename_pane[object]:pane:int name:string?",
                 "sprag_workspace/sprag_mux/rename_session[object]:name:string",
                 "sprag_workspace/sprag_mux/rename_window[object]:window:string? name:string",
-                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool? asked:string? said:string? noticed:string? transcript:string? build:string?",
+                "sprag_workspace/sprag_mux/report_agent[object]:id:int source:string state:string name:string? seq:int? bind:bool? asked:string? said:string? noticed:string? running:string? transcript:string? build:string?",
                 "sprag_workspace/sprag_mux/resize[object]:id:int cols:int rows:int cell_width:int? cell_height:int?",
                 "sprag_workspace/sprag_mux/resize_pane[object]:dir:string pane:int? cells:int?",
                 "sprag_workspace/sprag_mux/resize_window[object]:window:string? adjust_cols:int? adjust_rows:int?",

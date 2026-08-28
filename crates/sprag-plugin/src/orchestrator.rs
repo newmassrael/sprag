@@ -951,6 +951,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -1150,6 +1151,7 @@ mod tests {
                     said: None,
                     said_seq: 0,
                     noticed: None,
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -2679,6 +2681,7 @@ mod tests {
                 said: None,
                 said_seq: 0,
                 noticed: None,
+                running: None,
                 transcript: None,
                 // ⚠ THE ONE FIELD THIS ARM IS ABOUT.
                 settling: crate::access::Settling::At(publishes_at),
