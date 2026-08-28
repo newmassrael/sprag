@@ -1570,13 +1570,7 @@ fn plugin_from_request(
             // measured it again with the same answer. A `Brief` is the observable that fixes
             // that, and this is the only call site.
             let brief = ai_loop_brief(map, &kind)?;
-            // ⚠ THE AGENT'S NAME IS REQUIRED and the barrier is derived from it, because a
-            // loop's first prompt goes into a pane whose program may still be starting — see
-            // `AI_LOOP_FORM`. A caller whose peer needs a different barrier overrides it.
-            let mut spec = sprag_plugin::AiLoopSpec::driving(require_str(map, "agent")?);
-            if let Some(ready_when) = opt_ready_when(map)? {
-                spec.ready_when = Some(ready_when);
-            }
+            let mut spec = sprag_plugin::AiLoopSpec::behind(ai_loop_barrier(map, &kind)?);
             // ⚠⚠ READ AS TWO INDEPENDENT KEYS, where the `agent` form's `opt_turn` refuses a
             // bound with no `done_when` beside it. That rule is right there and wrong here:
             // an `agent` run's default contract is `exits`, so a bare bound would be bounding
@@ -2557,8 +2551,12 @@ fn opt_ready_when(map: &Map<String, Value>) -> Result<Option<ReadyWhen>, InvokeE
     let object = map["ready_when"]
         .as_object()
         .ok_or(InvokeError::TypeMismatch)?;
-    let matched = require_str(object, "match")?;
-    let marker = require_str(object, "marker")?.to_string();
+    // ⚠⚠ THE TWO FIELD NAMES ARE THE TYPE'S, NOT THIS READER'S — register item 738. A loop KIND
+    // authors a barrier of its own now, so this object is read out of a JSON request AND out of an
+    // `.scxml` datamodel; two readers spelling one key by hand is how they come to admit different
+    // objects, which is `Consent::ASKED_KEY`'s argument one type over.
+    let matched = require_str(object, ReadyWhen::MATCH_KEY)?;
+    let marker = require_str(object, ReadyWhen::MARKER_KEY)?.to_string();
     ReadyWhen::parse(matched, marker)
         .ok_or(InvokeError::TypeMismatch)
         .map(Some)
@@ -2822,6 +2820,72 @@ fn opt_count(map: &Map<String, Value>, key: &str) -> Result<Option<i64>, InvokeE
 ///
 /// [`InvokeError::TypeMismatch`] for a malformed argument, and [`refused`]'s sentence when this
 /// repository's own kind document holds a list this driver cannot read.
+/// **WHAT MAKES THIS RUN'S PANE READY, RESOLVED IN THREE STEPS** — register item 738, layer 3, and
+/// the ORDER is the whole of it.
+///
+/// A loop's first prompt goes into a pane whose program may still be starting, and R379 measured
+/// what no barrier costs: a prompt typed into a pane whose agent had existed for ten milliseconds,
+/// the pseudoterminal's own echo confirming the delivery, and the run then sitting in `working` for
+/// as long as anybody let it. **So there must always be one** — the question is only who says it.
+///
+/// 1. **What the caller SPELLED** (`ready_when`) wins over everything. It is the most specific
+///    thing anybody said about this pane.
+/// 2. **What the caller IMPLIED by naming a program** (`agent`), derived exactly as
+///    [`AiLoopSpec::driving`](sprag_plugin::AiLoopSpec::driving) always derived it. Item 300's line
+///    is untouched — the barrier is still READ OFF WHICH PROGRAM IS IN THE PANE — so a run driving
+///    `codex` still gets `codex`.
+/// 3. **What this repository's KIND document authors**, for a launch that named neither. That is
+///    the layer this item added, and it is why `agent` could stop being required: the key's own
+///    grammar note said it was mandatory *because there is no honest default*, and a document that
+///    names its peer is one.
+///
+/// # ⚠⚠⚠⚠⚠ Why this hands the barrier BACK instead of setting it in place
+///
+/// [`ai_loop_brief`]'s reason exactly, and it is this workspace's own recorded finding: a
+/// resolution consumed where it is computed is a wiring nothing can check, and **deleting a
+/// fall-through left the whole workspace green** (measured twice, items 312 and 492). The resolved
+/// value is the observable. ⚠ It is not a gate re-implementing the line it checks — this IS the
+/// line, and a gate asks it what a real request plus the real kind document resolve to.
+///
+/// # Errors
+///
+/// [`InvokeError::TypeMismatch`] for a malformed `ready_when` or an empty `agent`, and [`refused`]'s
+/// sentence when nothing at all names a barrier — which is a refusal rather than a `None`, because
+/// [`AiLoopSpec::ready_when`](sprag_plugin::AiLoopSpec::ready_when) CAN hold nothing and nothing
+/// means *go ahead immediately*, which is R379's failure bought back in silence.
+fn ai_loop_barrier(
+    map: &Map<String, Value>,
+    kind: &sprag_plugin::kind::LoopKind,
+) -> Result<sprag_plugin::ReadyWhen, InvokeError> {
+    if let Some(spelled) = opt_ready_when(map)? {
+        return Ok(spelled);
+    }
+    match opt_str(map, "agent")? {
+        Some(named) if !named.is_empty() => Ok(sprag_plugin::ReadyWhen::Settles(named.to_string())),
+        // ⚠ An EMPTY agent is malformed rather than absent, on `reference`'s own rule at this door:
+        // `""` is not a caller deferring, and reading it as absence would let a launcher's bug
+        // silently acquire this repository's default barrier.
+        Some(_) => Err(InvokeError::TypeMismatch),
+        None => kind
+            .ready_when()
+            .map_err(|why| {
+                refused(format!(
+                    "this repository's loop-kind document holds a readiness barrier this driver \
+                     cannot read ({why:?}); a run cannot start on a barrier nobody can check"
+                ))
+            })?
+            .ok_or_else(|| {
+                refused(
+                    "this run named neither `agent` nor `ready_when`, and this repository's \
+                     loop-kind document authors no barrier either — so nothing says when this pane \
+                     is ready to be typed into. Name the program in the pane (`agent`), spell the \
+                     barrier (`ready_when`), or author one in the kind document: a loop with no \
+                     barrier types its first prompt into whatever the pane happens to be running",
+                )
+            }),
+    }
+}
+
 fn ai_loop_brief(
     map: &Map<String, Value>,
     kind: &sprag_plugin::kind::LoopKind,
@@ -2842,11 +2906,46 @@ fn ai_loop_brief(
                          read ({why:?}); a run cannot start on decisions nobody can check"
         ))
     })?;
+    // ⚠⚠⚠⚠⚠ WHERE A RUN STARTS READING, AND WHO SAYS SO — register item 738, layer 2.
+    //
+    // This was `require_str`, so the kind document could not answer it: a launch that named no
+    // reference was MALFORMED rather than deferring, which is item 312's own finding about
+    // `max_turns` at a string instead of a count. **A required judgement is a decision the document
+    // is structurally forbidden from making**, and what filled the gap was a person retyping the
+    // ledger's path into every launch out of a memory that dies with the session.
+    //
+    // ⛔ THE FALL-THROUGH STOPS AT THE KIND. The template ships `'(edit me) paths, URLs or repos to
+    // consult'` and R380 measured that placeholder reaching a live agent, so a run with neither is
+    // REFUSED naming the key rather than briefing an agent with an instruction to edit a file.
+    //
+    // ⚠ A PRESENT-BUT-EMPTY VALUE IS STILL MALFORMED, which is what `require_str` answered before
+    // and must go on answering: `""` is not a caller deferring, it is a caller sending a reference
+    // that says nothing, and reading it as absence would let a bug in a launcher silently acquire
+    // this document's default.
+    let reference = match opt_str(map, "reference")? {
+        Some(named) if !named.is_empty() => named.to_string(),
+        Some(_) => return Err(InvokeError::TypeMismatch),
+        None => kind.reference().ok_or_else(|| {
+            refused(
+                "this run named no `reference` and this repository's loop-kind document authors \
+                 none, so nothing says where its first session should start reading. Name one, or \
+                 author it in the kind document — the loop template's own value is the placeholder \
+                 `(edit me) paths, URLs or repos to consult`, and briefing an agent with that is \
+                 worse than not starting",
+            )
+        })?,
+    };
     Ok(Brief {
         // ⚠⚠ NO WIRE KEY, DELIBERATELY. What a repository asks its own runs at the end
         // is its document's business; a caller that could override it could delete the
         // sweep this repository's record says it pays for twice over when it is missing.
         closing_rules: kind.closing_rules(),
+        // ⚠⚠⚠⚠⚠ NO WIRE KEY EITHER — register item 738, on the line above's own argument. What a
+        // repository holds every turn of its own runs to is its document's business, and a caller
+        // who could override it could delete it by naming nothing. ⚠ The measurement that made this
+        // a defect: this repository's supervisor typed the rules into `north_star` BY HAND on every
+        // launch, out of a session's context, and when the session ended they existed nowhere.
+        working_rules: kind.working_rules(),
         // ⚠⚠⚠ NO WIRE KEY EITHER, and for the same reason one line up — register item
         // 428. What certifies this repository's work is its document's business; a
         // caller who could name the checker could delete it by naming nothing, which is
@@ -2860,7 +2959,7 @@ fn ai_loop_brief(
         service: kind.service_outage(),
         north_star: require_str(map, "north_star")?.to_string(),
         milestone: require_str(map, "milestone")?.to_string(),
-        reference: require_str(map, "reference")?.to_string(),
+        reference,
         // ⚠⚠⚠ ABSENT MEANS "WHAT THIS REPOSITORY'S KIND DOCUMENT SAYS", and only then
         // the template's own number. A debt run ends on its work rather than on a turn
         // count, and that decision is the kind's to make — it reaches here as
@@ -6535,12 +6634,28 @@ mod tests {
         // The fixture minus every key the kind is meant to answer, which is the only way to ask
         // whose value arrived.
         let mut declining = ai_loop_request(PaneId(1), json!({}));
-        declining
-            .as_object_mut()
-            .expect("an object")
-            .remove("max_turns")
-            .expect("the fixture supplies the key this gate declines");
+        for key in ["max_turns", "reference"] {
+            declining
+                .as_object_mut()
+                .expect("an object")
+                .remove(key)
+                .unwrap_or_else(|| panic!("the fixture supplies {key}, which this gate declines"));
+        }
         let map = declining.as_object().expect("an object");
+
+        // ⚠⚠⚠⚠⚠ THE PREMISE, ASSERTED HERE RATHER THAN ASSUMED FROM THE LINES ABOVE — register
+        // item 738. Every assertion in this gate is about a value the CALLER DID NOT SEND, and
+        // against a fixture that sends it they are all vacuously true of a door that ignores the
+        // kind entirely. The fixture is shared and grows; a key added to it tomorrow would empty
+        // this gate silently, so what the request does NOT hold is checked in the gate.
+        for key in ["max_turns", "reference", "closing_rules", "working_rules"] {
+            assert!(
+                !map.contains_key(key),
+                "⚠⚠⚠⚠ THIS GATE IS VACUOUS IF THE REQUEST NAMES {key:?}: the whole question is \
+                 whose value arrives when the caller names none, and a fixture that supplies it \
+                 answers the other question with the same green",
+            );
+        }
 
         let brief = ai_loop_brief(map, &kind).expect("a well-formed request resolves");
 
@@ -6587,6 +6702,41 @@ mod tests {
             kind.closing_rules(),
             "and what a run of this kind owes at its ending",
         );
+        // ⚠⚠⚠⚠⚠ AND THE TWO REGISTER ITEM 738 ADDED, which are the same defect one level out: 492
+        // and 494 were decisions a kind could not make because no channel carried them; these were
+        // decisions a kind could not make because the CALLER had to make them on every launch. So
+        // they lived in somebody's memory, were retyped by hand into each firing, and vanished with
+        // the session that held them.
+        assert_eq!(
+            brief.working_rules,
+            kind.working_rules(),
+            "⚠⚠⚠⚠⚠ ITEM 738: the rules every turn of this repository's debt runs is held to. Until \
+             this line they were typed into `north_star` BY HAND on every launch — about 2 KB of \
+             them, out of one session's context — and the more conscientious the supervisor, the \
+             larger the copy",
+        );
+        assert!(
+            brief.working_rules.is_some(),
+            "⚠⚠⚠ and the kind must really author some, or the line above is two `None`s agreeing: \
+             the template ships `''`, so a run with nothing here composes exactly the prompt it \
+             always did and this whole channel would be green about nothing",
+        );
+        assert_eq!(
+            Some(brief.reference.clone()),
+            kind.reference(),
+            "⚠⚠⚠⚠⚠ ITEM 738: where a run of this kind STARTS READING. This key was `require_str`, \
+             so omitting it was malformed rather than deferring — item 312's finding at a string \
+             instead of a count — and a required judgement is a decision the document is \
+             structurally forbidden from making",
+        );
+        assert!(
+            !brief.reference.contains("edit me"),
+            "⚠⚠⚠⚠ AND NOT THE TEMPLATE'S PLACEHOLDER: the fall-through stops at the kind on \
+             purpose, because `(edit me) paths, URLs or repos to consult` is composed into the \
+             prompt exactly as written and R380 measured a live agent reading three of five \
+             clauses that way. Got {:?}",
+            brief.reference,
+        );
         assert_eq!(
             brief.service.is_some(),
             kind.service_outage().is_some(),
@@ -6621,13 +6771,124 @@ mod tests {
         // ⚠⚠⚠ THE CONTROL. Without it a door that IGNORED every caller and always used the kind's
         // values would satisfy every assertion above — which is the opposite defect and just as
         // silent.
-        let named = ai_loop_request(PaneId(1), json!({ "context_ceiling": 4242 }));
+        let named = ai_loop_request(
+            PaneId(1),
+            json!({ "context_ceiling": 4242, "reference": "what this caller wrote" }),
+        );
         let brief = ai_loop_brief(named.as_object().expect("an object"), &kind)
             .expect("a caller naming a ceiling resolves");
         assert_eq!(
             brief.context_ceiling,
             Some(4242),
             "a caller's own number must still win over the kind document's",
+        );
+        assert_eq!(
+            brief.reference, "what this caller wrote",
+            "⚠⚠⚠ AND THE CONTROL REACHES ITEM 738'S SIDE TOO: a document that always won would \
+             satisfy every assertion above, and it would ALSO delete what a caller wrote — which \
+             for this key is the whole of what `reflecting` hands a replacement session",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A LAUNCH THAT NAMES NEITHER `agent` NOR `ready_when` IS STILL BEHIND A BARRIER, AND
+    /// IT IS THE KIND DOCUMENT'S** — register item 738, layer 3.
+    ///
+    /// # ⚠⚠⚠⚠ What was being typed twice, measured
+    ///
+    /// Every launch of this repository's debt loop spelled `--agent claude --match settles --marker
+    /// claude`. Those are **the same fact typed twice**: `AiLoopSpec::driving` derives
+    /// `Settles(agent)` from the first, so the last two added nothing — and neither copy was
+    /// written down anywhere a build reads. `ready_when` was `{ settles, claude }` on this
+    /// repository's runs and on another repository's run 39 alike, which is what *invariant* means
+    /// when it is measured rather than assumed.
+    ///
+    /// # ⚠⚠⚠ The three assertions, and why the order is the claim
+    ///
+    /// * **NEITHER KEY → THE DOCUMENT'S**, which is the layer this item added. The premise is
+    ///   asserted inside the gate: the shared fixture supplies both keys, and against a request
+    ///   that still holds them this whole test is vacuously true of a door that never consults the
+    ///   kind at all.
+    /// * **`agent` ALONE → DERIVED FROM IT**, unchanged. Item 300's line is what this must not
+    ///   cross: a barrier is a predicate about the peer, read off which program is in the pane. A
+    ///   document that won here would send a run driving `codex` to wait for `claude`.
+    /// * **`ready_when` SPELLED → SPELLED**, because the most specific thing anybody said about
+    ///   this pane is the caller's own.
+    ///
+    /// ⚠ What is NOT asserted is the marker's spelling. Which peer this repository drives is its
+    /// document's business, and a string pinned here would be a second place it lives — so the
+    /// claim is agreement with `LoopKind::ready_when`, plus that it is a `Settles`.
+    #[test]
+    fn a_run_that_names_no_agent_gets_the_kind_documents_own_barrier() {
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+            .expect("this repository's kind document opens");
+        let authored = kind
+            .ready_when()
+            .expect("its barrier must be readable")
+            .expect(
+                "⚠⚠⚠ THE CONTROL: a kind that authors no barrier makes every assertion below a \
+                 statement about `None`, and the door would be refusing rather than falling through",
+            );
+
+        let mut declining = ai_loop_request(PaneId(1), json!({}));
+        for key in ["agent", "ready_when"] {
+            declining
+                .as_object_mut()
+                .expect("an object")
+                .remove(key)
+                .unwrap_or_else(|| panic!("the fixture supplies {key}, which this gate declines"));
+        }
+        let map = declining.as_object().expect("an object");
+        for key in ["agent", "ready_when"] {
+            assert!(
+                !map.contains_key(key),
+                "⚠⚠⚠⚠ THIS GATE IS VACUOUS IF THE REQUEST NAMES {key:?}: the question is what a \
+                 launch that named NEITHER gets, and a fixture supplying one answers a different \
+                 question with the same green",
+            );
+        }
+
+        let resolved = ai_loop_barrier(map, &kind).expect(
+            "⚠⚠⚠⚠⚠ ITEM 738: a launch that named neither key must reach the document's own",
+        );
+        assert_eq!(
+            resolved, authored,
+            "⚠⚠⚠⚠⚠ and it must be the KIND'S barrier rather than one this door invented: the \
+             point of the layer is that the value has an author who also wrote what this peer says \
+             when its service fails, not that some barrier turned up",
+        );
+        assert!(
+            matches!(resolved, sprag_plugin::ReadyWhen::Settles(_)),
+            "⚠⚠⚠ and `settles` is what an agent CLI can be waited for by — it asks the operating \
+             system which program owns the pane's terminal, so no amount of the loop typing the \
+             word can satisfy it. Read {resolved:?}",
+        );
+
+        // ⚠⚠⚠ CONTROL ONE: a caller who names the PROGRAM still has the barrier derived from it.
+        // This is item 300's line, and a document that won here would send a run driving `codex`
+        // to wait for a `claude` that is not in the pane.
+        let named = ai_loop_request(PaneId(1), json!({ "agent": "codex", "ready_when": null }));
+        assert_eq!(
+            ai_loop_barrier(named.as_object().expect("an object"), &kind)
+                .expect("a caller naming a program resolves"),
+            sprag_plugin::ReadyWhen::Settles("codex".to_string()),
+            "⚠⚠⚠⚠ A CALLER SAYING WHICH PROGRAM IS IN THEIR PANE IS MORE SPECIFIC THAN A \
+             DOCUMENT'S STANDING DEFAULT, and this key's whole meaning is that derivation",
+        );
+
+        // ⚠⚠ CONTROL TWO: and a caller who SPELLS the barrier wins over both.
+        let spelled = ai_loop_request(
+            PaneId(1),
+            json!({ "agent": "codex", "ready_when": { "match": "shows", "marker": "READY" } }),
+        );
+        assert_eq!(
+            ai_loop_barrier(spelled.as_object().expect("an object"), &kind)
+                .expect("a caller spelling a barrier resolves"),
+            sprag_plugin::ReadyWhen::Shows("READY".to_string()),
+            "⚠⚠⚠ the most specific thing anybody said about this pane is the caller's own words, \
+             and a resolution that let the derivation or the document past them would silently \
+             answer a question the caller had already answered",
         );
     }
 
@@ -7934,7 +8195,13 @@ mod tests {
              ⚠⚠⚠ THE SEVEN NEWEST ARE THE `ai_loop` FORM'S, and this gate caught the same argument \
              a THIRD time on it: `agent` was published as declinable and read with `require_str`, \
              so a caller building the minimal call this grammar describes was answered \
-             `TypeMismatch`. It is required now, which is what it always was. \
+             `TypeMismatch`. It was made required, and the two spellings agreed again. \
+             ⚠⚠⚠⚠ IT IS DECLINABLE ONCE MORE SINCE ITEM 738, AND THAT IS NOT THAT DEFECT COMING \
+             BACK — the two spellings still agree, because the READER moved with the grammar: a \
+             launch that names no `agent` now falls through to the barrier the KIND document \
+             authors, and one that reaches nothing at all is refused naming both keys. The defect \
+             this line records was a published word the daemon would not accept; what changed here \
+             is which party answers, not whether the published call is servable. \
              ⚠⚠⚠ Those four are why this gate is worth its own line, and it has caught the SAME \
              argument TWICE. `done_when`'s first draft published `settles` and the parser REFUSED \
              it, because that draft needed a companion `agent` the vocabulary could not demand. \
@@ -8001,10 +8268,26 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            74,
+            76,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠⚠⚠⚠ THE NEWEST IS `hold_within_ms` (item 534), and \
+             malformed rather than declined. ⚠⚠⚠⚠⚠ THE NEWEST TWO ARE `reference` AND `agent` \
+             (item 738), and they are the SECOND and THIRD arguments on this whole surface ever to \
+             move from REQUIRED to declinable — `max_turns` was the first, and its reason is \
+             theirs: while a key is mandatory, no document can answer it, so a decision the \
+             owner's rule puts in an `.scxml` is one the `.scxml` is structurally forbidden from \
+             making. ⚠⚠ What filled that gap is what makes this a defect rather than a tidiness: a \
+             person retyped both into every launch out of a session's memory, and the session died \
+             at the end of the day. ⚠⚠⚠ DECLINING EITHER DOES NOT REACH THE TEMPLATE, unlike every \
+             other key here. `reference` stops at the KIND document, because the template's own \
+             value is the placeholder `(edit me) paths, URLs or repos to consult` and R380 measured \
+             that reaching a live agent; `agent` stops at the kind's authored barrier, because the \
+             template has none and a loop with no barrier types its first prompt into whatever the \
+             pane is running. A launch that reaches neither is REFUSED naming the keys. \
+             ⚠ And `agent` DECLINED is not `agent` overridden: a caller who names a program still \
+             has the barrier derived from it, which is item 300's line and is why a run driving \
+             `codex` still gets `codex`. THE OLD SENTENCE FOLLOWS. THE NEWEST IS `hold_within_ms` \
+             (item 534), and \
              declining it means what declining the two duration keys beside it means since item \
              300: THIS DOCUMENT DECIDES — `ai_loop.scxml`'s own four hours. ⚠⚠ Zero is NOT a value \
              a caller may mean here, unlike `context_ceiling` and `reflect_after_refusals` below: \
@@ -8048,9 +8331,15 @@ mod tests {
              answers nothing and reports the question, which is what every loop did before the \
              keys existed — and what was measured costing it every turn it had. \
              ⚠⚠ The eleven before them are the `ai_loop` FORM'S own, and \
-             what is NOT among them is the point: the brief's four and the `agent` are REQUIRED, \
+             what is NOT among them WAS the point: the brief's four and the `agent` were REQUIRED, \
              because a loop with no purpose and a loop with no barrier are both runs nobody can \
-             mean. ⚠⚠ `reflect_every` IS declinable, and its default is STILL `max_turns` — which \
+             mean. ⚠⚠⚠ TWO OF THOSE FIVE ARE AMONG THEM NOW (item 738) AND THAT SENTENCE STILL \
+             HOLDS, which is the only reason they could move: what makes it true is that neither \
+             CAN end up unset. `reference` reaches the kind document's own and `agent` reaches the \
+             barrier it authors, and a launch that reaches neither is refused. The sentence was \
+             never about which party has to speak — it was about a run starting without a purpose \
+             or without a barrier, and that is still impossible. \
+             ⚠⚠ `reflect_every` IS declinable, and its default is STILL `max_turns` — which \
              used to mean *the one number that keeps the run inside the states this build drives* and \
              now means something else entirely: `reflecting` is served, so that default is a CHOICE \
              rather than a limit. A restart closes a pane somebody may be reading, so a caller who \

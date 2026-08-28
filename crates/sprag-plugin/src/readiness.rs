@@ -917,6 +917,18 @@ impl ReadyWhen {
     /// the wire in the compile that adds it.
     pub const WIRE_WORDS: &'static [&'static str] = &["prints", "shows", "runs", "settles"];
 
+    /// The field naming WHICH QUESTION the marker asks — `{ match: …, marker: … }`.
+    ///
+    /// ⚠⚠ Published here for [`WIRE_WORDS`](Self::WIRE_WORDS)' reason, and it earned it the day a
+    /// SECOND reader appeared: register item 738 gave a loop KIND a barrier of its own, so this
+    /// object is now read out of a JSON request AND out of an `.scxml` datamodel. Two readers
+    /// spelling one key by hand is how they come to admit different objects — which is the argument
+    /// [`Consent::ASKED_KEY`](crate::consent::Consent::ASKED_KEY) already makes one type over.
+    pub const MATCH_KEY: &'static str = "match";
+
+    /// The field holding what the pane must carry, or the program it must be running.
+    pub const MARKER_KEY: &'static str = "marker";
+
     /// The kind named by `word`, or `None` for a word outside the closed set.
     ///
     /// ⚠ A caller who sends something else has made a MALFORMED request, not a rejected one —

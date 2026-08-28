@@ -487,6 +487,145 @@
     -->
     <data id="closing_rules"
           expr="' Then sweep for debt this session turned up — anything you found and did not fix, and anything you learned that the next run would otherwise re-derive. Pay what you can pay now; register the rest, with what you measured. Say which you did for each.'"/>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════════════
+      ⚠⚠⚠⚠⚠ WHAT THE THREE CLAUSES BELOW ARE, AND WHY THEY ARRIVED LATE — register
+      item 738, layers 2 and 3.
+
+      Everything above this line is a decision about HOW a debt run behaves. What
+      was still missing is the plainer half: WHAT THE RUN IS FOR, and WHAT MAKES
+      ITS PEER READY TO BE DRIVEN. Neither was written anywhere a build can read.
+      They were typed by hand into the launch arguments of every single firing —
+      out of one person's memory, and out of one session's context.
+
+      ⚠⚠⚠⚠ MEASURED, AND THE MEASUREMENT IS WHY THIS IS A DEFECT RATHER THAN AN
+      INCONVENIENCE. Of the thirteen values a caller handed over on every launch,
+      exactly THREE were genuinely about that call (`pane`, `agent`, `plugin`);
+      the other ten were the same values every time, because they are properties
+      of the KIND. `ready_when` was `{ settles, claude }` on this repository's runs
+      and on another repository's run 39 alike. A value that never varies and lives
+      only in somebody's memory is not a run argument — it is an unwritten
+      decision, and the session holding it dies at the end of the day.
+
+      ⚠⚠⚠ THE SHAPE IS `closing_rules`', DELIBERATELY. That clause is this file's
+      own precedent for putting PROSE A RUN OBEYS into a document: the template
+      declares the id and ships it empty, this file holds the value, `LoopKind`
+      reads it, the door falls through to it when no caller said otherwise, and the
+      template assigns it at `start`. Nothing new is invented for these; the road
+      that carries the sweep carries them.
+
+      ⛔ AND THE WRONG REPAIR IS NAMED HERE SO IT IS NOT REACHED FOR AGAIN: a guard
+      chain in the launcher script. That is where these values lived, in an
+      untracked directory four supervisors share, and the owner's judgement of it is
+      the reason this item exists — a copy of somebody's memory is not a spec.
+      ══════════════════════════════════════════════════════════════════════════
+    -->
+
+    <!--
+      ⚠⚠⚠⚠⚠ THE RULES EVERY SESSION OF THIS KIND WORKS UNDER — the standing orders
+      a debt run is held to whoever drives it and whichever milestone it is on.
+
+      ⚠⚠⚠ WHY THEY ARE NOT CALLED `standing_rules`, WHICH IS WHAT A PERSON CALLS
+      THEM. The template already owns `standing`, and that is a DIFFERENT thing with
+      a different lifetime: it is empty until a `screen_rules` clause FIRES, and it
+      accumulates what a run was redirected to mid-flight. Two ids one word apart,
+      one authored and one accumulated, is how a reader comes to believe a fired
+      instruction and an author's rule are the same channel. The word that separates
+      them is what a rule is FOR — these are worked under, that one was said.
+
+      ⚠⚠⚠⚠ IT GOES INTO `start_prompt` AND NOWHERE ELSE, WHICH IS A COST DECISION
+      TAKEN ON PURPOSE. `start_prompt` is what every session of a run is greeted
+      with — the first one and every replacement `restarting` opens — so a rule
+      written here reaches every agent that ever works for this kind. Putting it in
+      `turn_prompt` as well would retype the whole block on every turn of a run that
+      ends on its work rather than on a count, for an agent whose session already
+      holds it.
+      ⚠ The residue, stated rather than hidden: a session many turns in has these
+      rules only at the top of its context. What restates them is the replacement
+      `reviewing` and `reflecting` buy — the same channel that restates the
+      milestone — and not a repetition on every turn.
+
+      ⚠⚠ AND THERE IS NO WIRE KEY FOR IT, on `closing_rules`' own argument: what a
+      repository holds its runs to is its document's business, and a caller who
+      could override it could delete it by naming nothing. A caller with something
+      to add adds it to the milestone, which is theirs.
+    -->
+    <data id="working_rules"
+          expr="'상시 규칙, 전부 지켜라:\n' +
+                '(1) 한글로 작업하고 보고한다.\n' +
+                '(2) 비용 무시 — 언제나 가장 장기적으로 올바른 선택. 가장 간단한 방법으로 때우지 말 것.\n' +
+                '(3) 마일스톤을 주장하는 턴은 그 턴 안에서 증거를 다시 만들어라.\n' +
+                '(4) 착수하면 원장의 문장을 명령으로 다시 재라: 전제·숫자·처방 전부. 재측정이 원장을 반증하는 것은 예외가 아니라 기대값이다.\n' +
+                '(5) 종료조건을 세는 술어에 「이 값이 0 이 되는 경로가 실제로 있는가」를 물어라. 없으면 모집단에 원래 0 이 될 수 없는 역할이 섞여 있다.\n' +
+                '(6) 탈출구(면제 목록·기본값·「해당 없음」)가 제 게이트를 무력화하지 않게 하라 — 분류되지 않은 것은 통과가 아니라 RED 다.\n' +
+                '(7) 게이트는 뮤테이션으로 red 를 보여야 산다.\n' +
+                '(8) 라운드 종료 = 커밋 + 원장 갱신 + push. 푸시 판정 SSOT 는 git ls-remote origin main.\n' +
+                '(9) git add -A 금지 — 트리를 다른 세션과 공유한다.\n' +
+                '(10) 산문으로 적힌 근거는 아무도 재지 않는다 — 근거는 문서나 생성물에 물어 확인되는 술어로 만들어라.\n'"/>
+
+    <!--
+      ⚠⚠⚠⚠⚠ WHAT A SESSION OF THIS KIND CARRIES BESIDE ITS MILESTONE, when the
+      caller names nothing — the LEDGER, which is the only prior art a debt run
+      ever starts from.
+
+      ⚠⚠⚠ THE TEMPLATE SHIPS `(edit me)` HERE, and that placeholder has reached a
+      live agent before (R380 measured three of five clauses arriving as `(edit
+      me)`). So the fall-through cannot be to the template: a caller who says
+      nothing must get THIS repository's ledger, and a launch with neither is
+      refused at the door naming the key, rather than briefing an agent with an
+      instruction to edit a file.
+
+      ⚠⚠ IT IS STILL OVERRIDABLE, unlike `working_rules` above, and the asymmetry
+      is the point. The rules are what this repository holds its runs to; the
+      reference is what a session should read FIRST, and a reflection rewrites it
+      every time it replaces a session — *what the last session had to work out*.
+      A value a reflection may rewrite mid-run is not one this document can own
+      outright; what it can own is where a run that has learnt nothing yet starts.
+
+      ⚠ THE PATH IS ABSOLUTE AND OUTSIDE THIS REPOSITORY, which is stated rather
+      than hidden: the register lives in the agent's memory directory, not in
+      version control. That is items 655 and 627, already registered, and naming it
+      here does not make it worse — it moves ONE copy of the address out of a
+      person's head and into a file a build reads.
+    -->
+    <data id="reference"
+          expr="'/home/coin/.claude/projects/-home-coin-sprag/memory/MEMORY.md 와 같은 폴더의 debt-open.md — 색인이 먼저이고, 항목의 표제·done-when·실측은 전부 원장에 있다. ⚠ 원장의 문장은 늙는다: 착수하면 전제·숫자·처방을 제품에 다시 물어라.'"/>
+
+    <!--
+      ⚠⚠⚠⚠⚠ WHAT MAKES A PANE READY FOR THIS KIND'S FIRST PROMPT — and the one
+      clause here that does NOT travel through the template's datamodel.
+
+      ⚠⚠⚠ WHY IT IS NOT A `<data>` IN `ai_loop.scxml` LIKE THE OTHER TWELVE. Item
+      300 measured the line: what makes a pane ready is a PREDICATE ABOUT THE PEER
+      and is the same for every run against it, while how long anybody waits for it
+      is a judgement. Predicates live on the run spec, judgements live in the
+      datamodel — and the type is what enforces it, so a barrier cannot be spelled
+      as a `<data>` without undoing that. This clause changes WHO AUTHORS the
+      predicate, not which side of the line it is on.
+
+      ⚠⚠⚠⚠ AND IT IS NOT A SECOND AUTHOR OF THE AGENT'S NAME, WHICH IS THE THING
+      TO GET RIGHT HERE. A caller who names an `agent` still has the barrier DERIVED
+      from it, exactly as before — this value is only what a launch that named no
+      agent gets. So the order is: what the caller spelled, then what the caller
+      implied by naming a program, then this. A run driving `codex` gets `codex`,
+      because the caller said so and a caller saying so is more specific than a
+      document's standing default.
+
+      ⚠⚠ THIS DOCUMENT ALREADY COMMITTED TO THIS PEER, which is why it may hold
+      this at all: `service_needles` above quotes sentences only `claude` prints,
+      and `milestone_check` spells `claude -p`. A kind that knows what its peer says
+      when it is unwell is a kind that knows which peer it has.
+
+      ⚠ `settles`, not `prints` or `shows`: it is the one barrier word an agent that
+      prints nothing on startup can be waited for by, it asks the operating system
+      rather than the screen, and no amount of typing the word can satisfy it. R379
+      measured the cost of no barrier at all — a first prompt typed into a pane
+      whose agent had existed for ten milliseconds, and a run that then sat in
+      `working` for as long as anybody let it.
+    -->
+    <data id="ready_when"
+          expr="{ match: 'settles', marker: 'claude' }"/>
   </datamodel>
 
   <!--

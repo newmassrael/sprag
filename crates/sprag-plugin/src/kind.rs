@@ -181,6 +181,122 @@ impl LoopKind {
             .filter(|said| !said.is_empty())
     }
 
+    /// **THE RULES EVERY SESSION OF THIS KIND WORKS UNDER**, or [`None`] for a kind that holds its
+    /// runs to none.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Register item 738, and what it was measured against
+    ///
+    /// [`closing_rules`](Self::closing_rules)' opening bracket, on exactly its terms: one is what a
+    /// repository asks of an ENDING, this is what it asks of every turn before that, and neither
+    /// belongs in a file other repositories copy. It has no wire key for the same reason that one
+    /// does not — *a caller who could override it could delete it by naming nothing*.
+    ///
+    /// ⚠⚠ **WHAT WAS HAPPENING INSTEAD IS THE MEASUREMENT.** This repository's supervisor typed ten
+    /// standing rules into `north_star` BY HAND on every launch, out of that session's context, and
+    /// when the session ended they existed nowhere — so the next launch retyped them, slightly
+    /// differently. **The more conscientious the supervisor, the larger the copy**, which is why
+    /// this is a defect rather than an inconvenience.
+    ///
+    /// ⚠ It is NOT the template's `standing`, one letter away and a different thing: that one is
+    /// empty until a screen rule FIRES and accumulates what a run was redirected to mid-flight. See
+    /// the template's `start_prompt`, where the two are composed side by side and the reason is
+    /// written down.
+    #[must_use]
+    pub fn working_rules(&self) -> Option<String> {
+        // ⚠ EMPTY READS AS NOTHING, on `closing_rules`' own polarity: the template ships `''` for
+        // the slots a kind may fill, so *declared but empty* is *this document holds its runs to
+        // nothing*.
+        self.machine
+            .policy()
+            .working_rules()
+            .filter(|said| !said.is_empty())
+    }
+
+    /// **WHERE A RUN OF THIS KIND STARTS READING**, or [`None`] where this kind names nothing and
+    /// the caller's own reference is the only one.
+    ///
+    /// # ⚠⚠⚠⚠ Why the fall-through stops HERE rather than reaching the template
+    ///
+    /// Register item 738. The template ships `'(edit me) paths, URLs or repos to consult'`, and that
+    /// placeholder is not a friendly default — R380 measured a live agent reading three of its five
+    /// clauses as `(edit me)`, because a part nobody filled in is composed into the prompt exactly
+    /// as written. So a run whose caller named none and whose kind authors none is REFUSED at the
+    /// door naming the key: not starting is a better ending than briefing an agent with an
+    /// instruction to edit a file.
+    ///
+    /// ⚠⚠ **AND THIS ONE IS OVERRIDABLE WHERE [`working_rules`](Self::working_rules) IS NOT**, which
+    /// is the asymmetry rather than an inconsistency. The rules are what this repository holds its
+    /// runs to; the reference is what a session reads FIRST, and `reflecting` rewrites it every time
+    /// it replaces a session — *what the last session had to work out*. A value a reflection may
+    /// rewrite mid-run is not one a document can own outright; what it can own is where a run that
+    /// has learnt nothing yet begins.
+    #[must_use]
+    pub fn reference(&self) -> Option<String> {
+        self.machine
+            .policy()
+            .reference()
+            .filter(|said| !said.is_empty())
+    }
+
+    /// **WHAT MAKES A PANE READY FOR THIS KIND'S FIRST PROMPT**, or [`None`] for a kind that names
+    /// no peer of its own.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The one clause of a kind that does NOT travel through the datamodel
+    ///
+    /// Register item 738's third layer. Item 300 drew the line every other reader here sits on the
+    /// far side of: what makes a pane ready is a PREDICATE ABOUT THE PEER and is the same for every
+    /// run against it, while how long anybody waits for it is a judgement. Predicates ride on
+    /// [`AiLoopSpec`](crate::AiLoopSpec); judgements are written into `<data>`. **This changes who
+    /// AUTHORS the predicate, not which side of that line it is on** — which is why there is no
+    /// `<data id="ready_when">` in the template and no `<assign>` for it, and why the value is read
+    /// straight off this document's own session.
+    ///
+    /// ⚠⚠⚠ **IT IS NOT A SECOND AUTHOR OF THE AGENT'S NAME.** A caller who names an `agent` still
+    /// gets the barrier DERIVED from it by [`AiLoopSpec::driving`](crate::AiLoopSpec::driving),
+    /// exactly as before; this is what a launch that named NO agent gets. The order the door
+    /// resolves in is *what the caller spelled, then what the caller implied by naming a program,
+    /// then this* — so a run driving `codex` gets `codex`, because a caller saying so is more
+    /// specific than a document's standing default.
+    ///
+    /// ⚠⚠ **AND THE WORD IS PARSED BY [`ReadyWhen::parse`](crate::ReadyWhen::parse), NOT BY A
+    /// MATCH WRITTEN HERE.** That is
+    /// the one author of which words exist and of *an empty marker is refused*; a second one in this
+    /// file is how a document comes to be admitted that the wire would turn down.
+    ///
+    /// # Errors
+    ///
+    /// [`NotScreenable::Unreadable`] when the document holds something that is not a barrier this
+    /// driver can carry out — a bare string, a missing `match`, a word outside
+    /// [`ReadyWhen::WIRE_WORDS`](crate::ReadyWhen::WIRE_WORDS). ⚠ A kind that declares nothing at
+    /// all is [`None`] and not an
+    /// error: naming no peer is a legitimate thing for a kind to do, and the caller's `agent` is
+    /// then the only answer.
+    pub fn ready_when(&self) -> Result<Option<crate::ReadyWhen>, NotScreenable> {
+        use crate::ReadyWhen;
+
+        let Ok(held) = self.script.get_variable(&self.session, "ready_when") else {
+            return Err(NotScreenable::Unreadable);
+        };
+        let fields = match held {
+            ScriptValue::Object(fields) => fields,
+            ScriptValue::Null | ScriptValue::Undefined => return Ok(None),
+            _ => return Err(NotScreenable::Unreadable),
+        };
+        let text_of = |key: &str| match fields.get(key) {
+            Some(ScriptValue::String(held)) => Some(held.clone()),
+            _ => None,
+        };
+        let (Some(matched), Some(marker)) = (
+            text_of(ReadyWhen::MATCH_KEY),
+            text_of(ReadyWhen::MARKER_KEY),
+        ) else {
+            return Err(NotScreenable::Unreadable);
+        };
+        ReadyWhen::parse(&matched, marker)
+            .ok_or(NotScreenable::Unreadable)
+            .map(Some)
+    }
+
     /// **HOW MANY TURNS A RUN OF THIS KIND MAY TAKE**, or [`None`] where this kind says nothing and
     /// the template's own number stands.
     ///
@@ -801,6 +917,112 @@ mod tests {
             outage.text, "continue",
             "⚠⚠ NOT THE MILESTONE AGAIN: the session still holds its brief and its half-finished \
              turn, so re-asking the whole question spends the context the outage did not take",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THIS KIND HOLDS ITS RUNS TO RULES, AND THEY ARE THE ONES A PERSON WAS RETYPING** —
+    /// register item 738, layer 2.
+    ///
+    /// # ⚠⚠⚠⚠ What the assertion is, and what it deliberately is not
+    ///
+    /// The rules are PROSE and this repository's own, so pinning their wording here would be a test
+    /// agreeing with a renderer — `closing_rules`' gate makes the same choice one method up. What
+    /// must hold is the property the item was filed on: **the rules exist in the DOCUMENT rather
+    /// than in a supervisor's memory**, and they are shaped to be composed into a prompt.
+    ///
+    /// ⚠⚠⚠ **THE SIZE FLOOR IS THE MEASUREMENT AND NOT A STYLE RULE.** The launch this item was
+    /// registered against carried about 2 KB of hand-typed standing rules in `north_star`; a clause
+    /// that came back as a sentence would mean the block had been quietly emptied to a token, which
+    /// reads identically to a kind that authors none once it reaches a prompt. So the floor is well
+    /// under what was measured and well over what an accident produces.
+    #[test]
+    fn the_debt_kind_holds_its_runs_to_rules_that_live_in_the_document() {
+        let kind = debt();
+        let rules = kind.working_rules().expect(
+            "⚠⚠⚠⚠⚠ ITEM 738: this repository holds every turn of its debt runs to standing rules, \
+             and until they were written here they were typed BY HAND into `north_star` on every \
+             launch — out of one session's context, and gone when that session ended",
+        );
+        assert!(
+            rules.len() > 200,
+            "⚠⚠⚠ the rules a run works under, not a token standing in for them: the launch this \
+             item was registered against carried about 2 KB of them and a clause this short is a \
+             block that was emptied rather than authored. Read {} bytes",
+            rules.len(),
+        );
+        assert!(
+            rules.ends_with('\n'),
+            "⚠⚠⚠⚠ IT CARRIES ITS OWN LINE TERMINATOR, like the template's `standing` it is composed \
+             beside: `start_prompt` concatenates it with no separator, so a block that did not end \
+             a line would run the next clause of the prompt onto the last rule: {rules:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND IT SAYS WHERE A RUN OF IT STARTS READING** — register item 738, layer 2's other
+    /// half, and the one that could not be authored while the wire demanded it.
+    ///
+    /// `reference` was `require_str` at the door, so omitting the key was MALFORMED rather than
+    /// deferring: item 312's finding at a string instead of a count — **a required judgement is a
+    /// decision the document is structurally forbidden from making.** What filled the gap was a
+    /// person retyping the ledger's path into every launch.
+    ///
+    /// ⚠⚠ The assertion is that the value is READABLE and is not the template's placeholder. Where
+    /// this repository's ledger lives is this document's business and a path pinned here would be a
+    /// second place it lives; what must hold is that a caller who names none does not get
+    /// `(edit me)`, which R380 measured reaching a live agent.
+    #[test]
+    fn the_debt_kind_says_where_a_run_of_it_starts_reading() {
+        let kind = debt();
+        let reference = kind.reference().expect(
+            "⚠⚠⚠⚠⚠ ITEM 738: a debt run's only prior art is the ledger, and a kind that names none \
+             leaves the door with nothing to fall through to — so every launch has to retype the \
+             path out of somebody's memory",
+        );
+        assert!(
+            !reference.contains("edit me"),
+            "⚠⚠⚠⚠ NOT THE TEMPLATE'S PLACEHOLDER. `(edit me) paths, URLs or repos to consult` is \
+             composed into the prompt exactly as written — R380 measured a live agent reading \
+             three of five clauses that way — so a kind that echoed it would be worse than one \
+             that authored nothing: {reference:?}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND IT KNOWS WHEN ITS PANE IS READY TO BE TYPED INTO** — register item 738, layer 3.
+    ///
+    /// # ⚠⚠⚠ The one clause of a kind that is not in the template's datamodel
+    ///
+    /// Item 300 put the readiness barrier on the run SPEC and the durations in `<data>`, on a line
+    /// this does not cross: what makes a pane ready is a predicate about the peer, how long anybody
+    /// waits for it is a judgement. This changes who AUTHORS the predicate. The measurement that
+    /// asked for it: every launch spelled `--match settles --marker claude`, which
+    /// `AiLoopSpec::driving` already derives from `--agent claude` — **the same fact typed twice,
+    /// every time, and neither copy written down anywhere.**
+    ///
+    /// ⚠⚠ The assertion is on the KIND of barrier rather than on the marker's spelling: which peer
+    /// this repository drives is its document's business, and `Settles` is the claim — the only
+    /// barrier word that asks the operating system instead of the screen, and so the only one an
+    /// agent that prints nothing on startup can be waited for by.
+    #[test]
+    fn the_debt_kind_knows_when_its_pane_is_ready() {
+        let barrier = debt()
+            .ready_when()
+            .expect("its barrier must be one this driver can carry out")
+            .expect(
+                "⚠⚠⚠⚠⚠ ITEM 738: a kind that names no barrier leaves a launch that named no \
+                 `agent` with nothing — and a loop with no barrier types its first prompt into \
+                 whatever the pane happens to be running (R379 measured that costing a whole run)",
+            );
+        assert!(
+            matches!(barrier, crate::ReadyWhen::Settles(_)),
+            "⚠⚠⚠⚠ `settles` IS THE CLAIM. `prints` and `shows` are predicates over TEXT, and an \
+             agent CLI that starts quietly emits none to predicate over; `settles` asks the \
+             operating system which program owns the pane's terminal, which cannot be echoed by \
+             what the loop itself typed. Read {barrier:?}",
+        );
+        assert!(
+            !barrier.marker().is_empty(),
+            "⚠⚠ and a marker `ReadyWhen::parse` would have refused cannot arrive here: an empty \
+             one names no process, so the barrier could never clear",
         );
     }
 }

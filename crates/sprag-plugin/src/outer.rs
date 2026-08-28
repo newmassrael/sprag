@@ -399,6 +399,14 @@ const DONE_MARKER: &str = "done_marker";
 /// *something checked this and was satisfied*.
 const MILESTONE_CHECK: &str = "milestone_check";
 
+/// **THE RULES EVERY SESSION OF A RUN WORKS UNDER**, as the template spells the id — register item
+/// 738.
+///
+/// ⚠ Spelled once here for [`MILESTONE_CHECK`]'s reason: the driver writes it into the brief
+/// payload and the document reads it back out, and a key retyped at either end is a channel that
+/// can go quiet without anything saying so.
+const WORKING_RULES: &str = "working_rules";
+
 /// **HOW MANY TIMES IN A ROW THIS DOCUMENT HAS BEEN REFUSED**, as the document itself counts it —
 /// read, never written, by the driver.
 ///
@@ -660,6 +668,26 @@ pub struct Brief {
     /// extend that, not replace it — so a repository can demand its own sweep without any kind being
     /// able to drop the report the document needs from every run.
     pub closing_rules: Option<String>,
+    /// **THE RULES EVERY SESSION OF THIS RUN WORKS UNDER**, or [`None`] to leave the template's
+    /// empty string standing, which holds a run to nothing beyond its brief.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Register item 738, and it is [`closing_rules`](Self::closing_rules)' opening bracket
+    ///
+    /// One says what a repository asks of an ENDING; this says what it asks of every turn before
+    /// that. Both travel the same road and neither has a wire key, on the same argument: what a
+    /// repository holds its own runs to is its document's business, and a caller who could override
+    /// it could delete it by naming nothing.
+    ///
+    /// ⚠⚠ **WHAT WAS HAPPENING WITHOUT IT.** This repository's supervisor typed ten standing rules
+    /// into [`north_star`](Self::north_star) by hand on every launch, out of that session's
+    /// context, and when the session ended they existed nowhere — so the next launch retyped them,
+    /// slightly differently. **The more conscientious the supervisor, the larger the copy.**
+    ///
+    /// ⚠ It reaches `start_prompt` and NOT `turn_prompt`, unlike the template's own `standing`
+    /// beside it: every session of a run is greeted with the first, including every replacement, so
+    /// no agent works without the rules — and retyping them at an agent whose session already holds
+    /// them is a bill a run that ends on its work rather than on a count would pay every turn.
+    pub working_rules: Option<String>,
     /// **WHO CERTIFIES THIS RUN'S MILESTONES**, as an argv — or [`None`] to leave the template's
     /// empty slot standing, which means the working agent's own word.
     ///
@@ -1008,8 +1036,29 @@ impl AiLoopSpec {
     /// arrives, so a delivery can be confirmed on screen before the Enter that submits it.
     #[must_use]
     pub fn driving(agent: &str) -> Self {
+        Self::behind(ReadyWhen::Settles(agent.to_owned()))
+    }
+
+    /// The same spec, for a caller that already has the barrier rather than the program's name.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this exists beside [`driving`](Self::driving) — register item 738
+    ///
+    /// A loop KIND may now author its own barrier, so the value can arrive from a document rather
+    /// than from an agent's name, and the caller that resolves it needs somewhere to put what it
+    /// resolved. [`driving`](Self::driving) is this function plus one derivation — it is defined in
+    /// terms of it, so the defaults below cannot come to differ between the two roads, which is the
+    /// failure a second constructor would otherwise be.
+    ///
+    /// ⚠⚠ **THE BARRIER IS NOT AN [`Option`] HERE, AND THAT IS THE POINT.** The field is optional
+    /// because *go ahead immediately* is a thing some callers mean; a loop is not one of them (R379
+    /// measured a first prompt typed into a pane whose agent had existed for ten milliseconds). A
+    /// constructor that took `None` would let a resolution that ran out of answers reach a run
+    /// looking like a decision, so the resolving is done where it can REFUSE and only an answer
+    /// gets here.
+    #[must_use]
+    pub fn behind(barrier: ReadyWhen) -> Self {
         Self {
-            ready_when: Some(ReadyWhen::Settles(agent.to_owned())),
+            ready_when: Some(barrier),
             done_when: INNER_SESSION_ENDS,
             shows_the_prompt: true,
             // ⚠ NOT DERIVABLE FROM THE AGENT'S NAME. What a run may answer on somebody's behalf is
@@ -4512,6 +4561,11 @@ impl OuterLoop {
             // ⚠ Unconditional, like `screen_rules` beside it and for the same reason: the template
             // ships `''` and a caller who adds nothing must not delete what the document composes.
             "closing_rules": brief.closing_rules.clone().unwrap_or_default(),
+            // ⚠⚠⚠⚠ AND THE RULES THE WORK ITSELF IS DONE UNDER — register item 738, carried on
+            // exactly the terms of the line above it and unconditional for the same reason: the
+            // template ships `''`, so a kind that holds its runs to nothing has its own empty
+            // string echoed back rather than nil assigned over what an author wrote.
+            WORKING_RULES: brief.working_rules.clone().unwrap_or_default(),
             // ⚠⚠⚠ AND WHO CERTIFIES A MILESTONE — unconditional on the same terms: the template
             // ships `''` (nobody checks), and a run whose kind names a checker must arrive holding
             // it. Register item 428's second half: until this line the slot could be authored by
@@ -13379,6 +13433,7 @@ mod tests {
             // ⚠ This gate is about the BRIEF's parts crossing the datamodel; the kind's closing
             // clause crosses on the same route and has its own gate rather than riding this one.
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -13442,6 +13497,146 @@ mod tests {
             "⚠⚠⚠ a placeholder survived into the prompt a live agent reads, which is the defect \
              stated positively — a composition that dropped one part leaves the template's own \
              text where that part should be. Prompt:\n{start}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE RULES THIS REPOSITORY WROTE DOWN REACH THE PROMPT ITS AGENT READS** — register
+    /// item 738, layer 2, and the far end of the road the door's own gate holds the near end of.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the two halves are two gates and neither is the claim alone
+    ///
+    /// `sprag-host`'s `a_kind_documents_judgements_reach_a_run_that_named_none_of_them` asserts
+    /// that a launch naming NEITHER key resolves to the kind document's values. It cannot see a
+    /// datamodel, so it stops at the `Brief`. **This one starts there** and asks the question item
+    /// 492 was filed on: *a value that left the kind's document — does anything actually USE it?*
+    /// That item's whole finding was a number authored since 2026-08-18, argued over three
+    /// paragraphs and dated, that nothing carried; the reader existed and the `<assign>` did not.
+    ///
+    /// So the subject here is the two links after the door: the template's `<assign>` in `brief`,
+    /// and `priming`'s composition. **Delete either and this gate goes red while every other gate
+    /// in the workspace stays green** — which is exactly what was measured, twice, for the fields
+    /// that came before these.
+    ///
+    /// # ⚠⚠⚠ The values are the KIND's own, read live rather than pasted
+    ///
+    /// What `debt_loop.scxml` says is that document's business, and a string pinned here would be
+    /// a second place it lives — the argument every kind-side gate in this workspace makes. So the
+    /// gate reads the real document, asserts the control (it authors something at all), and then
+    /// asks whether what it authored is in the prompt.
+    ///
+    /// ⚠⚠ **AND THE PLACEHOLDER IS THE NEGATIVE HALF.** A composition that dropped `reference`
+    /// leaves the template's own `(edit me) paths, URLs or repos to consult` where the ledger's
+    /// address should be — R380 measured a live agent reading three of five clauses that way — and
+    /// a gate that only checked for the rules would pass with that sitting beside them.
+    #[test]
+    fn the_rules_and_the_reference_a_kind_authors_reach_the_prompt_its_agent_reads() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 8)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        // ⚠ A SECOND ENGINE FOR THE KIND, deliberately: a kind document and the template it stands
+        // beside are two machines, and `LoopKind::debt` holds its own script session for the life
+        // of the read. Sharing one interpreter would be two documents sharing a datamodel.
+        let kind = crate::kind::LoopKind::debt(Arc::new(sce_rust_lua::LuaEngine::new()))
+            .expect("this repository's kind document opens");
+        let authored_rules = kind.working_rules().expect(
+            "⚠⚠⚠ THE CONTROL: a kind that holds its runs to nothing makes every assertion below a \
+             statement about the empty string, and the template's own `''` would satisfy it",
+        );
+        let authored_reference = kind
+            .reference()
+            .expect("⚠⚠⚠ THE CONTROL: and one that names no reference has nothing to carry either");
+
+        let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its authored strings");
+        let brief = Brief {
+            north_star: "prove a kind's own rules reach its agent".to_string(),
+            milestone: "read the composed prompt".to_string(),
+            // ⚠⚠⚠⚠⚠ THE PREMISE: BOTH OF THESE ARE THE DOCUMENT'S AND NOT THIS GATE'S. At the
+            // door they are what a launch that named neither key falls through to; here they are
+            // what the driver was handed, so a value invented in this file would make the whole
+            // gate a test of its own literal.
+            reference: authored_reference.clone(),
+            working_rules: Some(authored_rules.clone()),
+            closing_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            milestone_check: None,
+            service: None,
+            max_turns: Some(Counted::Of(3)),
+            reflect_every: Some(99),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        };
+        assert_eq!(
+            loops.brief(&brief),
+            Briefed::Took,
+            "the machine must hold every part of a brief it accepted",
+        );
+
+        let run = RunContext::uncancellable();
+        let primed = loops
+            .pump(&access, &run)
+            .expect("the pane must be readable");
+        assert!(
+            matches!(
+                primed,
+                Pumped::Moved {
+                    to: AiLoopState::Priming,
+                    ..
+                }
+            ),
+            "the control: the brief must not have stopped the loop starting. Got {primed:?}",
+        );
+        let start = loops
+            .authored()
+            .expect("a primed machine answers with its composed strings")
+            .start;
+
+        assert!(
+            start.contains(authored_rules.as_str()),
+            "⚠⚠⚠⚠⚠ ITEM 738: THE RULES CROSSED THE DOOR AND NEVER REACHED THE AGENT. That is item \
+             492's shape exactly — a value authored, argued and dated in a document, with a reader \
+             that works and nothing after it — and the failure is silent, because a prompt missing \
+             a clause still reads like a prompt. What is missing is the template's `<assign>` in \
+             `brief`, or `priming`'s composition of `working_rules` into `start_prompt`. \
+             Prompt:\n{start}",
+        );
+        assert!(
+            start.contains(authored_reference.as_str()),
+            "⚠⚠⚠⚠ and where this run starts reading. A caller who named none gets the kind's, and \
+             a composition that dropped it leaves the agent with no ledger at all. Prompt:\n{start}",
+        );
+        assert!(
+            !start.contains("(edit me)"),
+            "⚠⚠⚠ AND NO PLACEHOLDER SURVIVED, which is the same failure stated positively: a \
+             dropped part leaves the template's own text where the value should be, and R380 \
+             measured a live agent reading three of five clauses that way. Prompt:\n{start}",
+        );
+        // ⚠⚠ AND THE RULES DO NOT RUN INTO THE CLAUSE AFTER THEM. `start_prompt` concatenates with
+        // no separator — the block carries its own line terminator, which is why the kind's gate
+        // asserts that it ends in one — so a block that lost it would glue the last rule to
+        // whatever `priming` composes next, on the row a person reads.
+        assert!(
+            !start.contains(&format!("{}Report", authored_rules.trim_end())),
+            "⚠⚠ the rules must not be glued to the clause after them: {start}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }
@@ -13526,6 +13721,7 @@ mod tests {
                 milestone: "m".to_string(),
                 reference: "r".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 // ⚠ NO CHECKER AUTHORED — the world that must stay silent, and the control.
@@ -13606,6 +13802,7 @@ mod tests {
             milestone: "m".to_string(),
             reference: "r".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -13699,6 +13896,7 @@ mod tests {
             milestone: "m".to_string(),
             reference: "r".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -13776,6 +13974,7 @@ mod tests {
             milestone: "m".to_string(),
             reference: "r".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -13860,6 +14059,7 @@ mod tests {
                 milestone: "m".to_string(),
                 reference: "r".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -14010,6 +14210,7 @@ mod tests {
             milestone: "step one".to_string(),
             reference: "none".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -14202,6 +14403,7 @@ mod tests {
                 milestone: "wait exactly as long as the file says".to_string(),
                 reference: "register item 300".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -15429,6 +15631,7 @@ mod tests {
                 milestone: "m".to_string(),
                 reference: "r".to_string(),
                 closing_rules: Some(" AND THEN SWEEP.".to_string()),
+                working_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: Some("/bin/echo YES".to_string()),
@@ -15697,6 +15900,7 @@ mod tests {
             milestone: "reach it".to_string(),
             reference: CONSULT.to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: Some(check.to_string()),
@@ -16068,6 +16272,7 @@ mod tests {
                 milestone: "reach it".to_string(),
                 reference: String::new(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: Some(format!("/bin/sh {}", script.display())),
@@ -16782,6 +16987,7 @@ mod tests {
                     milestone: "reach it".to_string(),
                     reference: "this gate".to_string(),
                     closing_rules: None,
+                    working_rules: None,
                     context_ceiling: Some(ROOMY),
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -16990,6 +17196,7 @@ mod tests {
                     milestone: "reach it".to_string(),
                     reference: "this gate".to_string(),
                     closing_rules: None,
+                    working_rules: None,
                     // ⚠⚠⚠⚠⚠ AUTHORED THROUGH THE BRIEF — register item 492, and this line used to be
                     // a `set_variable` straight into the datamodel. That was a road NO CALLER HAD:
                     // the number could not be reached from a brief, a wire key or a kind document,
@@ -17174,6 +17381,7 @@ mod tests {
                 milestone: OPENED_WITH.to_string(),
                 reference: "what this run was handed at the start".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -17308,6 +17516,7 @@ mod tests {
                 milestone: "reach the first checkpoint".to_string(),
                 reference: "this gate".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 // ⚠⚠⚠⚠⚠ AUTHORED THROUGH THE BRIEF — item 492, and see the same line in
                 // `a_session_past_its_ceiling_reflects_without_being_asked` for what it
                 // replaced: a `set_variable` into the datamodel, which is a road no caller had.
@@ -17409,6 +17618,7 @@ mod tests {
                 milestone: "reach it".to_string(),
                 reference: "this gate".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -17639,6 +17849,7 @@ mod tests {
                     milestone: "reach it".to_string(),
                     reference: "this gate".to_string(),
                     closing_rules: None,
+                    working_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -18033,6 +18244,7 @@ mod tests {
                 milestone: "reach the first checkpoint".to_string(),
                 reference: "this gate".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: Some(ceiling),
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -18291,6 +18503,7 @@ mod tests {
                 milestone: "reach the first checkpoint".to_string(),
                 reference: "this gate".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -18545,6 +18758,7 @@ mod tests {
                 milestone: FIRST.to_string(),
                 reference: "this gate".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -18782,6 +18996,7 @@ mod tests {
                     milestone: "reach it".to_string(),
                     reference: "this gate".to_string(),
                     closing_rules: None,
+                    working_rules: None,
                     context_ceiling: None,
                     // ⚠⚠⚠ THE NUMBER UNDER TEST, on the road a kind or a caller really uses —
                     // register item 494. The `set_variable` that used to stand here reached the
@@ -18991,6 +19206,7 @@ mod tests {
                     milestone: "reach it".to_string(),
                     reference: "this gate".to_string(),
                     closing_rules: None,
+                    working_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     // ⚠⚠⚠ THROUGH THE BRIEF, WHICH IS THE CHANNEL A KIND'S CHECK ACTUALLY TRAVELS.
@@ -19304,6 +19520,7 @@ mod tests {
                 milestone: "reach it".to_string(),
                 reference: "this gate".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: check.map(ToOwned::to_owned),
@@ -19783,6 +20000,7 @@ mod tests {
                     milestone: "reach it".to_string(),
                     reference: "this gate".to_string(),
                     closing_rules: None,
+                    working_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -19975,6 +20193,7 @@ mod tests {
             milestone: "reach it".to_string(),
             reference: "this gate".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -20287,6 +20506,7 @@ mod tests {
             milestone: "reach it".to_string(),
             reference: "this gate".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -20464,6 +20684,7 @@ mod tests {
             milestone: "reach it".to_string(),
             reference: "this gate".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -20653,6 +20874,7 @@ mod tests {
             milestone: "reach it".to_string(),
             reference: "this gate".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -20888,6 +21110,7 @@ mod tests {
                 milestone: "reach it".to_string(),
                 reference: "this gate".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: Some(NEVER),
                 milestone_check: Some(DENIES.to_string()),
@@ -21183,6 +21406,7 @@ mod tests {
             milestone: "m".to_string(),
             reference: "r".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -21291,6 +21515,7 @@ mod tests {
                 milestone: "m".to_string(),
                 reference: "r".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -21416,6 +21641,7 @@ mod tests {
             milestone: "m".to_string(),
             reference: "r".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -21954,6 +22180,7 @@ mod tests {
                         milestone: "m".to_string(),
                         reference: "r".to_string(),
                         closing_rules: None,
+                        working_rules: None,
                         context_ceiling: None,
                         reflect_after_refusals: None,
                         milestone_check: None,
@@ -22346,6 +22573,7 @@ mod tests {
                     milestone: "be held and let go".to_string(),
                     reference: "register item 9".to_string(),
                     closing_rules: None,
+                    working_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -22521,6 +22749,7 @@ mod tests {
                 milestone: "reach a person who knows what for".to_string(),
                 reference: "register item 452".to_string(),
                 closing_rules: None,
+                working_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -22701,6 +22930,7 @@ mod tests {
                     milestone: "reach a person".to_string(),
                     reference: "register item 458".to_string(),
                     closing_rules: None,
+                    working_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -22931,6 +23161,7 @@ mod tests {
                     milestone: "reach `service_down` rather than a person".to_string(),
                     reference: "register item 715".to_string(),
                     closing_rules: None,
+                    working_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -23255,6 +23486,7 @@ mod tests {
             milestone: "a resumed loop holds its own prompts".to_string(),
             reference: "register item 543".to_string(),
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,

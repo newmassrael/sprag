@@ -42,7 +42,25 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 ///
 /// ⚠ TWO, and that is the whole shape of item 494: the sentence was already written about both when
 /// item 492 built the road for one of them.
-const CLAIMED: &[&str] = &["reflect_after_refusals", "context_ceiling"];
+///
+/// # ⚠⚠⚠⚠⚠ FOUR since 2026-08-28, and the two that arrived are not numbers — register item 738
+///
+/// `reference` and `working_rules` are PROSE, and pinning them here is the moment this gate's
+/// subject widened from *a number the template invites a kind to author* to *a decision*. Nothing
+/// in the derivation had to change for it, which is the evidence the class was drawn on the right
+/// axis: the claim is a sentence about a `<data>`, and what a `<data>` holds was never part of it.
+///
+/// ⚠⚠ **THE TWO NEW ONES ARE THE DEFECT'S OWN SHAPE ONE LEVEL OUT.** 492 and 494 were decisions a
+/// kind could not make because no channel carried them; these were decisions a kind could not make
+/// because **the caller was required to make them on every launch** — so they lived in a person's
+/// memory, were retyped by hand into each firing, and vanished with the session that held them.
+/// The road is the same four steps and this pin is what says a fifth claim cannot arrive quietly.
+const CLAIMED: &[&str] = &[
+    "reference",
+    "working_rules",
+    "reflect_after_refusals",
+    "context_ceiling",
+];
 
 /// Every file a kind's numbers are read in — measured 2026-08-20, register item 498(a).
 ///

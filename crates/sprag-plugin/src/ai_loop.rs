@@ -1765,6 +1765,7 @@ mod tests {
             // ⚠ These fixtures measure a BOUNDED run; the declined budget is a kind's decision and
             // has its own gate rather than being folded in here.
             closing_rules: None,
+            working_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,

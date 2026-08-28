@@ -1758,8 +1758,16 @@ impl PluginGrammar {
     pub const READY_WHEN: ArgGrammar = ArgGrammar::nested(
         "ready_when",
         &[
-            ArgGrammar::one_of("match", "string", sprag_plugin::ReadyWhen::WIRE_WORDS),
-            ArgGrammar::open("marker", "string"),
+            // ⚠⚠ THE FIELD NAMES ARE THE TYPE'S, like the words beside them — register item 738.
+            // A loop KIND authors a barrier of its own now, so this object is spelled by a wire
+            // grammar, a JSON reader and an `.scxml` datamodel; three parties spelling one key by
+            // hand is how a published shape and an admitted one come apart.
+            ArgGrammar::one_of(
+                sprag_plugin::ReadyWhen::MATCH_KEY,
+                "string",
+                sprag_plugin::ReadyWhen::WIRE_WORDS,
+            ),
+            ArgGrammar::open(sprag_plugin::ReadyWhen::MARKER_KEY, "string"),
         ],
     )
     .optional();
@@ -2149,9 +2157,17 @@ impl PluginGrammar {
     /// itself, in the document's own words, out of what it is FOR — so what a caller supplies is
     /// the purpose and not the sentence. `north_star` is where the loop is ultimately going and is
     /// never rewritten; `milestone` is the step being worked on now; `reference` is prior art the
-    /// agent should read first. All three are required, and that is measured rather than strict:
+    /// agent should read first. All three were required, and that was measured rather than strict:
     /// the document ships `(edit me)` placeholders for exactly these, and a live agent read three
     /// of its five clauses as `(edit me)` until R380.
+    ///
+    /// ⚠⚠⚠⚠⚠ **`reference` IS DECLINABLE SINCE ITEM 738, AND THE MEASUREMENT ABOVE IS WHY IT STOPS
+    /// AT THE KIND.** Requiring it made *where this repository's runs start reading* a decision the
+    /// document was forbidden from making, so it lived in a person's memory and was retyped into
+    /// every launch. Declining it now reaches `debt_loop.scxml`'s own `reference` — and NOT the
+    /// placeholder, which is the whole of what the sentence above measured: a launch that reaches
+    /// neither is refused naming the key. The other two are unchanged, because a north star and a
+    /// milestone are what a caller is FOR.
     ///
     /// ⚠⚠ **`max_turns` COUNTS THE AGENT'S TURNS AND IS NOT A GUARDRAIL**, which is why it is here
     /// and not in `guardrails`. One turn of a real agent is many steps of the loop driving it, so
@@ -2196,7 +2212,24 @@ impl PluginGrammar {
         ArgGrammar::open("pane", "int"),
         ArgGrammar::open("north_star", "string"),
         ArgGrammar::open("milestone", "string"),
-        ArgGrammar::open("reference", "string"),
+        // ⚠⚠⚠⚠⚠ DECLINABLE SINCE ITEM 738, and for `max_turns`' reason at a string instead of a
+        // count: while it was mandatory, no KIND document could answer it — omitting the key was
+        // malformed rather than deferring — so *where this repository's runs start reading* was a
+        // decision the document was structurally forbidden from making, and what filled the gap
+        // was a person retyping the ledger's path into every launch out of a memory that dies with
+        // the session.
+        //
+        // ⛔ THE FALL-THROUGH STOPS AT THE KIND AND NOT AT THE TEMPLATE. `ai_loop.scxml` ships
+        // `'(edit me) paths, URLs or repos to consult'` and R380 measured that reaching a live
+        // agent, so a run with neither is REFUSED naming the key: the sentence above about the
+        // placeholders is the reason the three were required, and it stays true of the two that
+        // still are.
+        //
+        // ⚠⚠ Relaxing required→optional does NOT earn a wire bump: it WIDENS what is well-formed,
+        // and every caller that has ever sent the key keeps working unchanged. ⚠ The residue,
+        // stated rather than hidden: the form alone does not tell an old client which build it is
+        // talking to, so declining the key against an older daemon still answers `TypeMismatch`.
+        ArgGrammar::open("reference", "string").optional(),
         // ⚠⚠⚠⚠ DECLINABLE SINCE ITEM 312, AND IT WAS THE LAST REQUIRED JUDGEMENT ON THIS FORM.
         // While it was mandatory, `ai_loop.scxml`'s own `<data id="max_turns" expr="40"/>` could not
         // be reached by any caller — omitting the key was malformed rather than deferring — so a
@@ -2243,17 +2276,27 @@ impl PluginGrammar {
         // ⚠ ZERO IS A VALUE A CALLER MAY MEAN — reflect on the first refusal, which the template
         // allows and does not recommend — so there is no decline word beside it either.
         ArgGrammar::open("reflect_after_refusals", "int").optional(),
-        // ⚠⚠⚠ REQUIRED, and the conformance sweep is what settled it. It was declared optional and
-        // read with `require_str`, which is the exact defect `DONE_WHEN` beside it records from
-        // version 25: the wire published an argument as declinable and the daemon refused every
-        // call that declined it, so an agent building a call from the published form gets
-        // `TypeMismatch` for a request the grammar says is well-formed.
+        // ⚠⚠⚠ REQUIRED UNTIL ITEM 738, and the conformance sweep is what settled the FIRST half of
+        // that history. It was declared optional and read with `require_str`, which is the exact
+        // defect `DONE_WHEN` beside it records from version 25: the wire published an argument as
+        // declinable and the daemon refused every call that declined it, so an agent building a
+        // call from the published form gets `TypeMismatch` for a request the grammar says is
+        // well-formed. It was made required, and the reason written here was that **there IS no
+        // honest default** — a loop with no barrier types its first prompt into whatever the pane
+        // happens to be running (R379 measured that costing a whole run), and only the caller
+        // knows which program is in their pane.
         //
-        // It is required rather than optional-with-a-default because there IS no honest default: a
-        // loop with no barrier types its first prompt into whatever the pane happens to be running
-        // — R379 measured that costing a whole run — and only the caller knows which program is in
-        // their pane.
-        ArgGrammar::open("agent", "string"),
+        // ⚠⚠⚠⚠⚠ THAT SENTENCE IS WHAT CHANGED, AND NOTHING ELSE DID. A loop KIND now authors a
+        // barrier of its own (`debt_loop.scxml`'s `ready_when`), so there IS an honest default for
+        // a launch that names neither key — one written down in a document a build reads, by the
+        // author who also wrote what that peer prints when its service fails. The resolution order
+        // keeps this key's meaning exactly: what the caller SPELLED, then what the caller IMPLIED
+        // by naming a program, then the kind's. A run driving `codex` still gets `codex`.
+        //
+        // ⛔ AND A LAUNCH THAT REACHES NONE OF THE THREE IS REFUSED naming both keys — the honest
+        // default has an author, so *nobody said* is still an answer this door will not invent.
+        // ⚠ Relaxing required→optional does not earn a bump, on `reference`'s note above.
+        ArgGrammar::open("agent", "string").optional(),
         Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::DONE_WHEN,
@@ -10302,7 +10345,7 @@ mod tests {
                 // that reads a hold at all — so publishing it on the other forms would advertise an
                 // argument they swallow, which is what `a_declared_argument_is_one_the_plugin_host_
                 // reads` exists to refuse.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string? max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two

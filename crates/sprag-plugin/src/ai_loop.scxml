@@ -147,8 +147,58 @@
     <data id="north_star" expr="'(edit me) the outcome this loop exists to reach'"/>
     <!-- The step being worked on now. Reflection may rewrite this. -->
     <data id="milestone" expr="'(edit me) the next checkpoint on the way there'"/>
-    <!-- Prior art the agent should read before deciding anything. -->
+    <!--
+      Prior art the agent should read before deciding anything.
+
+      ⚠⚠⚠⚠⚠ AND WHERE A CALLER WHO NAMES NONE GETS ONE — register item 738. The
+      placeholder below is a real hazard rather than a friendly default: R380
+      measured a live agent reading three of its five clauses as `(edit me)`,
+      because a part nobody filled in is composed into the prompt exactly as
+      written. ⚠ It is the KIND's to author, like `max_turns` and `reflect_every`
+      — where a repository's runs START READING is a fact about that repository,
+      and the caller who has to retype it every launch is retyping it out of a
+      memory that dies with the session.
+
+      ⚠⚠ THE FALL-THROUGH STOPS AT THE KIND AND DOES NOT REACH THIS LINE. A run
+      whose caller named none and whose kind authors none is REFUSED at the door
+      naming the key, because briefing an agent with an instruction to edit a file
+      is a worse ending than not starting.
+
+      ⚠ AND THIS IS THE ONE CLAIMED PART A REFLECTION MAY REWRITE MID-RUN — it
+      becomes *what the last session had to work out* the moment one lands. What a
+      kind authors is where a run that has learnt nothing yet begins, not a value
+      it keeps.
+    -->
     <data id="reference" expr="'(edit me) paths, URLs or repos to consult'"/>
+    <!--
+      ⚠⚠⚠⚠⚠ THE RULES EVERY SESSION OF A RUN WORKS UNDER — EMPTY HERE, AND
+      DECLARED SO A KIND CAN FILL IT. Register item 738.
+
+      `closing_rules` below is this file's precedent and this is its opening
+      bracket: one holds what a repository asks of an ENDING, this holds what it
+      asks of every turn before that. ⚠ It is the KIND's to author, like
+      `max_turns` and `reflect_every` — a rule about how work is done in a
+      particular tree is a decision about a place this file has never been.
+
+      ⚠⚠⚠ WHAT WAS HAPPENING WITHOUT IT, measured on this repository's own loop:
+      a supervisor typed ten standing rules into `north_star` BY HAND on every
+      launch, out of that session's context, and when the session ended the rules
+      existed nowhere. **The more conscientious the supervisor, the larger the
+      copy.** That is why it is a defect and not an inconvenience.
+
+      ⚠⚠ IT GOES INTO `start_prompt` AND NOT INTO `turn_prompt`, unlike
+      `standing` beside it, and the difference is which question each answers.
+      `standing` is what a run was REDIRECTED to mid-flight and has to survive the
+      turn it was said in; this is what the author wrote down once, and the session
+      that was greeted with it still holds it. Every replacement is greeted again,
+      so a fresh agent is never without them.
+
+      ⚠ EMPTY IS THE SHIPPED STATE AND MEANS NO RULES, which is the right default
+      for a document other repositories copy: it holds its own line terminator, so
+      a loop whose kind authors nothing composes exactly the prompt it always did
+      and no conditional is needed here.
+    -->
+    <data id="working_rules" expr="''"/>
     <!--
       The agent the driver launches in the inner pane. INTERACTIVE, never
       `-p`/print mode: sprag reads an agent's state from its TUI — the title's
@@ -2557,6 +2607,18 @@
       <assign location="milestone_check" expr="_event.data.milestone_check"/>
       <assign location="closing_rules" expr="_event.data.closing_rules"/>
       <!--
+        ⚠⚠⚠⚠ AND THE RULES THE WORK ITSELF IS DONE UNDER — register item 738,
+        `closing_rules`' opening bracket and carried on exactly its terms. One
+        says what a repository asks of an ENDING; this says what it asks of every
+        turn before that, and neither is a file other repositories copy has any
+        business deciding.
+
+        ⚠⚠ UNCONDITIONAL, like the line above it: the driver always sends the key,
+        echoing this document's own empty string back for a kind that authors no
+        rules, so omitting it cannot assign nil over what an author wrote.
+      -->
+      <assign location="working_rules" expr="_event.data.working_rules"/>
+      <!--
         ⚠⚠⚠ AND THE THREE THE PEER'S BAD DAY NEEDS, on the same unconditional
         terms: the driver always sends all three, echoing this document's own
         values back for a kind that names none, so a kind that declines cannot
@@ -2710,10 +2772,27 @@
               expr="turns - milestone_at &gt; 0
                     ? ' (set ' + (turns - milestone_at) + ' turns ago; check it still describes live facts)'
                     : ''"/>
+      <!--
+        ⚠⚠⚠⚠⚠ `working_rules` STANDS BESIDE `standing` AND NOT INSIDE IT —
+        register item 738. Both are instructions that outlive the turn they reach
+        the agent in, and they have different authors and different lifetimes: one
+        was WRITTEN DOWN by whoever owns the kind and never changes, the other
+        ACCUMULATES what this particular run was redirected to when a screen rule
+        fired. Seeding the second with the first would make `screened >
+        screened_carried` — the edge that buys a reflection when a run is
+        redirected — true for a run nobody has redirected.
+
+        ⚠⚠ It is in THIS prompt only. `start_prompt` greets every session of a
+        run, the first and every replacement `restarting` opens, so no agent ever
+        works without the rules; `turn_prompt` would retype them at an agent whose
+        session already holds them, on every turn of a run that ends on its work
+        rather than on a count.
+      -->
       <assign location="start_prompt"
               expr="'North star: ' + north_star + '\n' +
                     'Milestone: ' + milestone + milestone_age + '\n' +
                     'What to carry: ' + reference + '\n' +
+                    working_rules +
                     standing +
                     carried +
                     'Report what you did and what is left.' + '\n' +
