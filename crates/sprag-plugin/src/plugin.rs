@@ -462,6 +462,27 @@ pub struct Checks {
     ///
     /// ⚠ The sentence is `judge`'s, not composed here: one authority on what a silence means.
     pub why_silent: Option<String>,
+    /// **HOW MANY MILESTONE CLAIMS COULD NOT BE PUT TO A CHECKER AT ALL** — register item 674, and
+    /// the claims that used to leave the tally with no mark whatever.
+    ///
+    /// # ⛔⛔⛔⛔⛔ It is NOT part of [`asked`](Self::asked), and it is not zero for the same reason
+    ///
+    /// `asked` counts questions really put to an independent process. A claim counted here never
+    /// got that far: the loop could not READ its own `milestone_check` out of the datamodel, so
+    /// nothing was spawned and nothing could answer. Putting it in `asked` would claim a question
+    /// nobody asked; leaving it out of the record entirely — which is what happened before this
+    /// field — makes the run's own numbers **flatter its checker**: every claim it could not put is
+    /// a claim absent from the denominator, so *the checker answered all of them* stays true by
+    /// losing the ones it never saw.
+    ///
+    /// ⚠⚠ **THE DISTINCTION `asked`'s DOC ALREADY CLAIMED AND COULD NOT KEEP.** That doc says
+    /// `asked: 0` separates *nobody was meant to check this* from *the checker is broken* — true
+    /// only once a datamodel that cannot answer is told apart from an author who declared no
+    /// checker. Both used to arrive as `asked: 0`, and only one of them is a decision.
+    ///
+    /// ⚠ Non-zero means the loop's own instrument failed, so the remedy is this run's document and
+    /// script session, never the checker or the working agent.
+    pub unasked: u32,
     /// How many of [`asked`](Self::asked) the checker TURNED DOWN — register item 499.
     ///
     /// ⚠⚠⚠ THE THIRD VERDICT, AND IT WAS THE ONE WITH NO TALLY. A check answers agreed, refused or
@@ -505,6 +526,7 @@ impl Checks {
         why_silent: None,
         refused: 0,
         refused_in_a_row: 0,
+        unasked: 0,
     };
 
     /// Whether EVERY check this run asked said nothing — the reading that says *this run's endings

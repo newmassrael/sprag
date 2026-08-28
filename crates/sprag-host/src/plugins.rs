@@ -3348,6 +3348,11 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
             // never *no claim was ever refused*.
             "refused": progress.checks.refused,
             "refused_in_a_row": progress.checks.refused_in_a_row,
+            // ⚠⚠⚠⚠⚠ AND THE CLAIMS THAT NEVER REACHED A CHECKER — register item 674. It is
+            // OUTSIDE `asked` on purpose (see `Checks::unasked`): a claim the loop could not put
+            // is not a question anybody asked, and folding it in would make the denominator
+            // flatter the checker by counting a question that never happened.
+            "unasked": progress.checks.unasked,
         },
         RUN_DRIVING_KEY: progress.driving.map(|pane| pane.0),
         RUN_BANKED_KEY: progress.banked.as_ref().map(|banked| json!({
@@ -3484,6 +3489,12 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             // exactly what a reader gets today from a daemon older than item 663.
             refused: small(tally.get("refused"))?,
             refused_in_a_row: small(tally.get("refused_in_a_row"))?,
+            // ⚠⚠⚠⚠⚠ AND WHOLE-OR-NOTHING REACHES THIS ONE TOO — register item 674, on the rule
+            // stated directly above and for the sharpest instance of it. A `0` filled in here
+            // would answer *this run put every claim it had to a checker* on behalf of a daemon
+            // that never said so — which is precisely the flattering silence item 674 exists to
+            // end, re-created by the reader after the writer stopped making it.
+            unasked: small(tally.get("unasked"))?,
         })
     })();
     let banked = (|| {
@@ -4343,8 +4354,26 @@ fn delivered_clause(deliveries: sprag_plugin::Deliveries) -> Option<String> {
 /// ceiling is slack — unmeasured all over again.
 #[must_use]
 pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
+    // ⛔⛔⛔⛔⛔ **THE CLAIMS THAT COULD NOT BE PUT ARE SAID FIRST, AND THEY ARE SAID EVEN WHEN
+    // `asked` IS ZERO** — register item 674.
+    //
+    // `asked == 0` used to return `None` outright, on the reading that it means *this author
+    // declared no checker*. That is one of two worlds: a run whose datamodel could not answer for
+    // `milestone_check` also reaches zero, and it is the loop's instrument failing. Returning
+    // `None` for it is how a run that verified NOTHING printed the same row as a run nobody meant
+    // to verify — which is the whole of item 674's remaining half.
+    let unasked = match checks.unasked {
+        0 => String::new(),
+        n => format!(
+            "⚠ {n} milestone claim(s) could not be put to a checker at all — this run could not \
+             read its own `milestone_check`, so nothing was asked and nothing could answer. That \
+             is this loop's instrument, not its checker. "
+        ),
+    };
     if checks.asked == 0 {
-        return None;
+        // ⚠ A run with nothing asked and nothing unaskable is the author's decision, and stays
+        // silent exactly as before.
+        return (!unasked.is_empty()).then(|| unasked.trim_end().to_owned());
     }
     let why = checks
         .why_silent
@@ -4352,8 +4381,12 @@ pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
         .map_or_else(String::new, |why| format!(" ({why})"));
     let refused = refusal_clause(checks);
     if checks.silent == 0 {
+        // ⚠⚠ THE `unasked` CLAUSE LEADS EVEN HERE, and this is the arm it matters most on: *every
+        // one of them answered* is the reassuring reading, and it is true only of the claims that
+        // were put. A run that could not put three of them would otherwise print an unqualified
+        // success — register item 674.
         return Some(format!(
-            "{} milestone claim(s) went to an independent checker and every one of them \
+            "{unasked}{} milestone claim(s) went to an independent checker and every one of them \
              answered{refused}",
             checks.asked,
         ));
@@ -4363,14 +4396,14 @@ pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
     // whole reason for existing, arriving where a person reads it.
     if checks.none_answered() {
         return Some(format!(
-            "⚠ NONE of this run's {} milestone claim(s) was verified — its checker never answered, \
-             so anything it converged on rests on the working agent's own word{why}",
+            "{unasked}⚠ NONE of this run's {} milestone claim(s) was verified — its checker never \
+             answered, so anything it converged on rests on the working agent's own word{why}",
             checks.asked,
         ));
     }
     Some(format!(
-        "⚠ {} of {} milestone claims went unverified — the checker answered for the rest{why}\
-         {refused}",
+        "{unasked}⚠ {} of {} milestone claims went unverified — the checker answered for the \
+         rest{why}{refused}",
         checks.silent, checks.asked,
     ))
 }
@@ -4521,6 +4554,73 @@ mod tests {
     /// ⚠⚠ The sentences are the whole subject, so they are compared as VALUES rather than by
     /// eye — three arms that quietly rendered the same prose would satisfy any per-arm assertion
     /// written one at a time, which is how the collapse got in.
+    /// ⛔⛔⛔⛔⛔ **THE ROW SAYS HOW MANY CLAIMS NEVER REACHED A CHECKER, AND SAYS IT EVEN WHEN
+    /// `asked` IS ZERO** — register item 674's remaining half, at the surface a person reads.
+    ///
+    /// # The escape hatch that made the tally optimistic
+    ///
+    /// `checks_sentence` returned `None` outright for `asked == 0`, on the reading that it means
+    /// *this author declared no checker*. It has a second cause — a run whose datamodel could not
+    /// answer for `milestone_check` — and for that one the silence is the defect: the claim leaves
+    /// the denominator, so **a run that verified nothing prints the same row as a run nobody meant
+    /// to verify**. An unclassified case passing as *not applicable* is the shape this register
+    /// refuses; it has to be RED, and here that means a sentence.
+    ///
+    /// ⚠⚠ **THE THIRD ARM IS THE ONE THAT MATTERS MOST.** *Every one of them answered* is the
+    /// reassuring reading and it is true only of the claims that were PUT — so a run that could
+    /// not put some must not print it unqualified.
+    #[test]
+    fn a_row_says_how_many_milestone_claims_never_reached_a_checker() {
+        let of = |asked, silent, unasked| {
+            checks_sentence(&sprag_plugin::Checks {
+                asked,
+                silent,
+                why_silent: None,
+                refused: 0,
+                refused_in_a_row: 0,
+                unasked,
+            })
+        };
+
+        // ── THE CONTROL: an author who declared no checker stays silent, exactly as before ────
+        assert_eq!(
+            of(0, 0, 0),
+            None,
+            "⚠⚠⚠⚠⚠ THE PREMISE THAT KEEPS THE CLAIM HONEST: a run nobody meant to check must \
+             still print nothing. If this spoke, the assertion below would be satisfied by a \
+             sentence that appears on every run and says only that a run existed",
+        );
+
+        // ── AND THE WORLD THAT USED TO SHARE ITS SILENCE ─────────────────────────────────────
+        let unaskable = of(0, 0, 2).expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 674: a run that could not put ANY of its claims to a checker \
+             must not print the same row as a run nobody meant to check. `asked == 0` was an \
+             unconditional `None`, so this run — whose instrument failed twice — reported nothing \
+             at all, and its milestone claims stood on the working agent's own word in silence",
+        );
+        assert!(
+            unaskable.contains('2') && unaskable.contains("could not be put"),
+            "⚠⚠⚠ and it must say HOW MANY and that they were never put — a count with no subject \
+             sends a reader to the checker, which is the one thing that is not broken here. \
+             Got {unaskable:?}",
+        );
+
+        // ── THE ARM THAT WOULD OTHERWISE FLATTER THE CHECKER ─────────────────────────────────
+        let reassuring = of(3, 0, 1).expect("a run that asked three says so");
+        assert!(
+            reassuring.contains("could not be put") && reassuring.contains("every one of them"),
+            "⛔⛔⛔⛔ REGISTER ITEM 674: *every one of them answered* is true of the claims that \
+             were PUT, and this run could not put one. Printed unqualified it is a checker being \
+             flattered by the claims it never saw — the exact reading this item is about. \
+             Got {reassuring:?}",
+        );
+        assert!(
+            reassuring.find("could not be put") < reassuring.find("every one of them"),
+            "⚠⚠ and the caveat must come FIRST: a reader who stops at the first clause must not \
+             stop at the reassuring one. Got {reassuring:?}",
+        );
+    }
+
     #[test]
     fn each_reason_a_loop_could_not_be_built_names_its_own_file() {
         /// The clause that is true only of a datamodel short of its authored strings.
@@ -9693,6 +9793,8 @@ mod tests {
                             // transport that dropped one key and duplicated another still pass.
                             refused: 7,
                             refused_in_a_row: 6,
+                            // ⚠ AND DISTINCT AGAIN, on the same terms — register item 674.
+                            unasked: 9,
                         },
                         driving: Some(pane),
                         banked: Some(sprag_plugin::Banked {

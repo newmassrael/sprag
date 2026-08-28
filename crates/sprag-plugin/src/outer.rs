@@ -8831,13 +8831,42 @@ impl OuterLoop {
         if !said.said() {
             return (Checked::NotAsked, None, None);
         }
-        let argv: Vec<String> = self
-            .text_of(MILESTONE_CHECK)
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(ToOwned::to_owned)
-            .collect();
+        // ⛔⛔⛔⛔⛔ **TWO WORLDS USED TO SHARE `unwrap_or_default()` HERE, AND ONLY ONE OF THEM IS A
+        // DECISION** — register item 674's remaining half.
+        //
+        // `text_of` answers `None` for EVERY failure: the script session is gone, the variable was
+        // never declared, the value is not a string. That `None` became `""`, `""` became an empty
+        // argv, and an empty argv became `NotAsked` — the word `Checks::asked`'s own doc calls *a
+        // decision its author took*. **For a datamodel that could not answer, that sentence is
+        // false**, and its cost is exactly what item 674 is about: the claim leaves no mark, the
+        // tally's denominator never moves, and `checks_sentence` prints nothing at all. A milestone
+        // that was never checked reads identically to one nobody meant to check.
+        //
+        // ⚠⚠ IT IS THE SAME FACE AS REGISTER ITEM 431, one reader along: there a `read: 0` folded
+        // *nothing was read* into *nothing was there*, and the repair was to stop spelling an
+        // absent measurement as a measured zero. This is that, for the denominator.
+        let Some(declared) = self.text_of(MILESTONE_CHECK) else {
+            // ⚠⚠⚠ COUNTED, AND NOT AS `asked`. Nothing was put to any process, so claiming a
+            // question would be a second false sentence — this is the claim that could not be put,
+            // which is a fact about this run's INSTRUMENT rather than about its checker.
+            self.checks.unasked = self.checks.unasked.saturating_add(1);
+            // ⚠ The walk already carries a reason on this arm and this path left it empty. Filling
+            // it is what makes the failure diagnosable where a person reads it.
+            return (
+                Checked::NotAsked,
+                Some(
+                    "the milestone check could not be READ from this run's datamodel, so no \
+                     checker was put to the claim — this is the loop's own instrument failing, \
+                     not an author who declared none"
+                        .to_owned(),
+                ),
+                None,
+            );
+        };
+        let argv: Vec<String> = declared.split_whitespace().map(ToOwned::to_owned).collect();
         if argv.is_empty() {
+            // ⚠ THE AUTHOR'S DECISION, and the only world this arm may now claim: the datamodel
+            // answered, and what it answered was *no checker*. Silent on purpose.
             return (Checked::NotAsked, None, None);
         }
         // ⚠⚠⚠ READ BESIDE THE QUESTION AND NOT INSIDE IT, so what is REPORTED is what was SHOWN.
@@ -13454,6 +13483,112 @@ mod tests {
     ///
     /// ⚠ The second half is the one a careless widening breaks: reading every field unconditionally
     /// still passes the first half, and fails every caller who omitted one.
+    /// ⛔⛔⛔⛔⛔ **A MILESTONE CLAIM THE LOOP COULD NOT PUT TO A CHECKER IS COUNTED, AND ONE ITS
+    /// AUTHOR NEVER MEANT TO CHECK IS NOT** — register item 674's remaining half.
+    ///
+    /// # The two worlds `unwrap_or_default()` used to fold
+    ///
+    /// `checked` reads `milestone_check` out of the datamodel. `text_of` answers `None` for EVERY
+    /// failure — a dead script session, a value that is not a string, a variable nobody declared —
+    /// and that `None` became `""`, which became an empty argv, which became `Checked::NotAsked`:
+    /// the word `Checks::asked`'s own doc calls *a decision its author took*.
+    ///
+    /// **For a datamodel that could not answer, that is false**, and the cost is item 674's whole
+    /// subject: `asked` never moves, so the claim is absent from the denominator, and
+    /// `checks_sentence` prints nothing. A run that verified NOTHING reads exactly like a run
+    /// nobody meant to verify — which is how *the checker answered all of them* stays true by
+    /// losing the ones it never saw.
+    ///
+    /// # ⚠⚠⚠⚠ Both arms are ONE RUN, one field apart, and neither spawns a checker
+    ///
+    /// The honest arm's datamodel ANSWERS and what it answers is the empty string — an author who
+    /// declared no checker, which must stay silent. Then the same engine starts lying about that
+    /// one variable and nothing else. So the only difference between the two readings is whether
+    /// the loop could read its own instrument, which is exactly the distinction under test.
+    ///
+    /// ⚠⚠ **THE HONEST ARM IS THE PREMISE AND IT IS ASSERTED, NOT ASSUMED.** If the datamodel could
+    /// not answer in that arm either, both would count and the gate would pass while measuring
+    /// nothing — the shape this register calls vacuous.
+    #[test]
+    fn a_claim_the_loop_could_not_put_to_a_checker_is_counted_and_an_unauthored_one_is_not() {
+        let engine = Disagreeing::about(MILESTONE_CHECK, ScriptValue::Int(0));
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = bounded_at(
+            Arc::clone(&engine) as Arc<dyn IScriptEngine>,
+            pane,
+            Duration::from_secs(1),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "n".to_string(),
+                milestone: "m".to_string(),
+                reference: "r".to_string(),
+                closing_rules: None,
+                context_ceiling: None,
+                reflect_after_refusals: None,
+                // ⚠ NO CHECKER AUTHORED — the world that must stay silent, and the control.
+                milestone_check: None,
+                service: None,
+                max_turns: Some(Counted::Of(3)),
+                reflect_every: Some(99),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+        let run = RunContext::uncancellable();
+
+        // ── THE PREMISE: THE DATAMODEL ANSWERS, AND WHAT IT ANSWERS IS *NO CHECKER* ───────────
+        let (verdict, why, _) = loops.checked(&access, &run, Heard::Said(Evidence::Statement));
+        assert_eq!(
+            (verdict, why.as_deref()),
+            (Checked::NotAsked, None),
+            "the premise: this datamodel CAN be read, and it says the author declared no checker — \
+             which is a decision and must stay silent",
+        );
+        assert_eq!(
+            loops.checks.unasked, 0,
+            "⚠⚠⚠⚠⚠ THE PREMISE THAT MAKES THE CLAIM A CLAIM: an author who declared no checker is \
+             NOT a claim that could not be put. If this counted, the arm below would be measuring \
+             nothing — every run would count, and the number would say only that a run existed",
+        );
+
+        // ── AND NOW THE DATAMODEL STOPS ANSWERING ABOUT THAT ONE VARIABLE ────────────────────
+        engine.start_lying();
+        let (verdict, why, _) = loops.checked(&access, &run, Heard::Said(Evidence::Statement));
+        assert_eq!(
+            loops.checks.unasked, 1,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 674: a milestone claim the loop could not put to a checker \
+             must leave a mark. It leaves none if this is 0 — `asked` cannot move (nothing was \
+             asked), so the claim vanishes from the denominator and the run's own row reports a \
+             checker that answered everything it was given",
+        );
+        assert_eq!(
+            loops.checks.asked, 0,
+            "⚠⚠⚠ and it must NOT be counted as asked: nothing was put to any process, and a \
+             denominator that grew here would claim a question nobody asked",
+        );
+        assert_eq!(
+            verdict,
+            Checked::NotAsked,
+            "⚠⚠ the DOCUMENT's decision is deliberately unchanged — this round is about what is \
+             REPORTED, and routing on a new word is a separate decision with its own measurement",
+        );
+        assert!(
+            why.is_some_and(|said| said.contains("could not be READ")),
+            "⚠⚠⚠⚠ and the walk must carry the reason, which this arm left empty before: a count \
+             with no sentence tells a person a number and not what to repair",
+        );
+    }
+
     #[test]
     fn a_number_that_did_not_survive_is_named_and_one_never_sent_is_left_alone() {
         let sent_but_mangled = Disagreeing::about("await_person_ms", ScriptValue::Int(999));
