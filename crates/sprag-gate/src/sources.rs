@@ -591,6 +591,30 @@ mod tests {
     }
 
     /// ⚠⚠⚠ The split is worth nothing unless the file it is measured on really HAS both halves.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the second arm is a BOUNDARY and no longer a RATIO
+    ///
+    /// It read `product > code / 4` — *and it must not have swallowed the file*. That is a proxy,
+    /// and it was wrong in both directions.
+    ///
+    /// It decayed as this workspace was TESTED. [`Source::product`]'s own doc holds the finding:
+    /// a ratchet that counts test code punishes testing, which is backwards (register item 470,
+    /// measured). This arm was one. Measured 2026-08-29: `outer.rs` stood at 25.16 % of its own
+    /// lines — about twenty of margin over the floor — and the round that added register item 746's
+    /// two outage gates spent every one of them. A gate that goes red on the round that adds a gate
+    /// is not guarding the split; it is charging rent on it.
+    ///
+    /// ⚠⚠ And it was BLIND in the direction that actually costs something. A reader whose items
+    /// close too early leaves the test module in the shipping half — every ratchet built on the
+    /// split then counts its own gates, which is item 470's finding all over again — and a ratio
+    /// FLOOR gets greener the worse that gets. The boundary below is red for it: the last shipped
+    /// line has to be the last code line before the test module, so a split that stops early
+    /// (swallowing what ships) or late (keeping what proves) has moved it either way.
+    ///
+    /// ⚠ What this arm does NOT claim: that the reader is right about every shape. That is the
+    /// table above, and [`an_unclosed_test_item_is_refused_rather_than_swallowing_the_file`] is the
+    /// arm for a reader that loses its place outright. This one asks only whether the shapes those
+    /// two cover are the shapes the real file turned out to have.
     #[test]
     fn the_split_is_measured_on_a_file_that_really_has_both_halves() {
         let sources = rust_sources();
@@ -603,11 +627,29 @@ mod tests {
             driver.product.len() < driver.code.len(),
             "the driver carries its own test module and the split must see it",
         );
-        assert!(
-            driver.product.len() > driver.code.len() / 4,
-            "and it must not have swallowed the file: {} product lines of {}",
-            driver.product.len(),
-            driver.code.len(),
+
+        // ⚠ THE MODULE'S OWN LINE AND NOT ITS ATTRIBUTE, because `code` drops every line starting
+        // with `#` — the same trap `test_only_modules` is commented for one screen up.
+        let (module, _) = driver
+            .code
+            .iter()
+            .rev()
+            .find(|(_, text)| text.as_str() == "mod tests {")
+            .expect("the driver's test module is what makes it the file this gate is measured on");
+        let (last_shipped, _) = driver
+            .code
+            .iter()
+            .rev()
+            .find(|(line, _)| line < module)
+            .expect("the driver ships code before its own test module");
+        assert_eq!(
+            driver.product.last().map(|(line, _)| *line),
+            Some(*last_shipped),
+            "the shipping half must run to the test module and stop there. It ends at {:?} and \
+             the last code line before `mod tests {{` (line {module}) is {last_shipped} — so the \
+             split moved the boundary: earlier means it swallowed code that SHIPS, later means it \
+             kept code that PROVES and every ratchet built on this is now counting its own gates",
+            driver.product.last().map(|(line, _)| *line),
         );
     }
 }

@@ -4818,6 +4818,242 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⛔⛔⛔⛔⛔ **AN OUTAGE ENDS A RUN ON THE OUTAGE BUDGET, NEVER ON THE ITERATION ONE** —
+    /// register item 746, and the half [`crate::outer::OuterLoop::wait_out_service`]'s own gate
+    /// cannot reach: which CEILING a real run comes to rest on.
+    ///
+    /// # ⚠⚠⚠⚠ What was measured, and why the arithmetic had a third factor nobody could see
+    ///
+    /// Register item 724 gave the self-resuming door a budget of `service_resumes_max` (36) waits
+    /// of `service_retry_ms` (10 minutes) — **six hours**, and ratcheted the product so the two
+    /// files cannot drift apart. Run 58, 2026-08-29, hit an account limit and died at
+    /// `03:23:14 exhausted (iterations) after 100000 iterations` having spent **two** of those
+    /// thirty-six. Forty-eight minutes of outage, seven per cent of the design.
+    ///
+    /// The third factor is `max_iterations`: not in either of item 724's two files, not in any
+    /// document at all, but a **wire argument the launcher passes**. So the six hours that ratchet
+    /// defends were being silently cut to whatever number the caller happened to write, and the
+    /// item's own note forbids the obvious answer — *raise it* is not a repair, because nobody can
+    /// say what it should be.
+    ///
+    /// # ⚠⚠⚠ Two arms, differing in ONE thing, and what each alone would let through
+    ///
+    /// * **THE HEADLINE — an outage the budget covers is SURVIVED.** The peer's service goes out
+    ///   mid-turn, comes back inside the budget, and the run reaches its milestone. Alone, this
+    ///   passes for a driver with no ceiling at all.
+    /// * ⚠⚠⚠⚠ **AND ONE THAT OUTLASTS THE BUDGET ENDS ON `service_resumes_max`.** Same peer, same
+    ///   numbers, same run — it simply never speaks again — and the ending must be `blocked`
+    ///   through `awaiting_human`, which is the edge item 724 built. `exhausted` here is the very
+    ///   defect: it names a knob the caller can raise and says nothing about a service that never
+    ///   came back.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THE PREMISE IS ASSERTED INSIDE, because a roomy ceiling passes both arms
+    ///
+    /// A gate whose `max_iterations` is generous is green over the unfixed driver too, and it would
+    /// go on being green for ever — the vacuity item 657 named. So the ceiling is asserted to be
+    /// **below what the outage window is worth in polls**: `RETRIES × WINDOW` at
+    /// [`POLL_INTERVAL`](crate::run::POLL_INTERVAL) is what a driver that merely LOOKED once per
+    /// poll would spend crossing this outage, and the unfixed one spent far more than that because
+    /// it did not sleep at all. ⚠ It is a LOWER bound on the defect's cost and that is the honest
+    /// direction: if a ceiling this tight survives, no looser reading of the spin can have happened.
+    ///
+    /// ⚠⚠ The other direction is asserted too — the ceiling must be roomy enough that the arms are
+    /// about the OUTAGE and not about a run that could never have finished anything. That is what
+    /// the surviving arm reaching `converged` says.
+    ///
+    /// ⚠ The two numbers with no wire key are AUTHORED, which is what `with_bound` in
+    /// [`crate::outer`]'s own gates does and for its reason: the shipped silence bound is ten
+    /// minutes and the shipped budget is thirty-six waits, so a gate that inherited them would not
+    /// terminate. What it must not do is restate the CEILING, and it does not — that is read off
+    /// the running document, so nobody can make these arms vacuous by editing it.
+    #[test]
+    fn an_outage_ends_a_run_on_the_outage_budget_and_never_on_the_iteration_one() {
+        /// How long this gate's document lets nothing speak. Generous next to a stand-in's
+        /// delivery, because the peer has to get its outage message onto the pane before the bound
+        /// falls due — the control below is what says it did.
+        const QUIET: Duration = Duration::from_millis(500);
+        /// The document's retry window. It is what the outage COSTS in wall clock, so it is also
+        /// what the premise assertion divides by [`crate::run::POLL_INTERVAL`].
+        const WINDOW: Duration = Duration::from_millis(400);
+        /// How much of the budget each arm has left when it meets its outage — the same in both,
+        /// because the arms must differ in exactly one thing.
+        const RETRIES_LEFT: i64 = 3;
+        /// How long the service is out in the arm that survives: about one cycle of the loop's own
+        /// `quiet + window`, comfortably inside `RETRIES_LEFT` of them.
+        const OUTAGE: Duration = Duration::from_millis(900);
+        /// ⚠⚠ THE CEILING BOTH ARMS RUN UNDER, and the number this whole gate is about. Measured:
+        /// a surviving run costs about twenty passes here. It is asserted below to be under what
+        /// the outage is worth in polls, so it cannot be quietly raised into vacuity.
+        const ITERATIONS: u32 = 60;
+
+        /// Run a real loop, under a real Driver, against a peer whose service fails mid-turn —
+        /// `recovers_after` being the one thing the two arms differ in.
+        fn outage(
+            recovers_after: Option<Duration>,
+        ) -> (OutcomeState, Vec<String>, Duration, i64, u32) {
+            let (workspace, pane) =
+                crate::testing::standin_agent_whose_service_fails(recovers_after);
+            let access = supervised(&workspace);
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    // ⚠ THE PEER'S OWN WORDS, spelled once in the fixture and quoted here — the
+                    // needle is what a KIND authors, so a gate that invented one would be arming a
+                    // channel against a sentence nothing ever prints.
+                    service: Some(crate::outer::ServiceOutage {
+                        needles: vec![crate::testing::SERVICE_IS_DOWN.to_string()],
+                        every_ms: WINDOW.as_millis() as u64,
+                        text: "continue".to_string(),
+                    }),
+                    ..brief_for(40)
+                },
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            // ⚠⚠ AUTHORED AFTER THE BRIEF, which is where the document's own numbers stand: these
+            // two have no wire key by design (see `Quiet::DOCUMENT_KEY` and `service_resumes_max`),
+            // and the shipped ten minutes and thirty-six waits are a gate that never returns.
+            loops.inner.author_number(
+                crate::completion::Quiet::DOCUMENT_KEY,
+                QUIET.as_millis() as i64,
+            );
+            // ⚠⚠⚠ THE CEILING IS READ, NEVER WRITTEN — item 724's own discipline. An arm that
+            // spelled `36` here would keep passing the day somebody lowered the budget, which is
+            // exactly the stale fixture this register keeps paying for.
+            let ceiling = loops
+                .inner
+                .reads_number("service_resumes_max")
+                .expect("the document must declare `service_resumes_max` as a number");
+            loops
+                .inner
+                .author_number("service_retried", ceiling - RETRIES_LEFT);
+
+            let progress = ProgressCell::default();
+            let began = Instant::now();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: ITERATIONS,
+                max_cost: None,
+                // ⚠ Far above what either arm takes, so the wall clock is never the ending: this
+                // gate is about which of the OTHER two ceilings a run comes to rest on.
+                max_duration: Some(Duration::from_secs(120)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &access, &RunContext::uncancellable());
+            let took = began.elapsed();
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (outcome.state, walk, took, ceiling, outcome.iterations)
+        }
+
+        /// **THE CLAIM, IN ONE LINE: THE COUNT FOLLOWS THE RETRIES AND NOT THE CLOCK.** A run that
+        /// spent fewer iterations than its own elapsed time is worth in [`crate::run::POLL_INTERVAL`]s
+        /// cannot have been asking in a loop — which is the arithmetic register item 522's own gate
+        /// makes about looks, made here about the budget that actually ended run 58.
+        fn slower_than_polling(iterations: u32, took: Duration) -> bool {
+            u128::from(iterations) * crate::run::POLL_INTERVAL.as_millis() < took.as_millis()
+        }
+
+        // ── THE PREMISE, ASKED OF THE NUMBERS BEFORE EITHER ARM LEANS ON THEM ──
+        //
+        // ⚠⚠⚠⚠⚠ What a driver that merely LOOKED once per poll interval would spend crossing this
+        // outage. The unfixed one spent far more — it returned without sleeping at all — so this is
+        // a floor on the defect's cost and the honest direction to be conservative in.
+        let spun = (WINDOW.as_millis() as i64 * RETRIES_LEFT)
+            / crate::run::POLL_INTERVAL.as_millis() as i64;
+        assert!(
+            i64::from(ITERATIONS) < spun,
+            "⚠⚠⚠⚠⚠ THE CEILING IS TOO ROOMY FOR THIS GATE TO MEAN ANYTHING. {ITERATIONS} \
+             iterations against an outage worth at least {spun} polls — so a driver that spun \
+             through the whole wait would still have finished inside the budget, and both arms \
+             below would pass over the very defect item 746 registered. Widen the outage or \
+             tighten the ceiling; do NOT raise `max_iterations`, which is the workaround the item \
+             forbids by name",
+        );
+
+        // ── THE HEADLINE: an outage the budget covers is survived ──
+        let (survived, walk, took, ceiling, spent) = outage(Some(OUTAGE));
+        assert!(
+            ceiling > RETRIES_LEFT,
+            "⚠⚠⚠ THE PREMISE OF BOTH ARMS: the document's budget must be bigger than the headroom \
+             this gate leaves, or `service_retried` was authored to a negative number and neither \
+             arm is about a ceiling at all. Ceiling {ceiling}, headroom {RETRIES_LEFT}",
+        );
+        // ⚠⚠⚠⚠ THE CONTROL, AND WITHOUT IT THIS GATE MEASURES A HAPPY RUN. The peer's outage
+        // message has to be ON THE PANE before the silence bound falls due, or `peer.silent`
+        // carries `service: false`, the run goes to `awaiting_human` and ends `blocked` — which is
+        // the second arm's expected ending, reached for entirely the wrong reason.
+        assert!(
+            walk.iter().any(|note| note.contains("ServiceDown")),
+            "⚠⚠⚠⚠⚠ THE RUN NEVER MET AN OUTAGE, so nothing below is about one. The peer prints its \
+             service message and then stops speaking; if the {QUIET:?} silence bound falls due \
+             before that message is painted, the driver reads a plain silence instead. Walked \
+             {walk:?}",
+        );
+        assert_eq!(
+            survived,
+            OutcomeState::Converged,
+            "⛔⛔⛔⛔⛔ AN OUTAGE INSIDE THE BUDGET MUST BE SURVIVED. The peer's service was out for \
+             {OUTAGE:?} — about one of the {ceiling} waits item 724 budgeted — and came back, and \
+             this run answered {survived:?} instead of reaching its milestone. `exhausted \
+             (iterations)` here is run 58 exactly: 48 minutes of outage, 100,000 iterations, two \
+             retries spent. Walked {walk:?} in {took:?} over {spent} iteration(s)",
+        );
+        assert!(
+            slower_than_polling(spent, took),
+            "⚠⚠⚠⚠⚠ THE COUNT IS FOLLOWING THE CLOCK. {spent} iterations in {took:?} is at least \
+             one per {:?}, which is what ASKING looks like rather than what waiting looks like — \
+             and on the shipped ten-minute window that rate is the hundred thousand run 58 spent. \
+             The claim of item 746 is that an outage costs one iteration per `service_retry_ms`, \
+             not one per poll. Walked {walk:?}",
+            crate::run::POLL_INTERVAL,
+        );
+
+        // ── ⚠⚠⚠⚠ AND THE OTHER ARM: AN OUTAGE THAT OUTLASTS THE BUDGET ENDS ON THE BUDGET ──
+        let (gave_up, walk, took, _, spent) = outage(None);
+        assert!(
+            walk.iter()
+                .any(|note| note.contains("ServiceDown --ServiceRetry--> AwaitingHuman")),
+            "⚠⚠⚠⚠⚠ THE RUN DID NOT END ON THE OUTAGE'S OWN CEILING. That pair is the only way out \
+             of `service_down` when the budget is spent — item 724 built it, and a morning reader \
+             meeting it knows a server was down and nobody came. Walked {walk:?} in {took:?}",
+        );
+        // ⚠⚠ THE VARIANT AND NOT ITS PAYLOAD. `AiLoop::asking` stands an `Unanswered` in for the
+        // two doors into `awaiting_human` that never held a question — its own doc says so — and
+        // what this arm is about is which CEILING ended the run, not what the sentence beside it
+        // carries.
+        assert!(
+            matches!(gave_up, OutcomeState::Blocked(_)),
+            "⛔⛔⛔⛔⛔ A PEER THAT NEVER CAME BACK MUST BE REPORTED AS ONE, and this run answered \
+             {gave_up:?}. `exhausted` sends its reader to raise `max_iterations` about a service \
+             that is down — the sentence run 58 published — where `blocked` sends them to look at \
+             the peer. Walked {walk:?}",
+        );
+        // ⚠⚠⚠ AND THE PREMISE OF THE ARM ABOVE, MEASURED RATHER THAN ARGUED: this run really did
+        // spend long enough that the unfixed driver would have blown the ceiling. Without it the
+        // arm could pass over a run that gave up in milliseconds for some unrelated reason.
+        assert!(
+            took.as_millis() as i64 >= WINDOW.as_millis() as i64 * RETRIES_LEFT,
+            "⚠⚠⚠⚠ THE RUN DID NOT ACTUALLY WAIT OUT ITS BUDGET. {took:?} is less than the \
+             {RETRIES_LEFT} waits of {WINDOW:?} the document owes an outage before it gives up, so \
+             the ending above was reached without the waiting this gate is about",
+        );
+        assert!(
+            slower_than_polling(spent, took),
+            "⚠⚠⚠⚠ AND THE ARM THAT GAVE UP SPENT ITS BUDGET AT THE DOCUMENT'S RATE TOO. {spent} \
+             iterations in {took:?} is one per {:?} or faster, so this run reached the outage \
+             ceiling by luck of a roomy `max_iterations` rather than because waiting is cheap. \
+             Walked {walk:?}",
+            crate::run::POLL_INTERVAL,
+        );
+    }
+
     /// ⚠⚠⚠⚠ **THE TURN'S OWN READ NOTICES A DIALOG THE BARRIER MISSED** — `Over::Asking`, the arm
     /// register item 297 called unreachable through four fixtures.
     ///

@@ -6640,7 +6640,7 @@ impl OuterLoop {
 
             // ⚠⚠⚠ THE PEER'S SERVICE FAILED AND THE ONLY TREATMENT IS TIME — see
             // [`wait_out_service`](Self::wait_out_service).
-            Does::Wait => self.wait_out_service(),
+            Does::Wait => self.wait_out_service(run),
 
             // ⚠⚠⚠ THE LOOP IMPROVES ITS OWN SETUP AND THEN REPLACES THE SESSION THAT READS IT —
             // three acts, because the three things that happen are genuinely different, and the
@@ -6932,6 +6932,40 @@ impl OuterLoop {
         self.script
             .set_variable(&self.session, name, ScriptValue::String(with.to_owned()))
             .expect("a datamodel this run is holding is writable");
+    }
+
+    /// **AUTHOR ONE OF THIS DOCUMENT'S OWN NUMBERS**, the way a person editing `ai_loop.scxml`
+    /// does — [`break_a_clause`](Self::break_a_clause)'s neighbour, and the door the two `<data>`
+    /// entries with **no wire key at all** are reachable through.
+    ///
+    /// # ⚠⚠⚠ Why this is authoring rather than a back door
+    ///
+    /// `with_bound` in this module's own gates already does exactly this for `turn_within_ms`, and
+    /// its doc holds the argument: a gate that wants a value SAYS it, because the alternative is
+    /// inheriting from a file that is allowed to change. What makes it honest is that the DECISION
+    /// still lives in one place — the `<data>` — and everything downstream reads it there.
+    ///
+    /// ⚠⚠ Two numbers need it and neither has a channel by design. `quiet_within_ms` is authored
+    /// in the `.scxml` and nowhere else ([`Quiet::DOCUMENT_KEY`]'s own doc says so, and says a
+    /// `Brief` field is what a caller who needs one would add); `service_resumes_max` and
+    /// `service_retried` are the document's alone, which is [`wait_out_service`](Self::wait_out_service)'s
+    /// own note — *"neither is read here either"*. The shipped values are ten minutes and
+    /// thirty-six waits, so a gate that inherited them would not terminate.
+    ///
+    /// ⚠ `#[cfg(test)]`, so nothing in the product can reach it and no reader has to wonder
+    /// whether a second authority on these numbers exists.
+    #[cfg(test)]
+    pub(crate) fn author_number(&self, name: &str, held: i64) {
+        self.script
+            .set_variable(&self.session, name, ScriptValue::Int(held))
+            .expect("a datamodel this run is holding is writable");
+    }
+
+    /// What this document holds under `name` right now — [`author_number`](Self::author_number)'s
+    /// reader, so a gate can assert against the SHIPPED number instead of restating it.
+    #[cfg(test)]
+    pub(crate) fn reads_number(&self, name: &str) -> Option<i64> {
+        self.authored_number(name)
     }
 
     /// **WHAT THIS RUN'S MACHINE HAS SWALLOWED**, or [`None`] for the runs that swallowed nothing.
@@ -7366,7 +7400,7 @@ impl OuterLoop {
     /// changed when nothing did. The anchor is this function's alone — set on the first look and
     /// cleared on the way out — so no other state can leave it stale.
     ///
-    /// # ⚠⚠⚠ Why it takes no pane and cannot fail
+    /// # ⚠⚠⚠ Why it takes no pane and cannot fail — and why it DOES take the run
     ///
     /// Because it no longer TOUCHES one. The word that ends an outage moved to `service_down`'s own edge
     /// when `service.retry` gained a second destination, and what is left here is a clock and two
@@ -7374,7 +7408,55 @@ impl OuterLoop {
     /// (*"Nothing is sent on entry … the only act that helps is to let time pass"*). **The signature
     /// says so now instead of the prose**, and that is the check `cargo test` cannot make: clippy is
     /// what noticed the arguments had stopped being used.
-    fn wait_out_service(&mut self) -> Raise {
+    ///
+    /// ⚠⚠ THE [`RunContext`] IS THE ONE ARGUMENT THAT CAME BACK, and it is here for the CLOCK
+    /// rather than for the pane: a wait a person's stop and the run's own deadline cannot reach is
+    /// a wait that outlives the run it belongs to. [`poll_until`] answers both underneath it, which
+    /// is the same reason [`attend`](Self::attend)'s held arm takes it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THE WAIT IS ONE WAIT — register item 746, measured on run 58
+    ///
+    /// This function used to return [`AiLoopEvent::Null`] the moment it found the clock had not run
+    /// out. That is honest about the machine — nothing had happened, so the state stays — and it is
+    /// arithmetic nobody did: **the [`Driver`](crate::driver::Driver) pauses between steps for
+    /// NOTHING**, so *wait ten minutes* was spelled *ask, as fast as this machine can, for ten
+    /// minutes*, and every one of those asks is an iteration charged against a ceiling the document
+    /// cannot see.
+    ///
+    /// Measured 2026-08-29, run 58, launched with the loop's own recipe of `--max_iterations
+    /// 100000`:
+    ///
+    /// ```text
+    /// 02:35:10  Working --PeerSilent--> ServiceDown
+    /// 02:45:13  ServiceDown --ServiceRetry--> Working
+    /// 03:05:12  ServiceDown --ServiceRetry--> Working
+    /// 03:23:14  exhausted (iterations) after 100000 iterations
+    /// ```
+    ///
+    /// **Forty-eight minutes of outage spent the whole hundred thousand**, and the run died having
+    /// used TWO of the thirty-six retries register item 724 budgeted for it — about seven per cent
+    /// of a design meant to buy six hours. So the ceiling that ended the run was the one nobody
+    /// sets for an outage, and its ending sentence sent a reader to raise a number that would have
+    /// bought them nothing.
+    ///
+    /// ⚠⚠⚠⚠⚠ **IT IS THE ARITHMETIC ITEM 522 ALREADY PAID FOR ONE STATE OVER**, and this state did
+    /// not follow: `awaiting_human`'s idle look had exactly this shape and was parked on the
+    /// condition that ends a hold. The condition that ends an OUTAGE is nothing at all — the
+    /// state's own comment says so (*"the only act that helps is to let time pass"*) — so the park
+    /// waits on the clock alone, and no screen read belongs in it for the same reason no pane does.
+    ///
+    /// ⚠⚠ **THE BOUND IS WHAT IS LEFT OF THE DOCUMENT'S OWN NUMBER, AND IT ENDS NOTHING**: when it
+    /// elapses the look is simply taken again, exactly as the held arm's does. So an outage spends
+    /// iterations at the rate the DOCUMENT authors — one per `service_retry_ms` — rather than at
+    /// the rate this machine can spin, and the ceiling that ends a run whose peer never came back
+    /// is `service_retry_max` or `service_resumes_max`, which are the two that mean something.
+    ///
+    /// ⚠⚠⚠ **AND THE ANCHOR STAYS THE AUTHORITY ON WHETHER THE WAIT IS OVER.** The park can come
+    /// back early — that is what a cancel and a deadline ARE — so the elapsed test below is asked
+    /// afterwards rather than replaced by the park's own verdict. A run stopped mid-wait reports
+    /// `Null`, the machine stays in the outage, and the Driver ends the run on its next loop top,
+    /// which is [`attend`](Self::attend)'s discipline for the same case.
+    fn wait_out_service(&mut self, run: &RunContext) -> Raise {
         let since = *self.outage.get_or_insert_with(Instant::now);
         // ⚠⚠ THE DOCUMENT'S NUMBER, READ AT THE MOMENT OF USE, which is `await_person_ms`'s own
         // arrangement one function down. A copy taken at construction would be the value a kind
@@ -7384,6 +7466,14 @@ impl OuterLoop {
                 .and_then(|held| u64::try_from(held).ok())
                 .unwrap_or(DEFAULT_SERVICE_RETRY_MS),
         );
+        // ⚠⚠⚠⚠⚠ **AND THE LOOK IS ONE LOOK** — register item 746, whose measurement is in this
+        // function's doc. The predicate is `false` because an outage has no condition that ends it
+        // early: `service_retry_ms` is the whole treatment, and the run's own cancel and deadline
+        // are what [`poll_until`] answers underneath it.
+        let left = wait.saturating_sub(since.elapsed());
+        if !left.is_zero() {
+            poll_until(run, left, || false);
+        }
         if since.elapsed() < wait {
             return AiLoopEvent::Null.into();
         }
@@ -22778,6 +22868,172 @@ mod tests {
              two spellings of one bug, and only this control tells them apart. Got {authored} \
              byte(s) for a {} byte word",
             AUTHORED.len(),
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN WAITING OUT ITS PEER'S SERVICE MUST NOT SPEND ITS ITERATION BUDGET DOING
+    /// IT** — register item 746, measured on run 58, and the arithmetic register item 522 already
+    /// paid for one state over.
+    ///
+    /// # ⚠⚠⚠⚠ What it cost, in the run's own lines
+    ///
+    /// ```text
+    /// 02:35:10  Working --PeerSilent--> ServiceDown
+    /// 02:45:13  ServiceDown --ServiceRetry--> Working
+    /// 03:05:12  ServiceDown --ServiceRetry--> Working
+    /// 03:23:14  exhausted (iterations) after 100000 iterations
+    /// ```
+    ///
+    /// Forty-eight minutes of account limit spent a hundred thousand iterations and **two of the
+    /// thirty-six retries item 724 budgeted** — about seven per cent of a design meant to buy six
+    /// hours. `wait_out_service` returned the instant it found the clock had not run out, and the
+    /// [`Driver`](crate::driver::Driver) pauses between steps for nothing, so *wait ten minutes*
+    /// was spelled *ask as fast as this machine can for ten minutes*.
+    ///
+    /// # ⚠⚠⚠ Three arms, and what each alone would let through
+    ///
+    /// * **THE HEADLINE — the crossing costs ONE pass**, not one per poll. This is the whole item.
+    /// * ⚠⚠ **AND THE WAIT MUST ACTUALLY HAVE HAPPENED**: a driver that retried at once would take
+    ///   one pass too, and it is the opposite defect — asking again immediately is the load that
+    ///   caused the outage, which is `service_down`'s own argument for existing.
+    /// * ⚠⚠⚠⚠ **AND A RUN THAT ENDS UNDERNEATH THE WAIT MUST COME BACK ON THE ORDER, NOT ON THE
+    ///   CLOCK.** A bare `sleep` satisfies both arms above and buries a person's stop for the whole
+    ///   of `service_retry_ms` — ten minutes on the shipped document — which is why the park is
+    ///   [`poll_until`] and not a sleep. That is [`attend`](OuterLoop::attend)'s *left on the
+    ///   person's hand rather than on their clock*, on the outage's clock.
+    ///
+    /// # ⚠⚠ How fast the defect actually spins, measured on this gate's own mutation
+    ///
+    /// Reverting the park and running this: **400 passes in 14.5 ms** — about 27,600 a second,
+    /// where run 18's live measurement of the same shape one state over was ~69 a second against
+    /// real pane I/O. So *how fast does an unfixed outage ask* is **far above one look per
+    /// [`crate::run::POLL_INTERVAL`]**, which is what lets the sibling gate in [`crate::ai_loop`]
+    /// use that interval as a deliberately conservative floor when it asserts its own premise.
+    #[test]
+    fn an_outage_is_waited_out_in_one_look_rather_than_charged_to_the_iteration_budget() {
+        /// The retry window this gate authors, small enough to keep the gate cheap and far enough
+        /// above [`crate::run::POLL_INTERVAL`] that a polling driver has hundreds of looks in it.
+        const WINDOW: Duration = Duration::from_millis(400);
+        /// When the person stops the run in the third arm — well inside [`WINDOW`], so *came back
+        /// on the order* and *came back on the clock* are different measurements.
+        const STOPPED_AT: Duration = Duration::from_millis(60);
+        /// ⚠ Far above the one pass a parked outage takes, and low enough that a spinning driver
+        /// trips it in milliseconds rather than in the whole window.
+        const GIVE_UP_AFTER: u32 = 400;
+
+        /// Drive a real loop into `service_down` by the door that ENDED a turn, then pump it until
+        /// it leaves — handing back how many PASSES that cost and how long it took.
+        ///
+        /// ⚠⚠ A PASS IS AN ITERATION. [`crate::ai_loop::AiLoop`]'s `step` is one
+        /// [`OuterLoop::pump`], and the Driver charges one iteration per step — so counting passes
+        /// here is counting the very budget run 58 ran out of, not a proxy for it.
+        fn crossed(run: &RunContext) -> (u32, Duration, AiLoopState) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let access = crate::access::WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_millis(200))
+                .expect("the document's datamodel must carry its four authored strings");
+            // ⚠⚠ THE WINDOW IS AUTHORED THROUGH THE DOCUMENT'S OWN `<data>`, which is where
+            // `wait_out_service` reads it — a gate that reached past that would be measuring a
+            // number the product never consults. The shipped ten minutes is what makes this the
+            // one value a gate MUST write.
+            loops.author_number(SERVICE_RETRY_MS, WINDOW.as_millis() as i64);
+            loops
+                .advance(&access, run, AiLoopEvent::Start.into())
+                .expect("the pane stays readable");
+            loops
+                .advance(&access, run, AiLoopEvent::PromptSent.into())
+                .expect("the pane stays readable");
+            loops
+                .advance(
+                    &access,
+                    run,
+                    Raise::carrying(
+                        AiLoopEvent::TurnBlocked,
+                        serde_json::json!({"service": true, "judged": false, "rule": ""}),
+                    ),
+                )
+                .expect("the pane stays readable");
+            assert_eq!(
+                loops.state(),
+                AiLoopState::ServiceDown,
+                "the fixture: every arm must be WAITING OUT an outage before its looking can be \
+                 counted",
+            );
+
+            let began = Instant::now();
+            let mut spent = 0_u32;
+            loop {
+                loops
+                    .pump(&access, run)
+                    .expect("a run waiting out an outage is still drivable");
+                spent += 1;
+                if loops.state() != AiLoopState::ServiceDown || spent >= GIVE_UP_AFTER {
+                    break;
+                }
+            }
+            let took = began.elapsed();
+            let landed = loops.state();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (spent, took, landed)
+        }
+
+        // ── THE HEADLINE, and the arm that says the wait really happened ──
+        let (spent, took, landed) = crossed(&RunContext::uncancellable());
+        assert!(
+            spent <= 2,
+            "⛔⛔⛔⛔⛔ AN OUTAGE IS SPENDING THE RUN'S ITERATION BUDGET ON LOOKING. Crossing a \
+             {WINDOW:?} wait took {spent} passes over {took:?}, so the driver is asking whether the \
+             clock has run out instead of PARKING on it. Every one of those passes is an iteration \
+             charged against a ceiling the document cannot see, and on run 58 that arithmetic \
+             ended the run: `exhausted (iterations)` after 100,000 iterations of a 48-minute \
+             outage, having spent 2 of the 36 retries item 724 budgeted for it. Landed {landed:?}",
+        );
+        assert!(
+            took >= WINDOW,
+            "⚠⚠⚠ AND THE WAIT MUST ACTUALLY HAVE HAPPENED — the opposite defect and just as wrong. \
+             The run left the outage after {took:?} of a {WINDOW:?} window, so it is asking a \
+             service again at once, which is the load that caused the outage. `service_down`'s \
+             whole treatment is time",
+        );
+        assert_eq!(
+            landed,
+            AiLoopState::Working,
+            "⚠⚠ and the crossing must END the outage rather than merely leaving it: the retry \
+             below the ceiling goes back to work, which is what makes {spent} passes a measurement \
+             of a completed wait rather than of a run that gave up",
+        );
+
+        // ── ⚠⚠⚠⚠ THE THIRD ARM: A PERSON'S STOP REACHES INSIDE THE WAIT ──
+        //
+        // A `sleep` of the remaining window passes both arms above and is a defect: the run's own
+        // cancel and its deadline are unreachable for the whole of `service_retry_ms`, so a person
+        // who stopped a run at 02:36 would watch it sit there until 02:45.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let stopping = {
+            let cancel = Arc::clone(&cancel);
+            std::thread::spawn(move || {
+                std::thread::sleep(STOPPED_AT);
+                cancel.store(true, Ordering::Release);
+            })
+        };
+        let (stopped_after, waited, stayed) = crossed(&RunContext::new(Arc::clone(&cancel)));
+        stopping.join().expect("the person's own thread");
+        assert!(
+            waited < WINDOW,
+            "⚠⚠⚠⚠⚠ THE STOP WAS BURIED IN THE WAIT. A person stopped this run {STOPPED_AT:?} into \
+             a {WINDOW:?} outage and the pass did not come back for {waited:?} — so the park is a \
+             sleep rather than a bounded wait, and on the shipped `service_retry_ms` that is TEN \
+             MINUTES of a stopped run still holding its pane. `poll_until` answers a cancel and \
+             the run's deadline in the same breath, which is the whole reason it is what parks here",
+        );
+        assert_eq!(
+            stayed,
+            AiLoopState::ServiceDown,
+            "⚠⚠⚠ AND THE MACHINE MUST NOT HAVE MOVED. A wait cut short by a stop is not a wait that \
+             ELAPSED: raising `service.retry` here would spend one of the run's retries — and, at \
+             the ceiling, hand a person a pane holding a word nobody typed. The anchor stays the \
+             authority on whether the window is over. Took {stopped_after} pass(es)",
         );
     }
 

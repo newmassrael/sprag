@@ -1446,6 +1446,102 @@ pub(crate) fn standin_agent_finishing(prompts_before_done: u32) -> (Arc<Mutex<Wo
     (workspace, pane)
 }
 
+/// **WHAT A PEER PRINTS WHEN ITS SERVICE IS OUT** — the sentence
+/// [`standin_agent_whose_service_fails`] puts on its pane and the one a gate briefs as a needle,
+/// spelled ONCE so the fixture and the brief cannot drift apart.
+///
+/// ⚠ Deliberately not a real vendor's wording. What the driver matches is whatever the KIND
+/// authored, so a fixture quoting today's message would be asserting about a string that belongs to
+/// somebody else's release notes.
+///
+/// ⚠⚠ AND IT CARRIES NO APOSTROPHE, which is a fixture fact rather than a style one: the peer is a
+/// `/bin/sh` script and this sentence is printed from inside a single-quoted word, so a `'` here is
+/// a syntax error the pane reports as `Unterminated quoted string` — measured, on this very
+/// constant's first draft.
+pub(crate) const SERVICE_IS_DOWN: &str = "the peer service is out, resuming automatically";
+
+/// **A STAND-IN AGENT WHOSE SERVICE FAILS MID-TURN AND THEN GOES QUIET** — the peer register item
+/// 746's outage arithmetic is driven against, and the door run 58 actually came in at.
+///
+/// # ⚠⚠⚠⚠ Why it goes SILENT rather than ending its turn
+///
+/// There are two doors into `service_down` and they hold different budgets (register item 724). A
+/// peer whose turn ENDS with a 529 comes in by `turn.blocked` and is bounded by
+/// `service_retry_max`; a peer that hits an account limit **never ends its turn** — it prints what
+/// happened, stops speaking, and comes back on its own — so what the driver sees is the silence
+/// bound running out, `peer.silent` carries it in, and the budget is `service_resumes_max`.
+/// **Run 58 died on that second door**, so a fixture that ended the turn would be measuring the
+/// other one.
+///
+/// So this peer prints [`SERVICE_IS_DOWN`] and then does not speak: no reply, no [`SEQ_MARKER`],
+/// nothing for the supervisor to report. The loop types NOTHING on the way back out of that state
+/// (item 715 — a keystroke would cancel the very recovery it is waiting for), so nothing arrives
+/// at this peer's `read` either, which is exactly the shape of the live outage.
+///
+/// # ⚠⚠⚠ `recovers_after`
+///
+/// * [`Some`] — the service comes back after that long and the run carries on to its milestone.
+///   ⚠⚠ **AND IT SCROLLS THE NEEDLE OFF THE PANE ON THE WAY BACK**, which is not decoration: the
+///   driver reads the needle off the SCREEN, so a peer that recovered while its own outage message
+///   was still visible would have every later quiet moment read as a second outage — a fixture
+///   hazard, and also what a real agent does, which is go on printing.
+/// * [`None`] — it never speaks again, which is the arm where the run must end on the OUTAGE's
+///   ceiling rather than on anything else.
+pub(crate) fn standin_agent_whose_service_fails(
+    recovers_after: Option<Duration>,
+) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    // ⚠ A whole number of milliseconds through `sleep`'s fractional seconds, because `sh` has no
+    // sub-second sleep of its own. The `None` arm parks far past any gate's own ceiling rather
+    // than looping, so the peer is one process a closing pane can take with it.
+    let recovery = match recovers_after {
+        Some(after) => format!(
+            "sleep {:.3}; i=0; while [ $i -lt 20 ]; do printf 'RESUMED\\n'; i=$((i+1)); done; ",
+            after.as_secs_f64(),
+        ),
+        None => "sleep 600; ".to_string(),
+    };
+    let script = format!(
+        "stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; failed=0; \
+         while read line; do \
+           printf '%s\\n' \"$line\"; \
+           case \"$line\" in \
+             *exactly:*|*Summarise*|*'{STOP}'*) ;; \
+             *) continue;; \
+           esac; \
+           if [ $failed -eq 0 ]; then \
+             failed=1; \
+             printf '{NEEDLE}\\n'; \
+             {RECOVERY} \
+           fi; \
+           n=$((n+1)); \
+           printf 'MILESTONE REACHED\\n'; \
+           s=$((s+1)); printf '{SEQ} %s\\n' \"$s\"; \
+         done",
+        SEQ = SEQ_MARKER,
+        STOP = STOP_QUESTION,
+        NEEDLE = SERVICE_IS_DOWN,
+        RECOVERY = recovery,
+    );
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        "AGENT-READY",
+    );
+    (workspace, pane)
+}
+
 /// **A STAND-IN AGENT THAT ACTUALLY WRITES A REPORT WHEN IT IS ASKED TO CLOSE** — the peer the
 /// captured closing report is measured against.
 ///
