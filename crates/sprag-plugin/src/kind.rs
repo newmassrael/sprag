@@ -368,6 +368,35 @@ impl LoopKind {
         self.machine.policy().hold_within_ms()
     }
 
+    /// **WHERE A RUN OF THIS KIND WORKS**, or [`None`] for a kind that does not care where its
+    /// pane stands — register item 738, layer 4.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What it costs when nobody says it
+    ///
+    /// A pane opened without a directory stands in `$HOME`, and an agent starting there asks *"Is
+    /// this a project you created or one you trust?"* — a dialog this loop cannot answer, because
+    /// its consents cover editing and running commands and nothing else. Measured 2026-08-25: one
+    /// pane `blocked rule=dialog-choice-list` in `/home/coin` while three siblings standing in
+    /// their own repositories were `working`, all from the same restart.
+    ///
+    /// ⛔ **AND THE OBVIOUS REPAIR IS THE WRONG ONE.** Adding that dialog to the consents automates
+    /// a FALSE answer: *yes, I trust this folder* consents to every repository on the machine,
+    /// while the true fact is narrower — *this pane is not standing in the tree this run is about*.
+    /// Saying the true thing needs the tree to be written down, which is what this clause is.
+    ///
+    /// ⚠⚠ **SO IT BUYS A REFUSAL RATHER THAN AN ANSWER**, taken at the door where somebody is still
+    /// watching. Item 684's whole cost was a run already started, waiting for a person who was not
+    /// there. ⚠ [`None`] is the shipped state for a kind that says nothing, which is right for a
+    /// document other repositories copy — and it means no check at all rather than a check that
+    /// passes.
+    #[must_use]
+    pub fn works_in(&self) -> Option<String> {
+        self.machine
+            .policy()
+            .works_in()
+            .filter(|said| !said.is_empty())
+    }
+
     /// **HOW MANY TURNS A RUN OF THIS KIND MAY TAKE**, or [`None`] where this kind says nothing and
     /// the template's own number stands.
     ///

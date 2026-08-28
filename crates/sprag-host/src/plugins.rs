@@ -760,6 +760,23 @@ pub trait PluginWorld {
     /// clients, so two daemons legitimately answer differently and a driver must ask the one it is
     /// driving.
     fn default_size(&self) -> (u16, u16);
+
+    /// **WHERE `pane` WAS OPENED** — its own record of the directory it was pointed at, or [`None`]
+    /// for a pane this world does not hold or cannot say.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the door needs it — register item 738, layer 4
+    ///
+    /// A loop KIND may name the tree its runs work in, and a pane standing somewhere else walks its
+    /// agent into a *"do you trust this folder?"* dialog that the loop's consents do not cover. The
+    /// run then waits for a person who is not watching (item 684, measured on a live daemon). The
+    /// door is the last place anybody is still looking, so it is where that is caught — and
+    /// catching it needs this one fact about a pane it is otherwise only asked to confirm exists.
+    ///
+    /// ⚠⚠ **IT IS THE PANE'S OWN RECORD AND NOT `/proc/<pid>/cwd`.** That distinction is item 684's
+    /// first half: the kernel reading answers `None` the instant the child exits, which is exactly
+    /// when a replacement is asked for — so a door reading it would compare against nothing and
+    /// wave through the case this exists to catch.
+    fn pane_start_dir(&self, pane: PaneId) -> Option<std::path::PathBuf>;
 }
 
 /// **WHERE A RUN'S ASKER IS WHEN IT IS NOT IN THIS POOL** — register item 689.
@@ -820,6 +837,13 @@ impl PluginWorld for PluginsExternal {
 
     fn default_size(&self) -> (u16, u16) {
         lock(&self.workspace).default_size()
+    }
+
+    /// ⚠ Through [`PaneOrigin`](sprag_plugin::PaneOrigin), which is the SAME read
+    /// [`respawn`](sprag_plugin::PaneLifecycle::respawn) makes when it puts a replacement in the
+    /// same place — so *where this pane belongs* has one answer in this process rather than two.
+    fn pane_start_dir(&self, pane: PaneId) -> Option<std::path::PathBuf> {
+        Some(lock(&self.workspace).pane(pane)?.start_dir().to_path_buf())
     }
 }
 
@@ -1620,6 +1644,22 @@ fn plugin_from_request(
             // building a plugin that might have to be thrown away because its own document names a
             // guardrail no run of it can have.
             let authored = kind_guardrails(&kind, Cost::Bytes(DEFAULT_MAX_BYTES))?;
+            // ⛔⛔⛔⛔⛔ AND THE PANE MUST BE STANDING IN A TREE THIS KIND WORKS IN — register item
+            // 738, layer 4. See `ai_loop_stands_where_it_works` for the measurement: a pane in
+            // `$HOME` walks its agent into a trust dialog no consent of this loop covers, and the
+            // run then waits for a person who is not watching.
+            //
+            // ⚠⚠⚠⚠⚠ AFTER EVERY READ OF THE REQUEST, AND THAT ORDER IS A CONFORMANCE FINDING
+            // RATHER THAN A PREFERENCE. Placed first, it answered a request carrying a malformed
+            // `north_star` with a sentence about the PANE — so
+            // `a_declared_argument_is_one_the_plugin_host_reads` reported that this form's declared
+            // arguments were read by nobody, which is the correct reading of what it saw: **a
+            // refusal about the WORLD that pre-empts a refusal about the REQUEST makes every
+            // argument behind it look unread.** Grammar first, then the facts the world holds.
+            ai_loop_stands_where_it_works(
+                world.pane_start_dir(pane).as_deref(),
+                kind.works_in().as_deref(),
+            )?;
             let label = format!("ai_loop pane={}", pane.0);
             let loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
                 .map_err(|why| refused(ai_loop_refusal(&why)))?;
@@ -3096,6 +3136,77 @@ fn kind_barrier(
              read ({why:?}); a run cannot start on a barrier nobody can check"
         ))
     })
+}
+
+/// **A RUN DOES NOT START ON A PANE STANDING SOMEWHERE ITS KIND DOES NOT WORK** — register item
+/// 738, layer 4, and item 684's remaining half.
+///
+/// # ⛔⛔⛔⛔⛔ The measurement this exists for
+///
+/// A pane opened with no directory stands in `$HOME`, and an agent starting there asks *"Is this a
+/// project you created or one you trust?"*. That dialog is not in this loop's consents — they cover
+/// editing and running commands — so nothing answers it and the run waits for a person. Measured
+/// 2026-08-25 on a live daemon: `inner-wz` `blocked rule=dialog-choice-list` in `/home/coin`, while
+/// three sibling panes standing in their own repositories were `working`, all from one restart.
+///
+/// ⛔ **THE OBVIOUS REPAIR AUTOMATES A FALSE ANSWER.** *Yes, I trust this folder* consents to
+/// `/home/coin` — every repository on the machine — while the true fact is narrower and duller:
+/// this pane is not in the tree the run is about. Saying the true thing is what this does.
+///
+/// # ⚠⚠⚠ Why it REFUSES rather than reporting
+///
+/// The door is the last moment anybody is still watching. Item 684's whole cost was a run that had
+/// already started and had nobody left to tell — so the sentence has to arrive where the caller is,
+/// and it names BOTH directories because the remedy (reopen the pane pointed at the tree) is not
+/// guessable from either one alone.
+///
+/// # ⛔ And a pane that cannot say where it was opened is a RED, not a pass
+///
+/// This repository's own rule (`a-guard-that-cannot-read-a-pid-must-not-wave-it-through`): a check
+/// that cannot read its subject must not vouch for it. A surface with no such answer cannot host a
+/// kind that names a tree, and saying so is cheaper than the run that parks.
+///
+/// ⚠ **`works_in` of [`None`] IS NO CHECK AT ALL**, which is the shipped state for a kind that says
+/// nothing and the right default for a document other repositories copy. That is an absence of a
+/// claim rather than an exemption from one — nothing is classified as *fine*, because nothing was
+/// claimed.
+///
+/// ⚠⚠ It takes the two ANSWERS and not the world and the kind, on register item 739's finding: a
+/// resolution that reaches for its own inputs has arms no gate can enter, and *nobody said* is a
+/// value here rather than a document nobody can write.
+///
+/// # Errors
+///
+/// [`refused`]'s sentence when the pane stands somewhere else, and when the kind names a tree the
+/// surface cannot check the pane against.
+fn ai_loop_stands_where_it_works(
+    stands_in: Option<&std::path::Path>,
+    works_in: Option<&str>,
+) -> Result<(), InvokeError> {
+    let Some(marker) = works_in else {
+        return Ok(());
+    };
+    let Some(standing) = stands_in else {
+        return Err(refused(format!(
+            "this repository's loop-kind document says its runs work in a directory carrying \
+             {marker:?}, and this surface cannot say where the pane was opened — so nothing here \
+             can tell a pane standing in a tree from one that will meet a `do you trust this \
+             folder?` dialog no run of this kind may answer. A check that cannot read its subject \
+             does not vouch for it."
+        )));
+    };
+    // ⚠ `exists` AND NOT `is_dir`: a linked worktree carries `.git` as a FILE, and a check that
+    // demanded a directory would refuse a tree that is perfectly real.
+    if standing.join(marker).exists() {
+        return Ok(());
+    }
+    Err(refused(format!(
+        "this pane was opened in {standing:?}, which carries no {marker:?} — and this repository's \
+         loop-kind document says its runs work in a directory that does. An agent started outside \
+         a tree asks whether the folder is trusted, and that dialog is not one this loop's \
+         consents cover, so the run would stop at it and wait for somebody who is not watching. \
+         Open the pane pointed at the tree, or change what the kind document says marks one."
+    )))
 }
 
 /// **WHERE A RUN STARTS READING, AND WHO SAYS SO** — register item 738, layer 2.
@@ -5523,6 +5634,26 @@ mod tests {
             .expect("spawn the resumed agent")
     }
 
+    /// **A DIRECTORY THAT IS A TREE**, for a fixture whose pane a loop will be built over —
+    /// register item 738, layer 4.
+    ///
+    /// ⚠⚠⚠⚠⚠ It carries `.git` because `debt_loop.scxml` says a run of that kind works in a
+    /// directory that does, and the door refuses one standing anywhere else. **This is not a test
+    /// accommodating a check** — it is a fixture that had been standing in `$HOME` and calling
+    /// itself an agent's repository, which is the exact state item 684 measured on a live daemon
+    /// and the reason the check exists. A pane that would meet the *do you trust this folder?*
+    /// dialog is not a pane a debt run can be built over, in a gate any more than in the world.
+    ///
+    /// ⚠ Leaked deliberately: the tree lives for the process, and a fixture that removed it would
+    /// race every pane still standing in it.
+    fn a_tree_to_stand_in() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("sprag-loop-tree-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory for the fixture's panes to stand in");
+        std::fs::write(dir.join(".git"), b"gitdir: nowhere\n")
+            .expect("the marker `debt_loop.scxml` names — a FILE, as a linked worktree carries it");
+        dir
+    }
+
     fn echoing_agent_pane(workspace: &Arc<Mutex<Workspace>>) -> PaneId {
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
@@ -5530,6 +5661,9 @@ mod tests {
             "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done",
         );
         command.env("TERM", "dumb");
+        // ⚠⚠ POINTED AT A TREE — see `a_tree_to_stand_in`. Without it every fixture pane is born in
+        // the runner's `$HOME`, which is the placement item 684 measured costing a live run.
+        command.cwd(a_tree_to_stand_in());
         lock(workspace)
             .spawn(command, "agent".to_string(), 80, 24)
             .expect("spawn the stand-in agent")
@@ -6528,6 +6662,9 @@ mod tests {
         // time does for free.
         command.arg("stty -echo; printf 'AGENT-READY\\n'; read l; sleep 2; printf '%s\\n' \"$l\"");
         command.env("TERM", "dumb");
+        // ⚠ POINTED AT A TREE, like `echoing_agent_pane` — see `a_tree_to_stand_in`: a debt run is
+        // not built over a pane standing where its agent would be asked to trust the folder.
+        command.cwd(a_tree_to_stand_in());
         let pane = lock(&workspace)
             .spawn(command, "agent".to_string(), 80, 24)
             .expect("spawn the one-shot stand-in agent");
@@ -7298,6 +7435,164 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A LOOP IS NOT BUILT OVER A PANE STANDING OUTSIDE THE TREE ITS KIND WORKS IN** —
+    /// register item 738, layer 4, and item 684's remaining half.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The measurement, and the control that came out of the same restart
+    ///
+    /// 2026-08-25, read off a live daemon because the owner asked why the same screen kept coming
+    /// back: `inner-wz` was `blocked rule=dialog-choice-list` standing in `/home/coin`, showing
+    /// *"Quick safety check: Is this a project you created or one you trust?"* — while three
+    /// sibling panes standing in their own repositories were all `working`. **The symptom and the
+    /// control came from one restart**, which is what made it a measurement rather than a story
+    /// about how `claude` behaves.
+    ///
+    /// ⛔ **AND THE SECOND COST IS NOT THE DIALOG AT ALL.** Since item 710 the milestone checker is
+    /// spawned in *the run's repository*, and the repository it is given is the driving pane's
+    /// BIRTH directory — the same read this checks. So a loop over a pane in `$HOME` also tells its
+    /// checker the work lives in `$HOME`, whether or not any dialog ever appears. That is why this
+    /// refuses on placement rather than waiting to see whether a question arrives.
+    ///
+    /// # ⚠⚠⚠ Why the clause is a MARKER and not a path, which the TESTS decided
+    ///
+    /// The first form of `debt_loop.scxml`'s clause read `'/home/coin/sprag'` and **nineteen gates
+    /// went red at once**: the build machine's checkout is somewhere else entirely. The same
+    /// document is compiled into every checkout there will ever be, so a path in it names ONE
+    /// machine. `.git` is the fact that is true in all of them, and it separates the measured
+    /// symptom from the measured control exactly.
+    ///
+    /// ⚠⚠ **AND THE FIXTURES WERE WRONG RATHER THAN INCONVENIENCED.** Every pane these gates built
+    /// a loop over was born in the runner's `$HOME` — which is the placement that costs a live run,
+    /// and which pointed each gate's checker at `$HOME` too. Pointing them at a tree is what makes
+    /// them fixtures of a legitimate launch.
+    #[test]
+    fn a_loop_is_not_built_over_a_pane_standing_outside_the_tree_its_kind_works_in() {
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+            .expect("this repository's kind document opens");
+        let marks = kind.works_in().expect(
+            "⛔⛔⛔ THE CONTROL: a kind that names no marker makes every assertion below a statement \
+             about `None`, and the door would be checking nothing at all",
+        );
+
+        // ⚠⚠⚠⚠⚠ THE PREMISE, and it is what the whole gate is about: a directory that is NOT a
+        // tree, standing in for the `$HOME` a pane opened without `-c` is born in. Asserted rather
+        // than assumed, because a fixture that accidentally carried the marker would make the
+        // refusal below unreachable and the gate green about nothing.
+        let bare = std::env::temp_dir().join(format!("sprag-not-a-tree-{}", std::process::id()));
+        std::fs::create_dir_all(&bare).expect("a directory that is not a tree");
+        assert!(
+            !bare.join(&marks).exists(),
+            "⚠⚠⚠⚠ THIS GATE IS VACUOUS IF THE FIXTURE IS A TREE: {bare:?} must not carry {marks:?}",
+        );
+        let tree = a_tree_to_stand_in();
+        assert!(
+            tree.join(&marks).exists(),
+            "⚠⚠⚠ AND THE CONTROL MUST BE ONE: {tree:?} must carry {marks:?}, or *refused* and \
+             *accepted* below are the same case twice",
+        );
+
+        let why = ai_loop_stands_where_it_works(Some(&bare), Some(&marks))
+            .expect_err("⛔ a loop must NOT be built over a pane standing outside a tree");
+        let sentence = why
+            .reason()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| panic!("the refusal must carry a sentence: {why:?}"));
+        assert!(
+            sentence.contains(&bare.display().to_string()),
+            "⚠⚠⚠⚠ 455's RULE: the refusal must name WHERE the pane is standing, because the remedy \
+             is to reopen it somewhere else and a sentence that does not say where it is cannot be \
+             acted on. Got {sentence:?}",
+        );
+        assert!(
+            sentence.contains(&marks),
+            "⚠⚠⚠ and WHAT was looked for, or a reader cannot tell a misplaced pane from a tree this \
+             build failed to recognise: {sentence:?}",
+        );
+
+        // ⚠⚠ CONTROL ONE: the same check accepts a pane standing in a tree, or this is a door that
+        // refuses everything and the nineteen gates it reddened were right for the wrong reason.
+        ai_loop_stands_where_it_works(Some(&tree), Some(&marks))
+            .expect("a pane standing in a tree is one a loop may be built over");
+
+        // ⚠⚠⚠ CONTROL TWO: a kind that names NO marker is not checked at all — the shipped state of
+        // a document other repositories copy. That is an absence of a claim, not an exemption from
+        // one: nothing is classified as fine, because nothing was claimed.
+        ai_loop_stands_where_it_works(Some(&bare), None)
+            .expect("a kind that names no tree makes no claim about where its panes stand");
+
+        // ⛔⛔⛔ CONTROL THREE: a surface that cannot say where the pane was opened is a RED and not
+        // a pass — this repository's own rule that a guard which cannot read its subject must not
+        // wave it through.
+        let blind = ai_loop_stands_where_it_works(None, Some(&marks))
+            .expect_err("a surface that cannot answer must not vouch for the pane");
+        assert!(
+            blind
+                .reason()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .contains(&marks),
+            "⚠⚠ and it must say what it could not check for: {blind:?}",
+        );
+
+        // ⛔⛔⛔⛔⛔ AND THE DOOR ITSELF, WHICH IS THE HALF EVERY ASSERTION ABOVE MISSES. Register
+        // item 739's round measured this exactly one function over: a gate that hands a resolution
+        // its own inputs is GREEN when the wiring that normally feeds it is cut. So the last arm
+        // builds a real request over a real pane standing outside a tree, and the door must refuse
+        // it — with the wiring intact there is a marker to compare against, and with it cut there
+        // is nothing left to refuse on.
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let outside = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.cwd(&bare);
+            lock(&workspace)
+                .spawn(command, "outside".to_string(), 80, 24)
+                .expect("a pane standing outside a tree")
+        };
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            external.pane_start_dir(outside).as_deref(),
+            Some(bare.as_path()),
+            "⚠⚠⚠ THE PREMISE OF THE ARM BELOW: the world must really say the pane is standing \
+             outside a tree, or the refusal it expects has nothing to fire on",
+        );
+        let built = external.build_plugin(
+            ai_loop_request(outside, json!({}))
+                .as_object()
+                .expect("an object"),
+        );
+        let Err(refused_at_the_door) = built else {
+            panic!(
+                "⛔⛔⛔⛔⛔ THE DOOR BUILT A LOOP OVER A PANE STANDING OUTSIDE ITS TREE. Every \
+                 assertion above passes with the door's own call to this check deleted — that is \
+                 item 739's measured hole, and this arm is what closes it"
+            );
+        };
+        assert!(
+            refused_at_the_door
+                .reason()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .contains(&bare.display().to_string()),
+            "⚠⚠ and the door's refusal must be THIS one rather than some other: {refused_at_the_door:?}",
+        );
+        assert!(
+            lock(&workspace).close(outside).is_some(),
+            "the pane this gate opened was there to close",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **A LAUNCH NOBODY AND NO DOCUMENT ANSWERED IS REFUSED, NAMING EVERY KEY THAT WOULD
     /// FIX IT** — register item 739, and the two arms nothing could reach until this round.
     ///
@@ -7973,6 +8268,10 @@ mod tests {
         command.arg("-c");
         command.arg(format!("printf '%b' '{bytes}'; exec cat"));
         command.env("TERM", "xterm-256color");
+        // ⚠ POINTED AT A TREE — see `a_tree_to_stand_in`. A pane a LOOP may be built over must be
+        // standing somewhere its agent would not be asked to trust the folder (item 738, layer 4),
+        // and the conformance probe drives real `ai_loop` requests against this world.
+        command.cwd(a_tree_to_stand_in());
         let id = lock(&workspace)
             .spawn(command, "agent".to_string(), 80, 24)
             .expect("spawn the pane");
@@ -8887,6 +9186,9 @@ mod tests {
             let mut command = CommandBuilder::new("/bin/sh");
             command.arg("-c");
             command.arg("exec cat");
+            // ⚠ POINTED AT A TREE like the first — the probe addresses THIS pane in its `ai_loop`
+            // requests, and a loop is not built over a pane standing outside a tree (item 738).
+            command.cwd(a_tree_to_stand_in());
             lock(&workspace)
                 .spawn(command, "second".to_string(), 80, 24)
                 .expect("a second pane the addressing arguments can name");

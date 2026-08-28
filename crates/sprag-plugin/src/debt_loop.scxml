@@ -720,6 +720,73 @@
       21,600,000.
     -->
     <data id="hold_within_ms" expr="21600000"/>
+
+    <!--
+      ⛔⛔⛔⛔⛔ WHERE A RUN OF THIS KIND WORKS — register item 738, layer 4, and the
+      one fact about a debt run that nothing anywhere had ever written down.
+
+      ⚠⚠⚠⚠⚠ WHAT IT COSTS WHEN NOBODY SAYS IT, measured 2026-08-25 by the owner
+      asking why the same screen kept coming back. A pane opened without a
+      directory stands in `$HOME`, and `claude` starting there asks
+
+          Accessing workspace: /home/coin
+          Quick safety check: Is this a project you created or one you trust?
+          1. Yes, I trust this folder     2. No, exit
+
+      — a dialog this loop CANNOT answer, because `may_answer` covers editing and
+      running commands and nothing else. The run stopped there and waited for a
+      person who was not watching. In one reading of one daemon: `inner-wz` was
+      `blocked rule=dialog-choice-list` in `/home/coin` while three sibling panes
+      standing in their own repositories were all `working`. The control and the
+      symptom came out of the SAME restart, which is what made it a measurement
+      rather than a story about how `claude` behaves.
+
+      ⛔ AND THE WRONG REPAIR IS NAMED, because it is the obvious one: adding this
+      dialog to `may_answer` AUTOMATES A FALSE ANSWER. `Yes, I trust this folder`
+      consents to `/home/coin` — every repository on the machine — while the true
+      fact is narrower and duller: *this pane is not standing in the tree this run
+      is about*. A loop that says the true thing needs to know the tree, and until
+      this clause there was nowhere for that to be written.
+
+      ⚠⚠⚠ SO WHAT THIS BUYS IS A REFUSAL, NOT AN ANSWER. The door asks whether the
+      directory the pane was opened in carries this marker and declines to start a
+      run that would walk into that dialog — naming the directory and the marker,
+      so the remedy (reopen the pane with `-c`) is in the sentence. **Refusing
+      before the run is the only point where anybody is still watching**; item
+      684's whole cost was a run that had already been started and had nobody left
+      to tell.
+
+      ⛔⛔⛔⛔⛔ AND IT IS A MARKER, NOT A PATH — WHICH THE TESTS REFUTED IN THIS
+      ROUND RATHER THAN A READER PREDICTING IT. The first form of this clause read
+      `'/home/coin/sprag'`, and **nineteen gates went red at once**: the build
+      machine's checkout of this repository is `/home/developer/remote-build/sprag`
+      and its fixtures' panes stand somewhere else again. **The same document is
+      compiled into every checkout there will ever be**, so a path in it names ONE
+      machine and is false everywhere else — including the machine that runs the
+      gate that would defend it.
+
+      ⚠⚠⚠ SO THE CLAUSE ANSWERS THE QUESTION THAT IS ACTUALLY MACHINE-INDEPENDENT:
+      **what makes a directory the tree this kind works in.** A repository carries
+      `.git`; a home directory does not. That predicate separates the measured
+      symptom from the measured control exactly — `/home/coin` fails, and all four
+      of `sprag`·`pinion`·`watching-zenoh`·`scxml-core-engine` pass — and it is the
+      same NEEDLE idiom every other clause in this file already uses.
+
+      ⚠⚠ IT IS `exists`, NOT `is_dir`: a linked worktree carries `.git` as a FILE,
+      and a check that demanded a directory would refuse a tree that is perfectly
+      real. ⚠ The residue, stated: a checkout with no `.git` at all — an export, a
+      tarball — is refused, and that is the direction to be wrong in.
+
+      ⚠ AND IT IS ASKED OF THE PANE'S OWN RECORD OF WHERE IT WAS OPENED
+      (`PaneOrigin::pane_start_dir`), never of `/proc/<pid>/cwd`. That distinction
+      IS item 684's first half: the kernel reading answers `None` the moment the
+      child exits, and a replacement asked for at exactly that moment is how the
+      wrong directory used to be inherited for ever. ⚠⚠ It is also the SAME read
+      item 710 already takes as *the run's repository* when it stands the milestone
+      checker up — so this clause is what finally CHECKS a fact that door has been
+      assuming since it was built.
+    -->
+    <data id="works_in" expr="'.git'"/>
   </datamodel>
 
   <!--

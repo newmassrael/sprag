@@ -60,6 +60,29 @@ fn isolated_state_home(sock: &Path) -> PathBuf {
     sock.with_extension("state")
 }
 
+/// **A DIRECTORY THAT IS A TREE**, for the daemon this harness boots — register item 738, layer 4.
+///
+/// ⚠⚠⚠⚠⚠ The daemon's boot pane is born in the daemon's own working directory, and under `cargo`
+/// that is this CRATE's root — which carries no `.git`. `debt_loop.scxml` says a debt run works in
+/// a directory that does, and the door refuses one standing anywhere else, so a harness leaving the
+/// daemon where cargo put it builds every loop over a pane the product declines.
+///
+/// ⚠⚠ **THAT IS NOT THE HARNESS BEING ACCOMMODATED.** A pane outside a tree is the placement item
+/// 684 measured costing a live run: its agent is asked whether it trusts the folder and the loop
+/// has no consent that answers. Pointing the harness at a tree makes its panes as legitimate as the
+/// ones the product expects, which is what a fixture is for.
+///
+/// ⚠ ONE PER PROCESS rather than per socket, and that is deliberate: a tree is a PLACE, not a
+/// resource a test owns, so panes from different daemons standing in the same one measure exactly
+/// what panes in one repository measure. It is left behind, like the state homes beside it.
+fn a_tree_to_stand_in() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("sprag-cli-tree-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a tree for the daemon's panes to stand in");
+    std::fs::write(dir.join(".git"), b"gitdir: nowhere\n")
+        .expect("the marker `debt_loop.scxml` names — a FILE, as a linked worktree carries it");
+    dir
+}
+
 /// A state home unique to this CALL, for a CLI run that has no socket to derive one from.
 ///
 /// ⚠ Its own counter rather than [`socket_path`]'s, for that function's stated reason: parallel
@@ -133,6 +156,10 @@ fn spawn_host_argv(
     let child = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
         .args(leading)
         .args(program_and_args)
+        // ⚠⚠ THE DAEMON'S BOOT PANE IS BORN HERE — see `a_tree_to_stand_in`. Under `cargo` this
+        // would otherwise be the crate root, which carries no `.git`, and every loop this harness
+        // starts would be built over a pane the product refuses (item 738, layer 4).
+        .current_dir(a_tree_to_stand_in())
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
         .env("XDG_STATE_HOME", &state)
@@ -2685,6 +2712,11 @@ fn loop_session(conn: &mut HostConn, name: &str) -> u64 {
                 "name": name,
                 "cmd": ["sh", "-c",
                         "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done"],
+                // ⚠⚠ POINTED AT A TREE — see `a_tree_to_stand_in`, register item 738 layer 4. A
+                // pane opened with no directory is born in `$HOME`, and a debt loop is not built
+                // over one: its agent would be asked whether it trusts the folder (item 684), and
+                // item 710's checker would be told the work lives there.
+                "cwd": a_tree_to_stand_in().to_string_lossy(),
             },
         }),
     )
@@ -3407,6 +3439,11 @@ fn a_daemon_restarted_under_a_live_loop_brings_that_loop_back_running() {
                 "name": "work",
                 "cmd": ["sh", "-c",
                         "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done"],
+                // ⚠⚠ POINTED AT A TREE — see `a_tree_to_stand_in`, register item 738 layer 4. A
+                // pane opened with no directory is born in `$HOME`, and a debt loop is not built
+                // over one: its agent would be asked whether it trusts the folder (item 684), and
+                // item 710's checker would be told the work lives there.
+                "cwd": a_tree_to_stand_in().to_string_lossy(),
             },
         }),
     )
@@ -10825,7 +10862,13 @@ fn daemon_with_one_pane_told(label: &str, options: &[(&str, &str)]) -> (DaemonGu
         "scene/invoke",
         json!({
             "path": mux_action_path(NEW_SESSION_ACTION),
-            "args": { "name": "work", "cmd": ["sh", "-c", "exec cat"] },
+            // ⚠ POINTED AT A TREE — see `a_tree_to_stand_in`, item 738 layer 4: a loop is not
+            // built over a pane born in `$HOME`.
+            "args": {
+                "name": "work",
+                "cmd": ["sh", "-c", "exec cat"],
+                "cwd": a_tree_to_stand_in().to_string_lossy(),
+            },
         }),
     )
     .expect("new_session answers");
@@ -13268,6 +13311,11 @@ fn a_run_drives_its_pane_while_the_session_is_looking_at_another_window() {
                 "name": "work",
                 "cmd": ["sh", "-c",
                         "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done"],
+                // ⚠⚠ POINTED AT A TREE — see `a_tree_to_stand_in`, register item 738 layer 4. A
+                // pane opened with no directory is born in `$HOME`, and a debt loop is not built
+                // over one: its agent would be asked whether it trusts the folder (item 684), and
+                // item 710's checker would be told the work lives there.
+                "cwd": a_tree_to_stand_in().to_string_lossy(),
             },
         }),
     )

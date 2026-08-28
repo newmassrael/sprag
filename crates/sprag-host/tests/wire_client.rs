@@ -87,6 +87,8 @@ fn spawn_host_with(program_and_args: &[&str], env: &[(&str, &str)]) -> (HostChil
         .arg("40x6")
         .arg("--")
         .args(program_and_args)
+        // ⚠ THE BOOT PANE IS BORN HERE — see `a_tree_to_stand_in`, item 738 layer 4.
+        .current_dir(a_tree_to_stand_in(&sock))
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
         .stdin(Stdio::null());
@@ -95,6 +97,45 @@ fn spawn_host_with(program_and_args: &[&str], env: &[(&str, &str)]) -> (HostChil
     }
     let child = command.spawn().expect("spawn the sprag-term host binary");
     (HostChild(child, sock.clone()), sock)
+}
+
+/// **A DIRECTORY THAT IS A TREE**, for the daemon this harness boots — register item 738, layer 4.
+///
+/// ⚠⚠⚠ The daemon's boot pane is born in the daemon's own working directory, which under `cargo` is
+/// this crate's root and carries no `.git`. `debt_loop.scxml` says a debt run works in a directory
+/// that does, and the door refuses one standing anywhere else — so a harness left where cargo put
+/// it builds every loop over a pane the product declines. ⚠⚠ A pane outside a tree is the placement
+/// item 684 measured costing a live run, so pointing the harness at one is what makes its panes
+/// legitimate rather than what makes a check quiet.
+fn a_tree_to_stand_in(sock: &Path) -> PathBuf {
+    let dir = sock.with_extension("tree");
+    std::fs::create_dir_all(&dir).expect("a tree for the daemon's panes to stand in");
+    std::fs::write(dir.join(".git"), b"gitdir: nowhere\n")
+        .expect("the marker `debt_loop.scxml` names — a FILE, as a linked worktree carries it");
+    dir
+}
+
+/// **OPEN A PANE STANDING IN A TREE**, for a gate that will build a LOOP over it — register item
+/// 738, layer 4.
+///
+/// ⚠ The daemon's boot pane is born in `$HOME` by the product's own intent (item 417), so a gate
+/// that drives the boot pane is driving the placement item 684 measured costing a live run. This
+/// opens the pane a caller really would, and the caller is expected to take the LAST id.
+fn open_a_pane_in_a_tree(sock: &Path) {
+    let tree = a_tree_to_stand_in(sock);
+    let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(SPLIT_ACTION),
+            "args": {
+                "dir": "vertical",
+                "cmd": ["sh", "-c", "exec cat"],
+                "cwd": tree.to_string_lossy(),
+            },
+        }),
+    )
+    .expect("a pane standing in a tree");
 }
 
 /// A socket path unique to this CALL, under the temp dir.
@@ -10516,6 +10557,8 @@ fn spawn_host_at(sock: &Path, program_and_args: &[&str]) -> HostChild {
         .arg("40x6")
         .arg("--")
         .args(program_and_args)
+        // ⚠ THE BOOT PANE IS BORN HERE — see `a_tree_to_stand_in`, item 738 layer 4.
+        .current_dir(a_tree_to_stand_in(sock))
         .env("SPRAG_HOST_RPC_SOCK", sock)
         .env("SPRAG_HOST_RPC", "1")
         .stdin(Stdio::null());
@@ -10917,11 +10960,17 @@ fn the_loops_own_plugin_is_built_from_a_request_over_a_world_that_is_a_socket() 
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
     let _host = spawn_host_at(&sock, &["sh"]);
+    // ⚠⚠⚠⚠⚠ A PANE OPENED IN A TREE, AND NOT THE BOOT PANE — register item 738, layer 4. The boot
+    // pane is born in `$HOME` by the product's own intent (item 417: *a pane is a place a person
+    // opens*), and a debt loop is not built over one: its agent would be asked whether it trusts
+    // the folder (item 684) and item 710's checker would be told the work lives there. So this
+    // gate opens the pane a caller really would.
+    open_a_pane_in_a_tree(&sock);
     let (remote, _setup) = remote_driver(&sock);
     let pane = *remote
         .pane_ids()
-        .first()
-        .expect("the daemon's boot pane is there to drive");
+        .last()
+        .expect("the pane this gate opened in a tree is there to drive");
     let world = RemotePluginWorld::over(&remote);
 
     // ⚠ THE REQUEST A CALLER REALLY SENDS — the `agent` key is required, and the barrier is derived
@@ -11018,11 +11067,17 @@ fn a_saved_place_this_build_cannot_read_stops_the_driver_before_a_byte_is_typed(
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
     let _host = spawn_host_at(&sock, &["sh"]);
+    // ⚠⚠⚠⚠⚠ A PANE OPENED IN A TREE, AND NOT THE BOOT PANE — register item 738, layer 4. The boot
+    // pane is born in `$HOME` by the product's own intent (item 417: *a pane is a place a person
+    // opens*), and a debt loop is not built over one: its agent would be asked whether it trusts
+    // the folder (item 684) and item 710's checker would be told the work lives there. So this
+    // gate opens the pane a caller really would.
+    open_a_pane_in_a_tree(&sock);
     let (remote, _setup) = remote_driver(&sock);
     let pane = *remote
         .pane_ids()
-        .first()
-        .expect("the daemon's boot pane is there to drive");
+        .last()
+        .expect("the pane this gate opened in a tree is there to drive");
     let world = RemotePluginWorld::over(&remote);
     let context = RunContext::uncancellable();
 

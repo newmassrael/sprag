@@ -1872,6 +1872,21 @@ impl crate::plugins::PluginWorld for RemotePluginWorld<'_> {
             .and_then(|size| Some((dim(&size, "cols")?, dim(&size, "rows")?)))
             .unwrap_or((80, 24))
     }
+
+    /// ⚠⚠⚠⚠⚠ **THROUGH THE SURFACE ITEM 722 ALREADY BUILT, AND THAT IS WHY THIS COSTS NOTHING** —
+    /// register item 738, layer 4. A loop KIND now names the tree its runs work in and the door
+    /// refuses a pane standing elsewhere; a world that could not answer would make an
+    /// out-of-process driver refuse a request the daemon had already accepted, which is exactly the
+    /// promise [`RUN_DRIVER_PROCESS`](crate::options::RUN_DRIVER_PROCESS) makes — *the same request
+    /// means the same thing either way*.
+    ///
+    /// It answers through [`PaneOrigin`], whose remote half reads
+    /// [`PANE_START_DIR_SLOT`]. ⚠ `None` is *this daemon cannot
+    /// say*, and the door treats that as a refusal rather than a pass — a check that cannot read
+    /// its subject does not vouch for it.
+    fn pane_start_dir(&self, pane: PaneId) -> Option<std::path::PathBuf> {
+        PaneOrigin::pane_start_dir(self.0, pane)
+    }
 }
 
 #[cfg(test)]
