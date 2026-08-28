@@ -262,6 +262,10 @@ impl HostState {
             // windows and would answer *there is no such seat* about every pane on a working
             // daemon, which is the reassuring wrong answer that made this defect invisible.
             seats_elsewhere: Some(seats_of(Arc::clone(self.registry()))),
+            // ⚠⚠⚠ AND WHERE THE PANE A RUN DRIVES WENT — register item 682, on the line above's
+            // terms and from the same registry for its reason: a copy holds no windows and would
+            // answer *nowhere* about every moved pane, which is the reassuring wrong answer.
+            panes_elsewhere: Some(pools_of(Arc::clone(self.registry()))),
         }
     }
 
@@ -337,6 +341,24 @@ pub fn seats_of(registry: Arc<Mutex<SessionRegistry>>) -> crate::plugins::SeatEl
             .map(str::to_owned);
         Some(crate::plugins::PaneSeat { session })
     })
+}
+
+/// ⛔⛔⛔⛔⛔ **WHICH POOL HOLDS `pane`, ANYWHERE IN THIS DAEMON** — register item 682, and
+/// [`seats_of`]'s shape one fact over: that one finds the person who asked, this one finds the pane
+/// a run is DRIVING after somebody moved it to another window.
+///
+/// # Why the answer can be trusted across the move
+///
+/// Moving a pane is `close` + `adopt` between WINDOWS of one session, and nothing in this product
+/// moves a pane between sessions — [`bump_on_dirty`]'s own doc records that invariant and depends
+/// on it. So a pane this answers for is the same pane, in the same session, with the same program:
+/// the `claude` on pane 5 had been running for 9,632 seconds across the death this repays.
+///
+/// ⚠ [`None`] for a pane no window holds, which is a CLOSED pane — and that is what keeps a moved
+/// pane and a closed one two different endings for a run.
+#[must_use]
+pub fn pools_of(registry: Arc<Mutex<SessionRegistry>>) -> sprag_plugin::access::PaneElsewhere {
+    Arc::new(move |pane| Some(crate::lock(&registry).pool_holding(pane)?.pool))
 }
 
 /// The pane `on_dirty` hook that bumps `revision` on every batch of PTY output —

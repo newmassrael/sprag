@@ -1932,6 +1932,36 @@ pub type AttentionMinter = Arc<dyn Fn() -> Box<dyn Fn(PaneId, Attention) + Send>
 /// the same pane, free to disagree with the pane list a person is looking at.
 pub type AgentStateSource = Arc<dyn Fn(PaneId) -> Option<AgentObservation> + Send + Sync>;
 
+/// ⛔⛔⛔⛔⛔ **WHERE A PANE THIS POOL DOES NOT HOLD ACTUALLY LIVES** — register item 682, and the
+/// hook that makes a run's subject its PANE rather than one window's membership list.
+///
+/// # ⚠⚠⚠⚠⚠ What this is for, measured rather than reasoned
+///
+/// A [`Workspace`] is ONE WINDOW's pane pool, and a run holds the `Arc` it was given for its whole
+/// life. Moving a pane between windows of a session is `close` + `adopt` — the pane is **not
+/// touched**, only its membership — so from the run's side a perfectly healthy pane becomes
+/// `UnknownPane` and the next injection kills the run. Measured on this repository's own loops:
+/// runs 0, 1 and 3 died `failed: there is no pane N` while the panes they named were still open,
+/// and pane 5's `claude` had been running continuously for 9,632 seconds ACROSS the death.
+///
+/// ⚠⚠ **THE RUN NEVER MEANT A WINDOW.** `SessionScope::of_session` resolves to the session's
+/// CURRENT window, whatever window holds the pane the run will drive — so the pool a run captures
+/// and the pane it drives come from different places and nothing checks that they agree. A person
+/// rearranging their windows is not stopping anybody's work, and until this hook existed it was.
+///
+/// # ⚠⚠⚠ Why a hook and not this layer walking the session tree
+///
+/// Register item 689's shape exactly, and its reason verbatim: the plugin layer stays
+/// session-tree-free (the R144 Interface Segregation decision), so what arrives is an opaque `Fn`
+/// that answers *which pool holds this pane* — this surface never learns what a session is. `None`
+/// for a host that has no tree (a GUI's in-process host, a test double), which leaves the old
+/// behaviour exactly as it was.
+///
+/// ⚠ **AND A PANE THAT WAS CLOSED STILL ANSWERS `None`**, which is what keeps the two endings
+/// different: a moved pane is somewhere, a closed one is nowhere, and this hook is the only thing
+/// that can tell them apart from inside a run.
+pub type PaneElsewhere = Arc<dyn Fn(PaneId) -> Option<Arc<Mutex<Workspace>>> + Send + Sync>;
+
 /// [`PaneAccess`] over a shared [`Workspace`] — the production implementation.
 pub struct WorkspacePaneAccess {
     workspace: Arc<Mutex<Workspace>>,
@@ -1965,6 +1995,10 @@ pub struct WorkspacePaneAccess {
     /// Its absence is what [`PaneAccess::supervision`] reports, so "this build cannot supervise"
     /// and "this pane is not an agent" stay different answers all the way out to the plugin.
     agent_state: Option<AgentStateSource>,
+    /// ⛔⛔⛔⛔ **THE DAEMON'S ANSWER TO *WHERE ELSE IS THIS PANE*** ([`PaneElsewhere`]), or `None`
+    /// for a host with no session tree — register item 682. Opaque exactly as its three neighbours
+    /// are, and consulted only when this pool does not hold the id.
+    panes_elsewhere: Option<PaneElsewhere>,
 }
 
 impl WorkspacePaneAccess {
@@ -1977,6 +2011,7 @@ impl WorkspacePaneAccess {
             on_pane_exit: None,
             on_attention: None,
             agent_state: None,
+            panes_elsewhere: None,
         }
     }
 
@@ -2006,6 +2041,16 @@ impl WorkspacePaneAccess {
         self
     }
 
+    /// ⛔⛔⛔⛔ **Attach the daemon's *where else is this pane* reader** ([`PaneElsewhere`]), so a run
+    /// keeps driving the pane it was given after somebody moves it to another window — register
+    /// item 682. A builder for [`with_pane_exit`](Self::with_pane_exit)'s reason, and passing
+    /// `None` leaves this surface bound to one pool exactly as it was.
+    #[must_use]
+    pub fn with_panes_elsewhere(mut self, source: Option<PaneElsewhere>) -> Self {
+        self.panes_elsewhere = source;
+        self
+    }
+
     /// Clone the pane's I/O handle under the workspace lock (released before
     /// the handle is used), so screen reads / writes never hold the workspace
     /// lock.
@@ -2014,8 +2059,27 @@ impl WorkspacePaneAccess {
     /// reach the door a display client writes through ([`PanePtyHandle::write`]), because the
     /// injection API above is the door the RUN writes through and a fixture that uses it is
     /// staging the person out of the very distinction under test.
+    ///
+    /// # ⛔⛔⛔⛔⛔ And it follows a pane that moved windows — register item 682
+    ///
+    /// **THE ONE PLACE, WHICH IS WHY THE FALLBACK IS HERE.** Every reader on this surface —
+    /// `pane_rows`, `pane_collapsed`, the typing door, all of them — resolves through this
+    /// function, so one reading moves the whole surface together. A fallback added at the typing
+    /// door alone would leave a run able to TYPE into its pane and unable to READ it, which is a
+    /// worse state than either.
+    ///
+    /// ⚠⚠ **THE OWN POOL IS ASKED FIRST AND ITS LOCK IS RELEASED BEFORE THE HOOK IS CALLED.** The
+    /// hook walks the session tree and locks other pools; holding this one across it would be a
+    /// lock order this layer cannot see, so the answer is taken by value first.
+    ///
+    /// ⚠ A host with no hook answers exactly as it did: `None`, and the caller's own sentence.
     pub(crate) fn handle(&self, id: PaneId) -> Option<PanePtyHandle> {
-        lock(&self.workspace).pane(id).map(Pane::handle)
+        let own = lock(&self.workspace).pane(id).map(Pane::handle);
+        if own.is_some() {
+            return own;
+        }
+        let elsewhere = self.panes_elsewhere.as_ref()?(id)?;
+        lock(&elsewhere).pane(id).map(Pane::handle)
     }
 }
 
@@ -2045,9 +2109,21 @@ impl PaneAccess for WorkspacePaneAccess {
     fn pane_eof(&self, id: PaneId) -> Option<bool> {
         // A quick atomic load; reading it under the workspace lock (rather than
         // cloning the handle) is negligible and needs no producer change.
-        lock(&self.workspace)
+        //
+        // ⛔⛔⛔ AND IT FOLLOWS A PANE THAT MOVED WINDOWS, for `handle`'s reason and with a sharper
+        // consequence of its own — register item 682. The typing door asks THIS first: a pane that
+        // had moved answered `None` here, fell through, and got `UnknownPane` from `handle`. With
+        // `handle` following and this one not, a moved pane whose program had EXITED would be
+        // typed into rather than refused — the two readings must move together or the door's own
+        // distinction (`PeerGone` before `UnknownPane`) comes apart.
+        let own = lock(&self.workspace)
             .pane(id)
-            .map(|pane| pane.pty().is_eof())
+            .map(|pane| pane.pty().is_eof());
+        if own.is_some() {
+            return own;
+        }
+        let elsewhere = self.panes_elsewhere.as_ref()?(id)?;
+        lock(&elsewhere).pane(id).map(|pane| pane.pty().is_eof())
     }
 
     fn pane_full_text(&self, id: PaneId) -> Option<String> {

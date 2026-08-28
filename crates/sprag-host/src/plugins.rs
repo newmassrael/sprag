@@ -956,6 +956,11 @@ pub struct PluginsExternal {
     /// **WHERE THE ASKER IS SITTING, WHEN IT IS NOT IN THIS POOL** — see [`SeatElsewhere`] for what
     /// this answers and why a run has to be able to ask it. `None` off a daemon.
     seats: Option<SeatElsewhere>,
+    /// ⛔⛔⛔⛔ **WHERE A PANE IS WHEN IT IS NOT IN THIS POOL** — register item 682, and
+    /// [`seats`](Self::seats)' shape one fact over: that one finds a person, this one finds the
+    /// pane a run is DRIVING after somebody moved it to another window. `None` off a daemon, which
+    /// leaves a run bound to one window's membership exactly as it was.
+    panes: Option<sprag_plugin::access::PaneElsewhere>,
     /// **HOW TO START A RUN IN A PROCESS OF ITS OWN**, or `None` where this host drives runs on
     /// threads of its own — register items 544 and 643.
     ///
@@ -1009,6 +1014,23 @@ impl PluginsExternal {
         self
     }
 
+    /// ⛔⛔⛔⛔⛔ **LET A RUN KEEP THE PANE IT IS DRIVING WHEN SOMEBODY MOVES IT** — register item
+    /// 682, and [`reading_seats_elsewhere`](Self::reading_seats_elsewhere)'s shape one fact over.
+    ///
+    /// Moving a pane between windows is `close` + `adopt`: the pane is untouched and its
+    /// MEMBERSHIP changes. A run holds one window's pool for life, so that move turned a healthy
+    /// pane into `UnknownPane` and killed the run on its next injection — measured three times on
+    /// this repository's own loops, with the pane's program still running across the death.
+    ///
+    /// ⚠ Whoever installs this is saying *this pool is one window of a session that has others*,
+    /// which is the same sentence its neighbour above carries. An in-process host installs
+    /// nothing and behaves exactly as it did.
+    #[must_use]
+    pub fn following_panes_elsewhere(mut self, panes: sprag_plugin::access::PaneElsewhere) -> Self {
+        self.panes = Some(panes);
+        self
+    }
+
     /// Build the host over the shared workspace + run registry, plus the daemon's
     /// `on_pane_exit` death-signal (`None` off a daemon).
     #[must_use]
@@ -1032,6 +1054,9 @@ impl PluginsExternal {
             // ⚠ A POOL THAT IS THE WHOLE WORLD is what a host built without saying otherwise has —
             // see `reading_seats_elsewhere`, and `SeatElsewhere` for what a daemon installs there.
             seats: None,
+            // ⚠ AND A POOL THAT IS THE WHOLE WORLD CANNOT LOSE A PANE TO ANOTHER WINDOW — register
+            // item 682, on the line above's terms. See `following_panes_elsewhere`.
+            panes: None,
             // ⚠ IN-PROCESS is what a host built without saying otherwise does — see
             // `driving_out_of_process`, and `crate::options::RUN_DRIVER_PROCESS` for why that is
             // the default rather than the destination.
@@ -1795,7 +1820,12 @@ impl PluginsExternal {
             .with_attention(self.on_attention.as_ref().map(|router| {
                 let router = Arc::clone(router);
                 Arc::new(move || router.signal()) as sprag_plugin::access::AttentionMinter
-            }));
+            }))
+            // ⛔⛔⛔⛔⛔ AND WHERE ITS PANE WENT IF SOMEBODY MOVED IT — register item 682. The pool
+            // above is ONE WINDOW's and this run holds it for life; the hook is what keeps the
+            // run's subject the PANE. A host that installs none is a host whose pool is the whole
+            // world, and this run behaves exactly as it did.
+            .with_panes_elsewhere(self.panes.clone());
         let on_end = self.on_run_end.clone();
         let worker_progress = Arc::clone(progress);
         let handle = thread::spawn(move || {

@@ -2529,6 +2529,257 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A RUN WHOSE PANE MOVED TO ANOTHER WINDOW KEEPS DRIVING IT, AND ONE WHOSE PANE WAS
+    /// CLOSED STILL DIES** — register item 682, and the repair the gate above predicted.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The equation above is the OLD truth, and this is why it stood
+    ///
+    /// `a_run_ends_the_same_way_whether_its_pane_moved_or_was_closed` says a moved pane and a
+    /// closed one end a run with the identical line, and its own note says what would break that:
+    /// *"a future repair that wanted this equality to break would have to give the run a reader it
+    /// does not have today"*. This is that reader — [`crate::access::PaneElsewhere`], the daemon's
+    /// answer to *which pool holds this pane*, arriving as an opaque `Fn` on register item 689's
+    /// terms so the plugin layer still learns nothing about session trees.
+    ///
+    /// ⚠⚠ **THE EQUATION GATE STAYS AND STAYS GREEN**, which is not a contradiction: it builds its
+    /// access with NO hook, and a host that installs none is one whose pool is the whole world.
+    /// The two gates together are the claim — *without the reader the two removals are one
+    /// sentence, with it they are two outcomes* — and either alone is half of it.
+    ///
+    /// # What was measured, and what it cost
+    ///
+    /// Runs 0, 1 and 3 of this repository's own loop died `failed: there is no pane N` while the
+    /// panes they named were open: pane 5's `claude` had been running for **9,632 seconds across
+    /// the death**. Moving a pane between windows is `close` + `adopt` — the pane is never touched
+    /// — so a person rearranging their windows was killing somebody's run, and the run's own record
+    /// could not say so.
+    ///
+    /// ⚠⚠⚠ **THE CLOSED ARM IS NOT A FORMALITY, IT IS THE ESCAPE HATCH THIS REPAIR COULD HAVE
+    /// OPENED.** A hook that answered *somewhere* for a pane nobody holds would make a run type
+    /// into a pane that is gone — the failure `PeerGone` exists for — and every assertion about the
+    /// moved arm would still pass. So the two arms are driven side by side, and a closed pane must
+    /// still end the run with the live runs' own sentence.
+    #[test]
+    fn a_run_follows_its_pane_to_another_window_and_still_dies_when_it_is_closed() {
+        /// Drive a fresh loop over a live stand-in until the document is in `judging`, with the
+        /// daemon's *where else is this pane* reader installed over `destination`.
+        ///
+        /// ⚠⚠ THE HOOK IS INSTALLED BEFORE THE MOVE and answers `None` until there is something to
+        /// answer — which is how a daemon's own hook behaves. A fixture that attached it afterwards
+        /// would be staging a host that grew a new reader mid-run.
+        fn judging_with_the_reader() -> (
+            Arc<std::sync::Mutex<sprag_terminal::Workspace>>,
+            sprag_terminal::PaneId,
+            Arc<std::sync::Mutex<sprag_terminal::Workspace>>,
+            crate::access::WorkspacePaneAccess,
+            AiLoop,
+        ) {
+            let (workspace, pane) = standin_agent(9);
+            // ⚠⚠⚠⚠⚠ THE OTHER WINDOW IS A `sibling()` OF THIS RUN'S POOL, AND A MUTATION IS WHY
+            // THAT MATTERS. A pool built independently draws its own id counter, so its first pane
+            // is ALSO id 0 — the run's own id — and a fallback that ignored the id entirely would
+            // hand back a stranger's pane and look correct. `sibling` shares `next_id` precisely
+            // because *every window of a session must answer from one place*, so this stages the
+            // world the product can actually produce (register items 617 / 642).
+            let destination = Arc::new(std::sync::Mutex::new(
+                workspace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .sibling(),
+            ));
+            // ⚠⚠ AND IT ALREADY HOLDS SOMEBODY ELSE'S PANE, which is what makes *found the pane*
+            // and *found a pane* two different answers in the closed arm below.
+            {
+                let mut command = sprag_terminal::CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg("exec cat");
+                destination
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .spawn(command, "a stranger".to_string(), 80, 24)
+                    .expect("the other window opens a pane of its own");
+            }
+            let elsewhere: crate::access::PaneElsewhere = {
+                let destination = Arc::clone(&destination);
+                Arc::new(move |id| {
+                    let holds = destination
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .pane(id)
+                        .is_some();
+                    holds.then(|| Arc::clone(&destination))
+                })
+            };
+            let access = supervised(&workspace).with_panes_elsewhere(Some(elsewhere));
+            let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+                .expect("a well-briefed loop over a live pane starts");
+            let run = RunContext::uncancellable();
+            let mut pumped = 0;
+            while loops.state() != AiLoopState::Judging && pumped < 40 {
+                loops.step(&access, &run).expect("a live pane takes a pass");
+                pumped += 1;
+            }
+            assert_eq!(
+                loops.state(),
+                AiLoopState::Judging,
+                "⚠⚠ THE FIXTURE'S PRECONDITION: this loop must bank a turn within {pumped} passes",
+            );
+            (workspace, pane, destination, access, loops)
+        }
+
+        /// Let the driver take the judging pass, and answer what became of the run.
+        fn driven(
+            access: &crate::access::WorkspacePaneAccess,
+            loops: &mut AiLoop,
+        ) -> (OutcomeState, Vec<String>) {
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 4,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(loops, access, &RunContext::uncancellable());
+            let said = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            (outcome.state, said)
+        }
+
+        fn held(
+            pool: &std::sync::Mutex<sprag_terminal::Workspace>,
+        ) -> std::sync::MutexGuard<'_, sprag_terminal::Workspace> {
+            pool.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+
+        // ── ARM 1: MOVED — and the run goes on driving the pane it was given ────────────────
+        let moved_pane = {
+            let (source, pane, destination, access, mut loops) = judging_with_the_reader();
+            let taken = held(&source)
+                .close(pane)
+                .expect("the run's pool held its pane a statement ago");
+            held(&destination).adopt(taken);
+            assert!(
+                held(&source).pane(pane).is_none(),
+                "⚠⚠⚠⚠ THE PREMISE: the run's own pool must NOT hold the pane any more, or this arm \
+                 measures a run that never lost anything and the hook is never consulted",
+            );
+            let (ended, said) = driven(&access, &mut loops);
+            assert!(
+                !said
+                    .iter()
+                    .any(|note| note.contains(&format!("there is no pane {}", pane.0))),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 682: a run was killed by somebody MOVING ITS PANE between \
+                 windows. The pane is open, its program is running, and the only thing that changed \
+                 is which window's membership list holds it — a `close` + `adopt` that never \
+                 touches the pane. Three of this repository's own runs died exactly here. \
+                 Journal: {said:?}",
+            );
+            assert_ne!(
+                ended,
+                OutcomeState::Failed,
+                "⚠⚠⚠ and it must not have failed for some other reason either — a run that dies \
+                 differently is still a run the move killed. Journal: {said:?}",
+            );
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            // ⚠ DROPPED, not ignored: `close` hands the pane BACK, and it is that drop which ends
+            // the child this arm moved into the other window.
+            drop(held(&destination).close(pane));
+            pane
+        };
+
+        // ── ARM 2: CLOSED — and the reader must NOT make a dead pane look alive ────────────
+        let closed_pane = {
+            let (source, pane, _destination, access, mut loops) = judging_with_the_reader();
+            drop(
+                held(&source)
+                    .close(pane)
+                    .expect("the run's pool held its pane a statement ago"),
+            );
+            let (ended, said) = driven(&access, &mut loops);
+            assert_eq!(
+                ended,
+                OutcomeState::Failed,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 682's ESCAPE HATCH: a pane that was CLOSED must still end \
+                 the run. A reader that answered *somewhere* for a pane nobody holds would let a \
+                 run type into a pane that is gone, and every assertion in arm 1 would still pass \
+                 — which is this workspace's rule that an exemption must not disarm its own gate. \
+                 Journal: {said:?}",
+            );
+            assert!(
+                said.iter()
+                    .any(|note| note.contains(&format!("there is no pane {}", pane.0))),
+                "⚠⚠⚠ and with the live runs' own sentence, or this arm ended somewhere else: \
+                 {said:?}",
+            );
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            pane
+        };
+
+        assert_eq!(
+            moved_pane, closed_pane,
+            "⚠⚠ THE FIXTURES MUST NAME THE SAME PANE, or the two arms are about two ids rather \
+             than about two removals",
+        );
+
+        // ── ARM 3: A SLOPPY READER — the hook names a pool that does NOT hold the pane ─────
+        //
+        // ⚠⚠⚠⚠⚠ THE SECOND BELT, AND A MUTATION IS WHY IT EXISTS. Arm 2 is guarded by the HOOK
+        // answering `None`, so it never reaches this surface's own id lookup — replacing that
+        // lookup with *whatever this pool holds first* left both arms above green. The production
+        // hook is one function (`sprag_host::pools_of`) and a stale or careless one is exactly the
+        // shape that would resurrect a closed pane, so the surface must not trust a pool it is
+        // handed: the answer is about THIS pane or it is no answer.
+        {
+            let (source, pane, destination, _access, mut loops) = judging_with_the_reader();
+            let sloppy: crate::access::PaneElsewhere = {
+                let destination = Arc::clone(&destination);
+                Arc::new(move |_| Some(Arc::clone(&destination)))
+            };
+            let access = supervised(&source).with_panes_elsewhere(Some(sloppy));
+            drop(
+                held(&source)
+                    .close(pane)
+                    .expect("the run's pool held its pane a statement ago"),
+            );
+            assert!(
+                held(&destination).pane(pane).is_none() && !held(&destination).panes().is_empty(),
+                "⚠⚠⚠⚠ THE PREMISE: the pool this sloppy reader names must hold SOME pane and NOT \
+                 this one, or *found the pane* and *found a pane* are the same answer again",
+            );
+            let (ended, said) = driven(&access, &mut loops);
+            assert_eq!(
+                ended,
+                OutcomeState::Failed,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 682: this surface TRUSTED a pool it was handed and typed \
+                 into a stranger's pane. The reader answers *which pool holds this pane*, and a \
+                 pool that does not hold it is not an answer — a run that took one would be \
+                 driving somebody else's agent, which is worse than the death this repair is \
+                 about. Journal: {said:?}",
+            );
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            let strangers: Vec<sprag_terminal::PaneId> = held(&destination)
+                .panes()
+                .iter()
+                .map(sprag_terminal::Pane::id)
+                .collect();
+            for live in strangers {
+                drop(held(&destination).close(live));
+            }
+        }
+    }
+
     /// ⛔⛔⛔⛔ **A RUN PUBLISHES WHERE IT IS AS A FIELD, IN THE DOCUMENT'S OWN WORD** — register
     /// item 543, stage 3a.
     ///

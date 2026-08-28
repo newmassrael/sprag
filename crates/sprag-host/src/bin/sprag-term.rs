@@ -754,6 +754,11 @@ fn put_back_inherited_runs(
                 // given the same reach: an inherited run whose asker came back in another window
                 // would otherwise be put back as belonging to no conversation.
                 seats_elsewhere: Some(sprag_host::seats_of(Arc::clone(host.registry()))),
+                // ⚠⚠ AND WHERE ITS PANE WENT — register item 682, on the line above's argument: a
+                // run this daemon inherited is put back through the SAME surface a request gets,
+                // so a pane that moved windows while the predecessor was dying must not turn the
+                // restored run into one that dies on its first injection.
+                panes_elsewhere: Some(sprag_host::pools_of(Arc::clone(host.registry()))),
                 ..sprag_host::DaemonShared::none()
             },
         );

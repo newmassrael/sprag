@@ -606,6 +606,10 @@ impl WorkspaceExternal {
             // panes through the REGISTRY it already holds, so it has no use for a hook that answers
             // one question about one pane. Named for the reason above it.
             seats_elsewhere: _,
+            // ⚠ NOR WHERE A PANE WENT — register item 682, on the line above's argument exactly.
+            // This surface resolves panes through the REGISTRY it already holds, so a hook that
+            // answers one question about one pane buys it nothing. Named for the reason above it.
+            panes_elsewhere: _,
         } = daemon;
         Self {
             registry,
@@ -3943,8 +3947,9 @@ mod tests {
                     samplers: sampler(),
                     // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                     spawn_driver: None,
-                    // ⚠ And one window is this fixture's whole world — item 689.
+                    // ⚠ And one window is this fixture's whole world — items 689 and 682.
                     seats_elsewhere: None,
+                    panes_elsewhere: None,
                     runs: None,
                 },
             )
@@ -4141,8 +4146,9 @@ mod tests {
                     samplers: sampler(),
                     // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                     spawn_driver: None,
-                    // ⚠ And one window is this fixture's whole world — item 689.
+                    // ⚠ And one window is this fixture's whole world — items 689 and 682.
                     seats_elsewhere: None,
+                    panes_elsewhere: None,
                     runs: None,
                 },
             ),
@@ -4171,8 +4177,9 @@ mod tests {
                     samplers: sampler(),
                     // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                     spawn_driver: None,
-                    // ⚠ And one window is this fixture's whole world — item 689.
+                    // ⚠ And one window is this fixture's whole world — items 689 and 682.
                     seats_elsewhere: None,
+                    panes_elsewhere: None,
                     runs: None,
                 },
             ),
@@ -4305,8 +4312,9 @@ mod tests {
                 samplers: sampler(),
                 // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                 spawn_driver: None,
-                // ⚠ And one window is this fixture's whole world — item 689.
+                // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
+                panes_elsewhere: None,
                 runs: Some(Arc::clone(&runs)),
             },
         );
@@ -4478,8 +4486,9 @@ mod tests {
                 samplers: sampler(),
                 // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                 spawn_driver: None,
-                // ⚠ And one window is this fixture's whole world — item 689.
+                // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
+                panes_elsewhere: None,
                 runs: None,
             },
         );
@@ -4618,6 +4627,7 @@ mod tests {
                 samplers: sampler(),
                 spawn_driver: None,
                 seats_elsewhere: None,
+                panes_elsewhere: None,
                 runs: Some(Arc::clone(&runs)),
             },
         );
@@ -5502,8 +5512,9 @@ mod tests {
                 samplers: sampler(),
                 // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                 spawn_driver: None,
-                // ⚠ And one window is this fixture's whole world — item 689.
+                // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
+                panes_elsewhere: None,
                 runs: None,
             },
         );
@@ -7251,8 +7262,9 @@ mod tests {
                 samplers: sampler(),
                 // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                 spawn_driver: None,
-                // ⚠ And one window is this fixture's whole world — item 689.
+                // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
+                panes_elsewhere: None,
                 runs: None,
             },
         );
@@ -7676,8 +7688,9 @@ mod tests {
                 samplers: sampler(),
                 // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                 spawn_driver: None,
-                // ⚠ And one window is this fixture's whole world — item 689.
+                // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
+                panes_elsewhere: None,
                 runs: None,
             },
         );
@@ -7869,8 +7882,9 @@ mod tests {
                 samplers: sampler(),
                 // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                 spawn_driver: None,
-                // ⚠ And one window is this fixture's whole world — item 689.
+                // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
+                panes_elsewhere: None,
                 runs: None,
             },
         );
@@ -7939,8 +7953,9 @@ mod tests {
                 samplers: sampler(),
                 // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                 spawn_driver: None,
-                // ⚠ And one window is this fixture's whole world — item 689.
+                // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
+                panes_elsewhere: None,
                 runs: None,
             },
         );
@@ -8591,8 +8606,9 @@ mod tests {
                 samplers: sampler(),
                 // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                 spawn_driver: None,
-                // ⚠ And one window is this fixture's whole world — item 689.
+                // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
+                panes_elsewhere: None,
                 runs: None,
             },
         );
@@ -9084,8 +9100,9 @@ mod tests {
                 samplers: sampler(),
                 // ⚠ Not a driver image — item 544. Only `sprag-term` can serve a `--drive`.
                 spawn_driver: None,
-                // ⚠ And one window is this fixture's whole world — item 689.
+                // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
+                panes_elsewhere: None,
                 runs: None,
             },
         )

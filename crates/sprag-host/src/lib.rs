@@ -147,7 +147,7 @@ pub use project::{PROJECT_FILE, Project, ProjectAction, ProjectError};
 pub use rpc::{
     BirthPin, FrameIngress, HostState, IngressEvent, SUPPORTED_METHODS, bump_on_dirty,
     dispatch_channel, dispatch_frames, handle_parsed, handle_request, pane_attention_hook,
-    pane_exit_hook, seats_of, spawn_reaper, stdin_frames,
+    pane_exit_hook, pools_of, seats_of, spawn_reaper, stdin_frames,
 };
 pub use runs::{RunId, RunRegistry, RunState};
 pub use scope::{ScopeError, SessionScope};
@@ -272,6 +272,13 @@ pub struct DaemonShared {
     /// [`None`] off a daemon, like its optional neighbours: a host whose pool is the whole world
     /// needs no second place to look, and looking would find the same panes.
     pub seats_elsewhere: Option<plugins::SeatElsewhere>,
+    /// ⛔⛔⛔⛔ **WHERE A PANE IS WHEN IT IS NOT IN THE POOL A RUN CAPTURED** — register item 682,
+    /// and its neighbour's shape one fact over: that one finds the person who asked, this one finds
+    /// the pane the run is DRIVING once somebody moves it to another window.
+    ///
+    /// [`None`] off a daemon, for the field above's reason exactly: a host whose pool is the whole
+    /// world cannot lose a pane to another window.
+    pub panes_elsewhere: Option<sprag_plugin::access::PaneElsewhere>,
 }
 
 /// The host's SAMPLED facts, one sampler each, shared by every arm that serves them.
@@ -793,6 +800,14 @@ pub fn plugin_host(
     // so this surface never learns what answers it.
     let host = match daemon.seats_elsewhere.clone() {
         Some(seats) => host.reading_seats_elsewhere(seats),
+        None => host,
+    };
+    // ⛔⛔⛔⛔⛔ AND WHERE THE PANE A RUN DRIVES WENT, IF SOMEBODY MOVED IT — register item 682, on
+    // the line above's terms exactly. `workspace` is ONE WINDOW's pool and a run holds it for life,
+    // so without this a person rearranging their windows kills somebody's run: measured three
+    // times on this repository's own loops, with the pane's program still running across the death.
+    let host = match daemon.panes_elsewhere.clone() {
+        Some(panes) => host.following_panes_elsewhere(panes),
         None => host,
     };
     // ⚠⚠⚠⚠⚠ AND WHERE A RUN'S DRIVER IS PUT IN A PROCESS OF ITS OWN — register items 544 / 643 /
