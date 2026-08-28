@@ -889,6 +889,65 @@
     <data id="dispute_prompt" expr="dispute_opening + ' ' + dispute_asking"/>
 
     <!--
+      ══════════════════════════════════════════════════════════════════════════
+      ⛔⛔⛔⛔⛔ WHAT A CLAIM NOBODY COULD CHECK IS WORTH — register item 741, and
+      the four ids below are `disputing`'s five with one difference that is the
+      whole item.
+
+      `disputing` says one thing, because a refusal is one fact: the check
+      disagreed. A SILENCE is two facts wearing one word, and they ask for
+      opposite work:
+
+        unanswered   no verdict was ever produced — nothing was asked, the
+                     checker would not start, the wait ended without an answer,
+                     or its pane could not account for the reply. **Asking again
+                     is a remedy**, because the fault is in the asking.
+        unreadable   it answered, and what it said is not a verdict. Asking
+                     again gets the same shape; the remedy is its PROMPT or its
+                     program, and a retry is wasted work.
+
+      `_event.data.silence` is the word the driver derives from `Unheard`'s arm,
+      which has divided those two since register item 593 while nothing carried
+      the division past the driver.
+
+      ⚠⚠⚠⚠ THE TWO CLAUSES ARE EMPTY HERE AND THE KIND FILLS THEM, which is
+      register item 738's third layer applied to a decision rather than a number:
+      *what to do about a checker that did not answer* is a fact about WHICH
+      checker a repository runs, and a template that answered it would be
+      deciding for every repository that copies this file. A kind document knows
+      which program its `milestone_check` names; this one does not.
+
+      ⚠ Shipped EMPTY rather than absent, `judged_rules`' rule: turning it on is
+      editing a value in the file that owns the loop's decisions, not discovering
+      which of two documents an id belongs to.
+    -->
+    <data id="unverified_opening"
+          expr="'You said this milestone was reached. An independent check was asked and this run could not read an answer from it, so nothing outside this session has verified the claim.'"/>
+    <!--
+      WHAT THIS KIND'S RUNS OWE WHEN THE CHECKER NEVER PRODUCED A VERDICT.
+      Empty in the template; the kind's value arrives at `start`.
+    -->
+    <data id="unanswered_rule" expr="''"/>
+    <!--
+      AND WHEN IT ANSWERED SOMETHING THAT IS NOT ONE. Empty in the template, for
+      the id above's reason.
+    -->
+    <data id="unreadable_rule" expr="''"/>
+    <!--
+      THE CLAUSE CHOSEN FOR THIS SILENCE, composed on entry to `unverified` and
+      true for exactly one turn — `dispute_said`'s rule, and for its reason: a
+      remedy about THIS silence that outlived it would tell an agent to fix a
+      checker that has since answered.
+    -->
+    <data id="unverified_said" expr="''"/>
+    <!--
+      ⚠⚠ SHIPPED WITHOUT THE CLAUSE AND WITHOUT THE TURN, `dispute_prompt`'s
+      shape: what stands here is only ever read if the state is entered before
+      its `onentry` composes, which cannot happen.
+    -->
+    <data id="unverified_prompt" expr="unverified_opening"/>
+
+    <!--
       Standing instructions for dialogs the person has already decided about.
       When the inner agent raises a question no consent covers, `screening`
       matches it against these before anybody is woken; a match TURNS THE CALL
@@ -1584,6 +1643,23 @@
       `reflect_after_refusals` above and `reflecting`'s own `onentry`.
     -->
     <data id="refusals" expr="0"/>
+    <!--
+      ⛔⛔⛔⛔⛔ CONSECUTIVE SILENCES — register item 741, and its own count rather
+      than `refusals`' for the reason `refusals` is not `turns_since_reflect`:
+      spending one budget on two different facts makes one of them invisible.
+
+      A refusal is the check WORKING and disagreeing; a silence is the check not
+      answering at all. They ask for opposite things — one more turn on the work,
+      against a look at the checker — so a run that was refused twice and
+      silenced twice has approached NEITHER ceiling, and one counter would say it
+      had reached one.
+
+      ⚠ Cleared beside `refusals` in `reflecting`'s `onentry`, on that field's own
+      argument: a reflection is where the run gets a fresh look, and carrying
+      either count across one would bound the new session by the old one's
+      trouble.
+    -->
+    <data id="silences" expr="0"/>
     <!--
       ⚠⚠⚠ WHAT THE INNER SESSION HAS BEEN CHARGED TO READ, as of its last billed
       request. Written by the driver on every `turn.done` and by nothing else.
@@ -2631,6 +2707,23 @@
         rules, so omitting it cannot assign nil over what an author wrote.
       -->
       <assign location="working_rules" expr="_event.data.working_rules"/>
+      <!--
+        ⛔⛔⛔⛔ AND THE TWO A SILENT CHECKER NEEDS — register item 741, on
+        `working_rules`' terms exactly and for a reason of their own.
+
+        These are not prose about the WORK, they are what this repository does
+        about ITS checker: one remedy for a checker that produced no verdict, and
+        a different one for a checker that answered something that is not a
+        verdict. Which of those a run is in is `_event.data.silence`, and what to
+        do about each is a fact about which checker a repository runs — so the
+        template ships both empty and the kind fills them.
+
+        ⚠⚠ UNCONDITIONAL, like every line above: the driver always sends both,
+        echoing this document's own empty strings back for a kind that authors
+        neither, so omitting one cannot assign nil over an author's decision.
+      -->
+      <assign location="unanswered_rule" expr="_event.data.unanswered_rule"/>
+      <assign location="unreadable_rule" expr="_event.data.unreadable_rule"/>
       <!--
         ⚠⚠⚠ AND THE THREE THE PEER'S BAD DAY NEEDS, on the same unconditional
         terms: the driver always sends all three, echoing this document's own
@@ -3689,6 +3782,59 @@
     <transition event="judge" cond="_event.data.done &amp;&amp; _event.data.checked == 'failed'" target="disputing">
       <assign location="refusals" expr="refusals + 1"/>
     </transition>
+    <!--
+      ⛔⛔⛔⛔⛔ AND A CLAIM NOBODY COULD CHECK LEAVES BY A DOOR OF ITS OWN —
+      register item 741, and this document's own sentence made true of its
+      behaviour.
+
+      `Checked::Silent` describes itself as *"Silence is not agreement: fix the
+      checker, or the milestone is resting on the working agent's own word"*.
+      **It was, and the run went the same way an agreement did.** Measured across
+      this repository's entire run log, by transition:
+
+        agreed   Reflecting 96 · Closing 11 · Stopping 1
+        silent   Reflecting 15 · Closing  2 · Stopping 2   ← the same set
+        refused  Disputing   6                             ← reached by NO silence
+
+      Nineteen silences in twelve runs, six of those runs with `agreed = 0`, and
+      **two runs banked a milestone on a claim nothing had verified.** The word
+      was published, the walk said so in prose, and no edge read it.
+
+      ⚠⚠⚠⚠ IT IS NOT A REFUSAL, AND THAT DISTINCTION IS THE WHOLE DESIGN. The
+      block above says only `'failed'` refuses, because a checker that is merely
+      broken must not stop a run — and the measurement says how broken they get:
+      three of these nineteen were a PERMISSION DIALOG the checker sat at. So
+      this buys the same thing a refusal buys — ONE MORE TURN — and says
+      something different, rather than turning silence into a verdict against the
+      agent. `unverified` composes what to do about the CHECKER; `disputing`
+      composes what to do about the WORK.
+
+      ⚠⚠ BELOW THE STAND-DOWN AND ABOVE THE PLAIN `done`, both halves for the
+      refusing edge's reasons verbatim: a person saying stop still wins, and
+      placed after the plain edge this one would be unreachable.
+    -->
+    <transition event="judge"
+                cond="_event.data.done &amp;&amp; _event.data.checked == 'silent' &amp;&amp; silences + 1 &gt;= reflect_after_refusals"
+                target="reflecting">
+      <assign location="reflect_reason" expr="'unverified'"/>
+    </transition>
+    <!--
+      ⚠⚠⚠⚠⚠ AND THE CEILING ABOVE IS NOT DECORATION — register item 449, whose
+      whole finding was that a run refused over and over could not leave, and a
+      person had to press Escape. A checker at a permission dialog answers
+      nothing EVERY time it is asked, so without that edge this door would hand
+      the run back to `working` for ever, and the one situation where a fresh
+      session is the actual remedy would be the one it could not reach.
+
+      ⚠ `silences + 1`, because the increment belongs to this edge and the
+      ceiling fires INSTEAD of it: the question there is *would this silence be
+      the Nth*, asked before the count has taken it.
+    -->
+    <transition event="judge"
+                cond="_event.data.done &amp;&amp; _event.data.checked == 'silent'"
+                target="unverified">
+      <assign location="silences" expr="silences + 1"/>
+    </transition>
     <transition event="judge" cond="_event.data.done" target="reflecting">
       <assign location="reflect_reason" expr="'milestone'"/>
     </transition>
@@ -4069,6 +4215,79 @@
   </state>
 
   <!--
+    ⛔⛔⛔⛔⛔ THE DOOR A CLAIM NOBODY COULD CHECK LEAVES BY — register item 741,
+    and `disputing`'s shape one fact over.
+
+    A run arrives here having said it reached its milestone while the independent
+    check said nothing this run could read. That is neither an agreement nor a
+    refusal, and until this state existed it took the agreement's edge: measured
+    across this repository's whole run log, silence left `judging` by exactly the
+    doors an agreement did, and `Disputing` — the one door that buys another turn
+    — was reached by none of nineteen.
+  -->
+  <state id="unverified">
+    <onentry>
+      <!--
+        ⚠⚠⚠⚠⚠ THE ONE BRANCH THIS STATE HAS, and it is the item: a silence is TWO
+        facts wearing one word, and the remedies are opposite. `disputing` needs
+        no such branch because a refusal is one fact.
+
+        ⚠⚠ THE WORD IS THE DRIVER'S AND CLOSED — `Silence::wire_str`, derived
+        from `Unheard`'s arm. It is not the checker's prose: `_event.data.
+        explained` carries that, and this document may quote it but must never
+        decide on it, which is the ban that key's own comment states.
+
+        ⚠ `'unanswered'` IS TESTED RATHER THAN `'unreadable'`, so a word this
+        document has not met takes the READABLE arm — the one that does not
+        promise a retry will help. A silence nobody has classified must not be
+        answered with *ask again*, which is the more expensive wrong answer.
+      -->
+      <if cond="_event.data.silence == 'unanswered'">
+        <assign location="unverified_said" expr="unanswered_rule"/>
+      <else/>
+        <assign location="unverified_said" expr="unreadable_rule"/>
+      </if>
+      <!--
+        ⚠⚠⚠ THE CHECKER'S OWN WORDS, QUOTED — `disputing`'s rule verbatim, and
+        for its reason: an agent told *the wait ended NotYet* in this document's
+        voice would read it as the loop's finding. `_event.data.explained` is a
+        non-empty line or `false`, never `''`, which is what lets this branch on
+        it in a datamodel where the empty string is TRUE.
+      -->
+      <if cond="_event.data.explained">
+        <assign location="unverified_said"
+                expr="unverified_said + ' ' + dispute_quoting + ' ' + _event.data.explained"/>
+      </if>
+      <!--
+        ⚠⚠⚠ THE ORDINARY TURN PROMPT IS COMPOSED IN RATHER THAN REPLACED,
+        `disputing`'s argument unchanged: `turn_prompt` carries the milestone and
+        the standing instructions, so a prompt that replaced it would answer a
+        broken checker by taking the work away.
+      -->
+      <assign location="unverified_prompt"
+              expr="unverified_opening + ' ' + unverified_said + '\n' + turn_prompt"/>
+      <!--
+        ⚠⚠⚠⚠⚠ `asks='work'`, FOR `disputing`'s MEASURED REASON: the turn this
+        buys is watched in `working` by the arm that collects a run's ACCOUNT off
+        any turn whose question asked for one, so `account` here would publish an
+        unfinished run's next piece of work as its closing report.
+      -->
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="unverified_prompt"/>
+        <param name="asks" expr="'work'"/>
+      </send>
+    </onentry>
+    <transition event="prompt.sent" target="working"/>
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+    <!--
+      ⚠⚠ EVERY STATE A PROMPT CAN BE OWED FROM NEEDS THIS EDGE — `disputing`'s
+      note, and true here for the same reason.
+    -->
+    <transition event="peer.gone" target="peer_gone"/>
+  </state>
+
+  <!--
     Improve the loop's own setup from the record so far: what the next milestone
     is, what the next session should read, and the standing instructions this run
     has been given. None of those takes effect until a session reads them, which
@@ -4111,6 +4330,12 @@
         `reflect.none` and went back to work.
       -->
       <assign location="refusals" expr="0"/>
+      <!--
+        ⛔⛔⛔ AND THE SILENCE STREAK, on the line above's argument exactly —
+        register item 741. A reflection is a fresh look, and a checker that could
+        not answer the last session's claims is not evidence against this one's.
+      -->
+      <assign location="silences" expr="0"/>
       <!--
         ⚠⚠ BOTH REASONS TO BE HERE ARE CLEARED ON ENTRY, not on the way out. A
         reflection that finds nothing worth changing answers `reflect.none` and

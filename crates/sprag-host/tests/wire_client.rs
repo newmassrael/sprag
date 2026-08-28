@@ -6788,6 +6788,7 @@ fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
         reference: "register item 705".to_string(),
         closing_rules: None,
         working_rules: None,
+        unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
         // ⛔⛔⛔ THE WHOLE REASON THIS RUN IS BUILT HERE RATHER THAN REQUESTED.
@@ -7327,6 +7328,7 @@ fn a_host_run_drives_its_turns_on_the_turn_contract_that_ships() {
             reference: "register item 730".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -7614,6 +7616,7 @@ fn a_host_run_replaces_its_inner_session_and_the_fresh_one_works() {
         reference: "register item 730's fixture".to_string(),
         closing_rules: None,
         working_rules: None,
+        unverified_rules: None,
         // ⚠⚠ NOT AUTHORED, and that is the door this run takes: the document's own answer to an
         // unauthored ceiling is that every reflection replaces the session, and `reviewing` says so
         // in the `restart_reason` it writes. A number here would make this gate about capacity.
@@ -7963,6 +7966,7 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
             reference: "register item 424(b)".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             // ⚠⚠⚠⚠⚠ THE ONE NUMBER THE TWO ARMS DIFFER BY, and it is AUTHORED THROUGH THE BRIEF —
             // never written into the datamodel by hand. A gate that reached its subject by a door
             // no caller has is measuring itself (register item 492).
@@ -8250,6 +8254,7 @@ fn a_run_that_has_been_stood_down_finishes_its_milestone_and_stops() {
             reference: "register item 730's fourth lifecycle".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             // ⚠⚠ NOT AUTHORED, which SHUTS the capacity edge: `judging` tests it on
             // `context_ceiling > 0`. With the cadence shut too (below), the only door left into
             // `reflecting` is the one that requires a declared milestone — which is what makes the
@@ -8492,6 +8497,7 @@ fn a_loop_converges_on_what_its_agent_says_not_on_what_its_terminal_shows() {
             reference: "register item 441".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,

@@ -212,6 +212,45 @@ impl LoopKind {
             .filter(|said| !said.is_empty())
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHAT THIS KIND DOES ABOUT A CHECKER THAT SAID NOTHING READABLE** — register item
+    /// 741, or [`None`] where this document says nothing about either silence.
+    ///
+    /// # ⚠⚠⚠⚠ Why the pair comes back together or not at all
+    ///
+    /// Because they are one decision and the run meets exactly one of them: which clause it needs
+    /// is [`crate::judge::Silence`]'s answer, and a kind that authored *ask again* while leaving
+    /// *fix the prompt* empty would answer 4 of this repository's 19 measured silences and say
+    /// nothing about the other 15. Returning a half-filled pair would make that a value rather than
+    /// the omission it is — so a document that fills one and not the other is REFUSED here, and the
+    /// caller's own refusal names which clause is missing.
+    ///
+    /// ⚠ EMPTY READS AS NOTHING on [`working_rules`](Self::working_rules)' polarity: the template
+    /// ships `''` for both, so *declared and empty* is *this document says nothing about its
+    /// checker's silences*, which is the shipped behaviour and an honest answer.
+    ///
+    /// # Errors
+    ///
+    /// [`NotScreenable`] when the document holds exactly one of the two, naming the empty one — a
+    /// half-authored decision is the state this type exists to make unrepresentable.
+    pub fn unverified_rules(&self) -> Result<Option<crate::outer::UnverifiedRules>, NotScreenable> {
+        let policy = self.machine.policy();
+        let unanswered = policy.unanswered_rule().filter(|said| !said.is_empty());
+        let unreadable = policy.unreadable_rule().filter(|said| !said.is_empty());
+        match (unanswered, unreadable) {
+            (None, None) => Ok(None),
+            (Some(unanswered), Some(unreadable)) => Ok(Some(crate::outer::UnverifiedRules {
+                unanswered,
+                unreadable,
+            })),
+            // ⚠⚠ THE HALF-AUTHORED DOCUMENT IS A RED AND NOT A DEFAULT — this workspace's rule that
+            // an unclassified thing does not pass. The empty one is NAMED, because *one of your two
+            // clauses is missing* sends an author to a file and *your rules were ignored* sends
+            // them nowhere.
+            (None, Some(_)) => Err(NotScreenable::Missing("unanswered_rule")),
+            (Some(_), None) => Err(NotScreenable::Missing("unreadable_rule")),
+        }
+    }
+
     /// **WHERE A RUN OF THIS KIND STARTS READING**, or [`None`] where this kind names nothing and
     /// the caller's own reference is the only one.
     ///

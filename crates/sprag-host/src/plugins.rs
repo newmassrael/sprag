@@ -3316,6 +3316,24 @@ fn ai_loop_brief(
         // a defect: this repository's supervisor typed the rules into `north_star` BY HAND on every
         // launch, out of a session's context, and when the session ended they existed nowhere.
         working_rules: kind.working_rules(),
+        // ⛔⛔⛔⛔⛔ AND WHAT THIS REPOSITORY DOES ABOUT ITS CHECKER'S SILENCE — register
+        // item 741, on the line above's terms and with a refusal of its own.
+        //
+        // NO WIRE KEY, for `working_rules`' reason: a launch cannot author what a
+        // repository does about ITS checker, and one that could would delete it by
+        // naming nothing. ⚠ The refusal is the kind's — a document that filled one
+        // clause and left the other empty answers some of its runs and is silent about
+        // the rest, and `LoopKind::unverified_rules` names the empty one rather than
+        // shipping half a decision.
+        unverified_rules: kind.unverified_rules().map_err(|why| {
+            refused(format!(
+                "this repository's loop-kind document authors only half of what a run owes when \
+                 its checker says nothing readable ({why:?}); a silence is either a checker that \
+                 produced no verdict or one that answered something that is not a verdict, a run \
+                 meets exactly one of the two, and a document that answers one of them leaves the \
+                 other's runs with nothing to act on"
+            ))
+        })?,
         // ⚠⚠⚠ NO WIRE KEY EITHER, and for the same reason one line up — register item
         // 428. What certifies this repository's work is its document's business; a
         // caller who could name the checker could delete it by naming nothing, which is
@@ -3552,6 +3570,17 @@ fn ai_loop_refusal(why: &sprag_plugin::NotStarted) -> String {
                 ScreenRules::WIRE_KEY,
                 ScreenRule::WHEN_KEY,
                 ScreenRule::TEXT_KEY,
+            )
+        }
+        // ⛔⛔⛔ AND A CLAUSE THE DOCUMENT AUTHORED HALF OF — register item 741. It names the id
+        // that is empty, because the whole value of refusing early is that the author can go and
+        // fill it in; *your document is incomplete* would cost them the run they were spared.
+        sprag_plugin::NotStarted::Screening(sprag_plugin::NotScreenable::Missing(id)) => {
+            format!(
+                "this loop's kind document leaves `{id}` empty while its partner is filled, and \
+                 the two are one decision: a run meets exactly one of them, so a document that \
+                 answers one silence and not the other leaves the rest of its runs with nothing to \
+                 act on. Fill `{id}` in, or empty both and say nothing about either"
             )
         }
     }
@@ -7513,6 +7542,80 @@ mod tests {
             ),
             "⚠⚠⚠ a caller's own bounds must still win over the kind document's, on every one of \
              the three",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT THIS REPOSITORY DOES ABOUT A SILENT CHECKER IS ITS DOCUMENT'S, AND BOTH
+    /// HALVES REACH THE RUN** — register item 741, and register item 738's third layer applied to a
+    /// DECISION rather than to a number.
+    ///
+    /// # ⚠⚠⚠⚠ Why the pair and not one clause
+    ///
+    /// A silence is two facts wearing one word — a checker that produced no verdict wants asking
+    /// again, one that answered prose wants its prompt fixed — and a run meets exactly one of them.
+    /// So a document that authored one clause would answer some of its runs and be silent about the
+    /// rest, and the measurement says how the population splits: across this repository's whole run
+    /// log, 15 of 19 silences were `NotAVerdict` and 4 were `Unfinished`.
+    ///
+    /// ⚠⚠ **BOTH ARE ASSERTED TO BE THE KIND'S OWN VALUES**, never merely present: a door that
+    /// invented two sentences would satisfy *the brief carries a pair* while the document that owns
+    /// this loop's decisions said nothing at all.
+    ///
+    /// ⚠ The DISPOSITION — which clause a given silence gets — is the document's, and
+    /// `ai_loop`'s `a_check_that_said_nothing_readable_leaves_by_its_own_door_with_its_own_answer`
+    /// holds that end. This one holds the channel.
+    #[test]
+    fn a_kind_says_what_a_silent_checker_owes_and_the_door_carries_both_halves() {
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+            .expect("this repository's kind document opens");
+
+        // ⚠⚠⚠⚠⚠ THE PREMISE: this kind must really author BOTH, asserted before the door is asked.
+        // Against a document that authors neither, every claim below is two absences agreeing —
+        // and the honest answer for such a document is `None`, which is a different green.
+        let authored = kind
+            .unverified_rules()
+            .expect("its clauses must be readable")
+            .expect(
+                "⚠⚠⚠ THE CONTROL: `debt_loop.scxml` must author what a silence owes, or the door \
+                 below is carrying nothing and this gate is about an empty pair",
+            );
+        assert!(
+            !authored.unanswered.trim().is_empty() && !authored.unreadable.trim().is_empty(),
+            "⚠⚠ and neither half may be blank: an empty clause is composed into the prompt exactly \
+             as written, which is what R380 measured a live agent reading as `(edit me)`",
+        );
+        assert_ne!(
+            authored.unanswered, authored.unreadable,
+            "⛔⛔⛔ REGISTER ITEM 741: the two clauses are the SAME SENTENCE, so a document that \
+             has two channels is saying one thing through both — which is the collapse this item \
+             is about, moved from the driver into the document",
+        );
+
+        // ── AND THE DOOR CARRIES THEM, over the launch a person actually makes ──────────────
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let launch = json!({
+            "plugin": "ai_loop",
+            "pane": pane.0,
+            "north_star": "SPRAG-NORTH-STAR-CROSSED-THE-WIRE",
+            "milestone": "say the marker",
+        });
+        let map = launch.as_object().expect("an object");
+        assert!(
+            !map.contains_key("unanswered_rule") && !map.contains_key("unreadable_rule"),
+            "⚠⚠⚠⚠ THIS GATE IS VACUOUS IF THE LAUNCH NAMES EITHER CLAUSE: the question is whose \
+             value arrives when the caller names none, and there is no wire key for these at all",
+        );
+        let brief = ai_loop_brief(map, &kind).expect("a well-formed request resolves");
+        assert_eq!(
+            brief.unverified_rules.as_ref(),
+            Some(&authored),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 741: what this repository does about its own checker's silence \
+             did not reach the run. The document authored it, the machine has a door for it, and \
+             the channel between them is cut — so a silenced run is told nothing, which is the \
+             state before this item was filed",
         );
     }
 

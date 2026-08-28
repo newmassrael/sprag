@@ -1766,6 +1766,7 @@ mod tests {
             // has its own gate rather than being folded in here.
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -8655,8 +8656,19 @@ mod tests {
         // `a_claim_refused_to_the_ceiling_reflects_rather_than_buying_another_turn` in `outer.rs`,
         // which drives a real pump against a real checker and asserts this same rendering, with the
         // ceiling-out-of-reach control beside it. Register item 449.
-        const AUTHORED_IN_THE_DOCUMENT: [ReflectReason; 2] =
-            [ReflectReason::Capacity, ReflectReason::Refused];
+        // ⚠⚠⚠ A THIRD EXCEPTION, ON THE SECOND ONE'S TERMS EXACTLY — register item 741. `Unverified`
+        // is `Refused`'s neighbour: it needs a streak against a ceiling, and it needs a CHECKER that
+        // answers nothing, which is a stand-in this gate's peers do not include. The run that
+        // renders it is
+        // `a_check_that_said_nothing_readable_leaves_by_its_own_door_with_its_own_answer`, which
+        // drives the document to that edge with the ceiling at one and reads the word back off the
+        // datamodel; the driver's half — that the word is one it can read back at all — is
+        // `every_edge_into_reflecting_says_why_in_a_word_this_driver_knows`.
+        const AUTHORED_IN_THE_DOCUMENT: [ReflectReason; 3] = [
+            ReflectReason::Capacity,
+            ReflectReason::Refused,
+            ReflectReason::Unverified,
+        ];
         let covered: std::collections::BTreeSet<ReflectReason> =
             arms.iter().map(|(_, reason, _)| *reason).collect();
         assert_eq!(
@@ -8887,23 +8899,29 @@ mod tests {
     /// spent on. See `Retyped`.
     const UNASKED_AGAIN: &str = r#"{"retyped":"again"}"#;
 
-    /// **WHAT THE DRIVER PUTS ON `judge` AFTER AN ORDINARY TURN** — five keys, every one of them
+    /// **WHAT THE DRIVER PUTS ON `judge` AFTER AN ORDINARY TURN** — six keys, every one of them
     /// `false`, which is `OuterLoop::pump`'s own shape for *the agent worked and declared nothing*.
     ///
     /// ⚠ `false` and never `0` or `""`: this datamodel is Lua, where both of those are TRUE.
-    const ORDINARY: &str = r#"{"done": false, "checked": false, "explained": false, "unheard": false, "stop_short": false}"#;
+    ///
+    /// ⛔ THE SIXTH ARRIVED WITH REGISTER ITEM 741, and a gate is what said so:
+    /// `a_payload_a_fixture_shares_under_a_name_is_the_drivers_own` compares these against the keys
+    /// the DOCUMENT reads, so a fixture short of one walks a state the product never walks — which
+    /// is the exact hazard this round met from the other side, when a payload missing
+    /// `reflect_after_refusals` assigned nil and ended a run `failed`.
+    const ORDINARY: &str = r#"{"done": false, "checked": false, "explained": false, "unheard": false, "silence": false, "stop_short": false}"#;
 
-    /// **THE SAME PAYLOAD WITH THE AGENT SAYING THE WORD** — [`ORDINARY`]'s five keys with `done`
+    /// **THE SAME PAYLOAD WITH THE AGENT SAYING THE WORD** — [`ORDINARY`]'s six keys with `done`
     /// true, which is the only difference between a turn that banks and one that closes the run.
     ///
     /// ⚠ Spelled out beside its sibling rather than built from it: what a fixture sends the machine
     /// is the thing under test, and a payload assembled by string surgery is one a reader cannot
     /// check against `OuterLoop::pump`'s own by eye.
-    const DONE: &str = r#"{"done": true, "checked": false, "explained": false, "unheard": false, "stop_short": false}"#;
+    const DONE: &str = r#"{"done": true, "checked": false, "explained": false, "unheard": false, "silence": false, "stop_short": false}"#;
 
     /// **THE SAME PAYLOAD SAYING ONE OF THE RUN'S OWN CEILINGS FELL DUE** — `judging`'s FIRST arm,
     /// which asks the agent for an account rather than for more work.
-    const STOP_SHORT: &str = r#"{"done": false, "checked": false, "explained": false, "unheard": false, "stop_short": true}"#;
+    const STOP_SHORT: &str = r#"{"done": false, "checked": false, "explained": false, "unheard": false, "silence": false, "stop_short": true}"#;
 
     /// Raise a DATA-CARRYING event the way the driver does, then step.
     ///
@@ -10202,10 +10220,13 @@ mod tests {
         /// must answer a never-taken question with.
         type Refused<'a> = (&'a str, Vec<(AiLoopEvent, &'a str)>, AiLoopState);
 
-        // ⚠ SIX, AND THE NUMBER IS `Owed::on`'s. A seventh state that owes a prompt is a seventh
+        // ⚠ SEVEN, AND THE NUMBER IS `Owed::on`'s. An eighth state that owes a prompt is an eighth
         // state that can meet this condition, and a list that did not grow with it would be green
         // about a hole — which is the shape this whole item is.
-        let cases: [Refused; 6] = [
+        //
+        // ⛔ THE SEVENTH ARRIVED WITH REGISTER ITEM 741: `unverified` sends a prompt on entry, so
+        // it can be refused on entry, and the list grew with it rather than after somebody noticed.
+        let cases: [Refused; 7] = [
             // The one 446 built, and it now goes through the REGION's rule rather than its own
             // edge — so a green here is also the proof that a child with no answer inherits one.
             (
@@ -10225,6 +10246,20 @@ mod tests {
                     (
                         AiLoopEvent::Judge,
                         "{\"done\": true, \"checked\": \"failed\"}",
+                    ),
+                ),
+                AiLoopState::Restarting,
+            ),
+            // ⛔ REGISTER ITEM 741, and it is `disputing`'s neighbour in every way that matters
+            // here: entered from `judging` by one edge, composes a prompt on entry, hands back to
+            // `working`. What differs is the fact that got it there.
+            (
+                "unverified",
+                then(
+                    &TO_JUDGING,
+                    (
+                        AiLoopEvent::Judge,
+                        "{\"done\": true, \"checked\": \"silent\", \"silence\": \"unreadable\"}",
                     ),
                 ),
                 AiLoopState::Restarting,
@@ -11185,6 +11220,212 @@ mod tests {
              nothing else to tell a bad afternoon upstream from hard work, and an edge missing \
              its `<assign>` would reach `working` looking exactly like this one: {retried:?}",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CLAIM NOBODY COULD CHECK LEAVES BY A DIFFERENT DOOR THAN ONE A CHECK AGREED
+    /// WITH, AND THE TWO SILENCES GET DIFFERENT ANSWERS** — register item 741.
+    ///
+    /// # What was measured, and why prose was not enough
+    ///
+    /// `Checked::Silent`'s own sentence is *"Silence is not agreement"*. Across this repository's
+    /// entire run log the behaviour said otherwise — a silent check left `judging` by exactly the
+    /// doors an agreeing one did (`Reflecting` 15 / `Closing` 2 / `Stopping` 2 against 96 / 11 / 1),
+    /// while `Disputing`, the one door that buys another turn, was reached by **none of nineteen**.
+    /// Two runs banked a milestone nothing had verified. The word was published, the walk printed
+    /// it in prose, and no edge read it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Both classes, side by side, or this gate is vacuous
+    ///
+    /// A silence is two facts wearing one word: a checker that produced **no verdict** wants asking
+    /// again, and one that **answered something that is not a verdict** wants its prompt fixed.
+    /// Standing up one of them would prove only that some door exists — the claim is that the
+    /// DISPOSITION differs, and only the pair can say so. So both are driven here, and the two
+    /// composed prompts are asserted to differ AND to carry their own clause.
+    ///
+    /// ⚠⚠ THE CONTROL IS THE AGREEING CLAIM, driven through the same walk: without it a document
+    /// that sent EVERY judgement to `unverified` would satisfy everything above.
+    ///
+    /// ⚠ The clauses are handed in the way the DRIVER hands them (`start`'s payload), and that a
+    /// KIND authors them is a claim about the door — `plugins`'s
+    /// `a_kind_says_what_a_silent_checker_owes_and_the_door_carries_both_halves` holds that end.
+    #[test]
+    fn a_check_that_said_nothing_readable_leaves_by_its_own_door_with_its_own_answer() {
+        /// What a kind might author for a checker that never produced a verdict.
+        const UNANSWERED: &str = "ASK-THE-CHECKER-AGAIN";
+        /// And for one that answered something that is not a verdict.
+        const UNREADABLE: &str = "FIX-THE-CHECKERS-PROMPT";
+        /// The `start` payload a driver sends, carrying both clauses — the pair is one decision, so
+        /// a fixture that sent one would be staging a document this door refuses.
+        fn briefed() -> String {
+            serde_json::json!({
+                "unanswered_rule": UNANSWERED,
+                "unreadable_rule": UNREADABLE,
+                // ⚠⚠⚠⚠ AND THE CEILING, WHICH THIS FIXTURE LEARNED TO SEND THE HARD WAY. The
+                // `brief` transition assigns UNCONDITIONALLY — the driver always sends every key,
+                // echoing the template's own values back — so a payload that omits one assigns
+                // **nil** over a number the guard below then compares against, and the run ends
+                // `failed` on an `error.execution` nobody meant. A fixture must send what the
+                // driver sends; the number itself is immaterial to this gate, only that the first
+                // silence is under it.
+                "reflect_after_refusals": 3,
+            })
+            .to_string()
+        }
+        /// Reach `judging`, then judge with `data`, and answer with the state and what the
+        /// `unverified` prompt came to.
+        fn judged(data: &serde_json::Value) -> (AiLoopState, String) {
+            let (mut engine, host, lua, session) = started();
+            // ⚠⚠ THE CLAUSES ARRIVE ON `brief` AND NOT ON `start`, which is the door the DRIVER
+            // uses: `OuterLoop::brief` sends this event before the run begins, and a fixture that
+            // put the payload on `start` would leave every authored value at the template's empty
+            // string and then assert about the composition anyway.
+            carried(&mut engine, &host, AiLoopEvent::Brief, &briefed());
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Judging,
+                "⚠⚠ THE PREMISE: the walk must reach `judging`, or every claim below is about \
+                 somewhere else",
+            );
+            carried(&mut engine, &host, AiLoopEvent::Judge, &data.to_string());
+            let said = match lua.get_variable(&session, "unverified_prompt") {
+                Ok(ScriptValue::String(said)) => said,
+                other => panic!("the composed prompt must be readable: {other:?}"),
+            };
+            (engine.get_current_state(), said)
+        }
+
+        // ── THE CONTROL: a claim a check AGREED with still goes to `reflecting` ──────────────
+        let (agreed, _) = judged(&serde_json::json!({ "done": true, "checked": "passed" }));
+        assert_eq!(
+            agreed,
+            AiLoopState::Reflecting,
+            "⚠⚠⚠ THE CONTROL FAILED: a verified milestone must go on reflecting exactly as it \
+             always did. A document that sent every judgement through the new door would satisfy \
+             every assertion below while having changed nothing about SILENCE",
+        );
+
+        // ── AND A CLAIM NOBODY COULD CHECK DOES NOT ────────────────────────────────────────
+        let (unanswered, asking) = judged(&serde_json::json!({
+            "done": true,
+            "checked": "silent",
+            "silence": "unanswered",
+            "explained": "the checker was started and never answered",
+        }));
+        assert_eq!(
+            unanswered,
+            AiLoopState::Unverified,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 741: a milestone nothing verified left by the door a VERIFIED \
+             one leaves by. That is this document's own sentence — *Silence is not agreement* — \
+             being false of its behaviour, and it is how two runs banked a claim no independent \
+             process had ever agreed with",
+        );
+        let (unreadable, fixing) = judged(&serde_json::json!({
+            "done": true,
+            "checked": "silent",
+            "silence": "unreadable",
+            "explained": "the checker answered \"Permission\", which is not YES or NO",
+        }));
+        assert_eq!(
+            unreadable,
+            AiLoopState::Unverified,
+            "⛔⛔⛔ and so must the other silence — one door, because the run is in the same place: \
+             it claimed a milestone and nothing checked it",
+        );
+
+        // ── AND THE ANSWER IS NOT THE SAME ANSWER ─────────────────────────────────────────
+        assert!(
+            asking.contains(UNANSWERED) && !asking.contains(UNREADABLE),
+            "⛔⛔⛔⛔ REGISTER ITEM 741: a checker that produced NO VERDICT was told to fix its \
+             prompt, or told nothing at all. Asking again is the remedy for this one — 4 of this \
+             repository's 19 silences were a wait that ended without an answer — and a run sent to \
+             tighten a prompt would change the one thing that was working. Got:\n{asking}",
+        );
+        assert!(
+            fixing.contains(UNREADABLE) && !fixing.contains(UNANSWERED),
+            "⛔⛔⛔⛔ and the checker that ANSWERED must not be told to ask again: it would get the \
+             same shape back, which is 15 of those 19. Got:\n{fixing}",
+        );
+        assert_ne!(
+            asking, fixing,
+            "⚠⚠⚠ THE WHOLE ITEM IN ONE LINE: two silences with one answer is the collapse register \
+             item 593 measured one layer down, met again at the disposition",
+        );
+
+        // ── AND THE RUN CAN LEAVE, WHICH IS WHAT KEEPS THE NEW DOOR FROM BEING A TRAP ──────
+        //
+        // ⚠⚠⚠⚠⚠ A checker at a permission dialog answers nothing EVERY time it is asked, so
+        // without the ceiling this door would hand the run back to `working` for ever — register
+        // item 449's measured shape, which cost nine refusals and a person pressing Escape. Driven
+        // here rather than assumed: the brief sets the ceiling to ONE, so the first silence is
+        // already the Nth.
+        //
+        // ⚠⚠ AND IT IS WHERE THE WORD `unverified` IS ASSIGNED, which is why this arm also stands
+        // in for that reason in `the_walk_says_why_a_run_stopped_to_reflect` — that gate reaches
+        // its arms through real pumps against stand-in peers, and a stand-in CHECKER that answers
+        // nothing is a fixture it does not have. The driver's half — that the word is one it can
+        // read back — is `every_edge_into_reflecting_says_why_in_a_word_this_driver_knows`.
+        let (mut engine, host, lua, session) = started();
+        carried(
+            &mut engine,
+            &host,
+            AiLoopEvent::Brief,
+            &serde_json::json!({
+                "unanswered_rule": UNANSWERED,
+                "unreadable_rule": UNREADABLE,
+                "reflect_after_refusals": 1,
+            })
+            .to_string(),
+        );
+        carried(&mut engine, &host, AiLoopEvent::Start, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+        carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+        carried(
+            &mut engine,
+            &host,
+            AiLoopEvent::Judge,
+            &serde_json::json!({
+                "done": true,
+                "checked": "silent",
+                "silence": "unanswered",
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Reflecting,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 741 / 449: a run whose checker never answers must be able to \
+             LEAVE. With the ceiling at one this silence is already the Nth, and a document that \
+             sent it back to `working` anyway would spin on a permission dialog until a person \
+             pressed Escape — which is exactly what item 449 watched happen to refusals",
+        );
+        assert!(
+            matches!(
+                lua.get_variable(&session, "reflect_reason"),
+                Ok(ScriptValue::String(ref said))
+                    if said == crate::outer::ReflectReason::Unverified.word()
+            ),
+            "⚠⚠⚠ and it must say WHY in the word this driver reads back, or the reflection reports \
+             the PREVIOUS one's cause — `reflect_reason` is not cleared on entry. Read {:?}",
+            lua.get_variable(&session, "reflect_reason"),
+        );
+
+        // ── AND NEITHER SAYS THE MILESTONE WAS REFUSED ───────────────────────────────────
+        //
+        // ⚠⚠⚠⚠ THE LEDGER'S OWN WARNING, HELD AS AN ASSERTION: *do not simply flip unreadable into
+        // a refusal — one permission dialog kills a round.* `dispute_opening` is what a refusal
+        // says, and neither of these may be carrying it.
+        for said in [&asking, &fixing] {
+            assert!(
+                !said.contains("did not agree"),
+                "⛔⛔⛔⛔⛔ A SILENCE IS BEING PUT TO THE AGENT AS A REFUSAL. Three of the nineteen \
+                 measured silences were a checker sitting at a permission dialog — telling an \
+                 agent its work was rejected because nobody could read the checker sends it to \
+                 re-do work no one disputed. Got:\n{said}",
+            );
+        }
     }
 
     /// ⛔⛔⛔⛔⛔ **THE DOOR AN OUTAGE CAME IN AT DECIDES WHETHER ANYTHING MAY BE TYPED ON THE WAY

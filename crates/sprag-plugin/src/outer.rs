@@ -99,6 +99,7 @@ use crate::act::Does;
 use crate::completion::{Completion, DoneWhen, Over, Quiet, Turn};
 use crate::consent::Unanswered;
 use crate::deliver::{Delivered, Delivery, SubmittedWhen, deliver};
+use crate::judge::Silence;
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, park_until, poll_until};
 use crate::screen::{Malformed, Refused, ScreenRule, ScreenRules, Screened};
@@ -406,6 +407,31 @@ const MILESTONE_CHECK: &str = "milestone_check";
 /// payload and the document reads it back out, and a key retyped at either end is a channel that
 /// can go quiet without anything saying so.
 const WORKING_RULES: &str = "working_rules";
+/// The brief keys carrying [`UnverifiedRules`] — register item 741, spelled once here for
+/// [`WORKING_RULES`]'s reason.
+const UNANSWERED_RULE: &str = "unanswered_rule";
+/// The other half of the pair. See [`UNANSWERED_RULE`].
+const UNREADABLE_RULE: &str = "unreadable_rule";
+
+/// ⛔⛔⛔⛔⛔ **WHAT A REPOSITORY DOES ABOUT ITS CHECKER'S SILENCE, IN TWO CLAUSES** — register item
+/// 741, and [`Brief::unverified_rules`]'s value.
+///
+/// # ⚠⚠⚠ Why the pair is a type rather than two options
+///
+/// The two remedies are opposite — *ask again* against *fix the prompt* — and which one a run needs
+/// is [`crate::judge::Silence`]'s answer, which the document reads on `_event.data.silence`. A
+/// caller able to author one and not the other would leave the loop saying nothing about half the
+/// silences it meets, and the measurement says which half that would be: across this repository's
+/// whole run log, 15 of 19 silences were `NotAVerdict` and 4 were `Unfinished`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnverifiedRules {
+    /// What a run owes when the checker produced **no verdict at all** — see
+    /// [`crate::judge::Silence::Unanswered`], where asking again is a remedy.
+    pub unanswered: String,
+    /// And when it **answered something that is not a verdict** — see
+    /// [`crate::judge::Silence::Unreadable`], where asking again is wasted work.
+    pub unreadable: String,
+}
 
 /// **HOW MANY TIMES IN A ROW THIS DOCUMENT HAS BEEN REFUSED**, as the document itself counts it —
 /// read, never written, by the driver.
@@ -688,6 +714,21 @@ pub struct Brief {
     /// no agent works without the rules — and retyping them at an agent whose session already holds
     /// them is a bill a run that ends on its work rather than on a count would pay every turn.
     pub working_rules: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHAT THIS REPOSITORY DOES ABOUT A CHECKER THAT SAID NOTHING READABLE** — register
+    /// item 741, and a PAIR because a silence is two facts wearing one word.
+    ///
+    /// # ⚠⚠⚠⚠ Why one field and not two
+    ///
+    /// The two clauses are one decision — *what a silence is worth here* — and a caller that could
+    /// send half of it would author the remedy for a checker that never answered while leaving the
+    /// one for a checker that answers prose to whatever the template ships. That is the shape
+    /// [`crate::Deliveries`] exists to prevent one surface over, and it is why the wire splits the
+    /// pair into two flat keys at the last moment rather than carrying two independent options.
+    ///
+    /// ⚠⚠ [`None`] leaves the template's empty strings standing, which is *this run says nothing
+    /// about its checker* — the shipped behaviour and the honest one for a document that has never
+    /// been asked. It is not *there is nothing to say*.
+    pub unverified_rules: Option<UnverifiedRules>,
     /// **WHO CERTIFIES THIS RUN'S MILESTONES**, as an argv — or [`None`] to leave the template's
     /// empty slot standing, which means the working agent's own word.
     ///
@@ -1533,16 +1574,36 @@ pub enum ReflectReason {
     /// many. Reflection is also how this document REPLACES A SESSION — so the situation where a run
     /// most needs a fresh one stops being the situation where it cannot get one.
     Refused,
+    /// ⛔⛔⛔⛔⛔ **A CHECK HAS SAID NOTHING READABLE TOO MANY TIMES IN A ROW** — `silences` reached
+    /// `reflect_after_refusals`, so the loop stops buying turns on a checker that is not answering
+    /// and takes a fresh session. Register item 741.
+    ///
+    /// # ⚠⚠⚠⚠ It is [`Refused`](Self::Refused)'s shape and NOT its meaning
+    ///
+    /// Both bound a streak of *the check did not agree*, and there the likeness ends. A refusal is
+    /// the check WORKING: somebody looked and said no, and the remedy is the WORK. A silence is the
+    /// check not answering, and the remedy is the CHECKER — measured, three of this repository's
+    /// nineteen silences were a checker sitting at a permission dialog. Sharing one counter would
+    /// have made a run refused twice and silenced twice look like it had reached a ceiling neither
+    /// fact had approached.
+    ///
+    /// ⚠⚠⚠ **AND THE CEILING IS WHAT KEEPS THE NEW DOOR FROM BEING A TRAP.** `unverified` hands
+    /// the run back to `working`, so a checker that answers nothing every single time — which is
+    /// exactly what a permission dialog does — would take that door for ever. Register item 449
+    /// measured that shape costing nine refusals and a human keystroke; this is the same escape,
+    /// built at the same time as the door rather than four rounds later.
+    Unverified,
 }
 
 impl ReflectReason {
     /// Every arm, so the document's words and the readers below are one list.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Milestone,
         Self::Instruction,
         Self::Budget,
         Self::Capacity,
         Self::Refused,
+        Self::Unverified,
     ];
 
     /// **THE WORD THE DOCUMENT ASSIGNS** for this reason.
@@ -1557,6 +1618,7 @@ impl ReflectReason {
             Self::Budget => "budget",
             Self::Capacity => "capacity",
             Self::Refused => "refused",
+            Self::Unverified => "unverified",
         }
     }
 
@@ -1595,6 +1657,12 @@ impl ReflectReason {
                 "an independent check has refused this claim `reflect_after_refusals` times in a \
                  row, so the loop has stopped buying turns and is taking a fresh look — read what \
                  the check SAID on those refusals, because the run is not learning from them"
+            }
+            Self::Unverified => {
+                "an independent check has said nothing this run could read \
+                 `reflect_after_refusals` times in a row, so the loop has stopped buying turns on \
+                 a checker that is not answering and is taking a fresh session — the remedy is the \
+                 CHECKER and not the work, and the run's own line says which silence each one was"
             }
         }
     }
@@ -2575,6 +2643,16 @@ pub enum NotScreenable {
     /// driver cannot read as standing instructions, which is the same class of answer
     /// `Authored::read`'s [`None`] gives about the prompts.
     Unreadable,
+    /// ⛔⛔⛔ **A DECISION THE DOCUMENT AUTHORED HALF OF**, carrying the id it left empty — register
+    /// item 741.
+    ///
+    /// ⚠⚠ It is NOT [`Unreadable`](Self::Unreadable), and the difference is what a reader does:
+    /// that arm means *this clause is not the shape I can read*, and this one means *the shape is
+    /// right and one half of it is missing*. Both are refusals, and only this one can name the line
+    /// to go and add. Some clauses are pairs because a run meets exactly ONE of the two — see
+    /// [`UnverifiedRules`] — so a half-filled pair is a document that answers some runs and is
+    /// silent about the rest, which is the state this refusal makes unrepresentable.
+    Missing(&'static str),
 }
 
 /// **THE THINGS THAT ARE TRUE OF ONE PANE**, held together so a replacement cannot carry one of
@@ -4566,6 +4644,25 @@ impl OuterLoop {
             // template ships `''`, so a kind that holds its runs to nothing has its own empty
             // string echoed back rather than nil assigned over what an author wrote.
             WORKING_RULES: brief.working_rules.clone().unwrap_or_default(),
+            // ⛔⛔⛔⛔ AND WHAT THIS REPOSITORY DOES ABOUT A SILENT CHECKER — register item 741,
+            // unconditional on the line above's terms: the template ships `''` for both, so a kind
+            // that says nothing about its checker has its own empty strings echoed back rather
+            // than nil assigned over what an author wrote.
+            //
+            // ⚠⚠ THE PAIR IS SPLIT INTO TWO FLAT KEYS HERE AND NOWHERE EARLIER. It is ONE decision
+            // in the brief, so no caller can author half of it; it is two keys on the wire because
+            // the document assigns two `<data>` ids and a nested read would be this datamodel's
+            // one place where a missing key is a Lua nil rather than an echoed empty string.
+            UNANSWERED_RULE: brief
+                .unverified_rules
+                .as_ref()
+                .map(|rules| rules.unanswered.clone())
+                .unwrap_or_default(),
+            UNREADABLE_RULE: brief
+                .unverified_rules
+                .as_ref()
+                .map(|rules| rules.unreadable.clone())
+                .unwrap_or_default(),
             // ⚠⚠⚠ AND WHO CERTIFIES A MILESTONE — unconditional on the same terms: the template
             // ships `''` (nobody checks), and a run whose kind names a checker must arrive holding
             // it. Register item 428's second half: until this line the slot could be authored by
@@ -6431,7 +6528,7 @@ impl OuterLoop {
                 // ⚠⚠⚠⚠⚠ AND THE THIRD FACT: **DID ANYBODY WHO DID NOT DO THE WORK AGREE** — register
                 // item 428. Asked only where the agent has claimed the milestone, and answered by a
                 // process in a pane of its own. See [`Self::checked`] and [`Checked`].
-                let (checked, explained, shown) = self.checked(panes, run, heard);
+                let (checked, explained, shown, silence) = self.checked(panes, run, heard);
                 // ⚠⚠ KEPT BESIDE THE READING IT ANSWERS ABOUT, and for the same reason: it belongs
                 // to THIS judgement and is gone the instant the payload is built. It travels on
                 // [`Pumped::Moved`]'s `checked` — BESIDE the edge's own cause and never instead of
@@ -6482,6 +6579,28 @@ impl OuterLoop {
                         // and this arm is what keeps that promise on the wire.
                         "explained": match self.explained.as_deref() {
                             Some(line) => serde_json::Value::from(line),
+                            None => serde_json::Value::Bool(false),
+                        },
+                        // ⛔⛔⛔⛔⛔ AND WHICH OF THE TWO SILENCES IT WAS — register item 741, and
+                        // the one key on this payload whose whole job is to be ROUTED ON.
+                        //
+                        // `checked == 'silent'` says a check said nothing readable; it cannot say
+                        // whether asking again would help. Those are opposite remedies — a checker
+                        // that never answered wants another ask, one that answered prose wants its
+                        // prompt fixed — and until this key existed the document had one door for
+                        // both AND for a check that agreed. Measured across this repository's whole
+                        // run log: 19 silences, and `Disputing` reached by none of them.
+                        //
+                        // ⚠⚠ THIS IS NOT `explained`'S BAN BEING BROKEN. That key carries the
+                        // checker's own PROSE and must never be matched on, because a sentence a
+                        // model wrote is not a decision. This is a CLOSED word this driver derives
+                        // from `Unheard`'s arm — the same kind of thing `checked` itself is, one
+                        // level finer.
+                        //
+                        // ⚠ A WORD OR `false`, NEVER `''`, for `checked`'s measured reason: this
+                        // datamodel is Lua, where the empty string is TRUE.
+                        "silence": match silence {
+                            Some(which) => serde_json::Value::from(which.wire_str()),
                             None => serde_json::Value::Bool(false),
                         },
                         // ⚠⚠⚠ AND WHETHER A `false` ABOVE IS TRUSTWORTHY. `done` is a yes-or-no and
@@ -8881,9 +9000,9 @@ impl OuterLoop {
         panes: &dyn PaneAccess,
         run: &RunContext,
         said: Heard,
-    ) -> (Checked, Option<String>, Option<Evidence>) {
+    ) -> (Checked, Option<String>, Option<Evidence>, Option<Silence>) {
         if !said.said() {
-            return (Checked::NotAsked, None, None);
+            return (Checked::NotAsked, None, None, None);
         }
         // ⛔⛔⛔⛔⛔ **TWO WORLDS USED TO SHARE `unwrap_or_default()` HERE, AND ONLY ONE OF THEM IS A
         // DECISION** — register item 674's remaining half.
@@ -8915,13 +9034,18 @@ impl OuterLoop {
                         .to_owned(),
                 ),
                 None,
+                // ⚠ NOT A SILENCE — register item 741. This arm is the loop's own INSTRUMENT
+                // failing, and `Checked::NotAsked` is what it publishes; a silence is a checker
+                // that was actually put to the claim. Classing it would send a reader after a
+                // checker nobody asked.
+                None,
             );
         };
         let argv: Vec<String> = declared.split_whitespace().map(ToOwned::to_owned).collect();
         if argv.is_empty() {
             // ⚠ THE AUTHOR'S DECISION, and the only world this arm may now claim: the datamodel
             // answered, and what it answered was *no checker*. Silent on purpose.
-            return (Checked::NotAsked, None, None);
+            return (Checked::NotAsked, None, None, None);
         }
         // ⚠⚠⚠ READ BESIDE THE QUESTION AND NOT INSIDE IT, so what is REPORTED is what was SHOWN.
         // `check_question` composes the text out of this same reader; asking it twice would be two
@@ -8958,7 +9082,7 @@ impl OuterLoop {
             // an AGREEMENT is worth needs them for the same reason register item 428 needs the
             // verdict at all — and publishing them on one arm would tell the two apart by the
             // absence of a sentence, which is the reading this crate has burned wire numbers over.
-            Ok(judged) if judged.holds => (Checked::Passed, judged.explained, Some(shown)),
+            Ok(judged) if judged.holds => (Checked::Passed, judged.explained, Some(shown), None),
             // ⚠⚠⚠⚠⚠ **AND THE REFUSAL IS TALLIED IN ITS OWN ARM** — register item 499, on the rule
             // the silent arm below states for itself: the tally moves with the word, in the same
             // arm, so *how many were refused* and *what the walk said about them* cannot disagree.
@@ -8979,7 +9103,7 @@ impl OuterLoop {
                 let before = self.authored_number(REFUSALS).unwrap_or(0);
                 let deep = u32::try_from(before).unwrap_or(u32::MAX).saturating_add(1);
                 self.checks.refused_in_a_row = self.checks.refused_in_a_row.max(deep);
-                (Checked::Failed, judged.explained, Some(shown))
+                (Checked::Failed, judged.explained, Some(shown), None)
             }
             // ⚠⚠⚠ A CHECK THAT SAID NOTHING IS NOT A CHECK THAT AGREED. See [`Checked::Silent`],
             // and this crate's standing direction: silence is never a yes.
@@ -9007,7 +9131,21 @@ impl OuterLoop {
                 // next, and the remedy still standing is the most recent failure's. See
                 // `Checks::why_silent`.
                 self.checks.why_silent = Some(why.clone());
-                (Checked::Silent, Some(why), Some(shown))
+                // ⛔⛔⛔⛔⛔ **AND WHICH OF THE TWO SILENCES IT IS, TAKEN FROM THE ARM RATHER THAN
+                // FROM THE PROSE** — register item 741. `Unheard` has divided *no verdict was ever
+                // produced* from *it answered and that was not a verdict* since register item 593;
+                // what was missing is that nothing carried the division out of this function, so
+                // the document disposed of both by the same edge a run whose check AGREED takes.
+                //
+                // ⚠ It is derived here, in the arm that holds the value, and never re-derived from
+                // `why` — a second reader over somebody's prose is the drift this file names
+                // everywhere it composes rather than repeats.
+                (
+                    Checked::Silent,
+                    Some(why),
+                    Some(shown),
+                    Some(unheard.silence()),
+                )
             }
         }
     }
@@ -13434,6 +13572,7 @@ mod tests {
             // clause crosses on the same route and has its own gate rather than riding this one.
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -13570,6 +13709,7 @@ mod tests {
             // gate a test of its own literal.
             reference: authored_reference.clone(),
             working_rules: Some(authored_rules.clone()),
+            unverified_rules: None,
             closing_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
@@ -13722,6 +13862,7 @@ mod tests {
                 reference: "r".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 // ⚠ NO CHECKER AUTHORED — the world that must stay silent, and the control.
@@ -13743,7 +13884,7 @@ mod tests {
         let run = RunContext::uncancellable();
 
         // ── THE PREMISE: THE DATAMODEL ANSWERS, AND WHAT IT ANSWERS IS *NO CHECKER* ───────────
-        let (verdict, why, _) = loops.checked(&access, &run, Heard::Said(Evidence::Statement));
+        let (verdict, why, _, _) = loops.checked(&access, &run, Heard::Said(Evidence::Statement));
         assert_eq!(
             (verdict, why.as_deref()),
             (Checked::NotAsked, None),
@@ -13759,7 +13900,7 @@ mod tests {
 
         // ── AND NOW THE DATAMODEL STOPS ANSWERING ABOUT THAT ONE VARIABLE ────────────────────
         engine.start_lying();
-        let (verdict, why, _) = loops.checked(&access, &run, Heard::Said(Evidence::Statement));
+        let (verdict, why, _, _) = loops.checked(&access, &run, Heard::Said(Evidence::Statement));
         assert_eq!(
             loops.checks.unasked, 1,
             "⛔⛔⛔⛔⛔ REGISTER ITEM 674: a milestone claim the loop could not put to a checker \
@@ -13803,6 +13944,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -13897,6 +14039,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -13975,6 +14118,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -14060,6 +14204,7 @@ mod tests {
                 reference: "r".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -14211,6 +14356,7 @@ mod tests {
             reference: "none".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -14404,6 +14550,7 @@ mod tests {
                 reference: "register item 300".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -15632,6 +15779,7 @@ mod tests {
                 reference: "r".to_string(),
                 closing_rules: Some(" AND THEN SWEEP.".to_string()),
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: Some("/bin/echo YES".to_string()),
@@ -15901,6 +16049,7 @@ mod tests {
             reference: CONSULT.to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: Some(check.to_string()),
@@ -15969,7 +16118,7 @@ mod tests {
         );
 
         // ── (a)+(b) THE CHECK ITSELF: IT STOOD THERE, AND IT READ ───────────────────────────────
-        let (verdict, explained, _shown) = loops.checked(
+        let (verdict, explained, _shown, _silence) = loops.checked(
             &access,
             &run,
             Heard::Said(Evidence::Pane(Unstated::Unsupervised)),
@@ -16000,7 +16149,7 @@ mod tests {
             Briefed::Took,
             "the parts must be held",
         );
-        let (control, _why, _shown) = other_loops.checked(
+        let (control, _why, _shown, _silence) = other_loops.checked(
             &other_access,
             &run,
             Heard::Said(Evidence::Pane(Unstated::Unsupervised)),
@@ -16273,6 +16422,7 @@ mod tests {
                 reference: String::new(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: Some(format!("/bin/sh {}", script.display())),
@@ -16293,7 +16443,7 @@ mod tests {
 
         // ── THE PRODUCT'S OWN CHECK, not a re-enactment of it ─────────────────────────────────
         let run = RunContext::uncancellable();
-        let (verdict, why, _shown) =
+        let (verdict, why, _shown, _silence) =
             loops.checked(&isolating, &run, Heard::Said(Evidence::Statement));
 
         // ── ⚠⚠ THE PREMISE: the check really ran ──────────────────────────────────────────────
@@ -16988,6 +17138,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     working_rules: None,
+                    unverified_rules: None,
                     context_ceiling: Some(ROOMY),
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -17197,6 +17348,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     working_rules: None,
+                    unverified_rules: None,
                     // ⚠⚠⚠⚠⚠ AUTHORED THROUGH THE BRIEF — register item 492, and this line used to be
                     // a `set_variable` straight into the datamodel. That was a road NO CALLER HAD:
                     // the number could not be reached from a brief, a wire key or a kind document,
@@ -17382,6 +17534,7 @@ mod tests {
                 reference: "what this run was handed at the start".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -17517,6 +17670,7 @@ mod tests {
                 reference: "this gate".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 // ⚠⚠⚠⚠⚠ AUTHORED THROUGH THE BRIEF — item 492, and see the same line in
                 // `a_session_past_its_ceiling_reflects_without_being_asked` for what it
                 // replaced: a `set_variable` into the datamodel, which is a road no caller had.
@@ -17619,6 +17773,7 @@ mod tests {
                 reference: "this gate".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -17850,6 +18005,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     working_rules: None,
+                    unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -18245,6 +18401,7 @@ mod tests {
                 reference: "this gate".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: Some(ceiling),
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -18504,6 +18661,7 @@ mod tests {
                 reference: "this gate".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -18759,6 +18917,7 @@ mod tests {
                 reference: "this gate".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -18997,6 +19156,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     working_rules: None,
+                    unverified_rules: None,
                     context_ceiling: None,
                     // ⚠⚠⚠ THE NUMBER UNDER TEST, on the road a kind or a caller really uses —
                     // register item 494. The `set_variable` that used to stand here reached the
@@ -19207,6 +19367,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     working_rules: None,
+                    unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     // ⚠⚠⚠ THROUGH THE BRIEF, WHICH IS THE CHANNEL A KIND'S CHECK ACTUALLY TRAVELS.
@@ -19403,7 +19564,7 @@ mod tests {
                 // ⚠⚠⚠ AND IT NAMES NO READER EITHER — register item 448. A check that was never
                 // asked was shown nothing, so an `Evidence` here would describe a reading that did
                 // not happen, which is exactly what that item exists to stop.
-                (Checked::NotAsked, None, None),
+                (Checked::NotAsked, None, None, None),
                 "⚠⚠⚠ AND NOTHING IS ASKED WHERE NOTHING WAS CLAIMED: a check answers *was that \
                  claim true*, so it has no meaning before there is a claim — and a process spawned \
                  on every ordinary turn would price every turn at the cost of one nobody made",
@@ -19521,6 +19682,7 @@ mod tests {
                 reference: "this gate".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: check.map(ToOwned::to_owned),
@@ -20001,6 +20163,7 @@ mod tests {
                     reference: "this gate".to_string(),
                     closing_rules: None,
                     working_rules: None,
+                    unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -20194,6 +20357,7 @@ mod tests {
             reference: "this gate".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -20507,6 +20671,7 @@ mod tests {
             reference: "this gate".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -20685,6 +20850,7 @@ mod tests {
             reference: "this gate".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -20875,6 +21041,7 @@ mod tests {
             reference: "this gate".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -21111,6 +21278,7 @@ mod tests {
                 reference: "this gate".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: Some(NEVER),
                 milestone_check: Some(DENIES.to_string()),
@@ -21407,6 +21575,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -21516,6 +21685,7 @@ mod tests {
                 reference: "r".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -21642,6 +21812,7 @@ mod tests {
             reference: "r".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,
@@ -22181,6 +22352,7 @@ mod tests {
                         reference: "r".to_string(),
                         closing_rules: None,
                         working_rules: None,
+                        unverified_rules: None,
                         context_ceiling: None,
                         reflect_after_refusals: None,
                         milestone_check: None,
@@ -22574,6 +22746,7 @@ mod tests {
                     reference: "register item 9".to_string(),
                     closing_rules: None,
                     working_rules: None,
+                    unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -22750,6 +22923,7 @@ mod tests {
                 reference: "register item 452".to_string(),
                 closing_rules: None,
                 working_rules: None,
+                unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 milestone_check: None,
@@ -22931,6 +23105,7 @@ mod tests {
                     reference: "register item 458".to_string(),
                     closing_rules: None,
                     working_rules: None,
+                    unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -23162,6 +23337,7 @@ mod tests {
                     reference: "register item 715".to_string(),
                     closing_rules: None,
                     working_rules: None,
+                    unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     milestone_check: None,
@@ -23487,6 +23663,7 @@ mod tests {
             reference: "register item 543".to_string(),
             closing_rules: None,
             working_rules: None,
+            unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
             milestone_check: None,

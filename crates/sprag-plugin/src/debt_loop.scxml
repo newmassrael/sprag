@@ -490,6 +490,51 @@
 
     <!--
       ══════════════════════════════════════════════════════════════════════════
+      ⛔⛔⛔⛔⛔ WHAT THIS KIND DOES ABOUT ITS OWN CHECKER'S SILENCE — register item
+      741, and the two clauses are opposite remedies rather than one sentence
+      said twice.
+
+      This loop's checker is `claude -p` (`milestone_check` below), and what that
+      program does when it cannot answer was MEASURED across this repository's
+      entire run log — nineteen silences in twelve runs, six of those runs with
+      nothing verified at all, and two runs that BANKED a milestone nothing had
+      checked. By the arm the driver classed them under:
+
+        Unfinished    4   the wait ended without an answer (`NotYet` ×3, `RunEnded`)
+        NotAVerdict  15   it answered, and the first word was not YES or NO
+
+      and by what those fifteen first words were: `Permission` ×3 — the checker
+      sitting at a tool-permission dialog — `You've` ×2 — a usage-limit notice —
+      `Trim` — a hook refusing it — and nine that are genuinely a verdict in the
+      wrong shape (`Verdict`, `Gate`, `Counterfactual`, `Re-measured`, `The` ×2,
+      `Two`, `Still`, and one empty reply).
+
+      ⚠⚠⚠⚠ SO THE TWO CLAUSES ARE WRITTEN AGAINST THAT DISTRIBUTION AND NOT
+      AGAINST A GUESS. `unanswered` is told to look at the ASKING, because that
+      is where its four cases live; `unreadable` is told the first word is the
+      whole diagnosis and to make the next reply start with the verdict, because
+      that is what nine of its fifteen actually need.
+
+      ⚠⚠ AND NEITHER SAYS *the milestone is wrong*. A silence is not a refusal —
+      `judging`'s own block spells that out — and telling an agent its work was
+      rejected because a permission dialog ate the checker would send it to
+      re-do work nobody disputed. Both clauses ask about the CHECKER.
+
+      ⚠ IN THE OWNER'S OWN LANGUAGE, `screen_rules`' reason exactly: it is said
+      to somebody's agent, and which somebody is what a template cannot know.
+      ══════════════════════════════════════════════════════════════════════════
+    -->
+    <data id="unanswered_rule"
+          expr="'검사기가 판정을 «내지 못했다» — 물어본 쪽을 봐라: argv, 시작 실패, 시간 초과, 페인이 답을 셈하지 못함 중 하나다. 이 종류는 «다시 물으면» 답이 나올 수 있다. 마일스톤 주장은 그대로 두되, 다음 주장 전에 검사기가 실제로 답하는지 확인해라.'"/>
+    <!--
+      AND THE OTHER HALF. See the block above for the measurement both are
+      written from.
+    -->
+    <data id="unreadable_rule"
+          expr="'검사기가 답은 했는데 그 «첫 낱말»이 판정이 아니었다 — 다시 물어도 같은 모양이 온다. 고칠 것은 검사기의 프롬프트나 프로그램이다: 답의 첫 낱말이 YES 또는 NO 로 시작하게 만들어라. 마일스톤 주장 자체가 거절된 것은 아니다.'"/>
+
+    <!--
+      ══════════════════════════════════════════════════════════════════════════
       ⚠⚠⚠⚠⚠ WHAT THE THREE CLAUSES BELOW ARE, AND WHY THEY ARRIVED LATE — register
       item 738, layers 2 and 3.
 

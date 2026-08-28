@@ -175,6 +175,10 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     ("closing", 0),
     ("converged", 0),
     ("disputing", 0),
+    // ⛔ REGISTER ITEM 741. `unverified` is `disputing`'s neighbour and carries the same ZERO: it
+    // decides its own prompt in the document — an `<if>` over the silence's class picking a clause
+    // the KIND authored — so the driver holds no arm for it and must not grow one.
+    ("unverified", 0),
     // ⚠⚠⚠⚠⚠ **THE TWO SENTINELS WENT ON 2026-08-26 R100, AND A RECORDED DECISION HAD TO BE
     // REVERSED TO DO IT.** `NotStarted::Unbuilt(AiLoopState)` carried the state a bad brief would
     // reach, and its own note said why: *"the variant stays a STATE rather than becoming a sentence
@@ -314,7 +318,7 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
 /// ⚠ [`announced_sends`](sprag_gate::loop_shape::announced_sends) is now pinned at ZERO, which is
 /// what keeps this fall from being repeatable: a state that owes an effect must declare it as an
 /// act the host serves, where a document asking for something nobody performs is REFUSED.
-const DECLARED_ACTS: usize = 14;
+const DECLARED_ACTS: usize = 15;
 
 /// How many acts `ai_loop.scxml` asks THIS HOST to perform — one per `<send type="x-sprag-host">`.
 ///
@@ -436,7 +440,7 @@ const DECLARED_ACTS: usize = 14;
 ///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 41;
+const SERVED_ACTS: usize = 42;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

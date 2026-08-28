@@ -357,7 +357,84 @@ pub enum Unheard {
     NotAVerdict(String),
 }
 
+/// ⛔⛔⛔⛔⛔ **WHICH OF THE TWO SILENCES THIS IS** — register item 741, and the word a document
+/// routes a silence's DISPOSITION on.
+///
+/// # ⚠⚠⚠⚠⚠ Measured: the loop's own sentence and its behaviour disagreed
+///
+/// `crate::outer::Checked::Silent` says *"Silence is not agreement"*, and across this repository's
+/// whole run log a silent check left `judging` by **exactly the doors an agreeing one did** —
+/// `Reflecting` 15, `Closing` 2, `Stopping` 2, against an agreement's `Reflecting` 96, `Closing`
+/// 11, `Stopping` 1 — while `Disputing`, the one door that buys another turn, was reached by a
+/// silence **zero** times in nineteen. Two runs banked a milestone nothing had verified.
+///
+/// # ⚠⚠⚠ Why the split is THIS one, and why it needed no new mechanism
+///
+/// [`Unheard`] already carries six arms, and they divide cleanly along the line a remedy needs:
+/// five of them mean **no verdict was ever produced** — nothing was asked, no pane, it would not
+/// start, the wait ended without an answer, the pane could not account for what it handed back —
+/// and one means **it answered, and what it said is not a verdict.** Asking again is the remedy for
+/// the first and is useless for the second, which is why one word could not carry both.
+///
+/// **Measured over the same nineteen**: [`Unheard::NotAVerdict`] 15, [`Unheard::Unfinished`] 4
+/// (`NotYet` ×3, `RunEnded` ×1). The other four arms did not occur.
+///
+/// ⚠⚠ **WHAT THIS DOES NOT SPLIT, STATED RATHER THAN HIDDEN.** Of those 15 unreadable answers, six
+/// first words — `Permission` ×3, `You've` ×2, `Trim` — say the checker was stopped by a dialog, a
+/// usage limit or a hook **before it could judge at all**, which is [`Unanswered`](Self::Unanswered)
+/// in every sense but the one this type can see. [`Unheard::NotAVerdict`] keeps only the FIRST WORD
+/// of the reply, so nothing downstream can tell that from a verdict in the wrong shape. Registered
+/// as its own item rather than guessed at here: a needle list over somebody's prose is exactly the
+/// widening `debt_loop.scxml`'s own `service_needles` comment refuses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Silence {
+    /// **NO VERDICT WAS EVER PRODUCED** — the checker was not asked, could not be started, did not
+    /// finish, or its pane could not account for the answer. Nothing is known about the milestone,
+    /// and **asking again is a remedy**: the fault is in the asking, not in the answer.
+    Unanswered,
+    /// **IT ANSWERED, AND WHAT IT SAID IS NOT A VERDICT.** Asking again gets the same shape, so the
+    /// remedy is the checker's PROMPT or its program — never a retry.
+    Unreadable,
+}
+
+impl Silence {
+    /// Every arm, so the runs that produce them and the document that disposes of them are one
+    /// list — [`crate::outer::Checked::ALL`]'s rule, one level down.
+    pub const ALL: [Self; 2] = [Self::Unanswered, Self::Unreadable];
+
+    /// **THE WORD THIS DRIVER PUBLISHES** as `_event.data.silence`.
+    ///
+    /// ⚠ A word and never an empty string, for `Checked::wire_str`'s measured reason: this
+    /// datamodel is Lua, where `''` is TRUE.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Unanswered => "unanswered",
+            Self::Unreadable => "unreadable",
+        }
+    }
+}
+
 impl Unheard {
+    /// ⛔⛔⛔⛔ **WHICH OF THE TWO SILENCES THIS ONE IS** — register item 741.
+    ///
+    /// ⚠⚠ The `match` is EXHAUSTIVE and has no catch-all on purpose: a seventh way of hearing
+    /// nothing does not slip into whichever class happens to be listed last, it fails to compile
+    /// until somebody says which remedy it wants. That is this workspace's rule that an
+    /// unclassified thing is a RED rather than a pass, taken at the one place the classification
+    /// happens.
+    #[must_use]
+    pub const fn silence(&self) -> Silence {
+        match self {
+            Self::Unasked
+            | Self::NoPane
+            | Self::Unstarted(_)
+            | Self::Unfinished(_)
+            | Self::Unaccountable => Silence::Unanswered,
+            Self::NotAVerdict(_) => Silence::Unreadable,
+        }
+    }
+
     /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
     /// name, exactly as `crate::outer::Checked::describe` is.
     #[must_use]
@@ -875,6 +952,71 @@ mod tests {
                  rather than a checker that went wrong",
             );
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE SIX FALL INTO EXACTLY TWO REMEDIES, WHICH IS WHAT A DOCUMENT DISPOSES
+    /// OF** — register item 741.
+    ///
+    /// # ⚠⚠⚠⚠ Why the classification needs a gate of its own
+    ///
+    /// The document's gate feeds `silence` in on the event, the way the driver does, so it measures
+    /// the DISPOSITION and cannot see this function at all: collapse every arm to one class and
+    /// that gate stays green while every run gets the wrong remedy. That is this workspace's rule
+    /// that a value handed to a helper measures the helper — so the classification is walked here,
+    /// over [`Unheard`]'s own arms, with both classes standing up.
+    ///
+    /// ⚠⚠ **BOTH SIDES ARE ASSERTED, NOT JUST THE SPLIT.** A `match` that answered `Unanswered` to
+    /// everything and one that answered `Unreadable` to everything are both wrong, and only naming
+    /// which arm belongs where catches either. Measured on this repository's whole run log:
+    /// `NotAVerdict` 15, `Unfinished` 4 — the two classes are the population, not a hypothesis.
+    #[test]
+    fn every_way_of_hearing_nothing_falls_into_one_of_two_remedies() {
+        // ⚠ THE WHOLE VOCABULARY, spelled out: an arm added to `Unheard` fails to compile against
+        // this list until somebody says which remedy it wants, which is the same refusal
+        // `Unheard::silence`'s exhaustive `match` makes one layer down.
+        let every: [(Unheard, Silence); 6] = [
+            (Unheard::Unasked, Silence::Unanswered),
+            (Unheard::NoPane, Silence::Unanswered),
+            (
+                Unheard::Unstarted("no such program".to_owned()),
+                Silence::Unanswered,
+            ),
+            (
+                Unheard::Unfinished(crate::completion::Over::NotYet),
+                Silence::Unanswered,
+            ),
+            (Unheard::Unaccountable, Silence::Unanswered),
+            (
+                Unheard::NotAVerdict("Permission".to_owned()),
+                Silence::Unreadable,
+            ),
+        ];
+        for (heard, want) in &every {
+            assert_eq!(
+                heard.silence(),
+                *want,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 741: {heard:?} was classed as the wrong kind of silence, so \
+                 the document will put the wrong remedy to the agent — *ask the checker again* at \
+                 a checker that answered prose, or *fix the prompt* at one that never ran. Those \
+                 are not degrees of the same advice, they are opposite work",
+            );
+        }
+        // ── AND BOTH CLASSES ARE ACTUALLY PRODUCED, or the split is a constant ──────────────
+        for class in Silence::ALL {
+            assert!(
+                every.iter().any(|(_, is)| *is == class),
+                "⚠⚠⚠ THE CONTROL: {class:?} must be reachable from some arm, or this gate is \
+                 asserting a function that answers one word and the document's second clause is \
+                 dead prose nobody can reach",
+            );
+        }
+        assert_eq!(
+            Silence::ALL.map(Silence::wire_str),
+            ["unanswered", "unreadable"],
+            "⚠⚠ and the words are the ones `ai_loop.scxml` compares against — the document spells \
+             `_event.data.silence == 'unanswered'`, and a renamed word here would take the else \
+             branch for every silence in silence",
+        );
     }
 
     /// ⛔⛔⛔ **A CHECK THAT SAID NOTHING SAYS *WHICH* NOTHING, AND THE SIX ARE TOLD APART** —
