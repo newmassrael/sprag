@@ -429,6 +429,16 @@ pub const RUN_AT_KEY: &str = "at";
 /// too and is a separate authority on purpose (it publishes what a caller may say); what this ties
 /// together is the two places in THIS file that read it.
 pub const RUN_PANE_KEY: &str = "pane";
+/// **WHERE A RELAY READS FROM** — the `pipe` form's own spelling of a pane, and the reason
+/// [`RUN_PANE_KEY`] is not the only one.
+///
+/// ⚠⚠ A constant for [`PluginName::pane_keys`]'s sake rather than for the parse's: the arm and the
+/// type's answer about which keys name a pane are two readers of one word, and a rename that
+/// touched only the arm would leave a pane nothing checks — which is register item 682's whole
+/// remaining half.
+pub const PIPE_SRC_KEY: &str = "src";
+/// **WHERE A RELAY WRITES TO** — [`PIPE_SRC_KEY`]'s other half, and a pane in its own right.
+pub const PIPE_DST_KEY: &str = "dst";
 /// The answer key carrying **WHAT BECAME OF A PERSON'S STAND-DOWN ORDER** — absent unless somebody
 /// gave one, the rule [`RUN_CEILING_KEY`] follows.
 ///
@@ -683,6 +693,43 @@ impl PluginName {
             Self::Dialogue => crate::wire::PluginGrammar::DIALOGUE_FORM,
             Self::Answer => crate::wire::PluginGrammar::ANSWER_FORM,
             Self::AiLoop => crate::wire::PluginGrammar::AI_LOOP_FORM,
+        }
+    }
+
+    /// **WHICH OF THIS FORM'S KEYS NAME A PANE THE RUN WILL DRIVE** — empty for a plugin that
+    /// drives none. Register item 682, the half the door had left to a habit.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the type answers this and prose used to
+    ///
+    /// Every arm of `plugin_from_request` that took a pane called `require_pane_in` on it, and
+    /// **nothing anywhere said that it had to**. The rule lived in two places that cannot be
+    /// asked: a comment on [`pane_named`] (*"`pipe` names two, `src` and `dst`"*) and the habit of
+    /// whoever wrote the last arm. A sixth arm that forgot the call would ship a run that dies on
+    /// its first inject — item 682's exact ending — and the gate over the fifth would stay green,
+    /// because a gate over one arm cannot see the arm nobody wrote yet.
+    ///
+    /// So the door reads THIS instead of trusting each arm: `plugin_from_request` walks these keys
+    /// before it matches at all, which makes *an arm that forgets the check* unspellable rather
+    /// than merely measured. The match here is exhaustive, so a variant added to the type cannot
+    /// compile until somebody has answered **does this one drive a pane** — register rule six, at
+    /// the one moment the answer is cheap.
+    ///
+    /// ⚠⚠ **THE KEYS ARE THE ARMS' OWN CONSTANTS**, not literals re-typed here: a rename that
+    /// touched the arm and not this would otherwise leave a pane the door never checks, which is
+    /// the defect this exists to prevent, arriving by another road.
+    ///
+    /// ⚠ [`PluginName::Dialogue`] answers `&[]` and that is a claim rather than an omission — it
+    /// spawns its own panes per turn, so there is no caller-named pane for a pool to hold. The
+    /// residue, stated: a future arm that read a pane through some key this does not name would be
+    /// unchecked again. `every_form_that_names_a_pane_refuses_one_this_pool_does_not_hold` is what
+    /// measures that, by comparing this answer against the keys a well-formed call actually
+    /// carries a pane in.
+    #[must_use]
+    pub const fn pane_keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Orchestrator | Self::Agent | Self::Answer | Self::AiLoop => &[RUN_PANE_KEY],
+            Self::Pipe => &[PIPE_SRC_KEY, PIPE_DST_KEY],
+            Self::Dialogue => &[],
         }
     }
 
@@ -1435,9 +1482,14 @@ pub fn drive_request(
 /// building is what it needs the answer for.
 ///
 /// ⚠⚠ **SO ITS ONLY FAILURE MODE IS DECLINING TO RESUME.** A request whose plugin names its pane
-/// some other way (`pipe` names two, `src` and `dst`) answers [`None`] here, and a boot then leaves
-/// that run the honest `interrupted` it already had. It cannot send a run to the WRONG pool: the
-/// builder re-reads the key itself and `require_pane_in` refuses a pane the pool does not hold.
+/// some other way answers [`None`] here — [`PluginName::pane_keys`] is what says which forms those
+/// are, and `pipe`'s two are the case — and a boot then leaves that run the honest `interrupted`
+/// it already had. It cannot send a run to the WRONG pool: the builder walks those same keys and
+/// `require_pane_in` refuses a pane the pool does not hold.
+///
+/// ⚠ This one reads [`RUN_PANE_KEY`] ALONE and does not consult that answer, which is a scope cut
+/// stated rather than hidden: a boot resumes runs it can place, and a `pipe` names two pools' worth
+/// of pane with no rule yet for which one a resumed relay belongs to.
 ///
 /// ⚠ Tied to the builder at the KEY, which is the drift that could actually happen — a rename that
 /// touched one and not the other would otherwise leave every inherited loop unresumable in silence.
@@ -1474,10 +1526,30 @@ fn plugin_from_request(
     // vocabulary that refuses as malformed.
     let named =
         PluginName::from_wire(require_str(map, "plugin")?).ok_or(InvokeError::TypeMismatch)?;
+    // ⛔⛔⛔⛔⛔ EVERY PANE THIS FORM NAMES, CHECKED BEFORE ITS ARM RUNS AT ALL — register item 682,
+    // and the reason the check is here rather than five times below.
+    //
+    // ⚠⚠⚠ Each arm used to call `require_pane_in` itself, which made the rule a HABIT: nothing said
+    // an arm had to, so a sixth that forgot would ship a run that dies on its first inject — the
+    // ending item 682 is about — while the gate over the fifth stayed green. Reading
+    // `PluginName::pane_keys` instead makes the forgetful arm unspellable: the type's match is
+    // exhaustive, so a new variant answers the question at compile time or does not compile.
+    //
+    // ⚠⚠ TWO PASSES, AND THE ORDER IS THE RULE THE `ai_loop` ARM PAID FOR BELOW: every key is
+    // PARSED before any of them is checked against the world, so a `pipe` carrying a stranger in
+    // `src` and a malformed `dst` still answers about the malformed one. A refusal about the WORLD
+    // that pre-empts a refusal about the REQUEST makes every argument behind it look unread.
+    let named_panes = named
+        .pane_keys()
+        .iter()
+        .map(|key| require_pane_id(map, key))
+        .collect::<Result<Vec<PaneId>, InvokeError>>()?;
+    for pane in named_panes {
+        require_pane_in(world, pane)?;
+    }
     match named {
         PluginName::Orchestrator => {
             let pane = require_pane_id(map, RUN_PANE_KEY)?;
-            require_pane_in(world, pane)?;
             let stimulus = require_str(map, "stimulus")?.to_string();
             let sentinel = opt_str(map, "sentinel")?.map(str::to_string);
             let ready_when = opt_ready_when(map)?;
@@ -1498,10 +1570,8 @@ fn plugin_from_request(
             ))
         }
         PluginName::Pipe => {
-            let src = require_pane_id(map, "src")?;
-            let dst = require_pane_id(map, "dst")?;
-            require_pane_in(world, src)?;
-            require_pane_in(world, dst)?;
+            let src = require_pane_id(map, PIPE_SRC_KEY)?;
+            let dst = require_pane_id(map, PIPE_DST_KEY)?;
             let spec = PipeSpec {
                 src,
                 dst,
@@ -1517,7 +1587,6 @@ fn plugin_from_request(
         }
         PluginName::Agent => {
             let pane = require_pane_id(map, RUN_PANE_KEY)?;
-            require_pane_in(world, pane)?;
             let prompt = require_str(map, "prompt")?.to_string();
             let mut spec = AgentSpec::new(prompt);
             if !declined(map, "eof") {
@@ -1584,7 +1653,6 @@ fn plugin_from_request(
         }
         PluginName::Answer => {
             let pane = require_pane_id(map, RUN_PANE_KEY)?;
-            require_pane_in(world, pane)?;
             // ⚠⚠ REQUIRED, alone among the forms — see
             // [`PluginGrammar::MUST_ANSWER`](crate::wire::PluginGrammar::MUST_ANSWER). A run
             // with nothing to answer would occupy a run slot to do what not calling does.
@@ -1608,7 +1676,6 @@ fn plugin_from_request(
         }
         PluginName::AiLoop => {
             let pane = require_pane_id(map, RUN_PANE_KEY)?;
-            require_pane_in(world, pane)?;
             // ⚠⚠⚠ THE CONSTRUCTION SITE THE OUTER DRIVER'S DOC HAS NAMED SINCE R378. Building a
             // concrete `IScriptEngine` here is what made `sce-rust-lua` a real dependency of
             // this crate; the manifest carries the argument. It is per RUN and not shared: a
@@ -5907,16 +5974,23 @@ mod tests {
     /// the session's CURRENT window, and it reaches the run through `plugin_host` and
     /// `drive_on_a_thread` without ever being re-derived. So the pool and the PANE come from two
     /// different places, and 2026-08-25's diagnosis of item 682 recorded that *nothing checks they
-    /// agree*. **That was wrong, and asking the product is what found it out**: this arm of
-    /// `build_plugin` has called [`require_pane_in`] all along, whose own doc calls it *"the
-    /// fail-fast that turns a mistyped id into a synchronous refusal instead of a run that dies on
-    /// its first step"*.
+    /// agree*. **That was wrong, and asking the product is what found it out**: the builder has
+    /// called [`require_pane_in`] all along, whose own doc calls it *"the fail-fast that turns a
+    /// mistyped id into a synchronous refusal instead of a run that dies on its first step"*.
     ///
     /// What was missing was not the check but a MEASUREMENT of it: no gate anywhere named the
     /// refusal, so a future arm added without the call — the `answer` arm beside this one needs it
     /// for the same reason — would ship a run that dies on its first inject, which is precisely the
     /// ending item 682 is about. **A behaviour nothing measures is a behaviour the next round can
     /// delete without noticing.**
+    ///
+    /// ⚠⚠⚠ **THIS GATE IS ONE FORM'S, AND THAT WAS ITS OWN RESIDUE UNTIL
+    /// [`every_form_that_names_a_pane_refuses_one_this_pool_does_not_hold`] BESIDE IT.** What it
+    /// measures is the loop; what the class needed was every form that names a pane, and the
+    /// question *which forms are those* had no answer a test could ask until
+    /// [`PluginName::pane_keys`] existed. This one stays because it is the LIVE SHAPE — arm 3 below
+    /// stages a pane running in another window, which the class gate does not — and because a
+    /// refusal's own sentence is worth pinning where the item was measured.
     ///
     /// # ⚠⚠⚠ The third arm is the one that is about item 682 rather than about a typo
     ///
@@ -5927,7 +6001,7 @@ mod tests {
     /// anywhere*; only the third says the question is about MEMBERSHIP.
     ///
     /// ⚠⚠ **AND ARM 3 IS NOT INDEPENDENTLY MUTABLE, which is a fact about the boundary rather than
-    /// a gap in this gate.** Deleting the `require_pane_in` call from this arm turns it red — at
+    /// a gap in this gate.** Deleting the builder's [`require_pane_in`] call turns it red — at
     /// arm 2, which the mutation reaches first. The rival implementation arm 3 would catch on its
     /// own (*does this id exist anywhere* rather than *is it mine*) **cannot be written here at
     /// all**: [`PluginWorld`] sees one pool and has no way to ask about another. So arm 3
@@ -6026,6 +6100,176 @@ mod tests {
                 .is_eof(),
             "⚠⚠⚠⚠ THE FIXTURE'S POINT: that pane is RUNNING. If it were dead this arm would be a \
              second copy of arm 2 rather than the live shape item 682 measured",
+        );
+    }
+
+    /// A call the published grammar calls well-formed for `named`, and **the keys this call put a
+    /// pane id in** — the STAGE's own answer to the question [`PluginName::pane_keys`] answers for
+    /// the product.
+    ///
+    /// ⚠⚠ Exhaustive rather than a table, so a plugin added to the type has to be given a call
+    /// here before this file compiles. A population that can go quietly short is the whole defect
+    /// the gate below exists over; this is what stops it going short.
+    ///
+    /// ⚠ `second` is a DIFFERENT pane so `pipe` gets the two ends it is for. Relaying a pane into
+    /// itself would build, but it would also make the two keys indistinguishable in a failure.
+    fn a_call_that_names_its_panes(
+        named: PluginName,
+        pane: PaneId,
+        second: PaneId,
+    ) -> (Value, &'static [&'static str]) {
+        match named {
+            PluginName::Orchestrator => (
+                json!({"plugin": "orchestrator", "pane": pane.0, "stimulus": "say something"}),
+                &["pane"],
+            ),
+            PluginName::Pipe => (
+                json!({"plugin": "pipe", "src": pane.0, "dst": second.0}),
+                &["src", "dst"],
+            ),
+            PluginName::Agent => (
+                json!({"plugin": "agent", "pane": pane.0, "prompt": "say something"}),
+                &["pane"],
+            ),
+            // ⚠ The one form with no pane of its own: it spawns a pair per turn from these argv
+            // templates, which is why its answer below is the empty slice rather than a key.
+            PluginName::Dialogue => (
+                json!({
+                    "plugin": "dialogue",
+                    "endpoint_a": ["/bin/sh", "-c", "cat"],
+                    "endpoint_b": ["/bin/sh", "-c", "cat"],
+                    "seed": "hello",
+                }),
+                &[],
+            ),
+            PluginName::Answer => (
+                json!({
+                    "plugin": "answer",
+                    "pane": pane.0,
+                    "may_answer": [{"asked": "Do you want to", "answer": "1"}],
+                }),
+                &["pane"],
+            ),
+            PluginName::AiLoop => (ai_loop_request(pane, json!({})), &["pane"]),
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY FORM THAT NAMES A PANE REFUSES ONE THIS POOL DOES NOT HOLD** — register item
+    /// 682's remaining door clause, and the one that is about the arm nobody has written yet.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What the gate above this one structurally could not see
+    ///
+    /// `a_loop_is_refused_at_the_door_when_its_pool_does_not_hold_the_pane` measures ONE arm. The
+    /// audit that closed the rest (2026-08-25) found all five pane-taking arms calling the check
+    /// and wrote the residue down in as many words: **a sixth arm that leaves the call out ships
+    /// green.** A gate over one arm cannot see an arm nobody has written, and the reason it was
+    /// never widened is that nothing could answer *which forms name a pane*: [`pane_named`]'s doc
+    /// said it in prose — *"`pipe` names two, `src` and `dst`"* — and prose is not a predicate
+    /// anything runs.
+    ///
+    /// # ⚠⚠⚠ So the population is the TYPE's, and it cannot be short
+    ///
+    /// This walks [`PluginName::ALL`], the closed set the wire publishes, and asks each member for
+    /// a well-formed call through an EXHAUSTIVE match. A variant added to the type stops this file
+    /// compiling until somebody has written the call that drives it: **an unclassified arm is not
+    /// a pass, it is a build error** — register rule six, moved to the cheapest moment there is.
+    ///
+    /// # ⚠⚠ The three clauses, and what each catches alone
+    ///
+    /// * **The declaration agrees with the call.** What [`PluginName::pane_keys`] answers is
+    ///   compared against the keys this fixture actually put a pane id in — two authors, the
+    ///   product's and the stage's. Dropping `dst` from the `pipe` answer silently stops the door
+    ///   checking a pane, and this clause is what says so in one sentence.
+    /// * **The control, and it comes first.** Every form builds over panes its own pool holds.
+    ///   Without it the refusals below would be satisfied by a door that refuses everything, and
+    ///   this gate would be measuring its own fixtures.
+    /// * **The refusal, once per KEY rather than once per form.** A `pipe` names two panes and a
+    ///   check covering only the first would leave the destination open — forgetting is shaped
+    ///   like one key, not like one form.
+    ///
+    /// ⚠ It is the DOOR, still: a pane that leaves the pool mid-run is
+    /// [`sprag_plugin`]'s to notice, and `a_run_follows_its_pane_to_another_window_and_still_dies_
+    /// when_it_is_closed` is the gate standing on that half.
+    #[test]
+    fn every_form_that_names_a_pane_refuses_one_this_pool_does_not_hold() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let second = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        // ⚠ Out of reach of both fixtures rather than merely unequal to them: a stranger that
+        // collided with a real id would be a control, not a stranger.
+        let stranger = PaneId(pane.0 + second.0 + 4242);
+
+        let mut refusals = 0;
+        for named in PluginName::ALL {
+            let (call, staged) = a_call_that_names_its_panes(named, pane, second);
+            let word = named.wire_str();
+
+            assert_eq!(
+                named.pane_keys(),
+                staged,
+                "⚠⚠⚠⚠⚠ `{word}` DISAGREES WITH ITS OWN CALL ABOUT WHICH KEYS NAME A PANE. The \
+                 product answers {:?} and a well-formed call carries panes in {staged:?}. A key \
+                 the type leaves out is a pane the door never checks — the run builds, injects \
+                 into a pool that does not hold it, and dies `there is no pane N` on its first \
+                 step, which is item 682's ending reached from the door",
+                named.pane_keys(),
+            );
+
+            external
+                .build_plugin(call.as_object().expect("an object"))
+                .map(|(_built, label)| label)
+                .unwrap_or_else(|why| {
+                    panic!(
+                        "⚠⚠⚠⚠ THE CONTROL FAILED for `{word}`: a call over panes this pool holds \
+                         must build, or every refusal below is a door that refuses everything and \
+                         this gate measures nothing. It answered {why:?}"
+                    )
+                });
+
+            for key in staged {
+                let mut wrong = call.clone();
+                wrong[*key] = json!(stranger.0);
+                // ⚠ A `let … else` rather than `expect_err`: the built plugin cannot be named in a
+                // message because `PluginKind` is not `Debug`, and this way the refusal keeps the
+                // form's word and the KEY that carried the stranger.
+                let Err(refused) = external.build_plugin(wrong.as_object().expect("an object"))
+                else {
+                    panic!(
+                        "⚠⚠⚠⚠⚠ `{word}` BUILT A RUN OVER A PANE ITS POOL DOES NOT HOLD, named in \
+                         `{key}`. That run delivers nothing and dies `there is no pane \
+                         {stranger}` on its first injection — item 682's ending, reached from the \
+                         door",
+                        stranger = stranger.0,
+                    );
+                };
+                assert!(
+                    format!("{refused:?}")
+                        .contains(&format!("no pane {} in this workspace", stranger.0)),
+                    "⚠⚠⚠ and `{word}` must NAME the pane and say WHICH workspace could not find \
+                     it — a refusal that says neither sends a caller to re-read their own request \
+                     instead of their window: {refused:?}",
+                );
+                refusals += 1;
+            }
+        }
+
+        assert_eq!(
+            refusals, 6,
+            "⚠⚠⚠ ONE REFUSAL PER PANE-NAMING KEY ON THE WHOLE SURFACE: one each for \
+             `orchestrator`, `agent`, `answer` and `ai_loop`, and TWO for `pipe` — a relay has a \
+             source and a destination and both are panes. ⚠ `dialogue` contributes none, and that \
+             is its claim rather than a hole: it spawns its own panes per turn. A number that has \
+             DROPPED is a form that stopped naming a pane or a key that stopped being checked",
         );
     }
 
