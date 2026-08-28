@@ -133,6 +133,24 @@
 //! nothing has changed. What changed is that where a program CAN speak, a rendering no longer gets to
 //! refuse what the program itself confirms.
 //!
+//! ## ⚠⚠⚠⚠⚠ And the peer can be unable to take a question AT ALL — the front of the same door
+//!
+//! Every hazard above is about what became of bytes that went in. This one is about whether they
+//! should go in yet: **a `claude` that is running a child does not turn an Enter into a question.**
+//! Measured (register item 745) on the one pane of five whose composer was holding an unsubmitted
+//! prompt — its status line said `1 shell still running` where the other four said
+//! `esc to interrupt` — and the text that would not go was **363 bytes**, so the product's own
+//! *shorten it, or split it* remedy had nothing to shorten.
+//!
+//! What that costs is not a prompt. The loop that met it replaced its whole session over the
+//! refusal, and because a run that folds a DIFFERENT prompt each time never trips the *same bytes
+//! twice* guard, it recovered for ever and called nobody.
+//!
+//! So there is a hold in front of the typing — [`hold_while_a_child_runs`] — and its answer is
+//! [`Held`]. ⚠⚠ It WAITS rather than refusing on sight, because a tool call ends; refusing on sight
+//! would be a loop that sends nothing, which is why the gate on it stages a busy peer AND a free
+//! one and would be passed by neither alone.
+//!
 //! ## Why this is not a method on `PaneAccess`
 //!
 //! It waits, so it is bounded, so it must be cancellable, so it needs the run-scoped
@@ -856,6 +874,154 @@ impl Witnessed {
                  question may well have been asked"
             }
         }
+    }
+}
+
+/// **WHAT A HOLD AT THE TYPING DOOR FOUND** — [`hold_while_a_child_runs`]'s answer, and register
+/// item 745's cause side.
+///
+/// Four words rather than a `bool`, because the three that permit a delivery do not permit it for
+/// the same reason and the one that refuses is a fact a person acts on. A caller that folded them
+/// would be unable to say whether it waited, which is the difference between *the peer was free*
+/// and *the peer was busy and this run stood there for it*.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// **NOBODY NAMED A CHILD**, so nothing was held and the caller may type at once.
+    ///
+    /// ⚠⚠⚠ It is the answer for every pane that has no supervisor, every pane read off its screen
+    /// and every daemon older than the key — *nobody said* rather than *nothing is running* — and
+    /// that is deliberate: this door must behave exactly as it did before this word existed for the
+    /// panes that cannot answer, or the commonest case silently stops being deliverable. The
+    /// inversion is the one [`crate::completion::Quiet`] refuses one door over, met here from the
+    /// other side: there, an absence must not switch a safety net OFF; here, it must not switch a
+    /// delivery off.
+    Free,
+    /// **A CHILD WAS NAMED AND IT ENDED INSIDE THE BOUND** — `was` is the last tool the agent named
+    /// and `after` is how long this door stood there. The caller may type.
+    Ended {
+        /// The last tool the agent named before the naming stopped.
+        was: String,
+        /// How long the hold lasted, measured rather than the bound it was permitted.
+        after: Duration,
+    },
+    /// **THE BOUND RAN OUT WITH A CHILD STILL NAMED. NOTHING MAY BE TYPED.**
+    ///
+    /// ⚠ Not an error of the pane's: an agent inside a long tool call has broken no contract. What
+    /// makes it a refusal is what typing anyway would cost — see [`hold_while_a_child_runs`].
+    Still {
+        /// The tool the agent still names.
+        running: String,
+        /// The bound this door was given, so a refusal can say how long it stood there.
+        within: Duration,
+    },
+    /// **THE RUN ENDED WHILE HOLDING** — cancelled, or past its own deadline. Nothing was typed and
+    /// nothing is claimed about the peer.
+    ///
+    /// ⚠ A caller falls THROUGH this into its ordinary delivery rather than branching on it, and
+    /// that is not laziness: [`deliver`] answers [`Delivered::Stopped`] at its own first look for a
+    /// run that has ended, before a byte goes in, so the existing road already says *nothing was
+    /// asked* in the words every reader of this crate already knows. A second sentence for the same
+    /// ending would be a second authority on it.
+    Stopped {
+        /// The tool the agent named when the run ended under this door.
+        running: String,
+    },
+}
+
+/// **WHAT THIS PANE'S AGENT SAYS IT IS RUNNING RIGHT NOW**, or [`None`] where nothing said.
+///
+/// One read, in one place, so the hold and anything else that asks cannot disagree about which
+/// surface answers it. See [`crate::access::AgentObservation::running`], which is where the fact's
+/// whole argument lives.
+fn running_at(panes: &dyn PaneAccess, pane: PaneId) -> Option<String> {
+    panes
+        .supervision()?
+        .pane_agent_state(pane)
+        .seen()
+        .and_then(|seen| seen.running)
+}
+
+/// **HOLD UNTIL THIS PANE'S AGENT IS NOT RUNNING A CHILD** — bounded by `within` and by the RUN's
+/// own deadline, and answering [`Held`].
+///
+/// # ⚠⚠⚠⚠⚠ What typing at a peer that is running a child cost, measured
+///
+/// Register item 745. An unattended run's prompt was found **sitting in a live `claude`'s composer,
+/// unsubmitted**, and the one thing that pane's status line said which no other pane's did was
+/// `1 shell still running`. The four panes alive beside it at that minute had empty composers and
+/// said `esc to interrupt`. What the refusal cost is not the prompt: the run replaced its whole
+/// session over it, and a run that folds a DIFFERENT prompt each time never trips the *same bytes
+/// twice* guard either, so it recovers for ever and calls nobody.
+///
+/// ⛔ **The product's own prescription for that failure is wrong for this sample.** It says *what is
+/// left is the PROMPT — shorten it, or split it*, and the text that was refused was **363 bytes**.
+/// There is no size to shorten to. What is left is not to type it yet.
+///
+/// # ⚠⚠⚠⚠ WHAT THIS DOOR CAN SEE, AND WHAT IT CANNOT — measured 2026-08-29, stated rather than hidden
+///
+/// The fact consulted is the AGENT'S OWN WORD: the tool named by the event that opens a tool call,
+/// which register item 721 carried from the hook to a waiter. **It is retired by the very next
+/// report of any kind**, and `Stop` — the turn's own rest — is one of those
+/// (`sprag_host::hooks::CLAUDE`'s table, `("Stop", Report(Idle))`). So a child this door holds for
+/// is **a tool call in flight**, and a shell the agent BACKGROUNDED outlives its tool call's end and
+/// is invisible here.
+///
+/// ⚠⚠ That is not a hole this door could close by looking somewhere else, and the alternative was
+/// measured rather than argued: `sprag processes <pane>` lists the pane's foreground process group,
+/// which for a `claude` pane is the agent and its MCP server and never the shells it starts — the
+/// two backgrounded `/bin/bash -c` children of a live agent were in `ps --ppid` and **not** in that
+/// listing, while `sprag-mcp` sits in it for ever, so a *has a child* predicate read from there
+/// would hold permanently and this door would never let a prompt through at all.
+///
+/// # ⚠⚠⚠ Why it WAITS instead of refusing at once, and why it is bounded anyway
+///
+/// A tool call ends. Refusing on sight would turn every ordinary build into a refused delivery,
+/// which is the *loop that sends nothing* this door must not become — so the answer to a busy peer
+/// is to stand there, and the fixtures that hold this door are a pair for exactly that reason.
+///
+/// It is bounded because the alternative is a run that waits out a child nothing will ever end. The
+/// number is the caller's, and the caller this was built for hands it the DOCUMENT's own
+/// `turn_within_ms` — *how long one of this agent's turns may take* — which is the same quantity
+/// register item 721's silence bound ends a frozen tool call on, from the other side of the same
+/// fact.
+///
+/// # ⚠⚠ It POLLS, and the reason is that this fact has no due time
+///
+/// [`crate::run::park_until`] is cheaper wherever a predicate rests on the pane's bytes or on a
+/// deadline somebody published (register items 629 and 630). Neither is true here: a tool ends when
+/// it ends, the event that says so is a REPORT rather than a paint, and nothing anywhere knows when
+/// it is due. So this is [`crate::run::poll_until`] by name and not by degradation — a look every
+/// [`POLL_INTERVAL`] at a supervision read, for as long as the child runs.
+pub fn hold_while_a_child_runs(
+    panes: &dyn PaneAccess,
+    run: &RunContext,
+    pane: PaneId,
+    within: Duration,
+) -> Held {
+    // ⚠ ASKED ONCE BEFORE ANY WAIT IS SET UP. The overwhelmingly common answer is *nobody named
+    // anything*, and for that answer this door must cost one supervision read and no clock at all.
+    let Some(mut running) = running_at(panes, pane) else {
+        return Held::Free;
+    };
+    let began = std::time::Instant::now();
+    // ⚠⚠ THE NAME IS CARRIED FORWARD ON EVERY LOOK, not read again at the end. A refusal has to say
+    // WHICH tool held it, and by the time the bound has run out the report in force may name a
+    // different one — a second read would be a sentence about a later look than the one that
+    // decided.
+    let waited = crate::run::poll_until(run, within, || match running_at(panes, pane) {
+        Some(tool) => {
+            running = tool;
+            false
+        }
+        None => true,
+    });
+    match waited {
+        crate::run::Waited::Ready => Held::Ended {
+            was: running,
+            after: began.elapsed(),
+        },
+        crate::run::Waited::TimedOut => Held::Still { running, within },
+        crate::run::Waited::Stopped => Held::Stopped { running },
     }
 }
 
@@ -3762,5 +3928,178 @@ mod tests {
              own",
             lost.len(),
         );
+    }
+
+    /// **A PANE WHOSE AGENT'S `running` THIS TEST MOVES**, and the counter beside it.
+    ///
+    /// ⚠⚠⚠ [`supervised_peer`] derives its verdict FROM THE PANE, deliberately, and this one cannot
+    /// and must not: the fact under test is the tool named by a HOOK, which no screen states and no
+    /// rule can scrape. `completion.rs`'s own fixture for the same field is this shape for the same
+    /// reason. What that costs is stated — this double decides its own answer — and what keeps the
+    /// gate honest is that both arms below use it and differ in one field.
+    ///
+    /// ⚠ [`Authority::Reported`](crate::access::Authority::Reported), because a tool name only ever
+    /// arrives on a report; a scraped pane would be claiming a hook it does not have.
+    fn peer_naming_a_tool(
+        script: &str,
+    ) -> (WorkspacePaneAccess, PaneId, Arc<Mutex<Option<String>>>) {
+        let (access, pane) = access(script);
+        let running: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let source: crate::access::AgentStateSource = {
+            let running = Arc::clone(&running);
+            Arc::new(move |_id: PaneId| {
+                Some(crate::access::AgentObservation {
+                    state: sprag_detect::AgentState::Working,
+                    agent: Some("claude".to_owned()),
+                    authority: crate::access::Authority::Reported {
+                        source: "test".to_owned(),
+                    },
+                    seq: 1,
+                    asked_seq: 1,
+                    // Not zero: nothing below may be read off a default.
+                    reports: 6,
+                    asking: None,
+                    asked: None,
+                    said: None,
+                    said_seq: 0,
+                    noticed: None,
+                    running: running.lock().expect("the running mutex").clone(),
+                    transcript: None,
+                    settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
+                })
+            })
+        };
+        let access = access.with_agent_state(Some(source));
+        assert!(
+            shows(&access, pane, GO, Duration::from_secs(10)),
+            "the peer never configured its terminal",
+        );
+        (access, pane, running)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN HOLDS ITS PROMPT WHILE ITS PEER IS RUNNING A CHILD, AND TYPES AT ONCE WHEN
+    /// IT IS NOT** — register item 745's cause side.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THE TWO FIXTURES ARE THE GATE, and one of them alone proves nothing
+    ///
+    /// A rule that never let a prompt through would pass a *the busy peer was not typed at* arm
+    /// perfectly, and that rule is a loop which sends nothing — the exact failure this door is
+    /// wedged between. So the free peer is staged beside the busy one, on the same pane double,
+    /// differing in ONE field: whether the agent has named a tool.
+    ///
+    /// * **A CHILD IS RUNNING** — [`Held::Still`], after standing there for the whole bound, and
+    ///   **not one byte on the pane**.
+    /// * **NOTHING IS RUNNING** — [`Held::Free`] at once, and the delivery goes through: the text
+    ///   is on the screen and the answer is a delivery rather than a refusal.
+    /// * ⚠⚠⚠ **AND THE CHILD ENDS MID-HOLD** — the arm that makes the first one MEAN something. A
+    ///   passing `Still` cannot on its own tell *the hold was live* from *the hold never released
+    ///   for any reason*; here the same peer's tool ends while the door stands there, the answer
+    ///   is [`Held::Ended`] naming that tool, and the wait demonstrably outlasted the tool's life.
+    #[test]
+    fn a_run_holds_its_prompt_while_its_peer_is_running_a_child() {
+        /// What the agent says it is running. A real tool name: the field carries the agent's own
+        /// word, and a fixture that invented one would be describing nothing.
+        const TOOL: &str = "Bash";
+        /// The hold's bound — far above the poll cadence, so neither reading is an artefact of it.
+        const WITHIN: Duration = Duration::from_millis(400);
+        /// How long the third arm holds its tool open. Well inside `WITHIN`, so a hold that had
+        /// simply timed out could not be mistaken for this one.
+        const HELD: Duration = Duration::from_millis(150);
+
+        // ── ARM ONE: a child is running for the whole bound ──
+        let (access, pane, running) = peer_naming_a_tool(&peer("exec cat"));
+        *running.lock().expect("the running mutex") = Some(TOOL.to_owned());
+        let before = access.pane_collapsed(pane).unwrap_or_default();
+        let started = Instant::now();
+        let held = hold_while_a_child_runs(&access, &RunContext::uncancellable(), pane, WITHIN);
+        let cost = started.elapsed();
+        assert_eq!(
+            held,
+            Held::Still {
+                running: TOOL.to_owned(),
+                within: WITHIN,
+            },
+            "⛔⛔⛔⛔⛔ A PEER THAT IS RUNNING A CHILD MUST NOT BE TYPED AT. Measured: a live \
+             `claude` whose status line said `1 shell still running` took 363 bytes into its \
+             composer and never turned the Enter into a question, and the loop that met it spent a \
+             whole session recovering. Got {held:?}",
+        );
+        assert!(
+            cost >= WITHIN,
+            "and the premise has to hold inside the gate: this hold must actually have STOOD THERE \
+             for the bound, or the answer above is about a wait that never happened. {cost:?} \
+             against {WITHIN:?}",
+        );
+        assert_eq!(
+            access.pane_collapsed(pane).unwrap_or_default(),
+            before,
+            "⚠⚠⚠⚠⚠ AND NOT ONE BYTE REACHED THE PANE. The whole cost of this defect is text \
+             sitting in a composer; a hold that refused and typed anyway would have bought nothing",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        // ── ARM TWO: the identical peer with nothing running ──
+        //
+        // ⚠⚠⚠⚠⚠ ONE FIELD DIFFERENT. Without it the repair is passed by a door that never lets a
+        // prompt through, which is a loop that does no work at all — and no arm above can see that.
+        let (access, pane, _running) = peer_naming_a_tool(&peer("exec cat"));
+        let started = Instant::now();
+        let free = hold_while_a_child_runs(&access, &RunContext::uncancellable(), pane, WITHIN);
+        let cost = started.elapsed();
+        assert_eq!(
+            free,
+            Held::Free,
+            "⚠⚠⚠⚠⚠ AND A PEER WITH NOTHING RUNNING IS TYPED AT AS IT ALWAYS WAS. This pane is the \
+             one above with a single field cleared, so a build that holds here has not learned to \
+             discriminate — it has stopped delivering. Got {free:?}",
+        );
+        assert!(
+            cost < WITHIN,
+            "and it must answer WITHOUT waiting: {cost:?} against a bound of {WITHIN:?}",
+        );
+        let delivered = deliver(
+            &access,
+            &RunContext::uncancellable(),
+            pane,
+            "hello",
+            &Delivery::new().without_submitting(),
+        )
+        .expect("the pane takes text");
+        assert!(
+            delivered.is_on_screen(),
+            "⚠⚠ AND THE PROMPT ACTUALLY LANDS, which is the half that says the free arm is a \
+             DELIVERY and not merely a fast refusal. Got {delivered:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        // ── ARM THREE: the tool ends while the door is still holding ──
+        //
+        // ⚠⚠⚠ THE ARM THAT MAKES ARM ONE MEAN SOMETHING. Arm one's `Still` is also what a door
+        // whose predicate can never release would answer, and no assertion inside that arm can see
+        // the difference. Here the hold is demonstrably live: the same peer, held by the tool
+        // alone, is released the moment the agent stops naming it.
+        let (access, pane, running) = peer_naming_a_tool(&peer("exec cat"));
+        *running.lock().expect("the running mutex") = Some(TOOL.to_owned());
+        let ending = Arc::clone(&running);
+        let tool = std::thread::spawn(move || {
+            std::thread::sleep(HELD);
+            *ending.lock().expect("the running mutex") = None;
+        });
+        let started = Instant::now();
+        let after = hold_while_a_child_runs(&access, &RunContext::uncancellable(), pane, WITHIN);
+        let cost = started.elapsed();
+        tool.join().expect("the tool thread");
+        assert!(
+            matches!(&after, Held::Ended { was, .. } if was == TOOL),
+            "⚠⚠⚠ A CHILD THAT ENDS RELEASES THE DOOR, AND THE ANSWER NAMES IT. The tool the agent \
+             was last seen running is what a person reading a held delivery needs. Got {after:?}",
+        );
+        assert!(
+            (HELD..WITHIN).contains(&cost),
+            "and the hold lasted the CHILD's life rather than the bound's: {cost:?} against a tool \
+             held open for {HELD:?} inside a bound of {WITHIN:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 }

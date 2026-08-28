@@ -313,6 +313,42 @@ pub enum PaneError {
         instead: PaneDoing::Unknown,
         already_showing: false,
     },
+    /// ⚠⚠⚠⚠ **THIS PANE'S AGENT IS RUNNING A CHILD AND WOULD NOT STOP, SO NOTHING WAS TYPED INTO
+    /// IT** — register item 745, and the front of the door [`NeverTook`](Self::NeverTook) guards
+    /// the far side of.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a busy peer had to become a refusal rather than a delivery
+    ///
+    /// A `claude` that is running a child **does not turn an Enter into a question**: the text goes
+    /// into its composer and stays there. Measured on the one pane of five whose composer was
+    /// holding an unsubmitted prompt — its status line said `1 shell still running` where the other
+    /// four said `esc to interrupt` — and the text that would not go was **363 bytes**, so the
+    /// product's own *shorten it, or split it* remedy had nothing to shorten.
+    ///
+    /// ⚠⚠ **AND THE COST IS A SESSION, NOT A PROMPT.** The loop that met it replaced its whole
+    /// session over the refusal, and because a run that folds a DIFFERENT prompt each time never
+    /// trips the *same bytes twice* guard, it recovered for ever and called nobody. So this refusal
+    /// buys the one thing that failure could not produce: a stop somebody reads.
+    ///
+    /// ⚠ It is reached only after the hold has stood there for the whole bound
+    /// ([`crate::deliver::hold_while_a_child_runs`]) — an ordinary tool call ends and the delivery
+    /// goes through. What reaches here is a child that outlasted a whole turn's worth of patience.
+    ///
+    /// ⚠ It NAMES THE PANE, on [`PeerGone`](Self::PeerGone)'s terms.
+    PeerBusy {
+        /// Which pane, because a refusal that does not say which one is the defect this workspace
+        /// has paid four rounds for.
+        pane: PaneId,
+        /// **THE TOOL THE AGENT ITSELF NAMED** — carried rather than re-read, so the sentence
+        /// describes the look that decided rather than a later one.
+        running: String,
+        /// How long this run stood there before refusing, so the reader knows it waited.
+        within: std::time::Duration,
+    } = {
+        pane: PaneId(0),
+        running: String::new(),
+        within: std::time::Duration::ZERO,
+    },
     /// ⚠ A PROMPT WAS WRITTEN INTO A READY PANE AND THE PANE NEVER SHOWED IT, so nothing was
     /// submitted and the peer was never asked.
     ///
@@ -579,6 +615,25 @@ impl std::fmt::Display for PaneError {
                  the pane is theirs now, and a run that met this should end having said so rather \
                  than try again",
                 id.0,
+            ),
+            // ⚠⚠⚠ IT SAYS WHY NOT TYPING IS THE SERVICE, on `PeerGone`'s terms two arms up. A
+            // reader told only *the agent is busy* reaches for the prompt — shortens it, splits it
+            // — and the measured sample that produced this refusal was 363 bytes, so there is
+            // nothing there to shorten. The sentence therefore names what typing anyway would cost
+            // and what would clear it.
+            Self::PeerBusy {
+                pane,
+                running,
+                within,
+            } => write!(
+                f,
+                "pane {}'s agent has said it is running {running:?} for the whole {within:?} this \
+                 run was willing to hold its prompt, so nothing was typed: an agent inside a tool \
+                 call takes the text into its composer and does not turn the Enter after it into a \
+                 question, which leaves the prompt sitting there and makes the next delivery \
+                 concatenate onto it. The remedy is the CHILD and never the prompt — let it finish, \
+                 or look at the pane",
+                pane.0,
             ),
             Self::Spawn(why) => write!(f, "the pane could not be started: {why}"),
             Self::NeverReady {

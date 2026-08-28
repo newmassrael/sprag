@@ -8795,6 +8795,45 @@ impl OuterLoop {
         text: &str,
         asks: crate::act::Asks,
     ) -> Result<u64, PaneError> {
+        // ⚠⚠⚠⚠⚠ **BEFORE EVERYTHING, BECAUSE A CHILD IS THE ONE CONDITION THAT MAKES TYPING ITSELF
+        // WRONG** — register item 745. A `claude` that is running a child takes the text into its
+        // composer and does NOT turn the Enter after it into a question; measured on the one pane
+        // of five holding an unsubmitted prompt, whose status line alone said `1 shell still
+        // running`, over 363 bytes that no shortening could have saved. The loop that met it
+        // replaced its whole session and, folding a different prompt each time, never tripped the
+        // *same bytes twice* guard either — so it recovered for ever and called nobody.
+        //
+        // ⚠⚠⚠ **AND IT IS AHEAD OF THE FOUR MARKS BELOW, WHICH IS THE HALF A LATER PLACEMENT WOULD
+        // GET WRONG.** Those arm this turn's contract and its baselines, and the hold can last as
+        // long as a build: armed first, the turn's own bound would be spent on somebody else's tool
+        // call and the pane's baselines would be readings of a screen that has since moved. The
+        // marks belong to the injection, so the hold goes in front of them.
+        //
+        // ⚠⚠ **THE STOPPED ANSWER FALLS THROUGH ON PURPOSE.** A run that ended under the hold
+        // reaches `deliver` below, which looks at the run before its first injection and answers
+        // `Delivered::Stopped` with nothing written — the road this driver already reads as *no
+        // question was asked*. A second sentence here would be a second authority on one ending.
+        match crate::deliver::hold_while_a_child_runs(
+            panes,
+            run,
+            self.driving.pane,
+            // ⚠ THE DOCUMENT'S OWN `turn_within_ms`, read at the moment of the wait for
+            // [`patience`](Self::patience)'s reason. It is the same quantity register item 721's
+            // silence bound ends a frozen tool call on — *how long one of this agent's turns may
+            // take* — so the two halves of one fact are bounded by one number.
+            self.patience(),
+        ) {
+            crate::deliver::Held::Free
+            | crate::deliver::Held::Ended { .. }
+            | crate::deliver::Held::Stopped { .. } => {}
+            crate::deliver::Held::Still { running, within } => {
+                return Err(PaneError::PeerBusy {
+                    pane: self.driving.pane,
+                    running,
+                    within,
+                });
+            }
+        }
         // ⚠ Recorded here rather than at any composition site, for [`Session::asked`]'s reason one
         // screen down: a screen rule's text is typed at the peer too and is in no prompt slot at
         // all, so this function is the only place every question passes through.
@@ -11084,6 +11123,193 @@ mod tests {
             "⚠⚠⚠ THE CONTROL: under a supervisor that CAN see the turn start, the same peer and \
              the same prompt go through — a rule that refused here would refuse every loop there \
              is. Got {moved:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE LOOP ITSELF DOES NOT TYPE AT A PEER THAT IS RUNNING A CHILD, AND STILL TYPES
+    /// AT ONE THAT IS NOT** — register item 745, measured at the door the product actually calls.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the mechanism's own gate is not enough, and this one had to exist
+    ///
+    /// `deliver::tests::a_run_holds_its_prompt_while_its_peer_is_running_a_child` holds the hold. It
+    /// says nothing about whether anything ASKS it — and register item 721 landed with exactly that
+    /// hole open until a fifth gate was written at the product's door. A build that deleted this
+    /// driver's call and kept the function would pass every arm of the mechanism's gate.
+    ///
+    /// # ⚠⚠⚠ THE THREE ARMS, AND WHERE THE ONE FIELD MOVES
+    ///
+    /// * **RUNNING A CHILD** — the agent names a tool, and the pump comes back
+    ///   [`PaneError::PeerBusy`] with **nothing on the pane but the peer's own marker**.
+    /// * **THE SAME STATE, NO TOOL NAMED** — the discrimination. Everything about this peer is the
+    ///   arm above with one field cleared, and here the prompt goes IN: the pane carries it, and
+    ///   whatever the delivery then answers is not this refusal. Without it, a driver that had
+    ///   simply stopped typing at working peers would pass.
+    /// * **AND A DELIVERY THAT SUCCEEDS** — a peer whose turn a supervisor can see start, so the
+    ///   pump answers [`Pumped::Moved`]. It is what keeps the pair above from being satisfied by a
+    ///   build in which no delivery ever completes.
+    #[test]
+    fn a_loop_holds_its_prompt_while_its_peer_runs_a_child_and_types_when_it_does_not() {
+        /// A peer that paints what it is given, character by character, and acts on none of it.
+        const PAINTS_EVERYTHING: &str = "stty raw -echo; printf 'GO'; exec cat";
+        /// What the agent says it is running — a real tool name, since the field carries the
+        /// agent's own word.
+        const TOOL: &str = "Bash";
+        /// The loop's per-turn bound, which is also the bound its hold is given. Short, because
+        /// this gate deliberately spends it.
+        const WITHIN: Duration = Duration::from_millis(300);
+
+        /// What the stand-in supervisor says about the pane, and the ONE field that moves.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Peer {
+            /// Working, with a tool call in force — a `PreToolUse` in the report that stands.
+            RunningAChild,
+            /// Working, with nothing named. The arm above with one field cleared.
+            WorkingOnNothing,
+            /// The ordinary road: at rest until the submit reaches the pane, then working — which
+            /// is the reading `SubmittedWhen::Stirs` is satisfied by.
+            AtRest,
+        }
+
+        let start = |peer: Peer| {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+            let pane = {
+                let mut command = CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg(PAINTS_EVERYTHING);
+                command.env("TERM", "dumb");
+                workspace
+                    .lock()
+                    .unwrap()
+                    .spawn(command, "sh".to_string(), 80, 8)
+                    .expect("spawn pane")
+            };
+            let reader = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let published = Arc::new(Mutex::new(0_u64));
+            let source: crate::access::AgentStateSource = Arc::new(move |id: PaneId| {
+                // ⚠ The same seam the refusal gate above names: a `/bin/sh` peer paints no spinner,
+                // so what stands in for *this agent started a turn* is *the submit reached the
+                // pane*. Only `AtRest` spends it; the two arms under test never get that far.
+                let submitted = reader
+                    .input_trail()
+                    .and_then(|echo| echo.pane_recent_input(id))
+                    .is_some_and(|typed| typed.contains('\r'));
+                let mut seq = published.lock().expect("the published verdict");
+                if submitted && *seq == 0 {
+                    *seq = 1;
+                }
+                let working = !matches!(peer, Peer::AtRest) || submitted;
+                Some(crate::access::AgentObservation {
+                    state: if working {
+                        sprag_detect::AgentState::Working
+                    } else {
+                        sprag_detect::AgentState::Idle
+                    },
+                    agent: Some("claude".to_owned()),
+                    // ⚠ A tool name only ever arrives on a REPORT, so a fixture that named one
+                    // while claiming a scraped pane would be describing a hook it does not have.
+                    authority: crate::access::Authority::Reported {
+                        source: "test".to_owned(),
+                    },
+                    seq: *seq,
+                    asked_seq: *seq,
+                    reports: 6,
+                    asking: None,
+                    asked: None,
+                    said: None,
+                    said_seq: 0,
+                    noticed: None,
+                    running: matches!(peer, Peer::RunningAChild).then(|| TOOL.to_owned()),
+                    transcript: None,
+                    settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
+                })
+            });
+            let access =
+                WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+            let mut loops = with_bound(
+                OuterLoop::new(
+                    lua,
+                    pane,
+                    &AiLoopSpec {
+                        shows_the_prompt: true,
+                        ..spec(None)
+                    },
+                )
+                .expect("the document's datamodel must carry its four authored strings"),
+                WITHIN,
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            let up = Instant::now();
+            while !access
+                .pane_collapsed(pane)
+                .is_some_and(|screen| screen.contains("GO"))
+            {
+                assert!(
+                    up.elapsed() < Duration::from_secs(10),
+                    "the peer never configured its terminal",
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let pumped = loops.pump(&access, &RunContext::uncancellable());
+            let screen = access.pane_collapsed(pane).unwrap_or_default();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (pumped, screen)
+        };
+
+        // ── ARM ONE: the agent names a child ──
+        let (held, screen) = start(Peer::RunningAChild);
+        let held = held.expect_err(
+            "⛔⛔⛔⛔⛔ A LOOP MUST NOT TYPE AT A PEER THAT IS RUNNING A CHILD. Measured: a live \
+             `claude` whose status line alone said `1 shell still running` took 363 bytes into its \
+             composer and never turned the Enter into a question, and the run that put them there \
+             spent a whole session recovering from it",
+        );
+        assert!(
+            matches!(&held, PaneError::PeerBusy { running, .. } if running == TOOL),
+            "and the refusal names the tool the AGENT ITSELF said it was running, because that is \
+             what a person reading it goes and waits for: {held:?}",
+        );
+        let said = held.to_string();
+        for clause in ["nothing was typed", "composer", TOOL] {
+            assert!(
+                said.contains(clause),
+                "⚠⚠ THE SENTENCE IS WHAT ITS READER GETS. {clause:?} is not in: {said:?}",
+            );
+        }
+        assert_eq!(
+            screen.trim(),
+            "GO",
+            "⚠⚠⚠⚠⚠ AND NOT ONE BYTE OF THE PROMPT REACHED THE PANE. The whole cost of this defect \
+             is text left sitting in a composer, so a refusal that typed first would have bought \
+             nothing at all",
+        );
+
+        // ── ARM TWO: the identical peer with the tool name cleared ──
+        //
+        // ⚠⚠⚠⚠⚠ ONE FIELD DIFFERENT, and the state deliberately held constant: without this arm a
+        // driver that had simply stopped speaking to WORKING peers passes arm one perfectly, and
+        // that driver is a loop which never asks anything.
+        let (typed, screen) = start(Peer::WorkingOnNothing);
+        assert!(
+            !matches!(typed, Err(PaneError::PeerBusy { .. })),
+            "⚠⚠⚠⚠⚠ AND A PEER WITH NOTHING NAMED IS TYPED AT AS IT ALWAYS WAS. This pane is the one \
+             above with a single field cleared, so a build that holds here has not learned to \
+             discriminate — it has stopped delivering. Got {typed:?}",
+        );
+        assert!(
+            screen.trim().len() > "GO".len(),
+            "and the prompt is ON that pane, which is the half that says the door LET IT THROUGH \
+             rather than failing somewhere quieter. The screen holds only {screen:?}",
+        );
+
+        // ── ARM THREE: a delivery that actually completes ──
+        let moved = start(Peer::AtRest).0.expect("the control must not refuse");
+        assert!(
+            matches!(moved, Pumped::Moved { .. }),
+            "⚠⚠⚠ THE CONTROL: a peer whose turn a supervisor can see start takes the same prompt \
+             and the pass moves — so the two arms above are not being satisfied by a build in \
+             which no delivery ever completes. Got {moved:?}",
         );
     }
 
@@ -23117,7 +23343,16 @@ mod tests {
                     // ⚠⚠⚠ THE ONE FIELD THAT SEPARATES THE HEADLINE FROM THE FOURTH ARM — register
                     // item 721. Everything else about those two runs is identical, which is what
                     // makes the pair a discrimination rather than two anecdotes.
-                    running: running.map(str::to_string),
+                    //
+                    // ⚠⚠⚠⚠⚠ **IT IS INSTALLED AFTER THE FIRST PASS AND NOT HERE, and register item
+                    // 745 is what said so.** A tool call BEGINS INSIDE THE TURN A PROMPT OPENED —
+                    // this fixture's own doc says as much (*"the one a real turn is in for as long
+                    // as a tool call lasts"*) — so an agent naming a tool before it has been asked
+                    // anything is a pane no wire produces. Staged that way it also collided with
+                    // 745's repair, which refuses to TYPE at a peer that is running a child: the
+                    // run came back `PeerBusy` at its very first prompt and never reached the wait
+                    // this gate is about. See the loop below, where it goes in.
+                    running: None,
                     transcript: None,
                     settling: crate::access::Settling::Nothing,
                     reporter: crate::access::ReporterVoice::Speaking,
@@ -23187,12 +23422,20 @@ mod tests {
 
             let run = RunContext::uncancellable();
             let mut walked = Vec::new();
-            for _ in 0..PASSES {
+            for pass in 0..PASSES {
                 match loops.pump(&access, &run).expect("the pane stays readable") {
                     Pumped::Moved {
                         from, raised, to, ..
                     } => {
                         walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                        // ⚠⚠⚠ **THE TOOL CALL BEGINS INSIDE THE TURN THE PROMPT OPENED** — see the
+                        // field's own comment above. The first pass is what puts a prompt on that
+                        // pane; the agent names a tool afterwards, which is both what a wire does
+                        // and what leaves register item 745's typing door with nothing to hold.
+                        if pass == 0 {
+                            seen.lock().expect("the observation").running =
+                                running.map(str::to_string);
+                        }
                         if to == AiLoopState::AwaitingHuman {
                             break;
                         }
