@@ -4391,6 +4391,7 @@ mod tests {
                 briefed: None,
             }),
             output: None,
+            uncommitted: None,
         };
         assert_eq!(
             pane_entry(&mut ext, 0).get(crate::wire::PANE_DRIVEN_KEY),

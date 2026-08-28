@@ -429,6 +429,16 @@ pub const RUN_AT_KEY: &str = "at";
 /// too and is a separate authority on purpose (it publishes what a caller may say); what this ties
 /// together is the two places in THIS file that read it.
 pub const RUN_PANE_KEY: &str = "pane";
+/// The answer key carrying **WHAT THE TREE A RUN WORKED IN WAS HOLDING WHEN IT ENDED** — bytes of
+/// `git diff HEAD`, register item 682's commit-contamination clause.
+///
+/// ⚠⚠ An ADDED ANSWER KEY, so [`crate::wire::WIRE_PROTOCOL`] does not move: a reader that does not
+/// know the word ignores it, and this wire's own rule for that case is the one
+/// [`crate::runs::PersistedRun::build`] states at length.
+///
+/// ⚠ `null` is **cannot say**; `0` is **clean**. Never folded — see
+/// [`crate::runs::RunState::Done`].
+pub const RUN_UNCOMMITTED_KEY: &str = "uncommitted";
 /// **WHERE A RELAY READS FROM** — the `pipe` form's own spelling of a pane, and the reason
 /// [`RUN_PANE_KEY`] is not the only one.
 ///
@@ -1802,7 +1812,16 @@ impl PluginsExternal {
         // The cell the driver writes its counters into, shared with the registry so `runs` can
         // answer them while the run is still spending.
         let progress = sprag_plugin::ProgressCell::default();
-        let (state, run) = self.drive_on_a_thread(id, &progress, plugin, guardrails);
+        // ⛔⛔⛔⛔⛔ WHERE THIS RUN WORKS, LEARNED AT THE DOOR — register item 682's
+        // commit-contamination clause. It is read now rather than at the end for the reason the
+        // clause exists: a run that dies may have lost its pane by then (item 682's other half is
+        // exactly that), and a tree nobody could name is a question nobody can ask.
+        //
+        // ⚠ `pane_named` and not `PluginName::pane_keys`: a `pipe` names two panes and there is no
+        // rule saying which tree a relay's ending is about, so it answers `None` and the run's
+        // record says *cannot say* rather than picking one.
+        let tree = pane_named(request).and_then(|pane| self.pane_start_dir(pane));
+        let (state, run) = self.drive_on_a_thread(id, &progress, plugin, guardrails, tree);
         lock(&self.runs).submit(crate::runs::NewRun {
             id,
             label,
@@ -1842,6 +1861,7 @@ impl PluginsExternal {
         progress: &sprag_plugin::ProgressCell,
         mut plugin: PluginKind,
         guardrails: Guardrails,
+        tree: Option<std::path::PathBuf>,
     ) -> StartedDriver {
         // ⚠⚠⚠⚠ ASKED BEFORE THE PLUGIN MOVES INTO THE WORKER — register items 539 and 597. Once
         // the thread owns it there is nothing left here to ask, so the plugin's own answer is taken
@@ -1904,9 +1924,18 @@ impl PluginsExternal {
             // The worker still owns the plugin after the run, so it can read any
             // content the plugin captured (an AI adapter's reply) for the host.
             let output = plugin.as_plugin().captured();
+            // ⛔⛔⛔⛔⛔ AND THE ONE QUESTION A DEAD RUN CANNOT ASK ABOUT ITSELF — register item 682's
+            // commit-contamination clause. The run is over; whatever its agent had half-applied to
+            // the tree is still there and nobody is going to put it back. Asked HERE because this
+            // is the last moment anything knows a run happened at all, and asked on EVERY ending
+            // rather than only the bad ones: a converged run that left the tree dirty is the same
+            // hazard to the next commit as a failed one, and a check that only fires on failure is
+            // a check whose population somebody has already decided for the reader.
+            let uncommitted = what_the_tree_holds(tree.as_deref());
             *lock(&worker_state) = RunState::Done {
                 outcome: Box::new(outcome),
                 output,
+                uncommitted,
             };
             // ⚠ AFTER the state is written, never before: a client woken by this asks `runs`
             // immediately, and an announcement that raced the write would answer `running` about a
@@ -2070,6 +2099,10 @@ impl PluginsExternal {
             Arc::clone(&state),
             self.on_run_end.clone(),
             Some(Arc::new(move |lost| reviving.put_back_a_lost_driver(lost))),
+            // ⛔ WHERE THIS RUN WORKS, learned here for the same reason the worker path learns it
+            // at the door — register item 682. By the time the child is collected its pane may be
+            // gone, and a tree nobody can name is a question nobody can ask.
+            pane_named(request).and_then(|pane| self.pane_start_dir(pane)),
         );
         Ok((
             state,
@@ -2199,7 +2232,13 @@ impl PluginsExternal {
                 );
                 self.drive_in_a_process(spawn, inherited.id, &handed, honoured)?
             }
-            None => self.drive_on_a_thread(inherited.id, &inherited.progress, plugin, guardrails),
+            // ⚠ THE RESTORED RUN LEARNS ITS TREE THE SAME WAY A NEW ONE DOES — from the request it
+            // is being rebuilt from, which is the only place either of them ever reads it.
+            None => {
+                let tree =
+                    pane_named(&inherited.request).and_then(|pane| self.pane_start_dir(pane));
+                self.drive_on_a_thread(inherited.id, &inherited.progress, plugin, guardrails, tree)
+            }
         };
         if lock(&self.runs).put_back(inherited.id, name, state, run) {
             return Ok(());
@@ -2293,6 +2332,7 @@ fn collect_driver(
     state: Arc<Mutex<RunState>>,
     on_end: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
     on_lost: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
+    tree: Option<std::path::PathBuf>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let ended = match child.wait_with_output() {
@@ -2331,6 +2371,28 @@ fn collect_driver(
         // back and running, or failed and carrying the reason nothing picked it up. Announcing
         // first would wake every watcher onto a `panicked` this daemon was in the middle of
         // undoing, which is the *two readings with a gap between them* register item 637 is about.
+        // ⛔⛔⛔⛔⛔ AND THE QUESTION A DEAD RUN CANNOT ASK ABOUT ITSELF, ON THE PATH THAT ACTUALLY
+        // CARRIES THE RUNS — register item 682's commit-contamination clause. This is the DEFAULT
+        // driver, so a repair that stopped at the worker thread beside it would have left every
+        // real run unasked.
+        //
+        // ⚠⚠ It goes into the REPORTED object rather than beside it, because that object is what
+        // `run_to_json` splices — and it is lifted back out to the state level there, so a person
+        // reading a row cannot tell which kind of driver answered. ⚠ A `Panicked` ending carries
+        // nothing: it has no object to carry it in, and register item 671 puts such a run back on a
+        // driver anyway, so the ending that finally publishes is a reported one.
+        let ended = match ended {
+            RunState::Reported(mut reported) => {
+                if let Some(fields) = reported.as_object_mut() {
+                    fields.insert(
+                        RUN_UNCOMMITTED_KEY.to_owned(),
+                        json!(what_the_tree_holds(tree.as_deref())),
+                    );
+                }
+                RunState::Reported(reported)
+            }
+            other => other,
+        };
         let lost = matches!(ended, RunState::Panicked(_));
         *lock(&state) = ended;
         if let Some(revive) = on_lost.filter(|_| lost) {
@@ -2340,6 +2402,25 @@ fn collect_driver(
             announce(id);
         }
     })
+}
+
+/// **WHAT THE TREE A RUN WORKED IN IS HOLDING, ASKED AT AN ENDING** — register item 682's
+/// commit-contamination clause, and the ONE place either driver asks it.
+///
+/// # ⚠⚠⚠⚠⚠ Why it is a function and not two calls
+///
+/// A run ends on one of two paths — a worker thread here, or a driver in another process collected
+/// by [`collect_driver`] — and **the process one is the default** (`RUN_DRIVER_PROCESS` has
+/// defaulted to `on` since 2026-08-25). A repair written on the thread path alone would leave every
+/// real run unasked while every gate over the thread path stayed green, which is this register's
+/// most-repeated shape. Both call this.
+///
+/// ⚠ [`None`] is *cannot say*, straight from [`crate::checkout::carried_by`] — never folded into
+/// `Some(0)`, which is register item 709's discipline and the one thing this must not get wrong:
+/// a fabricated zero tells a person about to commit that nothing was left behind, on no evidence.
+fn what_the_tree_holds(tree: Option<&std::path::Path>) -> Option<usize> {
+    tree.and_then(crate::checkout::carried_by)
+        .map(|carried| carried.bytes())
 }
 
 /// What a driver process's exit MEANS, as a run state.
@@ -4263,10 +4344,19 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
                 .as_ref()
                 .map_or_else(|| progress_to_json(&run.progress), Clone::clone),
         )),
-        RunState::Done { outcome, output } => json!({
+        RunState::Done {
+            outcome,
+            output,
+            uncommitted,
+        } => json!({
             "status": RunStatus::Done.wire_str(),
             "outcome": outcome_to_json(outcome),
             "output": output,
+            // ⛔⛔⛔ WHAT THE TREE WAS HOLDING WHEN THIS RUN ENDED — register item 682. An ADDED
+            // ANSWER KEY, which is why `WIRE_PROTOCOL` does not move: a client that does not know
+            // the word ignores it, and one that does gets the sentence it needs before committing.
+            // ⚠ `null` is *cannot say* and `0` is *clean* — never folded, on item 709's rule.
+            RUN_UNCOMMITTED_KEY: uncommitted,
         }),
         // ⚠⚠⚠⚠⚠ `done`, AND THE SAME KEYS — a client asked *what became of this run*, and *whose
         // process computed the answer* is not part of that question. A fifth `status` word would be
@@ -4280,10 +4370,18 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
             let output = outcome
                 .as_object_mut()
                 .and_then(|fields| fields.remove("output"));
+            // ⛔⛔ LIFTED TO WHERE A `Done` RUN PUBLISHES IT — register item 682. The collector puts
+            // it INSIDE the reported object because that is the only thing it may write; here it
+            // joins `output` in coming back out, so one row shape serves both drivers and
+            // `uncommitted_sentence` has one place to look.
+            let uncommitted = outcome
+                .as_object_mut()
+                .and_then(|fields| fields.remove(RUN_UNCOMMITTED_KEY));
             json!({
                 "status": RunStatus::Done.wire_str(),
                 "outcome": outcome,
                 "output": output,
+                RUN_UNCOMMITTED_KEY: uncommitted,
             })
         }
         RunState::Panicked(message) => {
@@ -4856,6 +4954,64 @@ pub fn cancel_sentence(who: crate::runs::Canceller, state: &crate::runs::RunStat
             "⚠ a cancel was raised over this run and the daemon driving it died first, so the \
              cancel is NOT what finished it. Who raised the cancel: {raised}"
         ),
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT THE TREE THIS RUN WORKED IN WAS HOLDING WHEN IT ENDED, FOR A PERSON ABOUT TO
+/// COMMIT** — register item 682's commit-contamination clause, and the reading that clause asked
+/// for.
+///
+/// # ⚠⚠⚠⚠⚠ The accident this sentence exists to interrupt
+///
+/// A run died mid-edit and left its agent's half-applied mutation in the shared tree — one deleted
+/// line, which the next commit would have shipped, re-introducing a defect that had just been
+/// repaired. **The dead writer cannot put its own work back**, and nothing said anything: `runs`
+/// showed the ending and no more. The only reason it was caught is that somebody happened to run
+/// the whole suite first, which is a habit and not a gate.
+///
+/// # ⚠⚠⚠ What it does NOT say, and why the wording is careful
+///
+/// It never says *this run left this behind*. A tree has more than one writer (register item 196 —
+/// here, a person and an AI loop share this one), so attribution is not available to anybody and a
+/// sentence claiming it would be false on the day it mattered. What is available, and is the whole
+/// of what the reader needs, is **this tree is holding something no commit does**.
+///
+/// # ⚠⚠ Three answers, and two of them are said
+///
+/// * **Holding something** — said, with the size and the instruction to look.
+/// * **Cannot say** — said, shorter: a reader who is about to commit needs to know the question
+///   went unanswered rather than to read silence as *clean*.
+/// * **Clean** — SILENT, and this is the only one folded into silence deliberately. Every run in an
+///   ordinary round is clean, and a line on each of them would train the reader to skip the block
+///   the other two arms live in.
+#[must_use]
+pub fn uncommitted_sentence(run: &Value) -> Option<String> {
+    // ⚠ Read out of `state`, where a `Done` run publishes it — the run's other detail keys are
+    // top-level because they are true of a run that is still going, and this one is not: a tree is
+    // asked about once, when there is no longer anything to change it.
+    let state = run.get("state")?;
+    if !state
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|word| word == RunStatus::Done.wire_str())
+    {
+        return None;
+    }
+    match state.get(RUN_UNCOMMITTED_KEY) {
+        // ⚠ `null` AND an absent key are one answer here, and that is not the fold item 709
+        // forbids: both mean *this build was told nothing*, which is exactly *cannot say*. What
+        // must never join them is `0`, and it does not — it is the arm below.
+        None | Some(Value::Null) => Some(
+            "nobody could read what the tree it worked in is holding — check it before you commit"
+                .to_owned(),
+        ),
+        Some(held) => match held.as_u64().unwrap_or_default() {
+            0 => None,
+            bytes => Some(format!(
+                "the tree it worked in is holding {bytes} bytes no commit does — READ THEM before \
+                 you commit: a run that ended mid-edit cannot put its own work back",
+            )),
+        },
     }
 }
 
@@ -5862,15 +6018,24 @@ mod tests {
     }
 
     fn echoing_agent_pane(workspace: &Arc<Mutex<Workspace>>) -> PaneId {
+        // ⚠⚠ POINTED AT A TREE — see `a_tree_to_stand_in`. Without it every fixture pane is born in
+        // the runner's `$HOME`, which is the placement item 684 measured costing a live run.
+        echoing_agent_pane_in(workspace, &a_tree_to_stand_in())
+    }
+
+    /// The same stand-in agent, standing somewhere a caller chose.
+    ///
+    /// ⚠ Split out for register item 682's commit-contamination gate, which needs a pane in a REAL
+    /// repository — `a_tree_to_stand_in` writes a `.git` pointing nowhere, which is the right
+    /// fixture for the door's marker check and the wrong one for a question `git` has to answer.
+    fn echoing_agent_pane_in(workspace: &Arc<Mutex<Workspace>>, dir: &std::path::Path) -> PaneId {
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
         command.arg(
             "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done",
         );
         command.env("TERM", "dumb");
-        // ⚠⚠ POINTED AT A TREE — see `a_tree_to_stand_in`. Without it every fixture pane is born in
-        // the runner's `$HOME`, which is the placement item 684 measured costing a live run.
-        command.cwd(a_tree_to_stand_in());
+        command.cwd(dir);
         lock(workspace)
             .spawn(command, "agent".to_string(), 80, 24)
             .expect("spawn the stand-in agent")
@@ -6271,6 +6436,336 @@ mod tests {
              is its claim rather than a hole: it spawns its own panes per turn. A number that has \
              DROPPED is a form that stopped naming a pane or a key that stopped being checked",
         );
+    }
+
+    /// A repository with one commit in it, and a real one: the question this stages is what
+    /// `git diff HEAD` answers, and nothing can stand in for that.
+    ///
+    /// ⚠ Under the machine's temp root and named with the pid plus a nanosecond, so two of these in
+    /// one process cannot collide — the same construction [`crate::checkout`]'s own fixtures use.
+    fn a_repository_a_run_can_dirty() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sprag-run-tree-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.subsec_nanos()),
+        ));
+        std::fs::create_dir_all(&dir).expect("a directory to make a repository in");
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&dir)
+                    .args(args)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success()),
+                "⚠ THE STAGE: the fixture's `git {args:?}` must succeed, or every arm below is \
+                 about a directory rather than about a repository",
+            );
+        };
+        git(&["init", "-q"]);
+        // ⚠ An identity of the FIXTURE's own: a machine whose git has no `user.email` configured
+        // refuses to commit, and this gate must not depend on how the runner's git is set up.
+        git(&["config", "user.email", "gate@example.invalid"]);
+        git(&["config", "user.name", "the gate"]);
+        std::fs::write(dir.join("tracked.txt"), b"what a commit holds\n").expect("a tracked file");
+        git(&["add", "tracked.txt"]);
+        git(&["commit", "-qm", "the commit this tree is compared against"]);
+        dir
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THAT ENDS SAYS WHAT THE TREE IT WORKED IN IS HOLDING** — register item 682's
+    /// commit-contamination clause, and the half of that item nothing had ever asked about.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The accident, measured before this was written
+    ///
+    /// A run died mid-edit. Its agent had deleted one line of `deliver.rs` and had not put it back,
+    /// and **the dead writer cannot**: the run is gone, and what is left is a mutation sitting in a
+    /// shared tree with nobody's name on it. The next commit would have shipped it, re-introducing
+    /// the defect register item 669 had just repaired. It was caught because somebody happened to
+    /// run the whole suite first — a habit, not a gate — and the round that skips the sweep does
+    /// not see it.
+    ///
+    /// # ⚠⚠⚠ Three answers, and the gate insists all three are distinguishable
+    ///
+    /// * **Cannot say** — a pane standing where `git` cannot answer. The row publishes `null`.
+    /// * **Clean** — a real repository with nothing uncommitted. `0`, and the reading is SILENT,
+    ///   because a line on every ordinary run trains a reader to skip the block.
+    /// * **Holding something** — the item's own shape, staged the way it happened: the tree is
+    ///   dirtied WHILE THE RUN IS GOING and the run is then killed. `> 0`, and a sentence that
+    ///   says so.
+    ///
+    /// ⚠⚠ **`null` AND `0` ARE NOT ONE ANSWER**, which is register item 709's discipline and the
+    /// reason the first arm exists at all: a build that fabricated `0` for a tree it could not read
+    /// would tell a reader *nothing was left behind* on no evidence — the same accident this whole
+    /// clause is about, arriving from the other side.
+    ///
+    /// ⚠ **THE DIRTYING HAPPENS AFTER THE RUN IS CONFIRMED DRIVING**, not before, and that ordering
+    /// is what makes this measure the ENDING rather than the door: a build that read the tree when
+    /// the run STARTED would answer `0` here and pass every other arm.
+    #[test]
+    fn a_run_that_ends_says_what_the_tree_it_worked_in_is_holding() {
+        /// Start a run over `pane` that will not finish on its own, confirm it is driving, and hand
+        /// back its id — the shape every arm below needs before it kills the run.
+        fn a_run_that_will_not_stop_on_its_own(
+            external: &mut PluginsExternal,
+            pane: PaneId,
+        ) -> u64 {
+            let started = external
+                .invoke(
+                    RUN_ACTION,
+                    IntrospectValue::Json(json!({
+                        "plugin": "orchestrator",
+                        "pane": pane.0,
+                        "stimulus": "hello",
+                        // ⚠ A word the echo can never produce, so the run keeps going until it is
+                        // killed — which is the ending this item is about.
+                        "sentinel": "NO-SUCH-WORD-WILL-APPEAR",
+                        "ready_when": { "match": "shows", "marker": "AGENT-READY" },
+                    })),
+                )
+                .expect("the run is accepted");
+            let IntrospectValue::Int(id) = started else {
+                panic!("a started run answers its id: {started:?}");
+            };
+            let id = u64::try_from(id).expect("a run id is not negative");
+            // ⚠⚠ THE BARRIER IS A STEP TAKEN, NOT A DELIVERY COUNTED, and the difference was
+            // measured rather than assumed: `driving` beside this waits on `delivered`, which an
+            // `orchestrator` never counts — its journal read *"the stimulus was echoed back"*
+            // thirty-nine times while that key stayed at zero. What this arm needs is only that
+            // the run is really going before the tree is touched.
+            let start = Instant::now();
+            loop {
+                let entry = read_runs(external)
+                    .into_iter()
+                    .find(|entry| entry["id"] == json!(id));
+                if let Some(entry) = &entry
+                    && entry["state"]["iterations"].as_u64().unwrap_or(0) > 0
+                {
+                    break;
+                }
+                assert!(
+                    start.elapsed() < Duration::from_secs(20),
+                    "run {id} had taken no step after {:?}, so there is no driving run to dirty \
+                     the tree under",
+                    start.elapsed(),
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            id
+        }
+
+        /// ⚠ The ending is read through the shared [`ended`] helper, so this gate watches the row
+        /// the product renders rather than a shape of its own.
+        fn killed(
+            external: &mut PluginsExternal,
+            registry: &Arc<Mutex<RunRegistry>>,
+            id: u64,
+        ) -> Value {
+            external
+                .invoke(CANCEL_ACTION, IntrospectValue::Json(json!({ "id": id })))
+                .expect("the cancel is accepted");
+            ended(registry, id, Duration::from_secs(20))
+        }
+
+        // ── 1. CANNOT SAY, AND IT SAYS SO ──────────────────────────────────────────────────────
+        //
+        // The ordinary fixture pane stands in a directory whose `.git` points nowhere, so `git`
+        // refuses the question. That is a real state — a pane opened outside any checkout — and the
+        // row must publish `null` rather than a comfortable zero.
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let nowhere = echoing_agent_pane(&workspace);
+        let unreadable = a_run_that_will_not_stop_on_its_own(&mut external, nowhere);
+        let unreadable = killed(&mut external, &registry, unreadable);
+        assert_eq!(
+            unreadable["state"][RUN_UNCOMMITTED_KEY],
+            Value::Null,
+            "⚠⚠⚠⚠⚠ A TREE NOBODY COULD READ MUST PUBLISH `null`, never `0`: a fabricated zero is \
+             the sentence *nothing was left behind*, told to a person about to commit, on no \
+             evidence at all: {unreadable:?}",
+        );
+        assert!(
+            uncommitted_sentence(&unreadable)
+                .is_some_and(|said| said.contains("nobody could read")),
+            "⚠⚠ and it must be SAID: a reader who is about to commit needs the question's silence \
+             named, or they read it as *clean*: {:?}",
+            uncommitted_sentence(&unreadable),
+        );
+
+        // ── 2. THE CONTROL: A REAL REPOSITORY, HOLDING NOTHING ──────────────────────────────────
+        //
+        // ⚠⚠ Without this arm the gate would pass on a build that answered *dirty* for everything,
+        // and the sentence it exists to print would be noise on every row.
+        let repo = a_repository_a_run_can_dirty();
+        let clean_pane = echoing_agent_pane_in(&workspace, &repo);
+        let clean = a_run_that_will_not_stop_on_its_own(&mut external, clean_pane);
+        let clean = killed(&mut external, &registry, clean);
+        assert_eq!(
+            clean["state"][RUN_UNCOMMITTED_KEY],
+            json!(0),
+            "⚠⚠⚠⚠ THE CONTROL: a run that ended over a clean repository must publish `0` — a \
+             number, not a null: this build COULD read the tree and there was nothing in it: \
+             {clean:?}",
+        );
+        assert_eq!(
+            uncommitted_sentence(&clean),
+            None,
+            "⚠⚠ and a clean tree is the one answer that is SILENT — a line on every ordinary run \
+             is what trains a reader to skip the block the other two arms live in",
+        );
+
+        // ── 3. ⭐ THE ITEM: DIRTIED WHILE THE RUN WAS GOING, AND THE RUN THEN KILLED ────────────
+        //
+        // ⚠⚠⚠ THE ORDER IS THE CLAIM. The write happens after the run is confirmed driving, so a
+        // build that read the tree at the DOOR — when it was still clean — answers `0` here and
+        // this arm is the only thing that would say so.
+        let dirty_pane = echoing_agent_pane_in(&workspace, &repo);
+        let dirty = a_run_that_will_not_stop_on_its_own(&mut external, dirty_pane);
+        std::fs::write(
+            repo.join("tracked.txt"),
+            b"what the agent was in the middle of\n",
+        )
+        .expect("the mutation a dying run leaves behind");
+        let dirty = killed(&mut external, &registry, dirty);
+        let held = dirty["state"][RUN_UNCOMMITTED_KEY]
+            .as_u64()
+            .unwrap_or_else(|| {
+                panic!(
+                    "⚠⚠⚠⚠⚠ THE RUN ENDED OVER A TREE HOLDING AN UNCOMMITTED EDIT AND SAID NOTHING \
+                     ABOUT IT. That is item 682's whole cost: the next commit ships whatever the \
+                     dead run was in the middle of, and nothing asked: {dirty:?}"
+                )
+            });
+        assert!(
+            held > 0,
+            "⚠⚠⚠⚠ and the size must be REAL: `0` here means the tree was read at a moment when it \
+             was still clean — the door rather than the ending: {dirty:?}",
+        );
+        let said = uncommitted_sentence(&dirty).unwrap_or_else(|| {
+            panic!("⚠⚠⚠ a tree holding {held} bytes must produce a sentence: {dirty:?}")
+        });
+        assert!(
+            said.contains(&held.to_string()) && said.contains("before you commit"),
+            "⚠⚠ and the sentence must carry the size AND tell the reader what to do before \
+             committing — a number alone is a fact nobody acts on: {said:?}",
+        );
+
+        // ⚠ The workspace-hygiene rule: the fixture repository is removed here. A panic above
+        // leaves it under the machine's temp root, which is where `checkout`'s own fixtures accept
+        // the same residue.
+        std::fs::remove_dir_all(&repo).expect("the fixture repository is removed");
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN DRIVEN OUT OF PROCESS SAYS THE SAME THING ABOUT ITS TREE** — register item
+    /// 682's commit-contamination clause, on **the path that actually carries the runs**.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this gate exists beside the one above rather than inside it
+    ///
+    /// `RUN_DRIVER_PROCESS` has defaulted to **`on`** since 2026-08-25, so the worker thread the
+    /// gate above drives is the MINORITY path — and the run this whole clause was filed on was a
+    /// real one, which means it ended here. A repair measured only on the thread path would have
+    /// left every live run unasked while a green gate said the item was paid: this register's
+    /// most-repeated shape, and the reason this is a second gate rather than a fourth arm.
+    ///
+    /// # ⚠⚠⚠ What it holds that the other cannot
+    ///
+    /// The two paths reach the answer differently — the worker writes `RunState::Done.uncommitted`,
+    /// and the collector can only write INSIDE the object the driver reported — so *the row looks
+    /// the same either way* is a claim about `run_to_json`, not about either writer. This drives it
+    /// through the real collector with a real child process.
+    ///
+    /// ⚠ The child is `/bin/sh` printing an outcome, not a driver binary: what is under test is the
+    /// COLLECTOR's question, and a driver would only add a way for the fixture to be slow.
+    #[test]
+    fn a_run_driven_out_of_process_says_the_same_thing_about_its_tree() {
+        let repo = a_repository_a_run_can_dirty();
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane_in(&workspace, &repo);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .driving_out_of_process(Arc::new(|_id, _request| {
+            std::process::Command::new("/bin/sh")
+                .arg("-c")
+                // ⚠⚠ THE SLEEP IS THE STAGE, not a timing hope: the tree has to be dirtied while
+                // this child is still alive, because what is under test is whether the COLLECTOR
+                // asks after it exits. A child that ended first would be asked about a tree the
+                // fixture had not touched yet, and the arm would pass on a build that read the
+                // tree at the door.
+                .arg(
+                    "sleep 2; printf '{\"state\":\"failed\",\"iterations\":1,\"cost\":0,\
+                     \"unit\":\"bytes\"}'",
+                )
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+        }));
+
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "hello",
+                    "sentinel": "NO-SUCH-WORD-WILL-APPEAR",
+                })),
+            )
+            .expect("the run is accepted");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a started run answers its id: {started:?}");
+        };
+        let id = u64::try_from(id).expect("a run id is not negative");
+
+        std::fs::write(
+            repo.join("tracked.txt"),
+            b"what the agent was in the middle of\n",
+        )
+        .expect("the mutation a dying run leaves behind");
+
+        let row = ended(&registry, id, Duration::from_secs(30));
+        let held = row["state"][RUN_UNCOMMITTED_KEY]
+            .as_u64()
+            .unwrap_or_else(|| {
+                panic!(
+                    "⚠⚠⚠⚠⚠ THE DEFAULT DRIVER ENDED OVER A TREE HOLDING AN UNCOMMITTED EDIT AND \
+                     SAID NOTHING. Every real run of this daemon ends on this path, so a build \
+                     that only asks on the worker thread has repaired nothing: {row:?}"
+                )
+            });
+        assert!(
+            held > 0,
+            "⚠⚠⚠ and the size must be REAL — `0` means the collector read a tree that was still \
+             clean, which is the door rather than the ending: {row:?}",
+        );
+        assert!(
+            uncommitted_sentence(&row).is_some_and(|said| said.contains(&held.to_string())),
+            "⚠⚠ and ONE reading serves both drivers: a person must not have to know which kind of \
+             process answered before they can read the row: {:?}",
+            uncommitted_sentence(&row),
+        );
+
+        std::fs::remove_dir_all(&repo).expect("the fixture repository is removed");
     }
 
     #[test]
@@ -7250,6 +7745,7 @@ mod tests {
             &RunState::Done {
                 outcome: Box::new(finished(OutcomeState::Cancelled, 0)),
                 output: None,
+                uncommitted: None,
             },
         );
         assert_eq!(
@@ -7269,6 +7765,7 @@ mod tests {
                 RunState::Done {
                     outcome: Box::new(finished(OutcomeState::Failed, 0)),
                     output: None,
+                    uncommitted: None,
                 }
             }),
             ("a run that is still going", RunState::Running),
@@ -10906,6 +11403,7 @@ mod tests {
         let here = stand_down_sentence(&RunState::Done {
             outcome: Box::new(ended.clone()),
             output: None,
+            uncommitted: None,
         });
         assert!(
             here.contains("3 turns") && here.contains("BANKED"),

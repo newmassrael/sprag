@@ -41,6 +41,29 @@ pub enum RunState {
     Done {
         outcome: Box<Outcome>,
         output: Option<String>,
+        /// ⛔⛔⛔⛔⛔ **WHAT THE TREE THIS RUN WORKED IN WAS HOLDING WHEN IT ENDED**, in bytes of
+        /// `git diff HEAD` — register item 682's commit-contamination clause.
+        ///
+        /// # ⚠⚠⚠⚠⚠ The cost this exists to stop, measured before it was written
+        ///
+        /// A run died mid-edit and left its agent's half-applied mutation in the shared tree: one
+        /// deleted line in `deliver.rs`, which the NEXT person's commit would have shipped —
+        /// re-introducing the defect register item 669 had just repaired. The only reason it was
+        /// caught is that somebody ran the whole suite before committing, and a round that skips
+        /// the sweep does not see it. **The dead writer cannot put its own work back**, so the
+        /// question has to be asked by something that outlives it.
+        ///
+        /// ⚠⚠ **IT DOES NOT SAY THIS RUN LEFT IT, and the wording matters because a tree has more
+        /// than one writer** (item 196). A person and another run can both be editing, so
+        /// attribution is not available to anybody here — what IS available, and is what the reader
+        /// needs before committing, is *this tree is holding something no commit does*.
+        ///
+        /// ⚠ [`None`] is **cannot say** — a run whose pane named no directory, a directory that is
+        /// no repository, a `git` that is not installed — never *clean*, which is `Some(0)`. Item
+        /// 709's discipline: a fabricated zero here would be the sentence *nothing was left behind*
+        /// on no evidence, which is the accident this field exists to prevent, arriving by the
+        /// other road.
+        uncommitted: Option<usize>,
     },
     /// **THE RUN FINISHED IN ANOTHER PROCESS AND THIS IS WHAT IT REPORTED** — register items 650
     /// and 544.
@@ -2357,7 +2380,13 @@ impl RunRegistry {
                 .map(|(record, run)| {
                     let (finished, outcome, ceiling, output) = match &run.state {
                         RunState::Running | RunState::Interrupted => (false, None, None, None),
-                        RunState::Done { outcome, output } => (
+                        // ⚠ `uncommitted` is NOT persisted, and the omission is stated rather than
+                        // an oversight: what a tree was holding is a fact about a moment that has
+                        // passed, and a successor daemon publishing it would be vouching for a
+                        // reading it never took. A restored run answers *cannot say*.
+                        RunState::Done {
+                            outcome, output, ..
+                        } => (
                             true,
                             Some(crate::plugins::outcome_word(outcome).to_owned()),
                             crate::plugins::outcome_ceiling(outcome).map(str::to_owned),
@@ -2640,6 +2669,12 @@ impl RunRegistry {
                         briefed: saved.briefed.map(Into::into),
                     }),
                     output: saved.output.clone(),
+                    // ⛔ **CANNOT SAY, and this is the honest answer rather than a gap** — register
+                    // item 682. What a tree was holding is a reading somebody took at a moment that
+                    // has passed; this daemon did not take it and the log does not carry it, so
+                    // `None` is the only thing it may publish. `Some(0)` here would tell a reader
+                    // *nothing was left behind* about a run it never watched end.
+                    uncommitted: None,
                 }
             } else {
                 RunState::Interrupted
@@ -3058,6 +3093,7 @@ mod tests {
                     briefed: None,
                 }),
                 output: None,
+                uncommitted: None,
             };
         });
         let cancel = Arc::new(AtomicBool::new(false));
@@ -3133,6 +3169,7 @@ mod tests {
             *lock(&worker_state) = RunState::Done {
                 outcome: Box::new(a_cancelled_outcome()),
                 output: None,
+                uncommitted: None,
             };
         });
         NewRun {
@@ -3626,6 +3663,7 @@ mod tests {
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
                 output: None,
+                uncommitted: None,
             })),
             run: Box::new(EndedRun::restored(false, None, None)),
             progress,
@@ -3708,6 +3746,7 @@ mod tests {
                     ..an_outcome()
                 }),
                 output: None,
+                uncommitted: None,
             })),
             run: Box::new(EndedRun::restored(false, None, None)),
             progress,
@@ -3788,6 +3827,7 @@ mod tests {
                     ..an_outcome()
                 }),
                 output: None,
+                uncommitted: None,
             })),
             run: Box::new(EndedRun::restored(false, None, None)),
             progress,

@@ -5755,6 +5755,19 @@ fn render_run(run: &Value) -> String {
     let verified = run[sprag_host::plugins::RUN_CHECKS_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⛔⛔⛔⛔⛔ AND WHAT THE TREE IT WORKED IN IS HOLDING — register item 682's
+    // commit-contamination clause, in the same place and under the same constraint as the clauses
+    // above.
+    //
+    // ⚠⚠ THIS IS THE ONE CLAUSE HERE THAT IS ABOUT WHAT THE READER IS ABOUT TO DO rather than
+    // about what the run did. Every other line explains an ending; this one interrupts a COMMIT —
+    // a dead run's half-applied edit is still in the tree and shipping it re-introduces whatever
+    // it was in the middle of repairing.
+    //
+    // ⚠ The SENTENCE and not the byte count, `delivery_sentence`'s argument: the number travels in
+    // the row for a machine, and a person needs to be told to go and look.
+    let uncommitted = sprag_host::plugins::uncommitted_sentence(run)
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     // ⛔⛔⛔ AND WHAT THE DOOR ACCEPTED — register item 719's second direction, in the same place and
     // under the same constraint as the clauses above.
     //
@@ -5844,7 +5857,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{order}{walk_to}{briefed}{prompts}{verified}{uncommitted}{canceller}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -9737,6 +9750,7 @@ mod tests {
                     ..blocked_run(sprag_plugin::Refusal::NoConsent, 0)
                 }),
                 output: None,
+                uncommitted: None,
             },
         );
         let quiet = render_run(&swept);

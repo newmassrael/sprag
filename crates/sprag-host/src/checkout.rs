@@ -129,23 +129,15 @@ impl IsolatedCheckout {
             path,
         };
         // ⚠⚠⚠ READ FROM THE SHARED TREE AND WRITTEN ONLY INTO THE COPY — which is why this is safe
-        // to do while somebody else is working. `git diff HEAD` opens files; it changes none.
-        let carried = Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(["diff", "HEAD", "--binary"])
-            .output()
-            .ok()?;
-        if !carried.status.success() {
-            return None;
+        // to do while somebody else is working. [`carried_by`] opens files; it changes none.
+        match carried_by(repo)? {
+            // ⚠ AN EMPTY DIFF IS THE ORDINARY CASE, not a failure: the agent committed before
+            // claiming its milestone, which is what the run this item was filed on had done. `git
+            // apply` refuses an empty input, so the emptiness is answered here rather than read as
+            // a refusal.
+            Carried::Nothing => Some(cut),
+            Carried::Uncommitted(diff) => applied(&cut.path, &diff).then_some(cut),
         }
-        // ⚠ AN EMPTY DIFF IS THE ORDINARY CASE, not a failure: the agent committed before claiming
-        // its milestone, which is what the run this item was filed on had done. `git apply` refuses
-        // an empty input, so the emptiness is answered here instead of read as a refusal.
-        if carried.stdout.is_empty() {
-            return Some(cut);
-        }
-        applied(&cut.path, &carried.stdout).then_some(cut)
     }
 
     /// Where the copy is — the directory a check should be told to stand in.
@@ -167,6 +159,63 @@ impl Drop for IsolatedCheckout {
             .args(["worktree", "remove", "--force"])
             .arg(&self.path));
     }
+}
+
+/// **WHAT A WORKING TREE IS HOLDING THAT NO COMMIT DOES** — `git diff HEAD`, as a value.
+///
+/// ⚠⚠ The two readers of this fact want different halves of it and must not become two authors of
+/// the question: [`IsolatedCheckout::of`] wants the DIFF, to carry it into the copy, and a run's
+/// ending wants only *is there any* — register item 682's commit-contamination clause, where a run
+/// that died mid-edit leaves its mutation for the next person to commit by accident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Carried {
+    /// The tree holds nothing a commit does not.
+    Nothing,
+    /// The tree holds this much, as `git diff HEAD --binary` describes it.
+    ///
+    /// ⚠ Never empty — an empty diff is [`Nothing`](Self::Nothing), so a caller matching on this
+    /// arm cannot be looking at *no changes* spelled a second way.
+    Uncommitted(Vec<u8>),
+}
+
+impl Carried {
+    /// How many bytes the tree is holding — `0` for [`Nothing`](Self::Nothing).
+    ///
+    /// ⚠ A SIZE and not a file count: `git diff` describes changes, and counting the files in it
+    /// would be a second parser of a format this module deliberately does not read.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        match self {
+            Self::Nothing => 0,
+            Self::Uncommitted(diff) => diff.len(),
+        }
+    }
+}
+
+/// **WHAT `repo`'S WORKING TREE IS HOLDING**, or [`None`] where this build cannot say — a directory
+/// that is no repository, a `git` that is not installed, a command that failed.
+///
+/// # ⚠⚠⚠ `None` is *cannot say*, and no caller may fill it in
+///
+/// Register item 709's discipline. Answering [`Carried::Nothing`] for a tree nobody could read
+/// would put the sentence *this run left the tree clean* in a reader's mouth on no evidence — which
+/// is the exact shape of the accident item 682's clause is about, arriving from the other side.
+#[must_use]
+pub fn carried_by(repo: &Path) -> Option<Carried> {
+    let read = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["diff", "HEAD", "--binary"])
+        .output()
+        .ok()?;
+    if !read.status.success() {
+        return None;
+    }
+    Some(if read.stdout.is_empty() {
+        Carried::Nothing
+    } else {
+        Carried::Uncommitted(read.stdout)
+    })
 }
 
 /// Run `command` silently and say whether it succeeded — a spawn that fails and a non-zero exit are
