@@ -10614,6 +10614,35 @@ mod tests {
             AiLoopState::Restarting,
             "⚠⚠⚠⚠ A QUESTION THAT LANDED MUST CLEAR THE BUDGET: {cleared:?}",
         );
+
+        // ── ⛔⛔⛔⛔⛔ AND THE SENTENCE A PERSON READS MUST DESCRIBE *THIS* GUARD ──
+        //
+        // Register item 742, and it belongs in THIS test rather than in one of its own — that is
+        // the whole repair. The driver's prose said *"if it happens again in the session opened for
+        // it, the run stops"*, which is a DIFFERENT condition from the two walks above: the counter
+        // is cleared by a question that lands, so the `cleared` walk is a second refusal in the
+        // replacement session that correctly does NOT stop. A watcher read the sentence, watched
+        // that run, and filed the product as broken; two sessions spent a round finding out the
+        // only wrong thing was the line.
+        //
+        // ⚠⚠⚠ A GATE THAT ONLY READ THE SENTENCE WOULD BE VACUOUS — it would stay green while
+        // somebody changed the guard out from under it. Sitting here, a mutation to either edge
+        // reddens the walks above and this clause travels with them: **the sentence is asserted
+        // against walks that were just run, not against a remembered claim.**
+        let said = crate::outer::RestartReason::Unasked.describe();
+        assert!(
+            said.contains("TWICE RUNNING"),
+            "⚠⚠⚠⚠⚠ THE SENTENCE MUST NAME THE CONDITION THE WALKS ABOVE JUST DEMONSTRATED — a \
+             refusal with none taken in between. This is the only explanation a person ever reads \
+             for this ending, and prose that names a different condition sends an honest reader to \
+             report the product as broken: {said:?}",
+        );
+        assert!(
+            !said.contains("in the session opened for it"),
+            "⚠⚠⚠⚠ AND IT MUST NOT NAME THE CONDITION THE DOCUMENT REFUSED. `unasked_since_taken` \
+             is cleared by `prompt.sent`, so *again in the session opened for it* is false of the \
+             `cleared` walk two assertions up — which passes, and must: {said:?}",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **THE BOUND ON A REFUSED PROMPT COUNTS REFUSALS IN A ROW, AND THE CHURN REGISTER

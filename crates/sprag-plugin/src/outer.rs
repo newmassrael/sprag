@@ -2026,12 +2026,20 @@ impl RestartReason {
                  transcript that exists and reports nothing is register item 431, where a 3.4 MB \
                  record carrying 466,013 tokens was published as `context: 0`"
             }
+            // ⛔⛔⛔ THE LAST CLAUSE IS THE DOCUMENT'S GUARD, NOT A PARAPHRASE OF IT — register
+            // item 742. It used to read *"if it happens again in the session opened for it"*, and
+            // that is a DIFFERENT condition: `unasked_since_taken` is cleared by `prompt.sent`, so
+            // a session that takes four turns and then refuses one is back at zero and gets its
+            // replacement. A watcher read the old sentence, watched a run that had done exactly
+            // that NOT stop, and filed the product as broken. Two sessions spent a round finding
+            // out that the only wrong thing was this line.
             Self::Unasked => {
                 "the peer would not take the question: the prompt reached its pane and the submit \
                  after it never became a question the agent reported. Nothing is wrong with the \
                  work or the milestone — what is wedged is the SESSION's own composer, and this is \
                  the run opening a fresh one rather than throwing away what it has already paid \
-                 for. If it happens again in the session opened for it, the run stops for a person"
+                 for. If the next question is refused TWICE RUNNING — with none taken in between \
+                 — the run stops for a person; a question that lands clears it"
             }
         }
     }
