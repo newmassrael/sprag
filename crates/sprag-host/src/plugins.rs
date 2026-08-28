@@ -7208,6 +7208,33 @@ mod tests {
             resolved.max_cost,
         );
 
+        // ⛔⛔⛔⛔⛔ AND THE SHAPE THE ITEM WAS ACTUALLY FILED ON, WHICH IS NOT THE ONE ABOVE. Run 41
+        // of this daemon's registry named `max_iterations` and `max_seconds` and **left `max_bytes`
+        // out** — a caller who had thought about two ceilings and not the third — and died
+        // `exhausted (cost) after 49 iterations, 65809 bytes` with its round uncommitted. A
+        // fall-through that only fires when the whole `guardrails` object is absent would leave
+        // that exact launch on the daemon's 64 KiB, so the per-FIELD fall-through is the claim and
+        // this is the arm that holds it.
+        let partly = ai_loop_request(
+            PaneId(1),
+            json!({ "guardrails": { "max_iterations": 60, "max_seconds": 21600 } }),
+        );
+        let run_41 = parse_guardrails(partly.as_object().expect("an object"), unit, authored)
+            .expect("the launch that filed this item resolves");
+        assert_eq!(
+            run_41.max_cost, authored.max_cost,
+            "⛔⛔⛔⛔⛔ THE LAUNCH THIS ITEM WAS FILED ON IS STILL ON THE DAEMON'S DEFAULT. Naming \
+             two ceilings and forgetting the third is what a person does, and it is what run 41 \
+             did — so a fall-through keyed on the whole object rather than on each field would fix \
+             nothing that actually broke",
+        );
+        assert_eq!(
+            (run_41.max_iterations, run_41.max_duration),
+            (60, Some(std::time::Duration::from_secs(21_600))),
+            "⚠⚠⚠ and the two the caller DID name are still theirs: a per-field fall-through that \
+             overrode a named bound would be the document deciding what a person already decided",
+        );
+
         // ⚠⚠ AND THE OTHER DIRECTION: a caller who names a bound still wins, or *the document is
         // consulted* and *the document always wins* are one green and the second silently discards
         // what somebody asked for.
