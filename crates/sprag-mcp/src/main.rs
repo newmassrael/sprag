@@ -8114,8 +8114,39 @@ fn with_args(params: Value, args: Value) -> Value {
 /// succeeding with `window=`. Sending the window on every one of them is therefore correct for both
 /// kinds: the registry-wide actions do not consult it, and the scope-local ones need it. A client
 /// that tried to remember which is which would be keeping a second copy of the daemon's own rule.
+///
+/// # ⛔⛔⛔⛔⛔ AND A PANE OF THE AGENT'S OWN WINDOW MUST NAME IT TOO — register item 766
+///
+/// [`PaneRef::window`] is [`None`] for the caller's own window, and every PRESENTATION branch in
+/// this file reads it that way. **The wire does not**: a request with no window is resolved against
+/// the session's CURRENT window (`PaneSite::window`'s rule), which is wherever a person is looking.
+/// So the moment the agent's window and the current one came apart, every read and every write of
+/// the agent's OWN pane went to somebody else's window and died `NoExternalAtPath`.
+///
+/// **Measured live 2026-08-30, on this repository's own loop**: `read_pane` on the agent's own pane
+/// answered `NoExternalAtPath` while the current window was another repository's; the same call
+/// against the same daemon, same build, same pane answered the pane's text once the session's
+/// current window happened to become the agent's again. Nothing changed but where a person was
+/// looking.
+///
+/// ⚠⚠⚠ **THIS IS REGISTER ITEM 759'S SENTENCE AT THE OTHER CLIENT**, and the CLI has its own copy
+/// of the repair: *a listing narrowed at one end and addressed at the other is neither window's*.
+/// [`query_panes_and_daemon`] already narrows the listing to [`our_window`] — item 759's half — and
+/// the ADDRESS went on saying *current*. Narrowing one end is what made the other end wrong.
+///
+/// ⚠⚠ The fallback belongs HERE and not in the resolver, because `window: None` has to keep meaning
+/// *the caller's own* for the branches that PRINT it (`PaneRef::subject`, `pane_layout`'s far-window
+/// arm, `swap_pane`'s partner). One seam translates *mine* into a name; every other reader keeps the
+/// meaning it had.
+///
+/// ⚠ [`our_window`] can still answer [`None`] — an `sprag-mcp` outside any pane — and then this is
+/// exactly what it was before, which is the honest answer for a caller that has no window of its own.
 fn pane_params(pane: &PaneRef, path: String) -> Value {
-    windowed_params(path, pane.window.as_deref())
+    let window = match pane.window.as_deref() {
+        named @ Some(_) => named,
+        None => our_window(),
+    };
+    windowed_params(path, window)
 }
 
 /// [`pane_params`] for a request addressed at a WINDOW rather than at a pane in it.

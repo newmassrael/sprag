@@ -4360,6 +4360,112 @@ fn a_pane_an_agent_opens_stands_in_the_agents_own_window() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **AN AGENT CAN READ AND DRIVE ITS OWN PANE WHILE THE PERSON IS LOOKING SOMEWHERE ELSE**
+/// — register item 766, and register item 759's sentence at this client.
+///
+/// # ⚠⚠⚠⚠⚠ What went wrong, measured on the live loop rather than reasoned
+///
+/// `PaneRef::window` is [`None`] for a pane of the caller's OWN window and every branch that PRINTS
+/// it reads that as *mine*. **The wire does not**: a request naming no window is resolved against
+/// the session's CURRENT window, which is wherever a person last looked. So on 2026-08-30 the
+/// agent's own `read_pane` answered
+/// `scene/query /pane_369/…/full_text: NoExternalAtPath` — and the same call, same daemon, same
+/// build, same pane, answered the pane's text minutes later once the session's current window
+/// happened to be the agent's again. **Nothing changed but where a person was looking.**
+///
+/// ⚠⚠ That is why it read as *the door is broken*: it is not a refusal, it is a COIN TOSS decided
+/// by somebody else's screen. `list_panes` kept working throughout because item 759 narrowed the
+/// LISTING to the agent's window — and narrowing one end is exactly what made the other end wrong:
+/// *a listing narrowed at one end and addressed at the other is neither window's*.
+///
+/// # ⚠⚠⚠ Why the reads and the writes are one claim
+///
+/// Every pane-addressed request on this surface goes through `pane_params` — the reads, the mux
+/// actions, and `write_pane`. So the same missing word sends a WRITE to whichever window a person
+/// is on: item 759 measured `pane 2` being another repository's live loop *waiting for input*. This
+/// asserts both directions through the one door, because a fix at that door either serves both or
+/// serves neither.
+///
+/// # ⚠⚠⚠⚠ The premise is asserted inside, and it is the whole reason this was invisible
+///
+/// A one-window fixture cannot tell *the agent's window* from *the current window* — item 686's
+/// face, and the reason `sprag-mcp`'s gates were green while the live tool was a coin toss. So the
+/// person's view is moved to a second window and that is asserted before any claim rests on it.
+///
+/// ⚠ And the MARKER is what makes success mean the right pane: without it a read that reached some
+/// other window's pane by the same id would satisfy *no error* while answering about a stranger.
+#[test]
+fn an_agent_reads_and_drives_its_own_pane_while_the_person_looks_elsewhere() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let mine = mux_current_window(&sock);
+
+    // ── THE PREMISE: the person is looking somewhere the agent is not ───────────────────────
+    // `new_window` SELECTS what it creates, so this moves the view and leaves the agent behind.
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let theirs = mux_current_window(&sock);
+    assert_ne!(
+        theirs, mine,
+        "⛔ THE PREMISE: the current window must not be the agent's, or this gate passes in a \
+         one-window world and measures nothing — which is precisely how this defect reached a live \
+         daemon with four hundred gates green",
+    );
+    assert!(
+        mux_query_panes_in(&sock, &mine).contains(&0),
+        "⛔ THE PREMISE: the agent's own pane is no longer in the window it was born in, so what \
+         follows would not be a test of addressing it from elsewhere",
+    );
+
+    // ── THE CLAIM, PART ONE: a WRITE reaches the agent's own pane ────────────────────────────
+    //
+    // ⚠⚠⚠⚠⚠ THROUGH `call_tool_raw`, WHICH JUDGES NOTHING — and that is not a style choice. The
+    // first form of this used `call_tool`, whose own `assert_ne!(isError)` fires FIRST, so the
+    // sentence below could never be printed and the assertion around it could never fail: the
+    // vacuity this round's rule ⑸ asks about, one line from the claim it is protecting. The mutation
+    // was red either way, which is exactly why a red is not proof that the words are reachable.
+    const MARKER: &str = "R766-OWN-PANE";
+    let answer = server.call_tool_raw("write_pane", json!({ "pane": 1, "text": MARKER }));
+    let wrote = tool_text(&answer["result"]);
+    assert!(
+        answer["result"]["isError"] != json!(true)
+            && !wrote.contains("NoExternalAtPath")
+            && !wrote.contains("no pane"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 766: AN AGENT COULD NOT TYPE AT ITS OWN PANE BECAUSE A PERSON WAS \
+         LOOKING AT ANOTHER WINDOW. The request named no window, so the daemon resolved it against \
+         the session's CURRENT one — and every pane-addressed call on this surface shares that \
+         door, so a loop stops being able to work the moment somebody selects a different window. \
+         Answer: {wrote}",
+    );
+
+    // ── THE CLAIM, PART TWO: and a READ answers about THAT pane ─────────────────────────────
+    // ⚠ `call_tool_raw` again, for the reason above: a refusal has to arrive as TEXT this gate can
+    // put in front of a reader, not as somebody else's panic.
+    let mut screen = String::new();
+    for _ in 0..200 {
+        screen = tool_text(&server.call_tool_raw("read_pane", json!({ "pane": 1 }))["result"]);
+        if screen.contains(MARKER) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        screen.contains(MARKER),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 766: THE AGENT CANNOT READ ITS OWN PANE WHILE THE PERSON IS ON \
+         ANOTHER WINDOW. This is the door register item 765 needs in order to be measured at all — \
+         *did the answer ever reach the screen* cannot be asked when the only tool that shows a \
+         pane's scrollback refuses. `NoExternalAtPath` here is not a missing address: the external \
+         is there, and the request was sent to the wrong window. Screen: {screen:?}",
+    );
+
+    // ── AND THE PERSON WAS NOT MOVED, which is the rule this repair must not break ──────────
+    assert_eq!(
+        mux_current_window(&sock),
+        theirs,
+        "⚠⚠ reading and typing at its own pane moved the person's screen — R313's rule, and a \
+         repair that took a window to reach a pane would be worse than the defect",
+    );
+}
+
 /// **The round's claim end to end: an agent makes itself a place to work, works in it, and THEN
 /// shows the person — three acts, and only the third takes their screen.**
 ///
