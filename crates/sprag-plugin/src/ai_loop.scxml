@@ -1381,6 +1381,51 @@
     <data id="await_person_ms" expr="3600000"/>
 
     <!--
+      ⛔⛔⛔⛔⛔ WHICH OF THIS MACHINE'S STATES MEAN A PERSON IS NEEDED — register
+      item 755, and the clause that makes a run's own waiting SAYABLE.
+
+      ⚠⚠⚠⚠⚠ WHAT ITS ABSENCE COST, measured 2026-08-29 by the owner looking at
+      the screen and asking *"inner750 은 계속 멈춰있는데 왜 아무도 감시못하고
+      있는거야"*. Sixty-two minutes:
+
+        16:40  run79.log last write        17:42  the owner asks
+        sprag runs      : running — 46 iterations   ← the run says it is going
+        the driver      : alive                     ← so no kernel wait fires
+        sprag agent 308 : blocked                   ← the fact, in a third place
+        the screen      : a dialog this loop had put to a PERSON
+
+      Three surfaces, three different answers, and the two a watcher had wired
+      were the silent ones. **The loop's judgement was right the whole hour — it
+      was asking a person exactly the right question — and there was no channel.**
+
+      ⚠⚠ AND `await_person_ms` ABOVE IS WHY IT IS *STRUCTURAL* RATHER THAN A
+      MISSED LINE. This machine ENTERS `awaiting_human` and STAYS there; a stream
+      records TRANSITIONS, so there is no line to write while it stands. Re-
+      measured the same day: after the hour expired, the walk records
+      `Working →TurnBlocked→ Screening →ScreenNone→ AwaitingHuman` and `sprag
+      runs` still reads `running`. **A state that persists cannot be reported by
+      an event, and a watcher reading only the row never learns it at all.**
+
+      ⚠⚠⚠ SO THE DOCUMENT NAMES THE STATES, AND THE ROW READS THE NAME. Putting a
+      list of state words in Rust would be this file's vocabulary kept in a second
+      place — the defect `service_needles` and `screen_rules` are each here to
+      avoid. What a driver does with it is say so on the run's own status line;
+      what it must NOT do is act on it (register item 715: shortening the wait
+      hides the defect instead of reporting it).
+
+      ⚠ A LIST, though it holds one word today: *a person is needed* is a property
+      several states could come to have — a future `service_down` that has given
+      up, say — and a single string would have to be widened by whoever notices,
+      which is the shape this file keeps turning into lists.
+
+      ⚠⚠ THE EMPTY LIST IS A REAL ANSWER: a copy of this template whose author has
+      not classified its states says nothing, and a run of it reports no waiting
+      rather than a guess. That is an absence of a claim, not an exemption — no
+      state is silently filed as *fine*, because none was filed at all.
+    -->
+    <data id="needs_a_person" expr="['awaiting_human']"/>
+
+    <!--
       ⚠⚠⚠ HOW STILL A PERSON'S HAND MUST BE BEFORE THE PANE IS THE RUN'S AGAIN,
       in milliseconds — `await_person_ms`'s other half, and one decision with it:
       `Handback` lives INSIDE `Attended::APerson`, so *hand the pane back to a run

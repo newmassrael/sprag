@@ -561,6 +561,14 @@ const REFUSALS: &str = "refusals";
 /// repository's kind document quotes the words its own peer prints. See `ai_loop.scxml`.
 const SERVICE_NEEDLES: &str = "service_needles";
 
+/// **WHICH STATES OF THE MACHINE MEAN A PERSON IS NEEDED** — `needs_a_person`, read off the
+/// datamodel. Register item 755.
+///
+/// ⚠ Spelled once here for [`SERVICE_NEEDLES`]'s reason: the document names the states and this is
+/// the only place that name is repeated, so a rename in the `.scxml` cannot leave a reader looking
+/// for a key nobody writes.
+const NEEDS_A_PERSON: &str = "needs_a_person";
+
 /// The key each element of [`SERVICE_NEEDLES`] carries its text under.
 ///
 /// ⚠ One key rather than a bare string, for `may_answer`'s reason: every authored list in these
@@ -6416,6 +6424,45 @@ impl OuterLoop {
             .collect()
     }
 
+    /// [`Self::needs_a_person_in`] over this loop's own document — register item 755.
+    ///
+    /// ⚠ Read LIVE on every ask rather than cached at construction, for [`Self::rules_in`]'s
+    /// reason: what an author wrote is the authority for as long as the run lasts.
+    pub(crate) fn needs_a_person(&self) -> Vec<String> {
+        Self::needs_a_person_in(&self.script, &self.session)
+    }
+
+    /// **WHICH STATES OF THIS DOCUMENT MEAN A PERSON IS NEEDED** — `needs_a_person`, read off the
+    /// datamodel. Register item 755, and [`Self::service_needles_in`]'s shape exactly.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the words are the DOCUMENT's and not this file's
+    ///
+    /// `awaiting_human` is one of this machine's own state names, so a list of them in Rust would
+    /// be the statechart's vocabulary kept in a second place — the drift `service_needles` and
+    /// `screen_rules` are each here to avoid, and the thing register item 738 spent four layers
+    /// moving OUT of this crate. A template whose author adds a second such state says so in the
+    /// document and no Rust changes.
+    ///
+    /// ⚠⚠ **AN EMPTY LIST IS A REAL ANSWER AND NOT AN EXEMPTION.** A copy of the template whose
+    /// author has classified nothing reports no waiting — an absence of a claim, on
+    /// `works_in`'s terms. What it must not become is a default that files unclassified states as
+    /// *fine*; nothing here does, because nothing is filed at all.
+    ///
+    /// ⚠ Blank entries are dropped for [`Self::service_needles_in`]'s measured reason: an empty
+    /// string would match a state name nobody wrote.
+    pub(crate) fn needs_a_person_in(script: &Arc<dyn IScriptEngine>, session: &str) -> Vec<String> {
+        let Ok(ScriptValue::Array(items)) = script.get_variable(session, NEEDS_A_PERSON) else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| match item {
+                ScriptValue::String(state) if !state.trim().is_empty() => Some(state.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// **THE JUDGED DECISIONS THE DOCUMENT CARRIES**, read live for
     /// [`authored`](Self::authored)'s reason.
     ///
@@ -11631,6 +11678,59 @@ mod tests {
     /// file that is allowed to change. Writing the `<data>` is exactly what a person editing that
     /// file does, which is why this is authoring rather than a back door: there is still only one
     /// place the decision lives.
+    /// ⛔⛔⛔⛔⛔ **THE STATES THAT MEAN A PERSON IS NEEDED ARE THE DOCUMENT'S, AND THE SHIPPED
+    /// DOCUMENT NAMES ONE** — register item 755.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The premise, asserted first, because without it every claim here is about `[]`
+    ///
+    /// `needs_a_person` defaults to an empty list for a template whose author has classified
+    /// nothing, and an empty list makes *is this a waiting state* answer `false` for every state
+    /// there is. A gate that only checked the mechanism would then be green against a document
+    /// that says nothing — which is item 706's *the refusal ran for nobody* shape. So this asserts
+    /// the SHIPPED document classifies at least one state before believing anything else.
+    ///
+    /// # ⚠⚠⚠ Why the list is read from the `.scxml` at all
+    ///
+    /// `awaiting_human` is one of this machine's own state names. A list of them in Rust would be
+    /// the statechart's vocabulary kept in a second place — the drift `service_needles` and
+    /// `screen_rules` each exist to avoid, and what register item 738 spent four layers moving out
+    /// of this crate. **A template whose author classifies a second state changes no Rust.**
+    ///
+    /// ⚠ The control is a state that is NOT on the list, so *classified* and *unclassified* differ
+    /// in the one thing under test: without it a reader that answered `true` for everything would
+    /// pass the first assertion.
+    #[test]
+    fn the_states_that_need_a_person_are_the_documents_own() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let loops =
+            bounded_at(lua, pane, Duration::from_millis(200)).expect("the document's four strings");
+
+        let named = loops.needs_a_person();
+        assert!(
+            !named.is_empty(),
+            "⛔⛔⛔⛔⛔ THE PREMISE: the shipped `ai_loop.scxml` must classify at least one state \
+             as needing a person, or `waiting_for_a_person` answers `None` for every state there \
+             is and every gate about it is a statement about the empty list",
+        );
+        assert!(
+            named.iter().any(|state| state == "awaiting_human"),
+            "⚠⚠⚠ AND IT MUST BE THE ONE THE MEASUREMENT WAS ABOUT: the run that sat sixty-two \
+             minutes ended up in `awaiting_human`, and a list that named some other state would \
+             leave that hour exactly as unreported as before. Got {named:?}",
+        );
+        assert!(
+            !named.iter().any(|state| state == "working"),
+            "⚠⚠ THE CONTROL: an ordinary state must NOT be on the list, or *classified* and \
+             *unclassified* are the same answer and a run that is merely working would claim \
+             somebody is waiting on it. Got {named:?}",
+        );
+        assert!(
+            workspace.lock().unwrap().close(pane).is_some(),
+            "the pane this gate opened was there to close",
+        );
+    }
+
     fn bounded_at(
         script: Arc<dyn IScriptEngine>,
         pane: PaneId,

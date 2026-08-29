@@ -5994,12 +5994,37 @@ fn render_run(run: &Value) -> String {
             .to_owned(),
         (None, false) => String::new(),
     };
+    // ⛔⛔⛔⛔⛔ WHETHER SOMEBODY IS BEING WAITED ON — register item 755, and **THE ONE CLAUSE HERE
+    // THAT GOES ON THE STATUS LINE ITSELF** rather than under it.
+    //
+    // ⚠⚠⚠⚠⚠ THAT PLACEMENT IS THE WHOLE REPAIR AND IT IS THE OPPOSITE OF EVERY CLAUSE ABOVE. The
+    // note on `order` records why those go UNDER the status: this repository's own outer-loop
+    // watcher reads the run's status as the line immediately after the heading
+    // (`$0 ~ r {getline; print}`), so a detail line is invisible to it — which is exactly what a
+    // watcher blind for sixty-two minutes needs to stop being. A clause that only a person reading
+    // the whole block can see would repair nothing for the reader that was actually watching.
+    //
+    // ⚠⚠ APPENDED rather than replacing `running`, so that positional read keeps working and the
+    // word every script greps for is still there. What changes is that the line now says the run is
+    // going AND that it is going nowhere until somebody comes.
+    //
+    // ⚠ The daemon's sentence verbatim: which states mean *a person is needed* is the loop
+    // document's answer, and a second opinion in this binary would be a copy of a statechart's
+    // vocabulary in a client — item 686's class, one fact over.
+    //
+    // ⚠ Read off `state`, which is where the daemon puts it — and where only a `running` row can
+    // have it, because that is the one status whose state object comes from `progress_to_json`.
+    // The renderer therefore needs no guard of its own, and a guard here would be a second copy of
+    // a rule the wire already keeps.
+    let waiting = state[sprag_host::plugins::RUN_WAITING_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!(" · {said}"));
     let head = format!("run {id}  {label}{opener}{}\n", render_build(run));
     match state["status"].as_str() {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),

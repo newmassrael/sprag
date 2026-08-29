@@ -604,6 +604,9 @@ pub struct Driver {
     /// **WHERE THE PLUGIN'S OWN MACHINE IS** — [`Plugin::at`]'s last answer, asked once per
     /// completed step. [`None`] before the first step and for a plugin that walks no statechart.
     at: Option<&'static str>,
+    /// **WHETHER A PERSON IS BEING WAITED ON** — [`Plugin::waiting_for_a_person`]'s last answer,
+    /// asked beside [`at`](Self::at) and for the same steps. Register item 755.
+    waiting: Option<String>,
     /// **THE WHOLE PLACE THAT MACHINE IS IN** — [`Plugin::place`]'s last answer, asked beside
     /// [`at`](Self::at) and for the same steps. Register item 543.
     place: Option<Vec<String>>,
@@ -767,6 +770,23 @@ pub struct Progress {
     /// [`STATECHARTS_FINGERPRINT`](crate::STATECHARTS_FINGERPRINT) beside it. `None` before the
     /// first step completes, and for a plugin that walks no statechart.
     pub at: Option<&'static str>,
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS RUN IS WAITING FOR A PERSON RIGHT NOW, AND WHY** —
+    /// [`crate::Plugin::waiting_for_a_person`], register item 755. `None` for a run nobody is
+    /// waiting on, and before the first step.
+    ///
+    /// # ⚠⚠⚠⚠ Why it is a LEVEL here and not a journal line
+    ///
+    /// Every other channel a run has reports TRANSITIONS: the journal records steps, and a state a
+    /// machine STAYS IN writes no line while it stands. Measured 2026-08-29 — a run sat waiting for
+    /// sixty-two minutes while `sprag runs` read `running`, the driver stayed alive so no kernel
+    /// wait fired, and the walk only recorded `AwaitingHuman` after the wait had already expired.
+    /// **A persisting fact has to be readable as a level**, which is what this field is and what
+    /// `iterations` beside it already is for a different question.
+    ///
+    /// ⚠ A SENTENCE rather than a state word: the plugin knows which of its states mean this and
+    /// why, and a reader is told what to DO. The document owns the words (`needs_a_person`), the
+    /// plugin composes the sentence, and this carries it — nobody in between reads it.
+    pub waiting: Option<String>,
     /// **THE WHOLE PLACE THE MACHINE IS IN**, in the document's own words — [`crate::Plugin::place`],
     /// register item 543. `None` for a plugin that walks no statechart and before the first step.
     ///
@@ -899,6 +919,7 @@ impl Driver {
             forward: None,
             journal: Vec::new(),
             at: None,
+            waiting: None,
             place: None,
             cut_short: false,
             stopped: None,
@@ -957,6 +978,7 @@ impl Driver {
             answered: self.answered,
             screened: self.screened,
             at: self.at,
+            waiting: self.waiting.clone(),
             place: self.place.clone(),
             deliveries: self.deliveries,
             checks: self.checks.clone(),
@@ -1283,6 +1305,12 @@ impl Driver {
                     // where it last said*. Asked here, after the step and before the publish, it
                     // cannot be missed and cannot be stale.
                     self.at = plugin.at();
+                    // ⛔⛔⛔⛔⛔ AND WHETHER ANYBODY IS WAITED ON — register item 755, in the same
+                    // breath as `at` above and for its reason exactly: two readings of one machine
+                    // taken a step apart describe two moments, and this one is the fact a watcher
+                    // acts on. Asked here rather than derived downstream, because which states mean
+                    // *a person is needed* is the DOCUMENT's answer and only the plugin holds it.
+                    self.waiting = plugin.waiting_for_a_person();
                     // ⚠ BESIDE `at` AND AT THE SAME MOMENT — register item 543. Two readings of one
                     // machine taken a step apart would be a record whose word and whose
                     // configuration describe different places, and nothing downstream could tell.

@@ -1105,6 +1105,41 @@ impl Plugin for AiLoop {
         Some(AiLoopPolicy::get_state_name(self.state()))
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHETHER A PERSON IS NEEDED RIGHT NOW** — register item 755, and the one answer
+    /// this loop could give for an hour and had nowhere to put.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The states are the DOCUMENT's, which is the whole design of this
+    ///
+    /// `awaiting_human` is one of `ai_loop.scxml`'s own state names, so the list of states that
+    /// mean *a person is needed* is a `<data>` clause there and is read back through
+    /// `OuterLoop::needs_a_person`. A list in Rust would be this machine's vocabulary kept in a
+    /// second place — the drift `service_needles` and `screen_rules` each exist to avoid, and what
+    /// register item 738 spent four layers moving out of this crate. **A template whose author
+    /// classifies a second state says so in the document and nothing here changes.**
+    ///
+    /// ⚠⚠ **AN UNCLASSIFIED DOCUMENT REPORTS NO WAITING**, which is an absence of a claim and not
+    /// an exemption: no state is filed as *fine*, because none was filed. That is `works_in`'s rule
+    /// one crate over, and the gate asserts the shipped document DOES classify one — otherwise
+    /// every assertion about this would be a statement about the empty list.
+    ///
+    /// ⚠ It STATES and changes nothing: no timing moves, no run ends, no dialog is answered. Item
+    /// 715 refused the neighbouring repair (shorten the wait) because that hides the defect; this
+    /// is the mouth register item 706 gave `done_reason`, one fact over.
+    fn waiting_for_a_person(&self) -> Option<String> {
+        let at = AiLoopPolicy::get_state_name(self.state());
+        self.inner
+            .needs_a_person()
+            .iter()
+            .any(|state| state == at)
+            .then(|| {
+                format!(
+                    "this run is waiting for a person — its machine is in {at:?}, which its \
+                     document lists as a state a person is needed in. Go to the pane and look; \
+                     nothing here will move until somebody does."
+                )
+            })
+    }
+
     /// ⚠⚠ THE WHOLE PLACE, beside the word above and for the reason the trait gives: `at` answers a
     /// person and this answers an engine. Register item 543.
     ///
@@ -1879,6 +1914,70 @@ mod tests {
             ready_timeout_ms: Some(GATE_READY_MS),
             turn_within_ms: Some(GATE_TURN_MS),
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A LOOP SAYS IT IS WAITING FOR A PERSON ONLY IN THE STATES ITS DOCUMENT NAMES** —
+    /// register item 755, and the arm a GREEN MUTATION named.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What the other two gates cannot see
+    ///
+    /// `outer::tests::the_states_that_need_a_person_are_the_documents_own` measures the READER —
+    /// that `ai_loop.scxml` classifies `awaiting_human` and not `working`. The host's
+    /// `a_run_waiting_for_a_person_says_so_on_its_row_…` measures the MOUTH — that a `Progress`
+    /// carrying a sentence reaches the row. **Neither runs the plugin**, so a
+    /// `waiting_for_a_person` that ignored the document and answered `Some` for every state left
+    /// both of them green: measured, by cutting the list lookup out and running the whole
+    /// workspace suite.
+    ///
+    /// That is this workspace's rule that a green mutation is the name of a gate you owe, and this
+    /// is the gate — the one place where the document's answer and the machine's position meet.
+    ///
+    /// # ⚠⚠ The fixture's own premise, asserted first
+    ///
+    /// A fresh loop is NOT in a waiting state, so `None` here has to be shown to mean *this state
+    /// is not on the list* rather than *the list is empty* or *the reader is broken*. The document
+    /// is asked directly for both halves.
+    #[test]
+    fn a_loop_says_it_waits_for_a_person_only_where_its_document_says_so() {
+        let (workspace, pane) = standin_agent(2);
+        let loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+
+        // ── THE PREMISE: the document classifies something, and it is not where we are ───────
+        let named = loops.inner.needs_a_person();
+        assert!(
+            !named.is_empty(),
+            "⛔⛔⛔ THE PREMISE: the document must classify at least one state, or the `None` \
+             below is about an empty list and this gate measures nothing",
+        );
+        let at = AiLoopPolicy::get_state_name(loops.state());
+        assert!(
+            !named.iter().any(|state| state == at),
+            "⛔⛔ AND THE FIXTURE MUST NOT ALREADY BE THERE: a fresh loop sits in {at:?}, which \
+             must not be on {named:?} — otherwise the two arms below are the same case twice",
+        );
+
+        // ── THE CLAIM: not in a named state, so nobody is being waited on ───────────────────
+        assert_eq!(
+            loops.waiting_for_a_person(),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 755: a loop that is merely working must NOT claim somebody is \
+             waiting on it. A signal on every row is noise, and noise is why nobody reads the row \
+             this item exists to make readable — the state it is in ({at:?}) is not one the \
+             document names",
+        );
+
+        // ── THE CONTROL: the named state is the document's own, never one typed here ────────
+        let waiting = named.first().expect("the premise asserted one");
+        assert!(
+            loops.inner.needs_a_person().iter().any(|s| s == waiting),
+            "⚠⚠ the control's state must be the document's own: {waiting:?} / {named:?}",
+        );
+
+        assert!(
+            workspace.lock().unwrap().close(pane).is_some(),
+            "the pane this gate opened was there to close",
+        );
     }
 
     /// ⚠⚠⚠ **THE LOOP IS BOUNDED BY THE SUBSTRATE, NOT BY WHOEVER IS PUMPING IT** — register item

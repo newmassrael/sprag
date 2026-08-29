@@ -348,6 +348,26 @@ pub const RUN_CHECKS_KEY: &str = "checks";
 /// both are a `claude` prompt. This key is what lets the PANE surface answer *is anybody driving
 /// me* — see `crate::wire`'s pane answer.
 pub const RUN_DRIVING_KEY: &str = "driving";
+/// **WHETHER THIS RUN IS WAITING FOR A PERSON RIGHT NOW, AND WHY** — register item 755.
+///
+/// The plugin's own sentence ([`sprag_plugin::Plugin::waiting_for_a_person`]), carried through
+/// untouched.
+///
+/// # ⚠⚠⚠⚠⚠ It lives INSIDE the state object, and that placement is the guard
+///
+/// [`progress_to_json`] is what fills a `running` row's state, and **only `RunState::Running`
+/// reaches it** — `done`, `panicked` and `interrupted` each build a state object of their own. So
+/// *this sentence is published exactly while it is true* by construction rather than by a
+/// condition somebody has to keep writing: the claim is *nothing will move until somebody comes*,
+/// and a run no driver is stepping must not make it.
+///
+/// ⛔ A SECOND COPY BESIDE THE STATE WAS WRITTEN AND DELETED IN THE SAME ROUND. It published the
+/// same fact twice in one row — [`REPORTED_BESIDE_KEY`]'s stated defect — and a mutation cutting
+/// one left the other standing, which is a gate that cannot see its own subject.
+///
+/// ⚠ Absent means nobody is waited on, which is the ordinary state of a run and the reading every
+/// presence-is-the-claim key here takes.
+pub const RUN_WAITING_KEY: &str = "waiting";
 /// **WHERE A RUN'S MACHINE WAS, WRITTEN INTO THE REQUEST A DAEMON HANDS A DRIVER** — register item
 /// 543's fourth brick, and the one key on that map a CLIENT may not set.
 ///
@@ -4325,6 +4345,13 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
     if let Some(at) = progress.at {
         answer[RUN_AT_KEY] = json!(at);
     }
+    // ⛔⛔⛔ AND WHETHER SOMEBODY IS BEING WAITED ON — register item 755, carried on this key's
+    // exact terms: present only when there is one, so absence goes on meaning *nobody said* for a
+    // driver built before it existed. Without it an out-of-process run — which is every run this
+    // daemon starts — could never say it was waiting, and that is the deployment the item measured.
+    if let Some(waiting) = &progress.waiting {
+        answer[RUN_WAITING_KEY] = json!(waiting);
+    }
     if let Some(place) = &progress.place {
         answer[RUN_PLACE_KEY] = json!(place);
     }
@@ -4423,6 +4450,11 @@ pub struct ReportedProgress {
     pub cost: Option<sprag_plugin::Cost>,
     /// Where it said its machine was, in one word for a person — `sprag_plugin::Plugin::at`.
     pub at: Option<String>,
+    /// Whether it said somebody is being waited on, and why —
+    /// `sprag_plugin::Plugin::waiting_for_a_person`, register item 755. [`None`] for a driver that
+    /// says nothing, which is a run nobody is waiting on and also every driver built before the key
+    /// existed: absence has to keep meaning *nobody said*.
+    pub waiting: Option<String>,
     /// The whole place its machine was in — `sprag_plugin::Plugin::place`, the thing item 543's
     /// resume is entered at.
     pub place: Option<Vec<String>>,
@@ -4534,6 +4566,12 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
         },
         at: reported
             .get(RUN_AT_KEY)
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        // ⚠ Register item 755, read back on `at`'s terms: a driver that says nothing is one that
+        // has nobody waiting, not one whose waiting this build failed to read.
+        waiting: reported
+            .get(RUN_WAITING_KEY)
             .and_then(Value::as_str)
             .map(str::to_owned),
         // ⚠⚠ A LIST OF WORDS OR NOTHING — a `place` that is not a list of strings is a report this
@@ -7091,6 +7129,95 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&repo).expect("the fixture repository is removed");
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THAT IS WAITING FOR A PERSON SAYS SO ON ITS ROW — AND A RUN THAT IS NOT
+    /// SAYS NOTHING** — register item 755, both arms of its done-when.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The sixty-two minutes, and why no EVENT could have carried them
+    ///
+    /// 2026-08-29, after the owner asked why nobody was watching a run that had stopped an hour
+    /// earlier: `sprag runs` said `running — 46 iterations`, the driver was alive so no kernel wait
+    /// fired, and the fact lived in a third place (`sprag agent 308: blocked`) nothing was reading.
+    /// The loop had put a correct question to a person and there was no channel.
+    ///
+    /// **Waiting is a state a machine STAYS IN**, and every channel a run has reports transitions:
+    /// a stream has no line to write while a state stands, and a kernel wait fires on an ending
+    /// that is not happening. Re-measured the same day — after the wait expired the walk recorded
+    /// `AwaitingHuman` while the row still read `running`, so a watcher on the row learned it
+    /// **never** rather than late. That is why the repair is a LEVEL on the row.
+    ///
+    /// # ⚠⚠⚠ The second arm is not symmetry, it is the reason the first one gets read
+    ///
+    /// A signal on every row is noise, and noise is why nobody looks. So an ordinary running run
+    /// must carry NO such key — asserted here rather than assumed, because the cheap version of
+    /// this feature (a clause that renders whatever the plugin last said) would pass the first arm
+    /// and fail this one silently.
+    ///
+    /// ⚠ It drives `run_to_json` — the wire — rather than the renderer, for
+    /// [`a_panicked_runs_reason_reaches_the_wire`](self)'s stated reason: a key that appears on one
+    /// arm of one match is exactly what a render refactor drops, and the mouth would then be
+    /// repaired on top of nothing.
+    #[test]
+    fn a_run_waiting_for_a_person_says_so_on_its_row_and_one_that_is_not_says_nothing() {
+        let said = "this run is waiting for a person — its machine is in \"awaiting_human\"";
+        let row = |waiting: Option<&str>, state: RunState| {
+            run_to_json(
+                &crate::runs::RunSummary {
+                    id: RunId(9),
+                    label: "ai_loop pane=3".to_owned(),
+                    opened_by: None,
+                    opened_by_session: None,
+                    state,
+                    progress: sprag_plugin::Progress {
+                        waiting: waiting.map(str::to_owned),
+                        ..sprag_plugin::Progress::default()
+                    },
+                    reported: None,
+                    build: Some(crate::wire::BUILD.to_owned()),
+                    stood_down: false,
+                    held: false,
+                    cancelled_by: None,
+                    withheld: None,
+                },
+                None,
+            )
+        };
+
+        // ── ARM ONE: a waiting run's row carries the sentence ────────────────────────────────
+        let waiting = row(Some(said), RunState::Running);
+        assert_eq!(
+            waiting["state"][RUN_WAITING_KEY],
+            json!(said),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 755: a run that is waiting for a person must say so where a \
+             watcher is looking. Its own channels cannot — a state that PERSISTS produces no event \
+             — so the row is the only surface that can carry it: {waiting:?}",
+        );
+
+        // ── ARM TWO: an ordinary running run carries no such key ─────────────────────────────
+        let going = row(None, RunState::Running);
+        assert_eq!(
+            going["state"][RUN_WAITING_KEY],
+            Value::Null,
+            "⚠⚠⚠ AND A RUN NOBODY IS WAITING ON MUST SAY NOTHING. A signal on every row is noise, \
+             and noise is why nobody reads the row this item exists to make readable: {going:?}",
+        );
+
+        // ── ARM THREE: and it stops being said the moment the run stops running ──────────────
+        // The sentence asserts *nothing will move until somebody comes*, which is false of a run
+        // no driver is stepping — a person sent to that pane finds nobody to answer. An
+        // `interrupted` run is the sharpest case: its cell still holds whatever its driver last
+        // published, so without this guard a restart would leave rows claiming people are being
+        // waited on by runs that have no driver at all. This is `RUN_WITHHELD_KEY`'s guard one
+        // clause over, and it is what keeps the claim true.
+        let over = row(Some(said), RunState::Interrupted);
+        assert_eq!(
+            over["state"][RUN_WAITING_KEY],
+            Value::Null,
+            "⚠⚠ A RUN THAT IS NOT RUNNING MUST NOT CLAIM SOMEBODY IS WAITING ON IT: the last thing \
+             its driver published stays in the cell, so without this guard every interrupted run \
+             would keep sending people to a pane where nothing is happening: {over:?}",
+        );
     }
 
     /// ⛔⛔⛔⛔ **A DRIVER THAT DIED SILENTLY STILL SAYS WHY, AND THE WIRE CARRIES IT** — register

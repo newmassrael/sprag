@@ -851,6 +851,45 @@ pub trait Plugin {
         None
     }
 
+    /// **WHETHER THIS RUN IS WAITING FOR A PERSON RIGHT NOW, AND WHY** — register item 755.
+    /// [`None`] for a plugin nobody can be waiting on, which is the default and every plugin but
+    /// the loop.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The sixty-two minutes this exists to end
+    ///
+    /// 2026-08-29, read off a live daemon after the owner asked why nobody was watching a run that
+    /// had stopped an hour earlier: `sprag runs` said `running — 46 iterations`, the driver was
+    /// alive so no kernel wait fired, and the fact — the agent was `blocked` on a dialog the loop
+    /// had correctly put to a person — was in a third place nothing was reading. **The loop's
+    /// judgement was right the whole hour and there was no channel.**
+    ///
+    /// # ⚠⚠⚠⚠ Why an EVENT could not have carried it, which is the whole shape
+    ///
+    /// Waiting is a state a machine STAYS IN, and every channel a run has reports TRANSITIONS: a
+    /// stream has no line to write while a state stands, and a kernel wait fires on an ending that
+    /// is not happening. Re-measured the same day — after the wait expired, `AwaitingHuman` appears
+    /// in the WALK while the row still reads `running`, so a watcher on the row learns it **never**
+    /// rather than late. A fact that persists has to be readable where a reader looks, which is the
+    /// run's own status line.
+    ///
+    /// # ⚠⚠⚠ It STATES, and nothing acts on it
+    ///
+    /// Register item 715 refused the neighbouring repair — shortening the wait — because that hides
+    /// the defect rather than reporting it. This changes no timing, ends no run and answers no
+    /// dialog; it is a mouth, in the shape register item 706 gave `done_reason`: the fact was
+    /// already inside the daemon and had nowhere to be said.
+    ///
+    /// ⚠⚠ A SENTENCE and not a word, `Outcome`'s `stop_said` rule: what a
+    /// reader does about *the agent is asking you something* and *the machine handed this to you*
+    /// is the same walk to the same pane, but only a sentence can say which one it is when they
+    /// disagree.
+    ///
+    /// ⚠ Asked on every step beside [`at`](Self::at), so a plugin that starts waiting between two
+    /// steps says so at the next one and never has to be polled.
+    fn waiting_for_a_person(&self) -> Option<String> {
+        None
+    }
+
     /// **THE WHOLE PLACE THIS PLUGIN'S MACHINE IS IN**, in the document's own words — register item
     /// 543. [`None`] for a plugin that walks no statechart, which is every one but the loop.
     ///

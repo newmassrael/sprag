@@ -2806,6 +2806,13 @@ impl RunRegistry {
                     answered: 0,
                     // ⚠ Nor the count of calls it refused, for the same reason.
                     screened: 0,
+                    // ⛔⛔⛔ AND NOTHING IS WAITED ON BY A RUN NOBODY IS DRIVING — register item
+                    // 755. A restored run has no driver asking its plugin anything, so *is a
+                    // person needed* has no answerer; `None` is the honest reading and the same one
+                    // `journal` and `answered` above take. ⚠ It is a LEVEL a live driver republishes
+                    // on its next step, so a run that is put back and resumes says so at once — and
+                    // one that never resumes never claims somebody is waiting on it.
+                    waiting: None,
                     // ⚠⚠⚠⚠⚠ AND WHAT ITS DELIVERIES CAME TO **IS** RESTORED — register item 606.
                     // This used to say the log had no column for it, which was true and was the
                     // reason item 599 could not be answered by looking: measured on this machine,
