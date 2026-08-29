@@ -936,6 +936,27 @@
     -->
     <data id="unreadable_rule" expr="''"/>
     <!--
+      ⚠⚠⚠⚠⚠ AND WHEN IT NEVER GOT AS FAR AS JUDGING — register item 752, the
+      third word and the one the other two could not tell apart.
+
+      A checker stopped by a usage limit, a hook or an outage prints a notice and
+      no verdict, and until this existed that arrived as `unreadable`, whose
+      remedy is *fix the prompt*. The truth is *wait and ask again*, which is
+      `unanswered`'s remedy DELAYED — near enough to have been missed and
+      opposite enough to be wrong.
+
+      ⛔⛔⛔ THE DRIVER DOES NOT LEARN THIS FROM A NEEDLE. Matching the notice's
+      wording is the widening `service_needles` refuses two files over, and this
+      machine's own transcripts are the proof: a line whose head is the peer's
+      usage notice and whose tail is an AGENT writing about it. What separates
+      them is the checker's CONTRACT — an argv asking for a structured answer
+      that did not produce one — which is that program's own report.
+
+      ⚠ Empty in the template, `unanswered_rule`'s rule: a kind that names a
+      checker knows what to say about that checker's bad minute.
+    -->
+    <data id="unwell_rule" expr="''"/>
+    <!--
       THE CLAUSE CHOSEN FOR THIS SILENCE, composed on entry to `unverified` and
       true for exactly one turn — `dispute_said`'s rule, and for its reason: a
       remedy about THIS silence that outlived it would tell an agent to fix a
@@ -2778,6 +2799,7 @@
       -->
       <assign location="unanswered_rule" expr="_event.data.unanswered_rule"/>
       <assign location="unreadable_rule" expr="_event.data.unreadable_rule"/>
+      <assign location="unwell_rule" expr="_event.data.unwell_rule"/>
       <!--
         ⚠⚠⚠ AND THE THREE THE PEER'S BAD DAY NEEDS, on the same unconditional
         terms: the driver always sends all three, echoing this document's own
@@ -4292,13 +4314,28 @@
         explained` carries that, and this document may quote it but must never
         decide on it, which is the ban that key's own comment states.
 
-        ⚠ `'unanswered'` IS TESTED RATHER THAN `'unreadable'`, so a word this
-        document has not met takes the READABLE arm — the one that does not
-        promise a retry will help. A silence nobody has classified must not be
-        answered with *ask again*, which is the more expensive wrong answer.
+        ⚠ EVERY WORD IS TESTED BY NAME AND THE FALL-THROUGH IS THE READABLE ONE,
+        so a word this document has not met takes the arm that does not promise a
+        retry will help. A silence nobody has classified must not be answered
+        with *ask again*, which is the more expensive wrong answer.
+
+        ⚠⚠⚠⚠⚠ AND THE THIRD WORD IS REGISTER ITEM 752's — `unwell`, which is
+        neither of the two above: the checker RAN, printed something, and never
+        produced the shape its argv contracted, so it never got as far as
+        judging. Its remedy is `unanswered`'s (ask again) DELAYED (not yet),
+        which is why it could not borrow either spelling.
+
+        ⛔⛔ THIS IF/ELSE IS NOT WHAT KEEPS THE THREE HONEST. A document cannot
+        fail to compile, so an arm forgotten here would silently take the
+        fall-through — which is exactly how `unverified` itself went a day with
+        no `pass` arm (item 749). What holds it is
+        `outer::tests::every_silence_this_driver_can_publish_is_one_this_document_disposes_of`,
+        which reads `Silence::ALL` against the words this block names.
       -->
       <if cond="_event.data.silence == 'unanswered'">
         <assign location="unverified_said" expr="unanswered_rule"/>
+      <elseif cond="_event.data.silence == 'unwell'"/>
+        <assign location="unverified_said" expr="unwell_rule"/>
       <else/>
         <assign location="unverified_said" expr="unreadable_rule"/>
       </if>

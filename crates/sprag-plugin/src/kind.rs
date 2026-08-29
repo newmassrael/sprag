@@ -236,18 +236,27 @@ impl LoopKind {
         let policy = self.machine.policy();
         let unanswered = policy.unanswered_rule().filter(|said| !said.is_empty());
         let unreadable = policy.unreadable_rule().filter(|said| !said.is_empty());
-        match (unanswered, unreadable) {
-            (None, None) => Ok(None),
-            (Some(unanswered), Some(unreadable)) => Ok(Some(crate::outer::UnverifiedRules {
-                unanswered,
-                unreadable,
-            })),
+        // ⚠⚠⚠ THE THIRD, REGISTER ITEM 752 — see [`crate::judge::Silence::Unwell`]. It joins the
+        // all-or-nothing rule rather than defaulting: a kind that says what to do about a checker
+        // that misphrased and nothing about one that was stopped before it judged would leave the
+        // commonest interruption in an unattended loop's life answered by an empty sentence.
+        let unwell = policy.unwell_rule().filter(|said| !said.is_empty());
+        match (unanswered, unreadable, unwell) {
+            (None, None, None) => Ok(None),
+            (Some(unanswered), Some(unreadable), Some(unwell)) => {
+                Ok(Some(crate::outer::UnverifiedRules {
+                    unanswered,
+                    unreadable,
+                    unwell,
+                }))
+            }
             // ⚠⚠ THE HALF-AUTHORED DOCUMENT IS A RED AND NOT A DEFAULT — this workspace's rule that
-            // an unclassified thing does not pass. The empty one is NAMED, because *one of your two
+            // an unclassified thing does not pass. The empty one is NAMED, because *one of your
             // clauses is missing* sends an author to a file and *your rules were ignored* sends
             // them nowhere.
-            (None, Some(_)) => Err(NotScreenable::Missing("unanswered_rule")),
-            (Some(_), None) => Err(NotScreenable::Missing("unreadable_rule")),
+            (None, _, _) => Err(NotScreenable::Missing("unanswered_rule")),
+            (_, None, _) => Err(NotScreenable::Missing("unreadable_rule")),
+            (_, _, None) => Err(NotScreenable::Missing("unwell_rule")),
         }
     }
 

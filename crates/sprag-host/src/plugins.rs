@@ -8702,16 +8702,65 @@ mod tests {
                 "⚠⚠⚠ THE CONTROL: `debt_loop.scxml` must author what a silence owes, or the door \
                  below is carrying nothing and this gate is about an empty pair",
             );
-        assert!(
-            !authored.unanswered.trim().is_empty() && !authored.unreadable.trim().is_empty(),
-            "⚠⚠ and neither half may be blank: an empty clause is composed into the prompt exactly \
-             as written, which is what R380 measured a live agent reading as `(edit me)`",
+        // ⚠⚠⚠ THREE SINCE REGISTER ITEM 752, and the count is held against the driver's own
+        // vocabulary rather than a number typed here: a word added to `Silence` and not to this
+        // document is a class whose remedy reaches an agent as an empty sentence.
+        let clauses = [
+            (
+                sprag_plugin::judge::Silence::Unanswered,
+                &authored.unanswered,
+            ),
+            (
+                sprag_plugin::judge::Silence::Unreadable,
+                &authored.unreadable,
+            ),
+            (sprag_plugin::judge::Silence::Unwell, &authored.unwell),
+        ];
+        assert_eq!(
+            clauses.len(),
+            sprag_plugin::judge::Silence::ALL.len(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 752: this walk names {} of the {} silences the driver can \
+             publish, so a whole class of them is asserted by nobody here",
+            clauses.len(),
+            sprag_plugin::judge::Silence::ALL.len(),
         );
-        assert_ne!(
-            authored.unanswered, authored.unreadable,
-            "⛔⛔⛔ REGISTER ITEM 741: the two clauses are the SAME SENTENCE, so a document that \
-             has two channels is saying one thing through both — which is the collapse this item \
-             is about, moved from the driver into the document",
+        for (class, said) in &clauses {
+            assert!(
+                !said.trim().is_empty(),
+                "⚠⚠ no clause may be blank ({class:?}): an empty one is composed into the prompt \
+                 exactly as written, which is what R380 measured a live agent reading as `(edit \
+                 me)`",
+            );
+        }
+        for (one, other) in [(0, 1), (0, 2), (1, 2)] {
+            assert_ne!(
+                clauses[one].1, clauses[other].1,
+                "⛔⛔⛔ REGISTER ITEM 741, WIDENED BY 752: {:?} and {:?} are the SAME SENTENCE, so \
+                 a document with three channels is saying one thing through two of them — the \
+                 collapse this item is about, moved from the driver into the document",
+                clauses[one].0, clauses[other].0,
+            );
+        }
+        // ⛔⛔⛔⛔⛔ AND THE CLASS THIS KIND WROTE A REMEDY FOR MUST BE ONE ITS CHECKER CAN REACH —
+        // register item 752, and this workspace's rule that a count needs a road to its own value.
+        //
+        // `Silence::Unwell` has exactly ONE producer: a checker whose argv promised a structured
+        // answer and did not keep the promise. A kind that authors the clause and asks for no
+        // shape has written a sentence no run of it can ever say — item 469's *a field no gate
+        // reads is plumbing*, arriving as dead prose in somebody's agent rather than as a struct
+        // field nobody set.
+        let checker = kind
+            .milestone_check()
+            .expect("this kind names a checker — item 428's whole remedy rests on it");
+        assert!(
+            checker
+                .split_whitespace()
+                .any(|word| word == "--output-format"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 752: `debt_loop.scxml` authors what a run owes when its \
+             checker never reached a verdict, and its `milestone_check` promises no shape — so \
+             `judge::promised_shape` can never answer `Unwell` for this kind, and that clause is \
+             unreachable prose. Either the argv asks for the structure or the clause is a lie. \
+             Checker: {checker:?}",
         );
 
         // ── AND THE DOOR CARRIES THEM, over the launch a person actually makes ──────────────

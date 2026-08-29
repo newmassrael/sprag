@@ -12227,12 +12227,15 @@ mod tests {
         const UNANSWERED: &str = "ASK-THE-CHECKER-AGAIN";
         /// And for one that answered something that is not a verdict.
         const UNREADABLE: &str = "FIX-THE-CHECKERS-PROMPT";
+        /// And for one that never got as far as judging — register item 752.
+        const UNWELL: &str = "WAIT-THEN-ASK-AGAIN";
         /// The `start` payload a driver sends, carrying both clauses — the pair is one decision, so
         /// a fixture that sent one would be staging a document this door refuses.
         fn briefed() -> String {
             serde_json::json!({
                 "unanswered_rule": UNANSWERED,
                 "unreadable_rule": UNREADABLE,
+                "unwell_rule": UNWELL,
                 // ⚠⚠⚠⚠ AND THE CEILING, WHICH THIS FIXTURE LEARNED TO SEND THE HARD WAY. The
                 // `brief` transition assigns UNCONDITIONALLY — the driver always sends every key,
                 // echoing the template's own values back — so a payload that omits one assigns
@@ -12327,6 +12330,35 @@ mod tests {
              item 593 measured one layer down, met again at the disposition",
         );
 
+        // ── ⛔⛔⛔⛔⛔ AND THE THIRD, WHICH IS REGISTER ITEM 752 — AND WHICH ONLY A WALK CAN SHOW ──
+        //
+        // ⚠⚠⚠⚠⚠ **THE DOCUMENT COMPILING IS NOT THE DOCUMENT BRANCHING.** `unverified`'s entry now
+        // carries this workspace's FIRST `<elseif>`, and a compiler that parsed it and ignored it
+        // would send every `unwell` down the `<else>` — telling a checker stopped by a usage limit
+        // to fix its prompt, silently, which is the exact defect item 752 is about. Nothing but
+        // driving the real machine can tell those apart, so this arm drives it.
+        let (unwell, waiting) = judged(&serde_json::json!({
+            "done": true,
+            "checked": "silent",
+            "silence": "unwell",
+            "explained": "the checker was asked for a structured answer and printed a notice",
+        }));
+        assert_eq!(
+            unwell,
+            AiLoopState::Unverified,
+            "⛔⛔⛔ the third silence leaves by the same door as the other two — the run is in the \
+             same place, having claimed a milestone nothing checked",
+        );
+        assert!(
+            waiting.contains(UNWELL)
+                && !waiting.contains(UNANSWERED)
+                && !waiting.contains(UNREADABLE),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 752: a checker STOPPED BEFORE IT COULD JUDGE was handed \
+             another class's remedy. `<elseif>` is this document's first, so the likeliest cause \
+             is a compiler that parsed the arm and never takes it — in which case every usage \
+             limit this loop meets is filed as a prompt to tighten. Got:\n{waiting}",
+        );
+
         // ── AND THE RUN CAN LEAVE, WHICH IS WHAT KEEPS THE NEW DOOR FROM BEING A TRAP ──────
         //
         // ⚠⚠⚠⚠⚠ A checker at a permission dialog answers nothing EVERY time it is asked, so
@@ -12348,6 +12380,7 @@ mod tests {
             &serde_json::json!({
                 "unanswered_rule": UNANSWERED,
                 "unreadable_rule": UNREADABLE,
+                "unwell_rule": UNWELL,
                 "reflect_after_refusals": 1,
             })
             .to_string(),

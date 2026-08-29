@@ -39,6 +39,28 @@ pub struct AgentReply {
     /// that carry no session. A present id signals a healthy, continuable
     /// session; its absence on a resume turn is the cue to start fresh.
     pub session_id: Option<String>,
+    /// **THE ENVELOPE SAYING ITS OWN RUN FAILED** — the tool's `is_error`, `None` where the
+    /// envelope carries no such field.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a reader needed this — register item 752
+    ///
+    /// A checker that stops before it can judge (a usage limit, a hook, a bad minute upstream)
+    /// prints a NOTICE and no verdict, and to every reader downstream that looked exactly like a
+    /// checker that judged and phrased it badly. The two want opposite remedies — *wait and ask
+    /// again* against *fix the prompt* — and one word carried both.
+    ///
+    /// **The obvious repair was a needle list over the notice's wording, and it is refused**:
+    /// `debt_loop.scxml`'s own `service_needles` comment says *a needle a run can print by working
+    /// is a needle that stops the run for working*, and this repository's transcripts hold that
+    /// exact hazard — measured 2026-08-29, a line reading `You've hit your session limit · resets
+    /// 10:50am (UTC)) · …` whose tail is an AGENT's prose about the notice. A needle over that
+    /// wording would file a working agent as a broken one.
+    ///
+    /// ⚠⚠⚠ **SO THE FACT IS TAKEN FROM THE PROGRAM'S OWN STRUCTURED ANSWER INSTEAD.** A checker
+    /// asked for `--output-format json` has CONTRACTED a shape; an envelope that says `is_error`,
+    /// or no envelope at all, is that program stating it did not finish — in its own words, with
+    /// no prose matched anywhere. See [`crate::judge::Unheard::Unwell`].
+    pub errored: Option<bool>,
 }
 
 /// Parse a Claude `--output-format json` envelope from `raw` output bytes.
@@ -70,6 +92,11 @@ pub fn parse_claude_json(raw: &[u8]) -> Option<AgentReply> {
             .get("session_id")
             .and_then(Value::as_str)
             .map(str::to_string),
+        // ⚠ `None` FOR AN ENVELOPE THAT CARRIES NO SUCH KEY, and it does not collapse into
+        // `Some(false)`: *this tool did not say* and *this tool said it was fine* are different
+        // facts, and the reader in [`crate::judge`] treats only the second as a verdict worth
+        // looking for.
+        errored: object.get("is_error").and_then(Value::as_bool),
     })
 }
 

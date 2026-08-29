@@ -376,6 +376,36 @@ pub enum Unheard {
     /// argv, and an EMPTY string is a judge that printed nothing at all. One remedy each, and the
     /// empty spelling is kept for the last of them alone.
     NotAVerdict(String),
+    /// ⛔⛔⛔⛔⛔ **IT WAS ASKED FOR A STRUCTURED ANSWER AND DID NOT PRODUCE ONE**, carrying the
+    /// first LINE it printed instead — register item 752.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The fact this arm exists to carry, and why nothing else could
+    ///
+    /// A checker stopped by a usage limit, a hook or a bad minute upstream prints a NOTICE and no
+    /// verdict. Until this arm, that arrived as [`NotAVerdict`](Self::NotAVerdict) — *it answered,
+    /// and what it said is not a verdict* — whose remedy is **fix the prompt**. The truth is **wait
+    /// and ask again**, and the two are opposite: measured across this repository's run log,
+    /// `You've` ×2 (a usage notice) sat in that class with twelve genuine misphrasings.
+    ///
+    /// # ⛔⛔⛔ Why it is NOT a needle over the notice's wording
+    ///
+    /// That was the obvious repair and it is refused, in this crate's own loop document: *a needle
+    /// a run can print by working is a needle that stops the run for working.* Measured 2026-08-29
+    /// rather than argued — this machine's transcripts hold a line reading `You've hit your session
+    /// limit · resets 10:50am (UTC)) · …` whose tail is an AGENT's prose ABOUT that notice, so a
+    /// needle for it would file a working agent as a broken one. The words also moved: the two
+    /// needles `debt_loop.scxml` quotes (`Usage limit reached`, `continuing automatically at`)
+    /// appear nowhere in the notice this class actually met.
+    ///
+    /// ⚠⚠⚠ **WHAT SEPARATES THEM IS A CONTRACT, NOT A STRING.** A checker asked for
+    /// `--output-format json` has promised a shape. No envelope, or an envelope whose own
+    /// `is_error` is set, is **that program saying it did not finish** — its words, not a match
+    /// against them. A checker whose argv promises nothing cannot reach this arm, and that is
+    /// honest: the fact is unavailable there rather than guessed at.
+    ///
+    /// ⚠ It carries a LINE for [`NotAVerdict`](Self::NotAVerdict)'s reason, so a person reading the
+    /// walk sees what the checker did print.
+    Unwell(String),
 }
 
 /// ⛔⛔⛔⛔⛔ **WHICH OF THE TWO SILENCES THIS IS** — register item 741, and the word a document
@@ -423,12 +453,25 @@ pub enum Silence {
     /// **IT ANSWERED, AND WHAT IT SAID IS NOT A VERDICT.** Asking again gets the same shape, so the
     /// remedy is the checker's PROMPT or its program — never a retry.
     Unreadable,
+    /// ⛔⛔⛔⛔⛔ **IT NEVER GOT AS FAR AS JUDGING** — register item 752, and the class the two above
+    /// could not tell apart.
+    ///
+    /// The checker ran, printed something, and did not produce the shape it had contracted: a usage
+    /// limit, a hook, an outage. Asking again IS the remedy, as it is for
+    /// [`Unanswered`](Self::Unanswered) — **but not yet**, which is what makes it a third word
+    /// rather than a second spelling of the first. A retry issued into the same limit meets it
+    /// again, so what a run owes here is a WAIT and then the question.
+    ///
+    /// ⚠ The distinction from [`Unanswered`](Self::Unanswered), stated so neither borrows the
+    /// other's remedy: `Unanswered` means the asking failed and this run can fix the asking;
+    /// `Unwell` means the asking WORKED and the program on the other end could not answer.
+    Unwell,
 }
 
 impl Silence {
     /// Every arm, so the runs that produce them and the document that disposes of them are one
     /// list — [`crate::outer::Checked::ALL`]'s rule, one level down.
-    pub const ALL: [Self; 2] = [Self::Unanswered, Self::Unreadable];
+    pub const ALL: [Self; 3] = [Self::Unanswered, Self::Unreadable, Self::Unwell];
 
     /// **THE WORD THIS DRIVER PUBLISHES** as `_event.data.silence`.
     ///
@@ -439,6 +482,7 @@ impl Silence {
         match self {
             Self::Unanswered => "unanswered",
             Self::Unreadable => "unreadable",
+            Self::Unwell => "unwell",
         }
     }
 }
@@ -460,6 +504,7 @@ impl Unheard {
             | Self::Unfinished(_)
             | Self::Unaccountable => Silence::Unanswered,
             Self::NotAVerdict(_) => Silence::Unreadable,
+            Self::Unwell(_) => Silence::Unwell,
         }
     }
 
@@ -493,6 +538,13 @@ impl Unheard {
                     "the checker answered {said:?}, and nothing in that reply is a YES or a NO — \
                      fix its prompt or its program, because nothing here can turn that into a \
                      verdict"
+                )
+            }
+            Self::Unwell(said) => {
+                format!(
+                    "the checker was asked for a structured answer and printed {said:?} instead, \
+                     so it never got as far as judging — this is its program's bad minute and not \
+                     its prompt's: wait for whatever stopped it and ask again"
                 )
             }
         }
@@ -574,7 +626,63 @@ pub fn asked_of_another(
     within: Duration,
 ) -> Result<Judgement, Unheard> {
     let (reply, took) = said_by_another(panes, run, argv, cwd, question, within)?;
-    verdict_in(&reply, question, took)
+    verdict_in(&promised_shape(argv, &reply)?, question, took)
+}
+
+/// **WHAT A CHECKER ACTUALLY SAID, ONCE THE SHAPE IT PROMISED HAS BEEN HELD TO** — register item
+/// 752. [`Err`] where the promise was made and not kept, which is that program saying it never got
+/// as far as judging.
+///
+/// # ⚠⚠⚠⚠⚠ Why the CONTRACT is the classifier, and not a needle
+///
+/// The class this separates is *the checker was stopped before it could judge* — a usage limit, a
+/// hook, an outage — and until this existed it arrived as [`Unheard::NotAVerdict`], whose remedy
+/// (*fix the prompt*) is the opposite of what it wants (*wait and ask again*).
+///
+/// Matching the notice's wording is refused, and not on taste: `debt_loop.scxml`'s `service_needles`
+/// comment states the rule — *a needle a run can print by working is a needle that stops the run for
+/// working* — and this machine's own transcripts hold the hazard as a fact, a line whose head is
+/// the peer's usage notice and whose tail is an AGENT writing about it. The wording had also moved
+/// out from under the two needles that document quotes.
+///
+/// **A promise is different in kind from a phrase.** `--output-format json` is the caller's own
+/// argv asking for a shape; an answer that is not that shape is the program reporting its own
+/// failure, in its own words, with nothing matched against them.
+///
+/// ⚠⚠ **A CHECKER THAT PROMISED NOTHING IS UNCHANGED**, deliberately: its reply goes to
+/// [`verdict_in`] exactly as before. The fact is then UNAVAILABLE rather than guessed, which is
+/// this crate's rule that an unclassified thing is not quietly filed — see
+/// [`Silence::Unwell`]'s own note on what it costs a kind that declines the shape.
+///
+/// ⚠ `is_error` ABSENT IS NOT `is_error` FALSE. An envelope that carries no such key has not said
+/// its run was fine, so its `result` is read on the same terms as any other reply; an envelope that
+/// says `true` has, and is refused here.
+fn promised_shape(argv: &[String], reply: &str) -> Result<String, Unheard> {
+    // ⚠ THE CALLER'S OWN ARGV IS THE QUESTION — no list of tools, no version sniffing. A run whose
+    // document did not ask for the shape is a run this cannot speak about.
+    if !argv.iter().any(|word| word == "--output-format") {
+        return Ok(reply.to_owned());
+    }
+    let unwell = || {
+        Unheard::Unwell(
+            first_line(reply.trim_start())
+                .unwrap_or_default()
+                .to_owned(),
+        )
+    };
+    let Some(envelope) = crate::reply::parse_claude_json(reply.as_bytes()) else {
+        return Err(unwell());
+    };
+    // ⚠⚠ AND AN ENVELOPE THAT REPORTS ITS OWN FAILURE IS THE SAME FACT ARRIVING BY THE OTHER ROAD.
+    // Both are covered because which one a stopped checker takes is not knowable from here, and a
+    // repair that covered one would be half a repair with no way to tell which half it had.
+    if envelope.errored == Some(true) {
+        return Err(unwell());
+    }
+    // ⚠⚠⚠ AND AN ENVELOPE WITH NO `result` IS ALSO THE PROMISE UNKEPT: the shape was produced and
+    // the answer was not, which is the same *it did not get there* one field further in. Reading it
+    // as an empty reply would file it as a judge that printed nothing, whose remedy is the prompt.
+    envelope.text.ok_or_else(unwell)
 }
 
 /// **SPAWN `argv`, HAND IT `question`, AND ANSWER WHAT IT SAID** — everything
@@ -1117,7 +1225,7 @@ mod tests {
         // ⚠ THE WHOLE VOCABULARY, spelled out: an arm added to `Unheard` fails to compile against
         // this list until somebody says which remedy it wants, which is the same refusal
         // `Unheard::silence`'s exhaustive `match` makes one layer down.
-        let every: [(Unheard, Silence); 6] = [
+        let every: [(Unheard, Silence); 7] = [
             (Unheard::Unasked, Silence::Unanswered),
             (Unheard::NoPane, Silence::Unanswered),
             (
@@ -1132,6 +1240,13 @@ mod tests {
             (
                 Unheard::NotAVerdict("Permission".to_owned()),
                 Silence::Unreadable,
+            ),
+            // ⛔ THE SEVENTH ARRIVED WITH REGISTER ITEM 752, and the payload is the line this
+            // machine's own run log recorded twice: a checker stopped by a usage limit, which
+            // spent a day being told to fix its prompt.
+            (
+                Unheard::Unwell("You've hit your session limit".to_owned()),
+                Silence::Unwell,
             ),
         ];
         for (heard, want) in &every {
@@ -1155,7 +1270,7 @@ mod tests {
         }
         assert_eq!(
             Silence::ALL.map(Silence::wire_str),
-            ["unanswered", "unreadable"],
+            ["unanswered", "unreadable", "unwell"],
             "⚠⚠ and the words are the ones `ai_loop.scxml` compares against — the document spells \
              `_event.data.silence == 'unanswered'`, and a renamed word here would take the else \
              branch for every silence in silence",
@@ -1322,6 +1437,141 @@ mod tests {
     ///
     /// # ⚠⚠⚠⚠ Three kinds stand side by side, because two of them is the gate this replaces
     ///
+    /// ⛔⛔⛔⛔⛔ **A CHECKER STOPPED BEFORE IT COULD JUDGE IS NOT A CHECKER THAT MISPHRASED** —
+    /// register item 752, measured through the door the product actually calls.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The two facts one word carried, and what it cost
+    ///
+    /// A usage limit, a hook or an outage stops the checker; it prints a NOTICE and no verdict.
+    /// Until this, that arrived as [`Unheard::NotAVerdict`], whose remedy is *fix the prompt* —
+    /// the opposite of *wait and ask again*. Measured over this repository's whole run log: two of
+    /// eighteen unreadable replies were a usage notice (`You've` ×2), and every one of them was
+    /// answered with advice about a prompt that was working.
+    ///
+    /// # ⛔⛔⛔ Why the classifier is a CONTRACT and not a needle
+    ///
+    /// The obvious repair — match the notice's wording — is refused in this crate's own loop
+    /// document (*a needle a run can print by working is a needle that stops the run for working*),
+    /// and this machine's transcripts hold that hazard as a measured fact rather than a worry: a
+    /// line whose head is the peer's usage notice and whose tail is an AGENT writing about it. The
+    /// quoted needles had also gone stale — neither of the two `debt_loop.scxml` spells appears in
+    /// the notice this class actually met.
+    ///
+    /// So the question asked here is *did this checker keep the shape its argv promised*. Both
+    /// roads out of that promise are walked, because which one a stopped checker takes is not
+    /// knowable from here and covering one would be half a repair with no way to tell which half.
+    ///
+    /// ⚠⚠ **AND THE CHECKER THAT PROMISED NOTHING IS WALKED TOO**, which is the arm that keeps
+    /// this from being a behaviour change nobody asked for: its reply is read exactly as before,
+    /// and the third class is simply unavailable to it.
+    #[test]
+    fn a_checker_that_never_reached_a_verdict_is_not_one_that_misphrased() {
+        let host = crate::access::WorkspacePaneAccess::new(Arc::new(Mutex::new(
+            sprag_terminal::Workspace::new((80, 24)),
+        )));
+        // ⚠ A REAL SPAWN THROUGH THE PRODUCT'S OWN DOOR, `a_verdict_the_judge_did_not_open_with`'s
+        // arrangement: a gate that called the classifier directly would be measuring the
+        // classifier and not the road the driver takes to it.
+        let ask = |promises: bool, prints: &str| {
+            let mut argv = vec!["/bin/sh".to_owned(), "-c".to_owned()];
+            if promises {
+                // ⚠⚠ THE PROMISE RIDES ON THE ARGV THE DOCUMENT AUTHORS, so the fixture puts it
+                // where `debt_loop.scxml` puts it — as a word of the checker's own command line.
+                argv.push(format!("printf '%s\\n' {}", shell_quoted(prints)));
+                argv.push("--output-format".to_owned());
+                argv.push("json".to_owned());
+            } else {
+                argv.push(format!("printf '%s\\n' {}", shell_quoted(prints)));
+            }
+            asked_of_another(
+                &host,
+                &RunContext::uncancellable(),
+                &argv,
+                None,
+                "did it hold? answer YES or NO",
+                Duration::from_secs(20),
+            )
+        };
+
+        // ── THE CONTROL: A PROMISE KEPT STILL PRODUCES A VERDICT ────────────────────────────
+        //
+        // ⚠⚠⚠⚠ WITHOUT THIS ARM EVERY CLAIM BELOW HOLDS OF A READER THAT ANSWERED `Unwell` TO
+        // EVERYTHING, which would take every verified milestone in this repository and file it as
+        // a checker having a bad minute — a strictly worse defect than the one being paid off.
+        let kept = ask(
+            true,
+            r#"{"type":"result","is_error":false,"result":"YES the artifact meets it","session_id":"s1"}"#,
+        );
+        assert!(
+            matches!(&kept, Ok(judged) if judged.holds && judged.said == "YES"),
+            "⚠⚠⚠⚠⚠ THE CONTROL: an envelope that says its run was fine must have its `result` read \
+             for a verdict exactly as a plain reply is. Got {kept:?}",
+        );
+
+        // ── ROAD ONE: THE PROMISE IS NOT KEPT AT ALL ── the shape this class actually met.
+        //
+        // ⚠ The line is run 1's and run 6's, verbatim in family: a usage notice where a verdict
+        // was asked for. It carries NEITHER needle `debt_loop.scxml` quotes, which is why nothing
+        // matching prose could have caught it.
+        let stopped = ask(
+            true,
+            "You've hit your session limit · resets 4:10am (Asia/Seoul)",
+        );
+        assert!(
+            matches!(&stopped, Err(Unheard::Unwell(_))),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 752: a checker that was asked for a structured answer and \
+             printed a notice instead has NOT judged, and calling that `NotAVerdict` tells a run \
+             to fix a prompt that was working while the thing that actually stopped it goes \
+             unnamed. Got {stopped:?}",
+        );
+
+        // ── ROAD TWO: THE ENVELOPE ARRIVES AND REPORTS ITS OWN FAILURE ──────────────────────
+        let admitted = ask(
+            true,
+            r#"{"type":"result","is_error":true,"result":"Usage limit reached"}"#,
+        );
+        assert!(
+            matches!(&admitted, Err(Unheard::Unwell(_))),
+            "⛔⛔⛔⛔ AND THE OTHER ROAD OUT OF THE SAME PROMISE. Which one a stopped checker takes \
+             is not knowable from here, so a repair that covered only the missing envelope would \
+             be half of one — green on the sample above and blind to a tool that reports failure \
+             politely. Got {admitted:?}",
+        );
+
+        // ── ROAD THREE: THE SHAPE ARRIVES AND THE ANSWER DOES NOT ───────────────────────────
+        let hollow = ask(true, r#"{"type":"result","usage":{"input_tokens":9}}"#);
+        assert!(
+            matches!(&hollow, Err(Unheard::Unwell(_))),
+            "⚠⚠⚠ an envelope with no `result` is the promise unkept one field further in. Reading \
+             it as an empty reply would file it as a judge that printed nothing — whose remedy is \
+             the prompt, which is the wrong half again. Got {hollow:?}",
+        );
+
+        // ── AND THE CHECKER THAT PROMISED NOTHING IS UNCHANGED ─────────────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ THIS IS THE ARM THAT SAYS THE CLASSIFIER IS A CONTRACT AND NOT A NEEDLE. The
+        // SAME notice, from a checker whose argv promised no shape, must still be `NotAVerdict`:
+        // nothing here reads the words. A repair that had reached for the wording would answer
+        // `Unwell` to both, and this assertion is what fails the day somebody adds that needle.
+        let unpromised = ask(
+            false,
+            "You've hit your session limit · resets 4:10am (Asia/Seoul)",
+        );
+        assert!(
+            matches!(&unpromised, Err(Unheard::NotAVerdict(_))),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 752's OWN BAN: the third class must come from the ARGV's \
+             promise and from nothing else. A reader that answered `Unwell` here is matching the \
+             notice's prose, which is the widening `service_needles` refuses — and this machine's \
+             transcripts hold a line whose head is that notice and whose tail is an agent writing \
+             about it. Got {unpromised:?}",
+        );
+    }
+
+    /// `word`, quoted so `/bin/sh -c` hands it to `printf` as one argument.
+    fn shell_quoted(word: &str) -> String {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+
     /// A verdict at the opening, a verdict found further in, and no verdict at all. Standing only
     /// the first two would pass a parser that answered `YES` to everything; standing only the last
     /// two is the behaviour this item is about.

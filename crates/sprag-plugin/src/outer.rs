@@ -482,6 +482,8 @@ const WORKING_RULES: &str = "working_rules";
 const UNANSWERED_RULE: &str = "unanswered_rule";
 /// The other half of the pair. See [`UNANSWERED_RULE`].
 const UNREADABLE_RULE: &str = "unreadable_rule";
+/// The third, register item 752 — see [`crate::judge::Silence::Unwell`].
+const UNWELL_RULE: &str = "unwell_rule";
 
 /// ⛔⛔⛔⛔⛔ **WHAT A REPOSITORY DOES ABOUT ITS CHECKER'S SILENCE, IN TWO CLAUSES** — register item
 /// 741, and [`Brief::unverified_rules`]'s value.
@@ -501,6 +503,14 @@ pub struct UnverifiedRules {
     /// And when it **answered something that is not a verdict** — see
     /// [`crate::judge::Silence::Unreadable`], where asking again is wasted work.
     pub unreadable: String,
+    /// And when it **never got as far as judging** — see [`crate::judge::Silence::Unwell`], where
+    /// asking again is the remedy and not yet.
+    ///
+    /// ⚠⚠⚠ **THE THIRD ARRIVED WITH REGISTER ITEM 752 AND THE TYPE IS WHY IT COULD**: this struct
+    /// already refused to be half-authored, so adding a clause made every kind that authors any of
+    /// them author this one too — a compile error at each construction site rather than a silently
+    /// empty sentence in somebody's agent. Two `Option`s would have grown a third that defaulted.
+    pub unwell: String,
 }
 
 /// **HOW MANY TIMES IN A ROW THIS DOCUMENT HAS BEEN REFUSED**, as the document itself counts it —
@@ -4987,6 +4997,11 @@ impl OuterLoop {
                 .unverified_rules
                 .as_ref()
                 .map(|rules| rules.unreadable.clone())
+                .unwrap_or_default(),
+            UNWELL_RULE: brief
+                .unverified_rules
+                .as_ref()
+                .map(|rules| rules.unwell.clone())
                 .unwrap_or_default(),
             // ⚠⚠⚠ AND WHO CERTIFIES A MILESTONE — unconditional on the same terms: the template
             // ships `''` (nobody checks), and a run whose kind names a checker must arrive holding
@@ -20945,6 +20960,105 @@ mod tests {
              this loop asks when it disagrees reachable at all, and they are typed into somebody's \
              agent in somebody's language — a caller who can read six of seven can see every \
              question their loop asks except one. Published: {published:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY SILENCE THIS DRIVER CAN PUBLISH IS ONE THIS DOCUMENT DISPOSES OF** —
+    /// register item 752, and item 741's gate made total over a vocabulary that has since grown.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the document's own `if` cannot hold this
+    ///
+    /// `unverified`'s entry branches on `_event.data.silence`, and **a document cannot fail to
+    /// compile**. An arm forgotten there takes the fall-through silently — which is exactly how
+    /// `unverified` itself spent a day with no `pass` arm (item 749) and how three of four
+    /// hand-written prompt lists went stale (item 750). Item 741 shipped TWO words and the driver
+    /// now publishes THREE; nothing anywhere asked whether those were the same set.
+    ///
+    /// # ⚠⚠⚠⚠ What is derived and what is classified
+    ///
+    /// The population is [`crate::judge::Silence::ALL`] — every word the driver can put on the
+    /// wire — and each is held to three things this document answers:
+    ///
+    /// * it declares a `<data id="…_rule">` for it, so a kind has somewhere to write the remedy;
+    /// * its brief takes that id **verbatim** from the caller, which is
+    ///   [`ids_a_brief_takes_verbatim`]'s question asked one register item over — a clause a kind
+    ///   authors and the document does not carry is a rule nobody can set;
+    /// * `unverified`'s entry actually **assigns** it, so the clause reaches the agent.
+    ///
+    /// ⚠⚠ **AND THE FALL-THROUGH IS A CLASSIFICATION WITH A SIZE, NOT AN EXEMPTION.** Exactly ONE
+    /// word may go unnamed by a `cond` — the one the `<else>` is for. Two would mean a word nobody
+    /// decided about is quietly taking another's remedy, which is the shape rule 6 in this
+    /// workspace refuses; zero would mean the `<else>` is unreachable and some word has no arm at
+    /// all. The count is asserted, so neither can arrive unremarked.
+    #[test]
+    fn every_silence_this_driver_can_publish_is_one_this_document_disposes_of() {
+        use crate::judge::Silence;
+
+        // ⚠ THE STATE'S OWN ENTRY BLOCK, cut out so a `silence ==` written anywhere else in this
+        // document cannot stand in for one written here. `unverified` is where item 741 put the
+        // disposition and where item 752 has to find all three.
+        let at = DOCUMENT
+            .find("<state id=\"unverified\">")
+            .expect("⚠⚠ THE SCAN IS BLIND: this document declares no `unverified` state");
+        let rest = &DOCUMENT[at..];
+        let entry = &rest[..rest
+            .find("</onentry>")
+            .expect("`unverified` must carry an `<onentry>` — item 741 put its branch there")];
+
+        // ⚠⚠⚠⚠⚠ THE PREMISE, ASSERTED INSIDE THE GATE: the cut actually holds the branch. A slice
+        // that missed it would make every contrast below read an empty string and pass whatever the
+        // document said — the blind-eye shape this register keeps meeting.
+        assert!(
+            entry.contains("_event.data.silence"),
+            "⚠⚠⚠⚠⚠ THE SCAN IS BLIND: the `unverified` entry block this gate cut out does not \
+             branch on `silence` at all, so every claim below is about the empty set. Cut {} bytes",
+            entry.len(),
+        );
+
+        let declared: std::collections::BTreeSet<&str> =
+            declared_data_ids(DOCUMENT).into_iter().collect();
+        let verbatim: std::collections::BTreeSet<&str> =
+            ids_a_brief_takes_verbatim(DOCUMENT).into_iter().collect();
+        let mut unnamed = Vec::new();
+        for silence in Silence::ALL {
+            let word = silence.wire_str();
+            let rule = format!("{word}_rule");
+            assert!(
+                declared.contains(rule.as_str()),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 752: the driver can publish `{word}` and this document \
+                 declares no `{rule}`, so a kind has nowhere to say what a run owes when its \
+                 checker falls into that class — and the agent is told nothing at all",
+            );
+            assert!(
+                verbatim.contains(rule.as_str()),
+                "⛔⛔⛔⛔ REGISTER ITEM 752: `{rule}` is declared and the brief does not take it \
+                 from the caller, so a kind that authors the clause cannot get it into the run. \
+                 That is item 469's *a field no channel reaches is plumbing*, one document over",
+            );
+            assert!(
+                entry.contains(&format!("expr=\"{rule}\"")),
+                "⛔⛔⛔⛔ REGISTER ITEM 752: `{rule}` is carried all the way to the datamodel and \
+                 `unverified`'s entry never assigns it, so the clause a kind wrote reaches nobody",
+            );
+            if !entry.contains(&format!("_event.data.silence == '{word}'")) {
+                unnamed.push(word);
+            }
+        }
+
+        // ⭐⭐⭐⭐⭐ **THE FALL-THROUGH HAS A SIZE.** One word is the `<else>`'s and the rest must be
+        // named by a `cond`. Two unnamed means a word nobody decided about is silently taking
+        // another's remedy — *ask again* put to a checker that answered prose, or *fix the prompt*
+        // put to one that was stopped before it judged. Those are opposite work, and the document
+        // cannot say which it just did.
+        assert_eq!(
+            unnamed.len(),
+            1,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 752: exactly one silence may be the `<else>`'s and \
+             {unnamed:?} are unnamed by any `cond` in `unverified`'s entry. A word this document \
+             has not met takes whichever arm happens to be last, which is precisely the \
+             unclassified-thing-passes shape items 749 and 750 were about. Words the driver can \
+             publish: {:?}",
+            Silence::ALL.map(Silence::wire_str),
         );
     }
 

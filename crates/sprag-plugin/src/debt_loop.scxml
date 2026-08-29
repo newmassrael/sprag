@@ -338,7 +338,26 @@
       turn. A checkpoint is claimed once, and a refusal buys one more turn rather
       than ending anything.
     -->
-    <data id="milestone_check" expr="'claude -p'"/>
+    <!--
+      ⚠⚠⚠⚠⚠ AND IT ASKS FOR A STRUCTURED ANSWER, WHICH IS REGISTER ITEM 752's
+      WHOLE MECHANISM. A checker stopped by a usage limit, a hook or an outage
+      prints a notice and no verdict, and to a reader of the SCREEN that is
+      indistinguishable from a checker that judged and phrased it badly. The two
+      remedies are opposite.
+
+      Matching the notice's wording is the widening `service_needles` refuses two
+      hundred lines up, and this machine's transcripts hold the proof rather than
+      the argument: a line whose head is the peer's usage notice and whose tail is
+      an AGENT writing about it. So what tells them apart is a PROMISE instead —
+      this argv asks for a shape, and an answer that is not that shape is the
+      program reporting its own failure in its own words.
+
+      ⚠⚠ A KIND THAT DROPS THIS FLAG LOSES THE THIRD CLASS AND KEEPS THE OTHER
+      TWO — `judge::promised_shape` speaks only where the argv promised, so the
+      fact becomes unavailable rather than guessed. That is the honest failure
+      and it is why `unwell_rule` below is authored beside this line.
+    -->
+    <data id="milestone_check" expr="'claude -p --output-format json'"/>
 
     <!--
       ⚠⚠⚠⚠⚠ THE WORDS THIS REPOSITORY'S PEER PRINTS WHEN ITS SERVICE FAILS, and
@@ -540,6 +559,15 @@
     -->
     <data id="unreadable_rule"
           expr="'검사기가 답은 했는데 그 답 «어디에도» 판정 낱말이 없었다 — 다시 물어도 같은 모양이 온다. 고칠 것은 검사기의 프롬프트나 프로그램이다: 답이 YES 또는 NO 로 «시작»하게 만들어라(문장 안에 소문자로 묻힌 판정은 이 드라이버가 못 본다). 마일스톤 주장 자체가 거절된 것은 아니다.'"/>
+    <!--
+      AND THE THIRD — register item 752. It is the one an unattended loop meets
+      most and the one the other two could not name: the checker RAN and never
+      got as far as judging, because a usage limit or a hook stopped it. Its
+      remedy is `unanswered_rule`'s (ask again) with a WAIT in front of it, which
+      is why it could borrow neither spelling.
+    -->
+    <data id="unwell_rule"
+          expr="'검사기가 «판정에 이르지도 못했다» — 형식을 약속한 argv 로 물었는데 그 형식이 안 왔다(사용 한도·훅·정전 중 하나다). 프롬프트를 고칠 일이 아니고 «즉시» 다시 물을 일도 아니다: 무엇이 검사기를 멈췄는지 확인하고, 그것이 풀린 뒤에 다시 물어라. 마일스톤 주장은 거절된 것이 아니라 «아직 검증되지 않은» 것이다.'"/>
 
     <!--
       ══════════════════════════════════════════════════════════════════════════
