@@ -13324,6 +13324,98 @@ fn current_window_of(sock: &Path, session: &str) -> String {
         .to_owned()
 }
 
+/// ⛔⛔⛔⛔ **A CLI WAIT WITH NO `-t` PARKS ON THE SESSION ITS CALLER IS STANDING IN** — register
+/// item 753's other half, and the one that was ASSUMED rather than measured.
+///
+/// # ⚠⚠⚠⚠⚠ What item 753 actually observed, and what it did not
+///
+/// The register's evidence that this side works is a live `sprag wait-for-output --pane inner-sce
+/// 'Enter to select' **-t loop**` — a call that NAMES its session. That the same verb reaches the
+/// caller's own session when nobody names one was never asked, and it is the exact thing the MCP
+/// server got wrong: both wait tools there opened a connection of their own and built `params`
+/// with a `json!`, so the session was never offered.
+///
+/// **Re-measured: this side is right, and for a stated reason** — it sends [`scoped_only`], the one
+/// spelling this file gives a scope, which resolves through [`effective_scope`] to the session
+/// holding `$SPRAG_PANE`. The verb's own comment says so. **Nothing held it**: every existing CLI
+/// wait gate drives a daemon with ONE session and no `$SPRAG_PANE`, where *missing scope* and
+/// *right scope* are the same string — the same blind fixture that let this defect live in the
+/// other client. So this is a ratchet: correct today, and now unable to regress quietly.
+///
+/// # ⚠⚠ The control is what makes the claim a scope claim
+///
+/// The same call from a caller standing in NO pane must be REFUSED, because the daemon's default
+/// session does not hold that pane. Without it, a wait that had stopped narrowing at all would
+/// satisfy the assertion above.
+#[test]
+fn a_cli_wait_with_no_scope_parks_where_its_caller_stands() {
+    let (_guard, sock, caller) = daemon_with_one_pane("cli-wait-own-session");
+    let me = caller.to_string();
+
+    // A pane of the SAME session that has already said the word — so the park is released at once
+    // and a wrong session shows up as a refusal rather than as a test that hangs.
+    let talker = sprag(
+        &sock,
+        &[
+            "split-window",
+            "-t",
+            "work",
+            "--",
+            "sh",
+            "-c",
+            "printf 'WAITNEEDLE\\n'; exec cat",
+        ],
+    );
+    assert!(talker.ok, "a pane that speaks: {}", talker.stderr);
+    let talker: u64 = talker.stdout.trim().parse().expect("the new pane's id");
+
+    // ── THE PREMISE: `work` is not the session an unscoped request lands in ─────────────────
+    let elsewhere = sprag(&sock, &["panes", "-t", "0"]);
+    assert!(
+        !pane_ids_in(&elsewhere.stdout).contains(&talker),
+        "⛔ THE PREMISE: the daemon's DEFAULT session must not hold this pane, or *no scope* and \
+         *the right scope* are the same request and nothing below discriminates: {}",
+        elsewhere.stdout,
+    );
+
+    // ── THE CLAIM: no `-t`, and the caller is standing in a pane of `work` ──────────────────
+    let waited = sprag_env(
+        &sock,
+        &[
+            "wait-for-output",
+            "--pane",
+            &talker.to_string(),
+            "WAITNEEDLE",
+        ],
+        &[("SPRAG_PANE", &me)],
+    );
+    assert!(
+        waited.ok && waited.stdout.contains("WAITNEEDLE"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 753 ON THIS SIDE: a wait that names no session must park on the \
+         session its CALLER is in. The MCP server lost exactly this and refused every pane of the \
+         daemon with `session \"0\" has no pane N`. Got: {} / {}",
+        waited.stdout,
+        waited.stderr,
+    );
+
+    // ── THE CONTROL: a caller standing in no pane gets the daemon's default session ─────────
+    let outside = sprag(
+        &sock,
+        &[
+            "wait-for-output",
+            "--pane",
+            &talker.to_string(),
+            "WAITNEEDLE",
+        ],
+    );
+    assert!(
+        !outside.ok,
+        "⚠⚠⚠ THE CONTROL: from outside the workspace this pane is in another session and the \
+         request must be refused — otherwise the claim above is not about scope at all: {} / {}",
+        outside.stdout, outside.stderr,
+    );
+}
+
 /// ⛔⛔⛔⛔⛔ **A READ THAT SAYS *THIS WINDOW* ANSWERS THE CALLER'S WINDOW, NOT THE ONE A PERSON IS
 /// LOOKING AT** — register item 759, and item 754's other half.
 ///
