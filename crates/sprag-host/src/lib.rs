@@ -852,13 +852,173 @@ pub fn plugin_host(
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **THE IMAGE THIS PROCESS IS RUNNING, AS SOMETHING THAT CAN STILL BE STARTED** —
+/// register item 763, and the difference between a HANDLE and a NAME.
+///
+/// # ⚠⚠⚠⚠⚠ A path is not an image, and a promotion is what proves it
+///
+/// [`driver_spawn`] used to hand [`std::env::current_exe`] straight to [`std::process::Command`],
+/// and `crate::drive`'s module doc calls that *the driver is this daemon's image by construction*.
+/// It is not: `current_exe` answers with a NAME, and a name can stop meaning this image while the
+/// image goes on running. **Measured on this machine 2026-08-30**, against a live process whose
+/// file was replaced by `cp -f` underneath it — which is exactly what promoting a build does:
+///
+/// ```text
+/// before   readlink /proc/<pid>/exe  ->  …/probe763
+/// after    readlink /proc/<pid>/exe  ->  …/probe763 (deleted)     ← the STRING gains a suffix
+///          test -e "…/probe763 (deleted)"  ->  ENOENT             ← so Command::new fails
+///          exec  /proc/<pid>/exe --version ->  sleep (GNU coreutils) 9.4   ← the IMAGE is fine
+/// ```
+///
+/// So the path fails while the image is perfectly startable, and the daemon's own log said only
+/// `No such file or directory (os error 2)`. **In this repository's live loop log that refusal
+/// stands five times** (runs 71, 72, 73, 74, 76): five runs whose driver could not be replaced, all
+/// of them reported as if the run had broken.
+///
+/// # ⚠⚠⚠⚠ Why the magic link is the RIGHT answer here and not a trick
+///
+/// `/proc/self/exe` is the kernel's own handle to the image a process is executing. Exec'ing it
+/// re-runs THIS build — the measurement above shows it running the original program after the file
+/// on disk had become a different one. That is the sentence `drive.rs` already claims, made true:
+/// a driver started this way cannot be a different build from the daemon that started it, which is
+/// the hazard register item 344 was filed for and which the wire handshake currently catches after
+/// the fact rather than preventing.
+///
+/// ⚠⚠ **AND THE FALLBACK IS NAMED RATHER THAN SILENT.** Where no such handle exists the boot path
+/// is all there is, and then a replaced binary is not caught here at all — so a failure to spawn
+/// says which of the two worlds it was in (`driver_spawn_refused`, private beside
+/// [`driver_spawn`]). An unmarked fallback is the escape hatch that quietly disables its own gate.
+///
+/// ⚠ Resolved per spawn rather than cached, deliberately: `/proc/self/exe` is not a lookup whose
+/// answer could go stale — it names the running image for as long as the process exists — so
+/// stashing it at boot would add a copy without adding a guarantee.
+#[must_use]
+pub fn image_to_spawn() -> std::path::PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        std::path::PathBuf::from("/proc/self/exe")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // ⚠ The honest degradation: the NAME, which is what every platform has. A promotion that
+        // replaces this file leaves this pointing at somebody else's build, and `driver_spawn_refused`
+        // is where that stops being invisible.
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("sprag-term"))
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **THIS IMAGE STATES ITS OWN NAME, BECAUSE STARTING IT BY HANDLE TAKES THE NAME AWAY** —
+/// register item 763, and the half [`image_to_spawn`] would have broken in silence.
+///
+/// # ⚠⚠⚠⚠⚠ Measured, and it is why this function exists at all
+///
+/// The kernel sets a process's `comm` from **the basename of the path handed to `execve`**. Exec by
+/// path gives the file's name; exec by HANDLE gives the handle's:
+///
+/// ```text
+/// exec /bin/bash        -> comm=bash
+/// exec /proc/<pid>/exe  -> comm=exe          ← and argv[0] does NOT change it
+/// prctl(PR_SET_NAME)    -> comm=sprag-term   ← ps agrees
+/// ```
+///
+/// **So pinning the image would have renamed every driver to `exe`**, and `comm` is not decoration
+/// here: `procfs::pids_named(`[`sprag_rpc::DAEMON_BIN_NAME`]`)` is what tells a boot which stray
+/// processes are its predecessor's drivers (register items 526 and 740), what `daemon_pid` and
+/// `sprag_term_pids` count, and what `pane_processes` answers a person with. A repair that fixed
+/// the spawn and broke the identity would have traded one silent failure for a worse one.
+///
+/// ⚠⚠ **THE NAME IS THAT CONSTANT AND NOT A SECOND ONE.** [`sprag_rpc::DAEMON_BIN_NAME`] already
+/// exists for exactly this — its own doc says *the processes that LAUNCH a daemon and the ones that
+/// RECOGNISE one must name it once*, and `kill-server` recognises a daemon by it before signalling.
+/// A constant of this module's own would be that fact spelled twice, which is the shape register
+/// items 738 and 292 are about.
+///
+/// ⚠⚠ **IT IS NOT A DISGUISE.** The child IS this build — that is the whole point of starting it by
+/// handle — so restoring the name states a fact the exec path lost. What `comm` normally carries is
+/// a heuristic for *which program is this*; when the program is reached by handle the heuristic has
+/// nothing to read, and the program itself is the authority.
+///
+/// ⚠ The residue, stated rather than hidden: between `execve` and this call the process answers to
+/// `exe`. A scan landing in that window would not count it. The window is a few instructions at the
+/// top of `main`, and the processes these scans are about — a predecessor's leftover drivers — have
+/// been running for minutes or hours.
+///
+/// ⚠ A no-op where the platform has no such call, and that costs nothing there: without a handle to
+/// exec, [`image_to_spawn`] hands the boot PATH, whose basename is already this name.
+pub fn name_this_image() {
+    #[cfg(target_os = "linux")]
+    {
+        // ⚠ BUILT FROM THE CONSTANT rather than written out as a C literal, which is the only way
+        // the *named once* claim above is actually true: a literal here could not follow a rename.
+        // `TASK_COMM_LEN` is 16 including the NUL, so the kernel truncates a longer name rather
+        // than refusing — the assertion says so at the one moment somebody could still act on it.
+        let Ok(name) = std::ffi::CString::new(sprag_rpc::DAEMON_BIN_NAME) else {
+            return;
+        };
+        debug_assert!(
+            sprag_rpc::DAEMON_BIN_NAME.len() < 16,
+            "a process name over 15 bytes is TRUNCATED by the kernel, and every `pids_named` \
+             comparison in this workspace would then be against a name no process answers to",
+        );
+        // SAFETY: `PR_SET_NAME` reads at most 16 bytes from the pointer and writes nothing, and
+        // `name` is a NUL-terminated C string that outlives the call. It affects only the calling
+        // thread's name, and this is the first thing `main` does, so this thread is the process.
+        unsafe {
+            libc::prctl(libc::PR_SET_NAME, name.as_ptr());
+        }
+    }
+}
+
+/// **WHY A DRIVER COULD NOT BE STARTED, IN WORDS A PERSON CAN ACT ON** — register item 763's second
+/// half, and the reason `os error 2` was not enough.
+///
+/// `own` is what [`std::env::current_exe`] says this image is called, and `pinned` is whether
+/// [`image_to_spawn`] handed a live handle or merely that name.
+///
+/// # ⚠⚠⚠⚠ The failure that has actually happened here reads as a missing file, and is not one
+///
+/// A daemon whose binary was replaced under it reports `No such file or directory` — about its own
+/// executable, which is still running. Nobody reading that attributes it to the promotion they ran
+/// four seconds earlier; **another repository's watcher spent a round reading the run's `panicked`
+/// as a bug in its own code.** So the sentence names the cause when the evidence is there, and says
+/// plainly when it is not rather than guessing.
+///
+/// ⚠ The evidence is RE-DERIVED at the moment of failure — *does the name this image goes by still
+/// exist* — and not remembered from boot. A remembered value is a claim about the past; this is a
+/// question the operating system answers now.
+#[must_use]
+fn driver_spawn_refused(
+    why: &std::io::Error,
+    own: Option<&std::path::Path>,
+    pinned: bool,
+) -> String {
+    let replaced = own.is_some_and(|path| !path.exists());
+    match (replaced, pinned) {
+        (true, _) => format!(
+            "this daemon's own executable was replaced or removed while it was running — the name \
+             it goes by is now `{}`, which is not a file, so nothing here can be started from it. \
+             Promoting a build over a live daemon does exactly this. Restart the daemon. ({why})",
+            own.unwrap_or(std::path::Path::new("?")).display(),
+        ),
+        (false, true) => format!("this daemon could not start a copy of its own image: {why}"),
+        // ⚠ SAID, not glossed over: on a platform with no handle to the running image, a spawn
+        // takes whatever the boot path holds NOW — which after a promotion is a different build.
+        (false, false) => format!(
+            "this daemon starts drivers by NAME on this platform rather than by a handle to its \
+             own image, so a build promoted over it would be started instead of this one: {why}"
+        ),
+    }
+}
+
 /// **HOW THIS DAEMON STARTS A RUN'S DRIVER**, scoped to `session` — register items 544 / 643 / 650.
 ///
 /// # ⚠⚠⚠ The three facts it closes over, and why each has to be closed over here
 ///
-/// * **Which binary.** [`std::env::current_exe`], so *the driver is this daemon's image* is true by
-///   construction rather than by a version check — `crate::drive`'s module doc argues that at
-///   length. A named artefact would be a second thing to ship and a second version to skew.
+/// * **Which binary.** [`image_to_spawn`] — a HANDLE to the image this process is running, not the
+///   name it goes by, so *the driver is this daemon's image* is true by construction rather than by
+///   a version check (`crate::drive`'s module doc argues that at length). Register item 763 is what
+///   the difference cost: a promotion replaces the file, `current_exe` starts answering with a name
+///   that is not a file, and every driver this daemon tries to start afterwards fails.
 /// * **Which endpoint.** Passed in the child's environment under the same name every other client
 ///   of this daemon reads ([`sprag_rpc::HOST_SOCKET`]'s override), so the two can never disagree
 ///   about which host they mean.
@@ -878,7 +1038,7 @@ pub fn driver_spawn(session: &str, window: &str) -> plugins::DriverSpawn {
     let window = window.to_owned();
     Arc::new(
         move |id: crate::runs::RunId, request: &serde_json::Map<String, serde_json::Value>| {
-            let mut child = std::process::Command::new(std::env::current_exe()?)
+            let mut child = std::process::Command::new(image_to_spawn())
                 .arg(drive::DRIVE_FLAG)
                 .arg(id.0.to_string())
                 .arg("-t")
@@ -900,7 +1060,19 @@ pub fn driver_spawn(session: &str, window: &str) -> plugins::DriverSpawn {
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
-                .spawn()?;
+                .spawn()
+                // ⛔⛔⛔⛔⛔ AND A FAILURE SAYS WHAT HAPPENED — register item 763. This error is
+                // carried verbatim into the run's REFUSAL (`plugins::drive_in_a_process`) and from
+                // there into the row a person opens, so `os error 2` on its own was a fact nobody
+                // could attribute. See `driver_spawn_refused`.
+                .map_err(|why| {
+                    let said = driver_spawn_refused(
+                        &why,
+                        std::env::current_exe().ok().as_deref(),
+                        cfg!(target_os = "linux"),
+                    );
+                    std::io::Error::new(why.kind(), said)
+                })?;
             {
                 use std::io::Write as _;
                 let mut stdin = child.stdin.take().ok_or_else(|| {
@@ -992,6 +1164,77 @@ mod tests {
         let mut em = Emulator::new(cols, rows);
         em.advance(bytes);
         snapshot(em.screen(), em.palette())
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A DRIVER THAT COULD NOT BE STARTED SAYS WHICH OF THREE WORLDS IT IS IN** —
+    /// register item 763's second half.
+    ///
+    /// # ⚠⚠⚠⚠ Why a unit test for a sentence, when the `cli` gate measures the behaviour
+    ///
+    /// Because the behaviour gate can only reach ONE of these arms. Once
+    /// [`image_to_spawn`](super::image_to_spawn) hands a live handle, a replaced binary stops
+    /// failing at all — which is the repair — and the arm that explains a replaced binary becomes
+    /// unreachable from the outside on this platform. A sentence nothing can reach is a sentence
+    /// that rots (register items 739 and 482 are that shape), so the composer is a pure function
+    /// and every arm is asserted here.
+    ///
+    /// ⚠⚠ **ALL THREE ARMS, because none of them is a catch-all** (the round's rule ⑹): *the
+    /// executable was replaced*, *the image is pinned and something else went wrong*, and *this
+    /// platform starts drivers by NAME* are three different things to do about it, and folding the
+    /// last into the middle would hide the one case where a promotion silently swaps the build.
+    #[test]
+    fn a_driver_that_could_not_be_started_says_whether_the_image_was_replaced() {
+        let missing = std::path::Path::new("/definitely/not/a/file (deleted)");
+        let here = std::path::Path::new(".");
+        let enoent = std::io::Error::from(std::io::ErrorKind::NotFound);
+
+        // ── THE ARM THIS ITEM WAS FILED FOR: the name no longer exists ───────────────────────
+        let replaced = super::driver_spawn_refused(&enoent, Some(missing), true);
+        assert!(
+            replaced.contains("replaced or removed while it was running")
+                && replaced.contains("Restart the daemon"),
+            "⛔ REGISTER ITEM 763: the refusal does not say that this daemon's own executable went \
+             away, which is the whole fact a reader has to act on: {replaced}",
+        );
+        assert!(
+            replaced.contains(&missing.display().to_string()),
+            "⛔ REGISTER ITEM 763: it does not name the path, so a reader cannot check the claim \
+             against their own `ls`: {replaced}",
+        );
+
+        // ── THE CONTROL: an image that IS there, so this is some other failure ───────────────
+        //
+        // ⚠ Without it the sentence above could be printed over every spawn failure there is, and
+        // *your binary was replaced* would become noise a reader learns to skip.
+        let other = super::driver_spawn_refused(&enoent, Some(here), true);
+        assert!(
+            !other.contains("replaced or removed"),
+            "⚠⚠⚠ THE CONTROL FAILED: a daemon whose executable is exactly where it should be is \
+             being told its binary was replaced: {other}",
+        );
+
+        // ── THE THIRD WORLD: no handle to the running image, said rather than assumed ────────
+        let unpinned = super::driver_spawn_refused(&enoent, Some(here), false);
+        assert!(
+            unpinned.contains("by NAME"),
+            "⛔ REGISTER ITEM 763: a platform where `image_to_spawn` hands only the boot PATH is \
+             one where a promoted build gets started instead of this one, and the fallback has to \
+             say so — an unmarked fallback disables the very guarantee it stands in for: \
+             {unpinned}",
+        );
+        assert_ne!(
+            unpinned, other,
+            "⛔ REGISTER ITEM 763: pinned and unpinned failures read identically, so the row \
+             cannot tell a reader whether the guarantee was in force",
+        );
+
+        // ⚠ AND AN UNKNOWN NAME IS NOT READ AS A REPLACED ONE — `current_exe` can simply fail, and
+        // *we could not ask* must never be published as *your binary is gone*.
+        let unknown = super::driver_spawn_refused(&enoent, None, true);
+        assert!(
+            !unknown.contains("replaced or removed"),
+            "⚠⚠ an image nobody could name is being reported as one that was replaced: {unknown}",
+        );
     }
 
     #[test]

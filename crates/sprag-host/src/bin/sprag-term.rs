@@ -183,6 +183,16 @@ fn drive_order<I: Iterator<Item = String>>(mut args: I) -> io::Result<Option<Dri
 }
 
 fn main() -> io::Result<()> {
+    // ⛔⛔⛔⛔⛔ **BEFORE ANYTHING ELSE, THIS IMAGE SAYS WHAT IT IS** — register item 763.
+    //
+    // A driver is started from a HANDLE to the daemon's own image rather than from the name that
+    // image goes by (`sprag_host::image_to_spawn`), because a promotion replaces the file while the
+    // daemon is running and the name stops being a file. The kernel takes `comm` from the path it
+    // was handed, so a child started that way answers to `exe` — and `comm` is what every identity
+    // check in this repository compares (`leftover_driver`, `daemon_pid`, `pane_processes`). This
+    // is where the name comes back, and it is FIRST so the window in which it is wrong is the
+    // shortest this program can make it.
+    sprag_host::name_this_image();
     // ⚠⚠⚠⚠⚠ THE DRIVER SPLIT IS THE FIRST THING `main` DOES. Everything below boots a
     // multiplexer — a lock, a log, a pane, a socket — and a driver wants none of it: it is a client
     // of a daemon that already exists, and it reaches that daemon by the SAME endpoint resolution
@@ -610,7 +620,7 @@ fn leftover_driver(pid: u32, endpoint: &std::path::Path) -> bool {
         return false;
     }
     let want = format!("SPRAG_HOST_RPC_SOCK={}", endpoint.display());
-    sprag_terminal::procfs::pids_named("sprag-term").contains(&pid)
+    sprag_terminal::procfs::pids_named(sprag_rpc::DAEMON_BIN_NAME).contains(&pid)
         && sprag_terminal::procfs::environ(pid).is_some_and(|environ| {
             environ
                 .split(|byte| *byte == 0)

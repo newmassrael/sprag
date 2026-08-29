@@ -2479,7 +2479,7 @@ fn daemon_pid(sock: &Path) -> Option<u32> {
     // The socket is matched from the ENVIRONMENT rather than the name, because a box can be running
     // the developer's own daemon: a probe that took the first `sprag-term` it found would SIGKILL
     // somebody's terminal (R278, and this test kills what it finds).
-    let holding: Vec<u32> = sprag_terminal::procfs::pids_named("sprag-term")
+    let holding: Vec<u32> = sprag_terminal::procfs::pids_named(sprag_rpc::DAEMON_BIN_NAME)
         .into_iter()
         .filter(|&pid| {
             pid != me
@@ -2528,7 +2528,23 @@ fn kill_daemon(pid: u32) {
 /// Launch a `--daemon` on `sock` keeping its durable state under `state`. Returns once the
 /// intermediate parent has forked and exited; the caller waits for the socket to answer.
 fn spawn_daemon(sock: &Path, state: &Path) {
-    let status = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
+    spawn_daemon_from(Path::new(env!("CARGO_BIN_EXE_sprag-term")), sock, state);
+}
+
+/// [`spawn_daemon`], from a NAMED COPY of the binary rather than the one cargo built — register
+/// item 763.
+///
+/// # ⚠⚠⚠⚠⚠ Why a gate would ever want this
+///
+/// Because a promotion is a `cp` OVER THE FILE A DAEMON IS RUNNING, and the only way to stage that
+/// honestly is to have a copy of your own to overwrite. Overwriting `target/debug/sprag-term` would
+/// be overwriting the binary every other test in this suite is spawning — and this tree is shared
+/// with another session besides.
+///
+/// ⚠ The copy is the LOOP DAEMON'S OWN SHAPE, not a contrivance: `$LOOP/bin/sprag-term` is a `cp`
+/// of `target/debug/sprag-term`, and the repayment skill calls that copy *the promotion*.
+fn spawn_daemon_from(bin: &Path, sock: &Path, state: &Path) {
+    let status = Command::new(bin)
         .arg("--daemon")
         .env("SPRAG_HOST_RPC_SOCK", sock)
         .env("SPRAG_HOST_RPC", "1")
@@ -2603,7 +2619,7 @@ fn sprag_term_processes(sock: &Path) -> usize {
 fn sprag_term_pids(sock: &Path) -> Vec<u32> {
     let want = format!("SPRAG_HOST_RPC_SOCK={}", sock.display());
     let me = std::process::id();
-    sprag_terminal::procfs::pids_named("sprag-term")
+    sprag_terminal::procfs::pids_named(sprag_rpc::DAEMON_BIN_NAME)
         .into_iter()
         .filter(|&pid| pid != me)
         .filter(|&pid| {
@@ -2636,7 +2652,7 @@ fn driver_pids(sock: &Path) -> Vec<u32> {
 /// the question is portable and the answer should be too, and a pid that has been REUSED by some
 /// other program is not this driver coming back from the dead.
 fn still_running(pid: u32) -> bool {
-    sprag_terminal::procfs::pids_named("sprag-term").contains(&pid)
+    sprag_terminal::procfs::pids_named(sprag_rpc::DAEMON_BIN_NAME).contains(&pid)
 }
 
 /// Open a session on `sock` and submit a run over its pane that **cannot finish while anybody is
@@ -4477,6 +4493,248 @@ fn a_promotion_that_changes_the_documents_ends_the_drivers_it_is_not_bringing_ba
         "⚠⚠⚠ THE CONTROL FAILED: the row names a pid nothing ended, which would make the number in \
          the subject's row evidence of nothing. Row: {control:?}",
     );
+    drop(guard);
+}
+
+/// ⛔⛔⛔⛔⛔ **A DAEMON WHOSE BINARY IS REPLACED UNDER IT CAN STILL START A DRIVER** — register item
+/// 763, and the arm no gate in this suite could reach because none of them had a binary of its own
+/// to overwrite.
+///
+/// # ⚠⚠⚠⚠⚠ What a promotion does to a daemon four seconds before it is asked to stop
+///
+/// Promoting a build is `cp -f` over `$LOOP/bin/sprag-term`. GNU `cp` cannot open a running
+/// executable for writing (`ETXTBSY`), so with `-f` it **unlinks and recreates** — and the running
+/// process's own name gains a suffix:
+///
+/// ```text
+/// before   readlink /proc/<pid>/exe  ->  …/sprag-term
+/// after    readlink /proc/<pid>/exe  ->  …/sprag-term (deleted)
+///          test -e "…/sprag-term (deleted)"        ->  ENOENT
+///          exec  /proc/<pid>/exe --version         ->  the ORIGINAL program, still fine
+/// ```
+///
+/// `driver_spawn` handed `std::env::current_exe()` to `Command::new`, so from that instant the
+/// daemon could start **no driver at all** — while being perfectly able to run one. **In this
+/// repository's live loop log that refusal stands five times** (runs 71, 72, 73, 74, 76), each a
+/// run whose driver had died and could not be replaced, each reported as `panicked`. Another
+/// repository's watcher read one of those as a bug in its own code.
+///
+/// # ⚠⚠⚠⚠ The axis is NOT *was there a `cp`* — a positive control says so
+///
+/// The 2026-08-29 23:48 promotion on this machine ran `kill-server` → waited for the daemon to be
+/// **gone** → `cp` → start, and none of this happened: the new daemon spawned four drivers
+/// normally. So what matters is whether the `cp` deleted the image of a process that was **still
+/// running**, and this fixture stages exactly that and asserts it: the daemon is alive, and after
+/// the copy its own `/proc/<pid>/exe` reads `(deleted)` while the name it goes by is not a file.
+/// A fixture that copied over a dead daemon's binary would satisfy every claim below and measure
+/// nothing.
+///
+/// # ⚠⚠⚠ The control is the SAME question asked before the copy
+///
+/// A revival that fails after the `cp` proves nothing unless a revival succeeded before it — the
+/// daemon might simply never replace a dead driver. So two loops: one whose driver is killed
+/// **before** the copy, one **after**, through the same door (register item 671) in the same
+/// daemon. Before-and-after in one process is what makes the copy the cause.
+///
+/// ⚠ It is `cfg(linux)` and says why: the `(deleted)` premise is read out of `/proc`, and the
+/// handle that repairs this is a Linux one. Where there is no handle the product falls back to the
+/// boot path and SAYS so — that arm is `lib.rs`'s own unit gate, which is reachable everywhere.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_daemon_whose_binary_was_replaced_under_it_can_still_start_a_driver() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-binary-swapped-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    // ── A BINARY OF OUR OWN TO OVERWRITE, which is the whole reason this gate can exist ──────
+    let bin_dir = state.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("the test's own bin directory");
+    let bin = bin_dir.join("sprag-term");
+    std::fs::copy(env!("CARGO_BIN_EXE_sprag-term"), &bin).expect("a copy to promote over");
+    spawn_daemon_from(&bin, &sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+    let daemon = daemon_pid(&sock).expect("the daemon is running");
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    // ── TWO LOOPS: one killed before the copy, one after ────────────────────────────────────
+    let before_pane = loop_session(&mut conn, "before");
+    start_loop(
+        &mut conn,
+        "before",
+        before_pane,
+        "the loop whose driver dies while this daemon's binary is still on disk",
+    );
+    let after_pane = loop_session(&mut conn, "after");
+    start_loop(
+        &mut conn,
+        "after",
+        after_pane,
+        "the loop whose driver dies once the binary has been replaced under the daemon",
+    );
+    assert!(
+        wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 2),
+        "⚠⚠ THE PREMISE FAILED: this daemon ships `run-driver-process` on (register item 544), so \
+         the two loops should be two processes of their own and there is nothing here to kill. \
+         Found {:?}.",
+        driver_pids(&sock),
+    );
+    // ⚠⚠⚠ THE PREMISE THE REVIVALS REST ON: a run with no place cannot be put back at all
+    // (register item 671's own refusal arm), so without this the gate could read *nothing was
+    // revived* as *the spawn failed*.
+    assert!(
+        wait_for(Duration::from_secs(90), || resumable_runs(&state, 2)),
+        "⚠⚠ THE PREMISE FAILED: the daemon never persisted TWO live loops each carrying a place \
+         and a request, so neither run is one register item 671 would even try to revive.",
+    );
+    let started = driver_pids(&sock);
+
+    // ── THE CONTROL: a driver dies while the binary is where it has always been ──────────────
+    //
+    // SAFETY: read from the process table as a driver of THIS test's own daemon, beside a socket
+    // this test made.
+    unsafe { libc::kill(started[0] as libc::pid_t, libc::SIGKILL) };
+    assert!(
+        wait_for(Duration::from_secs(10), || !still_running(started[0])),
+        "the control's driver {} did not die",
+        started[0],
+    );
+    let replaced_control = || {
+        driver_pids(&sock)
+            .into_iter()
+            .find(|pid| !started.contains(pid))
+    };
+    assert!(
+        wait_for(Duration::from_secs(30), || replaced_control().is_some()),
+        "⚠⚠⚠ THE CONTROL FAILED: this daemon did not replace a dead driver even with its binary \
+         untouched, so *the copy broke it* cannot be what the claim below is measuring. This is \
+         register item 671's own behaviour and it has to be working here first. Drivers: {:?}.",
+        driver_pids(&sock),
+    );
+
+    // ── THE PROMOTION: `cp -f` over the image of a daemon that is STILL RUNNING ──────────────
+    //
+    // ⚠ A different file, because what a promotion writes is a different build. What matters is
+    // that `cp -f` UNLINKS the running image to do it.
+    let promoted = Command::new("cp")
+        .arg("-f")
+        .arg(env!("CARGO_BIN_EXE_sprag"))
+        .arg(&bin)
+        .status()
+        .expect("cp runs");
+    assert!(promoted.success(), "the promotion's own `cp -f` failed");
+
+    // ⚠⚠⚠⚠⚠ **AND THE FIXTURE PROVES IT STAGED THE DANGEROUS VARIANT, NOT MERELY A COPY.** This is
+    // the axis the positive control names: a `cp` over a daemon that has already exited does none
+    // of this, and every claim below would pass against such a fixture without measuring anything.
+    let own_name = std::fs::read_link(format!("/proc/{daemon}/exe"))
+        .expect("the daemon's own image is readable through /proc");
+    assert!(
+        own_name.to_string_lossy().ends_with("(deleted)"),
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: `cp -f` did not unlink the running daemon's image, so this \
+         gate is measuring a promotion that cannot cause register item 763. The daemon's image \
+         reads {own_name:?}.",
+    );
+    assert!(
+        !own_name.exists(),
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: the name this daemon goes by is still a file, so \
+         `Command::new(current_exe())` would have worked and the defect is not staged: {own_name:?}",
+    );
+    assert!(
+        bin.exists(),
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: the promoted path does not exist, which is a `cp` that \
+         failed rather than the in-place replacement a promotion performs",
+    );
+    assert_eq!(
+        daemon_pid(&sock),
+        Some(daemon),
+        "⚠⚠ THE PREMISE FAILED: the daemon did not survive having its binary replaced, so what is \
+         measured below is a restart and not a live daemon with no name",
+    );
+
+    // ── THE CLAIM: it can still start a driver ───────────────────────────────────────────────
+    let subject = driver_pids(&sock)
+        .into_iter()
+        .find(|pid| still_running(*pid) && *pid != started[0])
+        .expect("the second loop's driver is still running");
+    let alive_before_kill = driver_pids(&sock);
+    // SAFETY: as above — a driver of this test's own daemon.
+    unsafe { libc::kill(subject as libc::pid_t, libc::SIGKILL) };
+    assert!(
+        wait_for(Duration::from_secs(10), || !still_running(subject)),
+        "the subject's driver {subject} did not die",
+    );
+    let replacement = || {
+        driver_pids(&sock)
+            .into_iter()
+            .find(|pid| !alive_before_kill.contains(pid))
+    };
+    let arrived = wait_for(Duration::from_secs(30), || replacement().is_some());
+    let rows = conn
+        .call(
+            "scene/query",
+            json!({
+                "session": "after",
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+            }),
+        )
+        .expect("the runs slot answers")
+        .as_array()
+        .expect("a list of runs")
+        .clone();
+
+    // ── THE ROW FIRST, because it is the claim a person meets ───────────────────────────────
+    //
+    // ⚠⚠ This is the half that made the live occurrences expensive. `panicked` reaches a reader as
+    // *my loop hit a bug*, and register item 685 bought that word a REASON for exactly this — but
+    // the reason on offer was `No such file or directory (os error 2)`, which names no cause a
+    // person can act on. A run whose driver could not be replaced must not be wearing the failure.
+    //
+    // ⚠⚠⚠⚠⚠ **AND IT NAMES THE SUBJECT'S OWN ROW, WHICH THE FIRST FORM OF THIS GATE DID NOT.** It
+    // took the first row carrying `pane=` — and that is the CONTROL's run, whose driver was
+    // replaced before the copy and which is `running` whatever happens here. The assertion could
+    // therefore never fail, which is the vacuity this round's rule ⑸ asks about: *is there a path
+    // where this value is not what I want?* There was not, until this line named the pane.
+    let mine = format!("ai_loop pane={after_pane}");
+    let after_row = rows
+        .iter()
+        .find(|run| run["label"].as_str() == Some(mine.as_str()))
+        .map(|run| run["state"].clone())
+        .unwrap_or_else(|| panic!("no row for the loop on pane {after_pane}: {rows:?}"));
+    assert_ne!(
+        after_row["status"],
+        json!("panicked"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 763: a driver could not be replaced under a daemon whose binary was \
+         swapped, and the RUN is wearing the failure. `panicked` says this run broke; what happened \
+         is that somebody promoted a build over a live daemon and its own image stopped having a \
+         name. Row state: {after_row:?}",
+    );
+
+    // ── AND THE PROCESS TABLE AGREES: something really is driving it again ──────────────────
+    assert!(
+        arrived,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 763: THIS DAEMON CAN NO LONGER START A DRIVER BECAUSE ITS OWN \
+         BINARY WAS REPLACED UNDER IT. The control above proves it could a moment ago; the only \
+         thing that changed is a `cp -f` over the file it is running, which unlinked its image and \
+         left `current_exe()` answering `{}` — a name, not a file. The image itself is fine and \
+         `/proc/<pid>/exe` still starts it, so nothing about this run was impossible; the daemon \
+         was simply asking for its driver by a name that had stopped meaning anything. Every run \
+         this daemon holds is now un-revivable and each will be reported as if IT had broken. \
+         Drivers: {:?}. Rows: {rows:?}",
+        own_name.display(),
+        driver_pids(&sock),
+    );
+    drop(conn);
     drop(guard);
 }
 
@@ -11906,7 +12164,7 @@ fn a_signalled_daemon_whose_run_is_driven_elsewhere_is_gone_promptly() {
     // its own socket in the environment — `daemon_pid`'s doc says why that matters.
     unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
     let gone = wait_for(Duration::from_secs(10), || {
-        !sprag_terminal::procfs::pids_named("sprag-term").contains(&pid)
+        !sprag_terminal::procfs::pids_named(sprag_rpc::DAEMON_BIN_NAME).contains(&pid)
     });
     let took = signalled.elapsed();
     assert!(gone, "the signalled daemon was still there after {took:?}");
