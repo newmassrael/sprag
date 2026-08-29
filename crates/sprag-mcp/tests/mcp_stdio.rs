@@ -352,6 +352,36 @@ fn daemon_generation(sock: &Path) -> Option<String> {
     conn.daemon_generation().map(str::to_owned)
 }
 
+/// Wait, bounded, for EITHER window to gain a pane, and answer which did — register item 768.
+///
+/// # ⚠⚠⚠⚠ Why both, and why the answer is not a `bool`
+///
+/// A run that opens a pane in the WRONG window and a run that opened none at all are opposite
+/// facts, and a gate that waited only on the right window would report them identically — the
+/// second as if it were the first. So both are watched and the answer says which moved, leaving
+/// *neither* as a distinguishable third case the caller can call a failed PREMISE.
+///
+/// ⚠ A WAIT and not a `sleep`: a run opens its panes on its own schedule. ⚠⚠ And the poll has to be
+/// tight, because a `dialogue` turn's pane is TRANSIENT — the plugin closes it on every exit path
+/// (`PaneGuard`), so a slow poll can miss the whole life of the thing being measured.
+fn wait_for_a_new_pane(
+    sock: &Path,
+    mine: (&str, usize),
+    theirs: (&str, usize),
+) -> Option<&'static str> {
+    let until = Instant::now() + Duration::from_secs(25);
+    while Instant::now() < until {
+        if mux_query_panes_in(sock, mine.0).len() > mine.1 {
+            return Some("mine");
+        }
+        if mux_query_panes_in(sock, theirs.0).len() > theirs.1 {
+            return Some("theirs");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
 /// Divide `pane` and spawn a new one into the half it opens, returning the new pane's id.
 fn split_pane(sock: &Path, pane: u64, dir: &str) -> u64 {
     mux_invoke(
@@ -4463,6 +4493,276 @@ fn an_agent_reads_and_drives_its_own_pane_while_the_person_looks_elsewhere() {
         theirs,
         "⚠⚠ reading and typing at its own pane moved the person's screen — R313's rule, and a \
          repair that took a window to reach a pane would be worse than the defect",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **`pane_layout` WITH NO ARGUMENT DRAWS THE AGENT'S OWN WINDOW, AS ITS OWN DESCRIPTION
+/// PROMISES** — register item 768, the first of the three doors item 766's repair did not reach.
+///
+/// # ⚠⚠⚠⚠⚠ The tool said the fixed thing in words while doing the broken one
+///
+/// Its published description reads *"With no argument it draws YOUR window"*. With no argument it
+/// sent no window, and on the wire that is **the session's current window** — wherever a person
+/// last looked. Repairing the sentence instead of the code would have been dragging the contract
+/// down to the defect.
+///
+/// ⚠⚠ **AND THE TWO HALVES CAME FROM DIFFERENT WINDOWS**, which is worse than either: the pane
+/// LIST is narrowed to the agent's window (item 759) while the ARRANGEMENT came from the current
+/// one, so the drawing labelled one window's tree with another window's panes. *A listing narrowed
+/// at one end and addressed at the other is neither window's* — item 759's sentence, third client.
+///
+/// # ⚠⚠⚠ Why `(you are here)` is the assertion and *it drew something* is not
+///
+/// A drawing of the wrong window is still a drawing. The ONE thing that separates the two answers
+/// is whether the agent's own pane is in it — and that mark is what the tool exists to provide,
+/// because it is what makes a DIRECTION mean anything.
+#[test]
+fn an_agents_pane_layout_draws_its_own_window_while_the_person_looks_elsewhere() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let mine = mux_current_window(&sock);
+
+    // ── THE PREMISE: the person is looking somewhere the agent is not ───────────────────────
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let theirs = mux_current_window(&sock);
+    assert_ne!(
+        theirs, mine,
+        "⛔ THE PREMISE: the current window must not be the agent's, or this gate passes in a \
+         one-window world and measures nothing",
+    );
+    assert!(
+        mux_query_panes_in(&sock, &mine).contains(&0),
+        "⛔ THE PREMISE: the agent's own pane left the window it was born in",
+    );
+
+    // ── THE CLAIM ───────────────────────────────────────────────────────────────────────────
+    let drawn = tool_text(&server.call_tool_raw("pane_layout", json!({}))["result"]);
+    assert!(
+        drawn.contains("(you are here)"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 768: `pane_layout` DREW A WINDOW THE AGENT IS NOT IN. Its own \
+         description promises *\"With no argument it draws YOUR window\"*, and with no argument it \
+         named none — which the wire resolves as the window a PERSON is looking at. The mark is \
+         missing because the agent's pane is not in what was drawn, and every direction chosen \
+         from this drawing would be a step in somebody else's window. Drawing: {drawn:?}",
+    );
+
+    // ── THE CONTROL: a far window named by a pane in it still draws THAT window ──────────────
+    //
+    // ⚠ Without it, a repair that ignored the argument entirely and always drew the agent's own
+    // window would satisfy the claim above — and `pane_layout`'s reach past the window is a
+    // property register item 690's family paid for.
+    let far = mux_query_panes_in(&sock, &theirs)
+        .first()
+        .copied()
+        .expect("the person's window has a birth pane");
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": far, "name": "faraway" }),
+    );
+    let over_there =
+        tool_text(&server.call_tool_raw("pane_layout", json!({ "pane": "faraway" }))["result"]);
+    assert!(
+        !over_there.contains("(you are here)"),
+        "⚠⚠⚠ THE CONTROL FAILED: a drawing of a window the agent is NOT in is marking the agent \
+         as being in it, so the mark says nothing: {over_there:?}",
+    );
+    // ⚠⚠⚠ THE FAR PANE'S ID, and not its name — measured, after a mutation that made the caller's
+    // own window win over an explicit one stayed GREEN against the name. The id is the one token
+    // that can only come from the far window's own tree, so it is what separates *drew that window*
+    // from *drew mine and said that one's name at the top*.
+    assert!(
+        over_there.contains(&format!("id {far}")),
+        "⚠⚠⚠ THE CONTROL FAILED: naming a pane one window over no longer draws that window — the \
+         far window's own pane {far} is not in the drawing, so the repair took the reach away \
+         instead of fixing the default: {over_there:?}",
+    );
+    // ⛔⛔⛔⛔⛔ AND THE TWO HALVES CAME FROM THE SAME WINDOW, which is the assertion the first form
+    // of this control was MISSING — a mutation that made the caller's own window win over an
+    // explicit one was GREEN against it, which is this repository's *a green mutation names the
+    // gate you owe*. The name and the `(you are here)` mark are both satisfiable while the TREE
+    // comes from one window and the pane LIST from another; what is not is this sentence, which
+    // `render_arrangement_answer` prints for exactly that mismatch — a node in the drawing that
+    // the listing has no row for.
+    assert!(
+        !over_there.contains("gone since the pane list was read"),
+        "⛔⛔⛔ REGISTER ITEM 768: the arrangement and the pane list came from DIFFERENT windows, \
+         so the drawing labels one window's tree with another's panes. That is register item 759's \
+         sentence — *a listing narrowed at one end and addressed at the other is neither \
+         window's* — and it is the failure this whole item is about, pointed at the far-window \
+         path instead of the default one. Drawing: {over_there:?}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A DIRECTION AN AGENT WALKS IS WALKED IN THE AGENT'S OWN WINDOW** — register item 768,
+/// and the door of the three that WRITES.
+///
+/// # ⚠⚠⚠⚠ Selecting is not reading, and this one moved somebody else's cursor
+///
+/// `select_pane` sets a window's active pane. With no window named it acted on the CURRENT one, so
+/// an agent stepping *left* from where it thought it was moved the selection in the window a person
+/// was working in — and the daemon answered `ok`, because that window really does have a pane to
+/// the left. Nothing refused and nothing said which window had moved.
+///
+/// ⚠⚠ **BOTH ARMS WERE AFFECTED AND THE REGISTER ONLY NAMED ONE.** Measured while repairing it:
+/// the `dir` arm takes its window from an ORIGIN it usually has none of, and the `pane` arm takes
+/// `PaneRef::window`, which is `None` for the agent's own pane — and unlike every other
+/// pane-addressed tool, this one does not go through `pane_params`. So a pane the agent named BY
+/// NAME, in its own window, was selected in the person's.
+#[test]
+fn an_agents_directional_select_steps_within_its_own_window() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let mine = mux_current_window(&sock);
+
+    // The agent's window gets a second pane, so a direction has somewhere to land.
+    let neighbour = split_pane(&sock, 0, "horizontal");
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": neighbour, "name": "myneighbour" }),
+    );
+
+    // ── THE PREMISE: the person is elsewhere, and their window ALSO has somewhere to step ────
+    //
+    // ⚠⚠ The second pane over there is what makes this gate honest: against a one-pane window the
+    // wrong-window step would simply be refused, and a refusal would look like the repair working.
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let theirs = mux_current_window(&sock);
+    assert_ne!(
+        theirs, mine,
+        "⛔ THE PREMISE: the current window must not be the agent's, or this measures nothing",
+    );
+    let far = mux_query_panes_in(&sock, &theirs)
+        .first()
+        .copied()
+        .expect("the person's window has a birth pane");
+    split_pane(&sock, far, "horizontal");
+    assert_eq!(
+        mux_query_panes_in(&sock, &theirs).len(),
+        2,
+        "⛔ THE PREMISE: the person's window has nowhere to step, so a step that went there would \
+         be REFUSED — and a refusal would pass this gate for the wrong reason",
+    );
+
+    // ── THE CLAIM: the step lands on a pane of the AGENT'S window ────────────────────────────
+    let stepped =
+        tool_text(&server.call_tool_raw("select_pane", json!({ "dir": "right" }))["result"]);
+    assert!(
+        stepped.contains("myneighbour"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 768: A DIRECTION THE AGENT WALKED WAS WALKED IN THE PERSON'S \
+         WINDOW. The request named no window — a direction is taken from an origin, and an agent \
+         stepping from where it stands names none — so the daemon walked whichever window the \
+         person is on. It answers `ok` because that window has a pane that way, which is why this \
+         went unnoticed: nothing refuses, somebody else's cursor simply moves. Answer: {stepped:?}",
+    );
+
+    // ── AND THE PERSON'S SCREEN DID NOT MOVE ────────────────────────────────────────────────
+    assert_eq!(
+        mux_current_window(&sock),
+        theirs,
+        "⚠⚠ selecting a pane in its own window took the person's screen — the repair must set \
+         THAT window's active pane and leave the current window alone",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A RUN THAT NAMES NO PANE STILL BELONGS TO THE AGENT'S WINDOW, AND THE PANES IT OPENS
+/// LAND THERE** — register item 768, the third door and the one the register said needed an owner's
+/// decision.
+///
+/// # ⚠⚠⚠⚠⚠ It did not need one: measuring what the `None` arm actually IS answered it
+///
+/// The register recorded *"a run with no pane keeps the scope-only shape: `None` here is 'not
+/// narrowed'"* and filed the question of whether that is right. But `None` is not an abstraction —
+/// it is reachable exactly when a plugin declares no pane, and `PluginName::pane_keys` says which:
+/// `Dialogue` answers `&[]`, because **it spawns its own panes per turn**. So the arm is not a run
+/// that touches no window; it is a run that CREATES panes, and the window it was started against is
+/// where they open.
+///
+/// ⇒ There is no open design question. Register items 687 and 759 already settled this exact
+/// sentence for `open_pane`: *an agent's pane went wherever the user's view happened to be*. A run
+/// that opens panes is that defect with a loop around it.
+///
+/// # ⚠⚠⚠ The claim is where the PANES went, not what the call answered
+///
+/// A run naming no pane is accepted whichever window it is addressed to, so the answer cannot tell
+/// the two apart. What can is the window its panes appear in.
+#[test]
+fn an_agents_paneless_run_opens_its_panes_in_its_own_window() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let mine = mux_current_window(&sock);
+
+    // ── THE PREMISE: the person is looking somewhere the agent is not ───────────────────────
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let theirs = mux_current_window(&sock);
+    assert_ne!(
+        theirs, mine,
+        "⛔ THE PREMISE: the current window must not be the agent's, or this measures nothing",
+    );
+    let mine_before = mux_query_panes_in(&sock, &mine).len();
+    let theirs_before = mux_query_panes_in(&sock, &theirs).len();
+
+    // ── A RUN THAT NAMES NO PANE, which is what `dialogue` is ───────────────────────────────
+    //
+    // ⚠ `PluginName::pane_keys` answers `&[]` for it — that is the property this gate needs, and
+    // it is the plugin's own published fact rather than a shape invented here.
+    let started = tool_text(
+        &server.call_tool_raw(
+            "orchestrate",
+            json!({
+                "plugin": "dialogue",
+                // ⚠⚠ AN ENDPOINT THAT NEVER REPLIES, and that is the fixture's whole trick. With
+                // `cat` the turn's own echo IS an accepted reply, so the turn ended in
+                // milliseconds and took its pane with it (`PaneGuard` closes on every exit path) —
+                // measured: the run reached `exhausted — ran out of iterations after 2` while this
+                // gate, polling every 20ms, never saw a pane in either window. A peer that says
+                // nothing makes the turn hold its pane until `timeout_ms`, which is the window
+                // this gate looks through.
+                "endpoint_a": ["sh", "-c", "exec sleep 30"],
+                "endpoint_b": ["sh", "-c", "exec sleep 30"],
+                "seed": "R768",
+                // ⚠ FLAT, because this surface publishes the daemon's guardrails as top-level
+                // arguments rather than as the wire's nested object — and it REFUSES an argument it
+                // does not take rather than ignoring it, which is how this fixture learned.
+                "max_iterations": 1,
+                "max_seconds": 30,
+                // ⚠ A LONG TURN, so the transient pane is alive while this gate looks at it.
+                "timeout_ms": 8000,
+            }),
+        )["result"],
+    );
+    assert!(
+        !started.contains("needs to know which pane"),
+        "⚠⚠ THE PREMISE FAILED: this server is not inside a pane, so `orchestrate` refused before \
+         reaching the window at all: {started:?}",
+    );
+
+    // ── THE CLAIM: its pane opened in the AGENT'S window ────────────────────────────────────
+    //
+    // ⚠⚠ The PREMISE and the claim are separated here on purpose. A `dialogue` turn's pane is
+    // transient, so *no pane anywhere* is a real possible outcome — and reading that as *it went to
+    // the wrong window* would be this gate lying about what it saw. `wait_for_a_new_pane` watches
+    // both windows so the three outcomes stay three.
+    let landed = wait_for_a_new_pane(&sock, (&mine, mine_before), (&theirs, theirs_before));
+    assert!(
+        landed.is_some(),
+        "⚠⚠ THE PREMISE FAILED: the run opened no pane in EITHER window inside the bound, so this \
+         gate saw nothing to attribute. `dialogue` is chosen here because `PluginName::pane_keys` \
+         answers `&[]` for it and it spawns a pane per turn; if it has stopped doing so, this \
+         fixture no longer stages the arm register item 768 is about. ⚠ The run's own account is \
+         carried here rather than left in the daemon's log, because *it never spawned* and *it \
+         spawned somewhere unseen* are different repairs. Answer: {started:?}. Runs: {}",
+        tool_text(&server.call_tool_raw("list_runs", json!({}))["result"]),
+    );
+    assert_eq!(
+        landed,
+        Some("mine"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 768: A RUN THE AGENT STARTED OPENED ITS PANE IN THE PERSON'S \
+         WINDOW. `dialogue` names no pane, so the request carried no window, so the daemon built \
+         the run over whichever window the person was looking at — and every pane that run spawns \
+         appears there. This is register item 687's sentence with a loop around it: *an agent's \
+         pane went wherever the user's view happened to be*. Answer: {started:?}",
     );
 }
 

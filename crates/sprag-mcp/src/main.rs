@@ -8134,26 +8134,62 @@ fn with_args(params: Value, args: Value) -> Value {
 /// [`query_panes_and_daemon`] already narrows the listing to [`our_window`] — item 759's half — and
 /// the ADDRESS went on saying *current*. Narrowing one end is what made the other end wrong.
 ///
-/// ⚠⚠ The fallback belongs HERE and not in the resolver, because `window: None` has to keep meaning
-/// *the caller's own* for the branches that PRINT it (`PaneRef::subject`, `pane_layout`'s far-window
-/// arm, `swap_pane`'s partner). One seam translates *mine* into a name; every other reader keeps the
-/// meaning it had.
+/// ⚠⚠ The fallback belongs at a SEAM and not in the resolver, because `window: None` has to keep
+/// meaning *the caller's own* for the branches that PRINT it (`PaneRef::subject`, `pane_layout`'s
+/// far-window arm, `swap_pane`'s partner). One seam translates *mine* into a name; every other
+/// reader keeps the meaning it had.
 ///
-/// ⚠ [`our_window`] can still answer [`None`] — an `sprag-mcp` outside any pane — and then this is
-/// exactly what it was before, which is the honest answer for a caller that has no window of its own.
+/// ⚠⚠⚠ **AND THE SEAM IS ONE DOOR FURTHER DOWN THAN THIS ONE** — register item 768. Item 766 put it
+/// here and this doc claimed *the ONE door every pane-addressed request goes through*, which was
+/// true and not enough: three WINDOW-addressed calls never come this way. They all reach
+/// [`windowed_params`], which is where the fallback now lives and where the rest of this reasoning
+/// has moved with it.
 fn pane_params(pane: &PaneRef, path: String) -> Value {
-    let window = match pane.window.as_deref() {
-        named @ Some(_) => named,
-        None => our_window(),
-    };
-    windowed_params(path, window)
+    // ⚠ The fallback is [`windowed_params`]'s, not spelled again here — register item 768. Item 766
+    // put it at this door; measuring which requests actually go through it found three more that do
+    // not, and all of them go through the one below. One rule, one place.
+    windowed_params(path, pane.window.as_deref())
 }
 
 /// [`pane_params`] for a request addressed at a WINDOW rather than at a pane in it.
+///
+/// # ⛔⛔⛔⛔⛔ **`None` MEANS THE CALLER'S OWN WINDOW, AND IT IS FILLED IN HERE** — register item 768
+///
+/// On the WIRE a request that names no window is resolved against the session's CURRENT window —
+/// wherever a person last looked. Nowhere on this surface does a caller mean that. Every `None`
+/// that reaches this function means *the window I am in*, and until this item three of them said
+/// *the window somebody else is in* instead:
+///
+/// | caller | when | what it did |
+/// |---|---|---|
+/// | `tool_pane_layout` | no `pane` argument | drew the CURRENT window's arrangement, labelled with the AGENT's pane list |
+/// | `tool_select_pane` | either arm, target in the agent's own window | moved the selection in the CURRENT window |
+/// | `tool_orchestrate` | a run naming no pane (`dialogue`) | started a run whose panes open in the CURRENT window |
+///
+/// # ⚠⚠⚠⚠ Why the default belongs HERE and not at the three call sites
+///
+/// Item 766 fixed [`pane_params`] and its doc claimed that door is *the ONE every pane-addressed
+/// request goes through* — which was true of pane-addressed ones and left the WINDOW-addressed
+/// calls above out. Three sites each remembering to call [`our_window`] is three chances to forget,
+/// and item 687's whole finding is that **a rule kept by one of two doors is where the defects
+/// live**. This is the door under both, so *a tool added later cannot forget the window* stops
+/// being a promise and becomes the shape of the code.
+///
+/// ⚠⚠ **AND `pane_layout` PROMISED THE FIXED BEHAVIOUR IN WORDS**: its own tool description says
+/// *"With no argument it draws YOUR window"*. Repairing the sentence to match the code would have
+/// been dragging the contract down to the defect — the answer register item 768 refuses.
+///
+/// ⚠ A caller that means a DIFFERENT window still passes `Some`, and nothing here touches it.
+/// [`our_window`] answering [`None`] — an `sprag-mcp` outside any pane — leaves the request exactly
+/// as it was, which is the honest answer for a caller that has no window of its own.
 fn windowed_params(path: String, window: Option<&str>) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("path".to_owned(), Value::String(path));
-    if let Some(window) = window {
+    let named = match window {
+        named @ Some(_) => named,
+        None => our_window(),
+    };
+    if let Some(window) = named {
         map.insert(
             sprag_rpc::WINDOW_PARAM.to_owned(),
             Value::String(window.to_owned()),
