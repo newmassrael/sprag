@@ -2015,6 +2015,56 @@ pub(crate) const CLAUDE_USAGE_LIMIT_NOW: &str =
 pub(crate) const CLAUDE_USAGE_LIMIT_RESET_NOW: &str =
     "Usage limit reset · continuing automatically";
 
+/// **THE STATUS LINE THIS REPOSITORY'S PEER PAINTS WHILE IT HOLDS BACKGROUND SHELLS**, by how many
+/// it is holding — register item 745, and the photographs that refuted that item's own cause.
+///
+/// # ⚠⚠⚠⚠⚠ What these are evidence OF, which is the opposite of what the item assumed
+///
+/// 745 read ONE pane — a composer holding an unsubmitted prompt, whose status line alone said
+/// `1 shell still running` where its four neighbours said `esc to interrupt` — as *a peer running a
+/// child does not turn an Enter into a question*, and prescribed exactly this clause as a second
+/// information source for [`crate::deliver::hold_while_a_child_runs`]. **Driven, it does not hold.**
+///
+/// Measured 2026-08-29 against a live `claude` 2.1.251 in a pane of its own, with exactly one
+/// background shell running for the whole probe and this clause on the screen throughout. Four
+/// deliveries, every one of them submitted and answered:
+///
+/// | bytes | how the Enter was sent | answer |
+/// |---|---|---|
+/// | 359, and no background shell — the control | with the text | the turn started |
+/// | 48 | with the text | `BRAVO` |
+/// | 2,369 | with the text | `CHARLIE` |
+/// | 939, folded by the composer to `[Pasted text #2]` | as a SEPARATE write | `DELTA` |
+///
+/// The last row is the one that closes it: the shape [`crate::deliver::deliver`] itself uses —
+/// inject, wait for the echo, press the key afterwards — at a size the composer folded, with the
+/// child running. It landed.
+///
+/// # ⚠⚠ Why the captures are kept although the prescription died
+///
+/// Because the clause is REAL and current-tense, and the next round to meet 745 will read the same
+/// sentence in the register and reach for it again. These are what
+/// `deliver::tests::a_background_shell_on_the_screen_is_not_a_child_this_door_holds_for` stages, so
+/// the refutation is a gate rather than a paragraph.
+///
+/// ⚠ Photographs, so they are kept as taken: the agent count is this machine's, and the `0` row is
+/// the same pane one second after the shells ended. The PLURAL is the peer's own — `1 shell`,
+/// `2 shells` — which is why a reader of this clause could never have been one literal.
+pub(crate) const CLAUDE_FOOTER_BY_BACKGROUND_SHELLS: &[(usize, &str)] = &[
+    (
+        0,
+        "⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← 9 agents",
+    ),
+    (
+        1,
+        "⏵⏵ auto mode on · 1 shell · esc to interrupt · ← 9 agents · ↓ to manage",
+    ),
+    (
+        2,
+        "⏵⏵ auto mode on · 2 shells · esc to interrupt · ← 9 agents · ↓ to manage",
+    ),
+];
+
 /// Replay a captured screen through the SHIPPING parser and hand back what it read.
 ///
 /// ⚠ Through a real [`Emulator`](sprag_vt::Emulator) rather than by handing the parser a

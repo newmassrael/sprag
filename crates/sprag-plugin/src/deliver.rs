@@ -136,20 +136,31 @@
 //! ## ⚠⚠⚠⚠⚠ And the peer can be unable to take a question AT ALL — the front of the same door
 //!
 //! Every hazard above is about what became of bytes that went in. This one is about whether they
-//! should go in yet: **a `claude` that is running a child does not turn an Enter into a question.**
-//! Measured (register item 745) on the one pane of five whose composer was holding an unsubmitted
-//! prompt — its status line said `1 shell still running` where the other four said
-//! `esc to interrupt` — and the text that would not go was **363 bytes**, so the product's own
-//! *shorten it, or split it* remedy had nothing to shorten.
+//! should go in yet: **an agent that is inside a tool call is not an agent at rest**, and a prompt
+//! typed at one opens no turn this run can hold to a contract.
 //!
-//! What that costs is not a prompt. The loop that met it replaced its whole session over the
-//! refusal, and because a run that folds a DIFFERENT prompt each time never trips the *same bytes
-//! twice* guard, it recovered for ever and called nobody.
+//! The cost of getting it wrong was measured (register item 745) and it is not a prompt: a live
+//! loop met a peer that did not turn its Enter into a question, replaced its whole session over the
+//! refusal, and — because a run that folds a DIFFERENT prompt each time never trips the *same bytes
+//! twice* guard — recovered for ever and called nobody.
+//!
+//! ⛔⛔ **THE SAMPLE THAT MOTIVATED THIS DOOR DID NOT SHOW WHAT IT WAS READ AS SHOWING**, and the
+//! correction is here rather than in a register nobody compiles. That pane's status line said
+//! `1 shell still running` where its four neighbours said `esc to interrupt`, and the sentence
+//! written from it — *a `claude` running a child does not turn an Enter into a question* — was
+//! about a BACKGROUNDED shell. Driven on 2026-08-29 against a live `claude` with exactly one such
+//! shell running, four deliveries of 48, 359, 939 and 2,369 bytes all submitted and were answered,
+//! the last of them through this module's own shape (inject, wait for the echo, press the key
+//! afterwards) at a size the composer folded. **A background shell does not refuse an Enter, and
+//! what refused that one is not yet known.** See
+//! `tests::a_background_shell_on_the_screen_is_not_a_child_this_door_holds_for`, which is where
+//! that refutation is a gate instead of a paragraph.
 //!
 //! So there is a hold in front of the typing — [`hold_while_a_child_runs`] — and its answer is
-//! [`Held`]. ⚠⚠ It WAITS rather than refusing on sight, because a tool call ends; refusing on sight
-//! would be a loop that sends nothing, which is why the gate on it stages a busy peer AND a free
-//! one and would be passed by neither alone.
+//! [`Held`]. What it consults is the AGENT'S OWN WORD about a tool call in flight, which is a fact
+//! about this turn rather than about the screen. ⚠⚠ It WAITS rather than refusing on sight, because
+//! a tool call ends; refusing on sight would be a loop that sends nothing, which is why the gate on
+//! it stages a busy peer AND a free one and would be passed by neither alone.
 //!
 //! ## Why this is not a method on `PaneAccess`
 //!
@@ -944,18 +955,33 @@ fn running_at(panes: &dyn PaneAccess, pane: PaneId) -> Option<String> {
 /// **HOLD UNTIL THIS PANE'S AGENT IS NOT RUNNING A CHILD** — bounded by `within` and by the RUN's
 /// own deadline, and answering [`Held`].
 ///
-/// # ⚠⚠⚠⚠⚠ What typing at a peer that is running a child cost, measured
+/// # ⚠⚠⚠⚠⚠ What a prompt typed at a peer that was not at rest cost, measured
 ///
 /// Register item 745. An unattended run's prompt was found **sitting in a live `claude`'s composer,
-/// unsubmitted**, and the one thing that pane's status line said which no other pane's did was
-/// `1 shell still running`. The four panes alive beside it at that minute had empty composers and
-/// said `esc to interrupt`. What the refusal cost is not the prompt: the run replaced its whole
-/// session over it, and a run that folds a DIFFERENT prompt each time never trips the *same bytes
-/// twice* guard either, so it recovers for ever and calls nobody.
+/// unsubmitted**, and what that cost is not the prompt: the run replaced its whole session over it,
+/// and a run that folds a DIFFERENT prompt each time never trips the *same bytes twice* guard
+/// either, so it recovers for ever and calls nobody.
 ///
 /// ⛔ **The product's own prescription for that failure is wrong for this sample.** It says *what is
 /// left is the PROMPT — shorten it, or split it*, and the text that was refused was **363 bytes**.
 /// There is no size to shorten to. What is left is not to type it yet.
+///
+/// # ⛔⛔⛔⛔⛔ What that pane's status line said, and why this door does NOT read it
+///
+/// The one thing that pane said which its four neighbours did not was `1 shell still running`, and
+/// the item's remedy followed the correlation: give this door a second information source, the
+/// clause the peer paints while it holds a BACKGROUNDED shell. **Driven 2026-08-29, it is false.**
+/// Four deliveries into a live `claude` 2.1.251 with exactly one background shell running
+/// throughout — 48, 359, 939 and 2,369 bytes, the 939 folded by the composer into
+/// `[Pasted text #2]` and submitted by a SEPARATE Enter, which is this module's own shape — every
+/// one submitted and was answered. The captures and the table are on
+/// `testing::CLAUDE_FOOTER_BY_BACKGROUND_SHELLS` — named rather than linked, because that module
+/// is this crate's own and a public item may not link one. The gate that holds the refutation is
+/// named in the module docs above.
+///
+/// ⚠⚠ So the door's blind spot below is not a hole to be closed: a door that read that clause would
+/// stand for a whole bound and then stop a run for a person over a peer that was never busy. **What
+/// actually refused that one prompt is not known**, and this door does not claim to be its remedy.
 ///
 /// # ⚠⚠⚠⚠ WHAT THIS DOOR CAN SEE, AND WHAT IT CANNOT — measured 2026-08-29, stated rather than hidden
 ///
@@ -964,9 +990,9 @@ fn running_at(panes: &dyn PaneAccess, pane: PaneId) -> Option<String> {
 /// report of any kind**, and `Stop` — the turn's own rest — is one of those
 /// (`sprag_host::hooks::CLAUDE`'s table, `("Stop", Report(Idle))`). So a child this door holds for
 /// is **a tool call in flight**, and a shell the agent BACKGROUNDED outlives its tool call's end and
-/// is invisible here.
+/// is invisible here — which the section above measured to be the right thing to be blind to.
 ///
-/// ⚠⚠ That is not a hole this door could close by looking somewhere else, and the alternative was
+/// ⚠⚠ The other place it could have looked is worse rather than merely different, and that was
 /// measured rather than argued: `sprag processes <pane>` lists the pane's foreground process group,
 /// which for a `claude` pane is the agent and its MCP server and never the shells it starts — the
 /// two backgrounded `/bin/bash -c` children of a live agent were in `ps --ppid` and **not** in that
@@ -1686,7 +1712,18 @@ mod tests {
     }
 
     fn access(script: &str) -> (WorkspacePaneAccess, PaneId) {
-        let workspace = Arc::new(Mutex::new(Workspace::new((40, 6))));
+        access_sized(script, 40, 6)
+    }
+
+    /// [`access`] at a stated size, for a fixture whose evidence is a LINE rather than a word.
+    ///
+    /// ⚠ A pane 40 columns wide wraps anything longer, and [`PaneAccess::pane_collapsed`] joins the
+    /// rows with nothing between them — which recovers a wrapped SENTENCE but not the blanks a row
+    /// may have been trimmed of at the fold. A gate whose premise is *this pane is painting exactly
+    /// this status line* therefore has to be given a pane the line fits on, or it would be asserting
+    /// the emulator's wrapping rather than the peer's screen.
+    fn access_sized(script: &str, cols: u16, rows: u16) -> (WorkspacePaneAccess, PaneId) {
+        let workspace = Arc::new(Mutex::new(Workspace::new((cols, rows))));
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
         command.arg(script);
@@ -1694,7 +1731,7 @@ mod tests {
         let id = workspace
             .lock()
             .expect("the workspace")
-            .spawn(command, "peer".to_string(), 40, 6)
+            .spawn(command, "peer".to_string(), cols, rows)
             .expect("spawn the pane");
         (WorkspacePaneAccess::new(workspace), id)
     }
@@ -3943,7 +3980,17 @@ mod tests {
     fn peer_naming_a_tool(
         script: &str,
     ) -> (WorkspacePaneAccess, PaneId, Arc<Mutex<Option<String>>>) {
-        let (access, pane) = access(script);
+        peer_naming_a_tool_sized(script, 40, 6)
+    }
+
+    /// [`peer_naming_a_tool`] on a pane of a stated size — see [`access_sized`] for why one gate
+    /// here needs a pane its evidence fits on.
+    fn peer_naming_a_tool_sized(
+        script: &str,
+        cols: u16,
+        rows: u16,
+    ) -> (WorkspacePaneAccess, PaneId, Arc<Mutex<Option<String>>>) {
+        let (access, pane) = access_sized(script, cols, rows);
         let running: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let source: crate::access::AgentStateSource = {
             let running = Arc::clone(&running);
@@ -4020,10 +4067,12 @@ mod tests {
                 running: TOOL.to_owned(),
                 within: WITHIN,
             },
-            "⛔⛔⛔⛔⛔ A PEER THAT IS RUNNING A CHILD MUST NOT BE TYPED AT. Measured: a live \
-             `claude` whose status line said `1 shell still running` took 363 bytes into its \
-             composer and never turned the Enter into a question, and the loop that met it spent a \
-             whole session recovering. Got {held:?}",
+            "⛔⛔⛔⛔⛔ A PEER THAT IS INSIDE A TOOL CALL MUST NOT BE TYPED AT: it is not at rest, \
+             so the turn a prompt opens there is not one this run can hold to a contract. Measured \
+             cost (item 745): a live `claude` took 363 bytes into its composer, never turned the \
+             Enter into a question, and the loop that met it spent a whole session recovering. \
+             ⚠ The status-line clause that pane also showed is NOT what this arm is about — see \
+             `a_background_shell_on_the_screen_is_not_a_child_this_door_holds_for`. Got {held:?}",
         );
         assert!(
             cost >= WITHIN,
@@ -4099,6 +4148,147 @@ mod tests {
             (HELD..WITHIN).contains(&cost),
             "and the hold lasted the CHILD's life rather than the bound's: {cost:?} against a tool \
              held open for {HELD:?} inside a bound of {WITHIN:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A BACKGROUND SHELL ON THE SCREEN IS NOT A CHILD THIS DOOR HOLDS FOR** — register
+    /// item 745's residue (A′), and a gate that holds a REFUTATION rather than a repair.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was prescribed, and what driving it found
+    ///
+    /// The register read this door's blind spot as a hole: the fact it consults is the tool named
+    /// by a hook, which is retired at the turn's own `Stop`, so a shell the agent BACKGROUNDED is
+    /// invisible to it — while the peer's status line says `1 shell` for as long as that shell runs.
+    /// The prescription that followed was to give the door that clause as a second information
+    /// source.
+    ///
+    /// **It was driven on 2026-08-29 and it does not hold.** Four deliveries into a live `claude`
+    /// 2.1.251 with exactly one background shell running throughout, and every one of them was
+    /// submitted and answered — including the last, which used the shape [`deliver`] itself uses
+    /// (inject, wait for the echo, press the key as a SEPARATE write) at a size the composer folded
+    /// into `[Pasted text #2]`. The whole table is on
+    /// [`CLAUDE_FOOTER_BY_BACKGROUND_SHELLS`](crate::testing::CLAUDE_FOOTER_BY_BACKGROUND_SHELLS).
+    ///
+    /// So a door that read this clause would refuse deliveries that demonstrably land, and the cost
+    /// of that is not a lost prompt: it is a whole `turn_within_ms` of standing there and then a
+    /// [`PaneError::PeerBusy`](crate::access::PaneError::PeerBusy) that stops the run for a person
+    /// — for a peer that was never busy.
+    ///
+    /// # ⚠⚠⚠ Why the refutation needs a GATE and not a paragraph
+    ///
+    /// The register's own sentence outlives the measurement that killed it. A later round reading
+    /// *the status line says it and this door cannot see it* will reach for the same wire, and the
+    /// only thing that can answer at the moment of the edit is a test. So the captured screens are
+    /// staged on real panes and the claim is stated in both directions:
+    ///
+    /// * **THREE SCREENS, ONE ANSWER** — zero, one and two background shells, the same door, the
+    ///   same [`Held::Free`], and a delivery that lands on each. Wiring the clause in turns the
+    ///   second and third red while the first stays green.
+    /// * **ONE SCREEN, TWO ANSWERS** — the `1 shell` pane again, this time with the agent naming a
+    ///   tool: [`Held::Still`]. What decides this door is the agent's word, and the arm is here so
+    ///   the gate cannot be passed by a door that has simply stopped holding at all.
+    ///
+    /// ⚠ The premises are asserted INSIDE the gate, both of them: that each capture names the count
+    /// its row claims (so an edited fixture cannot quietly become three copies of one screen), and
+    /// that the pane is really painting it (so a peer that died at `printf` cannot pass as a peer
+    /// whose clause the door ignored).
+    #[test]
+    fn a_background_shell_on_the_screen_is_not_a_child_this_door_holds_for() {
+        /// Wide enough for the captured status line to sit on ONE row — see [`access_sized`].
+        const COLS: u16 = 100;
+        /// The hold's bound. Every arm below must answer well inside it, except the last.
+        const WITHIN: Duration = Duration::from_millis(400);
+        /// The tool the last arm's agent names, as in the gate above: the agent's own word.
+        const TOOL: &str = "Bash";
+
+        for (shells, footer) in crate::testing::CLAUDE_FOOTER_BY_BACKGROUND_SHELLS {
+            assert_eq!(
+                footer.contains(" shell"),
+                *shells > 0,
+                "⚠⚠ THE CAPTURE MUST NAME WHAT ITS ROW CLAIMS. This table is three photographs of \
+                 one status line, and a row whose clause disagrees with its count would stage the \
+                 same screen three times while reading as three cases: {footer:?} against \
+                 {shells} shell(s)",
+            );
+            if *shells > 0 {
+                assert!(
+                    footer.contains(&format!("{shells} shell")),
+                    "and the peer's own plural is part of the capture — `1 shell`, `2 shells` — \
+                     which is why no literal could ever have read this clause: {footer:?}",
+                );
+            }
+            let (access, pane, _running) = peer_naming_a_tool_sized(
+                &peer(&format!("printf '%s\\n' '{footer}'; exec cat")),
+                COLS,
+                8,
+            );
+            assert!(
+                shows(&access, pane, footer, Duration::from_secs(10)),
+                "⚠⚠⚠ AND THE PANE MUST ACTUALLY BE PAINTING IT. Without this the arm below is a \
+                 door answering `Free` at a blank screen, which it would do for any reason at all",
+            );
+            let started = Instant::now();
+            let free = hold_while_a_child_runs(&access, &RunContext::uncancellable(), pane, WITHIN);
+            let cost = started.elapsed();
+            assert_eq!(
+                free,
+                Held::Free,
+                "⛔⛔⛔⛔⛔ A PEER WITH {shells} BACKGROUND SHELL(S) ON ITS STATUS LINE AND NO TOOL \
+                 NAMED IS TYPED AT. Measured 2026-08-29: 48, 939 and 2,369 bytes all submitted and \
+                 were answered at a live `claude` with this exact clause on the screen. A door \
+                 that held here would stand for the whole bound and then stop the run for a person \
+                 over a peer that was never busy. Got {free:?}",
+            );
+            assert!(
+                cost < WITHIN,
+                "and it must answer WITHOUT waiting, or the door is holding and merely releasing: \
+                 {cost:?} against a bound of {WITHIN:?}",
+            );
+            let delivered = deliver(
+                &access,
+                &RunContext::uncancellable(),
+                pane,
+                "hello",
+                &Delivery::new().without_submitting(),
+            )
+            .expect("the pane takes text");
+            assert!(
+                delivered.is_on_screen(),
+                "⚠⚠ AND THE PROMPT LANDS, which is the half that makes `Free` a DELIVERY rather \
+                 than a fast refusal. Got {delivered:?}",
+            );
+            access.lifecycle().expect("lifecycle").close(pane);
+        }
+
+        // ── THE OTHER DIRECTION: the same screen, and this time the agent names a tool ──
+        //
+        // ⚠⚠⚠⚠⚠ Without this the whole gate above is passed by a door that has stopped holding for
+        // anything, which is register item 745's cause side deleted rather than corrected. What
+        // decides here is the hook's fact, and the screen — identical to the arm two rows up — has
+        // no vote either way.
+        let (_, busy_footer) = crate::testing::CLAUDE_FOOTER_BY_BACKGROUND_SHELLS[1];
+        let (access, pane, running) = peer_naming_a_tool_sized(
+            &peer(&format!("printf '%s\\n' '{busy_footer}'; exec cat")),
+            COLS,
+            8,
+        );
+        *running.lock().expect("the running mutex") = Some(TOOL.to_owned());
+        assert!(
+            shows(&access, pane, busy_footer, Duration::from_secs(10)),
+            "the same premise as above: this pane must be painting the clause, or the arm says \
+             nothing about a screen at all",
+        );
+        let held = hold_while_a_child_runs(&access, &RunContext::uncancellable(), pane, WITHIN);
+        assert_eq!(
+            held,
+            Held::Still {
+                running: TOOL.to_owned(),
+                within: WITHIN,
+            },
+            "⚠⚠⚠ AND THE HOLD IS STILL THERE. One screen, two answers, decided by the agent's own \
+             word — which is the fact this door was built on and the one the refutation above does \
+             not touch. Got {held:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }

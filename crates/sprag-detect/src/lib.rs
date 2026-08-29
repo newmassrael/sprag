@@ -195,8 +195,14 @@ sprag_vt::closed_set! {
         /// that types a prompt into a pane and presses Enter has, today, no way to learn whether
         /// the press landed: the agent's submit hook reports the submits it saw and is silent about
         /// the ones it did not, so "not submitted" arrives as *nothing at all* and no amount of
-        /// waiting turns it into an answer. The composer, on the other hand, is a PROPERTY of the
-        /// screen and is stable in both directions — it is holding, or it is not.
+        /// waiting turns it into an answer. The composer's PLACEHOLDER, on the other hand, is a
+        /// property of the screen and is stable in both directions — it is there, or it is not.
+        ///
+        /// ⚠⚠⚠ **THE PLACEHOLDER, AND NOT THE COMPOSER'S TEXT.** Measured 2026-08-29: `claude`
+        /// paints its own suggested next prompt on the composer row, and those bytes are not in its
+        /// buffer — a bare Enter does not submit them and typing replaces them whole. So *a
+        /// composer showing text* is not *a program holding text*, and a rule widened from the
+        /// placeholder to the row would publish `Holding` for a pane at rest.
         ///
         /// ⚠ The evidence is the agent's, not the terminal's: an empty composer is `claude`'s
         /// convention for "nothing pending" and not a fact a pty could state, which is why this is
@@ -1338,6 +1344,33 @@ mod tests {
         "  ⏵⏵ auto mode on (shift+tab to cycle)",
     ];
 
+    /// ⛔⛔⛔⛔⛔ **A COMPOSER ROW THAT NOBODY TYPED** — captured 2026-08-29 from `claude` 2.1.251,
+    /// and the reason [`AgentState::Holding`] must stay a lower bound rather than *any text in the
+    /// composer*.
+    ///
+    /// The line `stop the loop` appeared **on its own**, one second after the turn above it ended,
+    /// with no key pressed at that pane: it is the agent's own suggestion for the next prompt,
+    /// painted where input goes. Three of them arrived in a row during one probe, each derived from
+    /// the answer before it, and what the probe established about them is that they are NOT input:
+    ///
+    /// * `Ctrl+U` did not clear one, and neither did `End` first;
+    /// * a bare Enter did not submit one — twice, through two different write paths;
+    /// * and typing five bytes and pressing Enter submitted **those five bytes alone**, so the
+    ///   sentence on the screen was never in the program's buffer at all;
+    /// * none of the three ever reached the transcript.
+    ///
+    /// ⚠⚠ So *a rendering shows text* and *the program is holding text* are two different facts,
+    /// and this crate reads the SCREEN. The rule is anchored to the paste placeholder, which no
+    /// suggestion produces, and that is what keeps the two apart — see
+    /// `a_composer_row_the_program_does_not_hold_is_not_a_held_prompt`.
+    const SUGGESTED_NEXT_PROMPT: &[&str] = &[
+        "✻ Worked for 7s · done 2:40pm · 1 shell still running",
+        "──────────────────────────────────────────────────────",
+        "❯ stop the loop",
+        "──────────────────────────────────────────────────────",
+        "  ⏵⏵ auto mode on · 1 shell · ← 9 agents · ↓ to manage",
+    ];
+
     /// ⚠⚠⚠⚠⚠ **A COMPOSER HOLDING AN UNSUBMITTED PROMPT IS NOT A PANE AT REST**, and before this
     /// rule the two were the same answer.
     ///
@@ -1439,6 +1472,40 @@ mod tests {
             "⚠ an UNSUBMITTED prompt reads as rest when the composer did not fold it. That is a \
              known bound and not a passing grade — the twelve rows are right there on the \
              screen: {v:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A COMPOSER ROW THE PROGRAM DOES NOT HOLD IS NOT A HELD PROMPT** — and this is
+    /// why the bound above is a DESIGN rather than a shortfall to be widened away.
+    ///
+    /// The test before this one names a limit and invites a round to close it: *a round that widens
+    /// it should fail this test.* This is the measurement that says which way the widening would be
+    /// wrong. [`SUGGESTED_NEXT_PROMPT`] is a real screen whose composer row nobody typed — the agent
+    /// paints its own suggestion for the next prompt there — and a rule reading *any text after the
+    /// composer marker* would publish `Holding` for it. That verdict is `is_active`, so it is
+    /// published on sight and a supervisor waiting for a pane to go quiet would wait for ever on a
+    /// pane that is quiet.
+    ///
+    /// ⚠⚠ It is also, exactly, how register item 745's own evidence was over-read: a composer
+    /// holding an unsubmitted prompt was read off a screen, and a screen cannot tell *the program
+    /// has these bytes* from *the program painted these bytes*.
+    #[test]
+    fn a_composer_row_the_program_does_not_hold_is_not_a_held_prompt() {
+        let v = verdict(SUGGESTED_NEXT_PROMPT, Some("✳ Claude Code"));
+        assert_eq!(
+            v.state,
+            AgentState::Idle,
+            "⛔⛔⛔⛔⛔ NOBODY TYPED THAT ROW. `stop the loop` is the agent's own suggestion for a \
+             next prompt, painted where input goes, and the probe that captured it proved the \
+             program did not have those bytes: a bare Enter did not submit them and five typed \
+             bytes submitted alone. A rule that read the composer's TEXT would call this pane \
+             held: {v:?}",
+        );
+        assert_ne!(
+            v.rule.as_deref(),
+            Some("composer-holds-paste"),
+            "and specifically not by the paste rule, which is anchored to a placeholder no \
+             suggestion produces — that anchor is the whole distance between the two facts: {v:?}",
         );
     }
 

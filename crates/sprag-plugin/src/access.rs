@@ -319,11 +319,18 @@ pub enum PaneError {
     ///
     /// # ⚠⚠⚠⚠⚠ Why a busy peer had to become a refusal rather than a delivery
     ///
-    /// A `claude` that is running a child **does not turn an Enter into a question**: the text goes
-    /// into its composer and stays there. Measured on the one pane of five whose composer was
-    /// holding an unsubmitted prompt — its status line said `1 shell still running` where the other
-    /// four said `esc to interrupt` — and the text that would not go was **363 bytes**, so the
-    /// product's own *shorten it, or split it* remedy had nothing to shorten.
+    /// An agent inside a tool call **is not an agent at rest**, and a prompt typed at one opens no
+    /// turn this run can hold to a contract. Measured cost (register item 745): a live `claude` was
+    /// found with a run's prompt sitting unsubmitted in its composer, and the text that would not go
+    /// was **363 bytes**, so the product's own *shorten it, or split it* remedy had nothing to
+    /// shorten.
+    ///
+    /// ⛔⛔ **What that pane's status line ALSO said is not the reason, and the correction is
+    /// recorded where it can be compiled.** It said `1 shell still running` where its neighbours
+    /// said `esc to interrupt`, and the reading taken from it — *a peer running a background shell
+    /// refuses an Enter* — was driven on 2026-08-29 and is false: four deliveries of 48 to 2,369
+    /// bytes all submitted at a live `claude` with that clause on the screen. See
+    /// [`crate::deliver::hold_while_a_child_runs`], which does not read it.
     ///
     /// ⚠⚠ **AND THE COST IS A SESSION, NOT A PROMPT.** The loop that met it replaced its whole
     /// session over the refusal, and because a run that folds a DIFFERENT prompt each time never
@@ -629,10 +636,9 @@ impl std::fmt::Display for PaneError {
                 f,
                 "pane {}'s agent has said it is running {running:?} for the whole {within:?} this \
                  run was willing to hold its prompt, so nothing was typed: an agent inside a tool \
-                 call takes the text into its composer and does not turn the Enter after it into a \
-                 question, which leaves the prompt sitting there and makes the next delivery \
-                 concatenate onto it. The remedy is the CHILD and never the prompt — let it finish, \
-                 or look at the pane",
+                 call is not at rest, so a prompt typed there opens no turn this run could judge, \
+                 and bytes left in a composer are what the next delivery concatenates onto. The \
+                 remedy is the CHILD and never the prompt — let it finish, or look at the pane",
                 pane.0,
             ),
             Self::Spawn(why) => write!(f, "the pane could not be started: {why}"),

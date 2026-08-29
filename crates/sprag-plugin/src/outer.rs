@@ -9234,13 +9234,18 @@ impl OuterLoop {
         text: &str,
         asks: crate::act::Asks,
     ) -> Result<u64, PaneError> {
-        // ⚠⚠⚠⚠⚠ **BEFORE EVERYTHING, BECAUSE A CHILD IS THE ONE CONDITION THAT MAKES TYPING ITSELF
-        // WRONG** — register item 745. A `claude` that is running a child takes the text into its
-        // composer and does NOT turn the Enter after it into a question; measured on the one pane
-        // of five holding an unsubmitted prompt, whose status line alone said `1 shell still
-        // running`, over 363 bytes that no shortening could have saved. The loop that met it
-        // replaced its whole session and, folding a different prompt each time, never tripped the
-        // *same bytes twice* guard either — so it recovered for ever and called nobody.
+        // ⚠⚠⚠⚠⚠ **BEFORE EVERYTHING, BECAUSE A TOOL CALL IN FLIGHT IS THE ONE CONDITION THAT MAKES
+        // TYPING ITSELF WRONG** — register item 745. An agent inside one is not at rest, so the
+        // turn a prompt opens there is not a turn this pass can hold to its contract. The measured
+        // cost: a live `claude` was found holding a run's prompt unsubmitted, over 363 bytes that no
+        // shortening could have saved; the loop that met it replaced its whole session and, folding
+        // a different prompt each time, never tripped the *same bytes twice* guard either — so it
+        // recovered for ever and called nobody.
+        //
+        // ⛔ That pane's status line also said `1 shell still running`, and the reading taken from
+        // it — a BACKGROUNDED shell refuses an Enter — was driven on 2026-08-29 and is false. The
+        // hold below does not consult the screen; `deliver`'s own docs carry the four deliveries
+        // that refuted it.
         //
         // ⚠⚠⚠ **AND IT IS AHEAD OF THE FOUR MARKS BELOW, WHICH IS THE HALF A LATER PLACEMENT WOULD
         // GET WRONG.** Those arm this turn's contract and its baselines, and the hold can last as
@@ -11697,10 +11702,10 @@ mod tests {
         // ── ARM ONE: the agent names a child ──
         let (held, screen) = start(Peer::RunningAChild);
         let held = held.expect_err(
-            "⛔⛔⛔⛔⛔ A LOOP MUST NOT TYPE AT A PEER THAT IS RUNNING A CHILD. Measured: a live \
-             `claude` whose status line alone said `1 shell still running` took 363 bytes into its \
-             composer and never turned the Enter into a question, and the run that put them there \
-             spent a whole session recovering from it",
+            "⛔⛔⛔⛔⛔ A LOOP MUST NOT TYPE AT A PEER THAT IS INSIDE A TOOL CALL: it is not at \
+             rest, so the turn those bytes open is not one this pass can judge. Measured cost: a \
+             live `claude` took 363 bytes into its composer and never turned the Enter into a \
+             question, and the run that put them there spent a whole session recovering from it",
         );
         assert!(
             matches!(&held, PaneError::PeerBusy { running, .. } if running == TOOL),
