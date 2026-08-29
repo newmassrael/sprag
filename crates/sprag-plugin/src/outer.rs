@@ -459,6 +459,35 @@ const MILESTONE_CHECK: &str = "milestone_check";
 /// then kill a round on a verdict nobody made. The checker is told to say so in its sentence, which
 /// is what it was told before, and `unverified` is the door that exists for it.
 ///
+/// # ⛔⛔⛔⛔⛔ **AND THE THIRD FAILURE IS NOT A SHAPE AT ALL — IT IS A TENSE**
+///
+/// 2026-08-29, a live independent check of this repository's own milestone answered:
+///
+/// ```text
+/// The 101 was my invocation, not the product: the suite drives `sprag-term`, which
+/// `-p sprag-mcp` doesn't build. Rerunning with the workspace bins; I'll report when it lands.
+/// ```
+///
+/// **Every rule above was already there and none of them reaches this.** The reply is not a
+/// preamble in front of a verdict — item 751's `"My"`, `"Verdict"`, `"The"` — and it is not a
+/// checker saying it cannot judge. It is a checker that judged **nothing yet** and expected a
+/// SECOND TURN to report in. The prompt said what an answer must LOOK like and never said WHEN,
+/// so *later* was a shape it left open.
+///
+/// ⇒ The closing instruction now says the reply is the only turn, and — following the same finding
+/// item 751 wrote down — **names the form that failed** rather than restating the rule: a run whose
+/// checker keeps obeying the spirit and missing the letter needs the letter spelled.
+///
+/// ⚠⚠ **IT TELLS THE CHECKER WHAT IT COSTS, which is a true sentence and not a threat.** Such a
+/// reply IS discarded: `judge`'s verdict reader finds no marked verdict, so it arrives as
+/// [`Unheard::NotAVerdict`](crate::judge::Unheard) → [`Silence::Unreadable`](crate::judge::Silence),
+/// whose own doc says the remedy is *the checker's PROMPT or its program — never a retry*. This is
+/// that remedy.
+///
+/// ⚠ **AND IT DOES NOT TOUCH WHAT A CHECKER THAT CANNOT JUDGE SHOULD SAY** — the sentence after it
+/// is item 741's and is unchanged. *Deferring* and *being unable to judge* are different facts, and
+/// only the first is what this measured.
+///
 /// ⚠ Spelled once, for [`MILESTONE_CHECK`]'s reason: the gate that holds this ordering compares the
 /// rendered question against THIS string, so the product and the gate cannot come to hold two
 /// different ideas of what the closing instruction is.
@@ -466,7 +495,9 @@ const HOW_TO_ANSWER: &str = "Now answer. YOUR REPLY MUST BEGIN WITH THE WORD YES
      that FIRST WORD before anything else. Do not open with a heading, a greeting, a restatement \
      of the checkpoint, or a phrase such as \"My verdict\" or \"Verdict:\": a reply this run \
      cannot find a verdict in is thrown away, and a verdict buried in a sentence is one it can \
-     miss. Then \
+     miss. THIS REPLY IS YOUR ONLY TURN: nothing here reads a later one, so a reply that promises \
+     to report back — \"rerunning\", \"I'll report when it lands\" — is thrown away exactly as a \
+     missing verdict is, and the round is recorded as unverified. Then \
      give ONE short sentence saying why. If what you were shown is empty or does not let you \
      judge, say that in the sentence rather than guessing.\n";
 
@@ -17068,6 +17099,20 @@ mod tests {
              of it, so the closing sentence has to forbid the FORM and not merely restate the \
              rule: {HOW_TO_ANSWER:?}",
         );
+
+        // ── ⛔⛔⛔⛔⛔ AND THE THIRD FAILURE, WHICH IS A TENSE AND NOT A SHAPE ─────────────────
+        // Measured 2026-08-29 on a live independent check of this repository's own milestone: the
+        // checker had judged NOTHING and expected a second turn to report in. Neither rule above
+        // reaches that — it is not a preamble, and it is not *I cannot judge*.
+        assert!(
+            HOW_TO_ANSWER.contains("ONLY TURN"),
+            "⚠⚠⚠⚠⚠ THE PROMPT SAYS WHAT AN ANSWER MUST LOOK LIKE AND NOT WHEN IT IS DUE, so \
+             *later* is a shape it leaves open — and a checker took it: {HOW_TO_ANSWER:?}",
+        );
+        // ⚠ The READER's half of this sample lives in `judge`, where `verdict_in` is — see
+        // `a_reply_that_defers_instead_of_judging_is_not_a_verdict`. Two halves, two modules, and
+        // neither is the whole claim: this one is that the PROMPT forbids deferring, that one is
+        // that a deferral cannot be mistaken for a verdict if one arrives anyway.
 
         // ── THE SECOND HALF: which reader, and the two must not read alike ──
         assert_eq!(

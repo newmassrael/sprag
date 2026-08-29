@@ -1748,6 +1748,79 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A REPLY THAT DEFERS INSTEAD OF JUDGING IS NOT A VERDICT — AND MUST NOT BECOME
+    /// ONE** — measured 2026-08-29 on a live independent check of this repository's own milestone.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The sample, and why it is kept verbatim
+    ///
+    /// ```text
+    /// The 101 was my invocation, not the product: the suite drives `sprag-term`, which
+    /// `-p sprag-mcp` doesn't build. Rerunning with the workspace bins; I'll report when it lands.
+    /// ```
+    ///
+    /// The checker had judged **nothing** and expected a second turn. That is a third failure
+    /// beside the two [`crate::outer`]'s closing instruction already names: it is not a preamble
+    /// in front of a verdict (item 751's `"My"`, `"Verdict"`, `"The"`), and it is not a checker
+    /// saying it cannot judge (item 741's door). The PROMPT half of the repair is over there —
+    /// *this reply is your only turn*; this is the READER's half, and neither is the whole claim.
+    ///
+    /// # ⛔⛔⛔ What this sample is a RATCHET against — and a claim this round had to WITHDRAW
+    ///
+    /// It was written asserting the sample also guards the *take any `no`* widening, because it
+    /// says `not the product` and `doesn't build`. **Mutated and refuted**: with the mark check
+    /// disabled this test stays GREEN, because neither of those is the WORD `no` — [`word_in`]
+    /// trims punctuation and `NOT` matches nothing. The invented fixture `Error: no API key`
+    /// still holds that door; this sample does not, and saying it did would have been a gate
+    /// claiming a coverage it has not got.
+    ///
+    /// What it DOES ratchet is the other half, and it is the half item 741 named as the banned
+    /// repair: **a reply with no verdict in it must not become a NO.** Turning *nothing was
+    /// judged* into a refusal records a milestone as REJECTED by a checker that had not looked —
+    /// worse than the discarded answer item 743 was about — and the mutation that does it turns
+    /// this test red.
+    ///
+    /// ⚠ The control is the same sentence with a marked verdict in front of it, so *unreadable*
+    /// and *readable* differ in the one thing under test and in nothing else.
+    #[test]
+    fn a_reply_that_defers_instead_of_judging_is_not_a_verdict() {
+        const DEFERRED: &str = "The 101 was my invocation, not the product: the suite drives \
+                                `sprag-term`, which `-p sprag-mcp` doesn't build. Rerunning with \
+                                the workspace bins; I'll report when it lands.";
+        let asked = "Has the checkpoint been reached? Reply with YES or NO.";
+        let took = Duration::from_millis(1);
+
+        let unheard = verdict_in(DEFERRED, asked, took)
+            .expect_err("⛔ a reply that judged nothing must not come back as a judgement");
+        let Unheard::NotAVerdict(line) = &unheard else {
+            panic!(
+                "⚠⚠⚠ IT IS THE *it answered and said no verdict* ARM and not another: the checker \
+                 ran and replied, so `Unanswered`'s remedy (ask again) is wrong for it. Got \
+                 {unheard:?}",
+            );
+        };
+        assert!(
+            line.starts_with("The 101"),
+            "⚠⚠ and it carries the first LINE, which is what a person needs to see why: {line:?}",
+        );
+        assert_eq!(
+            unheard.silence(),
+            Silence::Unreadable,
+            "⛔⛔⛔⛔ THE REMEDY THIS ROUTES TO IS THE WHOLE POINT: `Unreadable` means *fix the \
+             prompt or the program*, and the prompt is exactly what was fixed. Routed to \
+             `Unanswered` this would be retried into the same shape for ever",
+        );
+
+        // ── THE CONTROL: the same prose with a marked verdict in front of it IS read ────────
+        let judged = format!("NO — {DEFERRED}");
+        let verdict = verdict_in(&judged, asked, took)
+            .expect("a marked verdict in front of the same prose is a judgement");
+        assert!(
+            !verdict.holds,
+            "⚠⚠⚠ THE CONTROL: this must differ from the arm above in the MARK and in nothing \
+             else, or *unreadable* could be about the prose rather than about the missing verdict",
+        );
+    }
+
     /// ⚠⚠⚠ **A STOPPED RUN GETS NO JUDGEMENT — AND THAT IS WHAT KEEPS `redirecting` OUT OF ITS
     /// REACH** — the half of R395's claim that lives one door over from `screening`.
     ///
