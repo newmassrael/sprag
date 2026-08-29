@@ -3988,6 +3988,94 @@ fn a_running_pane_in_another_window_is_not_reported_as_gone() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **`list_panes` SAYS *THIS WINDOW* AND MEANS IT — AND THE NUMBERS IT HANDS OUT ARE THAT
+/// WINDOW'S** — register item 759, and item 754's read-side twin.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is worse here than at the CLI, measured
+///
+/// 2026-08-30 on this repository's own daemon: the agent stood in window `sprag`, the session's
+/// current window was `wz`, and `list_panes` answered *"2 pane(s) in this window"* listing
+/// `outer-wz` and `inner-wz`. Its own description says **the sibling panes in YOUR window** and
+/// **a pane NUMBER means the Nth pane of YOUR window** — so `pane 2` was another repository's
+/// LIVE loop, idle and waiting for input, and `write_pane` takes that number. The answer was not
+/// merely about the wrong window; it was an ADDRESS for it.
+///
+/// ⛔ The remedy is not a truer description. *"Delete the words 'your window'"* would lower the
+/// claim instead of making it true, which is the shape this register keeps refusing.
+///
+/// # ⚠⚠⚠ One narrowing, two answers — and the control that must survive it
+///
+/// `resolve_pane_ref_at_from_a_daemon` counts a NUMBER against the very listing `list_panes`
+/// renders, so narrowing that one read fixes the rows and the numbering together and they cannot
+/// come to mean different windows. A NAME that misses it still looks session-wide, which is how a
+/// pane one window over stays reachable — asserted below, because a narrowing that also narrowed
+/// ADDRESSING would be register item 686's defect coming back.
+#[test]
+fn list_panes_answers_the_agents_own_window_and_numbers_it() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let mine = mux_current_window(&sock);
+
+    // ── THE PREMISE: the person's view is moved off the agent's window ──────────────────────
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let theirs = mux_current_window(&sock);
+    assert_ne!(
+        theirs, mine,
+        "⛔ THE PREMISE: a one-window fixture cannot tell *the agent's window* from *the current \
+         window*, which is why four hundred gates never saw this",
+    );
+    let far = mux_query_panes_in(&sock, &theirs)
+        .first()
+        .copied()
+        .expect("the other window's birth pane");
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": far, "name": "faraway" }),
+    );
+
+    // ── CLAIM ONE: the rows are the agent's window's ────────────────────────────────────────
+    let listed = server.call_tool("list_panes", json!({}));
+    assert!(
+        listed.contains("id=0"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 759: `list_panes` says *in this window* about the window a PERSON \
+         is looking at. On 2026-08-30 that answered another repository's live loop, with numbers \
+         `write_pane` accepts. Got: {listed}",
+    );
+    assert!(
+        !listed.contains(&format!("id={far}")),
+        "⚠⚠⚠ and it does not ALSO carry the other window's — a listing that grew session-wide \
+         would satisfy the assertion above while making a pane NUMBER mean nothing: {listed}",
+    );
+
+    // ── CLAIM TWO: a NUMBER is counted in that same window ──────────────────────────────────
+    // The half a listing alone does not buy. `pane 1` must resolve to the agent's own pane, and
+    // `pane_processes` is the one tool whose answer prints the number AND the id it landed on, so
+    // the claim is read off the product rather than inferred from the rows above.
+    let numbered = server.call_tool("pane_processes", json!({ "pane": 1 }));
+    assert!(
+        numbered.contains("pane 1 (id 0)"),
+        "⛔⛔⛔⛔ REGISTER ITEM 759, the ADDRESS half: `pane 1` must be the first pane of the \
+         AGENT's window. A number counted in somebody else's listing is how an agent types into \
+         another repository's live loop. Got: {numbered}",
+    );
+
+    // ── CONTROL: a pane one window over is still reachable BY NAME (item 686) ───────────────
+    let reached = server.call_tool("pane_processes", json!({ "pane": "faraway" }));
+    assert!(
+        reached.contains(&format!("id {far}")),
+        "⛔⛔ CONTROL, item 686: a NAME must still reach another window of this session — a \
+         narrowing that also narrowed addressing would be the defect 686 paid for. Got: {reached}",
+    );
+
+    // ── CONTROL: and the person did not move ────────────────────────────────────────────────
+    assert_eq!(
+        mux_current_window(&sock),
+        theirs,
+        "⚠⚠ reading is not showing: nothing here may take a person's screen (R313)",
+    );
+}
+
 /// ⛔⛔⛔⛔⛔ **A PANE AN AGENT OPENS STANDS IN THE AGENT'S OWN WINDOW, NOT IN THE ONE THE PERSON IS
 /// LOOKING AT** — register item 754, and the second mouth of the defect the CLI's
 /// `a_pane_born_naming_no_window_stands_where_its_caller_stands` measures.

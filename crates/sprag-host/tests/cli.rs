@@ -13324,6 +13324,248 @@ fn current_window_of(sock: &Path, session: &str) -> String {
         .to_owned()
 }
 
+/// ⛔⛔⛔⛔⛔ **A READ THAT SAYS *THIS WINDOW* ANSWERS THE CALLER'S WINDOW, NOT THE ONE A PERSON IS
+/// LOOKING AT** — register item 759, and item 754's other half.
+///
+/// # ⚠⚠⚠⚠⚠ The measurement, and why it is worse than a wrong listing
+///
+/// 2026-08-30 on this repository's own daemon: standing in window `sprag`, with the session's
+/// current window `wz`, `sprag panes -t loop` answered `outer-wz` and `inner-wz` — another
+/// repository's live loop. Nothing said so, because a read that names no window is answered about
+/// the session's CURRENT one and that is the daemon's documented default.
+///
+/// ⛔ **AND THE PROSE HAD ALREADY CLAIMED OTHERWISE.** [`find`]'s own comment says *every pane of
+/// the caller's own window*; it was sweeping whichever window a person was watching. That is this
+/// workspace's rule that **a justification written in prose is measured by nobody** — so the
+/// remedy is this gate, not a truer comment.
+///
+/// # ⚠⚠⚠ The four controls, because a narrowing that narrows too far is the SAME defect
+///
+/// Item 686 paid for reaching a pane one window over, and this must not undo it. So: a NAME still
+/// reaches another window, an ID still reaches another window, `find` still sweeps only one window
+/// (it must not silently become session-wide), and a caller standing in no pane of this session
+/// still gets the daemon's current window — byte-identical to the request it has always made.
+#[test]
+fn a_read_that_says_this_window_answers_the_window_its_caller_stands_in() {
+    let (_guard, sock, caller) = daemon_with_one_pane("reads-my-own-window");
+    let me = caller.to_string();
+    let home = current_window_of(&sock, "work");
+
+    // A second pane in the CALLER's window, carrying a needle nothing else has. Made while the
+    // caller's window is still current, so this fixture does not rest on the behaviour under test.
+    let mine = sprag(
+        &sock,
+        &[
+            "split-window",
+            "-t",
+            "work",
+            "--",
+            "sh",
+            "-c",
+            "printf 'HOMENEEDLE\\n'; exec cat",
+        ],
+    );
+    assert!(mine.ok, "a pane in the caller's window: {}", mine.stderr);
+    let mine: u64 = mine.stdout.trim().parse().expect("the new pane's id");
+
+    // ── THE PREMISE: the person is looking at a window the caller is not in ─────────────────
+    assert!(
+        sprag(&sock, &["new-window", "-t", "work", "spare"]).ok,
+        "the second window is the whole fixture",
+    );
+    let theirs = sprag(
+        &sock,
+        &[
+            "split-window",
+            "-t",
+            "work",
+            "--",
+            "sh",
+            "-c",
+            "printf 'SPARENEEDLE\\n'; exec cat",
+        ],
+    );
+    assert!(theirs.ok, "a pane in the OTHER window: {}", theirs.stderr);
+    let theirs: u64 = theirs.stdout.trim().parse().expect("the new pane's id");
+    assert!(
+        sprag(
+            &sock,
+            &["rename-pane", &theirs.to_string(), "faraway", "-t", "work"]
+        )
+        .ok,
+        "the far pane gets a name, for the control that reaches it",
+    );
+    assert_ne!(
+        current_window_of(&sock, "work"),
+        home,
+        "⛔ THE PREMISE: the session's current window must not be the caller's",
+    );
+    let view = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(
+        !pane_ids_in(&view.stdout).contains(&caller) && pane_ids_in(&view.stdout).contains(&theirs),
+        "⛔ THE PREMISE: the current window must hold the FAR pane and not the caller, or every \
+         claim below passes in a one-window world: {}",
+        view.stdout,
+    );
+
+    // ── CLAIM ONE: `panes` answers the caller's window ──────────────────────────────────────
+    let ours = sprag_env(&sock, &["panes", "-t", "work"], &[("SPRAG_PANE", &me)]);
+    assert!(ours.ok, "panes: {}", ours.stderr);
+    let listed = pane_ids_in(&ours.stdout);
+    assert!(
+        listed.contains(&caller) && listed.contains(&mine),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 759: `panes` answered the window somebody is LOOKING at rather \
+         than the one its caller stands in. On 2026-08-30 that answered another repository's live \
+         loop. Got: {}",
+        ours.stdout,
+    );
+    assert!(
+        !listed.contains(&theirs),
+        "⚠⚠⚠ and it does not ALSO carry the other window's — a listing that grew session-wide \
+         would satisfy the assertion above while making a pane NUMBER mean nothing: {}",
+        ours.stdout,
+    );
+
+    // ── CLAIM TWO: an ID FOUND IN THAT LISTING IS ADDRESSED IN THAT WINDOW ──────────────────
+    //
+    // ⛔⛔⛔⛔⛔ The half a listing alone does not buy, and the one this round measured the hard
+    // way. `resolve_pane`'s fast path answers `PaneSite { window: None }` for a number it finds in
+    // `pane_ids`, and `None` means *the scope's current window* — true only while those were the
+    // same window. Narrowing the listing broke it: measured live, `sprag find --pane 1` resolved
+    // pane 1 out of the caller's window and then died `NoExternalAtPath` asking the CURRENT one
+    // for it, while the same pane BY NAME worked (the name path goes session-wide and fills the
+    // window in). **A listing narrowed at one end and addressed at the other is neither
+    // window's**, and a gate that only read the listing would have shipped that.
+    let mut hit = sprag_env(
+        &sock,
+        &[
+            "find",
+            "--pane",
+            &mine.to_string(),
+            "HOMENEEDLE",
+            "-t",
+            "work",
+        ],
+        &[("SPRAG_PANE", &me)],
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !hit.stdout.contains("HOMENEEDLE") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        hit = sprag_env(
+            &sock,
+            &[
+                "find",
+                "--pane",
+                &mine.to_string(),
+                "HOMENEEDLE",
+                "-t",
+                "work",
+            ],
+            &[("SPRAG_PANE", &me)],
+        );
+    }
+    assert!(
+        hit.ok && hit.stdout.contains("HOMENEEDLE"),
+        "⛔⛔⛔ REGISTER ITEM 759: a pane the caller's own listing holds must be REACHABLE by that \
+         number. `NoExternalAtPath` here means the id was found in one window and asked for in \
+         another. Got: {:?} / {:?}",
+        hit.stdout,
+        hit.stderr,
+    );
+
+    // ── CONTROL: a pane one window over is still reachable, by NAME and by ID (item 686) ────
+    for spelling in ["faraway", &theirs.to_string()] {
+        let reached = sprag_env(
+            &sock,
+            &["capture-pane", spelling, "-p", "-t", "work"],
+            &[("SPRAG_PANE", &me)],
+        );
+        assert!(
+            reached.ok,
+            "⛔⛔ CONTROL, item 686: a pane one window over must still be reachable as {spelling:?} \
+             — a narrowing that also narrowed ADDRESSING would be the very defect 686 paid for. \
+             {} / {}",
+            reached.stdout, reached.stderr,
+        );
+    }
+
+    // ── CONTROL: a caller standing in no pane narrows nothing ───────────────────────────────
+    let anon = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(
+        pane_ids_in(&anon.stdout).contains(&theirs),
+        "⚠⚠ CONTROL: a shell outside the workspace must still get the daemon's current window, \
+         byte-identical to the request this verb has always made: {}",
+        anon.stdout,
+    );
+}
+
+/// ⛔⛔⛔⛔ **AND `-t elsewhere` GETS NO WINDOW OF OURS** — register item 759's guard, and the arm a
+/// GREEN MUTATION named.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a gate and not a comment
+///
+/// The narrowing above sends the caller's own window on every unnarrowed read. That is right only
+/// while the request is about the caller's own SESSION: with an explicit `-t elsewhere` the ambient
+/// pane is not in the session being addressed at all, so its window names either nothing there — a
+/// refusal about a window the caller never mentioned — or, worse, a DIFFERENT window that happens
+/// to share the name, answered as if it were theirs.
+///
+/// [`here_window`] has carried that guard since it was written, and this round measured what was
+/// holding it: **nothing.** Deleting the filter left the whole CLI suite green. A green mutation is
+/// the name of a gate you owe, so this is it.
+///
+/// ⚠ The fixture gives the caller's window a name the other session cannot have, which is what
+/// turns *sent it* and *did not send it* into different outcomes rather than the same one twice.
+#[test]
+fn a_read_scoped_to_another_session_carries_no_window_of_the_callers() {
+    let (_guard, sock, caller) = daemon_with_one_pane("no-window-of-ours-elsewhere");
+    let me = caller.to_string();
+    assert!(
+        sprag(&sock, &["rename-window", "-t", "work", "mywin"]).ok,
+        "the caller's window gets a name the other session will not have",
+    );
+    assert!(sprag(&sock, &["new", "elsewhere"]).ok, "a second SESSION");
+
+    // ── THE PREMISE, ASSERTED: `elsewhere` holds no window called `mywin` ───────────────────
+    let there = sprag(&sock, &["windows", "-t", "elsewhere"]);
+    assert!(there.ok, "windows -t elsewhere: {}", there.stderr);
+    assert!(
+        !there.stdout.contains("mywin"),
+        "⛔ THE PREMISE: the other session must NOT have a window of that name, or sending ours \
+         would be harmless here and this gate would measure nothing: {}",
+        there.stdout,
+    );
+    assert_eq!(
+        current_window_of(&sock, "work"),
+        "mywin",
+        "⛔ and the caller really is standing in the window with that name",
+    );
+
+    // ── THE CLAIM ───────────────────────────────────────────────────────────────────────────
+    let asked = sprag_env(&sock, &["panes", "-t", "elsewhere"], &[("SPRAG_PANE", &me)]);
+    assert!(
+        asked.ok,
+        "⛔⛔⛔⛔ REGISTER ITEM 759's GUARD: a request scoped to another session must carry no \
+         window of the caller's. Sending `mywin` there names a window that session does not have, \
+         and the refusal is about a window the caller never mentioned. Got: {} / {}",
+        asked.stdout, asked.stderr,
+    );
+    assert!(
+        !asked.stdout.is_empty(),
+        "⚠⚠ and it really answered that session's panes rather than an empty listing: {:?}",
+        asked.stdout,
+    );
+
+    // ── CONTROL: the SAME caller, scoped to its OWN session, still gets its own window ──────
+    let ours = sprag_env(&sock, &["panes", "-t", "work"], &[("SPRAG_PANE", &me)]);
+    assert!(
+        pane_ids_in(&ours.stdout).contains(&caller),
+        "⚠⚠⚠ CONTROL: a guard that refused to narrow at ALL would pass the claim above while \
+         undoing the item: {}",
+        ours.stdout,
+    );
+}
+
 /// ⛔⛔⛔⛔⛔ **A PANE BORN NAMING NO WINDOW STANDS WHERE ITS CALLER STANDS, NOT WHERE THE VIEW IS**
 /// — register item 754.
 ///

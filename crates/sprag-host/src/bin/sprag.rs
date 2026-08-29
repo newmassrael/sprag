@@ -1263,6 +1263,17 @@ fn find(args: Vec<String>) -> io::Result<()> {
     let only = resolve_optional_pane(&mut conn, session.as_deref(), only.as_deref(), "find")?;
     let panes: Vec<(Option<String>, u64)> = match &only {
         Some(site) => vec![(site.window.clone(), site.id)],
+        // ⚠⚠⚠⚠⚠ AND THE WINDOW STAYS `None` HERE, WHICH IS A MEASUREMENT AND NOT AN OVERSIGHT —
+        // register item 759. This round wrote `here_window(session)` into this map and then asked
+        // whether any run could reach it: **no.** This arm is entered only when
+        // `resolve_optional_pane` answered `None`, and that happens under exactly the filter
+        // [`here_window`] answers `None` under — *no `$SPRAG_PANE` of this scope*. The two are the
+        // same condition, so a window here could never be anything but `None`, and code that
+        // cannot be reached is worse than absent: it reads like a defence.
+        //
+        // ⇒ A caller standing in a pane never sweeps at all — it searches THAT pane, resolved one
+        // line up. The sweep is the shell-outside-the-workspace form, and the daemon's current
+        // window is the only answer it could mean.
         None => pane_ids(&mut conn, session.as_deref())?
             .into_iter()
             .map(|id| (None, id))
@@ -2754,11 +2765,36 @@ fn our_pane() -> Option<u64> {
         .ok()
 }
 
-/// The ids of the panes the scoped session's CURRENT window holds — the one read behind every
-/// pane-id check and the `panes` listing, so a client and the daemon cannot disagree on which panes
-/// are addressable.
+/// [`scoped_params`] narrowed to the window the CALLER IS STANDING IN — what every unnarrowed read
+/// about *this window* must send (register item 759).
+///
+/// # ⛔⛔⛔⛔⛔ The lie this removes
+///
+/// A read that names no window is answered about the session's CURRENT one — *whichever a person
+/// is looking at* — and three readers here describe their answer as the caller's own window
+/// anyway. [`find`]'s comment says *every pane of the caller's own window*; `panes`' help says
+/// *the current window's panes* and a caller standing in a pane reads that as theirs.
+///
+/// Measured 2026-08-30 on this repository's own daemon: standing in window `sprag` with the
+/// session's current window `wz`, `sprag panes -t loop` answered `outer-wz` and `inner-wz` —
+/// another repository's live loop.
+///
+/// ⚠⚠ **A CALLER STANDING IN NO PANE OF THIS SESSION NARROWS NOTHING**, which is byte-identical to
+/// the request these have always made: [`here_window`] answers [`None`] there, and the daemon's
+/// current window is the only answer a shell outside the workspace could ever mean.
+fn here_params(session: Option<&str>, path: String) -> Value {
+    windowed_params(session, path, here_window(session))
+}
+
+/// The ids of the panes THE CALLER'S OWN window holds — the one read behind every pane-id check and
+/// the `panes` listing, so a client and the daemon cannot disagree on which panes are addressable.
+///
+/// ⚠ Its window is [`here_params`]'s; see there for the answer this used to give and for the
+/// callers whose own prose it makes true. A pane of ANOTHER window is still reachable — by id or by
+/// name — through [`resolve_pane`]'s session-wide fall-through, which is register item 686's path
+/// and is what keeps this narrowing from being a re-narrowing.
 fn pane_ids(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<u64>> {
-    let listed: Value = query_slot(conn, scoped_params(session, mux_action_path(PANES_SLOT)))?;
+    let listed: Value = query_slot(conn, here_params(session, mux_action_path(PANES_SLOT)))?;
     Ok(listed
         .as_array()
         .into_iter()
@@ -2795,10 +2831,19 @@ fn pane_ids(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<u64>> 
 struct PaneSite {
     /// The pane's id — what every action and every pane-addressed path takes.
     id: u64,
-    /// The window holding it, or [`None`] when that is the scope's CURRENT window.
+    /// The window holding it, or [`None`] when nothing here can narrow one — which is a caller
+    /// standing in no pane of this session, and for whom the scope's CURRENT window is the only
+    /// answer there could be.
     ///
     /// `None` rather than always naming the window, deliberately: it keeps "narrowed" and "not
     /// narrowed" distinguishable, which is what the version-skew probe measures.
+    ///
+    /// ⚠⚠⚠⚠⚠ **IT USED TO MEAN *the scope's current window*, AND THAT STOPPED BEING TRUE** —
+    /// register item 759, recorded here because this doc is what a reader trusts instead of
+    /// checking (item 644). The fast path in [`resolve_pane`] answers a pane found in the listing
+    /// [`pane_ids`] returns, and that listing is the CALLER's window now rather than the current
+    /// one. `None` therefore had to stop standing in for it: the two are the same window only for
+    /// a caller who is not in a pane, and that is exactly the case this now describes.
     window: Option<String>,
 }
 
@@ -2818,14 +2863,23 @@ fn resolve_pane(
 ) -> io::Result<PaneSite> {
     let here = pane_ids(conn, session)?;
     let address = PaneAddress::parse(raw);
-    // A pane of the CURRENT window resolves without reading any further — the ordinary case, and
-    // one query, exactly as before this verb could reach past the window.
+    // A pane of THE CALLER'S OWN window resolves without reading any further — the ordinary case,
+    // and one query, exactly as before this verb could reach past the window.
+    //
+    // ⛔⛔⛔⛔⛔ AND IT CARRIES THAT WINDOW — register item 759, found by a gate rather than
+    // predicted. `window: None` means *the scope's current window* (see [`PaneSite::window`]), and
+    // that was the same window `pane_ids` answered from right up until this item narrowed it. The
+    // instant those two came apart, this fast path started saying *current* about a pane it had
+    // found in the CALLER's: measured live at `sprag find --pane 1`, which resolved pane 1 out of
+    // the caller's window and then died `NoExternalAtPath` asking the current one for it — while
+    // the same pane reached BY NAME worked, because the name path goes session-wide and fills the
+    // window in. **A listing narrowed at one end and addressed at the other is neither window's.**
     if let PaneAddress::Number(id) = &address
         && here.contains(id)
     {
         return Ok(PaneSite {
             id: *id,
-            window: None,
+            window: here_window(session).map(str::to_owned),
         });
     }
     let elsewhere = session_panes(conn, session)?;
@@ -3995,10 +4049,15 @@ fn panes(args: Vec<String>) -> io::Result<()> {
     let mut conn = connect_scoped(session.as_deref())?;
     let listed: Value = query_slot(
         &mut conn,
-        scoped_params(session.as_deref(), mux_action_path(PANES_SLOT)),
+        here_params(session.as_deref(), mux_action_path(PANES_SLOT)),
     )?;
     // The whole entry, not just the id — this is the one command whose subject is the LIST, so it
     // reads the slot directly rather than through `pane_ids`.
+    //
+    // ⛔⛔⛔ THROUGH `here_params` ALL THE SAME — register item 759. Reading the slot directly is
+    // about the ROW, never about the window, and sending a different scope from `pane_ids` would
+    // make this listing and every id check answer about two different windows. That is the drift
+    // `pane_ids`' own doc promises cannot happen, and one helper is how.
     for pane in listed.as_array().into_iter().flatten() {
         println!("{}", pane_row(pane));
     }

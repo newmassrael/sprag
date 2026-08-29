@@ -8278,9 +8278,20 @@ fn query_panes() -> Result<Vec<PaneInfo>, String> {
 /// [`host_call_answered`] gives: a build fetched on a second connection is a second moment, and the
 /// event in between is precisely the daemon restart the comparison exists to detect.
 fn query_panes_and_daemon() -> Result<(Vec<PaneInfo>, DaemonSaid), String> {
+    // ⛔⛔⛔⛔⛔ THE AGENT'S OWN WINDOW, NOT THE ONE A PERSON IS LOOKING AT — register item 759.
+    // `None` here meant the session's CURRENT window, so `list_panes` said *"in this window"* about
+    // somebody else's and handed out NUMBERS for it. Measured 2026-08-30 standing in window
+    // `sprag` with the current window `wz`: `pane 2` was `inner-wz`, another repository's live
+    // loop, waiting for input — and `write_pane` takes that number.
+    //
+    // ⚠⚠⚠ IT IS ONE READ FOR TWO ANSWERS, which is what makes a single narrowing enough:
+    // `resolve_pane_ref_at_from_a_daemon` resolves a NUMBER against this very listing, so the rows
+    // a caller is shown and the rows a number is counted in cannot come to mean different windows.
+    // ⚠ A NAME that misses here still looks session-wide (`query_session_panes`), which is how a
+    // pane one window over stays reachable — the control this narrowing must not break.
     let answered = host_call_answered(
         "scene/query",
-        windowed_params(mux_action_path(PANES_SLOT), None),
+        windowed_params(mux_action_path(PANES_SLOT), our_window()),
     )?;
     let array = answered
         .value
