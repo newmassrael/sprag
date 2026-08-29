@@ -400,6 +400,37 @@ const DONE_MARKER: &str = "done_marker";
 /// *something checked this and was satisfied*.
 const MILESTONE_CHECK: &str = "milestone_check";
 
+/// **HOW THE CHECKER IS TOLD TO ANSWER, AND IT IS THE LAST THING IT READS.**
+///
+/// # ⛔⛔⛔⛔⛔ Why this is a constant standing at the END of the question
+///
+/// [`Judgement`](crate::judge::Judgement) is decided on the reply's FIRST WORD, so a checker that
+/// opens with anything else has not answered — measured, live: a run's check replied `"My"` and the
+/// round was recorded `unverified` although the checker had judged. Before this, the prompt asked
+/// for that first word in the MIDDLE and then handed over the agent's whole transcript, so the last
+/// thing the reader saw was somebody else's prose and the last instruction was hundreds of lines
+/// behind it. **The order is the fix**: what the reply must look like is now the closing sentence.
+///
+/// ⚠⚠ **IT NAMES THE SHAPE THAT FAILED** rather than only restating the rule. *Answer YES or NO as
+/// your FIRST WORD* was already there and was already followed in substance — the replies that lost
+/// their verdicts were `"My"`, `"Verdict"`, `"The"`, `"Two"`: a preamble, then the answer. A rule
+/// that is obeyed in spirit and missed in form is a rule that has to name the form.
+///
+/// ⚠⚠⚠⚠ **AND IT DOES NOT TURN *I CANNOT JUDGE* INTO A REFUSAL.** Register item 741 recorded
+/// turning an unreadable answer into a NO as the banned repair, because one permission dialog would
+/// then kill a round on a verdict nobody made. The checker is told to say so in its sentence, which
+/// is what it was told before, and `unverified` is the door that exists for it.
+///
+/// ⚠ Spelled once, for [`MILESTONE_CHECK`]'s reason: the gate that holds this ordering compares the
+/// rendered question against THIS string, so the product and the gate cannot come to hold two
+/// different ideas of what the closing instruction is.
+const HOW_TO_ANSWER: &str = "Now answer. YOUR REPLY MUST BEGIN WITH THE WORD YES OR THE WORD NO — \
+     that FIRST WORD before anything else. Do not open with a heading, a greeting, a restatement \
+     of the checkpoint, or a phrase such as \"My verdict\" or \"Verdict:\": a reply whose first \
+     word is anything else cannot be read as a verdict at all and this run throws it away. Then \
+     give ONE short sentence saying why. If what you were shown is empty or does not let you \
+     judge, say that in the sentence rather than guessing.\n";
+
 /// **THE RULES EVERY SESSION OF A RUN WORKS UNDER**, as the template spells the id — register item
 /// 738.
 ///
@@ -9454,10 +9485,8 @@ impl OuterLoop {
         format!(
             "An AI agent was asked to reach this checkpoint:\n\n{milestone}\n\n{where_it_is}\
              {consult}Below is what it produced while working on it. Decide whether the checkpoint \
-             was actually reached — judge the work, not the claim.\n\nAnswer YES or NO as your \
-             FIRST WORD. Then give ONE short sentence saying why. If what you were shown is empty \
-             or does not let you judge, say that in the sentence rather than guessing.\n\nWhat it \
-             produced:\n{}\n",
+             was actually reached — judge the work, not the claim.\n\nWhat it produced:\n{}\n\n\
+             {HOW_TO_ANSWER}",
             produced.text(),
         )
     }
@@ -16243,6 +16272,58 @@ mod tests {
             "⚠⚠⚠ THE VERDICT IS STILL THE FIRST WORD. `asked_of_another` decides on it and keeps \
              the first line of the rest; a prompt that stopped saying so would let a judge open \
              with `Yes, but…` and be read as agreement: {question:?}",
+        );
+
+        // ══ ⛔⛔⛔⛔⛔ AND THE INSTRUCTION IS THE LAST THING READ, NOT THE MIDDLE ═══════════════
+        //
+        // Every assertion above asks whether a SENTENCE is present, and presence was never the
+        // thing that failed: the prompt said *Answer YES or NO as your FIRST WORD* while a live
+        // check answered `"My"` and the round was recorded `unverified`. What it did not say was
+        // WHERE — the agent's whole transcript came after it, so the reader's last instruction was
+        // hundreds of lines behind somebody else's prose.
+        //
+        // ⚠⚠⚠⚠⚠ THE PREMISE, ASSERTED INSIDE THE GATE. `ends_with` on a question that never
+        // carried the transcript would hold for a prompt that showed the checker nothing at all,
+        // and the ordering below would be comparing one string against nothing.
+        let shown = artifact.text();
+        assert!(
+            !shown.trim().is_empty(),
+            "⚠⚠⚠⚠⚠ THIS GATE IS MEASURING AN EMPTY PROMPT: the artifact it composed the question \
+             from carries no text, so `before the instruction` has nothing to be before and every \
+             claim below is vacuous",
+        );
+        let at_shown = question.find(shown.trim()).unwrap_or_else(|| {
+            panic!(
+                "⚠⚠⚠⚠ THE QUESTION DOES NOT CARRY WHAT THE CHECKER IS BEING ASKED ABOUT. It was \
+                 shown {shown:?} and the rendered question is {question:?}",
+            )
+        });
+        let at_rule = question.find(HOW_TO_ANSWER.trim_end()).unwrap_or_else(|| {
+            panic!(
+                "⛔⛔⛔⛔⛔ THE PRODUCT AND THIS GATE HOLD TWO DIFFERENT CLOSING INSTRUCTIONS. \
+                 `HOW_TO_ANSWER` exists so there is one, and the rendered question does not \
+                 contain it: {question:?}",
+            )
+        });
+        assert!(
+            at_shown < at_rule,
+            "⛔⛔⛔⛔⛔ THE TRANSCRIPT IS THE LAST THING THE CHECKER READS AND THE ANSWER RULE IS \
+             BURIED ABOVE IT. That is the arrangement a live run answered `\"My\"` under: the \
+             verdict is decided on the FIRST WORD, and the last thing this prompt said before \
+             handing over was not about the first word. Shown at {at_shown}, rule at {at_rule}",
+        );
+        assert!(
+            question.trim_end().ends_with(HOW_TO_ANSWER.trim_end()),
+            "⛔⛔⛔⛔ AND *BEFORE THE TRANSCRIPT ENDS* IS NOT THE SAME AS *LAST*. Anything appended \
+             after the closing instruction puts a reader's final attention somewhere else again, \
+             which is the whole defect being paid off here: {question:?}",
+        );
+        assert!(
+            HOW_TO_ANSWER.contains("MUST BEGIN"),
+            "⚠⚠⚠⚠ AND MOVING IT IS HALF THE REPAIR. The replies that lost their verdicts — `My`, \
+             `Verdict`, `The`, `Two` — each OBEYED *answer YES or NO* and put a preamble in front \
+             of it, so the closing sentence has to forbid the FORM and not merely restate the \
+             rule: {HOW_TO_ANSWER:?}",
         );
 
         // ── THE SECOND HALF: which reader, and the two must not read alike ──
