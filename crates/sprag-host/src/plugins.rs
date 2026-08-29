@@ -2768,6 +2768,58 @@ impl fmt::Debug for PluginsExternal {
 rpc_external_impl!(PluginsExternal);
 
 impl PluginsExternal {
+    /// ⛔⛔⛔⛔⛔ **IS THE AGENT THIS RUN IS DRIVING BLOCKED RIGHT NOW** — register item 755, and
+    /// the half a plugin structurally cannot answer.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the DAEMON asks and not the loop
+    ///
+    /// The item's own measurement is the argument: `sprag runs` read `running — 46 iterations` for
+    /// sixty-two minutes and **the count never moved**. A plugin publishes through
+    /// [`sprag_plugin::Progress`], which the Driver fills *when a step completes* — so a run stuck
+    /// inside one turn has no moment at which to say anything. The first repair of this item put
+    /// the sentence on the plugin, and an independent check named exactly this gap: the machine
+    /// only reaches `awaiting_human` **after** `await_person_ms` expires, so the whole window the
+    /// item is about still rendered as a plain `running`.
+    ///
+    /// This surface has no such problem. It holds the [`crate::AgentClock`] and the run row names
+    /// the pane, so the question is asked **at the moment the row is read** — which is exactly when
+    /// somebody is looking.
+    ///
+    /// ⚠⚠ `Blocked` and nothing else. The agent vocabulary has one word for *it is asking a person
+    /// and will not go on until one answers*, and inventing a second reading of `working` here
+    /// would be this file guessing at a detector's business.
+    ///
+    /// ⚠ [`None`] when there is no clock, no driven pane, or nothing agent-shaped in it — an
+    /// absence of a claim, which is what every presence-is-the-claim key on this row means.
+    fn blocked_now(&self, run: &crate::runs::RunSummary) -> Option<String> {
+        if !matches!(run.state, RunState::Running) {
+            return None;
+        }
+        // ⚠ THE DRIVER'S REPORT FIRST, then the local cell — the precedence every other key on the
+        // row keeps, so *which pane this run is driving* has one answer here and there.
+        let pane = run
+            .reported
+            .as_ref()
+            .map(progress_from_report)
+            .unwrap_or_default()
+            .driving
+            .or(run.progress.driving)?;
+        let agents = self.agents.as_ref()?;
+        let seen = agent_state_source(
+            Arc::clone(&self.workspace),
+            Arc::clone(agents),
+            sprag_detect::Hysteresis::default,
+        )(pane)?;
+        (seen.state == sprag_detect::AgentState::Blocked).then(|| {
+            format!(
+                "this run is waiting for a person — the agent in pane {} is blocked on something \
+                 it wants answered, and no step of this run completes until somebody answers it. \
+                 Go and look at that pane.",
+                pane.0
+            )
+        })
+    }
+
     fn read(&self, path: &str) -> Option<IntrospectValue> {
         match path {
             RUNS_SLOT => {
@@ -2790,7 +2842,7 @@ impl PluginsExternal {
                                 .as_deref()
                                 .and_then(|session| self.seat_of(session))
                         });
-                        run_to_json(run, seat)
+                        run_to_json(run, seat, self.blocked_now(run))
                     })
                     .collect();
                 Some(IntrospectValue::Json(Value::Array(entries)))
@@ -4656,7 +4708,7 @@ fn progress_reported(reported: Value) -> Value {
 ///
 /// ⚠ Ask [`sprag_rpc::WIRE_PROTOCOL`]'s own doc rather than this paragraph if the question comes up
 /// again; this records the judgement taken for THIS change, not the rule.
-fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
+fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>) -> Value {
     let (cost, unit) = run
         .progress
         .cost
@@ -4681,11 +4733,29 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>) -> Value {
         // ⚠⚠ AND WHAT IT CARRIED FOR THE KEYS BESIDE THE STATE IS LIFTED OUT — register item 663.
         // The report is a TRANSPORT: leaving that object in would publish the delivery triple and
         // the driven pane twice in one row, and only for one kind of driver.
-        RunState::Running => progress_reported(without_the_beside(
-            run.reported
-                .as_ref()
-                .map_or_else(|| progress_to_json(&run.progress), Clone::clone),
-        )),
+        RunState::Running => {
+            let mut going = progress_reported(without_the_beside(
+                run.reported
+                    .as_ref()
+                    .map_or_else(|| progress_to_json(&run.progress), Clone::clone),
+            ));
+            // ⛔⛔⛔⛔⛔ AND WHAT THE DAEMON CAN SEE THAT THE RUN CANNOT SAY — register item 755.
+            //
+            // ⚠⚠⚠⚠⚠ THIS OVERRIDES THE PLUGIN'S OWN SENTENCE, AND THAT PRECEDENCE IS THE REPAIR.
+            // A plugin publishes through `Progress`, which the Driver fills WHEN A STEP COMPLETES —
+            // so a run stuck inside one turn cannot say anything at all, and that is precisely the
+            // window this item measured: sixty-two minutes at `running — 46 iterations`, the count
+            // never moving, while `sprag agent` said the pane was `blocked`. The plugin's answer
+            // is the older reading by construction; the daemon's is taken now.
+            //
+            // ⚠⚠ IT IS NOT A SECOND SPELLING. Both fill ONE key, and the fresher fact wins — the
+            // arrangement every `reported.or(progress)` pair on this row already uses, one axis
+            // over (that one prefers the driver's report; this one prefers the live look).
+            if let Some(said) = blocked_now {
+                going[RUN_WAITING_KEY] = json!(said);
+            }
+            going
+        }
         RunState::Done {
             outcome,
             output,
@@ -7181,6 +7251,10 @@ mod tests {
                     withheld: None,
                 },
                 None,
+                // ⚠ NO LIVE LOOK HERE. This gate is about the PLUGIN's sentence reaching the row;
+                // the daemon's own look is a different fact with a fixture of its own
+                // (`a_run_whose_agent_is_blocked_says_so_while_its_machine_is_still_working`).
+                None,
             )
         };
 
@@ -7252,6 +7326,7 @@ mod tests {
                 cancelled_by: None,
                 withheld: None,
             },
+            None,
             None,
         );
         assert_eq!(
@@ -7609,7 +7684,7 @@ mod tests {
             lock(&registry)
                 .snapshot()
                 .first()
-                .map(|run| run_to_json(run, run.opened_by)),
+                .map(|run| run_to_json(run, run.opened_by, None)),
         );
 
         assert!(
@@ -7896,7 +7971,7 @@ mod tests {
                 .snapshot()
                 .iter()
                 .find(|run| run.id.0 == id)
-                .map(|run| run_to_json(run, run.opened_by))
+                .map(|run| run_to_json(run, run.opened_by, None))
                 .expect("the run this call started is in the registry's snapshot")
         };
         // ⚠⚠⚠ THE STAGING CONTROL, asked before every reading below. An `EndedRun` answers `false`
@@ -10718,6 +10793,124 @@ mod tests {
     /// (R249's measurement, and the reason `Rule::priority` exists), so a surface that read the
     /// title alone would report this pane at rest while it waits for a person.
     #[test]
+    fn a_run_whose_agent_is_blocked_says_so_while_its_machine_is_still_working() {
+        let (workspace, pane) = pane_painting(PERMISSION_SCREEN);
+        let agents = Arc::new(crate::AgentClock::new(Ruleset::new(built_ins())));
+        // ⚠ THE PREMISE: the pane must really be blocked before the row is asked anything, or the
+        // `Some` below could come from a detector that says `blocked` about everything.
+        let seen = settle(&source(&workspace, &agents), pane, |o| {
+            o.state == AgentState::Blocked
+        });
+        assert_eq!(
+            seen.state,
+            AgentState::Blocked,
+            "⛔ the fixture's pane must be blocked, or this gate is about nothing",
+        );
+
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            Some(Arc::clone(&agents)),
+            None,
+            None,
+        );
+        // ⛔⛔⛔⛔⛔ THE WINDOW THE ITEM IS ABOUT: the machine is `working` — NOT `awaiting_human`,
+        // which it only reaches after `await_person_ms` expires — and no step has completed, so
+        // `Progress` carries nothing. This is the sixty-two minutes exactly.
+        let run = crate::runs::RunSummary {
+            id: RunId(11),
+            label: format!("ai_loop pane={}", pane.0),
+            opened_by: None,
+            opened_by_session: None,
+            state: RunState::Running,
+            progress: sprag_plugin::Progress {
+                at: Some("working"),
+                driving: Some(pane),
+                ..sprag_plugin::Progress::default()
+            },
+            reported: None,
+            build: Some(crate::wire::BUILD.to_owned()),
+            stood_down: false,
+            held: false,
+            cancelled_by: None,
+            withheld: None,
+        };
+        assert_eq!(
+            run.progress.waiting, None,
+            "⛔⛔ AND THE PLUGIN SAYS NOTHING, which is the whole difficulty: a run stuck inside \
+             one turn completes no step, so the Driver never fills this. If the fixture carried a \
+             sentence here the gate would be measuring the arm that already worked",
+        );
+
+        let row = run_to_json(&run, None, external.blocked_now(&run));
+        let said = row["state"][RUN_WAITING_KEY].as_str().unwrap_or_default();
+        assert!(
+            said.contains(&format!("pane {}", pane.0)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 755, done-when ⑴ VERBATIM — *the moment the agent enters
+             `blocked`*. An independent check named this exactly: classifying `awaiting_human` \
+             alone leaves the whole window rendering as a plain `running`, because the machine \
+             only gets there after the wait expires. The daemon holds the AgentClock and the row \
+             names the pane, so it is asked NOW. Got: {row:?}",
+        );
+
+        // ── THE CONTROL: the same agent, WORKING, says nothing ───────────────────────────────
+        // ⚠⚠⚠⚠ IT IS `CLAUDE_WORKING` AND NOT A BARE SHELL, AND A GREEN MUTATION IS WHY. Written
+        // first with a pane painting ordinary text, the control passed for the WRONG REASON: the
+        // clock never calls such a pane an agent at all, so `blocked_now` fell out at the
+        // `agent_state_source` read and a version of it that answered for EVERY agent still passed.
+        // Measured — `(true || seen.state == Blocked)` left this green. The control has to differ
+        // from the claim in the agent's STATE and in nothing else.
+        let (quiet_workspace, quiet_pane) = pane_painting(CLAUDE_WORKING);
+        let quiet_agents = Arc::new(crate::AgentClock::new(Ruleset::new(built_ins())));
+        let quiet_seen = settle(&source(&quiet_workspace, &quiet_agents), quiet_pane, |o| {
+            o.state == AgentState::Working
+        });
+        assert_eq!(
+            quiet_seen.state,
+            AgentState::Working,
+            "⛔⛔ THE CONTROL'S OWN PREMISE: this pane must be an agent the clock calls WORKING — \
+             a pane it does not call an agent at all would make the `Null` below true for a \
+             reason that has nothing to do with this item",
+        );
+        let quiet_external = PluginsExternal::new(
+            Arc::clone(&quiet_workspace),
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            Some(quiet_agents),
+            None,
+            None,
+        );
+        let quiet_run = crate::runs::RunSummary {
+            id: RunId(12),
+            label: format!("ai_loop pane={}", quiet_pane.0),
+            progress: sprag_plugin::Progress {
+                at: Some("working"),
+                driving: Some(quiet_pane),
+                ..sprag_plugin::Progress::default()
+            },
+            ..run
+        };
+        let quiet_row = run_to_json(&quiet_run, None, quiet_external.blocked_now(&quiet_run));
+        assert_eq!(
+            quiet_row["state"][RUN_WAITING_KEY],
+            Value::Null,
+            "⚠⚠⚠ THE CONTROL: a run whose agent is working must say nothing. A signal on every row \
+             is noise, and noise is why nobody reads the row this item exists to make readable: \
+             {quiet_row:?}",
+        );
+
+        for (held, id) in [(&workspace, pane), (&quiet_workspace, quiet_pane)] {
+            assert!(
+                lock(held).close(id).is_some(),
+                "the panes this gate opened were there to close",
+            );
+        }
+    }
+
+    #[test]
     fn a_plugin_reads_a_blocked_agents_state_and_the_question_it_is_blocked_on() {
         let (workspace, id) = pane_painting(PERMISSION_SCREEN);
         let agents = Arc::new(crate::AgentClock::new(Ruleset::new(built_ins())));
@@ -11884,7 +12077,7 @@ mod tests {
                     .find(|run| run.id.0 == id)
                     // The seat as the record itself names it: this helper watches runs THIS
                     // registry issued, so there is no inherited conversation to re-derive from.
-                    .map(|run| run_to_json(run, run.opened_by))
+                    .map(|run| run_to_json(run, run.opened_by, None))
             };
             if let Some(entry) = &entry
                 && entry["state"]["status"] != json!("running")
