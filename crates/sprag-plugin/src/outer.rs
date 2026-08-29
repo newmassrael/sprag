@@ -2084,8 +2084,10 @@ pub enum RestartReason {
     /// session took the identical prompt. So what is wedged is the SESSION, and this loop's answer
     /// to a wedged session already exists.
     ///
-    /// ⚠⚠ It is bounded by the document (`unasked_since_taken`): a peer that will not take a
-    /// question in the session opened to fix exactly that is a person's, and the run says `failed`.
+    /// ⚠⚠ It is bounded by the document (`unasked_seen`): a run whose peer folds a SECOND question
+    /// is a person's, and the run says `failed`. ⚠ Register item 745(B) made that count the run's
+    /// rather than a stretch since anything took — the replacement retypes the brief, so a landing
+    /// used to hand the budget straight back to the recovery that had just spent it.
     /// ⚠ And it is raised only where the pane can REPORT being asked — at a scraped pane *nobody
     /// reported it* is not evidence, and the delivery's old refusal stands.
     Unasked,
@@ -2164,18 +2166,24 @@ impl RestartReason {
             }
             // ⛔⛔⛔ THE LAST CLAUSE IS THE DOCUMENT'S GUARD, NOT A PARAPHRASE OF IT — register
             // item 742. It used to read *"if it happens again in the session opened for it"*, and
-            // that is a DIFFERENT condition: `unasked_since_taken` is cleared by `prompt.sent`, so
-            // a session that takes four turns and then refuses one is back at zero and gets its
+            // that was a DIFFERENT condition then: the counter was cleared by `prompt.sent`, so a
+            // session that took four turns and then refused one was back at zero and got its
             // replacement. A watcher read the old sentence, watched a run that had done exactly
             // that NOT stop, and filed the product as broken. Two sessions spent a round finding
             // out that the only wrong thing was this line.
+            //
+            // ⚠⚠ REGISTER ITEM 745(B) THEN REMOVED THE CLEARING, so the sentence below and the
+            // document now agree about a SECOND FOLD ANYWHERE IN THE RUN. It still must not be
+            // rewritten to name a session: a run that folds once, works for five turns and folds
+            // again is stopped, and that is the case 745 was filed for.
             Self::Unasked => {
                 "the peer would not take the question: the prompt reached its pane and the submit \
                  after it never became a question the agent reported. Nothing is wrong with the \
                  work or the milestone — what is wedged is the SESSION's own composer, and this is \
                  the run opening a fresh one rather than throwing away what it has already paid \
-                 for. If the next question is refused TWICE RUNNING — with none taken in between \
-                 — the run stops for a person; a question that lands clears it"
+                 for. This run gets ONE such replacement: if any later question is folded away \
+                 too, whatever it says and however much work has happened in between, the run \
+                 stops for a person"
             }
         }
     }
@@ -2636,10 +2644,14 @@ pub enum Noticed {
     /// they are OPPOSITE decisions. One takes an option the peer offered; this one turns the peer's
     /// call down. [`OuterLoop::took_screening`] consumes it.
     Screened(Screened),
-    /// **THE PEER WOULD NOT TAKE THE QUESTION, TWICE RUNNING** — register item 446, and it is here
-    /// on this enum's own terms: the FIRST refusal reaches `restarting`, which says why in
+    /// **THE PEER WOULD NOT TAKE THE QUESTION, TWICE IN THIS RUN** — register item 446, and it is
+    /// here on this enum's own terms: the FIRST fold reaches `restarting`, which says why in
     /// `restart_reason`, and the second reaches `failed`, which is entered from six transitions and
     /// can name nothing.
+    ///
+    /// ⚠ *IN THIS RUN* AND NOT *IN A ROW* SINCE REGISTER ITEM 745(B): the counter used to be
+    /// cleared by any prompt that landed, and the prompt that lands after a fold is the brief the
+    /// replacement itself retyped — so the recovery renewed its own bound.
     ///
     /// ⚠ It carries what the delivery carried, because *how many times it pressed* and *how much it
     /// wrote* are the two numbers that separate a peer that ignored a submit from one that never saw
@@ -3298,18 +3310,23 @@ impl Made {
 ///
 /// # ⚠⚠⚠⚠ Why the document's existing bound cannot express it, however it is tuned
 ///
-/// `unasked_since_taken` counts REFUSALS IN A ROW: one free replacement, and a second refusal with
-/// nothing taken in between ends the run. That guard is correct and it is not this one — it answers
-/// *will this peer take a question at all?*, and it is cleared the moment any prompt lands, because
-/// (the document's own words) *"a question that landed is what makes the next refusal a NEW fact
-/// rather than the same one continuing"*.
+/// `unasked_seen` counts FOLDS IN THE RUN: one free replacement, and a second fold ends the run.
+/// That guard is correct and it is not this one — it answers *will this peer take a question at
+/// all?*, and it names no text, so the run it stops is told to look at the SESSION rather than at
+/// the brief.
 ///
-/// **In the measured churn a question lands on every cycle.** It is the BRIEF, retyped in full into
-/// every replacement by `priming`; the prompt that is refused is the turn prompt one step later. So
-/// the budget is spent and handed straight back, for as long as the run lasts —
-/// `the_bound_on_a_refused_prompt_is_spent_and_returned_by_every_brief_that_lands` pins that
-/// arithmetic. **A row is the wrong thing to count. The fact with no counter at all is the same
-/// TEXT coming back**, and this is it.
+/// ⛔⛔⛔ **IT USED TO BE CLEARED BY EVERY PROMPT THAT LANDED, AND THAT IS WHY ITEM 719 COULD NOT
+/// LEAN ON IT.** In the measured churn a question lands on every cycle: the BRIEF, retyped in full
+/// into every replacement by `priming`, while the prompt that is refused is the turn prompt one
+/// step later. The budget was spent and handed straight back for as long as the run lasted.
+/// **Register item 745(B) removed that clearing** — the landing was the replacement's own doing, so
+/// reading it as *this peer takes questions* let a recovery renew the bound on recoveries.
+///
+/// ⚠⚠ **THIS TYPE IS STILL A DIFFERENT QUESTION AND IS NOT MADE REDUNDANT BY THAT.** A row of folds
+/// and the same TEXT coming back are two facts, and only this one can name the remedy: *shorten the
+/// prompt or split it*. A run whose first two folds carry different text is ended by the document's
+/// count; a run whose first fold repeats is ended HERE, one step sooner and with the sentence the
+/// person actually needs.
 ///
 /// # ⚠⚠⚠⚠⚠ Why the memory is on [`OuterLoop`] and not on the session
 ///
@@ -3321,7 +3338,7 @@ impl Made {
 /// session on this text, and a run outlives its sessions.
 ///
 /// ⚠⚠ **AND IT IS NEVER FORGOTTEN, WHICH IS THE OTHER HALF.** A memory cleared by a prompt that
-/// landed would be `unasked_since_taken`'s hole in a second spelling: the brief lands on every
+/// landed would be `unasked_seen`'s OLD hole in a second spelling: the brief lands on every
 /// cycle. A memory cleared by THIS text landing would still leave the two-turn churn — refuse,
 /// replace, land, refuse, replace — unbounded. So what is remembered is remembered for the run.
 ///
@@ -4263,7 +4280,7 @@ pub struct OuterLoop {
     /// [`Retyped::First`] on every turn of the churn.
     ///
     /// ⚠⚠ **A LATCH, AND CLEARED BY NOTHING.** The two clearing rules that suggest themselves both
-    /// reopen the cycle: *any prompt that landed* is `unasked_since_taken`'s own hole (the brief
+    /// reopen the cycle: *any prompt that landed* is `unasked_seen`'s OWN OLD hole (the brief
     /// lands on every replacement), and *this text landing* leaves the two-turn shape — refuse,
     /// replace, land, refuse — with no bound at all.
     ///

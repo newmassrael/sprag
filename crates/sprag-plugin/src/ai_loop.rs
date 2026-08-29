@@ -920,8 +920,8 @@ impl AiLoop {
                     // of these sentences, and the arm below has never had one. What IS gated is
                     // the ROUTING that picks between them — the driver's answer
                     // (`the_text_a_refusal_cost_a_session_outlives_the_session_it_bought`) and the
-                    // document's (`the_bound_on_a_refused_prompt_is_spent_and_returned_by_every_
-                    // brief_that_lands`) — because `noticed` is `OuterLoop`'s private slot and a
+                    // document's (`a_brief_that_lands_no_longer_hands_back_the_bound_on_a_refused_
+                    // prompt`) — because `noticed` is `OuterLoop`'s private slot and a
                     // fixture that could set it would be product surface built for a `format!`.
                     Some(Noticed::Unasked {
                         attempts,
@@ -11285,12 +11285,19 @@ mod tests {
             "⚠⚠⚠⚠ TWICE RUNNING IS NOT A RECOVERY, IT IS A SPIN: {twice:?}",
         );
 
-        // ⚠⚠⚠⚠⚠ AND THE CONTROL THAT MAKES THE BOUND A BOUND RATHER THAN A ONE-SHOT — the identical
-        // walk with ONE question taken in the middle. `unasked_since_taken` is cleared by a prompt
-        // that landed, so the budget is one replacement per question that went in and not one per
-        // run. Without this arm a document that never cleared the counter would be green above and
-        // would end the second real outage of every long run.
-        let cleared = [
+        // ⛔⛔⛔⛔⛔ AND A QUESTION THAT LANDS IN BETWEEN DOES **NOT** BUY ANOTHER — register item
+        // 745(B), and this arm used to assert the opposite.
+        //
+        // It read *"a question that landed must clear the budget"*, because the counter was cleared
+        // by `priming`'s `prompt.sent` and the argument for that is sound OF ONE SESSION: a peer
+        // that just took a question is not a peer that takes none. **The peer here is not one
+        // session.** `restarting` replaced it, and the question that lands is the brief the
+        // replacement itself retyped — so the recovery renewed the bound on recoveries, and two
+        // live runs (50 and 51) folded twice, worked in between, and were failed by nothing.
+        //
+        // ⚠⚠ THE WALK IS UNCHANGED AND ONLY THE EXPECTATION MOVED, which is what makes this a
+        // measurement rather than a rewrite: same events, same payloads, same order.
+        let landed_between = [
             (AiLoopEvent::Start, ""),
             (AiLoopEvent::PromptUnasked, UNASKED),
             (AiLoopEvent::SessionReplaced, ""),
@@ -11303,38 +11310,47 @@ mod tests {
             (AiLoopEvent::PromptUnasked, UNASKED),
         ];
         assert_eq!(
-            walked(&cleared),
-            AiLoopState::Restarting,
-            "⚠⚠⚠⚠ A QUESTION THAT LANDED MUST CLEAR THE BUDGET: {cleared:?}",
+            walked(&landed_between),
+            AiLoopState::Failed,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 745(B): a run that folds a prompt, buys a session, WORKS A \
+             TURN and folds another must stop for a person. A `Restarting` here is the churn the \
+             item was filed for — an unattended run throwing a session away every few turns for as \
+             long as it lives, with the brief it retypes each time handing the budget back: \
+             {landed_between:?}",
         );
 
         // ── ⛔⛔⛔⛔⛔ AND THE SENTENCE A PERSON READS MUST DESCRIBE *THIS* GUARD ──
         //
         // Register item 742, and it belongs in THIS test rather than in one of its own — that is
         // the whole repair. The driver's prose said *"if it happens again in the session opened for
-        // it, the run stops"*, which is a DIFFERENT condition from the two walks above: the counter
-        // is cleared by a question that lands, so the `cleared` walk is a second refusal in the
-        // replacement session that correctly does NOT stop. A watcher read the sentence, watched
-        // that run, and filed the product as broken; two sessions spent a round finding out the
-        // only wrong thing was the line.
+        // it, the run stops"*, which was a DIFFERENT condition from the walks above. A watcher read
+        // the sentence, watched a run that did not stop, and filed the product as broken; two
+        // sessions spent a round finding out the only wrong thing was the line.
         //
         // ⚠⚠⚠ A GATE THAT ONLY READ THE SENTENCE WOULD BE VACUOUS — it would stay green while
         // somebody changed the guard out from under it. Sitting here, a mutation to either edge
         // reddens the walks above and this clause travels with them: **the sentence is asserted
         // against walks that were just run, not against a remembered claim.**
+        //
+        // ⭐⭐⭐⭐⭐ AND IT PAID FOR ITSELF AT REGISTER ITEM 745(B), WHICH IS WHY THE WORDS BELOW
+        // MOVED. That item removed the clearing, so the sentence's old promise — *refused TWICE
+        // RUNNING, with none taken in between; a question that lands clears it* — became false in
+        // both halves on the same edit. It went red here, in the test whose walks had just
+        // demonstrated the new condition, exactly as item 742 designed it to.
         let said = crate::outer::RestartReason::Unasked.describe();
         assert!(
-            said.contains("TWICE RUNNING"),
-            "⚠⚠⚠⚠⚠ THE SENTENCE MUST NAME THE CONDITION THE WALKS ABOVE JUST DEMONSTRATED — a \
-             refusal with none taken in between. This is the only explanation a person ever reads \
-             for this ending, and prose that names a different condition sends an honest reader to \
+            said.contains("ONE such replacement"),
+            "⚠⚠⚠⚠⚠ THE SENTENCE MUST NAME THE CONDITION THE WALKS ABOVE JUST DEMONSTRATED — one \
+             replacement for the whole run. This is the only explanation a person ever reads for \
+             this ending, and prose that names a different condition sends an honest reader to \
              report the product as broken: {said:?}",
         );
         assert!(
-            !said.contains("in the session opened for it"),
-            "⚠⚠⚠⚠ AND IT MUST NOT NAME THE CONDITION THE DOCUMENT REFUSED. `unasked_since_taken` \
-             is cleared by `prompt.sent`, so *again in the session opened for it* is false of the \
-             `cleared` walk two assertions up — which passes, and must: {said:?}",
+            !said.contains("in the session opened for it") && !said.contains("clears it"),
+            "⚠⚠⚠⚠ AND IT MUST NOT NAME EITHER CONDITION THE DOCUMENT HAS REFUSED. *Again in the \
+             session opened for it* was never what the guard read (item 742); *a question that \
+             lands clears it* was true until item 745(B) removed the clearing, and the \
+             `landed_between` walk two assertions up is the proof it no longer is: {said:?}",
         );
     }
 
@@ -11345,14 +11361,14 @@ mod tests {
     ///
     /// Item 719 filed *"a recovery that re-types the input that caused the failure — churn with a
     /// period of ONE TURN"* and read it as a cycle nothing bounds. **Asked, the document answers
-    /// otherwise**: `prompt.unasked` has a guard (`unasked_since_taken`), one free replacement, and
+    /// otherwise**: `prompt.unasked` has a guard (`unasked_seen`), one free replacement, and
     /// a second refusal goes to `failed`. The gate above holds both halves.
     ///
-    /// **So the bound exists. It simply does not count what 719 is about.** It is cleared by
-    /// `priming`'s `prompt.sent` — the document says so in its own words, *"a question that landed
+    /// **So the bound exists. It simply did not count what 719 is about.** It was cleared by
+    /// `priming`'s `prompt.sent` — the document said so in its own words, *"a question that landed
     /// is what makes the next refusal a NEW fact rather than the same one continuing"* — and the
     /// prompt that lands in item 719's run is the BRIEF, retyped in full into every replacement.
-    /// The turn prompt is the one refused. So every cycle clears the counter before spending it:
+    /// The turn prompt is the one refused. So every cycle cleared the counter before spending it:
     ///
     /// ```text
     /// priming's brief LANDS  ->  counter := 0
@@ -11379,27 +11395,30 @@ mod tests {
     /// asserted is the machine's own arithmetic, and a pane fixture would put a delivery, a
     /// supervisor and a peer's timing between the claim and the answer.
     ///
-    /// # ⚠⚠⚠⚠⚠ AND THIS IS THAT DAY — what changed, said by the gate that predicted it
+    /// # ⚠⚠⚠⚠⚠ AND THIS IS THAT DAY, TWICE — the second time is register item 745(B)
     ///
-    /// This doc used to end *"it asserts the PRESENT behaviour, which is the churn … the day the
-    /// loop stops repeating itself, this gate is what says exactly which sentence changed."* The
-    /// answer is: **not one sentence of the arithmetic above.** The counter still spends its budget
-    /// and still has it handed back by every brief that lands, and the loop below still asserts
-    /// exactly that, because it is still the right answer to the question that counter asks.
+    /// The first announcement was 719's own: what ended THAT churn is a SIBLING EDGE keyed on the
+    /// TEXT — `prompt.unasked` carrying `_event.data.retyped`, read from the driver's memory of
+    /// what it last delivered and failed to get asked (`OuterLoop::retyping`). The last arm here
+    /// drives the identical cycle with that word set and finds the run ENDED.
     ///
-    /// What ended the churn is a SIBLING EDGE keyed on the TEXT — `prompt.unasked` carrying
-    /// `_event.data.retyped`, read from the driver's own memory of what it last delivered and
-    /// failed to get asked (`OuterLoop::retyping`). The final arm of this gate drives the identical
-    /// cycle with that word set and finds the run ENDED, which is the announcement this doc
-    /// promised: the repair is a second question, not a tuning of the first.
+    /// ⛔⛔⛔⛔⛔ **THE SECOND IS THE ARITHMETIC ITSELF, AND THIS GATE SAID WHERE IT WOULD BE
+    /// ANNOUNCED.** Its loop used to assert `Restarting` on all three cycles under the sentence
+    /// *"a `failed` here would mean the bound had begun to count what this item is about — which
+    /// would be the repair, and this gate is where it would be announced."* It has. Register item
+    /// 745(B) measured two live runs (50 and 51) folding a prompt, buying a session, working, and
+    /// folding a DIFFERENT prompt — never failed by anything, because `retyped` needs the same
+    /// bytes and the counter was handed back by the brief each replacement retyped. **So the
+    /// clearing is gone**: `unasked_seen` counts the run's folds and the budget is one per run.
     ///
-    /// ⚠ So the loop below is no longer a pin on an open defect. It is the CONTROL for the arm
-    /// under it — the proof that what stops the cycle is the text and not the count.
+    /// ⚠ What is NOT changed, and the loop below is what says so: the first fold still buys a
+    /// replacement. A repair that stopped the run on the first one would have answered 745 by
+    /// deleting item 446's remedy.
     #[test]
-    fn the_bound_on_a_refused_prompt_is_spent_and_returned_by_every_brief_that_lands() {
-        /// How many replacement cycles to drive. Three rather than two: the guard's own budget is
-        /// ONE, so a second replacement already exceeds it and a third says the excess is not a
-        /// fencepost.
+    fn a_brief_that_lands_no_longer_hands_back_the_bound_on_a_refused_prompt() {
+        /// How many replacement cycles to drive. Three rather than two: the budget is ONE, so the
+        /// second cycle is where the run must now end and the third says the walk would have gone
+        /// on — it is the shape the churn had, driven against the document that now stops it.
         const CYCLES: usize = 3;
 
         // ⚠⚠⚠⚠⚠ **THE WIRE, PINNED FIRST, BECAUSE NOTHING ELSE JOINS ITS TWO HALVES.** Every gate
@@ -11423,26 +11442,39 @@ mod tests {
 
         let mut walked = Vec::new();
         for cycle in 0..CYCLES {
-            // ⚠ THE BRIEF LANDS. This is the whole mechanism: `priming`'s `prompt.sent` clears
-            // `unasked_since_taken`, and in item 719's run the brief is exactly what the peer takes
-            // — 9,025 bytes of it, retyped into every session this loop opens.
+            // ⚠ THE BRIEF LANDS. This was the whole mechanism: `priming`'s `prompt.sent` used to
+            // clear the counter, and in item 719's run the brief is exactly what the peer takes —
+            // 9,025 bytes of it, retyped into every session this loop opens.
             carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
             carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
             carried(&mut engine, &host, AiLoopEvent::Judge, "{\"done\": false}");
             // ⚠ AND THE TURN PROMPT DOES NOT. Same peer, same session, one prompt later.
-            // ⚠⚠ SAYING THE TEXT IS NEW EVERY TIME, which is what keeps this loop about the
-            // COUNTER: the arm at the foot of this gate is where the same cycle says otherwise.
+            // ⚠⚠ SAYING THE TEXT IS NEW EVERY TIME, which is what makes this walk register item
+            // 745(B)'s case rather than 719's: `retyped` never bites here, so whatever stops the
+            // run is the COUNT.
             carried(&mut engine, &host, AiLoopEvent::PromptUnasked, UNASKED);
             walked.push(format!("cycle {cycle}: {:?}", engine.get_current_state()));
+            // ⭐⭐⭐⭐⭐ **THE FIRST FOLD BUYS A SESSION AND THE SECOND STOPS THE RUN** — item 446's
+            // remedy and item 745(B)'s bound, in one walk. This loop asserted `Restarting` on all
+            // three cycles until 745(B), and the runs that measured it (50 and 51) worked real
+            // turns between their folds — which is why a bound that only counted refusals with
+            // nothing taken in between never fired.
+            let expected = match cycle {
+                0 => AiLoopState::Restarting,
+                _ => AiLoopState::Failed,
+            };
             assert_eq!(
                 engine.get_current_state(),
-                AiLoopState::Restarting,
-                "⛔⛔⛔⛔⛔ REGISTER ITEM 719, PINNED: the run must still be BUYING A REPLACEMENT on \
-                 cycle {cycle}, because the brief it just landed returned the one free replacement \
-                 the guard had already spent. A `failed` here would mean the bound had begun to \
-                 count what this item is about — which would be the repair, and this gate is where \
-                 it would be announced. Walked {walked:?}",
+                expected,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 745(B): on cycle {cycle} this run must be {expected:?}. A \
+                 `Restarting` on the second is the churn itself — the brief the replacement retypes \
+                 lands, hands the budget back, and an unattended run throws a session away every \
+                 few turns for as long as it lives with nobody called. A `Failed` on the FIRST \
+                 would be item 446's remedy deleted rather than bounded. Walked {walked:?}",
             );
+            if expected == AiLoopState::Failed {
+                break;
+            }
             carried(&mut engine, &host, AiLoopEvent::SessionReplaced, "");
             carried(&mut engine, &host, AiLoopEvent::SessionReady, "");
         }

@@ -2192,13 +2192,28 @@
       by an interrupt, while ordinary typed text in the same pane submitted at
       once, and a fresh session took the identical prompt.
 
-      ONE means the session opened to fix exactly that will not take a question
-      either. Nothing another restart does reaches that, so the run says
-      `failed` and a person looks. ⚠ It is reset by `prompt.sent` — a question
-      that landed is what makes the next refusal a NEW fact rather than the same
-      one continuing.
+      ONE means a second fold has happened in this run. Nothing another restart
+      does reaches that, so the run says `failed` and a person looks.
+
+      ⛔⛔⛔⛔⛔ IT USED TO BE RESET BY `prompt.sent`, AND IT WAS NAMED
+      `unasked_since_taken` FOR THAT — register item 745(B), which measured the
+      reset undoing the net. The argument for clearing was *a question that
+      landed makes the next refusal a NEW fact*, and it holds only while the
+      PEER IS THE SAME ONE. `restarting` replaces the peer, `priming` retypes
+      the brief into the replacement, and that landing was read as evidence the
+      budget could be renewed — so **the recovery cleared the counter that
+      bounds recoveries.** Two runs on this machine folded twice and were never
+      failed by it; the name is now `unasked_seen` because the count is of the
+      RUN and no longer of a stretch since anything.
+
+      ⚠⚠ THE OTHER TWO ARMS ASK DIFFERENT QUESTIONS AND ARE UNCHANGED, which is
+      why this is a third eye rather than a tuning of one: `_event.data.retyped`
+      asks *is this the same TEXT coming back* (item 719, and it wins by being
+      first because it can name the remedy exactly), and the arm below asks
+      *has this run already spent its one replacement*. A run can reach either
+      without the other.
     -->
-    <data id="unasked_since_taken" expr="0"/>
+    <data id="unasked_seen" expr="0"/>
 
     <!--
       WHICH ERROR OF ITS OWN THIS DOCUMENT STOPPED ON, and empty for the runs
@@ -3080,13 +3095,42 @@
       </send>
     </onentry>
     <!--
-      ⚠⚠ A QUESTION THAT WAS TAKEN CLEARS THE ONE FREE REPLACEMENT BELOW. See
-      `unasked_since_taken`: what that number bounds is a peer that will not
-      take a question TWICE RUNNING, and a peer that took this one is not that.
+      ⛔⛔⛔⛔⛔ THIS TRANSITION USED TO CLEAR `unasked_seen`, AND REGISTER ITEM
+      745 MEASURED WHAT THAT COST. The sentence was:
+
+        *a question that was taken clears the one free replacement: what that
+        number bounds is a peer that will not take a question TWICE RUNNING,
+        and a peer that took this one is not that.*
+
+      Every clause is true OF ONE SESSION, and this state is reached from
+      `restarting` — where the peer has just been REPLACED. The question that
+      lands here is the brief being retyped into the new session, which is the
+      recovery itself; reading it as *this peer takes questions, so the budget
+      is fresh* lets the recovery hand its own safety net back.
+
+      MEASURED, run 51 on this machine (2026-08-29), the whole cycle in four
+      lines: at 01:10:34 `working` took `prompt.unasked` into `restarting` · at
+      01:10:40 `priming` took `prompt.sent` into `working`, returning the budget
+      · at 01:14:33 a turn completed · at 01:14:43 `reflecting` took
+      `prompt.unasked` into `restarting` again. A SECOND fold, and the guard
+      read zero because the brief in between had landed. run 50 did the same
+      thing 5 turns apart, twice. Neither run was ever failed by this net, and
+      `retyped` did not bite either: the folded text was different each time
+      (1053 B, then 2847 B).
+
+      ⚠⚠⚠ SO THE CLEAR IS GONE AND THE BUDGET IS ONE PER RUN. The counter's
+      question is unchanged — *will this peer take a question at all* — but the
+      answer may no longer be bought back by the one prompt whose landing is
+      the replacement's own doing.
+
+      ⚠⚠ WHAT THAT COSTS, STATED RATHER THAN HIDDEN: a run whose peer folds a
+      prompt twice in an hour, with real work in between, now stops for a
+      person instead of quietly buying another session. That is the trade item
+      745 asked for in its own title — *an unattended run can throw a session
+      away every five turns for ever and nobody is called* — and being called
+      is the point.
     -->
-    <transition event="prompt.sent" target="working">
-      <assign location="unasked_since_taken" expr="0"/>
-    </transition>
+    <transition event="prompt.sent" target="working"/>
     <!--
       ⚠⚠⚠⚠⚠ THE PEER WOULD NOT TAKE THE QUESTION — REPLACE THE SESSION RATHER
       THAN END THE RUN. Register item 446, measured on the owner's own daemon.
@@ -5173,15 +5217,21 @@
     retyped into each, and no ending anywhere: the period of that cycle is ONE
     TURN and it runs for as long as the run does.
 
-    ⚠⚠⚠⚠ WHY THE GUARD BELOW LET IT THROUGH, WHICH IS NOT A DEFECT IN IT. That
-    counter asks *will this peer take a question AT ALL* and is cleared the
-    moment any prompt lands, for the reason written under it: a question that
-    landed makes the next refusal a NEW fact. In this cycle a question lands
-    every time — the brief — so the budget is spent and handed straight back.
-    A bound on refusals IN A ROW cannot express *the same text coming back*,
-    however it is tuned, and the gate
-    `the_bound_on_a_refused_prompt_is_spent_and_returned_by_every_brief_that_lands`
-    pins that arithmetic against the day somebody tries.
+    ⚠⚠⚠⚠ WHY THE GUARD BELOW LET IT THROUGH, WHICH WAS NOT A DEFECT IN IT. That
+    counter asks *will this peer take a question AT ALL* and used to be cleared
+    the moment any prompt landed, for the reason written under it: a question
+    that landed makes the next refusal a NEW fact. In this cycle a question
+    lands every time — the brief — so the budget was spent and handed straight
+    back. A bound on folds cannot express *the same text coming back*, however
+    it is tuned, and the gate
+    `a_brief_that_lands_no_longer_hands_back_the_bound_on_a_refused_prompt`
+    pins that against the day somebody tries.
+
+    ⛔⛔ AND THE CLEARING IS GONE SINCE REGISTER ITEM 745(B), so the guard below
+    now stops this run on its SECOND fold whatever the text was. That does not
+    make this edge redundant: it fires on the FIRST, one replacement sooner, and
+    it is the only one of the two that can name the remedy — *shorten the prompt
+    or split it* rather than *look at the session*.
 
     ⚠⚠⚠ SO THE DRIVER ANSWERS IT, because only the driver holds the earlier
     reading — the bytes it put on the pane last time this happened. It says
@@ -5240,12 +5290,19 @@
     exactly what `closing` and `stopping` do above, because a run that is already
     ending must not buy a session.
 
-    ⚠⚠ ONE FREE REPLACEMENT, AND THE GUARD IS WHAT MAKES THIS A RECOVERY RATHER
-    THAN A SPIN. A peer that will not take the question EITHER, in the session
-    opened to fix exactly that, is not something another restart reaches. That is
-    a person's, and `failed` is how this document says so. The counter is cleared
-    the moment any prompt IS taken (`priming`'s `prompt.sent`), so the budget is
-    one replacement per question that landed rather than one per run.
+    ⚠⚠ ONE FREE REPLACEMENT PER RUN, AND THE GUARD IS WHAT MAKES THIS A RECOVERY
+    RATHER THAN A SPIN. A peer that folds a second question, in a run that has
+    already bought a session for the first, is not something another restart
+    reaches. That is a person's, and `failed` is how this document says so.
+
+    ⛔⛔⛔⛔⛔ THAT SENTENCE USED TO END *"the counter is cleared the moment any
+    prompt IS taken, so the budget is one replacement per question that landed
+    rather than one per run"* — REGISTER ITEM 745(B) MEASURED THAT CLEARING
+    UNDOING THE NET. The prompt that lands after a replacement is the brief the
+    replacement itself retyped, so the recovery renewed its own budget; runs 50
+    and 51 on this machine each folded twice and neither was ever failed here.
+    The budget is one per RUN now, and `unasked_seen`'s own comment carries the
+    four-line trace.
 
     ⚠ IT IS NOT `awaiting_human`: a condition this document can fix by itself
     must not wake anybody, which is the rule everywhere else here.
@@ -5255,10 +5312,10 @@
     expected. **Staying put IS the defect**, and it is what five of the six
     states did before this rule existed.
   -->
-  <transition event="prompt.unasked" cond="unasked_since_taken == 0"
+  <transition event="prompt.unasked" cond="unasked_seen == 0"
               target="restarting">
     <assign location="restart_reason" expr="'unasked'"/>
-    <assign location="unasked_since_taken" expr="1"/>
+    <assign location="unasked_seen" expr="1"/>
   </transition>
   <transition event="prompt.unasked" target="failed"/>
 
