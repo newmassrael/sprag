@@ -1985,6 +1985,121 @@ fn an_agent_waits_for_a_job_to_start_without_polling() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **A WAIT PARKS ON THE SESSION ITS AGENT IS IN — BOTH OF THEM** — register item 753.
+///
+/// # ⚠⚠⚠⚠⚠ The measurement, and why every existing wait gate was green through it
+///
+/// 2026-08-29 on this repository's own daemon: `wait_for_output` was refused for **every pane of
+/// it**, including one this same server had opened a second earlier —
+/// `session "0" has no pane N` — while `read_pane`, `write_pane`, `find_in_pane` and `send_keys`
+/// answered all of them at the same instant. The register, this workspace's operating notes and
+/// the tool's own description all say *do not poll, use `wait_for_output`*, and on this daemon it
+/// may never once have worked. **An unused door is a door nobody knows is shut.**
+///
+/// The two live gates below drive `McpServer::spawn(&sock)` — a server in NO pane — against a
+/// daemon with ONE session. For such a server the daemon's default session IS the session its
+/// panes are in, so the missing scope is invisible. That is item 686's lesson at a different seam:
+/// **two scopes that can diverge cannot be told apart from inside one of them**, so this fixture
+/// puts the agent's pane in a session the daemon would not pick and asserts that before claiming
+/// anything.
+///
+/// # ⚠⚠⚠ Why BOTH waits, and why the second is the worse one
+///
+/// Both tools open a connection of their own (a park's deadline is the caller's, which the shared
+/// one-shot door cannot express) and each then built its `params` with a `json!` of its own —
+/// **so neither forgot its session; it was never offered one.** `wait_for_output` at least
+/// REFUSED. `wait_for_change` parked on the default session's journal and answered *"Nothing
+/// changed"*, which is byte-identical to a genuinely quiet terminal: an agent watching its own
+/// session slept through every change it made. Silence is the failure this workspace calls
+/// *unclassified is a RED, not a pass*, and it is why the third arm below is here.
+///
+/// ⛔ **NO SCOPE IS HANDED IN BY THE FIXTURE**, deliberately: these tools take no session argument
+/// and the defect IS that the client supplies none, so a gate that passed one would be testing a
+/// call no agent can make.
+#[test]
+fn a_wait_parks_on_the_session_its_agent_is_in() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], (80, 6));
+    let created = mux_invoke(&sock, NEW_SESSION_ACTION, json!({ "name": "work" }));
+    assert_eq!(created.as_str(), Some("work"), "the second session exists");
+    let mine = spawn_pane_in(&sock, "work");
+
+    // ── THE PREMISE, ASSERTED: the agent's pane is NOT in the session an unscoped request lands
+    // in. Without this the whole gate passes in a one-session world, which is exactly how the two
+    // live wait gates below stayed green while this door was shut.
+    assert!(
+        !mux_query_panes(&sock).contains(&mine),
+        "⛔ THE PREMISE: pane {mine} must not be in the daemon's DEFAULT session, or `session \"0\"` \
+         and the agent's session are the same string and nothing below is attributable",
+    );
+    let mut server = McpServer::spawn_in_pane(&sock, mine);
+
+    // ── THE CONTROL FIRST: the pane really is readable, which is what makes the refusal a defect
+    // rather than a missing pane. Item 753's done-when says exactly this — *a wait succeeds for a
+    // pane `read_pane` answers*.
+    let read = server.call_tool("read_pane", json!({ "pane": 1 }));
+    assert!(
+        !read.starts_with("Error:"),
+        "⚠⚠ THE CONTROL: `read_pane` must answer this pane, or the wait below has nothing to \
+         prove: {read}",
+    );
+
+    // ── CLAIM ONE: the pane wait reaches the same pane ──────────────────────────────────────
+    let quiet = server.call_tool(
+        "wait_for_output",
+        json!({ "pane": 1, "needle": "never-printed-by-cat", "timeout_seconds": 2 }),
+    );
+    assert!(
+        !quiet.contains("has no pane"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 753: the wait was parked on the daemon's DEFAULT session while \
+         the agent's pane lives in another, so a pane every other tool answers about is refused. \
+         The register, the operating notes and this tool's own description all say to use it \
+         instead of polling. Got: {quiet}",
+    );
+    assert!(
+        quiet.contains("has not printed") && quiet.contains("nothing failed"),
+        "⚠⚠ and a quiet pane answers *not yet* rather than an error: {quiet}",
+    );
+
+    // ── CLAIM TWO: and it is a real park, released by that pane's OWN output ────────────────
+    server.call_tool(
+        "write_pane",
+        json!({ "pane": 1, "text": "the-build-is-done" }),
+    );
+    let matched = server.call_tool(
+        "wait_for_output",
+        json!({ "pane": 1, "needle": "the-build-is-done", "timeout_seconds": 20 }),
+    );
+    assert!(
+        matched.contains("printed \"the-build-is-done\""),
+        "⚠⚠⚠ a wait that merely stopped refusing would satisfy CLAIM ONE; this is the one that \
+         says the park is on the right session's OUTPUT: {matched}",
+    );
+
+    // ── CLAIM THREE: the SILENT half — the event wait watches this session's journal ────────
+    // Establish the cursor, exactly as any first call does. Then make a change IN THIS AGENT'S
+    // SESSION while the tool is parked: a wait on the default session's journal never sees it and
+    // answers "Nothing changed", which is what a quiet terminal answers too.
+    let cursor = server.call_tool("wait_for_change", json!({ "timeout_seconds": 1 }));
+    assert!(
+        cursor.contains("Nothing changed"),
+        "the cursor call establishes the present: {cursor}",
+    );
+    let there = sock.to_path_buf();
+    let mover = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        spawn_pane_in(&there, "work")
+    });
+    let moved = server.call_tool("wait_for_change", json!({ "timeout_seconds": 20 }));
+    let born = mover.join().expect("the mover thread finished");
+    assert!(
+        moved.contains("pane_created"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 753, THE SILENT HALF: the event wait parked on the DEFAULT \
+         session's journal, so a change in the agent's own session (pane {born}) never woke it — \
+         and the answer is byte-identical to a quiet terminal, so nothing anywhere says so. \
+         Got: {moved}",
+    );
+}
+
 /// **THE live gate for `wait_for_output`** — a real daemon, a real PTY, and the three answers this
 /// tool can give, each driven rather than asserted about.
 ///

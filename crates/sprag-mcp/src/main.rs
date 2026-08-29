@@ -5644,19 +5644,14 @@ fn tool_wait_for_output(args: &Value) -> Result<String, String> {
     let pane = resolve_pane_ref(args)?;
     let (subject, id) = (pane.subject(), pane.id());
 
-    let sock = host_sock().ok_or_else(|| {
-        "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
-         ancestor); these pane tools do not apply to this session"
-            .to_owned()
-    })?;
-    let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)
-        .map_err(|e| format!("cannot reach the sprag host at {}: {e}", sock.display()))?;
-    // The caller's timeout IS the read deadline, and it is the ONLY deadline: the daemon carries
-    // none, so closing this connection is what releases the park (`sprag_host::notify`).
-    conn.set_read_deadline(Some(timeout))
-        .map_err(|e| format!("cannot set the wait timeout: {e}"))?;
-
-    let params = json!({ PANE_PARAM: id, key: wanted });
+    let mut conn = parking_conn(timeout)?;
+    // ⛔⛔⛔⛔⛔ IN THIS SERVER'S OWN SESSION — register item 753. A park is scoped to ONE session
+    // at the daemon (`handle_output_wait` looks the pane up in `scope.session()`), and this
+    // request used to carry no session at all, so every wait this tool ever made was parked on the
+    // daemon's DEFAULT session. Measured 2026-08-29 on this repository's own daemon: every pane of
+    // it, including one this same server had opened a second earlier, came back
+    // `session "0" has no pane N` — while `read_pane` answered all of them.
+    let params = in_our_session(json!({ PANE_PARAM: id, key: wanted }));
     let answer = match conn.try_call(PANE_WAIT_OUTPUT_METHOD, params) {
         Ok(answer) => answer,
         // The caller's own mistake, in the daemon's own words — reaching the agent as that sentence
@@ -7576,19 +7571,14 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
             )?,
     };
 
-    let sock = host_sock().ok_or_else(|| {
-        "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
-         ancestor); these pane tools do not apply to this session"
-            .to_owned()
-    })?;
-    let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)
-        .map_err(|e| format!("cannot reach the sprag host at {}: {e}", sock.display()))?;
-
-    // The caller's timeout IS the read deadline, and it is the ONLY deadline: the daemon carries
-    // none, so closing this connection is what releases the park (`sprag_host::notify`).
-    conn.set_read_deadline(Some(timeout))
-        .map_err(|e| format!("cannot set the wait timeout: {e}"))?;
-    let mut params = json!({ SINCE_PARAM: since });
+    let mut conn = parking_conn(timeout)?;
+    // ⛔⛔⛔⛔⛔ AND IN THIS SERVER'S OWN SESSION — register item 753, the SILENT half. A journal is
+    // per-session (`handle_events_wait` observes and parks on `scope.session()`), so a wait with
+    // no session parked on the daemon's DEFAULT one and slept through every change its agent's
+    // session made. Unlike the pane wait one door up it does not even refuse: the answer is
+    // *"Nothing changed"*, which is byte-identical to a genuinely quiet terminal — the shape this
+    // workspace calls *unclassified is a RED, not a pass*.
+    let mut params = in_our_session(json!({ SINCE_PARAM: since }));
     if let Some(filter) = filter {
         // Through the host's own const, not the literal `"match"`. The literal was here first, which
         // in a round whose whole thesis is that a wire word gets spelled once was this round's own
@@ -8612,6 +8602,59 @@ fn older_daemon(method: &str, path: &str, fault: &sprag_rpc::RpcFault) -> Option
 ///
 /// A caller that already named a session keeps it — nothing here does today, and a stamp that
 /// overwrote one would be a scope this server invented.
+/// A connection of this server's OWN, for the two verbs that PARK — register item 753.
+///
+/// # ⚠⚠⚠⚠⚠ Why they cannot go through [`host_call_kinded`], and what that cost
+///
+/// A park holds the connection open for as long as the caller asked, so its read deadline is the
+/// CALLER's rather than this process's, and [`host_call_unscoped_answered`]'s one-shot connection
+/// cannot express that. So both wait tools opened a connection of their own — and each then built
+/// its `params` with a `json!` of its own, which is where the door's guarantees stopped applying:
+/// `in_our_session` is [`host_call_kinded`]'s, so neither wait FORGOT its session, **it was never
+/// offered one**. That is register item 687's sentence, one seam over, and this function is the
+/// door those two now pass.
+///
+/// ⚠⚠ **THE HANDSHAKE IS PART OF IT**, and its absence was the same omission. The note on
+/// [`host_call_unscoped_answered`] says *"the door every other client passes, and this one did
+/// not"* about a gap it then closed — and these two connections were still outside it, so a daemon
+/// too old to agree on a shape would have been parked against rather than refused.
+///
+/// ⛔⛔⛔ **AND NOTHING HOLDS THE KNOCK — register item 760.** Deleting `handshake` here leaves the
+/// whole MCP suite green, measured on the round that added it. The two facts a knock buys are a
+/// PROTOCOL agreement and the daemon's BUILD, and neither is observable from this tree: the client
+/// list is the ATTACHED display clients (a parked connection is not one of them, measured), and
+/// `sprag_peer::OldDaemon` passes the handshake at this build's number **on purpose** — its own
+/// doc says an older daemon still speaks this protocol — so no fixture here can stage a refused
+/// one. The line stays because the asymmetry was the defect; what it is owed is a peer that
+/// answers a number this build will not take, which is item 760.
+///
+/// ⚠ It takes the deadline rather than setting a default, because *how long to wait* is the one
+/// thing about a park that is genuinely the caller's.
+///
+/// # Errors
+///
+/// A sentence for an agent when this process is in no sprag terminal, when the host cannot be
+/// reached, when the daemon will not agree on a shape, or when the deadline cannot be set.
+fn parking_conn(timeout: Duration) -> Result<HostConn, String> {
+    let sock = host_sock().ok_or_else(|| {
+        "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
+         ancestor); these pane tools do not apply to this session"
+            .to_owned()
+    })?;
+    let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)
+        .map_err(|e| format!("cannot reach the sprag host at {}: {e}", sock.display()))?;
+    conn.handshake(&mcp_client_id())
+        .map_err(|error| error.to_string())?;
+    // The caller's timeout IS the read deadline, and it is the ONLY deadline: the daemon carries
+    // none, so closing this connection is what releases the park (`sprag_host::notify`).
+    //
+    // ⚠ AFTER the handshake, so the knock is not charged against the caller's wait — and a
+    // handshake that hung would still be bounded by `CONNECT_TIMEOUT` above.
+    conn.set_read_deadline(Some(timeout))
+        .map_err(|e| format!("cannot set the wait timeout: {e}"))?;
+    Ok(conn)
+}
+
 fn in_our_session(mut params: Value) -> Value {
     if let (Some(session), Some(map)) = (our_session(), params.as_object_mut())
         && !map.contains_key(sprag_host::wire::SESSION_PARAM)
