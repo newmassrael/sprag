@@ -21769,6 +21769,192 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⛔⛔⛔⛔⛔ **A ROUND WHOSE CHECK NEVER ANSWERED GOES ON WORKING INSTEAD OF DYING WHERE IT
+    /// STOOD** — register item 749, driven end to end over the real `ai_loop.scxml`, a real pane
+    /// and a real checker process.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The failure this reproduces, and why the document-level gate is not enough
+    ///
+    /// Register item 741 built `unverified` — the door a milestone nothing could verify leaves by —
+    /// and did not give it a `<transition event="pass">` arm. The document was right, the walk was
+    /// right, every gate was green, and **the DRIVER could not move**: `asked_of_this_pass` came
+    /// back empty, `pump` answered [`Pumped::Unbuilt`], and the run ended `failed` holding a whole
+    /// round of unbanked work. `ai_loop::tests::every_driven_state_says_what_a_pass_of_it_is_for`
+    /// now contrasts the two sets so the arm cannot go missing again; **this gate is the other
+    /// half — that the arm WORKS on a run rather than merely existing in the file.**
+    ///
+    /// ⚠⚠ **AND IT IS THE ORDINARY CASE, NOT A CORNER.** The measured shape is a checker that stops
+    /// at a permission dialog: it answers `Permission …`, which is not a verdict, so
+    /// [`crate::judge::Unheard::NotAVerdict`] classifies it `Unreadable` and the document routes to
+    /// `unverified` — **every time it is asked**. A run whose checker is blocked meets this on every
+    /// claimed milestone, which is why the omission cost rounds rather than curiosities.
+    ///
+    /// ⚠⚠⚠ THE CONTROLS, and each fails on its own: the run must never reach `disputing` (a silence
+    /// is not a refusal — the checker did not say NO, it said nothing readable), the sentence typed
+    /// on arrival must be this state's OWN and not the ordinary turn's, and no account may be
+    /// collected — `unverified` hands straight back to `working`, whose `turn.done` publishes the
+    /// agent's answer as the run's report whenever the question in flight asked for one.
+    #[test]
+    fn a_claim_no_check_could_read_leaves_by_its_own_door_and_the_run_goes_on() {
+        /// **A CHECKER STANDING AT A PERMISSION DIALOG**, which is what run 68 met. Its first word
+        /// is not a verdict, so this is `NotAVerdict("Permission")` → `Silence::Unreadable` → the
+        /// document's `unverified`. ⚠ It is deliberately NOT `/bin/echo NO …`: that is a REFUSAL and
+        /// reaches `disputing`, which is the control this gate asserts it never took.
+        const CANNOT_ANSWER: &str = "/bin/echo Permission to use Bash";
+        /// Out of reach, so the silence ceiling never fires inside this walk — what is measured is
+        /// the silent edge itself and the pass that follows it.
+        const NEVER: i64 = 99;
+        /// Enough passes for two arrivals at `unverified` and a completed turn after one.
+        const PASSES: usize = 10;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        // ⚠ ONE prompt to the marker, so the stand-in claims the milestone on every turn and the
+        // check answers nothing readable to every claim.
+        let (workspace, pane) = standin_agent(1);
+        let access = supervised(&workspace);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its authored strings");
+
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "the stand-in claims a milestone no check can read".to_string(),
+                milestone: "reach it".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                working_rules: None,
+                unverified_rules: None,
+                context_ceiling: None,
+                reflect_after_refusals: Some(NEVER),
+                milestone_check: Some(CANNOT_ANSWER.to_string()),
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                reflect_every: Some(99),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<(AiLoopState, AiLoopEvent, AiLoopState)> = Vec::new();
+        // What was typed on arrival, what the driver says that sentence was for, and whether this
+        // run has collected an account by then.
+        let mut asked: Vec<(AiLoopState, String, Option<crate::act::Asks>, bool)> = Vec::new();
+        while walked.len() < PASSES {
+            match loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable")
+            {
+                Pumped::Moved {
+                    from, raised, to, ..
+                } => {
+                    walked.push((from, raised, to));
+                    asked.push((
+                        to,
+                        loops.driving.asked.clone(),
+                        loops.asks,
+                        loops.reported.is_some(),
+                    ));
+                }
+                // ⛔⛔⛔⛔⛔ REGISTER ITEM 749 IS EXACTLY THIS PANIC. `Pumped::Unbuilt(Unverified)`
+                // is what a run got for a whole day of rounds, and the message a person saw was
+                // *this run document asked for no act on the pass that looked at it*.
+                other => panic!(
+                    "⛔⛔⛔⛔⛔ REGISTER ITEM 749: this run stopped instead of carrying on — \
+                     {other:?}. A state the `pass` table does not name is answered by nobody, so \
+                     the driver reports `Unbuilt` and the round ends `failed` with its work \
+                     unbanked. Walked {walked:?}",
+                ),
+            }
+        }
+
+        let composed = loops
+            .authored()
+            .expect("a running machine answers with its authored strings");
+
+        // ── THE PREMISE: this walk really did meet the silence, more than once ──────────────
+        let arrivals: Vec<&(AiLoopState, String, Option<crate::act::Asks>, bool)> = asked
+            .iter()
+            .filter(|(state, _, _, _)| *state == AiLoopState::Unverified)
+            .collect();
+        assert!(
+            arrivals.len() > 1,
+            "⚠⚠⚠ THE PREMISE: a checker that cannot answer says nothing on EVERY claim, so this \
+             walk must reach `unverified` more than once — otherwise every claim below is about a \
+             state this run barely touched. Walked: {walked:?}",
+        );
+
+        // ── THE CONTROL: a SILENCE IS NOT A REFUSAL. Nothing said NO, so `disputing` is not the
+        //    door, and a document that routed both silences down the refusal's edge would satisfy
+        //    everything else here — which is the collapse register item 741 was filed about. ──
+        assert!(
+            !walked
+                .iter()
+                .any(|(_, _, to)| *to == AiLoopState::Disputing),
+            "⚠⚠⚠⚠ THE CONTROL FAILED: this checker never refused anything — it answered \
+             `Permission …`, which is not a verdict — and a run that reached `disputing` was told \
+             its milestone was denied by somebody who never looked. Walked: {walked:?}",
+        );
+
+        // ── THE ACT, PART ONE: THE RUN LEAVES BY THIS STATE'S OWN DOOR ─────────────────────
+        assert!(
+            walked
+                .iter()
+                .any(|(from, raised, to)| *from == AiLoopState::Unverified
+                    && *raised == AiLoopEvent::PromptSent
+                    && *to == AiLoopState::Working),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 749: the run entered `unverified` and never came out of it. \
+             That door is `prompt.sent`, and the only thing that raises it is the act the `pass` \
+             table names for this state — so a run sitting here for ever is the missing arm seen \
+             from the run's side rather than the file's. Walked: {walked:?}",
+        );
+
+        // ── THE ACT, PART TWO: WHAT WAS TYPED IS THIS STATE'S OWN SENTENCE ─────────────────
+        //
+        // ⚠ The premise is asserted first (register item 684): `unverified` composes the ordinary
+        // turn IN rather than replacing it, so the true claim is CONTAINS-AND-DIFFERS. A document
+        // shipping them equal would make the read below pass for a driver that typed the plain
+        // turn prompt and never told the agent its check had gone silent.
+        for (state, said, asks, _) in &arrivals {
+            assert!(
+                !said.is_empty() && *said != composed.turn && said.contains(&composed.turn),
+                "⛔⛔⛔⛔ {state:?} MUST PUT ITS OWN SENTENCE. It is composed of the run's ordinary \
+                 turn — so the agent keeps the milestone and the standing instructions — OPENED BY \
+                 what happened to its check, and a driver typing the bare turn prompt here answers \
+                 a broken checker by saying nothing about it. Got:\n{said}",
+            );
+            assert_eq!(
+                *asks,
+                Some(crate::act::Asks::Work),
+                "⛔⛔⛔ {state:?} ASKS FOR THE WRONG THING. The turn this buys is watched in \
+                 `working` by the arm that collects a run's ACCOUNT off any question that asked for \
+                 one, so `account` here publishes an unfinished run's next piece of work as its \
+                 closing report",
+            );
+        }
+
+        // ── AND THE CONTROL THAT WORD IS FOR: nothing was collected ───────────────────────
+        assert!(
+            asked.iter().all(|(_, _, _, reported)| !reported),
+            "⚠⚠⚠⚠⚠ THIS RUN COLLECTED AN ACCOUNT, AND NOTHING ASKED IT FOR ONE — `disputing`'s \
+             own control, true here for its reason: this state hands straight back to `working`. \
+             Walked: {walked:?}",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠⚠ **WHAT SHAPE THE AUTHORED `screen_rules` CROSS THE DATAMODEL IN** — asked of the engine
     /// before anything is built to read them, because the whole of `screening` rests on the answer.
     ///

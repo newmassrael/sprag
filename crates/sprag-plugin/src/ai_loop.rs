@@ -1569,7 +1569,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    use sce_rust_runtime::{Engine, IScriptEngine, ScriptValue};
+    // ⚠ `StatePolicy` is what carries the COMPILED TOPOLOGY — `is_descendant_of`, `is_compound_state`
+    // and the two name tables — and `every_driven_state_says_what_a_pass_of_it_is_for` derives its
+    // population from that rather than from a list written here (register item 749).
+    use sce_rust_runtime::{Engine, IScriptEngine, ScriptValue, StatePolicy};
 
     use super::{AiLoop, Learned, NotStarted};
     use crate::access::PaneAccess;
@@ -10162,11 +10165,66 @@ mod tests {
     /// arguments riding beside it have their own exhaustive gate
     /// (`the_pass_that_watches_a_turn_is_told_what_an_outage_looks_like`) — two gates pinning the
     /// same five fields would make every new argument cost two edits and buy one.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND THE WORD `EVERY` WAS A CLAIM NOTHING MEASURED — register item 749
+    ///
+    /// This gate walked SEVEN of the document's sixteen driven states and was named for all of
+    /// them. Register item 741 then added a sixteenth, `unverified`, and forgot to give it a
+    /// `<transition event="pass">` arm — **and every gate in this crate stayed green**, because the
+    /// table below is a hand-written list and nothing contrasted it with the document. What that
+    /// cost was measured live: a checker that stops at a permission dialog answers nothing, the run
+    /// reaches `unverified`, the driver answers `Pumped::Unbuilt`, and the round ends `failed` with
+    /// its work unbanked (watching-zenoh's watcher, run 68, 2026-08-29).
+    ///
+    /// ⚠⚠⚠⚠⚠ **SO THE LIST IS NO LONGER ALLOWED TO BE SHORT.** Two contrasts stand at the bottom of
+    /// this function, and neither is a second copy of anything:
+    ///
+    /// * **the population is derived, not written** — every `id` the DOCUMENT declares, classified
+    ///   by the COMPILED topology (`is_descendant_of(_, work)` and atomic), which is SCE's own
+    ///   reading of the same file;
+    /// * **that set must equal the `In(…)` names in the document's `pass` table** — the arm exists;
+    /// * **and it must equal the states this table actually WALKED** — the arm answers.
+    ///
+    /// ⚠⚠ THERE IS NO EXEMPTION LIST AND THERE MUST NOT BE ONE. A driven state nobody classified is
+    /// RED rather than skipped, which is the whole shape of the defect being paid off here: the way
+    /// `unverified` got through was by being in no list at all.
     #[test]
     fn every_driven_state_says_what_a_pass_of_it_is_for() {
         /// A turn that ended because the peer's SERVICE was not answering — `working`'s own first
         /// `turn.blocked` guard, and the only road to `service_down`.
         const BLOCKED_BY_SERVICE: &str = r#"{"service": true, "judged": false}"#;
+        /// A blocked turn that is neither an outage nor a decision — an ordinary tool dialog, which
+        /// is `working`'s LAST `turn.blocked` arm and the only road to `screening`.
+        const BLOCKED_BY_DIALOG: &str = r#"{"service": false, "judged": false}"#;
+        /// And one the driver's judge called a DESIGN decision — the middle arm, and the only road
+        /// to `redirecting`. ⚠ Nothing in the product publishes a `true` for this key yet; the
+        /// document has the route and says so, and a fixture is how a route with no producer is
+        /// still measured rather than argued about.
+        const BLOCKED_BY_DESIGN: &str = r#"{"service": false, "judged": true}"#;
+        /// **A MILESTONE AN INDEPENDENT CHECK REFUSED** — [`DONE`]'s six keys with the word in
+        /// `checked`, which is `judging`'s road to `disputing`.
+        ///
+        /// ⚠ NOT SPELLED `REFUSED`, and a gate is what said so:
+        /// `no_payload_key_is_spelled_by_a_name_this_workspace_disagrees_about` refuses a payload
+        /// name four other declarations in this workspace already answer to, because a claim about
+        /// what the driver sends would then rest on whichever was read last.
+        const CHECK_SAID_NO: &str = r#"{"done": true, "checked": "failed", "explained": false, "unheard": false, "silence": false, "stop_short": false}"#;
+        /// **AND ONE IT COULD NOT ANSWER AT ALL** — the same shape with `silent`, and the road to
+        /// `unverified`. ⛔ `silence` carries the CLASS because that state's `onentry` branches on
+        /// it; a payload short of it takes the readable arm on a word this document has not met,
+        /// which is the wrong half of register item 741 and not what this route is for.
+        const CHECK_SAID_NOTHING: &str = r#"{"done": true, "checked": "silent", "explained": false, "unheard": false, "silence": "unanswered", "stop_short": false}"#;
+        /// **WHAT THE DRIVER PUTS ON `reflect.applied`** (`OuterLoop::reflect`) — the three slots a
+        /// reflection may rewrite, and the road from `reflecting` to `reviewing`. ⚠ All three are
+        /// sent because that transition assigns UNCONDITIONALLY: a fixture short of one puts nil
+        /// over a slot the later prompts compose, which is [`TURN`]'s lesson under item 505.
+        const APPLIED: &str = r#"{"milestone": "the next thing", "reference": "", "standing": ""}"#;
+
+        // **THE STATES THIS WALK ACTUALLY REACHED**, which is what the contrast at the bottom
+        // holds the table to. Filled from `AiLoopPolicy::get_state_name` rather than from a
+        // spelling written here, so it says the same words the document does.
+        let mut walked: std::collections::BTreeSet<&'static str> =
+            std::collections::BTreeSet::new();
 
         for (route, state, does) in [
             (vec![], AiLoopState::Idle, crate::act::Does::Ready),
@@ -10219,7 +10277,116 @@ mod tests {
                 AiLoopState::ServiceDown,
                 crate::act::Does::Wait,
             ),
+            // ── ⛔ THE NINE THIS TABLE NEVER WALKED, AND THE LAST OF THEM IS ITEM 749 ──────────
+            //
+            // Every one of these was a driven state the gate named `every` was silent about. They
+            // are written in the order a run meets them rather than alphabetically, so a reader
+            // can check each route against the document's own edges.
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnBlocked, BLOCKED_BY_DIALOG),
+                ],
+                AiLoopState::Screening,
+                crate::act::Does::Screen,
+            ),
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnBlocked, BLOCKED_BY_DESIGN),
+                ],
+                AiLoopState::Redirecting,
+                crate::act::Does::Redirect,
+            ),
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnDone, TURN),
+                    (AiLoopEvent::Judge, CHECK_SAID_NO),
+                ],
+                AiLoopState::Disputing,
+                crate::act::Does::Sent,
+            ),
+            // ⛔⛔⛔⛔⛔ **REGISTER ITEM 749, AND THE ROUTE IS THE ONE A REAL ROUND TOOK.** A run
+            // said it reached its milestone, the independent check answered something that was not
+            // a verdict, and the document sent it here. Until this round the word below did not
+            // exist: `unverified` declared no `pass` arm, so this very walk ended `Unbuilt`.
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnDone, TURN),
+                    (AiLoopEvent::Judge, CHECK_SAID_NOTHING),
+                ],
+                AiLoopState::Unverified,
+                crate::act::Does::Sent,
+            ),
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnDone, TURN),
+                    (AiLoopEvent::Judge, STOP_SHORT),
+                ],
+                AiLoopState::Stopping,
+                crate::act::Does::Watch,
+            ),
+            // ⚠ A BANKED TURN UNDER A STANDING-DOWN ORDER, which is the only road to `closing` —
+            // `every_ending_says_what_a_stop_must_still_reach`'s own fixture, one region over.
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnDone, TURN),
+                    (AiLoopEvent::StandDown, ""),
+                    (AiLoopEvent::Judge, DONE),
+                ],
+                AiLoopState::Closing,
+                crate::act::Does::Watch,
+            ),
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnDone, TURN),
+                    (AiLoopEvent::Judge, DONE),
+                    (AiLoopEvent::ReflectApplied, APPLIED),
+                ],
+                AiLoopState::Reviewing,
+                crate::act::Does::Review,
+            ),
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnDone, TURN),
+                    (AiLoopEvent::Judge, DONE),
+                    (AiLoopEvent::ReflectApplied, APPLIED),
+                    (AiLoopEvent::ReviewNone, ""),
+                ],
+                AiLoopState::Restarting,
+                crate::act::Does::Replace,
+            ),
+            // ⚠ THE REPLACEMENT AND THE WAIT ARE TWO STATES, which is the document's own reason for
+            // `resuming` existing at all — so reaching it costs one more event than `restarting`.
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnDone, TURN),
+                    (AiLoopEvent::Judge, DONE),
+                    (AiLoopEvent::ReflectApplied, APPLIED),
+                    (AiLoopEvent::ReviewNone, ""),
+                    (AiLoopEvent::SessionReplaced, ""),
+                ],
+                AiLoopState::Resuming,
+                crate::act::Does::Resume,
+            ),
         ] {
+            walked.insert(AiLoopPolicy::get_state_name(state));
             let (mut engine, host, _lua, _session) = started();
             for (event, data) in &route {
                 carried(&mut engine, &host, *event, data);
@@ -10259,6 +10426,134 @@ mod tests {
                  something nobody asked for — silently, because both words are served",
             );
         }
+
+        // ══ ⛔⛔⛔⛔⛔ AND NOW THE HALF THAT WAS MISSING: IS THE TABLE ABOVE COMPLETE? ═══════════
+        //
+        // Register item 749. Everything above this line measures the states somebody REMEMBERED to
+        // write down, which is precisely the property that was true while `unverified` had no arm
+        // and every round with a blocked checker ended `failed`.
+        let document = crate::outer::DOCUMENT;
+        let declared = declared_state_ids(document);
+
+        // ⚠⚠⚠⚠⚠ THE PREMISE, ASSERTED INSIDE THE GATE RATHER THAN ASSUMED BY IT. Both sets below
+        // are read out of the document by a scan, and a scan that found NOTHING would make every
+        // contrast trivially true — a gate blind to its own eye, which is the shape this register
+        // keeps meeting. So the walk above is what proves the scan can see: each state this gate
+        // actually drove must be an id the scan read back out of the file.
+        for name in &walked {
+            assert!(
+                declared.contains(name),
+                "⚠⚠⚠⚠⚠ THE SCAN IS BLIND: this gate drove a real engine into `{name}` and the read \
+                 of `ai_loop.scxml` did not find that id. Every contrast below is therefore \
+                 comparing empty sets and would pass whatever the document said. Read back \
+                 {} ids: {declared:?}",
+                declared.len(),
+            );
+        }
+
+        // ⚠⚠⚠⚠⚠ **THE POPULATION IS DERIVED, NOT WRITTEN.** A state a run can be DRIVEN in is an
+        // id this document declares that the COMPILER put inside the `work` region and left atomic
+        // — SCE's own reading of the same file, so this cannot drift from the topology the way a
+        // list in Rust does. The finals fall out on their own: this document keeps them OUTSIDE
+        // the parallel, so `get_parent` answers `None` for every one of them.
+        //
+        // ⚠⚠ AND AN ID NOBODY CLASSIFIED IS RED RATHER THAN SKIPPED. A `<state>` the compiled
+        // topology does not know is a document and a build that have come apart, and passing it
+        // over is the exemption that would let the next `unverified` through.
+        let driven: std::collections::BTreeSet<&str> = declared
+            .iter()
+            .copied()
+            .filter(|id| {
+                let state = AiLoopPolicy::get_state_from_name(id).unwrap_or_else(|| {
+                    panic!(
+                        "⛔⛔⛔ `{id}` IS A STATE THIS DOCUMENT DECLARES AND THE COMPILED TOPOLOGY \
+                         DOES NOT KNOW. The generated enum comes from this very file, so the two \
+                         disagreeing means the build is holding a different document than the one \
+                         being read here — and nothing below can be trusted until that is true",
+                    )
+                });
+                AiLoopPolicy::is_descendant_of(state, AiLoopState::Work)
+                    && !AiLoopPolicy::is_compound_state(state)
+                    && !AiLoopPolicy::is_parallel_state(state)
+            })
+            .collect();
+
+        // ⭐⭐⭐⭐⭐ **CONTRAST ONE — THE ARM EXISTS.** This is register item 749's own sentence: the
+        // set of states a run can be driven in, against the set the `pass` table names. `unverified`
+        // was in the first and not the second for a whole day of runs, and no gate anywhere asked.
+        let armed: std::collections::BTreeSet<&str> =
+            states_the_pass_table_names(document).into_iter().collect();
+        assert_eq!(
+            driven, armed,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 749: the `pass` table and the states a run can be driven in \
+             have come apart. A state in the LEFT set and not the right declares no act, so a run \
+             that reaches it is answered by nobody — `Pumped::Unbuilt`, and the round ends \
+             `failed` with its work unbanked. A name in the RIGHT set and not the left is an arm \
+             for somewhere this document cannot be, which is a guard that can never fire",
+        );
+
+        // ⭐⭐⭐ **CONTRAST TWO — THE ARM ANSWERS.** An `In(…)` in the document proves a line was
+        // written; only a walk proves the line WORKS. So the table above must reach every driven
+        // state, and a state added to this document costs a route here or this gate is red.
+        assert_eq!(
+            driven, walked,
+            "⛔⛔⛔⛔ THE WORD `EVERY` IN THIS GATE'S NAME IS A CLAIM, AND IT JUST FAILED. A driven \
+             state this table does not walk is one whose arm is asserted by nobody: it could name \
+             its neighbour's act, or none at all, and every gate in this crate would stay green — \
+             which is exactly what happened to `unverified` between register items 741 and 749",
+        );
+    }
+
+    /// **EVERY `id` `ai_loop.scxml` DECLARES AS A STATE**, in document order.
+    ///
+    /// ⚠ It scans for the attribute rather than parsing XML, which is `outer::declared_data_ids`'s
+    /// argument verbatim: an id is an NCName so it cannot contain a quote, and a real parser here
+    /// would be a second reading of a document this crate already compiles. What the ids are FOR is
+    /// decided by the compiled topology, not by which of the three spellings declared them.
+    fn declared_state_ids(document: &str) -> Vec<&str> {
+        ["<state id=\"", "<final id=\"", "<parallel id=\""]
+            .into_iter()
+            .flat_map(|needle| {
+                document.match_indices(needle).filter_map(|(at, found)| {
+                    let rest = &document[at + found.len()..];
+                    rest.find('"').map(|end| &rest[..end])
+                })
+            })
+            .collect()
+    }
+
+    /// **EVERY STATE THE `pass` TABLE NAMES IN AN `In('…')`**, which is the set of states that
+    /// document answers a pass for.
+    ///
+    /// ⚠⚠ THE START TAG ONLY, and the quote tracking is why: a `cond` may hold `&gt;` but it may
+    /// also hold a bare `>`, and a scan that stopped at the first one would read half a guard and
+    /// call the rest of the file part of it.
+    fn states_the_pass_table_names(document: &str) -> Vec<&str> {
+        document
+            .match_indices("<transition event=\"pass\"")
+            .flat_map(|(at, _)| {
+                let rest = &document[at..];
+                let mut quoted = false;
+                let end = rest
+                    .char_indices()
+                    .find(|&(_, ch)| match ch {
+                        '"' => {
+                            quoted = !quoted;
+                            false
+                        }
+                        '>' => !quoted,
+                        _ => false,
+                    })
+                    .map_or(rest.len(), |(end, _)| end);
+                let tag = &rest[..end];
+                tag.match_indices("In('")
+                    .filter_map(|(at, found)| {
+                        let rest = &tag[at + found.len()..];
+                        rest.find('\'').map(|end| &rest[..end])
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     /// ⭐ **ALL SEVEN, and the last three cost one intermediate state each.** `converged` is reached

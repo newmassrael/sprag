@@ -2335,11 +2335,30 @@
       <param name="does" expr="'ready'"/>
     </send>
   </transition>
-  <!-- ⚠ TWO STATES, ONE WORD. Both were entered by a transition that delivered
-       a sentence and neither waits for anything else, so *the prompt was sent*
-       is the whole of what either has to report. In the driver these were two
-       arms of the match; saying it once is what the move found. -->
-  <transition event="pass" cond="In('priming') || In('disputing')">
+  <!-- ⚠ THREE STATES, ONE WORD. Each was entered by a transition that
+       DELIVERED A SENTENCE and none of them waits for anything else, so *the
+       prompt was sent* is the whole of what any of them has to report. In the
+       driver these were separate arms of the match; saying it once is what the
+       move found.
+
+       ⛔⛔⛔⛔⛔ `unverified` JOINED LATE, AND THAT LATENESS IS REGISTER ITEM 749.
+       Item 741 built the state and did not name it here, and a state missing
+       from this table is answered by NOBODY — the driver reports
+       `Pumped::Unbuilt` and the run ends `failed`, which is what the block at
+       the top of this table already promised would happen. It was met LIVE
+       before it was found by reading: a check that stops at a permission dialog
+       answers nothing EVERY time it is asked, so this was not a rare accident
+       but the ordinary ending of every run whose check was blocked — the run
+       reached `unverified` and died there instead of putting the sentence that
+       state had just composed.
+
+       ⚠⚠ THE OMISSION WAS INVISIBLE BECAUSE NOTHING CONTRASTED THE TWO SETS.
+       `ai_loop::tests::every_driven_state_says_what_a_pass_of_it_is_for` does
+       now: the states this document puts inside `work` are read back out of the
+       COMPILED topology and matched against the `In(...)` names in this table,
+       so the next state added without an arm is red before any run meets it. -->
+  <transition event="pass"
+              cond="In('priming') || In('disputing') || In('unverified')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
       <param name="awaits" expr="await_person_ms"/>
