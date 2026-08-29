@@ -5956,6 +5956,23 @@ fn render_run(run: &Value) -> String {
     let withheld = run[sprag_host::plugins::RUN_WITHHELD_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⛔⛔⛔⛔⛔ AND WHAT BECAME OF THE PROCESS THAT WAS STILL DRIVING IT — register item 740, in the
+    // same place and under the same constraint as the clause above, and printed straight after it
+    // because the two are one answer about one promotion.
+    //
+    // ⚠⚠⚠⚠ WITHOUT IT THIS ROW IS ITEM 744's CLASS AGAIN, AT THE SAME MOUTH. The daemon has known
+    // since item 737 whether something was still typing at that pane, and the fact reached the
+    // OPERATOR'S LOG — read by whoever happened to be watching the terminal the daemon was
+    // restarted in, which a promotion exists to make unnecessary. The person who comes back to
+    // `sprag runs` afterwards is the one who has to decide whether to start the loop again.
+    //
+    // ⚠⚠ AND IT IS THE CLAUSE THAT SAYS WHY THE WORD ABOVE IS `interrupted` AND NOT `panicked`.
+    // Those two were, before item 740, decided by whether a person had reached the driver before
+    // the daemon went down — and a watcher of another repository read `panicked` as *my loop hit a
+    // bug* and went through its own code looking for one that was not there.
+    let leftover = run[sprag_host::plugins::RUN_LEFTOVER_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     // ⚠⚠⚠⚠⚠ AND WHICH PANE A PERSON SHOULD ACTUALLY WALK TO — register item 726, in the same place
     // and under the same constraint as the four clauses above.
     //
@@ -6105,7 +6122,7 @@ fn render_run(run: &Value) -> String {
         // had happened was a `kill-server`. **A fact that reaches the wire and dies at the mouth
         // somebody actually reads** is the sentence the `Reported` arm above already wrote down.
         _ => format!(
-            "{head}  {}{}{withheld}{order}{prompts}{verified}{canceller}\n",
+            "{head}  {}{}{withheld}{leftover}{order}{prompts}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("?"),
             render_why_it_ended(state),
         ),

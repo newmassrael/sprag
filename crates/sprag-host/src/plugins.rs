@@ -248,6 +248,29 @@ pub const RUN_BRIEFED_KEY: &str = "briefed";
 /// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_STOOD_DOWN_KEY`]'s argument unchanged: an added
 /// answer key withdraws no address and widens no value space a peer decodes whole.
 pub const RUN_WITHHELD_KEY: &str = "withheld";
+/// ⛔⛔⛔⛔⛔ **AND WHAT BECAME OF THE PROCESS THAT WAS STILL DRIVING IT** — register item 740, and
+/// [`RUN_WITHHELD_KEY`]'s other half. A SENTENCE (composed by [`leftover_sentence`]), and ABSENT for
+/// every run whose predecessor left nothing typing.
+///
+/// # ⚠⚠⚠⚠⚠ Why the word `interrupted` is not an answer on its own, even beside the key above
+///
+/// That key says *nobody is bringing this run back*. It does not say whether anybody is still
+/// WORKING on it — and until this item a leftover driver was reported and left alone, so a person
+/// reading a withheld row could not tell a quiet pane from one a dead daemon's process was still
+/// typing into. **Measured on this machine 2026-08-30**: across sixty-three boot readings the line
+/// *STILL TYPING into that pane* was written three times, and the loop that ENDS such a process ran
+/// zero times, because it iterates the runs that came back and a document change brings back none.
+///
+/// ⚠⚠ **AND THE ENDING WORD DEPENDED ON WHO KILLED WHAT FIRST.** A driver a person ends before the
+/// promotion leaves its run `panicked` (a live daemon saw a driver die); the same driver ended by
+/// the successor's boot leaves it `interrupted` (the daemon went away, and the driver is that
+/// fact's consequence). Another repository's watcher spent a round reading the first as *my loop
+/// hit a bug*. So the sentence names which of the two happened rather than leaving a reader to
+/// reconstruct the order of two `kill`s.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_STOOD_DOWN_KEY`]'s argument unchanged: an added
+/// answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_LEFTOVER_KEY: &str = "leftover";
 /// The key a driver's [`REPORT_PROGRESS_ACTION`] carries its counters under.
 ///
 /// ⚠⚠ **THE WHOLE OBJECT UNDER ONE KEY, not its fields spread across the request.** What is inside
@@ -4939,6 +4962,23 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
     // would carry a claim that had stopped being true, which is worse than not carrying one.
     if let (Some(why), RunState::Interrupted) = (&run.withheld, &run.state) {
         entry[RUN_WITHHELD_KEY] = json!(withheld_sentence(why));
+        // ⛔⛔⛔⛔⛔ AND WHAT BECAME OF WHAT WAS STILL DRIVING IT — register item 740, published
+        // NESTED INSIDE the clause above rather than beside it.
+        //
+        // ⚠⚠⚠⚠ THAT NESTING IS THE GUARD, AND IT IS STRUCTURAL RATHER THAN A SECOND CONDITION TO
+        // REMEMBER. This sentence asserts that the word on the row is `interrupted` and says why it
+        // is not `panicked`; both halves are claims about a run nobody is bringing back. Written as
+        // its own `if`, it would be one edit away from being printed over a run that had come back
+        // `running` — which is register item 755's lesson, that a guard belonging to a fact should
+        // be the shape of the code and not a rule somebody keeps.
+        //
+        // ⚠ A run that IS put back has its leftover ended too (register item 526's loop, older than
+        // this), and says nothing here on purpose: it comes back `running` on a driver of its own,
+        // and a clause about a process that no longer matters would be noise on the one row a
+        // person does not have to act on.
+        if let Some(pid) = run.ended_driver {
+            entry[RUN_LEFTOVER_KEY] = json!(leftover_sentence(pid));
+        }
     }
     // ⚠⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register item 540, present only once a step has said so,
     // which is `RUN_CEILING_KEY`'s presence-is-the-claim rule. ⚠ The NUMBER and not the label's
@@ -5570,6 +5610,38 @@ pub fn withheld_sentence(why: &crate::runs::Withheld) -> String {
              recorded what the run was asked with, so no plugin could be rebuilt to enter at it"
             .to_owned(),
     }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT A BOOT DID ABOUT THE PROCESS STILL DRIVING A RUN IT IS NOT PUTTING BACK** —
+/// register item 740, and the sentence [`RUN_LEFTOVER_KEY`] carries.
+///
+/// # ⚠⚠⚠⚠⚠ One spelling, read twice — [`withheld_sentence`]'s rule one fact over
+///
+/// The boot writes it to the operator's log beside the run id, and the row carries it to whoever
+/// opens `sprag runs` afterwards. A promotion's whole point is that those need not be the same
+/// person, and two compositions of *what happened to the thing that was typing at my pane* would be
+/// free to disagree about one process.
+///
+/// # ⚠⚠⚠ Why it names the ENDING WORD, when the row already prints it two lines up
+///
+/// Because the word is the half a reader gets wrong. `interrupted` and `panicked` both mean *this
+/// run stopped and nothing is driving it*, and which one a withheld run wears was, before this
+/// item, decided by whether a person had reached its driver before the daemon went down —
+/// `panicked` if they had, `interrupted` if the successor's boot got there. Neither the row nor the
+/// log said so, and a watcher of another repository read `panicked` as *my loop hit a bug* and went
+/// through its own code looking for one.
+///
+/// So the product answers it: a leftover the BOOT ends leaves the run `interrupted`, because what
+/// happened is that the daemon went away and the driver is that fact's consequence — and this
+/// sentence is where that decision is said out loud rather than left to be inferred from two pids.
+#[must_use]
+pub fn leftover_sentence(pid: u32) -> String {
+    format!(
+        "the process its dead daemon left driving it ({pid}) was still typing into that pane with \
+         nothing able to read what it did, so this boot ended it — which is why this run reads \
+         `interrupted` (its daemon went away) rather than `panicked` (something reached its driver \
+         first)"
+    )
 }
 
 /// **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES**, or [`None`] for a run that put
@@ -7249,6 +7321,7 @@ mod tests {
                     held: false,
                     cancelled_by: None,
                     withheld: None,
+                    ended_driver: None,
                 },
                 None,
                 // ⚠ NO LIVE LOOK HERE. This gate is about the PLUGIN's sentence reaching the row;
@@ -7325,6 +7398,7 @@ mod tests {
                 held: false,
                 cancelled_by: None,
                 withheld: None,
+                ended_driver: None,
             },
             None,
             None,
@@ -10836,6 +10910,7 @@ mod tests {
             held: false,
             cancelled_by: None,
             withheld: None,
+            ended_driver: None,
         };
         assert_eq!(
             run.progress.waiting, None,

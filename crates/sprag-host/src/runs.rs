@@ -1050,6 +1050,30 @@ struct RunRecord {
     /// nothing downstream could re-derive this. The log is read once, at boot, and this is what is
     /// kept out of that reading. It is [`PersistedRun::withheld`]'s answer and nobody else's.
     withheld: Option<Withheld>,
+    /// ⛔⛔⛔⛔⛔ **THE PROCESS THIS BOOT ENDED BECAUSE IT WAS STILL DRIVING A RUN NOBODY IS PUTTING
+    /// BACK** — register item 740, written once by `put_back_inherited_runs` through
+    /// [`RunRegistry::ended_leftover_driver`].
+    ///
+    /// [`None`] for every run this daemon started, for one it inherited whole, and for a withheld
+    /// one whose predecessor left no live driver behind — an absence said rather than filled in
+    /// (register item 709's discipline), because *there was nothing still typing* and *something
+    /// was, and this boot ended it* are different facts about somebody's pane.
+    ///
+    /// # ⚠⚠⚠ Why the ROW needs it, when the boot has already written it to the operator's log
+    ///
+    /// Because without it the run's ending WORD is settled by an accident nobody wrote down. A
+    /// leftover driver ended by a PERSON before the promotion leaves its run [`RunState::Panicked`]
+    /// — a live daemon watches its driver die and says so — and the very same driver ended HERE
+    /// leaves it [`RunState::Interrupted`], because what happened is that the daemon went away.
+    /// **Measured 2026-08-29 across four promotions on this machine**: another repository's watcher
+    /// read `panicked` on its run 73 as *my loop hit a bug* and went looking through its own code,
+    /// when what had happened was that this machine's promotion had `kill -9`ed the driver first.
+    ///
+    /// So the row says which of the two this was, in [`crate::plugins::leftover_sentence`]'s words
+    /// — the same spelling the boot's log line carries, on [`crate::plugins::withheld_sentence`]'s
+    /// argument: a promotion's whole point is that the person who reads it need not be the person
+    /// who ran it.
+    ended_driver: Option<u32>,
 }
 
 /// **WHAT A DAEMON SHOULD DO ABOUT A RUN WHOSE DRIVER PROCESS DIED WITHOUT AN OUTCOME** — register
@@ -1172,6 +1196,14 @@ pub struct RunSummary {
     /// distinguish *your loop is waiting for a daemon to pick it up* from *no daemon ever will*.
     /// `Revival::not_put_back` is the same shape one door over, for a run whose driver died.
     pub withheld: Option<Withheld>,
+    /// ⛔⛔⛔⛔⛔ **THE PROCESS A BOOT ENDED BECAUSE IT WAS STILL DRIVING THIS WITHHELD RUN** —
+    /// register item 740, and [`None`] wherever there was nothing left typing.
+    ///
+    /// ⚠⚠ It travels beside [`withheld`](Self::withheld) because it is the OTHER half of what a
+    /// promotion did to this run: that field says nobody is bringing it back, and this one says
+    /// nobody is still working on it either — and until item 740 the second half was decided by
+    /// whichever processes a person happened to `kill` by hand first.
+    pub ended_driver: Option<u32>,
 }
 
 /// EVERYTHING A RUN BRINGS WITH IT — the argument list of [`RunRegistry::submit`], as a struct.
@@ -1992,6 +2024,9 @@ impl RunRegistry {
             // is starting it, so there is no predecessor's record for anything to have been kept
             // out of, and the absence is that fact rather than an unanswered question.
             withheld: None,
+            // ⚠ AND NO PREDECESSOR LEFT A PROCESS DRIVING IT — register item 740, on the line
+            // above's argument: this daemon is spawning this run's only driver, right now.
+            ended_driver: None,
         });
         id
     }
@@ -2063,6 +2098,44 @@ impl RunRegistry {
             });
         }
         answer
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THIS BOOT ENDED THE PROCESS ITS PREDECESSOR LEFT DRIVING A RUN IT IS NOT PUTTING
+    /// BACK** — register item 740, and [`inheritance`](Self::inheritance)'s companion: that door
+    /// says which runs stayed behind, and this one records what was done about what was still
+    /// typing at them.
+    ///
+    /// Returns whether such a run is held here, so a caller that killed a process for a run this
+    /// registry has never heard of learns it rather than writing into nothing.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Only over a run that is NOT coming back, and the guard is structural
+    ///
+    /// The sentence this field becomes claims two things at once: that nothing is typing at that
+    /// pane any more, and that `interrupted` is this daemon's ANSWER for the run rather than a word
+    /// that fell out of who reached the driver first. Both are statements about a run nobody is
+    /// resuming. A run being put back has its leftover ended too — that is register item 526's loop
+    /// and it is older than this — but there the fact is invisible by design: the run comes back
+    /// `running` on a new driver, and a clause explaining a process that no longer matters would be
+    /// noise on the one row a person does not have to act on.
+    ///
+    /// So this refuses a record with no [`withheld`](RunSummary::withheld) reason rather than
+    /// trusting its caller to be the boot's withheld loop. The row's own publish guard
+    /// (`crate::plugins::run_to_json`) is nested inside the withheld one for the same reason: a
+    /// clause that can only be SET where it can be PRINTED cannot drift apart from it.
+    ///
+    /// ⚠ It does not touch the run's state. The record is already [`RunState::Interrupted`] — that
+    /// is what [`restore`](Self::restore) leaves — and moving it here would be this daemon
+    /// inventing an ending for work its predecessor was doing.
+    pub fn ended_leftover_driver(&mut self, id: RunId, pid: u32) -> bool {
+        let Some(record) = self
+            .runs
+            .iter_mut()
+            .find(|record| record.id == id && record.withheld.is_some())
+        else {
+            return false;
+        };
+        record.ended_driver = Some(pid);
+        true
     }
 
     /// **THIS RESTORED RUN HAS A DRIVER AGAIN** — register item 543's sixth brick, and the one door
@@ -2883,6 +2956,12 @@ impl RunRegistry {
                 // back can now say whether there was nothing to put back or whether a promotion
                 // took the documents out from under all of it.
                 withheld: saved.withheld(),
+                // ⚠⚠ AND NOTHING HAS BEEN ENDED YET — register item 740. This reads the log; the
+                // boot that acts on it (`put_back_inherited_runs`) is a later call with the socket
+                // in hand, and this field is its answer rather than the file's. A record that
+                // arrived here claiming a process had been dealt with would be asserting something
+                // no reading can know.
+                ended_driver: None,
             });
         }
     }
@@ -2919,6 +2998,10 @@ impl RunRegistry {
                 // the log, and a row that showed it changing would be showing a fact about the
                 // reading rather than about the run.
                 withheld: record.withheld.clone(),
+                // ⚠ A LEVEL THAT NEVER MOVES EITHER — item 740, on the line above's argument. A
+                // boot ends a leftover once and writes it here once; a row that showed this
+                // appearing and going away would be reporting on the daemon, not on the run.
+                ended_driver: record.ended_driver,
             })
             .collect()
     }

@@ -4141,6 +4141,345 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
     drop(guard);
 }
 
+/// ⛔⛔⛔⛔⛔ **A PROMOTION THAT CHANGES THE DOCUMENTS ENDS THE DRIVERS IT IS NOT BRINGING BACK, AND
+/// THE ROW SAYS SO** — register item 740, and the arm both gates above structurally cannot reach.
+///
+/// # ⚠⚠⚠⚠⚠ The kill loop item 526 built has never once run on this machine
+///
+/// `put_back_inherited_runs` ends the leftover driver of every run it puts back, and it iterates
+/// `Inheritance::resumed`. A promotion is usually a DOCUMENT change — `sprag-plugin/build.rs` says
+/// so in as many words, *"the restart that motivates persisting a run at all is a document change,
+/// so the dangerous case is the common one rather than the rare one"* — and a changed document
+/// withholds every run in the log at once (register item 737). **So the set that loop walks is
+/// empty precisely when there is most to end.**
+///
+/// **Measured 2026-08-30 on the live loop daemon's own log** (`/run/user/1000/sprag-loop.log`, 63
+/// boot readings): `put a run this daemon inherited back` **0 times**, `ended the driver process …`
+/// **0 times**, and *STILL TYPING into that pane* **3 times** — runs 63, 65 and 66, whose drivers
+/// were alive when their successor booted and were reported and left alone.
+///
+/// # ⚠⚠⚠⚠ Why `a_promotion_brings_every_loop_back_on_exactly_one_driver` cannot see it
+///
+/// That gate re-spawns THE SAME TEST BINARY, so the successor's fingerprint is the predecessor's,
+/// every run comes back, and item 526's loop runs over a full list. It measures a promotion that
+/// almost never happens. This one stages the promotion that does, the way the item 737 gate does —
+/// by rewriting the fingerprint the log recorded, which from a successor's point of view is the
+/// WHOLE of what a document change is — and then reads the process table the way item 526's gate
+/// does. Neither half is new; the pair is, and the defect lives exactly in the gap between them.
+///
+/// # ⚠⚠⚠⚠⚠ The premise this gate must assert, or it measures item 526 wearing a second name
+///
+/// **Nothing may come back.** If one run were resumed, the OLD loop would end its driver and this
+/// gate would be green about a line it never executed — the vacuity item 737 was filed about, one
+/// level up. So BOTH records are moved to a foreign build and the claim below reads each row's own
+/// refusal sentence before it reads the process table.
+///
+/// ⚠ And a second premise, asserted between the kill and the successor: **the stranded driver is
+/// still alive.** Outliving its daemon is a property item 544's stage 1 built on purpose, and if it
+/// ever stops being true this gate must say so rather than going quietly green on a process that
+/// left by itself.
+///
+/// # ⚠⚠⚠ The control is a driver a PERSON ended first, and it is the situation item 740 measured
+///
+/// This repository's own promotion ritual says *kill the drivers before the daemon*, so a real
+/// promotion arrives with some leftovers already gone. That run is withheld exactly like the other
+/// and there is nothing for the boot to end — so its row must carry the refusal sentence and say
+/// NOTHING about a leftover. Without it, a renderer that printed the clause over every withheld run
+/// would satisfy the claim, which is register item 744's own predicate: the test is that the row
+/// with the key and the row without it RENDER DIFFERENTLY.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_promotion_that_changes_the_documents_ends_the_drivers_it_is_not_bringing_back() {
+    /// A fingerprint no build of these documents has — the log's word for *another image wrote
+    /// this*, spelled as the item 737 gate spells it.
+    const FOREIGN: &str = "0000000000000000";
+
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-promoted-leaving-a-driver-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    assert_ne!(
+        FOREIGN,
+        sprag_plugin::STATECHARTS_FINGERPRINT,
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: the word this gate writes into the log must not be the one \
+         this binary's documents hash to, or the promotion it stages is not a promotion at all.",
+    );
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    // ── THE STRANDED LOOP: its driver is left exactly as the dying daemon left it ────────────
+    let stranded = loop_session(&mut conn, "stranded");
+    start_loop(
+        &mut conn,
+        "stranded",
+        stranded,
+        "the loop whose driver nobody stopped before the build was swapped",
+    );
+    // ── THE CONTROL: a loop whose driver a PERSON ends first, which is the promotion ritual ──
+    let handstopped = loop_session(&mut conn, "handstopped");
+    start_loop(
+        &mut conn,
+        "handstopped",
+        handstopped,
+        "the loop somebody stood down by hand before the promotion",
+    );
+    assert!(
+        wait_for(Duration::from_secs(90), || resumable_runs(&state, 2)),
+        "⚠⚠ THE PREMISE FAILED: the daemon never persisted TWO live loops each carrying a place \
+         and a request, so there is nothing for a promotion to withhold and this gate would be \
+         measuring an empty log.",
+    );
+    let runs_dir = state.join("sprag");
+    assert!(
+        wait_for(Duration::from_secs(60), || std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".snapshot.json"))),
+        "⚠⚠ THE PREMISE FAILED: the daemon never wrote a workspace snapshot, so its successor \
+         would boot with no panes at all",
+    );
+
+    // ⚠⚠⚠ READ WHILE THE DAEMON IS ALIVE, which is the only time `driver_pids` can tell a driver
+    // from the daemon — the rule the promotion gate above paid a red to learn.
+    assert!(
+        wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 2),
+        "⚠⚠ THE PREMISE FAILED: this daemon ships `run-driver-process` on (register item 544), so \
+         the two loops above should be two processes of their own. Found {:?}.",
+        driver_pids(&sock),
+    );
+    drop(conn);
+
+    // THE PROMOTION: outright, so nothing writes a tidy terminal state on the way out.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+
+    // ── AND THE DOCUMENTS CHANGE UNDERNEATH BOTH OF THEM ────────────────────────────────────
+    //
+    // ⚠⚠ BOTH, unlike the item 737 gate, and that is this gate's premise rather than a shortcut:
+    // a run that came back would be reached by item 526's OWN kill loop, and the claim below would
+    // be green about a line this item never touched.
+    //
+    // ⚠ THE LABEL IS WHAT NAMES A RUN HERE, and it is allowed to be: a label is composed once,
+    // when the run opens (`ai_loop pane=N`), so at this moment it still spells the pane the loop
+    // was started over. Nothing downstream derives anything from it.
+    let log_file = std::fs::read_dir(&runs_dir)
+        .expect("the state directory exists")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(".runs.json"))
+        })
+        .expect("the daemon wrote a run log");
+    let mut log = sprag_host::load_runs(&log_file).expect("and it decodes");
+    let driver_of = |log: &sprag_host::runs::RunLog, pane: u64| -> u32 {
+        let want = format!("pane={pane}");
+        log.runs
+            .iter()
+            .find(|run| run.label.contains(&want) && !run.finished)
+            .unwrap_or_else(|| panic!("no unfinished run for the loop on pane {pane}"))
+            .driver
+            .unwrap_or_else(|| {
+                panic!(
+                    "⚠⚠ THE PREMISE FAILED: the loop on pane {pane} was persisted with no driver \
+                     pid beside it, so this boot could not identify a leftover even if one were \
+                     there — and `PersistedRun::driver` is register item 526's own field.",
+                )
+            })
+    };
+    let stranded_driver = driver_of(&log, stranded);
+    let hand_driver = driver_of(&log, handstopped);
+    assert_ne!(
+        stranded_driver, hand_driver,
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: the two loops must have been driven by two different \
+         processes, or the control and the subject are the same measurement.",
+    );
+    let mut moved = 0;
+    for run in &mut log.runs {
+        assert_eq!(
+            run.document.as_deref(),
+            Some(sprag_plugin::STATECHARTS_FINGERPRINT),
+            "⚠⚠⚠ THE PREMISE FAILED: run {} was persisted without this build's fingerprint beside \
+             its place, so moving it below would not be what makes it withheld.",
+            run.id,
+        );
+        run.document = Some(FOREIGN.to_owned());
+        moved += 1;
+    }
+    assert_eq!(
+        moved, 2,
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: both records must be moved to another build's documents, \
+         so that NOTHING is resumed and item 526's existing kill loop cannot be what ends a driver.",
+    );
+    std::fs::write(
+        &log_file,
+        serde_json::to_string(&log).expect("the run log encodes"),
+    )
+    .expect("the predecessor's log is left where its successor reads it");
+
+    // ── THE CONTROL'S DRIVER IS ENDED BY HAND, the way this repository's promotion ritual does ──
+    //
+    // ⚠ Before the successor exists, so the successor genuinely has nothing to end for that run —
+    // which is the situation item 740 measured across four promotions in one day, and the reason a
+    // withheld run's ending word used to depend on who got to which process first.
+    //
+    // SAFETY: `hand_driver` was read from this test's own daemon's log as a run's driver pid, and
+    // the process is a `sprag-term` this test spawned by way of that daemon.
+    unsafe { libc::kill(hand_driver as libc::pid_t, libc::SIGKILL) };
+    assert!(
+        wait_for(Duration::from_secs(10), || !still_running(hand_driver)),
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: the control's driver ({hand_driver}) would not go, so the \
+         successor might still find something to end for it and the control stops being one.",
+    );
+
+    // ⚠⚠⚠⚠⚠ **AND THE SUBJECT'S DRIVER IS STILL THERE, WHICH IS THE PREMISE THE WHOLE CLAIM RESTS
+    // ON.** A driver outliving its daemon is what item 544's stage 1 built ON PURPOSE. If that ever
+    // stops being true, every assertion below would pass over a process that left by itself and
+    // this gate would be measuring nothing — the shape register item 737 named as *a gate cannot
+    // see its own blind spot*. So it is asserted here rather than assumed.
+    assert!(
+        still_running(stranded_driver),
+        "⚠⚠⚠ THE PREMISE FAILED: the stranded loop's driver ({stranded_driver}) did not outlive \
+         the daemon that spawned it, so there is no leftover for a boot to end and this gate is \
+         vacuous. Item 544's stage 1 made a driver a process of its own precisely so that it would.",
+    );
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the replacement daemon never started serving",
+    );
+
+    // ── THE CLAIM, PART ONE: nothing is left driving anything ────────────────────────────────
+    //
+    // ⚠⚠⚠⚠ COUNTED AS A TOTAL, on the promotion gate's own argument: once the first daemon is
+    // killed its leftovers are re-parented to init, so `daemon_pid`'s *nobody's child* rule can
+    // pick a DRIVER as the daemon. A total needs no such judgement — and here the total is ONE,
+    // because nothing came back and so the boot spawned no driver of its own.
+    //
+    // ⚠⚠ AND THE COUNT IS ALSO THE CONTROL AGAINST A CATASTROPHE: `1` says the replacement daemon
+    // is there and the drivers are not. `0` would be every `sprag-term` on this socket gone, which
+    // would satisfy *the leftover was ended* while meaning something else entirely.
+    //
+    // ⚠ IT WAITS, bounded, for register item 728's reason: a re-parented process on its way out
+    // settles inside the bound and one that is still typing never does, so a red that survives the
+    // bound is still a red and the assertions below take a FRESH read regardless.
+    let settled = wait_for(Duration::from_secs(30), || {
+        !still_running(stranded_driver) && sprag_term_pids(&sock).len() == 1
+    });
+    let after = sprag_term_pids(&sock);
+    assert!(
+        !still_running(stranded_driver),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 740: A DRIVER OF A RUN NOBODY IS PUTTING BACK IS STILL TYPING. \
+         Driver {stranded_driver} outlived the daemon that spawned it, its run was withheld by \
+         this boot, and nothing ended it — so it goes on typing into a pane this boot has just \
+         restored, with its answer bound for the stdout pipe of a daemon that no longer exists. \
+         `put_back_inherited_runs` walks `Inheritance::resumed` to end leftovers, and a promotion \
+         that changes the documents resumes NOTHING, which is why this is the common case rather \
+         than the rare one. It was given thirty seconds and the shape {} within the bound. \
+         Processes on this socket: {after:?}",
+        if settled { "settled" } else { "NEVER settled" },
+    );
+    assert_eq!(
+        after.len(),
+        1,
+        "⛔⛔⛔ REGISTER ITEM 740: after a promotion that brings nothing back there should be the \
+         replacement daemon and NOTHING ELSE on this socket. MORE means something is still driving \
+         a run no successor will read; FEWER means the daemon itself is gone and the claim above \
+         is true for a reason that has nothing to do with this item. Found {after:?}.",
+    );
+
+    // ── THE PREMISE, ASSERTED FROM THE PRODUCT'S OWN MOUTH: neither run came back ────────────
+    let block_for = |listed: &str, pane: u64| -> String {
+        let heading = format!("ai_loop pane={pane}");
+        listed
+            .split("\nrun ")
+            .map(|chunk| chunk.trim_end().to_owned())
+            .find(|chunk| {
+                chunk
+                    .lines()
+                    .next()
+                    .is_some_and(|head| head.trim_end().ends_with(&heading))
+            })
+            .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
+    };
+    let row_of = |session: &str, pane: u64| -> String {
+        let listed = sprag(&sock, &["runs", "-t", session]);
+        assert!(listed.ok, "{}", listed.stderr);
+        block_for(&listed.stdout, pane)
+    };
+    let subject = row_of("stranded", stranded);
+    let control = row_of("handstopped", handstopped);
+    for (name, row) in [("stranded", &subject), ("hand-stopped", &control)] {
+        assert!(
+            row.contains("interrupted") && row.contains("no successor can put it back"),
+            "⚠⚠⚠ THE PREMISE FAILED: the {name} loop's row does not say it was withheld, so this \
+             boot resumed it — and item 526's OWN kill loop is then what ended a driver, which \
+             makes every claim here green about a line item 740 never touched. Row: {row:?}",
+        );
+    }
+
+    // ── THE CLAIM, PART TWO: the row says what happened to the process, and which word it earned ─
+    //
+    // ⚠⚠⚠⚠ THE PROCESS TABLE ABOVE IS NOT ENOUGH, and that is register item 744's whole class: a
+    // fact the daemon knows and the mouth a person reads does not carry has, for that person, not
+    // happened. `sprag runs` has no machine form — `render_run` is the only mouth — so a clause
+    // that reached the wire and not this row would leave the reader exactly where item 740 found
+    // another repository's watcher: looking at a word and guessing what caused it.
+    assert!(
+        subject.contains(&stranded_driver.to_string()),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 740: the boot ended a process that was still driving this run and \
+         the row does not name it. The person reading this row is the one deciding whether to \
+         start the loop again, and *something was typing at your pane until this daemon stopped \
+         it* is the fact that decision turns on. Row: {subject:?}",
+    );
+    assert!(
+        subject.contains("`interrupted`") && subject.contains("`panicked`"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 740: the row says a process was ended and NOT which ending word \
+         that earns the run. Those two words were decided by an accident — `panicked` if a person \
+         reached the driver before the daemon went down, `interrupted` if the successor's boot got \
+         there — and a watcher of another repository spent a round reading the first as *my loop \
+         hit a bug*. The product decides it now, so the row has to say which one this is and why. \
+         Row: {subject:?}",
+    );
+
+    // ── THE CONTROL: a withheld run with nothing left to end says none of this ───────────────
+    //
+    // ⚠⚠⚠⚠ WITHOUT IT A RENDERER THAT PRINTED THE CLAUSE OVER EVERY WITHHELD ROW WOULD PASS — and
+    // that is register item 744's predicate exactly: a key is carried by the mouth only if the row
+    // that has it and the row that does not RENDER DIFFERENTLY.
+    assert!(
+        !control.contains("this boot ended it"),
+        "⚠⚠⚠ THE CONTROL FAILED: a run whose driver was already gone is carrying the sentence that \
+         says this boot ended one, so the clause is printed about being withheld rather than about \
+         a process. Row: {control:?}",
+    );
+    assert!(
+        !control.contains(&hand_driver.to_string()),
+        "⚠⚠⚠ THE CONTROL FAILED: the row names a pid nothing ended, which would make the number in \
+         the subject's row evidence of nothing. Row: {control:?}",
+    );
+    drop(guard);
+}
+
 /// ⚠⚠⚠⚠⚠ **A RUN WHOSE DRIVER PROCESS DIES UNDER A LIVING DAEMON IS PUT BACK ON A NEW ONE, AND A
 /// RUN THAT CANNOT BE IS TOLD SO** — register item 671, the first of the two residues item 544 left
 /// behind when it moved a driver out of the daemon.

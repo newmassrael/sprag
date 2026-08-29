@@ -618,6 +618,48 @@ fn leftover_driver(pid: u32, endpoint: &std::path::Path) -> bool {
         })
 }
 
+/// **END A DRIVER A DEAD DAEMON LEFT BEHIND**, answering whether there was one to end — register
+/// items 526 and 740, and the one place in this binary that signals another process.
+///
+/// # ⚠⚠⚠⚠⚠ Why the two loops below share it rather than each spelling a `kill`
+///
+/// Because they used to differ, and the difference was not a decision anybody took. Item 526 ends
+/// the leftover of a run it is PUTTING BACK, so that a pane does not get two processes typing at
+/// it. Item 740 measured what that leaves out: a promotion is usually a DOCUMENT change, a changed
+/// document brings back nothing, and so the kill loop — which iterates the runs that came back —
+/// ran over an empty list exactly when it was most needed. **Measured on this machine 2026-08-30**:
+/// sixty-three boot readings, zero drivers ended, and three occasions on which the boot wrote *STILL
+/// TYPING into that pane* and moved on.
+///
+/// The answer channel is the same on both sides and so is the remedy: a driver reports its outcome
+/// on the stdout pipe of the process that spawned it (`crate::drive`'s module doc), so a driver
+/// whose daemon is gone can finish hours of work that NOBODY WILL EVER BE ABLE TO READ. Item 526
+/// judged that worth a kill for a run coming back. For a run that is NOT coming back the same
+/// argument is strictly stronger — there is no successor driver to read the pane either, so what is
+/// being preserved by leaving it alive is an answer with no reader at all.
+///
+/// ⚠ The residue, stated rather than hidden: whatever that loop did since its last persist is lost,
+/// and — unlike item 526's arm — its run is not put back, so the work STOPS. That is the cost, and
+/// item 740 is where it was weighed: the alternative is a stranger typing into a restored pane
+/// forever. The row says which happened, so a person can start the loop again knowing why.
+///
+/// ⚠⚠ It waits for the process to actually leave the table, bounded. The caller's next act is to
+/// tell a reader what it did, and *ended* has to have happened before it is said.
+fn end_leftover_driver(pid: u32, endpoint: &std::path::Path) -> bool {
+    if !leftover_driver(pid, endpoint) {
+        return false;
+    }
+    // SAFETY: `pid` was recorded by a predecessor of THIS daemon as a run's driver, and
+    // `leftover_driver` has just confirmed it is a live `sprag-term` holding this daemon's own
+    // endpoint in its environment — which is what makes it ours to end.
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    let until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < until && leftover_driver(pid, endpoint) {
+        thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
 fn put_back_inherited_runs(
     host: &Host,
     runs: &Arc<Mutex<RunRegistry>>,
@@ -645,25 +687,57 @@ fn put_back_inherited_runs(
     // request is a predecessor that never wrote one down.
     let endpoint = sprag_rpc::socket_path(HOST_SOCKET);
     for run in &inheritance.withheld {
-        // ⛔⛔⛔ AND WHETHER SOMETHING IS STILL DRIVING IT, which is the half a person can act on.
-        // The loop below ends the leftover driver of every run it puts back (item 526); a run that
-        // is NOT put back is never reached by it, so its driver — a process of its own since item
-        // 544's stage 1 — goes on typing into that pane with its answer bound for a pipe that
-        // closed with the dead daemon.
+        // ⛔⛔⛔⛔⛔ **AND WHAT WAS STILL DRIVING IT IS ENDED, WHICH UNTIL REGISTER ITEM 740 IT WAS
+        // NOT.** The loop below ends the leftover driver of every run it PUTS BACK (item 526), and
+        // a run that is not put back was never reached by it — so its driver, a process of its own
+        // since item 544's stage 1, went on typing into that pane with its answer bound for a pipe
+        // that closed with the dead daemon.
         //
-        // ⚠⚠ IT IS REPORTED AND NOT ENDED, and that is a decision rather than an omission: killing
-        // it stops a loop that is still working, and this boot has no way to know whether the
-        // person promoting the build wanted that. What is not defensible is the third option, which
-        // is what this was before item 737 — neither deciding nor saying.
-        let leftover = run
+        // ⚠⚠⚠⚠⚠ **AND THAT IS THE COMMON CASE, NOT THE RARE ONE**, which is what made the omission
+        // matter: `sprag-plugin/build.rs` says the restart that motivates persisting a run at all is
+        // a DOCUMENT change, a changed document withholds every run in the log at once (item 737),
+        // and so the kill loop below ran over an empty list exactly when there was most to end.
+        // **Measured 2026-08-30 on this daemon's own log**: sixty-three boot readings, `put a run
+        // this daemon inherited back` zero times, `ended the driver process …` zero times, and
+        // three runs reported as STILL TYPING and left alone.
+        //
+        // ⚠⚠ ITEM 737 LEFT THIS UNDECIDED ON PURPOSE and named the cost of each way: ending it
+        // stops a loop that may still be working, leaving it costs an answer nobody can ever read.
+        // Item 740 took it, and the deciding fact is that for a WITHHELD run there is no successor
+        // driver either — so *leaving it alive* preserves work that no reader will ever meet, on a
+        // pane this boot has just restored for somebody else. `end_leftover_driver`'s doc carries
+        // the argument; the residue is that the loop stops, and the row says so.
+        let ended = run
             .driver
-            .filter(|pid| leftover_driver(*pid, &endpoint))
-            .map_or_else(String::new, |pid| {
-                format!(
-                    "; and the process its dead daemon left driving it ({pid}) is STILL TYPING \
-                     into that pane, with nothing able to read what it does"
-                )
-            });
+            .filter(|pid| end_leftover_driver(*pid, &endpoint));
+        // ⚠⚠⚠ WRITTEN TO THE ROW AS WELL AS TO THIS LOG, and that is register item 744's class
+        // rather than a courtesy: this line reaches whoever was watching the terminal the daemon was
+        // restarted in, and a promotion's whole point is that nobody has to be. The person who comes
+        // back to `sprag runs` is the one who has to decide whether to start the loop again.
+        if let Some(pid) = ended
+            && !runs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .ended_leftover_driver(run.id, pid)
+        {
+            // ⚠ THE DOOR'S REFUSAL IS SAID RATHER THAN DISCARDED. It can only answer `false` if
+            // this registry no longer holds the run `inheritance()` handed over a moment ago, or
+            // holds it with no withheld reason — either way the two have stopped agreeing, which is
+            // the shape `inheritance` itself reports one file over. A signal was sent to a process
+            // and the row is about to not say so, and that is not something to swallow.
+            tracing::warn!(
+                target: "sprag_host::runs",
+                run = run.id.0,
+                driver = pid,
+                "this boot ended a leftover driver and could not record it against its run, so \
+                 the row will not say the process was stopped",
+            );
+        }
+        // ⚠ ONE SPELLING, READ TWICE — `withheld_sentence`'s rule, and this clause is composed by
+        // the same function the row uses (`plugins::leftover_sentence`) for that reason.
+        let leftover = ended.map_or_else(String::new, |pid| {
+            format!("; {}", sprag_host::plugins::leftover_sentence(pid))
+        });
         tracing::warn!(
             target: "sprag_host::runs",
             run = run.id.0,
@@ -689,24 +763,21 @@ fn put_back_inherited_runs(
         //
         // ⚠⚠ So the LOG is the channel that survives a restart, and the run comes back through it.
         // The leftover process does not: it is ended here, deliberately and not as tidying.
+        //
+        // ⚠ THROUGH THE SAME DOOR AS THE LOOP ABOVE — register item 740. The kill and its bounded
+        // wait were spelled here and nowhere else, which is why the withheld arm did not have them;
+        // `end_leftover_driver` carries both, and there is now one place to read what a boot does
+        // to a process it did not start.
         if let Some(pid) = run.driver
-            && leftover_driver(pid, &endpoint)
+            && end_leftover_driver(pid, &endpoint)
         {
             tracing::warn!(
                 target: "sprag_host::runs",
                 run = run.id.0,
                 driver = pid,
-                "ending the driver process this daemon's predecessor left behind, so the run is \
+                "ended the driver process this daemon's predecessor left behind, so the run is \
                  put back on one driver rather than two",
             );
-            // SAFETY: `pid` was recorded by a predecessor of THIS daemon as this run's driver, and
-            // `leftover_driver` has just confirmed it is a live `sprag-term` holding this daemon's
-            // own endpoint in its environment — which is what makes it ours to end.
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-            let until = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < until && leftover_driver(pid, &endpoint) {
-                thread::sleep(Duration::from_millis(20));
-            }
         }
         let Some(pane) = sprag_host::plugins::pane_named(&run.request) else {
             tracing::warn!(
