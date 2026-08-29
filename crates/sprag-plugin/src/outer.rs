@@ -12113,15 +12113,43 @@ mod tests {
             }
             let pumped = loops.pump(&access, &RunContext::uncancellable());
             let counted = loops.deliveries();
+            // ⚠⚠ AND WHAT THAT DELIVERY WAS TYPED AT — register item 745(C1), taken here because
+            // this is the only fixture in the crate that reaches a REFUSED delivery on the road a
+            // real agent CLI takes (`shows_the_prompt: true`). Taking it consumes it, which is
+            // this reader's contract.
+            let faced = loops.facing();
             access.lifecycle().expect("lifecycle").close(pane);
-            (pumped, counted)
+            (pumped, counted, faced)
         };
 
-        let (wedged, held) = refused_by(PAINTS_EVERYTHING);
+        let (wedged, held, faced) = refused_by(PAINTS_EVERYTHING);
         assert!(
             matches!(wedged, Err(PaneError::NeverSubmitted { .. })),
             "the staging, not the claim: this arm must reach the refusal whose count is under \
              test, or what follows is about somewhere else. Got {wedged:?}",
+        );
+        // ⛔⛔⛔⛔ **AND THE REFUSED DELIVERY RECORDED WHAT IT WAS TYPED AT** — register item
+        // 745(C1), whose whole purpose is that the peer at THIS moment stops being unknowable.
+        //
+        // ⚠⚠⚠ It is asserted HERE and not beside the record's own gates because of what those
+        // cannot reach: every loop fixture in this crate drives `shows_the_prompt: false`, so a
+        // build that recorded on that road alone is green across all of them. Measured — the first
+        // mutation written for this record deleted the OTHER road's line and nothing went red.
+        // This arm is the painting road AND the refusal, which is the exact delivery the record
+        // exists for.
+        //
+        // ⚠⚠ THE ANSWER IS AN ABSENCE, AND IT IS THE POINT. Neither arm here is supervised, and
+        // `WorkspacePaneAccess::supervision` answers `None` for a surface with no detector — so
+        // this is `Faced::Unsupervised`, the arm that must never be confused with *the host looked
+        // and no manifest claimed it*. A record that folded them would pass every assertion in
+        // this file and send a reader to the wrong place on the one run it mattered.
+        assert_eq!(
+            faced,
+            Some(Faced::Unsupervised),
+            "⛔ item 745(C1): this delivery reached the pane, was painted, and was never asked — \
+             the moment five dead hypotheses had no evidence about — and the run must have written \
+             down what it typed at. Nothing supervises this pane, so the honest record is that and \
+             not silence: {faced:?}",
         );
         assert_eq!(
             held.unsubmitted, 1,
@@ -12131,10 +12159,22 @@ mod tests {
              run that never sent anything: {held:?}",
         );
 
-        let (never_landed, missed) = refused_by(PAINTS_NOTHING);
+        let (never_landed, missed, nothing_faced) = refused_by(PAINTS_NOTHING);
         assert!(
             matches!(never_landed, Err(PaneError::NeverTook { .. })),
             "the staging for the control: this arm must fail the OTHER way. Got {never_landed:?}",
+        );
+        // ⚠⚠⚠⚠ AND THE CONTROL FOR THE RECORD TOO, on the count's own terms one assertion down:
+        // this prompt never appeared on the pane at all, so there is no delivery for the record to
+        // be about. `say` writes it where `record_delivery` writes the evidence — past the
+        // injection and before the refusals — and `NeverTook` is raised on the far side of that, so
+        // the honest answer here is the same `Unsupervised` reading rather than nothing. What this
+        // arm holds is that the two roads do not disagree about a peer neither of them could read.
+        assert_eq!(
+            nothing_faced,
+            Some(Faced::Unsupervised),
+            "the record follows the DELIVERY and not its outcome: both refusals here are at the \
+             same unsupervised pane, so both say so. Got {nothing_faced:?}",
         );
         assert_eq!(
             missed.unsubmitted, 0,
