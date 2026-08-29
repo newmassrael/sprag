@@ -3412,6 +3412,186 @@ impl Retyped {
     }
 }
 
+/// **WHAT THIS RUN TYPED AT** — the peer, as its own supervisor described it in the instant before
+/// a prompt went in. Register item 745(C).
+///
+/// # ⚠⚠⚠⚠⚠ Why this exists at all: five axes died on evidence nobody had
+///
+/// `prompt.unasked` — *the text reached the pane and the submit never became a question* — has been
+/// measured at roughly four in fifteen prompts across three repositories, and **nothing anywhere
+/// records what the peer was at the moment it happened**. What the run keeps is what the DELIVERY
+/// did: how many bytes, how many presses, whether these exact bytes had already cost a session. So
+/// every hypothesis about the cause has had to be tested against numbers a watcher could recover
+/// afterwards from a walk, and five of them died that way — the prompt's size, its ordinal, where
+/// the pane came from, which state the document was in, and (measured 2026-08-29, four live
+/// deliveries) whether the peer was running a background shell.
+///
+/// The one axis nobody could test is the peer's own condition, because it is gone by the time
+/// anybody reads the run. This is that fact, written down while it is still true.
+///
+/// # ⚠⚠⚠⚠⚠ IT IS TAKEN ON EVERY DELIVERY, AND THAT IS THE WHOLE DESIGN
+///
+/// A record kept only on the refusals could never separate anything: four samples of *what the peer
+/// was when it refused*, with nothing to compare them against, is the shape this register already
+/// paid for — *the same source's samples cannot refute each other*. The comparison a cause needs is
+/// against the prompts that LANDED, so the reading is taken in `OuterLoop::say` — named rather
+/// than linked, because that door is this crate's own and a public item may not link one — which
+/// every question this loop asks passes through, whether that prompt is about to land or fold.
+///
+/// # ⚠⚠⚠⚠ …AND PUBLISHED WHEN IT CHANGES, which is `Told`'s rule and not a weakening of the one
+/// above
+///
+/// [`crate::deliver::Witnessed`] one field over is a DIFF, and its doc records what settled that:
+/// the first build said it on every delivery and **six neighbouring gates went red in one run**,
+/// each asserting a journal line that had grown a clause — the real objection being register item
+/// 277's, a bounded journal filling with one repeated constant. The same is true here: a healthy
+/// run types at a peer its supervisor calls `Idle` every single time.
+///
+/// So the READING is per-delivery and the SENTENCE is per-change, and nothing is lost: this is a
+/// step function, and a walk that records every change of one records all of it. A folded delivery
+/// with no clause on its line therefore says *the same peer as the last line that named one* — which
+/// is itself a finding about the axis, and the reader has the value two lines up.
+///
+/// ⚠⚠ What must NOT be latched is the difference between a peer that could not be read and one that
+/// was fine, and it is not: those are arms of this type, so the sentence says which. Telling two
+/// facts apart by the absence of a sentence is the reading this workspace has burned wire numbers
+/// over — the latch is about repetition, never about an absence.
+///
+/// # ⚠⚠⚠⚠ Why four arms, when three of them are absences
+///
+/// Because they are not the same absence, and [`crate::access::Supervised`] exists to say so — its
+/// own doc names folding them as *the defect this type was made to end*. A pane nobody supervises,
+/// a pane the host looked at and did not recognise, and a reporter naming a word this build cannot
+/// spell send a reader to three different places. Collapsing them into *unknown* would make the
+/// record answer *nothing to see here* for a build skew, which is exactly the escape hatch that
+/// makes an instrument useless the day it matters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Faced {
+    /// **NOTHING SUPERVISES THIS PANE.** No supervision surface at all — the case every scraped
+    /// pane and every daemon older than the key is in.
+    ///
+    /// ⚠ *Nobody was watching*, and never *the peer was fine*: this arm is the reason the record
+    /// says something rather than omitting its clause.
+    Unsupervised,
+    /// **THE HOST LOOKED AND NO MANIFEST CLAIMS THIS PANE** — [`crate::access::Supervised::NotAnAgent`].
+    NotAnAgent,
+    /// **THE REPORTER NAMED A STATE THIS BUILD CANNOT SPELL**, carried verbatim — a SKEW between two
+    /// builds, not an absence, and a reader is meant to go and compare them.
+    Unspellable(String),
+    /// **WHAT THE PANE'S OWN SUPERVISOR SAID.**
+    Seen {
+        /// The state its manifest read.
+        state: sprag_detect::AgentState,
+        /// The tool the agent itself named, or [`None`] where it named none.
+        ///
+        /// ⚠ Very nearly always [`None`] here, and kept anyway: this is read straight after
+        /// [`crate::deliver::hold_while_a_child_runs`] has stood there until the naming stopped, so
+        /// a name surviving into this record is the door having answered
+        /// [`crate::deliver::Held::Ended`] on the same look — a fact about a peer that had only
+        /// just finished, which is precisely the neighbourhood a cause would live in.
+        running: Option<String>,
+        /// **HOW THAT STATE IS KNOWN** — a process inside the pane said so, or a rule read it off
+        /// the screen.
+        ///
+        /// ⚠⚠⚠ Carried because an instrument that cannot say how it knows is one a later round
+        /// will over-read. A [`crate::access::Authority::Scraped`] `Idle` is approximate BY
+        /// CONSTRUCTION — the working signal is an animation and a sample can land in its gap — and
+        /// the daemon degrades a mute reporter's pane to exactly that (register item 709). Reading
+        /// a scraped `Idle` as *the peer was at rest* is the mistake this field exists to prevent.
+        ///
+        /// ⚠ It stands where a report COUNT stood in the first draft: a counter moves on every
+        /// delivery, so the diff above would publish a sentence per prompt and tell a reader
+        /// nothing new by doing it.
+        told_by: crate::access::Authority,
+    },
+}
+
+impl Faced {
+    /// Ask the pane's supervisor what it is looking at, right now.
+    #[must_use]
+    pub fn read(panes: &dyn PaneAccess, pane: PaneId) -> Self {
+        let Some(supervision) = panes.supervision() else {
+            return Self::Unsupervised;
+        };
+        match supervision.pane_agent_state(pane) {
+            crate::access::Supervised::NotAnAgent => Self::NotAnAgent,
+            crate::access::Supervised::Unspellable(word) => Self::Unspellable(word),
+            crate::access::Supervised::Seen(observation) => Self::Seen {
+                state: observation.state,
+                running: observation.running,
+                told_by: observation.authority,
+            },
+        }
+    }
+
+    /// **WHETHER A PROCESS INSIDE THE PANE SAID THIS**, rather than a rule reading its screen.
+    ///
+    /// ⚠⚠⚠ It exists so this reading serves BOTH its readers. `say` used to ask the supervisor a
+    /// second time, one screen down, for exactly this bit — and *"the caller passes the reading it
+    /// already took rather than this asking the pane a second time"* is the rule the neighbouring
+    /// check is already built on. Two reads of one surface in one delivery are two answers to one
+    /// question that nothing keeps in step, and the per-pass cost of the second is what a red sweep
+    /// went looking for while register item 745(C1) was being built.
+    #[must_use]
+    pub const fn reported(&self) -> bool {
+        matches!(
+            self,
+            Self::Seen {
+                told_by: crate::access::Authority::Reported { .. },
+                ..
+            }
+        )
+    }
+
+    /// **THE SENTENCE A JOURNAL LINE CARRIES**, for the reader who has only this one line.
+    ///
+    /// ⚠ Every arm says something. The three that could not read the peer say WHICH of the three
+    /// they are, because a reader sent to look at a build skew and a reader sent to look at an
+    /// unsupervised pane are being sent to different places.
+    #[must_use]
+    pub fn noted(&self) -> String {
+        match self {
+            Self::Unsupervised => {
+                "it typed at a pane nothing supervises, so what the peer was is not recorded"
+                    .to_owned()
+            }
+            Self::NotAnAgent => {
+                "it typed at a pane the host looked at and no manifest claimed".to_owned()
+            }
+            Self::Unspellable(word) => format!(
+                "it typed at a peer whose reporter said {word:?}, a state word this build cannot \
+                 spell — a build skew, so compare the two"
+            ),
+            Self::Seen {
+                state,
+                running,
+                told_by,
+            } => {
+                let how = match told_by {
+                    crate::access::Authority::Reported { source } => {
+                        format!("reported by {source}")
+                    }
+                    // ⚠ The rule is named where there is one, because *which rule fired* is what a
+                    // person re-reading a doubtful `Idle` has to go and look at.
+                    crate::access::Authority::Scraped { rule: Some(rule) } => {
+                        format!("scraped off the screen by {rule}")
+                    }
+                    crate::access::Authority::Scraped { rule: None } => {
+                        "scraped off the screen".to_owned()
+                    }
+                };
+                match running {
+                    Some(tool) => format!(
+                        "it typed at a peer its supervisor called {state:?} ({how}), still naming \
+                         {tool:?}"
+                    ),
+                    None => format!("it typed at a peer its supervisor called {state:?} ({how})"),
+                }
+            }
+        }
+    }
+}
+
 /// **WHAT A SESSION CAN SAY ABOUT ITS OWN SPEND** — three answers, because two of them look like
 /// zero and only one of them is a fault.
 ///
@@ -4428,6 +4608,13 @@ pub struct OuterLoop {
     /// `peer.gone` when that turn's prompt could not be delivered is TWO, and the journal used to
     /// carry whichever the arm happened to name (register item 614).
     walked: Vec<crate::plugin::Edge>,
+    /// **WHAT THIS PASS TYPED AT** — [`Faced`], taken in [`Self::say`] and emptied at the top of
+    /// every [`Self::pump`], the slot beside `walked` and for its reason exactly.
+    ///
+    /// ⚠⚠ [`None`] means THIS PASS TYPED NOTHING, which is most passes, and never *the peer could
+    /// not be read* — that answer is an arm of [`Faced`] itself. The two would be one `Option` if
+    /// the absence were folded, which is register item 745(C)'s whole point one type over.
+    faced: Option<Faced>,
     /// ⚠⚠⚠ **THE EVIDENCE THIS RUN HAS ALREADY TOLD ITS READER ABOUT** — the level
     /// [`witnessed`](Self#structfield.witnessed)'s event is DIFFED against, so a walk carries the
     /// answer once and then again whenever it CHANGES.
@@ -4483,8 +4670,20 @@ pub struct OuterLoop {
 ///
 /// So the rule lives where it can be driven ON ITS OWN, through a road that changes and changes
 /// back — `a_runs_delivery_evidence_is_said_once_and_again_when_the_road_changes`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Told(Option<crate::deliver::Witnessed>);
+///
+/// ⚠⚠ IT HOLDS TWO FACTS SINCE REGISTER ITEM 745(C), and one struct rather than two fields loose on
+/// the loop is the point: *what this run has already been told* is one question, and a second
+/// remembered elsewhere is the shape where one of them silently stops being diffed.
+///
+/// ⚠ No longer `Copy` — [`Faced`] carries the words a reporter used, and a value nobody can copy by
+/// accident is the right one for a level that must be UPDATED rather than read past.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Told {
+    /// What proved a delivery arrived — register item 434.
+    witnessed: Option<crate::deliver::Witnessed>,
+    /// What the run was last told it was typing at — register item 745(C).
+    faced: Option<Faced>,
+}
 
 impl Told {
     /// **WHAT THIS PASS SHOULD PUBLISH** given the evidence it earned — [`None`] for a pass that
@@ -4497,12 +4696,31 @@ impl Told {
         now: Option<crate::deliver::Witnessed>,
     ) -> Option<crate::deliver::Witnessed> {
         match now {
-            Some(evidence) if self.0 != Some(evidence) => {
-                self.0 = Some(evidence);
+            Some(evidence) if self.witnessed != Some(evidence) => {
+                self.witnessed = Some(evidence);
                 Some(evidence)
             }
             _ => None,
         }
+    }
+
+    /// **WHAT THIS DELIVERY SHOULD SAY ABOUT THE PEER IT IS TYPING AT** — [`None`] where that is
+    /// what this run was already told.
+    ///
+    /// ⚠⚠ The same act as [`tell`](Self::tell) about the other fact, and here for the same reason:
+    /// a run that decided what to publish in one place and remembered it in another would have two
+    /// records of one thing. See [`Faced`], where the reading-per-delivery and sentence-per-change
+    /// split is argued out.
+    ///
+    /// ⚠ It takes the reading rather than an [`Option`] of one, because a peer that could not be
+    /// read is an ARM of [`Faced`] and not an absence — there is no such thing as a delivery that
+    /// faced nothing.
+    fn facing(&mut self, now: Faced) -> Option<Faced> {
+        if self.faced.as_ref() == Some(&now) {
+            return None;
+        }
+        self.faced = Some(now.clone());
+        Some(now)
     }
 }
 
@@ -4647,6 +4865,9 @@ impl OuterLoop {
             made: None,
             witnessed: None,
             walked: Vec::new(),
+            // ⚠ Nothing has been typed at yet, which is not the same as a peer that could not be
+            // read — see the field's own doc.
+            faced: None,
             told: Told::default(),
             deliveries: crate::plugin::Deliveries::NONE,
             checks: crate::plugin::Checks::NONE,
@@ -5412,6 +5633,29 @@ impl OuterLoop {
     #[must_use]
     pub fn signalling(&self) -> Option<crate::act::Signals> {
         self.serving.signalling()
+    }
+
+    /// **WHAT THE PASS THAT JUST RAN TYPED AT, IF IT IS NEWS** — [`None`] where it typed nothing,
+    /// and where the peer is what this run was already told. See [`Faced`], whose arms carry the
+    /// three ways a peer can fail to be readable.
+    ///
+    /// # ⚠⚠⚠⚠⚠ TAKING IT IS WHAT PUBLISHES IT, and the placement is a defect this round measured
+    ///
+    /// The diff belongs where the SENTENCE IS WRITTEN and not where the delivery happened, because
+    /// a pass can deliver and then report through a road that composes no journal line at all: a
+    /// screened dialog answers `Verdict::Screened` and returns before the walk is rendered. With
+    /// the diff at the delivery, that pass consumed the finding and nothing ever said it — and the
+    /// NEXT delivery, at the same peer, then read as a change and said it twice in one run.
+    /// **Measured here, as two neighbouring gates going red with one sentence duplicated.**
+    ///
+    /// ⚠⚠ That is `Told`'s own rule — *it RECORDS as it answers, so what has been told and what a
+    /// walk carries are one act* — and it only holds where the answer becomes the line.
+    ///
+    /// ⚠ So this takes: the reading is consumed, whatever it decides. A caller that wants to look
+    /// without consuming does not exist and should think hard before it does.
+    pub fn facing(&mut self) -> Option<Faced> {
+        let reading = self.faced.take()?;
+        self.told.facing(reading)
     }
 
     /// **WHAT THE LAST PUMP SAW BEHIND THE EVENT IT RAISED** — see [`Noticed`].
@@ -6400,6 +6644,10 @@ impl OuterLoop {
         // in this slot belongs to this pass* true by construction rather than by every exit
         // remembering.
         self.walked.clear();
+        // ⚠⚠ AND THE SAME LINE FOR THE SAME REASON — register item 745(C). What a pass typed at
+        // belongs to the pass that typed it, and a slot cleared anywhere else would let a journal
+        // line say a run faced a peer on a pass that asked it nothing.
+        self.faced = None;
         // ⚠⚠⚠ A PERSON'S ORDER IS CARRIED IN FIRST, BEFORE ANYTHING IS DECIDED THIS PASS. The flag
         // is raised by a host thread at a moment nothing here controls, so the only place it can be
         // read without racing a decision is at the top of a pass — the same reason the barrier
@@ -9278,6 +9526,29 @@ impl OuterLoop {
                 });
             }
         }
+        // ⚠⚠⚠⚠⚠ **WHAT THIS RUN IS ABOUT TO TYPE AT** — register item 745(C), and here for the
+        // reason the line below is here: this function is the only place every question passes
+        // through, so it is the only place a record of the peer can be taken on EVERY delivery
+        // rather than on the interesting ones.
+        //
+        // ⚠⚠⚠ AND ON EVERY DELIVERY IS THE WHOLE POINT. Five hypotheses about why a submit
+        // sometimes never becomes a question have died on evidence recovered after the fact, and
+        // the sixth — what the peer itself was — cannot be tested from refusals alone: samples of
+        // one outcome cannot separate an axis, which is why this is taken before the injection and
+        // written on the journal line whether the prompt lands or folds.
+        //
+        // ⚠⚠ AFTER THE HOLD, NOT BEFORE IT. The hold above stands there until the agent stops
+        // naming a tool, so a reading taken in front of it would describe a peer this run then
+        // waited out — the moment worth recording is the one the bytes actually go in at.
+        //
+        // ⚠⚠⚠⚠⚠ **TAKEN HERE AND COMMITTED WHERE `record_delivery` IS**, which is not fussiness:
+        // the two roads below can leave without typing a byte — a pane that has gone answers
+        // `PeerGone` at the `?` — and a journal line reading *it typed at …* about a pass that
+        // typed nothing is this file's own headline defect, **a record that renders a non-event as
+        // an event**. So the reading is taken at the honest moment and published only once the
+        // bytes are out. The refusals that matter here are on the far side of that point: a prompt
+        // the composer folded away IS a delivery, and it is the one this record exists for.
+        let facing = Faced::read(panes, self.driving.pane);
         // ⚠ Recorded here rather than at any composition site, for [`Session::asked`]'s reason one
         // screen down: a screen rule's text is typed at the peer too and is in no prompt slot at
         // all, so this function is the only place every question passes through.
@@ -9325,6 +9596,10 @@ impl OuterLoop {
             // prompt is on that pane*; recording nothing here would leave it indistinguishable
             // from a pass that delivered nothing at all.
             self.record_delivery(Some(crate::deliver::Witnessed::Unchecked));
+            // ⚠ AND WHAT IT WAS TYPED AT, beside the evidence for the same reason and at the same
+            // moment — see `facing` above. The RAW reading: the diff against what this run has
+            // already been told belongs where the sentence is written, not here.
+            self.faced = Some(facing);
             return Ok(written);
         }
         let delivered = deliver(
@@ -9336,7 +9611,8 @@ impl OuterLoop {
                 // A prompt longer than the pane is wide arrives in pieces — see the constant.
                 confirm: confirmable(text),
                 then_press: vec![crate::access::KeyStroke::named("Enter")],
-                submitted_when: self.submit_lands_when(panes),
+                // ⚠ THE READING TAKEN ABOVE, not a second ask — see the method's own doc.
+                submitted_when: self.submit_lands_when(&facing),
                 ..Delivery::new()
             },
         )?;
@@ -9351,6 +9627,11 @@ impl OuterLoop {
         // enough for its composer to show — so a walk that published the contract would say item
         // 421's road was taken on every delivery to a hooked agent.
         self.record_delivery(crate::deliver::Witnessed::of(delivered));
+        // ⚠⚠ AND WHAT IT WAS TYPED AT — register item 745(C), recorded at the same moment as the
+        // evidence above and BEFORE the three refusals below, which is the whole reason it is here
+        // rather than at the reading: a prompt the composer folded away is a delivery that
+        // happened, and it is the delivery this record was built for.
+        self.faced = Some(facing);
         // ⚠ A prompt the pane never took is a REFUSAL, not a turn to wait out. The alternative is
         // a loop that waits its whole bound for an answer to a question that was never asked, and
         // then judges the screen anyway — this crate's most expensive failure class.
@@ -9456,14 +9737,17 @@ impl OuterLoop {
     /// reports no prompt ever, so `Took` could only ever go unsatisfied there — asking it would
     /// refuse every delivery to a peer this build supervises by eye. The choice is made on the
     /// authority the supervisor publishes, so it is a fact about the peer rather than a hope.
-    fn submit_lands_when(&self, panes: &dyn PaneAccess) -> SubmittedWhen {
-        let reported = panes
-            .supervision()
-            .and_then(|supervisor| supervisor.pane_agent_state(self.driving.pane).seen())
-            .is_some_and(|seen| {
-                matches!(seen.authority, crate::access::Authority::Reported { .. })
-            });
-        match (submit_lands_when(self.done_when), reported) {
+    ///
+    /// ⚠⚠⚠⚠ **IT IS HANDED THE READING ITS CALLER ALREADY TOOK** — register item 745(C1), and the
+    /// rule the neighbouring check states in its own doc: *the caller passes the reading it already
+    /// took rather than this asking the pane a second time*. This used to ask the supervisor itself,
+    /// which made two reads of one surface inside one delivery — two answers to one question that
+    /// nothing keeps in step, and a second helping of per-pass cost in a driver racing a live pane.
+    /// **That cost is a measured hazard here** (R93: a per-pass macrostep cost the loop its timing
+    /// and was recorded rather than shipped), which is why the record built for 745(C) rides the
+    /// read that was already happening instead of adding one.
+    fn submit_lands_when(&self, facing: &Faced) -> SubmittedWhen {
+        match (submit_lands_when(self.done_when), facing.reported()) {
             (SubmittedWhen::Stirs { within }, true) => SubmittedWhen::Took { within },
             (weaker, _) => weaker,
         }
@@ -11920,6 +12204,101 @@ mod tests {
              constant on most of a bounded journal's steps; reporting only the first is a LATCH, \
              and a run whose deliveries stopped being visible on the pane would say nothing about \
              it for the rest of its life",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND WHAT THIS RUN IS TYPING AT IS SAID THE SAME WAY — ONCE, AND AGAIN WHENEVER THE
+    /// PEER IS DIFFERENT** — register item 745(C)'s diff, driven on its own beside its sibling.
+    ///
+    /// # ⚠⚠⚠⚠ The three unreadable answers are the half a `bool` would have destroyed
+    ///
+    /// The first draft of this record was *did the supervisor answer* — and the three ways it can
+    /// fail to are not one fact: a pane nothing supervises, a pane the host looked at and did not
+    /// recognise, and a reporter whose word this build cannot spell send a reader to three
+    /// different places, which is [`crate::access::Supervised`]'s own reason for existing. So each
+    /// is an arm here, each is DIFFERENT from the others to this diff, and each earns its own line
+    /// the first time a run meets it.
+    ///
+    /// ⚠⚠ **AND THE CHANGE-BACK IS GATED, on the sibling's terms**: a run that types at a working
+    /// peer, then a resting one, then a working one again has three findings, and a latch would
+    /// swallow the third while looking perfect in every walk anybody had read.
+    #[test]
+    fn what_a_run_is_typing_at_is_said_once_and_again_whenever_the_peer_is_different() {
+        /// The supervisor a fixture peer has: exact, and it names itself.
+        fn reported() -> crate::access::Authority {
+            crate::access::Authority::Reported {
+                source: "test".to_owned(),
+            }
+        }
+        fn seen(state: sprag_detect::AgentState) -> Faced {
+            Faced::Seen {
+                state,
+                running: None,
+                told_by: reported(),
+            }
+        }
+
+        let mut told = Told::default();
+        let readings = [
+            seen(sprag_detect::AgentState::Idle),
+            // The same peer twice more — the constant this diff exists to stop repeating, and what
+            // a healthy run looks like for its whole life.
+            seen(sprag_detect::AgentState::Idle),
+            seen(sprag_detect::AgentState::Idle),
+            // ⚠ The peer is DIFFERENT: this delivery went in at an agent its supervisor called
+            // working. THIS is the line an axis would be separated on.
+            seen(sprag_detect::AgentState::Working),
+            seen(sprag_detect::AgentState::Working),
+            // ⚠⚠ AND IT CHANGES BACK, which a latch would swallow.
+            seen(sprag_detect::AgentState::Idle),
+            // ⚠⚠⚠ The same STATE, and not the same reading: a tool named is a different peer, and
+            // a diff that compared only the word would publish nothing here.
+            Faced::Seen {
+                state: sprag_detect::AgentState::Idle,
+                running: Some("Bash".to_owned()),
+                told_by: reported(),
+            },
+            // ⚠⚠⚠⚠ The three unreadable answers, which are three answers and not one absence.
+            Faced::Unsupervised,
+            Faced::NotAnAgent,
+            Faced::Unspellable("marinating".to_owned()),
+            Faced::Unspellable("marinating".to_owned()),
+        ];
+        let said: Vec<Option<Faced>> = readings
+            .iter()
+            .cloned()
+            .map(|reading| told.facing(reading))
+            .collect();
+
+        let published: Vec<bool> = said.iter().map(Option::is_some).collect();
+        assert_eq!(
+            published,
+            vec![
+                true, false, false, true, false, true, true, true, true, true, false
+            ],
+            "⚠⚠⚠⚠⚠ ITEM 745(C): seven findings and four silences. A sentence per delivery puts one \
+             constant on most of a bounded journal's steps (item 277); a sentence only on the \
+             first is a latch, and the peer this run typed at when the submit was not a question \
+             would be the one thing it never said. Got {said:?}",
+        );
+
+        // ⚠⚠⚠ AND EVERY ANSWER SAYS SOMETHING, which is the half a reader depends on: the record
+        // exists to be believed later, and an arm that rendered to nothing would be an escape
+        // hatch dressed as a fact.
+        for reading in &readings {
+            let sentence = reading.noted();
+            assert!(
+                sentence.starts_with("it typed at "),
+                "every arm names what was typed at, including the three that could not read the \
+                 peer: {reading:?} said {sentence:?}",
+            );
+        }
+        assert_ne!(
+            Faced::Unsupervised.noted(),
+            Faced::NotAnAgent.noted(),
+            "⚠⚠ AND THE ABSENCES ARE NOT ONE SENTENCE. *Nothing supervises this pane* and *the \
+             host looked and no manifest claimed it* send a reader to different places, which is \
+             `Supervised`'s own argument and the reason this type has four arms rather than two",
         );
     }
 

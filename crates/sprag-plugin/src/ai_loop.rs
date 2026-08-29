@@ -228,6 +228,12 @@ struct Learned<'a> {
     /// What proved this pass's delivery arrived, when that is not what the run was already told —
     /// register item 434.
     witnessed: Option<crate::deliver::Witnessed>,
+    /// **WHAT THIS PASS TYPED AT** — register item 745(C), and [`None`] on every pass that typed
+    /// nothing at all.
+    ///
+    /// ⚠ Borrowed, like [`found`](Self::found) and [`explained`](Self::explained): this struct is
+    /// `Copy` so a caller cannot half-fill it, and the renderer only reads.
+    faced: Option<&'a crate::outer::Faced>,
 }
 
 impl AiLoop {
@@ -548,6 +554,7 @@ impl AiLoop {
             explained,
             shown,
             witnessed,
+            faced,
         } = learned;
         let mut note = if raised == AiLoopEvent::Null {
             format!("{from:?}: looked, nothing had happened")
@@ -611,6 +618,24 @@ impl AiLoop {
         // skips, where a missing one is a question they cannot answer without the transcript.
         if let Some(evidence) = witnessed {
             note = format!("{note} — {}", evidence.noted());
+        }
+        // ⚠⚠⚠⚠⚠ **AND WHAT IT TYPED AT** — register item 745(C), beside the evidence above because
+        // the two are the same act's two halves: that one says the prompt arrived, this one says
+        // what was there to receive it.
+        //
+        // ⚠⚠⚠ SAID ON EVERY DELIVERY AND NOT ONLY ON THE FOLDED ONE, which is the rule three
+        // clauses above are already written on and is here for a sharper reason than theirs: this
+        // fact exists to let somebody separate the deliveries that LANDED from the ones that did
+        // not, and a clause printed only on refusals is a sample with no control — the shape that
+        // has already killed five hypotheses about `prompt.unasked`. A build that says it only on
+        // the interesting line has deleted the instrument and kept its name.
+        //
+        // ⚠⚠ AND THE UNREADABLE PEER STILL GETS A SENTENCE. [`Faced`] carries its own absences, so
+        // a pane nothing supervises reads as *nobody was watching* rather than as a missing clause
+        // — telling two facts apart by the absence of a sentence being the reading this workspace
+        // has burned wire numbers over, said here for the fourth time on this one function.
+        if let Some(peer) = faced {
+            note = format!("{note} — {}", peer.noted());
         }
         if let Some(unanswered) = found {
             note = format!("{note} — {}", unanswered.noted());
@@ -1276,6 +1301,13 @@ impl Plugin for AiLoop {
                     )
                     .noting(note));
                 }
+                // ⚠⚠⚠⚠⚠ TAKEN HERE, PAST THE TWO EARLY RETURNS ABOVE, and that is register item
+                // 745(C)'s own measurement rather than a preference: a pass that answered a dialog
+                // or refused a call composes no walk line, so a diff consumed on the delivery
+                // would be a finding nobody ever said — and the next delivery at the same peer
+                // would then read as a change and say it twice. Both gates that caught it are in
+                // this file.
+                let faced = self.inner.facing();
                 let note = Self::walked(
                     from,
                     raised,
@@ -1289,6 +1321,11 @@ impl Plugin for AiLoop {
                         explained: explained.as_deref(),
                         shown,
                         witnessed,
+                        // ⚠⚠ TAKEN OFF THE LOOP rather than carried on `Pumped::Moved`, which is
+                        // `walked`'s own decision beside it: the slot is emptied at the top of
+                        // every pump, so what is in it belongs to the pass that just ran, and a
+                        // field on `Pumped` would put one fact at every construction site.
+                        faced: faced.as_ref(),
                     },
                 );
                 // ⚠⚠⚠⚠⚠ **WHETHER THAT ARRIVAL WAS AN ENDING IS THE DOCUMENT'S TO SAY** — register
@@ -9055,6 +9092,103 @@ mod tests {
     /// `ReflectReason` arm no run here reaches would be a word rendered by nobody, and
     /// `every_edge_into_reflecting_says_why_in_a_word_this_driver_knows` holds the other end of
     /// that against the document itself.
+    /// ⛔⛔⛔⛔⛔ **A WALK SAYS WHAT THIS RUN TYPED AT — ON A DELIVERY THAT LANDED, AND ONCE** —
+    /// register item 745(C), driven through the product's own door.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What has no evidence, and why the instrument had to exist
+    ///
+    /// `prompt.unasked` — *the text reached the pane and the submit never became a question* — runs
+    /// at roughly four in fifteen prompts, and **five hypotheses about its cause have died on
+    /// evidence recovered after the fact**: the prompt's size, its ordinal, the pane's origin, the
+    /// document's own state, and (four live deliveries, 2026-08-29) a background shell. What none
+    /// of them could test is the peer's own condition, because nothing wrote it down.
+    ///
+    /// # ⚠⚠⚠⚠ The two halves this gate holds, and what each one dies of
+    ///
+    /// * **A DELIVERY THAT LANDED SAYS IT.** A record kept only where the submit was refused is a
+    ///   sample with no control — the shape that killed the five above — so the fact is taken in
+    ///   `say`, which every question passes through, and this asserts it on the ordinary line of an
+    ///   ordinary run. A build that recorded only on the refusal is green everywhere else and red
+    ///   here.
+    /// * **AND IT DOES NOT REPEAT.** A healthy run types at one peer in one state for its whole
+    ///   life, so a sentence per delivery is register item 277's bounded journal filling with a
+    ///   constant. The second delivery of this run is at the same peer and its line must carry
+    ///   nothing — which is the half a build that dropped [`crate::outer::Told`]'s diff fails.
+    ///
+    /// ⚠⚠ The diff's own rule — once, again on a change, again on the change BACK, and each
+    /// unreadable peer earning its own sentence — is driven where a fixture can actually change:
+    /// `what_a_run_is_typing_at_is_said_once_and_again_whenever_the_peer_is_different`, beside the
+    /// sibling latch it copies. This one is about the product path reaching the journal at all.
+    #[test]
+    fn a_walk_says_what_a_landed_delivery_typed_at_and_does_not_say_it_twice() {
+        /// The peer this fixture's supervisor describes, and the exact words the line must carry.
+        const FACED: &str = "it typed at a peer its supervisor called Idle (reported by test)";
+        /// The clause's opening, for the arms that must carry NO such sentence.
+        const ANY_FACED: &str = "it typed at ";
+
+        let (workspace, pane) = crate::testing::standin_agent(4);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        while walked.len() < 12 {
+            let step = loops
+                .step(&access, &run)
+                .expect("every step must be readable");
+            if let Some(note) = step.note.clone() {
+                walked.push(note);
+            }
+            if matches!(
+                loops.state(),
+                AiLoopState::Converged
+                    | AiLoopState::Exhausted
+                    | AiLoopState::Failed
+                    | AiLoopState::Cancelled
+                    | AiLoopState::Blocked
+            ) {
+                break;
+            }
+        }
+
+        let carrying: Vec<&String> = walked.iter().filter(|note| note.contains(FACED)).collect();
+        assert_eq!(
+            carrying.len(),
+            1,
+            "⛔⛔⛔⛔⛔ ITEM 745(C): exactly one line of this run says what it typed at. Zero means \
+             the record was never taken on a delivery that LANDED — leaving the peer knowable only \
+             where the submit was refused, which is a sample with no control and the shape five \
+             dead hypotheses already had. More than one means the diff is gone and a bounded \
+             journal is filling with one constant (item 277). Walked {walked:?}",
+        );
+        let first = walked
+            .first()
+            .expect("a driven run writes at least one line");
+        assert!(
+            first.contains(FACED),
+            "⚠⚠⚠ AND IT IS THE FIRST DELIVERY THAT CARRIES IT, which is the brief going in — the \
+             one delivery every run makes before anything can have gone wrong. Got {first:?}",
+        );
+
+        // ⚠⚠⚠⚠ THE CONTROL, AND IT IS THE HALF THAT SAYS THIS IS A DIFF RATHER THAN A SHOUT. This
+        // run delivers more than once — the reflection prompt and the replacement's brief both go
+        // through `say` — and every one of those lines is at the SAME peer, so it must say nothing
+        // about it. A build that appended the clause to each would pass the assertion above only
+        // by accident of counting, which is why the whole tail is asserted rather than a total.
+        let repeats: Vec<&String> = walked
+            .iter()
+            .skip(1)
+            .filter(|note| note.contains(ANY_FACED))
+            .collect();
+        assert!(
+            repeats.is_empty(),
+            "⚠⚠⚠ AFTER THE FIRST, NOTHING REPEATS IT: this run's later deliveries are at the same \
+             peer in the same state, and a journal that said so on each would be one constant on \
+             most of its steps. Got {repeats:?}",
+        );
+    }
+
     #[test]
     fn the_walk_says_why_a_run_stopped_to_reflect() {
         use crate::outer::ReflectReason;

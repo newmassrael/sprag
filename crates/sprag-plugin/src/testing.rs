@@ -2546,6 +2546,27 @@ impl DialogBetweenTheReads {
 /// GROW: past the first scroll the high-water mark was final and **no further turn could end**.
 /// R375 recorded the shrinking half of this trap; the half that cost a round is the ceiling.
 pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAccess {
+    supervised_calling(workspace, Arc::new(Mutex::new(AgentState::Idle)))
+}
+
+/// [`supervised`], with the state it reports held by the CALLER — so a gate can change what the
+/// peer is between one delivery and the next.
+///
+/// # ⚠⚠⚠ Why a knob exists at all, when the doc above says the state must be `Idle`
+///
+/// That paragraph is about what this fixture may claim ON ITS OWN: a shell peer's screen carries no
+/// evidence of working, so inventing `Working` would be a fixture stating a fact its pane does not
+/// have. A caller holding the handle is a different thing — it is the GATE saying *and now the
+/// supervisor says this*, which is exactly the arrangement register item 745(C)'s record has to be
+/// driven through: a fact published only when it CHANGES cannot be gated by a fixture that never
+/// changes, and every loop fixture in this crate has one peer in one state for its whole life.
+///
+/// ⚠ The seq machinery is untouched and still the peer's own, so a gate that turns this knob has
+/// changed one thing.
+pub(crate) fn supervised_calling(
+    workspace: &Arc<Mutex<Workspace>>,
+    state: Arc<Mutex<AgentState>>,
+) -> WorkspacePaneAccess {
     let source = {
         let workspace = Arc::clone(workspace);
         let high: SeqHighWater = Arc::default();
@@ -2555,7 +2576,7 @@ pub(crate) fn supervised(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAcce
                 .unwrap_or_default();
             let seq = latched(&high, id, &rows);
             Some(crate::access::AgentObservation {
-                state: AgentState::Idle,
+                state: *state.lock().expect("the state this gate is holding"),
                 // ⚠⚠ ONLY ONCE THE PANE HAS PAINTED — see [`has_painted`], and the same reason as its
                 // sibling above: `Settles` names an agent, and a blank pane must not.
                 agent: has_painted(&rows).then(|| "claude".to_string()),
