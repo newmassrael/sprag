@@ -4555,10 +4555,35 @@ fn a_daemon_whose_binary_was_replaced_under_it_can_still_start_a_driver() {
     };
 
     // ── A BINARY OF OUR OWN TO OVERWRITE, which is the whole reason this gate can exist ──────
-    let bin_dir = state.join("bin");
+    //
+    // ⛔⛔⛔⛔⛔ **LINKED, NOT COPIED, AND THAT IS A RACE THIS GATE PAID FOR ONCE.** The first form
+    // used `fs::copy` and died `Text file busy` inside an 88-target sweep while passing four times
+    // on its own. It is not a flake and it has a mechanism: `fs::copy` holds the DESTINATION open
+    // for writing, and any other test thread that forks during that window hands its child a
+    // duplicate of that descriptor — `O_CLOEXEC` closes it at the child's exec, not at its fork —
+    // so for as long as that child is between fork and exec, `execve` of the file this test just
+    // wrote answers `ETXTBSY`. Under one test that window has nobody in it; under thirty-one
+    // threads it does.
+    //
+    // ⚠⚠ A retry would hide it. A HARD LINK removes it: nothing is ever opened for writing, so the
+    // window does not exist. It is also the truer fixture — what this gate needs is not a copy of
+    // the bytes but **a name of its own that it may destroy**, which is exactly what a link is.
+    //
+    // ⚠ Beside the cargo binary, because a link cannot cross filesystems and the state directory is
+    // in `$TMPDIR`. The directory carries this test's pid and thread so two runs cannot collide.
+    let bin_dir = Path::new(env!("CARGO_BIN_EXE_sprag-term"))
+        .parent()
+        .expect("the cargo binary has a parent directory")
+        .join(format!(
+            "r766-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+    let _ = std::fs::remove_dir_all(&bin_dir);
     std::fs::create_dir_all(&bin_dir).expect("the test's own bin directory");
     let bin = bin_dir.join("sprag-term");
-    std::fs::copy(env!("CARGO_BIN_EXE_sprag-term"), &bin).expect("a copy to promote over");
+    std::fs::hard_link(env!("CARGO_BIN_EXE_sprag-term"), &bin)
+        .expect("a name of our own for this image");
     spawn_daemon_from(&bin, &sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
@@ -4736,6 +4761,10 @@ fn a_daemon_whose_binary_was_replaced_under_it_can_still_start_a_driver() {
     );
     drop(conn);
     drop(guard);
+    // ⚠ The link's directory lives beside the cargo binary rather than under `$TMPDIR` (see its
+    // note), so it is taken away here. A panic above leaves it behind — under `target/`, which is
+    // ignored and pruned — and that is the right trade against a fixture that cannot run at all.
+    let _ = std::fs::remove_dir_all(&bin_dir);
 }
 
 /// ⚠⚠⚠⚠⚠ **A RUN WHOSE DRIVER PROCESS DIES UNDER A LIVING DAEMON IS PUT BACK ON A NEW ONE, AND A
