@@ -404,12 +404,18 @@ const MILESTONE_CHECK: &str = "milestone_check";
 ///
 /// # ⛔⛔⛔⛔⛔ Why this is a constant standing at the END of the question
 ///
-/// [`Judgement`](crate::judge::Judgement) is decided on the reply's FIRST WORD, so a checker that
-/// opens with anything else has not answered — measured, live: a run's check replied `"My"` and the
-/// round was recorded `unverified` although the checker had judged. Before this, the prompt asked
-/// for that first word in the MIDDLE and then handed over the agent's whole transcript, so the last
-/// thing the reader saw was somebody else's prose and the last instruction was hundreds of lines
-/// behind it. **The order is the fix**: what the reply must look like is now the closing sentence.
+/// A verdict is ONE WORD, and the surest place to put it is first — measured, live: a run's check
+/// replied `"My"` and the round was recorded `unverified` although the checker had judged. Before
+/// this, the prompt asked for that first word in the MIDDLE and then handed over the agent's whole
+/// transcript, so the last thing the reader saw was somebody else's prose and the last instruction
+/// was hundreds of lines behind it. **The order is the fix**: what the reply must look like is now
+/// the closing sentence.
+///
+/// ⚠⚠⚠⚠⚠ **AND THE READER WAS REPAIRED TOO, WHICH DOES NOT MAKE THIS ONE REDUNDANT** — register
+/// item 743. [`verdict_in`](crate::judge) now FINDS a marked verdict instead of taking the first
+/// word, so `"My verdict is YES"` is read. The two halves are independent and both are wanted: a
+/// prompt this run cannot get an unambiguous answer out of is a prompt to fix, and the reader's
+/// rule still cannot see a verdict spelled in lower case inside a sentence.
 ///
 /// ⚠⚠ **IT NAMES THE SHAPE THAT FAILED** rather than only restating the rule. *Answer YES or NO as
 /// your FIRST WORD* was already there and was already followed in substance — the replies that lost
@@ -426,8 +432,9 @@ const MILESTONE_CHECK: &str = "milestone_check";
 /// different ideas of what the closing instruction is.
 const HOW_TO_ANSWER: &str = "Now answer. YOUR REPLY MUST BEGIN WITH THE WORD YES OR THE WORD NO — \
      that FIRST WORD before anything else. Do not open with a heading, a greeting, a restatement \
-     of the checkpoint, or a phrase such as \"My verdict\" or \"Verdict:\": a reply whose first \
-     word is anything else cannot be read as a verdict at all and this run throws it away. Then \
+     of the checkpoint, or a phrase such as \"My verdict\" or \"Verdict:\": a reply this run \
+     cannot find a verdict in is thrown away, and a verdict buried in a sentence is one it can \
+     miss. Then \
      give ONE short sentence saying why. If what you were shown is empty or does not let you \
      judge, say that in the sentence rather than guessing.\n";
 
@@ -2992,7 +2999,7 @@ impl Session {
 /// existed and **says that is what happened**.
 ///
 /// ⚠⚠ **A CHECK THAT SAID NOTHING IS [`NotAsked`](Self::NotAsked)'s NEIGHBOUR AND NOT ITS TWIN.** A
-/// spawn that failed, a checker that outran its bound, a reply whose first word is not a verdict —
+/// spawn that failed, a checker that outran its bound, a reply with no verdict anywhere in it —
 /// [`asked_of_another`](crate::judge::asked_of_another) answers `None` to all of them, and this
 /// crate's standing direction applies: **silence is never a yes**. It is [`Silent`](Self::Silent),
 /// which is a fault a reader can act on (the checker is broken) where `NotAsked` is a decision the
@@ -3009,7 +3016,7 @@ pub enum Checked {
     /// An independent process was asked and said it was NOT.
     Failed,
     /// An independent process was asked and **said nothing this could read** — it would not start,
-    /// it outran its bound, the run ended underneath it, or its first word was not a verdict.
+    /// it outran its bound, the run ended underneath it, or nothing in its reply was a verdict.
     Silent,
 }
 
@@ -9371,7 +9378,7 @@ impl OuterLoop {
     /// outside.
     ///
     /// ⚠⚠⚠ **THE VERDICT RULE IS UNCHANGED AND THAT IS THE POINT.** `asked_of_another` decides on
-    /// the FIRST WORD and keeps the first line of the rest, which is measured behaviour: the same
+    /// ONE WORD and keeps the first line of the rest, which is measured behaviour: the same
     /// model answers some questions with a bare verdict and others with a paragraph. Asking for a
     /// sentence does not widen what counts as the verdict; it stops throwing away the half that was
     /// already being read.
@@ -16220,7 +16227,7 @@ mod tests {
     /// permanently blind against a repainting agent, and one a real checker answers `NO` to.
     ///
     /// ⚠⚠ **THE VERDICT RULE IS UNCHANGED, AND THAT IS ASSERTED.** `asked_of_another` decides on
-    /// the first word and keeps the first line of the rest; asking for a sentence must not widen
+    /// ONE WORD and keeps the first line of the rest; asking for a sentence must not widen
     /// what counts as a verdict, or a judge that begins *"Yes, but…"* changes meaning.
     #[test]
     fn a_check_is_asked_for_a_reason_and_the_run_says_which_reader_it_was_shown() {
@@ -16269,9 +16276,10 @@ mod tests {
         // ── AND THE VERDICT RULE IS UNTOUCHED ──
         assert!(
             question.contains("FIRST WORD") && question.contains("YES") && question.contains("NO"),
-            "⚠⚠⚠ THE VERDICT IS STILL THE FIRST WORD. `asked_of_another` decides on it and keeps \
-             the first line of the rest; a prompt that stopped saying so would let a judge open \
-             with `Yes, but…` and be read as agreement: {question:?}",
+            "⚠⚠⚠ THE PROMPT STILL ASKS FOR THE VERDICT FIRST. Register item 743 taught the READER \
+             to find a marked verdict further in, and that is a safety net rather than a licence: \
+             the reader still cannot see one spelled in lower case inside a sentence, so a prompt \
+             that stopped asking would hand it replies it has to throw away: {question:?}",
         );
 
         // ══ ⛔⛔⛔⛔⛔ AND THE INSTRUCTION IS THE LAST THING READ, NOT THE MIDDLE ═══════════════
@@ -16308,9 +16316,9 @@ mod tests {
         assert!(
             at_shown < at_rule,
             "⛔⛔⛔⛔⛔ THE TRANSCRIPT IS THE LAST THING THE CHECKER READS AND THE ANSWER RULE IS \
-             BURIED ABOVE IT. That is the arrangement a live run answered `\"My\"` under: the \
-             verdict is decided on the FIRST WORD, and the last thing this prompt said before \
-             handing over was not about the first word. Shown at {at_shown}, rule at {at_rule}",
+             BURIED ABOVE IT. That is the arrangement a live run answered `\"My\"` under: a \
+             verdict is ONE WORD, and the last thing this prompt said before handing over was not \
+             about which word that is. Shown at {at_shown}, rule at {at_rule}",
         );
         assert!(
             question.trim_end().ends_with(HOW_TO_ANSWER.trim_end()),
@@ -19913,7 +19921,7 @@ mod tests {
             assert_eq!(
                 ask(&mut loops, MUMBLES).0,
                 Checked::Silent,
-                "⚠⚠⚠ a reply whose first word is not a verdict is SILENCE — a broken checker, and a \
+                "⚠⚠⚠ a reply with no verdict anywhere in it is SILENCE — a broken checker, and a \
                  fact a reader can act on. It must not be an agreement, and it must not be a verdict \
                  against the agent either",
             );
@@ -21864,11 +21872,16 @@ mod tests {
     /// now contrasts the two sets so the arm cannot go missing again; **this gate is the other
     /// half — that the arm WORKS on a run rather than merely existing in the file.**
     ///
-    /// ⚠⚠ **AND IT IS THE ORDINARY CASE, NOT A CORNER.** The measured shape is a checker that stops
-    /// at a permission dialog: it answers `Permission …`, which is not a verdict, so
-    /// [`crate::judge::Unheard::NotAVerdict`] classifies it `Unreadable` and the document routes to
-    /// `unverified` — **every time it is asked**. A run whose checker is blocked meets this on every
-    /// claimed milestone, which is why the omission cost rounds rather than curiosities.
+    /// ⚠⚠ **AND IT IS THE ORDINARY CASE, NOT A CORNER.** A checker that answers something holding
+    /// no verdict — a usage-limit notice, a hook's refusal — is classified `Unreadable` by
+    /// [`crate::judge::Unheard::NotAVerdict`] and the document routes to `unverified`, **every time
+    /// it is asked**. A run whose checker is in that state meets this on every claimed milestone,
+    /// which is why the omission cost rounds rather than curiosities.
+    ///
+    /// ⚠ Register item 743 later removed the LARGEST member of that population — `Permission …` was
+    /// an advisory over a real verdict, not a checker that had been stopped — and removed nothing
+    /// from this door: the remaining members still arrive here, and a door reached less often is
+    /// still a door a run cannot be left without.
     ///
     /// ⚠⚠⚠ THE CONTROLS, and each fails on its own: the run must never reach `disputing` (a silence
     /// is not a refusal — the checker did not say NO, it said nothing readable), the sentence typed
@@ -21877,10 +21890,15 @@ mod tests {
     /// agent's answer as the run's report whenever the question in flight asked for one.
     #[test]
     fn a_claim_no_check_could_read_leaves_by_its_own_door_and_the_run_goes_on() {
-        /// **A CHECKER STANDING AT A PERMISSION DIALOG**, which is what run 68 met. Its first word
-        /// is not a verdict, so this is `NotAVerdict("Permission")` → `Silence::Unreadable` → the
-        /// document's `unverified`. ⚠ It is deliberately NOT `/bin/echo NO …`: that is a REFUSAL and
-        /// reaches `disputing`, which is the control this gate asserts it never took.
+        /// **A CHECKER THAT ANSWERS SOMETHING WITH NO VERDICT IN IT** — the shape run 68 was
+        /// recorded under, so this is `NotAVerdict(…)` → `Silence::Unreadable` → the document's
+        /// `unverified`. ⚠ It is deliberately NOT `/bin/echo NO …`: that is a REFUSAL and reaches
+        /// `disputing`, which is the control this gate asserts it never took.
+        ///
+        /// ⚠⚠ **AND IT IS NO LONGER RUN 68's OWN REPLY, which register item 743 measured.** That
+        /// reply carried `Permission` as an ADVISORY above a real `YES`, and a run meeting it today
+        /// is verified rather than unverified. What this gate needs is a checker whose answer holds
+        /// no verdict at all, and this is one — the door under test is the same either way.
         const CANNOT_ANSWER: &str = "/bin/echo Permission to use Bash";
         /// Out of reach, so the silence ceiling never fires inside this walk — what is measured is
         /// the silent edge itself and the pass that follows it.

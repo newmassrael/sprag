@@ -501,19 +501,27 @@
       checked. By the arm the driver classed them under:
 
         Unfinished    4   the wait ended without an answer (`NotYet` ×3, `RunEnded`)
-        NotAVerdict  15   it answered, and the first word was not YES or NO
+        NotAVerdict  15   it answered, and no word of the answer was YES or NO
 
-      and by what those fifteen first words were: `Permission` ×3 — the checker
-      sitting at a tool-permission dialog — `You've` ×2 — a usage-limit notice —
-      `Trim` — a hook refusing it — and nine that are genuinely a verdict in the
-      wrong shape (`Verdict`, `Gate`, `Counterfactual`, `Re-measured`, `The` ×2,
-      `Two`, `Still`, and one empty reply).
+      and by what those fifteen replies OPENED with: `Permission` ×3 — `You've`
+      ×2, a usage-limit notice — `Trim`, a hook refusing it — and nine that are
+      genuinely a verdict in the wrong shape (`Verdict`, `Gate`,
+      `Counterfactual`, `Re-measured`, `The` ×2, `Two`, `Still`, and one empty
+      reply).
+
+      ⛔⛔⛔⛔⛔ AND REGISTER ITEM 743 DISPROVED THE READING OF THE LARGEST GROUP.
+      `Permission` is not a checker sitting at a dialog: it is the opening of an
+      ADVISORY the tool prints about a loose allow rule in the consuming
+      repository's `.claude/settings.local.json`, and the judge's `YES` was on
+      the line UNDER it. The driver now finds a marked verdict anywhere in the
+      reply, so those three — and most of the nine — are READ. What is left in
+      this class is `You've` and `Trim`: replies with no verdict in them at all.
 
       ⚠⚠⚠⚠ SO THE TWO CLAUSES ARE WRITTEN AGAINST THAT DISTRIBUTION AND NOT
       AGAINST A GUESS. `unanswered` is told to look at the ASKING, because that
-      is where its four cases live; `unreadable` is told the first word is the
-      whole diagnosis and to make the next reply start with the verdict, because
-      that is what nine of its fifteen actually need.
+      is where its four cases live; `unreadable` is told to make the next reply
+      LEAD with the verdict, because a reply this driver cannot find one in is
+      the only thing that still lands there.
 
       ⚠⚠ AND NEITHER SAYS *the milestone is wrong*. A silence is not a refusal —
       `judging`'s own block spells that out — and telling an agent its work was
@@ -531,7 +539,7 @@
       written from.
     -->
     <data id="unreadable_rule"
-          expr="'검사기가 답은 했는데 그 «첫 낱말»이 판정이 아니었다 — 다시 물어도 같은 모양이 온다. 고칠 것은 검사기의 프롬프트나 프로그램이다: 답의 첫 낱말이 YES 또는 NO 로 시작하게 만들어라. 마일스톤 주장 자체가 거절된 것은 아니다.'"/>
+          expr="'검사기가 답은 했는데 그 답 «어디에도» 판정 낱말이 없었다 — 다시 물어도 같은 모양이 온다. 고칠 것은 검사기의 프롬프트나 프로그램이다: 답이 YES 또는 NO 로 «시작»하게 만들어라(문장 안에 소문자로 묻힌 판정은 이 드라이버가 못 본다). 마일스톤 주장 자체가 거절된 것은 아니다.'"/>
 
     <!--
       ══════════════════════════════════════════════════════════════════════════

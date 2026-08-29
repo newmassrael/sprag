@@ -239,12 +239,19 @@ impl JudgedRules {
 pub struct Judgement {
     /// Whether the criterion holds.
     pub holds: bool,
-    /// The verdict word actually read — what the reply's FIRST WORD was.
+    /// The verdict word actually read — the first MARKED one in the reply, spelled as the judge
+    /// spelled it. A word counts as MARKED where the judge said *this is my answer*: it opens the
+    /// reply, or it is spelled in capitals.
     ///
     /// ⚠ Carried because the reply is not guaranteed to be one word. Measured: the same model
     /// answers some dialogs with a bare verdict and others with a paragraph after it, so a reader
-    /// comparing whole replies called a stable verdict unstable. The first word is the verdict and
-    /// the rest is commentary — this is the part that was read.
+    /// comparing whole replies called a stable verdict unstable. The verdict is one word and the
+    /// rest is commentary — this is the part that was read.
+    ///
+    /// ⚠⚠ **AND IT IS NO LONGER ALWAYS THE REPLY'S FIRST WORD** — register item 743. It was, and
+    /// that meant a judge answering under a tool's advisory, or inside a sentence, was recorded as
+    /// having answered nothing at all. The spelling travels because it is actionable: `Yes,` is a
+    /// prompt that wants tightening where `YES` is one that does not.
     pub said: String,
     /// **WHAT THE JUDGE WENT ON TO SAY AFTER ITS VERDICT**, and [`None`] where it said only the
     /// word.
@@ -259,11 +266,13 @@ pub struct Judgement {
     /// instructed to measure why the check was refusing before changing anything, and against the
     /// shipped product that instruction could not be carried out at all.**
     ///
-    /// ⚠⚠ **THE FIRST-WORD RULE ITSELF IS RIGHT AND STAYS.** It is measured (a model answers some
+    /// ⚠⚠ **THE ONE-WORD RULE ITSELF IS RIGHT AND STAYS.** It is measured (a model answers some
     /// dialogs with a bare verdict and others with a paragraph) and nothing here loosens it: the
-    /// verdict is still decided by the first word alone, and a judge that explains itself changes no
-    /// verdict by doing so. What changes is that the paragraph is KEPT beside the word instead of
-    /// dropped.
+    /// verdict is still ONE WORD, and a judge that explains itself changes no verdict by doing so.
+    /// What changes is that the paragraph is KEPT beside the word instead of dropped.
+    ///
+    /// ⚠ Register item 743 later moved where that word may STAND, and moved
+    /// nothing about what one is.
     ///
     /// ⚠ **ONE LINE, and that is a rule rather than a length.** What a walk carries is a line a
     /// person reads, so this is the first line of whatever followed the verdict — the reply is
@@ -304,7 +313,7 @@ pub struct Judgement {
 ///
 /// [`asked_of_another`]'s own doc states the safety property and states it correctly: *no argv, no
 /// lifecycle, a spawn that failed, a process that outran `within`, a run that ended underneath, or
-/// a reply whose first word is not a verdict — all of them answer `None`, and the CALLER decides
+/// a reply with no verdict anywhere in it — all of them answer `None`, and the CALLER decides
 /// what nothing means.* **Silence is never a yes.** Nothing about that changes here.
 ///
 /// What that collapse cost is a different thing: **a person told only *the checker was silent* has
@@ -346,14 +355,26 @@ pub enum Unheard {
     /// ended is the two-authorities defect this crate keeps naming.
     Unfinished(crate::completion::Over),
     /// **ITS PANE COULD NOT ACCOUNT FOR WHAT IT HANDED BACK** — the retained history had evicted
-    /// lines, or the numbering changed underneath the read, so the verdict may not be the first
-    /// word of what the judge actually wrote.
+    /// lines, or the numbering changed underneath the read, so what looks like a verdict may be a
+    /// word out of the middle of a sentence the opening of which is gone.
     Unaccountable,
-    /// **IT ANSWERED, AND WHAT IT SAID IS NOT A VERDICT**, carrying the first word it did say.
+    /// **IT ANSWERED, AND NOTHING IN WHAT IT SAID IS A VERDICT**, carrying the first LINE the judge
+    /// spoke — or, where the judge said nothing of its own, the first line of what was printed.
     ///
-    /// ⚠ The word is kept because it is the whole diagnosis: `Error:` is a broken checker, `Yes,`
-    /// with a comma is a prompt that needs tightening, and an empty string is a judge that printed
-    /// nothing at all. One remedy each.
+    /// # ⛔⛔⛔⛔⛔ It used to carry the first WORD, and the doc claimed that word was the whole
+    /// diagnosis
+    ///
+    /// **The measurement disproved the claim** — register item 743. `Permission`, the commonest
+    /// payload this variant ever carried, is the opening of an ADVISORY a tool prints about a loose
+    /// allow rule in somebody's `.claude/settings.local.json`; the judge's actual answer was on the
+    /// line beneath it. One word could not tell *the checker was stopped before it judged* from
+    /// *the checker judged and something printed over the top*, and the second was what had
+    /// happened.
+    ///
+    /// ⚠ A LINE, then, which is the unit [`Judgement::explained`] already uses one door over.
+    /// `Error: no API key` is a broken checker, an echoed question is a checker handed the wrong
+    /// argv, and an EMPTY string is a judge that printed nothing at all. One remedy each, and the
+    /// empty spelling is kept for the last of them alone.
     NotAVerdict(String),
 }
 
@@ -380,12 +401,19 @@ pub enum Unheard {
 /// (`NotYet` ×3, `RunEnded` ×1). The other four arms did not occur.
 ///
 /// ⚠⚠ **WHAT THIS DOES NOT SPLIT, STATED RATHER THAN HIDDEN.** Of those 15 unreadable answers, six
-/// first words — `Permission` ×3, `You've` ×2, `Trim` — say the checker was stopped by a dialog, a
-/// usage limit or a hook **before it could judge at all**, which is [`Unanswered`](Self::Unanswered)
-/// in every sense but the one this type can see. [`Unheard::NotAVerdict`] keeps only the FIRST WORD
-/// of the reply, so nothing downstream can tell that from a verdict in the wrong shape. Registered
-/// as its own item rather than guessed at here: a needle list over somebody's prose is exactly the
-/// widening `debt_loop.scxml`'s own `service_needles` comment refuses.
+/// first words — `Permission` ×3, `You've` ×2, `Trim` — looked like a checker stopped by a dialog,
+/// a usage limit or a hook **before it could judge at all**, which is
+/// [`Unanswered`](Self::Unanswered) in every sense but the one this type can see. A needle list over
+/// somebody's prose would be the widening `debt_loop.scxml`'s own `service_needles` comment
+/// refuses, so it was registered as its own item rather than guessed at here.
+///
+/// ⛔⛔⛔⛔⛔ **AND THE MEASUREMENT THAT ITEM MADE HALVED THE POPULATION IT WAS ABOUT.** The three
+/// `Permission` replies were not a checker stopped before judging at all: that word is the opening
+/// of an ADVISORY some tool prints about a loose allow rule, and the judge's `YES` was on the line
+/// underneath. Those are now READ, which leaves this paragraph describing
+/// `You've` ×2 and `Trim` — replies with no verdict anywhere in them, where *asking again* is what
+/// the usage limit and the hook actually want. **The split is unchanged and what it cannot see is
+/// smaller**; telling those apart still needs a vocabulary this type does not have.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Silence {
     /// **NO VERDICT WAS EVER PRODUCED** — the checker was not asked, could not be started, did not
@@ -456,14 +484,15 @@ impl Unheard {
                 )
             }
             Self::Unaccountable => {
-                "its pane could not account for what it handed back, so the first word may not be \
-                 the judge's own — the verdict was discarded rather than guessed at"
+                "its pane could not account for what it handed back, so what reads as a verdict may \
+                 not be the judge's own — it was discarded rather than guessed at"
                     .to_owned()
             }
             Self::NotAVerdict(said) => {
                 format!(
-                    "the checker answered {said:?}, which is not YES or NO — fix its prompt or its \
-                     program, because nothing here can turn that into a verdict"
+                    "the checker answered {said:?}, and nothing in that reply is a YES or a NO — \
+                     fix its prompt or its program, because nothing here can turn that into a \
+                     verdict"
                 )
             }
         }
@@ -473,7 +502,7 @@ impl Unheard {
 /// Ask `spec`'s agent whether `criterion` holds of `question`.
 ///
 /// [`Err`] when there is no lifecycle to spawn into, the judge could not be started, it did not
-/// finish inside [`JudgeSpec::within`], the run ended underneath, or its first word was not a
+/// finish inside [`JudgeSpec::within`], the run ended underneath, or no word in its reply was a
 /// verdict. Every one of those is *this judge said nothing* — see the module doc for why that must
 /// not be read as either answer, and [`Unheard`] for why they are told apart.
 ///
@@ -505,7 +534,7 @@ pub fn judges(
 }
 
 /// **PUT ONE YES-OR-NO QUESTION TO A PROCESS NOBODY IN THIS RUN IS**, bounded, and hand back what
-/// its first word was — or [`None`] where it said nothing this can read.
+/// its verdict word was — or [`None`] where it said nothing this can read.
 ///
 /// # ⚠⚠⚠⚠ Why this is its own function, with two callers and a name of its own
 ///
@@ -527,7 +556,7 @@ pub fn judges(
 /// # ⚠⚠⚠ Every silence is [`None`], and that direction is the safety property
 ///
 /// No argv, no lifecycle, a spawn that failed, a process that outran `within`, a run that ended
-/// underneath, or a reply whose first word is not a verdict — **none of them is a verdict**, and
+/// underneath, or a reply with no verdict anywhere in it — **none of them is a verdict**, and
 /// the CALLER decides what nothing means. **Silence is never a yes**, and it is never a no either:
 /// a `false` here would look exactly like a considered verdict against, which is a different fact.
 ///
@@ -559,7 +588,7 @@ pub fn asked_of_another(
 /// its economic door has never been walked by a run because nothing can produce `ask.done`.
 ///
 /// ⚠⚠ **THE SPLIT IS AT THE MEANING, WHICH IS WHERE THE TWO CALLERS DIFFER AND NOWHERE ELSE.** A
-/// judgement is a FIRST WORD (`YES`/`NO`) with an explanation under it; a review's answer is A
+/// judgement is ONE WORD (`YES`/`NO`) with an explanation under it; a review's answer is A
 /// LINE. Everything before that — an empty argv, a host with no lifecycle, a spawn that failed, a
 /// process that outran `within`, a run that ended underneath, a pane whose history was lost — is
 /// the same question with the same six answers, and [`Unheard`] already names them.
@@ -630,10 +659,14 @@ pub(crate) fn said_by_another(
     //
     // `lost` means the pane's retained history evicted lines before this read, and `restarted` means
     // the numbering changed underneath it — in either case the text may not open where the reply
-    // does. That matters more here than almost anywhere: the verdict is the FIRST WORD, so a reply
-    // read with its opening missing does not produce a wrong reason, it produces **a wrong verdict**
-    // — the first word of the middle of a sentence, put through the YES/NO match. Silence is the
-    // safe direction and this function is built on it, so an unaccountable read takes it.
+    // does. That matters more here than almost anywhere: a verdict is a WORD, so a reply read with
+    // its opening missing does not produce a wrong reason, it produces **a wrong verdict** — a word
+    // out of the middle of a sentence, put through the YES/NO match. Silence is the safe direction
+    // and this function is built on it, so an unaccountable read takes it.
+    //
+    // ⚠ Register item 743 widened where a verdict may STAND and left this argument exactly where it
+    // was: a scan that reads further into the reply reads further into a reply that may be a
+    // fragment, which is the same fabrication one word later.
     let Some(reply) = reply else {
         return Err(Unheard::Unaccountable);
     };
@@ -646,25 +679,66 @@ pub(crate) fn said_by_another(
 /// checker that ECHOES its argv sends this run's own prompt back, and the echo has to be cut off
 /// what the judge is quoted as saying. `took` is the asking's own clock, handed over rather than
 /// re-taken — see [`said_by_another`].
+///
+/// # ⛔⛔⛔⛔⛔ THE VERDICT IS FOUND, NOT TAKEN — register item 743
+///
+/// This used to read the reply's FIRST WORD and put that one word through the YES/NO match, so a
+/// judge that answered correctly one line further down had its whole answer thrown away. Two
+/// samples, measured in two repositories, arriving by two different roads:
+///
+/// | what the run recorded | what the reply actually was |
+/// |---|---|
+/// | `NotAVerdict("Permission")` | a tool ADVISORY about a loose allow rule, printed above the answer — and `YES — …` on the line under it |
+/// | `NotAVerdict("My")` | no advisory at all: the judge put its verdict INSIDE a sentence |
+///
+/// ⚠⚠⚠ **WHICH IS WHY THE REPAIR IS NOT AN ADVISORY FILTER.** The first sample was measured in
+/// both directions — same question, same argv, one allow rule the only difference — so what prints
+/// that line is known exactly. **The second has no advisory to filter.** A needle for the one road
+/// leaves the other wide open, and that widening is refused in this crate's own loop document:
+/// *a needle a run can print by working is a needle that stops the run for working.*
+///
+/// ⚠⚠ **WHAT ONE THROWN-AWAY ANSWER COST, so this is not read as tidiness**: that `YES` was the
+/// INDEPENDENT CHECK of another repository's milestone. A round that had been verified was
+/// recorded as a round nothing verified — register item 428's defect arriving down the one road
+/// its remedy was built to close.
+///
+/// # ⚠⚠⚠⚠ The first MARKED verdict word, which is a different rule from *any `yes`*
+///
+/// A verdict counts where the judge MARKED it as its answer, and there are exactly two marks: it
+/// **opens the reply** (position), or it is spelled **in capitals** (emphasis). Both are the mark
+/// this run asked for — `render` says *reply with exactly one word: YES or NO* and the milestone
+/// check's closing instruction says *THE WORD YES OR THE WORD NO*.
+///
+/// ⛔⛔⛔⛔⛔ **AND THE SECOND MARK IS NOT FASTIDIOUSNESS — A GATE IN THIS FILE CAUGHT ITS ABSENCE
+/// THE HOUR THIS WAS WRITTEN.** A scan that took any `no` read the broken checker `Error: no API
+/// key` as a considered REFUSAL, and the shape generalises well past that fixture: *"there is no
+/// evidence for the claim"* is a sentence a judge writes on its way to either verdict. Inside a
+/// sentence, in ordinary case, `no` is English. **A fabricated verdict is worse than the discarded
+/// one this item is about**, and the two marks are what tell them apart.
+///
+/// ⚠ And a verdict is a WORD: `NOT`, `NOTHING` and `YESTERDAY` are not verdicts, though a
+/// substring search finds one in every one of them.
+///
+/// ⚠⚠⚠⚠⚠ **THE ECHO IS CUT BEFORE THE SCAN, AND THAT ORDER IS THE SAFETY PROPERTY.** The rendered
+/// question SAYS the words `YES` and `NO` — it must, it is asking for one of them — so a checker
+/// spelled `/bin/echo` prints a verdict word without having judged anything. Scanning the whole
+/// reply would read that as an agreement, which is exactly the act this module exists to keep out
+/// of reach: **silence is never a yes.**
+///
+/// ⚠ The residue, stated rather than left to be discovered: what stood BEFORE the verdict is not
+/// kept. [`Judgement::explained`] is what a judge went on to say AFTER its answer, an advisory some
+/// tool printed over the top is nobody's reasoning — and a preamble the judge wrote itself goes out
+/// with it. What is lost there is prose about an answer that now arrives; what was lost before was
+/// the answer.
+///
+/// ⚠⚠ **AND THE SECOND RESIDUE, WHICH IS THE ONE THAT COULD BITE**: a checker that QUOTES the
+/// instruction it was given — *"I was asked to answer YES or NO and I cannot"* — has spelled a
+/// marked verdict word it did not mean. A full echo cannot do this (it is cut), and the prompt asks
+/// for no restatement, but a partial quotation is reachable and would be read as the word it
+/// quoted. Filtering that phrase would be a needle over somebody's prose, which is the widening
+/// this item refused; it is named here instead so the next measurement knows where to look.
 fn verdict_in(reply: &str, question: &str, took: Duration) -> Result<Judgement, Unheard> {
-    // ⚠⚠ SPLIT ONCE, so the verdict and what follows it are read off the SAME reply at the same
-    // moment. Taking the first word here and re-scanning the text for the rest would be two readers
-    // of one string, free to disagree about where the word ended.
-    let trimmed = reply.trim_start();
-    let (first, rest) =
-        trimmed.split_at(trimmed.find(char::is_whitespace).unwrap_or(trimmed.len()));
-    if first.is_empty() {
-        // ⚠ AN EMPTY FIRST WORD IS A CHECKER THAT PRINTED NOTHING, and it is kept as such rather
-        // than folded into the arm below: an empty string in that variant would render as `""`,
-        // which reads like a judge that said something unquotable instead of one that said nothing.
-        return Err(Unheard::NotAVerdict(String::new()));
-    }
-    let said = first.trim_matches(|c: char| !c.is_ascii_alphabetic());
-    // ⚠⚠⚠⚠⚠ AND WHAT IT WENT ON TO SAY — see [`Judgement::explained`]. TRIMMED BEFORE the line is
-    // taken, so a judge that puts its reason under the verdict reads the same as one that puts it
-    // beside: `NO\nBecause …` and `NO because …` both answer *Because …*.
-    //
-    // ⚠⚠⚠⚠ **AND THE QUESTION WE SENT IS CUT OFF FIRST, BECAUSE AN ECHO IS NOT A STATEMENT.** The
+    // ⚠⚠⚠⚠ **THE QUESTION WE SENT IS CUT OFF FIRST, BECAUSE AN ECHO IS NOT A STATEMENT.** The
     // rendered question travels as the LAST ARGV, which a print-mode CLI reads positionally and
     // never prints — but a checker spelled `/bin/echo NO` prints its arguments, so everything after
     // the verdict is this run's own prompt coming back. Quoting that into a walk as *"it said"*
@@ -675,38 +749,107 @@ fn verdict_in(reply: &str, question: &str, took: Duration) -> Result<Judgement, 
     // ⚠ Cut at the question's FIRST LINE, which is where the echo begins wherever it lands — a
     // checker that echoes on the verdict's own line and one that echoes below it are the same case.
     // The residue, stated: a judge that opens by quoting that line loses everything after it. That
-    // is a false SILENCE, which is the safe direction — the same one the first-word rule takes.
+    // is a false SILENCE, which is the safe direction — the same one this whole file takes.
+    //
+    // ⚠⚠ CUT ONCE, over the WHOLE reply, so the verdict and what follows it are read off the SAME
+    // string at the same moment. Two readers of one reply are free to disagree about where the
+    // judge's own words end, and this crate has paid for that shape often enough to name it.
+    let trimmed = reply.trim_start();
     let opening = question.lines().next().unwrap_or_default();
     let spoken = match opening.is_empty() {
-        true => rest,
-        false => rest.split(opening).next().unwrap_or_default(),
+        true => trimmed,
+        false => trimmed.split(opening).next().unwrap_or_default(),
     };
-    let explained = spoken
-        .trim()
-        .lines()
-        .next()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned);
-    let holds = match said.to_ascii_uppercase().as_str() {
-        "YES" => true,
-        "NO" => false,
-        // ⚠ Anything else is NOT a no. A judge that replied with a sentence, an error, or a
-        // refusal has not answered, and the caller must be able to tell that from a measured
-        // `false` — a `false` here would look exactly like a judge that considered the dialog and
-        // decided against, which is a different fact.
+    // ⚠ Anything with no verdict word in it at all is NOT a no. A judge that replied with a
+    // sentence, an error, or a refusal to judge has not answered, and the caller must be able to
+    // tell that from a measured `false` — a `false` here would look exactly like a judge that
+    // considered the dialog and decided against, which is a different fact.
+    let Some((at, holds)) = verdict_word(spoken) else {
+        // ⚠⚠⚠ AND WHAT IT DID SAY TRAVELS — A LINE OF IT, not a word. The word was documented as
+        // *the whole diagnosis* and the measurement disproved that: `Permission` was the opening of
+        // an advisory about somebody's settings file, and nothing downstream could tell that from a
+        // checker stopped before it judged. A line is the unit this file's reader already has —
+        // [`Judgement::explained`] takes one, for the same reason.
         //
-        // ⚠⚠ THE WORD IT DID SAY TRAVELS, which is what makes this actionable: `Error:` names a
-        // broken checker, `Yes,` names a prompt that needs tightening, and the two used to arrive
-        // as the same silence.
-        _ => return Err(Unheard::NotAVerdict(said.to_owned())),
+        // ⚠⚠ THE JUDGE'S OWN LINE, and the WHOLE REPLY's only where the judge said nothing of its
+        // own: a checker that printed nothing but the echo has to be diagnosed as one that ECHOED,
+        // and an empty payload already means *it printed nothing at all*. Those two want different
+        // remedies, so neither may borrow the other's spelling.
+        return Err(Unheard::NotAVerdict(
+            first_line(spoken)
+                .unwrap_or_else(|| first_line(trimmed).unwrap_or_default())
+                .to_owned(),
+        ));
     };
+    // ⚠⚠⚠⚠⚠ AND WHAT IT WENT ON TO SAY — see [`Judgement::explained`]. TRIMMED BEFORE the line is
+    // taken, so a judge that puts its reason under the verdict reads the same as one that puts it
+    // beside: `NO\nBecause …` and `NO because …` both answer *Because …*.
+    let explained = first_line(&spoken[at.end..]).map(ToOwned::to_owned);
     Ok(Judgement {
         holds,
-        said: said.to_owned(),
+        // ⚠ THE WORD AS THE JUDGE SPELLED IT, punctuation trimmed off the ends and the case left
+        // alone: `Yes,` is a prompt that wants tightening and `YES` is one that does not, and a
+        // reader comparing them has to see which arrived.
+        said: word_in(spoken, &at).to_owned(),
         explained,
         took,
     })
+}
+
+/// **THE FIRST VERDICT WORD IN WHAT THE JUDGE SAID** — where it stands and what it means, or
+/// [`None`] where the text holds no verdict at all.
+///
+/// ⚠⚠ A RANGE AND NOT THE WORD, because the caller needs both halves of one cut: the verdict, and
+/// everything the judge went on to say after it. Handing back the word alone would send the caller
+/// searching the string a second time for a boundary this function has already found.
+///
+/// ⚠⚠⚠ IT STOPS AT THE FIRST ONE. A reply holding both words — *"NO, and a YES would need the
+/// tests to pass"* — is the refusal it opens with, not the sentence it goes on to mention.
+///
+/// ⛔⛔ AND ONLY A MARKED ONE COUNTS — see [`verdict_in`] for the mark and for the measured reason
+/// it exists: the opening word in any case, or capitals anywhere. `Error: no API key` is a checker
+/// that broke, not one that refused.
+fn verdict_word(said: &str) -> Option<(std::ops::Range<usize>, bool)> {
+    let mut from = 0;
+    let mut opening = true;
+    while let Some(offset) = said[from..].find(|c: char| !c.is_whitespace()) {
+        let start = from + offset;
+        let end = said[start..]
+            .find(char::is_whitespace)
+            .map_or(said.len(), |len| start + len);
+        // ⚠ WHAT IS NOT A LETTER IS TRIMMED OFF THE ENDS, so `YES,` `**NO**` and `(yes)` are the
+        // words they plainly are. A TRIM and not a search: `NOTHING` and `YESTERDAY` come through
+        // whole and match neither verdict, where a substring test finds one in both. And a word
+        // with punctuation THROUGH it — `YES/NO` — survives as itself and matches nothing, which
+        // is right: that is a checker quoting its options rather than answering.
+        let word = word_in(said, &(start..end));
+        // ⚠⚠ THE MARK, and the whole of it: the reply's own opening, or capitals. An `opening`
+        // that stayed true would make every word a candidate and the mark decorative — which is
+        // the state this function was in when a fixture read `no API key` as a verdict.
+        if opening || word.chars().all(|c| c.is_ascii_uppercase()) {
+            match word.to_ascii_uppercase().as_str() {
+                "YES" => return Some((start..end, true)),
+                "NO" => return Some((start..end, false)),
+                _ => {}
+            }
+        }
+        opening = false;
+        from = end;
+    }
+    None
+}
+
+/// The word standing at `at` in `said`, with what is not a letter trimmed off its ends — spelled
+/// once, so [`verdict_word`] and the [`Judgement`] it produces cannot come to disagree about where
+/// a word ends.
+fn word_in<'a>(said: &'a str, at: &std::ops::Range<usize>) -> &'a str {
+    said[at.clone()].trim_matches(|c: char| !c.is_ascii_alphabetic())
+}
+
+/// The first line of `said` that holds anything at all, trimmed — or [`None`] where it holds
+/// nothing, which is a fact its callers act on rather than an absence to paper over.
+fn first_line(said: &str) -> Option<&str> {
+    said.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
 /// **WHAT THE JUDGE SAID, READ BY ADDRESS** — its pane's logical lines from birth, or [`None`] where
@@ -1093,10 +1236,23 @@ mod tests {
         );
         assert_eq!(
             prose,
-            Err(Unheard::NotAVerdict("Error".to_owned())),
+            Err(Unheard::NotAVerdict("Error: no API key".to_owned())),
             "⛔⛔⛔ ITEM 593: this checker RAN and ANSWERED, and the remedy is its prompt or its \
-             program — the opposite end of the diagnosis from one that would not start. The word \
-             it said travels because that word IS the diagnosis: {prose:?}",
+             program — the opposite end of the diagnosis from one that would not start. What it \
+             said travels because that IS the diagnosis — and since register item 743 it is the \
+             LINE and not the first word: `Permission` was measured to be the opening of an \
+             advisory about somebody's settings file, so one word could not tell a broken checker \
+             from a working one with a noisy tool: {prose:?}",
+        );
+        // ⛔⛔⛔⛔⛔ **AND THE LINE IS ALSO THIS GATE'S CONTROL ON REGISTER ITEM 743.** `no` stands
+        // in that reply — as English, in a noun phrase — and a scan that took any verdict word
+        // read this broken checker as a considered REFUSAL. It is asserted here rather than only
+        // in 743's own gate because this is where the fixture lives.
+        assert!(
+            matches!(&prose, Err(Unheard::NotAVerdict(_))),
+            "⚠⚠⚠⚠⚠ ITEM 743's CONTROL: `Error: no API key` holds the word `no`, and a verdict \
+             found there would be one this checker never made. A verdict is MARKED — it opens the \
+             reply, or it is in capitals — and neither is true of this one: {prose:?}",
         );
 
         // ── IT PRINTED NOTHING AT ALL ── the control on the arm above: same road, same exit, and
@@ -1132,6 +1288,191 @@ mod tests {
             host.pane_ids().is_empty(),
             "⚠⚠ AND EVERY ARM CLOSED ITS PANE. A judge left running holds a pty and a process for \
              the rest of the run — once per silence, which is the case nobody watches: {:?}",
+            host.pane_ids(),
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A VERDICT THE JUDGE DID NOT OPEN WITH IS STILL A VERDICT, AND PROSE IS STILL
+    /// NOT ONE** — register item 743, staged on both measured samples and on the controls that
+    /// keep the repair from becoming *any `yes` anywhere*.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The two samples are two ROADS, and a gate that stood only the first is the wrong
+    /// gate
+    ///
+    /// | run | what the product recorded | how the verdict got out of first place |
+    /// |---|---|---|
+    /// | another repository's run 68 | `NotAVerdict("Permission")` | a tool ADVISORY about a loose allow rule printed above the answer |
+    /// | this repository's run 70 | `NotAVerdict("My")` | **no advisory at all** — the judge put its verdict inside a sentence |
+    ///
+    /// The first was measured in both directions by the repository that met it — same question,
+    /// same argv, one allow rule the only difference — and **that repository sent word not to use
+    /// its own pair as grounds for an advisory filter**, because the second sample reaches the same
+    /// defect with no advisory anywhere. Both stand here for that reason: a gate holding one road
+    /// leaves the other open, and the shape of the repair would follow the gate.
+    ///
+    /// ⚠⚠ **WHAT IS RECONSTRUCTED AND WHAT IS MEASURED, said plainly.** The advisory line is the
+    /// verbatim opening of run 68's stdout. Run 70's reply is NOT recoverable — the product kept
+    /// one word of it, which is this item — so what stands here is its measured SHAPE: first word
+    /// `My`, no advisory, the verdict inside the sentence. The three replies that lost their
+    /// verdicts beside it were `Verdict`, `The` and `Two`: a preamble, then the answer.
+    ///
+    /// ⚠⚠⚠ **AND THE COST IS WHY THIS IS NOT TIDINESS.** Run 68's discarded `YES` was the
+    /// INDEPENDENT CHECK of another repository's milestone — register item 428's whole remedy —
+    /// and the round it verified was recorded as one nothing had verified.
+    ///
+    /// # ⚠⚠⚠⚠ Three kinds stand side by side, because two of them is the gate this replaces
+    ///
+    /// A verdict at the opening, a verdict found further in, and no verdict at all. Standing only
+    /// the first two would pass a parser that answered `YES` to everything; standing only the last
+    /// two is the behaviour this item is about.
+    #[test]
+    fn a_verdict_the_judge_did_not_open_with_is_read_and_prose_is_not_a_verdict() {
+        /// Run 68's stdout, first line: an advisory the TOOL printed about a loose allow rule in
+        /// the consuming repository's `.claude/settings.local.json`. It appears whether the tool
+        /// call succeeded or not, so this is nobody's refusal and nobody's verdict.
+        const ADVISORY: &str = "Permission allow rule (.claude/settings.local.json): Bash(sed -n \
+                                ... hosts.toml) has a wildcard before the rest of the command. \
+                                Replace that * with the exact value you mean.";
+
+        let host = crate::access::WorkspacePaneAccess::new(Arc::new(Mutex::new(
+            sprag_terminal::Workspace::new((80, 24)),
+        )));
+        let ask = |argv: Vec<String>| {
+            judges(
+                &host,
+                &RunContext::uncancellable(),
+                "the milestone was reached",
+                &question(),
+                &JudgeSpec {
+                    argv,
+                    within: Duration::from_secs(20),
+                },
+            )
+        };
+        let says = |said: &str| {
+            ask(vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                format!("printf '{said}\\n'"),
+            ])
+        };
+
+        // ── THE ORDINARY SHAPE ── a bare verdict, which is what the question asks for. Without
+        // this arm every claim below could hold of a parser that had stopped reading verdicts.
+        let opened_with_it = says("YES because the sweep is green");
+        assert!(
+            matches!(&opened_with_it, Ok(judged) if judged.holds && judged.said == "YES"),
+            "⚠⚠⚠ THE CONTROL: a reply that opens with its verdict must still be read as one — \
+             this item widens where a verdict may STAND, and changes nothing about what one is. \
+             Got {opened_with_it:?}",
+        );
+
+        // ── SAMPLE ONE: THE ADVISORY ROAD ── run 68, with the answer on the line beneath it.
+        let under_an_advisory = says(&format!(
+            "{ADVISORY}\\nYES - debt 547 is really closed: 61 passed, ABI 13, 22 exported symbols"
+        ));
+        let Ok(judged) = &under_an_advisory else {
+            panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 743: the judge ANSWERED — it opened the files, it quoted \
+                 what it found, and it said YES on the line under an advisory some tool printed \
+                 over the top. Throwing that away is how a verified round came to be recorded as \
+                 one nothing verified. Got {under_an_advisory:?}"
+            );
+        };
+        assert!(
+            judged.holds && judged.said == "YES",
+            "⚠⚠⚠⚠ and it is the judge's verdict that is read, not the advisory's first word: \
+             {judged:?}",
+        );
+        assert!(
+            judged
+                .explained
+                .as_deref()
+                .is_some_and(|why| why.contains("547")),
+            "⚠⚠ AND WHAT IT WENT ON TO SAY COMES WITH IT. A verdict recovered without its reason \
+             would pay this item halfway and leave register item 461 broken again: {judged:?}",
+        );
+
+        // ── SAMPLE TWO: NO ADVISORY AT ALL ── run 70, whose reply began `My`. The road the
+        // narrow reading would have missed, which is why the repository that owned the other
+        // sample refused to let its pair be used for that reading.
+        let inside_a_sentence = says("My verdict is YES - the round landed and the sweep is green");
+        assert!(
+            matches!(&inside_a_sentence, Ok(judged) if judged.holds && judged.said == "YES"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 743, THE SECOND ROAD: nothing printed over this reply — the \
+             judge simply put its answer in a sentence. A repair that filtered advisories would \
+             be green on the sample above and still lose this one, and this is the run that DIED \
+             of it. Got {inside_a_sentence:?}",
+        );
+
+        // ── THE FIRST VERDICT WORD WINS, AND IT IS NOT *ANY* VERDICT WORD ── a refusal that goes
+        // on to say what an agreement would have needed is the refusal it made.
+        let refused_at_length =
+            says("My reading: NO - a YES here would need the sweep to be green first");
+        assert!(
+            matches!(&refused_at_length, Ok(judged) if !judged.holds && judged.said == "NO"),
+            "⛔⛔⛔⛔ THE CONTROL THIS ITEM NAMES: the scan takes the FIRST verdict word and stops. \
+             A reader that took the last one, or the first `YES` it could find, would turn this \
+             refusal into an agreement — and an agreement is the direction that banks a milestone \
+             nobody checked. Got {refused_at_length:?}",
+        );
+
+        // ── PROSE IS NOT A VERDICT ── the `no` of ordinary English, in the middle of a sentence,
+        // in ordinary case. This is the arm that decides the rule: a verdict is MARKED, by opening
+        // the reply or by being spelled in capitals, and neither is true here.
+        let prose = says("The ledger shows no measurement I could check against");
+        assert_eq!(
+            prose,
+            Err(Unheard::NotAVerdict(
+                "The ledger shows no measurement I could check against".to_owned()
+            )),
+            "⛔⛔⛔⛔⛔ THE FABRICATION THIS RULE EXISTS TO REFUSE: `no` inside a sentence is \
+             English, and a verdict read there is one the checker never made. **A fabricated \
+             verdict is worse than the discarded one this item is about** — and note the payload: \
+             a LINE, because the first word was documented as *the whole diagnosis* and the \
+             measurement disproved it. Got {prose:?}",
+        );
+
+        // ── AND THE ECHO, WHICH IS THE SHARPEST CONTROL OF ALL ── the rendered question SAYS the
+        // words YES and NO, because it is asking for one of them. A checker that prints its argv
+        // has therefore printed a verdict word without judging anything, and a scan that ran
+        // before the echo was cut would read this as an AGREEMENT.
+        let echoed = ask(vec!["/bin/echo".to_owned()]);
+        let Err(Unheard::NotAVerdict(said)) = &echoed else {
+            panic!(
+                "⛔⛔⛔⛔⛔ A CHECKER THAT ECHOED THE QUESTION HAS NOT AGREED TO IT. The question \
+                 spells YES and NO, so scanning the reply before cutting the echo turns this run's \
+                 own prompt into this run's own verdict — the one act this module is built to keep \
+                 out of reach. **Silence is never a yes.** Got {echoed:?}"
+            );
+        };
+        assert!(
+            said.starts_with("An AI agent"),
+            "⚠⚠⚠ and it is diagnosed as an ECHO rather than as a checker that printed NOTHING — \
+             an empty payload already means the second, and the two want different remedies: \
+             {said:?}",
+        );
+
+        // ── THE THREE KINDS, STANDING TOGETHER ── the premise asserted inside the gate: a verdict
+        // at the opening, a verdict found further in, and no verdict at all. Two of these is the
+        // shape this item replaces, and a gate that stood two would be green on a parser that had
+        // simply moved which one it gets wrong.
+        assert!(
+            matches!(&opened_with_it, Ok(one) if one.holds)
+                && matches!(&under_an_advisory, Ok(two) if two.holds)
+                && matches!(&inside_a_sentence, Ok(three) if three.holds)
+                && matches!(&refused_at_length, Ok(four) if !four.holds)
+                && matches!(&prose, Err(Unheard::NotAVerdict(_)))
+                && matches!(&echoed, Err(Unheard::NotAVerdict(_))),
+            "⚠⚠⚠⚠⚠ THE PREMISE: all three kinds have to be REACHABLE from this parser, or the \
+             claims above are about a function that answers one thing. Opening verdict \
+             {opened_with_it:?}; advisory {under_an_advisory:?}; sentence {inside_a_sentence:?}; \
+             refusal {refused_at_length:?}; prose {prose:?}; echo {echoed:?}",
+        );
+        assert!(
+            host.pane_ids().is_empty(),
+            "⚠⚠ AND EVERY ARM CLOSED ITS PANE — once per judgement, which is the leak nobody \
+             watches: {:?}",
             host.pane_ids(),
         );
     }
@@ -1349,11 +1690,11 @@ mod tests {
                  It said {judged:?}"
             );
         };
-        // The CONTROL: the verdict itself is unchanged by any of this. The first-word rule is right
+        // The CONTROL: the verdict itself is unchanged by any of this. The one-word rule is right
         // and this gate does not loosen it — a judge that explains itself decides nothing different.
         assert!(
             !verdict.holds && verdict.said.eq_ignore_ascii_case("NO"),
-            "⚠⚠ the verdict is still the first word alone: {verdict:?}",
+            "⚠⚠ the verdict is still one word alone: {verdict:?}",
         );
 
         let explained = verdict.explained.as_deref().expect(
@@ -1377,8 +1718,8 @@ mod tests {
     /// an address that cannot account for what it handed back.
     ///
     /// ⚠⚠⚠ The second is the one worth a test rather than a comment. `lost`/`restarted` answering
-    /// [`None`] is not tidiness — the verdict is the reply's FIRST WORD, so a read whose opening was
-    /// evicted does not yield a short reason, it yields **the first word of the middle of a
+    /// [`None`] is not tidiness — a verdict is a WORD, so a read whose opening was
+    /// evicted does not yield a short reason, it yields **a word out of the middle of a
     /// sentence put through the YES/NO match**. That is a fabricated verdict, and the direction this
     /// whole file is built on is that silence is safer than one of those.
     ///
@@ -1460,7 +1801,7 @@ mod tests {
         );
 
         // ── THE ARMS. An eviction and a renumbering each mean *the text may not open where the
-        // reply does*, and the first word is the verdict.
+        // reply does*, and a verdict is a word read out of that text.
         for (what, since) in [
             ("lines were evicted before the read", since(3, false, "")),
             ("the addresses restarted underneath", since(0, true, "")),

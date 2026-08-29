@@ -255,7 +255,9 @@
 
       This is an ARGV, split on whitespace, run by nobody this loop is driving.
       The driver appends one rendered question — the milestone, and what the turn
-      produced — and reads the first word of the reply as YES or NO.
+      produced — and reads ONE WORD of the reply as YES or NO: the first the
+      checker MARKED as its answer, by opening with it or by spelling it in
+      capitals. A reply holding no such word is a silence, never an agreement.
 
       ⚠⚠ EMPTY IS THE SHIPPED VALUE AND MEANS NOBODY CHECKS, which is exactly the
       behaviour this document had before the slot existed. It does NOT mean
@@ -1142,9 +1144,10 @@
       ⚠ MEASURED, which is why it is spellable at all: a cheap judge (haiku, in
       print mode) separated four captured live dialogs 3 times
       out of 3, the identical-sentence pair included, at 4-6 s per call. The
-      verdict is the FIRST WORD of the reply — the same model answers some
-      dialogs in one word and others with a paragraph, so a reader taking the
-      whole reply would call a stable verdict unstable.
+      verdict is ONE WORD of the reply — the same model answers some dialogs in
+      one word and others with a paragraph, so a reader taking the whole reply
+      would call a stable verdict unstable. Which word: the first the judge
+      MARKED as its answer, by opening with it or by spelling it in capitals.
 
       ⚠⚠⚠ A LIST, SO A DECISION IS ONE ELEMENT TO ADD AND ONE TO DELETE. Each
       carries three things and nothing else:
