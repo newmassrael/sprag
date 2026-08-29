@@ -1985,6 +1985,105 @@ fn an_agent_waits_for_a_job_to_start_without_polling() {
     );
 }
 
+/// ⛔⛔⛔⛔ **EVERY TOOL THAT PARKS REACHES THE AGENT'S OWN SESSION — AND THE POPULATION IS THE
+/// PRODUCT'S, NOT A LIST HERE** — register item 753's done-when, which is a UNIVERSAL: *a pane
+/// `read_pane` answers is one `wait_*` answers*.
+///
+/// # ⚠⚠⚠⚠⚠ Why a ratchet and not two more assertions
+///
+/// The gate below drives the two wait tools BY NAME, which is right for measuring what each of
+/// them does and wrong for the claim item 753 actually makes. A third parking verb added later
+/// would open a connection of its own for the same reason these two do — a park's deadline is the
+/// caller's — and would be free to build its `params` with a `json!` of its own and lose its
+/// session exactly as these did. **A hand-written list cannot notice that**; it is register item
+/// 335's finding, in a ratchet.
+///
+/// # ⭐ The population comes off the SCHEMA the server publishes
+///
+/// A parking tool is one whose `inputSchema` declares `timeout_seconds` — *how long to wait* is
+/// the argument only a park has, and it is the product's own word rather than this file's. So the
+/// roster is walked and every such tool is driven; a parking tool this test has no arguments for
+/// **fails the run** rather than being skipped, which is the shape
+/// [`a_tool_against_an_older_daemon_says_so`](self) already keeps.
+///
+/// # ⚠⚠ What it asserts: it PARKED, and it parked HERE
+///
+/// Two facts, and neither alone is the claim. **Not refused** — a request whose session is missing
+/// comes back `session "0" has no pane N`, which is what this item measured. **And it really
+/// waited** — a refusal returns at once, so the call must take about as long as the timeout it was
+/// given. A wait that answered instantly reached no park whatever it said.
+///
+/// ⚠ What this does NOT cover, stated rather than left to be found: `wait_for_change` parked on
+/// the WRONG session also times out, so the timing arm cannot tell that apart. The gate below is
+/// what does — it makes a change in the agent's own session and requires the wait to see it.
+#[test]
+fn every_parking_tool_reaches_the_agents_own_session() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], (80, 6));
+    let created = mux_invoke(&sock, NEW_SESSION_ACTION, json!({ "name": "work" }));
+    assert_eq!(created.as_str(), Some("work"), "the second session exists");
+    let mine = spawn_pane_in(&sock, "work");
+    assert!(
+        !mux_query_panes(&sock).contains(&mine),
+        "⛔ THE PREMISE: the agent's pane must not be in the daemon's DEFAULT session, or the \
+         missing scope is invisible — the very reason the two live wait gates never saw this",
+    );
+    let mut server = McpServer::spawn_in_pane(&sock, mine);
+
+    // The arguments each parking tool is driven with. A hand list, deliberately — the two verbs
+    // take DIFFERENT arguments and one of them (`needle`/`pattern`) is an exclusive pair, so a
+    // sample-per-argument table would send a request refused before it ever reached a session.
+    // ⚠ What is NOT hand-written is WHICH tools must appear here: that is the roster below, and a
+    // parking tool missing from this match fails the run.
+    let driving = |tool: &str| -> Option<Value> {
+        Some(match tool {
+            "wait_for_output" => json!({ "pane": 1, "needle": "zz", "timeout_seconds": 2 }),
+            "wait_for_change" => json!({ "timeout_seconds": 2 }),
+            _ => return None,
+        })
+    };
+
+    let roster = server.request("tools/list", json!({}));
+    let tools = roster["result"]["tools"]
+        .as_array()
+        .expect("the roster is a list")
+        .clone();
+    let parking: Vec<String> = tools
+        .iter()
+        .filter(|tool| tool["inputSchema"]["properties"]["timeout_seconds"].is_object())
+        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        parking.len() >= 2,
+        "⛔⛔⛔ THE POPULATION IS EMPTY OR SHRANK: `timeout_seconds` is how a parking tool is \
+         recognised here, and finding fewer than the two this item measured means the schema \
+         moved and this ratchet is now green about nothing. Found {parking:?}",
+    );
+
+    for tool in &parking {
+        let args = driving(tool).unwrap_or_else(|| {
+            panic!(
+                "⛔⛔⛔⛔⛔ A PARKING TOOL THIS RATCHET HAS NO ARGUMENTS FOR: {tool:?}. It opens a \
+                 connection of its own like the other two, so it can lose its session the same \
+                 way — add it here rather than letting it go unchecked",
+            )
+        });
+        let began = std::time::Instant::now();
+        let answer = server.call_tool(tool, args);
+        let took = began.elapsed();
+        assert!(
+            !answer.contains("has no pane") && !answer.contains("session \"0\""),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 753: {tool} parked on the daemon's DEFAULT session while the \
+             agent's pane lives in another. Got: {answer}",
+        );
+        assert!(
+            took >= Duration::from_millis(1500),
+            "⛔⛔⛔ AND IT MUST HAVE ACTUALLY PARKED: {tool} answered in {took:?} against a 2s \
+             timeout, so it never reached a park — a refusal returns at once, whatever it says. \
+             Got: {answer}",
+        );
+    }
+}
+
 /// ⛔⛔⛔⛔⛔ **A WAIT PARKS ON THE SESSION ITS AGENT IS IN — BOTH OF THEM** — register item 753.
 ///
 /// # ⚠⚠⚠⚠⚠ The measurement, and why every existing wait gate was green through it
