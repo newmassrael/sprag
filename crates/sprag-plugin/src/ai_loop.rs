@@ -11054,6 +11054,23 @@ mod tests {
     /// ROUTING, and a pane fixture would put a delivery, a supervisor and a peer's timing between
     /// the claim and the answer — three things that can fail on their own. The driver's own half
     /// (raising the event at all) is `pump`'s funnel and is gated where it lives.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND THE WORD `EVERY` WAS A CLAIM NOTHING MEASURED — register item 750
+    ///
+    /// The table below is a list somebody types, and it used to be headed by a literal `7` whose
+    /// stated authority was `Owed::on` — a function register item 470's third stage had already
+    /// deleted. Item 741 added the seventh entry by REMEMBERING to, and the same round forgot the
+    /// `pass` arm for the same state (item 749, measured live as a run that ended `failed` with its
+    /// work unbanked) and left the driver's own two prompt lists a prompt short besides. **Four
+    /// hand-written lists enumerate this document's prompts and not one was held against the file.**
+    ///
+    /// So the population is DERIVED at the bottom of this function, on item 749's pattern: a state
+    /// that owes the peer a prompt is a state one of this document's `prompt.say` acts leaves a run
+    /// in — an `<onentry>` means that state, a transition body means where that transition lands,
+    /// and **neither is RED rather than skipped**. The other three lists are held by
+    /// `every_driven_state_says_what_a_pass_of_it_is_for` and by
+    /// `outer::tests::every_prompt_this_document_sends_is_one_the_door_checks_and_a_caller_can_read`,
+    /// whose doc carries the table naming all four.
     #[test]
     fn every_state_that_owes_a_prompt_answers_a_question_that_was_never_taken() {
         /// Walk a fresh machine through `events`, each carrying `data`, and say where it landed.
@@ -11093,13 +11110,16 @@ mod tests {
         /// must answer a never-taken question with.
         type Refused<'a> = (&'a str, Vec<(AiLoopEvent, &'a str)>, AiLoopState);
 
-        // ⚠ SEVEN, AND THE NUMBER IS `Owed::on`'s. An eighth state that owes a prompt is an eighth
-        // state that can meet this condition, and a list that did not grow with it would be green
-        // about a hole — which is the shape this whole item is.
+        // ⛔⛔⛔⛔⛔ **NO NUMBER STANDS HERE ANY MORE, AND THAT IS REGISTER ITEM 750.**
         //
-        // ⛔ THE SEVENTH ARRIVED WITH REGISTER ITEM 741: `unverified` sends a prompt on entry, so
-        // it can be refused on entry, and the list grew with it rather than after somebody noticed.
-        let cases: [Refused; 7] = [
+        // It used to read `[Refused; 7]`, and the comment above it said the seven were `Owed::on`'s
+        // — a function item 470's third stage had already deleted, so the literal derived from
+        // nothing and the only thing keeping it honest was somebody remembering. Item 741 added the
+        // seventh by remembering; the same round forgot the `pass` arm for the same state (item
+        // 749) and two more lists besides. **A list that grows by memory is a list that will be
+        // green about a hole**, so this one is contrasted with the document at the bottom of this
+        // function instead of counted here.
+        let cases: Vec<Refused> = vec![
             // The one 446 built, and it now goes through the REGION's rule rather than its own
             // edge — so a green here is also the proof that a child with no answer inherits one.
             (
@@ -11168,6 +11188,57 @@ mod tests {
                 AiLoopState::Exhausted,
             ),
         ];
+
+        // ══ ⛔⛔⛔⛔⛔ AND THE HALF THAT WAS MISSING: IS THE TABLE ABOVE COMPLETE? ═══════════════
+        //
+        // Register item 750, and it is item 749's contrast one list over. Everything below this
+        // line used to be true only of the states somebody REMEMBERED to write down, which is
+        // precisely the property that was true while this table walked six of seven.
+        //
+        // ⚠⚠⚠⚠⚠ **THE POPULATION IS DERIVED, NOT WRITTEN.** A state that owes the peer a prompt is
+        // a state one of this document's `prompt.say` acts LEAVES A RUN IN — the document's own
+        // rule, written at `priming`: *the driver raises `prompt.unasked` at the state the delivery
+        // landed in*. `outer::prompts_the_document_says` reads the acts and answers where each
+        // lands, and a prompt sent from neither an `<onentry>` nor a transition body is RED rather
+        // than skipped.
+        let document = crate::outer::DOCUMENT;
+        let declared: std::collections::BTreeSet<&str> =
+            declared_state_ids(document).into_iter().collect();
+        let mut owes: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for act in crate::outer::prompts_the_document_says(document) {
+            let Some(state) = act.lands_in.state() else {
+                panic!(
+                    "⛔⛔⛔ REGISTER ITEM 750: this document sends a prompt from somewhere that is \
+                     neither a state's `<onentry>` nor a transition's body, so nothing can say \
+                     which state owes the answer when the peer will not take it: {act:?}",
+                );
+            };
+            // ⚠⚠⚠⚠⚠ THE PREMISE, ASSERTED INSIDE THE GATE RATHER THAN ASSUMED BY IT: the scan
+            // must be reading this file's own ids. A reader answering names the document does not
+            // declare would make the contrast below compare two sets of junk, and a gate blind to
+            // its own eye is the shape this register keeps meeting.
+            assert!(
+                declared.contains(state),
+                "⚠⚠⚠⚠⚠ THE SCAN IS BLIND: a prompt act lands in `{state}`, and the read of \
+                 `ai_loop.scxml` found no such `id`. Read back {} ids",
+                declared.len(),
+            );
+            owes.insert(state);
+        }
+        // ⭐⭐⭐ **CONTRAST — THE CASE EXISTS.** The set of states a prompt can be refused at,
+        // against the set this table walks. `unverified` was in the first and not the second for
+        // exactly as long as it was missing from the `pass` table, and for the same reason.
+        let listed: std::collections::BTreeSet<&str> =
+            cases.iter().map(|(state, _, _)| *state).collect();
+        assert_eq!(
+            owes, listed,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 750: this table and the states that owe the peer a prompt have \
+             come apart. A state in the LEFT set and not the right is one whose answer to a \
+             question that never went in is asserted by NOBODY — it may stay put, which is the \
+             defect item 446 measured: the event is raised, no transition takes it, and the driver \
+             goes back to watching a pane for a turn nobody was asked to take. A name in the RIGHT \
+             set and not the left is a case about a state this document never prompts from",
+        );
 
         for (state, walk, answer) in cases {
             // ⚠⚠⚠⚠ THE CONTROL, PER CASE, AND IT IS NOT A FORMALITY: a walk that did not reach the

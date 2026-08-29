@@ -334,6 +334,23 @@ pub struct Authored {
     /// knowable until one refuses. What is shipped is the frame around them, which is true of every
     /// refusal this document can deliver.
     pub dispute: String,
+    /// **WHAT AN AGENT WHOSE MILESTONE NOBODY COULD CHECK IS TOLD** — `unverified`'s prompt,
+    /// register items 741 and 750.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a preview needs this one too, and why it was the easy one to forget
+    ///
+    /// It is [`dispute`](Self::dispute)'s twin: authoring a `milestone_check` is what makes BOTH
+    /// sentences reachable, and a caller who could read one of the pair and not the other could see
+    /// what their loop says when it disagrees and not what it says when it could not tell. The two
+    /// are reached by the same event from the same state and differ only in which fact got there —
+    /// which is exactly why a list grown by memory grew for one of them and stopped.
+    ///
+    /// ⚠⚠ **BEFORE A CHECK GOES SILENT THIS CARRIES NO CLAUSE AND NO TURN, AND THAT IS THE HONEST
+    /// PREVIEW** — [`stop`](Self::stop)'s and [`dispute`](Self::dispute)'s arrangement exactly.
+    /// `unverified`'s entry chooses between this kind's two remedies on the CLASS of the silence,
+    /// and which class a run will meet is not knowable in advance. What is shipped is the opening,
+    /// which is true of every silence this document can deliver.
+    pub unverified: String,
     /// What the agent says when it has reached the milestone.
     pub done_marker: String,
 }
@@ -350,11 +367,23 @@ impl Authored {
     /// from the moment the engine is built: `end_prompt` is a literal the document ships, and
     /// `stop_prompt` is composed in the `<datamodel>` itself out of the two parts that do not depend
     /// on how the run ends. ⚠ `stopping` composes the third part in later — see [`Self::stop`].
+    ///
+    /// # ⚠⚠⚠⚠⚠ THE DOOR WALKS [`Owed::ALL`], AND THE FIELDS ARE WHAT IT PUBLISHES
+    ///
+    /// Register item 750. Reading each variable only where a field names it makes the CHECK a
+    /// consequence of the struct's shape: a prompt added to [`Owed`] and not to a field below is
+    /// then a prompt nothing validates, and the run that meets it has already spent a turn. The
+    /// walk is the door and it is total over the enum by construction; the assignments underneath
+    /// are the preview. ⚠ Each string is therefore read twice, which is the price of the two jobs
+    /// being separable — and a datamodel read is not what a run's cost is made of.
     fn read(script: &Arc<dyn IScriptEngine>, session: &str) -> Option<Self> {
         let text = |name: &str| match script.get_variable(session, name) {
             Ok(ScriptValue::String(value)) => Some(value),
             _ => None,
         };
+        for owed in Owed::ALL {
+            text(owed.variable())?;
+        }
         Some(Self {
             start: text(Owed::Start.variable())?,
             turn: text(Owed::Turn.variable())?,
@@ -365,6 +394,9 @@ impl Authored {
             // unlike the three `priming` composes: the `<datamodel>` composes it out of the two
             // parts that do not depend on a refusal having happened. See [`Self::dispute`].
             dispute: text(Owed::Dispute.variable())?,
+            // ⚠ READABLE FROM THE MOMENT THE ENGINE IS BUILT, `dispute`'s reason exactly: the
+            // `<datamodel>` seeds it with the opening, which is the part no silence changes.
+            unverified: text(Owed::Unverified.variable())?,
             done_marker: text(DONE_MARKER)?,
         })
     }
@@ -605,6 +637,16 @@ const REFLECT_REASON: &str = "reflect_reason";
 /// ⚠ NOT `#[cfg(test)]`, unlike the two above: this one the DRIVER reads, because delivering it is
 /// what the state is for.
 const DISPUTE_PROMPT: &str = "dispute_prompt";
+
+/// **WHAT AN AGENT WHOSE MILESTONE NOBODY COULD CHECK IS TOLD** — composed by `unverified`'s
+/// `onentry` out of the document's own opening, the clause this kind wrote for THIS silence, and
+/// the ordinary turn. Register item 741, delivered by [`Owed::Unverified`].
+///
+/// ⚠⚠⚠ IT IS [`DISPUTE_PROMPT`]'s NEIGHBOUR IN EVERY WAY THE DOOR CARES ABOUT — composed in the
+/// `<datamodel>` before any run exists, recomposed on entry with the check's own words, and typed
+/// into somebody's agent in somebody's language. Register item 750 is what found that the door and
+/// the preview had both been left one prompt short of the document.
+const UNVERIFIED_PROMPT: &str = "unverified_prompt";
 
 /// The datamodel variable saying **WHICH CEILING ended the run** — written by whichever `judge`
 /// transition reached `stopping`, and read by two parties that must not disagree: the document's own
@@ -1389,9 +1431,54 @@ pub(crate) enum Owed {
     /// bought, opened by the reason it was bought. A prompt that replaced the turn would answer a
     /// check by taking the work away.
     Dispute,
+    /// ⚠⚠⚠⚠⚠ The `unverified_prompt` — **what the agent is told when the check that was asked
+    /// about its milestone produced no verdict at all**, owed by the other edge out of `judging`
+    /// that means *the claim was not believed*. Register item 741 built the state; **register item
+    /// 750 is why this variant exists**.
+    ///
+    /// # ⛔⛔⛔⛔ It was missing for a day, and the two things that cost
+    ///
+    /// [`Dispute`](Self::Dispute)'s whole argument applies here word for word — authoring a
+    /// `milestone_check` is what makes this sentence reachable, and a caller who could read the six
+    /// beside it could see every question their loop asks except this one. **The list did not grow
+    /// with the document**, which is the shape item 750 names in four places at once.
+    ///
+    /// And the door lost a check with it: `unverified_prompt` was a `<data>` [`Authored::read`]
+    /// never asked for, so a document shipped without it would have built a machine, started a run,
+    /// and died at `error.execution` on the entry that composes it — at the one moment a run has
+    /// already spent its turn.
+    ///
+    /// ⚠⚠ **A TURN PROMPT, NOT A SECOND KIND OF QUESTION**, exactly as [`Dispute`](Self::Dispute)
+    /// is: `unverified`'s entry composes `turn_prompt` in, so what arrives is the ordinary turn,
+    /// opened by the fact that nothing outside the session verified the claim.
+    Unverified,
 }
 
 impl Owed {
+    /// **EVERY PROMPT A DOCUMENT MUST HOLD**, which is what makes this enum a list rather than a
+    /// handful of scattered constants.
+    ///
+    /// ⚠⚠⚠⚠⚠ **IT IS NOT ALLOWED TO BE A HAND-WRITTEN LIST THAT DRIFTS, AND A GATE IS WHAT SAYS
+    /// SO** — `outer::tests::every_prompt_this_document_sends_is_one_the_door_checks_and_a_caller_can_read`
+    /// derives the population from `ai_loop.scxml` itself (the `<param name="text">` of every
+    /// `prompt.say` this document declares) and contrasts it with this array, in both directions.
+    /// A prompt the document gained and this array did not is RED there; so is an entry here that
+    /// no act names. Register item 750 — the defect being paid off is precisely a list somebody
+    /// remembered to grow in one place and not the others.
+    ///
+    /// ⚠⚠ **IT IS THE DOOR'S OWN WALK AND NOT A LIST KEPT FOR TESTS**: [`Authored::read`] iterates
+    /// it before it fills a single field, so what the door checks is this array rather than
+    /// whichever variants a struct literal happens to mention.
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Start,
+        Self::Turn,
+        Self::End,
+        Self::Stop,
+        Self::Reflect,
+        Self::Dispute,
+        Self::Unverified,
+    ];
+
     /// The datamodel variable this prompt is read out of.
     ///
     /// ⚠ ONE LIST DECIDES BOTH READS. [`Authored::read`] validates a machine through these names
@@ -1427,6 +1514,7 @@ impl Owed {
             Self::Stop => "stop_prompt",
             Self::Reflect => "reflect_prompt",
             Self::Dispute => DISPUTE_PROMPT,
+            Self::Unverified => UNVERIFIED_PROMPT,
         }
     }
 
@@ -3370,6 +3458,197 @@ pub(crate) fn declared_data_ids(document: &str) -> Vec<&str> {
         .filter_map(|(at, needle)| {
             let rest = &document[at + needle.len()..];
             rest.find('"').map(|end| &rest[..end])
+        })
+        .collect()
+}
+
+/// **WHERE A PROMPT THIS DOCUMENT SENDS LEAVES THE RUN STANDING** — the classification register
+/// item 750's population is partitioned by, and it is a classification rather than a list of
+/// exceptions on purpose: the third arm is RED, not *skipped*.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Landing<'a> {
+    /// Sent by a state's `<onentry>`, so a run that has been handed it is IN that state.
+    Entering(&'a str),
+    /// Sent from a transition's body, so a run that has been handed it is in the state that
+    /// transition lands in — its `target`, or the state the transition is written in when it has
+    /// none. The document says this itself: *the driver raises `prompt.unasked` at the state the
+    /// delivery LANDED in*.
+    Taking(&'a str),
+    /// ⛔⛔⛔⛔⛔ **NEITHER**, which every reader here must treat as RED. An `<onexit>` or a
+    /// top-level `<script>` can carry a `<send>` too, and a prompt sent from one leaves the run
+    /// somewhere no reader of this type can name — so nothing may quietly pass it over. Passing it
+    /// over is the exemption that let `unverified` through four lists at once.
+    Nowhere,
+}
+
+#[cfg(test)]
+impl<'a> Landing<'a> {
+    /// The state a run holding this prompt is in, else [`None`] for [`Self::Nowhere`].
+    pub(crate) const fn state(self) -> Option<&'a str> {
+        match self {
+            Self::Entering(state) | Self::Taking(state) => Some(state),
+            Self::Nowhere => None,
+        }
+    }
+}
+
+/// **ONE PROMPT THIS DOCUMENT SENDS** — the datamodel id it names as its text, and where the run is
+/// standing once it has gone.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Said<'a> {
+    /// The `<param name="text" expr="…"/>` of the act — a datamodel id in this document, and a
+    /// reader that finds anything else has found a prompt no preview can show.
+    pub(crate) text: &'a str,
+    /// Where the delivery leaves the run.
+    pub(crate) lands_in: Landing<'a>,
+}
+
+/// **HOW MANY BYTES OF `rest` THE TAG IT OPENS WITH TAKES UP**, quotes respected.
+///
+/// ⚠ `>` INSIDE A QUOTED ATTRIBUTE IS NOT THE END OF A TAG — `states_the_pass_table_names` pays for
+/// the same fact: a `cond` may hold a bare `>`, and a scan that stopped there would read half a
+/// guard and call the rest of the file part of it.
+#[cfg(test)]
+fn tag_len(rest: &str) -> usize {
+    let mut quoted = false;
+    rest.char_indices()
+        .find(|&(_, ch)| match ch {
+            '"' => {
+                quoted = !quoted;
+                false
+            }
+            '>' => !quoted,
+            _ => false,
+        })
+        .map_or(rest.len(), |(end, _)| end + 1)
+}
+
+/// The value of `name="…"` on `tag`, else [`None`].
+#[cfg(test)]
+fn attribute<'t>(tag: &'t str, name: &str) -> Option<&'t str> {
+    let needle = format!("{name}=\"");
+    let at = tag.find(&needle)?;
+    let rest = &tag[at + needle.len()..];
+    rest.find('"').map(|end| &rest[..end])
+}
+
+/// **EVERY PROMPT `document` DECLARES AN ACT FOR**, in document order — register item 750's
+/// population, and the one four hand-written lists in this workspace are held to.
+///
+/// # ⚠⚠⚠⚠⚠ Why this exists rather than four lists that each grew by memory
+///
+/// Item 741 added a seventh prompt-owing state and an eighth prompt to this document, and then grew
+/// ONE of the four lists that enumerate them. Nothing anywhere contrasted any of the four with the
+/// document, so the other three stayed green about a hole: the `pass` table had no arm for the new
+/// state (item 749, measured live as a run that ended `failed` with its work unbanked), the
+/// prompt-refusal gate's `cases` walked six of seven, and both the door and the caller's preview
+/// were one prompt short. **A list nothing contrasts is a list that grows by remembering.**
+///
+/// ⚠⚠ IT SCANS TAGS RATHER THAN PARSING XML, which is [`declared_data_ids`]'s argument with one
+/// addition: this reader needs NESTING (is the `<send>` under an `<onentry>` or inside a
+/// `<transition>`), so it tracks the elements that answer that and nothing else. Comments are
+/// skipped WHOLE, because this document explains itself in prose that shows tags, and a scan that
+/// read one would place a real act inside a sentence about it.
+///
+/// ⚠ It reads tag ends through [`tag_len`], for the reason written there.
+#[cfg(test)]
+pub(crate) fn prompts_the_document_says(document: &str) -> Vec<Said<'_>> {
+    let mut said = Vec::new();
+    // The states open around the reader, the transition being read (if any), whether an
+    // `<onentry>` is open, and whether the `<send>` being read is a `prompt.say`. Four facts,
+    // because the landing is a function of exactly those.
+    //
+    // ⚠⚠ A STACK AND NOT *THE LAST ID SEEN*: a compound state may write its own `<onentry>` or its
+    // own edges AFTER the children it contains, and a reader that never pops would file those
+    // under whichever child closed last — a wrong state, silently, which is this item's whole
+    // subject one layer down.
+    let mut open: Vec<&str> = Vec::new();
+    let mut transition: Option<Option<&str>> = None;
+    let mut entering = false;
+    let mut saying = false;
+    let mut rest = document;
+    while let Some(at) = rest.find('<') {
+        rest = &rest[at..];
+        if let Some(after) = rest.strip_prefix("<!--") {
+            rest = after.find("-->").map_or("", |end| &after[end + 3..]);
+            continue;
+        }
+        let (tag, after) = rest.split_at(tag_len(rest));
+        rest = after;
+        let closes = tag.ends_with("/>");
+        if tag.starts_with("<state ") || tag.starts_with("<final ") || tag.starts_with("<parallel ")
+        {
+            if let (false, Some(id)) = (closes, attribute(tag, "id")) {
+                open.push(id);
+            }
+        } else if tag.starts_with("</state")
+            || tag.starts_with("</final")
+            || tag.starts_with("</parallel")
+        {
+            open.pop();
+        } else if tag.starts_with("<onentry") {
+            entering = !closes;
+        } else if tag.starts_with("</onentry") {
+            entering = false;
+        } else if tag.starts_with("<transition") {
+            transition = (!closes).then(|| attribute(tag, "target"));
+        } else if tag.starts_with("</transition") {
+            transition = None;
+        } else if tag.starts_with("<send") {
+            saying = !closes && attribute(tag, "event") == Some("prompt.say");
+        } else if tag.starts_with("</send") {
+            saying = false;
+        } else if saying && tag.starts_with("<param") && attribute(tag, "name") == Some("text") {
+            let lands_in = match (transition, entering, open.last().copied()) {
+                // ⚠ A TARGETLESS TRANSITION LANDS WHERE IT STARTED, which is the SCXML rule and
+                // not a convenience: its executable content runs and the configuration does not
+                // change, so the run is standing in the state that carries it.
+                (Some(target), _, state) => {
+                    target.or(state).map_or(Landing::Nowhere, Landing::Taking)
+                }
+                (None, true, Some(state)) => Landing::Entering(state),
+                (None, _, _) => Landing::Nowhere,
+            };
+            if let Some(text) = attribute(tag, "expr") {
+                said.push(Said { text, lands_in });
+            }
+        }
+    }
+    said
+}
+
+/// **EVERY DATAMODEL ID A BRIEF WRITES THE CALLER'S OWN WORDS INTO**, unmodified — an `<assign>`
+/// whose `expr` is exactly `_event.data.<the same id>`.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is the classifier and not an exemption list — register item 750
+///
+/// One of the texts this document's acts name is not a question it authors: `service_retry_text` is
+/// the word that ends an outage (*carry on with the turn you already have*), and [`Owed`] used to
+/// carry a `ServiceRetry` variant that item 470's third stage deleted as *the one entry that was
+/// never a prompt*. A gate that skipped it by NAME would be an exemption list, and the next such id
+/// would be skipped by nobody noticing it was not on it.
+///
+/// What separates it is a fact the document states: the caller SUPPLIED those words. Register item
+/// 469's whole argument for the preview is that a caller can turn on a prompt they cannot read —
+/// and a caller reading back their own string learns nothing. So the classifier is *did the brief
+/// take this verbatim*, the document answers it, and an id that is neither taken verbatim nor
+/// authored here has no third place to hide.
+///
+/// ⚠ `end_prompt` IS ASSIGNED IN THE SAME TRANSITION AND IS NOT THIS: it is composed there out of a
+/// literal and `closing_rules`, so what a caller gets back is the document's sentence around their
+/// clause — which is exactly the thing a preview exists to show.
+#[cfg(test)]
+pub(crate) fn ids_a_brief_takes_verbatim(document: &str) -> Vec<&str> {
+    document
+        .match_indices("<assign location=\"")
+        .filter_map(|(at, _)| {
+            let tag = &document[at..at + tag_len(&document[at..])];
+            let id = attribute(tag, "location")?;
+            attribute(tag, "expr")
+                .is_some_and(|expr| expr == format!("_event.data.{id}"))
+                .then_some(id)
         })
         .collect()
 }
@@ -20413,6 +20692,259 @@ mod tests {
             "⚠⚠⚠⚠⚠ A TURN NOBODY REFUSED MUST BE TOLD NOTHING ABOUT A REFUSAL. An agent told its \
              claim was refused when it made no claim is being argued with by its own loop. \
              Walked {plain_walk:?}, screen {plain_screen:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY PROMPT THIS DOCUMENT SENDS IS ONE THE DOOR CHECKS AND A CALLER CAN READ**
+    /// — register item 750, the half of it that is about WORDS.
+    ///
+    /// # ⚠⚠⚠⚠⚠ FOUR hand-written lists enumerate this document's prompts, and nothing contrasted
+    ///
+    /// Register item 741 added one state and one prompt to `ai_loop.scxml`, and then grew **one**
+    /// of the four lists that enumerate them. Every gate in this workspace stayed green, because
+    /// all four are lists somebody types and none was held against the file. Named, with what each
+    /// enumerates and where it is now contrasted:
+    ///
+    /// | # | The list | Enumerates | Held against the document by |
+    /// |---|---|---|---|
+    /// | 1 | the `In('…')` names of `ai_loop.scxml`'s `pass` table | the states a pass declares an act for | `ai_loop::tests::every_driven_state_says_what_a_pass_of_it_is_for` (item **749**) |
+    /// | 2 | `cases` in `every_state_that_owes_a_prompt_answers_a_question_that_was_never_taken` | the states that owe the peer a prompt | that gate's own contrast (item **750**) |
+    /// | 3 | [`Owed::ALL`] | the authored strings a machine must hold for the door | **THIS GATE** |
+    /// | 4 | [`Authored`]'s prompt fields | the questions a caller can preview | **THIS GATE**, through the sentinels below |
+    ///
+    /// What each cost, measured: list 1's hole ended a live run `failed` with its work unbanked;
+    /// list 2's meant the seventh prompt-owing state's answer to a refused question was asserted by
+    /// nobody; list 3's left `unverified_prompt` a `<data>` [`Authored::read`] never asked for, so
+    /// a document shipped without it would have died at `error.execution` on the entry that
+    /// composes it; list 4's is register item 469 recurring — *a caller could turn on a prompt they
+    /// could not read*.
+    ///
+    /// # ⚠⚠⚠⚠ The population is DERIVED, and the one text that is not a prompt is CLASSIFIED
+    ///
+    /// [`prompts_the_document_says`] reads the `<param name="text">` of every `prompt.say` act the
+    /// file declares. One of them is not a question this document authors — `service_retry_text`,
+    /// the word that ends an outage — and item 470's third stage deleted the `Owed::ServiceRetry`
+    /// that used to carry it. **It is separated by a classifier and not by name**:
+    /// [`ids_a_brief_takes_verbatim`] asks the document which ids a brief writes the caller's own
+    /// words into, because item 469's argument for the preview is that a caller can turn on a
+    /// prompt they cannot read, and a caller reading back their own string learns nothing. An id
+    /// that is neither taken verbatim nor declared as a `<data>` is RED — there is no third place.
+    ///
+    /// ⚠⚠ THE PREVIEW IS ASKED THROUGH ITS `Debug`, AND THAT IS THE POINT: Rust cannot enumerate a
+    /// struct's fields, so a gate naming them would be a FIFTH hand-written list. A unique sentinel
+    /// per [`Owed`] variant, written into the datamodel and looked for in the derived `Debug`, is
+    /// the reflection-free question *does this preview publish every prompt the door checks* — and
+    /// it is red for a variant that lost its field, and for two variants sharing one.
+    #[test]
+    fn every_prompt_this_document_sends_is_one_the_door_checks_and_a_caller_can_read() {
+        use std::collections::BTreeSet;
+
+        let said = prompts_the_document_says(DOCUMENT);
+
+        // ══ THE PREMISES, ASSERTED INSIDE THE GATE RATHER THAN ASSUMED BY IT ═══════════════════
+        //
+        // ⚠⚠⚠⚠⚠ A SCAN THAT FOUND NOTHING WOULD MAKE EVERY CONTRAST BELOW TRIVIALLY TRUE — the
+        // shape this register keeps meeting. Two facts prove this one can see: it read acts at
+        // all, and its nesting tracker actually TELLS THE TWO KINDS APART. A reader that answered
+        // `Entering` for everything would put every transition's prompt in the state that carries
+        // the edge rather than the one it lands in, and list 2's contrast would then be green
+        // about the wrong states.
+        assert!(
+            said.iter()
+                .any(|act| matches!(act.lands_in, Landing::Entering(_)))
+                && said
+                    .iter()
+                    .any(|act| matches!(act.lands_in, Landing::Taking(_))),
+            "⚠⚠⚠⚠⚠ THE SCAN IS BLIND: this document sends prompts from `<onentry>` blocks AND from \
+             transition bodies, and a reader that found only one kind is not reading nesting at \
+             all. Read back {} acts: {said:?}",
+            said.len(),
+        );
+        // ⚠⚠⚠ AND A PROMPT SENT FROM NEITHER IS RED RATHER THAN SKIPPED. `<onexit>` can carry a
+        // `<send>` too; one that did would leave a run holding a question at a state no reader
+        // here can name, and passing it over is the exemption that let `unverified` through four
+        // lists at once.
+        let nowhere: Vec<&Said> = said
+            .iter()
+            .filter(|act| act.lands_in == Landing::Nowhere)
+            .collect();
+        assert!(
+            nowhere.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 750: this document sends a prompt from somewhere neither an \
+             `<onentry>` nor a transition body. Whatever owes the answer to `prompt.unasked` for \
+             it is a state nothing here can name: {nowhere:?}",
+        );
+
+        // ══ THE CLASSIFICATION — three arms, and the third is RED ══════════════════════════════
+        let verbatim: BTreeSet<&str> = ids_a_brief_takes_verbatim(DOCUMENT).into_iter().collect();
+        let declared: BTreeSet<&str> = declared_data_ids(DOCUMENT).into_iter().collect();
+        let (mut authored, mut supplied) = (BTreeSet::new(), BTreeSet::new());
+        for act in &said {
+            assert!(
+                declared.contains(act.text),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 750: `{}` is what an act of this document names as its \
+                 text, and the `<datamodel>` declares no such id. A prompt composed anywhere but a \
+                 `<data>` is one `Authored::read` cannot reach, so no caller could ever preview it \
+                 and no door could ever check it was there: {act:?}",
+                act.text,
+            );
+            if verbatim.contains(act.text) {
+                supplied.insert(act.text);
+            } else {
+                authored.insert(act.text);
+            }
+        }
+
+        // ── THE CONTROLS: each arm of the classifier must be REACHABLE, or the split is a name ──
+        //
+        // ⚠⚠⚠⚠ Without the first, *every text is authored* is true because the classifier can
+        // never answer otherwise, and the contrast below would demand an `Owed` variant for a word
+        // item 470 deliberately deleted one for. Without the second there is nothing to contrast.
+        assert!(
+            !supplied.is_empty(),
+            "⚠⚠⚠ THE CLASSIFIER CANNOT ANSWER `SUPPLIED`: no text this document sends is one a \
+             brief writes the caller's own words into, so the partition below has one arm and is a \
+             list of everything. Either the brief stopped taking `service_retry_text` verbatim, or \
+             the reader of that shape is broken",
+        );
+        assert!(
+            !authored.is_empty(),
+            "⚠⚠⚠ THE CLASSIFIER CANNOT ANSWER `AUTHORED`: this document would then compose no \
+             prompt of its own, which is not a loop",
+        );
+
+        // ══ ⭐⭐⭐⭐⭐ CONTRAST — LIST 3 AGAINST THE DOCUMENT, IN BOTH DIRECTIONS ════════════════
+        let door: BTreeSet<&str> = Owed::ALL.iter().map(|owed| owed.variable()).collect();
+        assert_eq!(
+            authored, door,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 750: `Owed::ALL` and the prompts this document composes have \
+             come apart. A name in the LEFT set and not the right is a question typed into \
+             somebody's agent that no door checks and no caller can preview — which is exactly \
+             what `unverified_prompt` was between items 741 and 750. A name in the RIGHT set and \
+             not the left is a variant no act names: plumbing, and a door refusing machines over a \
+             string nothing sends",
+        );
+        // ══ ⭐⭐⭐⭐⭐ THE DOOR ACTUALLY READS EVERY ONE, AND THE PREVIEW PUBLISHES EVERY ONE ═════
+        //
+        // ⚠⚠⚠ A LIST THE DOOR AGREES WITH IS NOT A DOOR THAT READS IT. `Authored::read` walks
+        // `Owed::ALL` today, which makes the check total over this enum by construction — and that
+        // is a property of one line somebody can move, not a law. A read dropped back onto the
+        // struct's fields would leave this enum, the document and the contrasts above all agreeing
+        // while the door had quietly stopped asking. The only question that catches it is asked of
+        // the running machine: break one variable, and the machine must stop being drivable.
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let access = supervised(&workspace);
+        let loops = bounded_at(lua, pane, Duration::from_secs(5))
+            .expect("the document's datamodel must carry its authored strings");
+        let read = |owed: Owed| match loops.script.get_variable(&loops.session, owed.variable()) {
+            Ok(ScriptValue::String(text)) => text,
+            other => panic!("`{}` must be a string: {other:?}", owed.variable()),
+        };
+
+        // ── THE PREVIEW: A CALLER CAN SEE WHAT AN UNCHECKED AGENT WILL BE TOLD, BEFORE ONE IS ──
+        //
+        // ⚠⚠⚠⚠⚠ REGISTER ITEM 469's ARM, ON ITS TWIN. The contrasts above make a caller's preview
+        // and the door agree about the LIST; this is the arm that says the entry on it carries
+        // words. Item 448 built `dispute` this way and named why: a field no gate reads is
+        // plumbing. `unverified` is reached by the same event from the same state as `dispute` and
+        // differs only in which fact got there, so the question a caller is asking — *what will my
+        // agent be told when I turn a `milestone_check` on* — has two answers and needs both.
+        //
+        // ⚠⚠⚠ READ BEFORE ANY RUN, which is the claim: `unverified`'s entry composes this kind's
+        // remedy in, but a caller deciding whether to author a check is asking before any silence
+        // exists. The `<datamodel>` seeds it for exactly that reason.
+        let shipped = loops
+            .authored()
+            .expect("a machine that was built answers with its strings");
+        assert!(
+            shipped
+                .unverified
+                .contains("An independent check was asked and this run could not read an answer"),
+            "⚠⚠⚠⚠ A CALLER MUST BE ABLE TO PREVIEW THE SILENCE, not only the refusal. Authoring a \
+             `milestone_check` is what makes this sentence reachable at all, and it is typed into \
+             somebody's agent in somebody's language: {:?}",
+            shipped.unverified,
+        );
+        // ⚠⚠⚠ AND IT CARRIES NEITHER THE CHECK'S WORDS NOR THE TURN, which is `stop`'s and
+        // `dispute`'s arrangement exactly: `unverified`'s entry chooses between this kind's two
+        // remedies on the CLASS of the silence and quotes whatever the checker managed to say, and
+        // a preview that named one would be item 264 one layer out — a true-looking sentence about
+        // a silence nobody has met.
+        //
+        // ⚠ THE TURN IS ASKED FOR AS A NEWLINE and not as `turn_prompt`'s text: at this moment the
+        // machine is in `idle` and that variable is the empty string `priming` has not composed
+        // yet, so a `contains` of it would be true of every string there is. The entry that
+        // composes this prompt joins the turn on with `'\n'`, and the shipped opening is one line.
+        assert!(
+            !shipped.unverified.contains("It said:") && !shipped.unverified.contains('\n'),
+            "⚠⚠⚠ the shipped preview must carry the FRAME and not a quote nobody gave, nor the \
+             turn a silence has not yet bought: {:?}",
+            shipped.unverified,
+        );
+        let mut broken = Vec::new();
+        for owed in Owed::ALL {
+            let held = read(owed);
+            loops
+                .script
+                .set_variable(&loops.session, owed.variable(), ScriptValue::Int(0))
+                .expect("a gate may write this datamodel");
+            if loops.authored().is_some() {
+                broken.push(owed);
+            }
+            loops
+                .script
+                .set_variable(&loops.session, owed.variable(), ScriptValue::String(held))
+                .expect("a gate may write this datamodel");
+            assert!(
+                loops.authored().is_some(),
+                "⚠⚠⚠ THE CONTROL FOR `{owed:?}`: putting the string back must make the machine \
+                 drivable again, or the read above is refusing for some other reason and this walk \
+                 proves nothing about the variable it broke",
+            );
+        }
+        assert!(
+            broken.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 750: `Authored::read` let a machine through that no longer \
+             holds {broken:?}. The door's whole job is to refuse a machine this driver cannot \
+             drive; one it validates without reading is a run that starts and dies at \
+             `error.execution` on the entry that composes the missing prompt — after it has spent \
+             the turn",
+        );
+
+        // ⚠⚠⚠⚠⚠ AND THE PREVIEW CARRIES EVERY ONE OF THEM — item 469's *a preview field no gate
+        // reads is plumbing*, made total over the enum instead of argued once per field. The
+        // sentinel is unique per variant, so a field that lost its variant is red AND so are two
+        // variants wired to one field.
+        for (nth, owed) in Owed::ALL.into_iter().enumerate() {
+            loops
+                .script
+                .set_variable(
+                    &loops.session,
+                    owed.variable(),
+                    ScriptValue::String(format!("SENTINEL-{nth}-{}", owed.variable())),
+                )
+                .expect("a gate may write this datamodel");
+        }
+        let preview = loops
+            .authored()
+            .expect("a machine holding a string for every prompt is drivable");
+        access.lifecycle().expect("lifecycle").close(pane);
+        // ⚠ THE DERIVED `Debug`, for the reason in this gate's own doc: it is the only reader in
+        // the language that sees every field without a second list naming them.
+        let published = format!("{preview:?}");
+        let unpublished: Vec<&str> = Owed::ALL
+            .iter()
+            .filter(|owed| !published.contains(&format!("-{}", owed.variable())))
+            .map(|owed| owed.variable())
+            .collect();
+        assert!(
+            unpublished.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 750, AND 469 BEFORE IT: {unpublished:?} is checked by the \
+             door and shown to nobody. Authoring a `milestone_check` is what makes the questions \
+             this loop asks when it disagrees reachable at all, and they are typed into somebody's \
+             agent in somebody's language — a caller who can read six of seven can see every \
+             question their loop asks except one. Published: {published:?}",
         );
     }
 
