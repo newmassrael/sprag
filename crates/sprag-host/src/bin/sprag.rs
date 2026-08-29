@@ -68,9 +68,11 @@
 //! sprag panes [-t SESSION]                        list the current window's panes (tmux list-panes)
 //! sprag layout [-t SESSION]                       print WHERE those panes sit — the arrangement,
 //!                                         which pane fills the window, and which are floating
-//! sprag split-window [-t SESSION] [-h|-v [-b] PANE] [-- command…]
+//! sprag split-window [-t SESSION] [-w WINDOW] [-c DIR] [-h|-v [-b] PANE] [-- command…]
 //!                                         divide PANE right (-h) / below (-v), or append with
-//!                                         neither; print the new pane's id (tmux split-window)
+//!                                         neither; print the new pane's id (tmux split-window).
+//!                                         -c is where it STARTS, -w is which window it stands in
+//!                                         (default: the window the caller is standing in)
 //! sprag rename-pane [-t SESSION] PANE <NAME | --clear>  give a pane a NAME, or take it away.
 //!                                         A name is an ADDRESS an agent can hold where a pane
 //!                                         NUMBER goes stale; unique across the daemon
@@ -2634,6 +2636,26 @@ struct Here {
     /// The session holding that pane NOW, read from the registry rather than remembered: a pane's
     /// session is the daemon's fact, and the environment carries no name to go stale.
     session: String,
+    /// The WINDOW holding that pane now, on the line above's terms exactly — register item 754.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The half this type argued for and did not carry
+    ///
+    /// The section above — *why the caller's OWN pane, and not the focused one* — is an argument
+    /// about a FOCUS, and it was only ever finished for the session. A request that names no window
+    /// acts in the session's CURRENT one, so an unscoped command run inside a pane went on landing
+    /// wherever a person was looking: *two agents working in two panes both get the answer for
+    /// whichever one a human happens to be watching*, which is the sentence above, one level down
+    /// and still true.
+    ///
+    /// Measured 2026-08-29: a `split-window` from a process standing in window `sprag`, with the
+    /// session's current window `sce`, put the pane in `sce`. `$SPRAG_PANE` is per-CALLER and the
+    /// window holding it is the daemon's own fact, so reading it back is the opposite of a guess —
+    /// and it is the only answer here that is the same every time it is asked.
+    ///
+    /// [`None`] when the daemon's tree does not place the pane, which is [`session`](Self::session)
+    /// answering at all: they are read off ONE tree at one instant, so they cannot describe two
+    /// places.
+    window: Option<String>,
 }
 
 /// This process's [`Here`], or [`None`] when it is not running in a pane THIS daemon holds.
@@ -2677,7 +2699,33 @@ fn where_we_are(conn: &mut HostConn) -> Option<Here> {
     // slot so an agent's tools answer about its own session, and two copies of "which session holds
     // this pane" is a torn answer waiting to happen.
     let session = sprag_host::wire::session_holding(&tree, PaneId(pane))?.to_owned();
-    Some(Here { pane, session })
+    // ⚠⚠ OFF THE SAME TREE, AT THE SAME INSTANT — register item 754. A second read would be a
+    // second answer, and this type's whole contract is that the two levels describe ONE place.
+    let window = sprag_host::wire::window_holding(&tree, PaneId(pane)).map(str::to_owned);
+    Some(Here {
+        pane,
+        session,
+        window,
+    })
+}
+
+/// The WINDOW this process is standing in, for a request scoped to the session it is standing in —
+/// register item 754.
+///
+/// # ⚠⚠⚠ Why the scope guard, which is [`resolve_optional_pane`]'s and not a new rule
+///
+/// With an explicit `-t elsewhere` the ambient pane is not in the session being addressed at all,
+/// so its window names nothing there — and substituting it would turn a scoped command into a
+/// wrong answer of exactly the kind [`Here`] exists to remove. The guard is spelled the same way
+/// one function over, because it is the same condition about the same fact.
+///
+/// [`None`] means *do not narrow*, which is what every caller sent before this existed: the
+/// daemon's current window, unchanged for a caller that is not standing in a pane of this session.
+fn here_window(session: Option<&str>) -> Option<&'static str> {
+    here()
+        .filter(|here| effective_scope(session) == Some(here.session.as_str()))?
+        .window
+        .as_deref()
 }
 
 /// The pane this process was born in — but only when the environment ALSO carries the address that
@@ -2939,6 +2987,23 @@ fn windowed_params(session: Option<&str>, path: String, window: Option<&str>) ->
 /// [`windowed_params`] for a resolved pane — what every pane-addressed query and invoke sends.
 fn site_params(session: Option<&str>, site: &PaneSite, path: String) -> Value {
     windowed_params(session, path, site.window.as_deref())
+}
+
+/// [`windowed_params`] plus an action's `args` — [`site_invoke`]'s form for a request that names a
+/// window WITHOUT naming a pane, which is what a BIRTH is (register item 754).
+///
+/// Kept beside the other two so the one way a request names its window is spelled once: a birth
+/// that built its own `{"window": …}` would be a second copy of that rule, free to drift from the
+/// one every pane-addressed call already goes through.
+fn windowed_invoke(
+    session: Option<&str>,
+    path: String,
+    args: Value,
+    window: Option<&str>,
+) -> Value {
+    let mut params = windowed_params(session, path, window);
+    params["args"] = args;
+    params
 }
 
 /// Read a scene SLOT, translating "this daemon has no such address" into a sentence about the
@@ -6874,6 +6939,26 @@ fn print_events(batch: &Value, cursor: u64) -> u64 {
 /// `sprag_terminal`'s `start_dir`, which states the reasoning (*a pane is a place a person opens*)
 /// and is the authority. This flag does not change the default; it makes the other answer
 /// EXPRESSIBLE, which is what an agent's pane needs and a person's split does not.
+///
+/// # ⛔⛔⛔⛔⛔ `-w` — WHICH WINDOW THE PANE IS BORN IN, and why the default moved (item 754)
+///
+/// `-c` answered *where the pane starts* and left *whose screen it appears on* to the daemon's
+/// default, which is the scoped session's CURRENT window — **whichever one a person is looking
+/// at**. That is the right default for a person, whose current window is the one they are in, and
+/// it is not an address at all for an agent: the same command lands somewhere different every time
+/// it is run. Measured 2026-08-29 on this repository's own daemon — a process standing in window
+/// `sprag`, current window `sce`, the pane born in `sce` — after a day in which this call put one
+/// loop's panes across three windows, every one of them reported as a success.
+///
+/// So two things, and the second is the one that makes the defect unreachable:
+///
+/// * `-w WINDOW` names the window, for a caller that has one to name. Refused BESIDE a pane
+///   target, because a pane already says which window it is in and two answers to one question is
+///   the ambiguity this flag exists to remove.
+/// * **With neither, a caller running inside a pane of the scoped session gets ITS OWN window** —
+///   [`here_window`], which is [`Here`]'s own argument finished. A caller that is not in such a
+///   pane narrows nothing and gets the daemon's current-window default, byte-identical to the
+///   request this verb has always made.
 fn split_window(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "split-window")?;
@@ -6882,6 +6967,7 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
     let mut before = false;
     let mut pane: Option<String> = None;
     let mut cwd: Option<String> = None;
+    let mut window: Option<String> = None;
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -6890,6 +6976,12 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
                 cwd = Some(
                     it.next()
                         .ok_or_else(|| bad("split-window: -c needs a directory".to_owned()))?,
+                );
+            }
+            "-w" => {
+                window = Some(
+                    it.next()
+                        .ok_or_else(|| bad("split-window: -w needs a window name".to_owned()))?,
                 );
             }
             "-h" | "-v" => {
@@ -6936,6 +7028,15 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
         return Err(bad(
             "split-window: -b names which side of a target, so it needs -h or -v".to_owned(),
         ));
+    }
+    // ⚠⚠ TWO ANSWERS TO ONE QUESTION IS THE AMBIGUITY `-w` EXISTS TO REMOVE — register item 754. A
+    // pane is resolved session-wide and the site it answers CARRIES its window, so a `-w` beside it
+    // is either redundant or a contradiction, and nothing here can tell which the caller meant.
+    if let (Some(named), Some((_, Some(target)))) = (&window, &placement) {
+        return Err(bad(format!(
+            "split-window: -w {named} names a window, and pane {target} already says which window \
+             it is in; give one or the other"
+        )));
     }
     let mut action_args = match &command {
         Some(command) if command.is_empty() => {
@@ -6995,7 +7096,17 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
                 mux_action_path(action),
                 action_args,
             ),
-            None => scoped_invoke(session.as_deref(), mux_action_path(action), action_args),
+            // ⛔⛔⛔⛔⛔ WHERE A PANE NOBODY PLACED IS BORN — register item 754. The caller's `-w`,
+            // else the window the caller is STANDING in, else nothing — and only that last case is
+            // the daemon's current-window default, which is where every one of these went before.
+            None => windowed_invoke(
+                session.as_deref(),
+                mux_action_path(action),
+                action_args,
+                window
+                    .as_deref()
+                    .or_else(|| here_window(session.as_deref())),
+            ),
         },
     );
     match answer {

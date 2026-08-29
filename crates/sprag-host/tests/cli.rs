@@ -13308,6 +13308,215 @@ fn orchestrate_starts_a_run_on_a_pane_named_rather_than_numbered() {
     );
 }
 
+/// The window the scoped session is CURRENTLY on, read off `windows` rather than assumed.
+///
+/// ⚠ A helper because the two gates below both need to say *the window that is not the current
+/// one*, and a fixture that hard-coded a boot window's name would be asserting the daemon's naming
+/// convention instead of the placement it is about.
+fn current_window_of(sock: &Path, session: &str) -> String {
+    let listed = sprag(sock, &["windows", "-t", session]);
+    assert!(listed.ok, "windows -t {session}: {}", listed.stderr);
+    listed
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_suffix(" (current)"))
+        .unwrap_or_else(|| panic!("some window is current: {}", listed.stdout))
+        .to_owned()
+}
+
+/// ⛔⛔⛔⛔⛔ **A PANE BORN NAMING NO WINDOW STANDS WHERE ITS CALLER STANDS, NOT WHERE THE VIEW IS**
+/// — register item 754.
+///
+/// # ⚠⚠⚠⚠⚠ The measurement, off a live daemon
+///
+/// 2026-08-29, the owner reading the screen: the session's current window was `pinion` and it held
+/// `outer-pinion`, `inner-pinion`, and **`inner750` — this repository's own loop pane**. Its
+/// watcher had called `split-window` more than ten times that day naming no window, so each pane
+/// was born in whichever window a person happened to be looking at, and every one of those calls
+/// reported success. Reproduced in this tree the same day: a process standing in window `sprag`,
+/// the session's current window `sce`, and the pane born in `sce`.
+///
+/// # ⚠⚠⚠ Why the default MOVED rather than a flag being added
+///
+/// The owner refused the flag-shaped repair in words — *결정론적으로 이런 문제가 절대 일어나면 안
+/// 돼, 컨텍스트나 메모리에 의존해서는 안 돼* — and a watcher that remembers to pass `-w` is a rule
+/// held in whoever is on shift. `Here`'s own doc had already made this argument for the SESSION
+/// (*two agents working in two panes both get the answer for whichever pane a human happens to be
+/// watching*) and stopped one level short of the window. `$SPRAG_PANE` is per-caller and the window
+/// holding it is the daemon's own fact, so it is the one answer here that is the same every time
+/// it is asked.
+///
+/// # ⚠⚠ The premise is asserted inside, because a one-window fixture proves nothing
+///
+/// This is item 686's lesson at the same seam: **two scopes that can diverge cannot be told apart
+/// from inside one of them.** So the fixture leaves the caller's pane one window over from the
+/// current one and asserts that before making any claim, and the CONTROL — a caller standing in no
+/// pane at all — must still get the daemon's current-window default, or the change is not a
+/// narrowing but a rewrite.
+#[test]
+fn a_pane_born_naming_no_window_stands_where_its_caller_stands() {
+    let (_guard, sock, pane) = daemon_with_one_pane("born-where-the-caller-is");
+    let caller = pane.to_string();
+    let home = current_window_of(&sock, "work");
+
+    // ── THE FIXTURE'S PREMISE, MADE AND THEN ASSERTED ───────────────────────────────────────
+    // `new-window` selects what it makes, so the current window becomes `spare` and the CALLER is
+    // one window over. Every claim below is vacuous without that.
+    assert!(
+        sprag(&sock, &["new-window", "-t", "work", "spare"]).ok,
+        "the second window is the whole fixture",
+    );
+    let view = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(view.ok, "panes -t work: {}", view.stderr);
+    assert!(
+        !pane_ids_in(&view.stdout).contains(&pane),
+        "⛔ THE PREMISE: `panes` lists the CURRENT window, and this gate is only about a caller \
+         standing somewhere else. Pane {pane} listed here means the current window never moved, \
+         and every claim below would be passing in a one-window world: {}",
+        view.stdout,
+    );
+
+    // ── THE CLAIM: a birth that names no window at all ──────────────────────────────────────
+    let born = sprag_env(
+        &sock,
+        &["split-window", "-t", "work", "--", "cat"],
+        &[("SPRAG_PANE", &caller)],
+    );
+    assert!(born.ok, "split-window: {} {}", born.stdout, born.stderr);
+    let child: u64 = born
+        .stdout
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("split-window prints the new pane's id: {:?}", born.stdout));
+    let view = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(
+        !pane_ids_in(&view.stdout).contains(&child),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 754: the pane was born in the window somebody is LOOKING at \
+         rather than the window its caller is standing in. That is not an address — the same \
+         command lands somewhere different every time it is run, and it put this repository's loop \
+         pane in `pinion`'s window on 2026-08-29. Current window holds: {}",
+        view.stdout,
+    );
+    assert!(
+        sprag(&sock, &["select-window", "-t", "work", &home]).ok,
+        "the caller's window is still there to look at",
+    );
+    let mine = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(
+        pane_ids_in(&mine.stdout).contains(&child),
+        "⚠⚠⚠ AND IT IS POSITIVELY IN THE CALLER'S WINDOW, not merely absent from the other one: a \
+         pane that went to a THIRD place would satisfy the assertion above and none of this item. \
+         {home} holds: {}",
+        mine.stdout,
+    );
+
+    // ── THE CONTROL: a caller standing in no pane narrows nothing ───────────────────────────
+    // `sprag` (not `sprag_env`) removes `$SPRAG_PANE`, which is a shell outside the workspace —
+    // and for it the daemon's current-window default is the only answer there is. If this landed
+    // anywhere else the change would be a rewrite of the verb rather than the narrowing it claims.
+    assert!(
+        sprag(&sock, &["select-window", "-t", "work", "spare"]).ok,
+        "back to the window nobody is standing in",
+    );
+    let anon = sprag(&sock, &["split-window", "-t", "work", "--", "cat"]);
+    assert!(anon.ok, "split-window: {} {}", anon.stdout, anon.stderr);
+    let stranger: u64 = anon
+        .stdout
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("split-window prints the new pane's id: {:?}", anon.stdout));
+    let view = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(
+        pane_ids_in(&view.stdout).contains(&stranger),
+        "⚠⚠ THE CONTROL: a caller in no pane of this session must still get the daemon's current \
+         window, byte-identical to the request this verb has always made. Current window holds: {}",
+        view.stdout,
+    );
+}
+
+/// ⛔⛔⛔⛔ **AND A CALLER THAT HAS A WINDOW TO NAME CAN NAME IT** — register item 754, the wire
+/// premise the clause above rests on.
+///
+/// # ⚠⚠⚠ Why this is a separate gate from the one above
+///
+/// They fail for different reasons and neither is evidence for the other, which is item 686's own
+/// rule about its two spellings. The default moving is what makes the defect unreachable for a
+/// caller INSIDE a pane; `-w` is what a caller outside one has, and it is the only thing a kind
+/// document's placement could ever be carried by. A gate that drove only the default would leave
+/// the wire with nowhere to put an answer.
+///
+/// ⚠ The refusal beside a pane target is the third arm: a pane is resolved session-wide and the
+/// site it answers CARRIES its window, so `-w` there is either redundant or a contradiction and
+/// nothing can tell which was meant.
+#[test]
+fn a_birth_that_names_a_window_is_born_in_it() {
+    let (_guard, sock, pane) = daemon_with_one_pane("born-in-the-window-named");
+    let home = current_window_of(&sock, "work");
+
+    // ── THE PREMISE: the window being NAMED is not the one being looked at ───────────────────
+    assert!(
+        sprag(&sock, &["new-window", "-t", "work", "spare"]).ok,
+        "the second window is the whole fixture",
+    );
+    assert_eq!(
+        current_window_of(&sock, "work"),
+        "spare",
+        "⛔ THE PREMISE: `-w {home}` must name a window that is NOT current, or this gate passes \
+         in a world where the flag does nothing",
+    );
+
+    // ── THE CLAIM ───────────────────────────────────────────────────────────────────────────
+    let born = sprag(
+        &sock,
+        &["split-window", "-w", &home, "-t", "work", "--", "cat"],
+    );
+    assert!(born.ok, "split-window -w: {} {}", born.stdout, born.stderr);
+    let child: u64 = born
+        .stdout
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("split-window prints the new pane's id: {:?}", born.stdout));
+    let view = sprag(&sock, &["panes", "-t", "work"]);
+    assert!(
+        !pane_ids_in(&view.stdout).contains(&child),
+        "⛔⛔⛔ REGISTER ITEM 754: `-w` named a window and the pane was born in the current one. \
+         Current window holds: {}",
+        view.stdout,
+    );
+    assert!(sprag(&sock, &["select-window", "-t", "work", &home]).ok);
+    assert!(
+        pane_ids_in(&sprag(&sock, &["panes", "-t", "work"]).stdout).contains(&child),
+        "⚠⚠⚠ and positively in the window that was NAMED, not merely absent from the other",
+    );
+
+    // ── THE THIRD ARM: two answers to one question is refused, naming the flag ───────────────
+    let clash = sprag(
+        &sock,
+        &[
+            "split-window",
+            "-w",
+            "spare",
+            "-h",
+            &pane.to_string(),
+            "-t",
+            "work",
+            "--",
+            "cat",
+        ],
+    );
+    assert!(
+        !clash.ok,
+        "⚠⚠ a pane already says which window it is in, so `-w` beside it is either redundant or a \
+         contradiction and nothing here can tell which: {} {}",
+        clash.stdout, clash.stderr,
+    );
+    assert!(
+        clash.stderr.contains("-w"),
+        "⚠ 455's RULE: the refusal must name the flag that would fix it: {:?}",
+        clash.stderr,
+    );
+}
+
 /// ⛔⛔⛔⛔ **`orchestrate` STARTS A RUN ON A PANE OF A WINDOW THAT IS NOT THE CURRENT ONE** —
 /// register item 686, and the line AFTER item 542's.
 ///

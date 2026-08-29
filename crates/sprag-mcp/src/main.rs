@@ -5832,9 +5832,17 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
         }
         Some(other) => return Err(format!("'cmd' must be a list of strings, not {other}")),
     }
+    // ⛔⛔⛔⛔⛔ AND IN THIS AGENT'S OWN WINDOW — register item 754. A birth naming no window is
+    // born in the session's CURRENT one, so `open_pane` put an agent's pane wherever the user's
+    // view happened to be; the same gap on the CLI put this repository's loop pane in `pinion`'s
+    // window on 2026-08-29. `own_pane` is already required above — the opener this tool refuses to
+    // work without — so the window holding it is a fact this call already has, not a guess.
+    //
+    // ⚠ [`our_window`] of `None` sends nothing, which is byte-identical to the request this tool
+    // has always made: a server that cannot place itself narrows nothing rather than picking.
     let id = host_call_kinded(
         "scene/invoke",
-        json!({ "path": mux_action_path(SPAWN_ACTION), "args": spawn_args }),
+        windowed_invoke(mux_action_path(SPAWN_ACTION), spawn_args, our_window()),
     )
     // A birth that carries a name has a second way to be refused, and the daemon cannot say which
     // (`InvokeError::Rejected` has no payload — upstream PINION-PR82). So the sentence names the
@@ -8133,6 +8141,14 @@ fn windowed_params(path: String, window: Option<&str>) -> Value {
     Value::Object(map)
 }
 
+/// [`windowed_params`] plus an action's `args` — the INVOKE shape, kept beside the query shape so
+/// the one way a request names its window is spelled once (register item 754).
+fn windowed_invoke(path: String, args: Value, window: Option<&str>) -> Value {
+    let mut params = windowed_params(path, window);
+    params["args"] = args;
+    params
+}
+
 /// One window's pane listing.
 ///
 /// The rows carry no numbers and cannot: a number is `list_panes`'s row index and `list_panes`
@@ -8616,6 +8632,38 @@ fn our_session() -> Option<&'static str> {
         // Through the daemon's own reader, shared with the `sprag` CLI, so the tool an agent reads
         // with and the command it acts with cannot disagree about which session its pane is in.
         sprag_host::wire::session_holding(&tree, sprag_terminal::PaneId(pane)).map(str::to_owned)
+    })
+    .as_deref()
+}
+
+/// The WINDOW holding [`own_pane`], asked once — [`our_session`]'s sibling one level down, and here
+/// for register item 754.
+///
+/// # ⛔⛔⛔⛔⛔ What it costs when nobody asks
+///
+/// A request that names no window acts in the session's CURRENT one — *whichever a person is
+/// looking at*. For an agent that is not an address: `open_pane` put a pane wherever the user's
+/// view happened to be, so a loop's panes end up scattered across other people's windows. Measured
+/// 2026-08-29 on this repository's own daemon, from the CLI's identical gap: a process standing in
+/// window `sprag`, current window `sce`, and the pane born in `sce`.
+///
+/// ⚠⚠ Through the daemon's own reader, shared with the `sprag` CLI, on [`our_session`]'s stated
+/// reason: the tool an agent acts with and the command a person acts with must not disagree about
+/// where that agent is standing.
+///
+/// [`None`] on [`our_session`]'s terms exactly — and it means the same thing there: *nobody said
+/// which window*, so the daemon's current one is what a caller gets.
+fn our_window() -> Option<&'static str> {
+    static OURS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    OURS.get_or_init(|| {
+        let pane = own_pane()?;
+        let answer = host_call_unscoped(
+            "scene/query",
+            json!({ "path": mux_action_path(sprag_host::wire::TREE_SLOT) }),
+        )
+        .ok()?;
+        let tree: Vec<sprag_terminal::TreeSession> = serde_json::from_value(answer).ok()?;
+        sprag_host::wire::window_holding(&tree, sprag_terminal::PaneId(pane)).map(str::to_owned)
     })
     .as_deref()
 }

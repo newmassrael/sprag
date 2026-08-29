@@ -920,7 +920,7 @@ impl Verb {
             Self::SplitWindow => (
                 "split-window",
                 Group::Pane,
-                Shell::Runs("[-h|-v [-b] [PANE]] [-- command…] [-t SESSION]"),
+                Shell::Runs("[-h|-v [-b] [PANE]] [-c DIR] [-w WINDOW] [-- command…] [-t SESSION]"),
                 Keystroke::Means("split-window -h|-v [-b]"),
                 Agent::Tools(&["open_pane"]),
             ),

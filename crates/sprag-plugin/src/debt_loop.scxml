@@ -868,6 +868,72 @@
       assuming since it was built.
     -->
     <data id="works_in" expr="'.git'"/>
+
+    <!--
+      ⛔⛔⛔⛔⛔ WHICH WINDOW A RUN OF THIS KIND STANDS IN — register item 754, and
+      the clause `works_in` above is one half of. That one says which TREE a run's
+      pane must be opened in; this one says whose SCREEN it may appear on, and
+      nothing anywhere had ever written it down either.
+
+      ⚠⚠⚠⚠⚠ WHAT IT COSTS WHEN NOBODY SAYS IT, measured 2026-08-29 by the owner
+      looking at the screen and asking *"pinion 에 pane 이 세 개 있는데, 이게
+      보이는 화면에 붙이려다보니까 생기는 버그 아니야?"*. The reading:
+
+          windows:  sprag · guilaunch · pinion (current) · wz · sce
+          panes in the CURRENT window (= pinion):
+            6:   outer-pinion
+            308: inner750        ← THIS repository's loop, in pinion's window
+            318: inner-pinion
+
+      A request that narrows no window acts in the session's CURRENT one, so a
+      pane is born wherever a person happens to be looking. This loop's watcher
+      had called `split-window` more than ten times over that day and named no
+      window once, and the panes went to three different windows — every call
+      reporting success, because from the daemon's side every one of them was.
+
+      ⛔ AND THE WRONG REPAIR IS NAMED, because it is the obvious one and the owner
+      refused it in words: *"결정론적으로 이런 문제가 절대 일어나면 안 돼,
+      컨텍스트나 메모리에 의존해서는 안 돼."* **A watcher that remembers to pass
+      the window is not a mechanism** — it is a rule held in whoever is on shift,
+      and this register has the same sentence about `-c`, about the three
+      ceilings, and about the reference. A rule that spreads between watchers is a
+      symptom, not a cure.
+
+      ⚠⚠⚠ SO WHAT THIS BUYS IS A REFUSAL, on `works_in`'s exact terms: the door
+      asks whether the window the pane stands in belongs to the tree this run
+      works in, and declines a run whose pane landed in somebody else's work. The
+      birth side is answered separately and structurally — `sprag split-window`
+      takes `-w`, and with neither `-w` nor a pane it now stands where its CALLER
+      stands rather than where a person is looking — so this clause is what
+      notices when that is bypassed, at the last moment anybody is watching.
+
+      ⛔⛔⛔⛔⛔ AND IT IS A PREDICATE, NOT A WINDOW NAME, for the reason the clause
+      above records in the same words: **the same document is compiled into every
+      checkout there will ever be**, and the four repositories that share this
+      daemon call their windows `sprag`, `pinion`, `wz`, `sce` while their trees
+      are named otherwise. A name here would be true in one window of one daemon
+      and false everywhere else, INCLUDING the fixture that defends it.
+
+      ⚠⚠⚠ SO THE CLAUSE ANSWERS THE QUESTION THAT IS ACTUALLY PORTABLE: *a window
+      belongs to one tree*. A run stands in a window whose other panes were opened
+      in the same tree it works in, and never in one already holding somebody
+      else's. That predicate separates the measured symptom from the measured
+      control exactly — `inner750` (a `sprag` pane among `pinion`'s) fails, and
+      `inner-sprag`, `inner-pinion`, `inner-wz`, `inner-sce` all pass — with no
+      opinion at all about what a window is CALLED.
+
+      ⚠⚠ A PANE THAT NAMES NO TREE CONTRADICTS NOTHING. The watcher's own shell is
+      born in a home directory and the GUI's pane in nowhere in particular; those
+      are absences of a claim, not claims of a different tree, which is the same
+      reading `works_in`'s `None` gets one clause up. What this refuses is a
+      window where TWO trees are named, because that is the state the owner was
+      looking at.
+
+      ⚠ AND IT IS ASKED OF EACH PANE'S OWN RECORD OF WHERE IT WAS OPENED
+      (`PaneOrigin::pane_start_dir`), never of `/proc/<pid>/cwd` — item 684's
+      first half, and the same read `works_in` takes.
+    -->
+    <data id="stands_in" expr="'tree'"/>
   </datamodel>
 
   <!--

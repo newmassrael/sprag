@@ -919,6 +919,25 @@ pub trait PluginWorld {
     /// when a replacement is asked for — so a door reading it would compare against nothing and
     /// wave through the case this exists to catch.
     fn pane_start_dir(&self, pane: PaneId) -> Option<std::path::PathBuf>;
+
+    /// **EVERY PANE THIS WORLD HOLDS** — which is every pane of ONE WINDOW, because that is what a
+    /// pane pool is.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the door needs it — register item 754
+    ///
+    /// A loop KIND may say its runs stand in a window that belongs to the tree they work in, and a
+    /// pane that landed in somebody else's window is one nothing else notices: the birth succeeded,
+    /// the pane exists, and [`pane_start_dir`](Self::pane_start_dir) says it is standing in the
+    /// right tree. What is wrong is the COMPANY it is keeping, and that question cannot be asked of
+    /// one pane.
+    ///
+    /// ⚠⚠ It is the pool's own membership and nothing about the session tree, so this stays the
+    /// window-free surface [`SeatElsewhere`] exists to keep it (Interface Segregation): the answer
+    /// is a list of pane ids, and what a window IS never crosses.
+    ///
+    /// ⚠ An empty list is *this world holds nothing*, which for a remote world is a daemon that was
+    /// replaced under the driver — the same latch [`has_pane`](Self::has_pane) reads.
+    fn panes_here(&self) -> Vec<PaneId>;
 }
 
 /// **WHERE A RUN'S ASKER IS WHEN IT IS NOT IN THIS POOL** — register item 689.
@@ -986,6 +1005,16 @@ impl PluginWorld for PluginsExternal {
     /// same place — so *where this pane belongs* has one answer in this process rather than two.
     fn pane_start_dir(&self, pane: PaneId) -> Option<std::path::PathBuf> {
         Some(lock(&self.workspace).pane(pane)?.start_dir().to_path_buf())
+    }
+
+    /// ⚠ The pool's own membership, which IS this window's — the same list
+    /// [`has_pane`](Self::has_pane) answers one pane of.
+    fn panes_here(&self) -> Vec<PaneId> {
+        lock(&self.workspace)
+            .panes()
+            .iter()
+            .map(sprag_terminal::Pane::id)
+            .collect()
     }
 }
 
@@ -1889,9 +1918,28 @@ fn plugin_from_request(
             // arguments were read by nobody, which is the correct reading of what it saw: **a
             // refusal about the WORLD that pre-empts a refusal about the REQUEST makes every
             // argument behind it look unread.** Grammar first, then the facts the world holds.
-            ai_loop_stands_where_it_works(
-                world.pane_start_dir(pane).as_deref(),
+            let stands_in = world.pane_start_dir(pane);
+            ai_loop_stands_where_it_works(stands_in.as_deref(), kind.works_in().as_deref())?;
+            // ⛔⛔⛔⛔⛔ AND IN A WINDOW THAT BELONGS TO THAT TREE — register item 754, the clause
+            // above's other half. That one asks whether the pane was pointed at a tree; this asks
+            // whose SCREEN it appeared on, which is the fact a birth naming no window decides by
+            // looking at whoever is watching. See `ai_loop_stands_in_its_kinds_window` for the
+            // reading that found this repository's loop pane sitting in `pinion`'s window.
+            //
+            // ⚠ AFTER it, and the order is the honest one: *this pane is not in a tree* is a
+            // better sentence than *its neighbours are strangers*, and a pane in `$HOME` would
+            // otherwise be reported by whichever of the two happened to run first.
+            let neighbours: Vec<_> = world
+                .panes_here()
+                .into_iter()
+                .filter(|held| *held != pane)
+                .map(|held| (held, world.pane_start_dir(held)))
+                .collect();
+            ai_loop_stands_in_its_kinds_window(
+                kind.stands_in().as_deref(),
                 kind.works_in().as_deref(),
+                stands_in.as_deref(),
+                &neighbours,
             )?;
             let label = format!("ai_loop pane={}", pane.0);
             let loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
@@ -3523,6 +3571,144 @@ fn ai_loop_stands_where_it_works(
          consents cover, so the run would stop at it and wait for somebody who is not watching. \
          Open the pane pointed at the tree, or change what the kind document says marks one."
     )))
+}
+
+/// The word [`ai_loop_stands_in_its_kinds_window`] knows: *a window belongs to one tree*.
+///
+/// A CONSTANT rather than a literal in two places, because the document and this build have to
+/// agree on it and a second spelling is how they would come to disagree silently. A word this
+/// build does not know is a REFUSAL there, never a pass — see that function.
+const STANDS_IN_ITS_TREES_WINDOW: &str = "tree";
+
+/// **THE TREE A DIRECTORY BELONGS TO** — the nearest ancestor-or-self carrying `marker`, or [`None`]
+/// for a directory under no tree at all.
+///
+/// ⚠ ANCESTOR-OR-SELF and not self alone, which is the difference from
+/// [`ai_loop_stands_where_it_works`]'s check and is deliberate: that one asks whether the RUN's own
+/// pane was pointed at a tree, and a run of this kind is pointed at the root. This one classifies
+/// the pane NEXT to it, which may perfectly well have been opened in a subdirectory — and reading
+/// `crates/sprag-host` as *no tree* would make a legitimate neighbour look like a stranger.
+///
+/// ⚠⚠ `exists` and not `is_dir`, [`ai_loop_stands_where_it_works`]'s reason verbatim: a linked
+/// worktree carries `.git` as a FILE.
+fn tree_of(dir: &std::path::Path, marker: &str) -> Option<std::path::PathBuf> {
+    dir.ancestors()
+        .find(|step| step.join(marker).exists())
+        .map(std::path::Path::to_path_buf)
+}
+
+/// **AND THE WINDOW IT STANDS IN MUST BE ITS TREE'S** — register item 754, and
+/// [`ai_loop_stands_where_it_works`]'s other half.
+///
+/// That one asks whether the pane was opened in a tree. This asks whose SCREEN it appears on, which
+/// is a question nothing in this product could answer and nothing anywhere had written down.
+///
+/// # ⛔⛔⛔⛔⛔ The measurement
+///
+/// 2026-08-29, read off a live daemon because the owner looked at the screen and asked. The
+/// session's current window was `pinion`, and it held three panes: `outer-pinion`, `inner-pinion`,
+/// and `inner750` — **this repository's own loop**, opened in `/home/coin/sprag`, standing between
+/// two panes opened in `/home/coin/pinion`. Its watcher had called `split-window` more than ten
+/// times that day and named a window in none of them, so each pane was born in whichever window a
+/// person happened to be looking at, and every one of those calls SUCCEEDED.
+///
+/// ⛔ **The obvious repair is the one the owner refused in words**: *결정론적으로 이런 문제가 절대
+/// 일어나면 안 돼, 컨텍스트나 메모리에 의존해서는 안 돼*. A watcher that remembers to pass the
+/// window is a rule held in whoever is on shift — item 738's whole subject. The BIRTH side is
+/// answered structurally instead (`sprag split-window` takes `-w`, and with neither `-w` nor a pane
+/// it stands where its CALLER stands rather than where a person is looking); this is what notices
+/// when that is bypassed, at the door, which is the last moment anybody is watching.
+///
+/// # ⚠⚠⚠ Why the clause is a PREDICATE and not a window NAME
+///
+/// `works_in`'s measured reason, one clause over: the same document is compiled into every checkout
+/// there will ever be, and the four repositories sharing this daemon call their windows `sprag`,
+/// `pinion`, `wz` and `sce` while their trees are named otherwise. A name would be true in one
+/// window of one daemon. *A window belongs to one tree* is portable, and it separates the symptom
+/// from the controls exactly.
+///
+/// # ⚠⚠ What is NOT a stranger
+///
+/// A pane that names no tree — the watcher's own shell in a home directory, the GUI's pane — is an
+/// absence of a claim and not a claim of a different tree, which is the reading `works_in`'s
+/// [`None`] already gets. What is refused is a window in which TWO trees are named, because that is
+/// the state the owner was looking at.
+///
+/// ⚠ **The sentence names the NEIGHBOUR and both trees rather than the window's name.** The window
+/// is not this layer's word to say — the plugin surface is deliberately free of the session tree —
+/// and the neighbour is the more actionable half anyway: *which pane made this somebody else's
+/// window* is what a person needs in order to move one of them.
+///
+/// ⚠⚠ It takes the ANSWERS and not the world, on item 739's finding: a resolution that reaches for
+/// its own inputs has arms no gate can enter.
+///
+/// # Errors
+///
+/// [`refused`]'s sentence when the window already holds a pane of another tree, when the kind names
+/// a rule this build cannot honour, and when the surface cannot answer what the rule is about.
+fn ai_loop_stands_in_its_kinds_window(
+    stands_in: Option<&str>,
+    works_in: Option<&str>,
+    here: Option<&std::path::Path>,
+    neighbours: &[(PaneId, Option<std::path::PathBuf>)],
+) -> Result<(), InvokeError> {
+    let Some(rule) = stands_in else {
+        return Ok(());
+    };
+    // ⛔⛔ A WORD THIS BUILD DOES NOT KNOW IS A REFUSAL AND NOT A PASS. An unclassified value
+    // falling through to `Ok` would be the escape hatch that disarms this whole check the first
+    // time somebody edits the document — a run started under a rule nobody applied.
+    if rule != STANDS_IN_ITS_TREES_WINDOW {
+        return Err(refused(format!(
+            "this repository's loop-kind document says its runs stand in {rule:?}, and this build \
+             knows only {STANDS_IN_ITS_TREES_WINDOW:?} (a window that belongs to one tree). A rule \
+             nothing can apply is not one a run may be started under: teach this build the word, or \
+             change what the kind document says."
+        )));
+    }
+    // ⚠⚠ THE MARKER IS WHAT MAKES THE RULE ANSWERABLE, so a kind that names a placement and no tree
+    // is refused rather than waved through: *belongs to one tree* has no meaning without the fact
+    // that says what a tree is.
+    let Some(marker) = works_in else {
+        return Err(refused(
+            "this repository's loop-kind document says its runs stand in a window that belongs to \
+             one tree, and it names nothing that marks one — so nothing here can tell this pane's \
+             neighbours from strangers. A check that cannot read its subject does not vouch for it.",
+        ));
+    };
+    let Some(standing) = here else {
+        return Err(refused(
+            "this repository's loop-kind document says its runs stand in a window that belongs to \
+             the tree they work in, and this surface cannot say where the pane was opened — so \
+             nothing here can say which tree that is. A check that cannot read its subject does \
+             not vouch for it.",
+        ));
+    };
+    let Some(ours) = tree_of(standing, marker) else {
+        return Err(refused(format!(
+            "this pane was opened in {standing:?}, which is under no directory carrying \
+             {marker:?} — and this repository's loop-kind document says its runs stand in a window \
+             belonging to the tree they work in. There is no such tree to belong to."
+        )));
+    };
+    for (pane, opened) in neighbours {
+        let Some(theirs) = opened.as_deref().and_then(|dir| tree_of(dir, marker)) else {
+            // ⚠ NOT A STRANGER: a pane that names no tree makes no claim, and refusing on it would
+            // refuse every window holding a shell. See this function's own note.
+            continue;
+        };
+        if theirs != ours {
+            return Err(refused(format!(
+                "this pane stands in a window that already holds pane {}, opened in {theirs:?}, \
+                 while this run works in {ours:?} — and this repository's loop-kind document says \
+                 a run of this kind stands in a window belonging to its own tree. A pane born \
+                 where somebody happened to be looking is one nobody can find again: open it with \
+                 `split-window -w <window>`, or move it, or change what the kind document says.",
+                pane.0
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// **WHERE A RUN STARTS READING, AND WHO SAYS SO** — register item 738, layer 2.
@@ -9111,6 +9297,260 @@ mod tests {
             lock(&workspace).close(outside).is_some(),
             "the pane this gate opened was there to close",
         );
+    }
+
+    /// A SECOND tree, so *this repository* and *somebody else's* are two directories rather than
+    /// one used twice — register item 754.
+    fn another_tree_to_stand_in() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("sprag-other-tree-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a second tree for a neighbour to stand in");
+        std::fs::write(dir.join(".git"), b"gitdir: elsewhere\n").expect("the same marker");
+        dir
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A LOOP IS NOT BUILT OVER A PANE IN A WINDOW THAT ALREADY BELONGS TO ANOTHER
+    /// TREE** — register item 754, and the sibling of the gate above.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The measurement, and why one pane could never show it
+    ///
+    /// 2026-08-29, off a live daemon because the owner looked at the screen and asked: the current
+    /// window was `pinion` and it held `outer-pinion`, `inner-pinion` and **`inner750` — this
+    /// repository's loop pane**, opened in `/home/coin/sprag`. Every check that existed passed on
+    /// it: the pane was real, it stood in a tree, and its own directory was the right one. What was
+    /// wrong was the COMPANY it kept, and that is not a question one pane can be asked — which is
+    /// why the door needed [`PluginWorld::panes_here`] before it could be asked at all.
+    ///
+    /// # ⚠⚠⚠ Every arm below is a case the shipped document actually reaches
+    ///
+    /// A window holding a shell born in `$HOME` and a window holding somebody else's repository are
+    /// different facts, and a check that refused both would refuse every launch this loop has ever
+    /// made. So *names no tree* is a control here and not a symptom — the same reading `works_in`'s
+    /// [`None`] gets one function over.
+    #[test]
+    fn a_loop_is_not_built_over_a_pane_in_a_window_that_belongs_to_another_tree() {
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+            .expect("this repository's kind document opens");
+        let marks = kind.works_in().expect(
+            "⛔⛔⛔ THE CONTROL: without a marker there is nothing to classify a neighbour by, and \
+             every assertion below would be a statement about `None`",
+        );
+        let rule = kind.stands_in().expect(
+            "⛔⛔⛔ THE PREMISE: this repository's kind document must SAY where its runs stand, or \
+             the door is checking nothing at all and this gate is green about a clause nobody wrote",
+        );
+        assert_eq!(
+            rule, STANDS_IN_ITS_TREES_WINDOW,
+            "⚠⚠ and it must be the word this build knows, or the arm below that refuses an unknown \
+             word is the one the SHIPPED document takes",
+        );
+
+        let ours = a_tree_to_stand_in();
+        let theirs = another_tree_to_stand_in();
+        assert_ne!(
+            ours, theirs,
+            "⚠⚠⚠⚠ THE FIXTURE'S PREMISE: two trees, or *refused* and *accepted* below are the same \
+             case twice",
+        );
+
+        // ── THE SYMPTOM ─────────────────────────────────────────────────────────────────────
+        let stranger = PaneId(41);
+        let why = ai_loop_stands_in_its_kinds_window(
+            Some(&rule),
+            Some(&marks),
+            Some(&ours),
+            &[(stranger, Some(theirs.clone()))],
+        )
+        .expect_err("⛔ a loop must NOT be built over a pane sitting in somebody else's window");
+        let sentence = why
+            .reason()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| panic!("the refusal must carry a sentence: {why:?}"));
+        for named in [
+            theirs.display().to_string(),
+            ours.display().to_string(),
+            stranger.0.to_string(),
+        ] {
+            assert!(
+                sentence.contains(&named),
+                "⚠⚠⚠⚠ 455's RULE: the refusal must name WHICH pane made this somebody else's \
+                 window and BOTH trees, because the remedy is to move one of them and a sentence \
+                 naming neither cannot be acted on. Missing {named:?} from {sentence:?}",
+            );
+        }
+
+        // ── CONTROL ONE: a window of one tree is the placement this whole clause is FOR ──────
+        ai_loop_stands_in_its_kinds_window(
+            Some(&rule),
+            Some(&marks),
+            Some(&ours),
+            &[(stranger, Some(ours.clone()))],
+        )
+        .expect("a window whose panes share this run's tree is where a run of this kind stands");
+
+        // ── CONTROL TWO: a neighbour opened in a SUBDIRECTORY of the tree is not a stranger ──
+        // This is the half `tree_of` walks ancestors for. A watcher's shell sitting in
+        // `crates/sprag-host` belongs to this tree, and reading it as *no tree* — or worse, as a
+        // different one — would refuse a launch nobody could see anything wrong with.
+        let below = ours.join("crates");
+        std::fs::create_dir_all(&below).expect("a subdirectory of the tree");
+        ai_loop_stands_in_its_kinds_window(
+            Some(&rule),
+            Some(&marks),
+            Some(&ours),
+            &[(stranger, Some(below))],
+        )
+        .expect("a pane opened below the tree's root is in the tree");
+
+        // ── AND ITS MIRROR, WHICH IS THE ARM THAT ACTUALLY MEASURES THE ANCESTOR WALK ────────
+        // ⭐ Written because the mutation `tree_of(…).take(1)` — classify by the directory ITSELF
+        // and never walk up — left the control above GREEN: a subdirectory then answers *no tree*,
+        // and *no tree* is waved through. A green mutation is the name of a gate you owe, so here
+        // it is. A stranger opened one level inside somebody else's checkout is the commonest
+        // shape a real neighbour has (`sprag processes` says every one of this daemon's watcher
+        // shells sits below its repository root), and reading it as *makes no claim* would let the
+        // exact pane this item measured stand unnoticed.
+        let inside_theirs = theirs.join("crates");
+        std::fs::create_dir_all(&inside_theirs).expect("a subdirectory of the OTHER tree");
+        let deep = ai_loop_stands_in_its_kinds_window(
+            Some(&rule),
+            Some(&marks),
+            Some(&ours),
+            &[(stranger, Some(inside_theirs))],
+        )
+        .expect_err("a neighbour opened BELOW another tree's root is still in another tree");
+        assert!(
+            deep.reason()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .contains(&theirs.display().to_string()),
+            "⚠⚠ and it is refused for the OTHER TREE's root rather than for the subdirectory, \
+             which is what makes two panes of one checkout one answer: {deep:?}",
+        );
+
+        // ── CONTROL THREE: a pane that names NO tree contradicts nothing ─────────────────────
+        // The watcher's own shell is born in a home directory and the GUI's pane in nowhere in
+        // particular. Those are absences of a claim, and a check that read them as claims of a
+        // different tree would refuse every window this loop has ever run in.
+        let bare = std::env::temp_dir().join(format!("sprag-no-tree-{}", std::process::id()));
+        std::fs::create_dir_all(&bare).expect("a directory that is not a tree");
+        assert!(
+            !bare.join(&marks).exists(),
+            "⚠⚠⚠ THIS CONTROL IS VACUOUS IF THE FIXTURE IS A TREE: {bare:?} must not carry {marks:?}",
+        );
+        ai_loop_stands_in_its_kinds_window(
+            Some(&rule),
+            Some(&marks),
+            Some(&ours),
+            &[(stranger, Some(bare.clone())), (PaneId(42), None)],
+        )
+        .expect("a neighbour that names no tree makes no claim about whose window this is");
+
+        // ── CONTROL FOUR: a kind that names no placement is not checked at all ───────────────
+        // The shipped state of a document other repositories copy — an absence of a claim rather
+        // than an exemption from one.
+        ai_loop_stands_in_its_kinds_window(
+            None,
+            Some(&marks),
+            Some(&ours),
+            &[(stranger, Some(theirs.clone()))],
+        )
+        .expect("a kind that says nothing about placement makes no claim");
+
+        // ── REFUSAL TWO: a word this build cannot honour is a RED, never a pass ──────────────
+        // The escape hatch this gate exists to keep shut: an unclassified value falling through to
+        // `Ok` would disarm the whole check the first time somebody edited the document, and the
+        // run would start under a rule nothing applied.
+        let unknown = ai_loop_stands_in_its_kinds_window(
+            Some("whichever window is current"),
+            Some(&marks),
+            Some(&ours),
+            &[(stranger, Some(ours.clone()))],
+        )
+        .expect_err("a placement rule this build does not know must not be waved through");
+        assert!(
+            unknown
+                .reason()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .contains("whichever window is current"),
+            "⚠⚠ and it must name the word it could not honour: {unknown:?}",
+        );
+
+        // ── REFUSAL THREE: a placement with nothing to classify BY ───────────────────────────
+        ai_loop_stands_in_its_kinds_window(
+            Some(&rule),
+            None,
+            Some(&ours),
+            &[(stranger, Some(theirs.clone()))],
+        )
+        .expect_err(
+            "*belongs to one tree* has no meaning without the fact that says what a tree is",
+        );
+
+        // ── REFUSAL FOUR: a surface that cannot say where the pane stands ────────────────────
+        ai_loop_stands_in_its_kinds_window(
+            Some(&rule),
+            Some(&marks),
+            None,
+            &[(stranger, Some(theirs.clone()))],
+        )
+        .expect_err("a check that cannot read its subject does not vouch for it");
+
+        // ⛔⛔⛔⛔⛔ AND THE DOOR ITSELF, WHICH IS THE HALF EVERY ASSERTION ABOVE MISSES — item
+        // 739's measured hole, in the words the gate above it uses: a resolution handed its own
+        // inputs is GREEN when the wiring that normally feeds it is cut. So the last arm builds a
+        // real request over a real pool holding a real stranger, and the door must refuse it.
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let driven = echoing_agent_pane_in(&workspace, &ours);
+        let neighbour = echoing_agent_pane_in(&workspace, &theirs);
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            external.panes_here().contains(&neighbour),
+            "⚠⚠⚠ THE PREMISE OF THIS ARM: the world must really hold the stranger, or the refusal \
+             it expects has nothing to fire on",
+        );
+        assert_eq!(
+            external.pane_start_dir(neighbour).as_deref(),
+            Some(theirs.as_path()),
+            "⚠⚠ and it must really say the stranger was opened in another tree",
+        );
+        let built = external.build_plugin(
+            ai_loop_request(driven, json!({}))
+                .as_object()
+                .expect("an object"),
+        );
+        let Err(refused_at_the_door) = built else {
+            panic!(
+                "⛔⛔⛔⛔⛔ THE DOOR BUILT A LOOP IN A WINDOW THAT ALREADY BELONGS TO ANOTHER TREE. \
+                 Every assertion above passes with the door's own call to this check deleted — \
+                 that is item 739's measured hole, and this arm is what closes it"
+            );
+        };
+        assert!(
+            refused_at_the_door
+                .reason()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .contains(&theirs.display().to_string()),
+            "⚠⚠ and the door's refusal must be THIS one rather than some other: \
+             {refused_at_the_door:?}",
+        );
+        for pane in [driven, neighbour] {
+            assert!(
+                lock(&workspace).close(pane).is_some(),
+                "the panes this gate opened were there to close",
+            );
+        }
     }
 
     /// ⛔⛔⛔⛔⛔ **A LAUNCH NOBODY AND NO DOCUMENT ANSWERED IS REFUSED, NAMING EVERY KEY THAT WOULD

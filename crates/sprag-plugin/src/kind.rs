@@ -445,6 +445,40 @@ impl LoopKind {
             .filter(|said| !said.is_empty())
     }
 
+    /// **WHICH WINDOW A RUN OF THIS KIND STANDS IN**, or [`None`] for a kind that does not care
+    /// whose screen its pane appears on — register item 754, and [`works_in`](Self::works_in)'s
+    /// other half.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What it costs when nobody says it
+    ///
+    /// A request that narrows no window acts in its session's CURRENT one, so a pane is born
+    /// wherever a person is looking. Measured 2026-08-29 off a live daemon, by the owner reading
+    /// the screen: this repository's loop pane `inner750` was in the `pinion` window, between
+    /// `outer-pinion` and `inner-pinion`. Its watcher had called `split-window` more than ten times
+    /// that day naming no window, and the panes had gone to three different windows — every call
+    /// succeeding, because from the daemon's side every one of them had.
+    ///
+    /// ⛔ **AND THE OBVIOUS REPAIR IS THE WRONG ONE**, refused by the owner in words: *a watcher
+    /// that remembers to name the window* is a rule held in whoever is on shift, which is what item
+    /// 738 exists to end. The birth side is answered structurally instead (`split-window -w`, and a
+    /// bare call standing where its CALLER stands); this clause is what NOTICES when that is
+    /// bypassed, at the door, which is the last moment anybody is watching.
+    ///
+    /// ⚠⚠ **IT IS A PREDICATE AND NOT A WINDOW NAME**, on `works_in`'s measured reason: the same
+    /// document is compiled into every checkout, and the four repositories sharing this daemon name
+    /// their windows nothing like their trees. What is portable is *a window belongs to one tree* —
+    /// see the document for the symptom and the four controls that predicate separates.
+    ///
+    /// ⚠ [`None`] is the shipped state for a kind that says nothing, which is right for a document
+    /// other repositories copy — and it means no check at all rather than a check that passes.
+    #[must_use]
+    pub fn stands_in(&self) -> Option<String> {
+        self.machine
+            .policy()
+            .stands_in()
+            .filter(|said| !said.is_empty())
+    }
+
     /// **HOW MANY TURNS A RUN OF THIS KIND MAY TAKE**, or [`None`] where this kind says nothing and
     /// the template's own number stands.
     ///

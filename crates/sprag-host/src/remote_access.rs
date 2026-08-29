@@ -1887,6 +1887,20 @@ impl crate::plugins::PluginWorld for RemotePluginWorld<'_> {
     fn pane_start_dir(&self, pane: PaneId) -> Option<std::path::PathBuf> {
         PaneOrigin::pane_start_dir(self.0, pane)
     }
+
+    /// ⚠⚠⚠ **THE SAME LIST [`has_pane`](crate::plugins::PluginWorld::has_pane) ANSWERS ONE PANE
+    /// OF** — register item 754, on the line above's terms exactly: a kind that says which window
+    /// its runs stand in must mean the same thing to an out-of-process driver as it does to the
+    /// daemon, or
+    /// [`RUN_DRIVER_PROCESS`](crate::options::RUN_DRIVER_PROCESS)'s promise is broken at the one
+    /// door that refuses.
+    ///
+    /// ⚠ A surface whose daemon was replaced answers an EMPTY list here, exactly as `has_pane`
+    /// answers `false` — the run is then refused by the check above this one, which is the right
+    /// order: *there is no such pane* is a better sentence than *its neighbours are strangers*.
+    fn panes_here(&self) -> Vec<PaneId> {
+        self.0.pane_ids()
+    }
 }
 
 #[cfg(test)]

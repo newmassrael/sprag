@@ -3988,6 +3988,76 @@ fn a_running_pane_in_another_window_is_not_reported_as_gone() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **A PANE AN AGENT OPENS STANDS IN THE AGENT'S OWN WINDOW, NOT IN THE ONE THE PERSON IS
+/// LOOKING AT** — register item 754, and the second mouth of the defect the CLI's
+/// `a_pane_born_naming_no_window_stands_where_its_caller_stands` measures.
+///
+/// # ⚠⚠⚠⚠⚠ The measurement, and why it reaches THIS tool
+///
+/// 2026-08-29, the owner reading a live daemon's screen: the current window was `pinion` and it
+/// held `outer-pinion`, `inner-pinion` and **this repository's own loop pane**. A request that
+/// names no window acts in the session's CURRENT one, and `open_pane` named none — so an agent's
+/// pane went wherever the user's view happened to be. This is item 686 → 687's shape exactly: one
+/// fact missing from two clients, and fixing the CLI alone leaves the tool an agent is actually
+/// told to use still doing it.
+///
+/// ⚠⚠ `own_pane` is already REQUIRED by this tool — it refuses to open a pane with nobody
+/// answerable for it — so the window holding that pane is a fact the call already has. Nothing is
+/// guessed and nobody has to remember a flag, which is what the owner asked for in words:
+/// *결정론적으로 이런 문제가 절대 일어나면 안 돼, 컨텍스트나 메모리에 의존해서는 안 돼.*
+///
+/// # ⚠⚠⚠ The premise is asserted inside
+///
+/// A one-window fixture cannot tell *the agent's window* from *the current window*, which is why
+/// four hundred gates never saw this. So the person's view is MOVED to a second window first, and
+/// that is asserted before any claim rests on it.
+#[test]
+fn a_pane_an_agent_opens_stands_in_the_agents_own_window() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let mine = mux_current_window(&sock);
+
+    // ── THE PREMISE: the person is looking somewhere the agent is not ───────────────────────
+    // `new_window` SELECTS what it creates, so this moves the view and leaves the agent behind.
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let theirs = mux_current_window(&sock);
+    assert_ne!(
+        theirs, mine,
+        "⛔ THE PREMISE: the current window must not be the agent's, or this gate passes in a \
+         one-window world and measures nothing",
+    );
+    let before = mux_query_panes_in(&sock, &mine).len();
+
+    // ── THE CLAIM ───────────────────────────────────────────────────────────────────────────
+    let opened = server.call_tool("open_pane", json!({ "cmd": ["cat"], "name": "agentpane" }));
+    assert!(
+        opened.contains("Opened pane"),
+        "the pane was opened at all: {opened}",
+    );
+    let ours = mux_query_panes_in(&sock, &mine);
+    assert_eq!(
+        ours.len(),
+        before + 1,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 754: the pane an agent opened was born in the window the PERSON \
+         is looking at. That is not an address — the same call lands somewhere different every \
+         time, and on 2026-08-29 it put this repository's loop pane in `pinion`'s window. \
+         {mine} holds {ours:?}, {theirs} holds {:?}",
+        mux_query_panes_in(&sock, &theirs),
+    );
+    assert_eq!(
+        mux_query_panes_in(&sock, &theirs).len(),
+        1,
+        "⚠⚠⚠ AND THE PERSON'S WINDOW IS UNTOUCHED, not merely one short: a pane that went to a \
+         THIRD place would satisfy the count above and none of this item",
+    );
+    assert_eq!(
+        mux_current_window(&sock),
+        theirs,
+        "⚠⚠ and opening a pane still does not move the person — R313's rule, which this must not \
+         break while fixing where the pane goes",
+    );
+}
+
 /// **The round's claim end to end: an agent makes itself a place to work, works in it, and THEN
 /// shows the person — three acts, and only the third takes their screen.**
 ///

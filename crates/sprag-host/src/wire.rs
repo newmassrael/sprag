@@ -4230,6 +4230,43 @@ pub fn session_holding(
         .map(|session| session.name.as_str())
 }
 
+/// Which WINDOW holds `pane`, read off a [`TREE_SLOT`] answer — [`session_holding`]'s sibling one
+/// level down, and here for its reason exactly.
+///
+/// # ⛔⛔⛔⛔⛔ The defect this exists to remove — register item 754
+///
+/// [`session_holding`] stopped at the session, so a client running inside a pane knew which SESSION
+/// it was standing in and nothing about which WINDOW. A request that narrows no window lands in the
+/// session's CURRENT one — *whichever a person is looking at*, which is what
+/// [`crate::scope::SessionScope`] documents as the default. For a person the two are the same
+/// window; for an agent they are not, and a pane born from an unnarrowed request appears in
+/// somebody else's work.
+///
+/// Measured 2026-08-29 on this repository's own daemon: a process standing in window `sprag` asked
+/// for a pane, the session's current window was `sce`, and the pane was born in `sce`. The same
+/// call had put this loop's panes in three different windows over the preceding day, one of them
+/// `pinion`'s — and nothing anywhere said so, because every one of them SUCCEEDED.
+///
+/// # ⚠⚠ Why it is one function and not one per client, verbatim from [`session_holding`]
+///
+/// Two clients need a pane id turned back into a place: the `sprag` CLI, so a command acts where
+/// its caller is standing, and `sprag-mcp`, so an agent's tools answer about the agent's own
+/// window. Written twice, the two would be free to disagree — a torn answer between the tool an
+/// agent reads with and the command it acts with, about the one fact this item is.
+///
+/// [`None`] means the tree does not hold that pane at all, which is [`session_holding`]'s [`None`]
+/// and means the same thing: nobody said which window, so the daemon's default is the one.
+#[must_use]
+pub fn window_holding(
+    tree: &[sprag_terminal::TreeSession],
+    pane: sprag_terminal::PaneId,
+) -> Option<&str> {
+    tree.iter()
+        .flat_map(|session| session.windows.iter())
+        .find(|window| window.panes.iter().any(|held| held.id == pane))
+        .map(|window| window.name.as_str())
+}
+
 /// The mux control external query FAMILY: every session's live ACTIVITY — where it is working, on
 /// what branch, and what it is serving — with the AGE of the sample they were all taken in.
 ///
