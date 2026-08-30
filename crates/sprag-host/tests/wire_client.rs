@@ -9056,6 +9056,27 @@ fn staging_control(
     }
 }
 
+/// **THE RULE REGISTER ITEM 783 REPLACED** — the extra time priced at the SHORT arm's rate, kept
+/// for the reason the window rule below is kept: the case for replacing it is a claim about what
+/// it does to healthy hosts, and a claim like that is a predicate or it is nothing.
+///
+/// ⚠ Returns the bare verdict rather than a [`Staged`], because the only thing anybody asks it now
+/// is *would the old rule have bought this pair*.
+fn staging_control_by_short_rate(
+    short: u64,
+    short_took: Duration,
+    long: u64,
+    long_took: Duration,
+) -> bool {
+    let apart = long_took.saturating_sub(short_took);
+    if short_took.is_zero() {
+        return false;
+    }
+    let extra = u128::from(long.saturating_sub(short));
+    let owed = (u128::from(short) * apart.as_nanos()).div_ceil(short_took.as_nanos());
+    extra * 2 >= owed
+}
+
 /// **THE RULE ARM (3-f) REPLACED** — looks counted against the WINDOWS each arm asked for, kept
 /// because the case for replacing it is a claim about what it did to real readings.
 ///
@@ -9070,16 +9091,105 @@ fn staging_control_by_window(short: u64, long: u64) -> bool {
     long >= short.saturating_mul(GROWTH)
 }
 
+/// ⛔⛔⛔⛔⛔ **WHICH ARM'S RATE PRICES THE EXTRA TIME, READ AGAINST A HOST THAT SLOWS DOWN
+/// MID-WAIT** — register item 783, and the half of it a measured pair cannot show.
+///
+/// # ⚠⚠⚠⚠⚠ This gate exists because the repair is PARTIAL and nothing said so
+///
+/// Item 666 recorded, in `readiness.rs`, that **any rule phrased as looks per unit time** is
+/// turned over by a host that changes pace mid-wait. This control is such a rule. Moving its
+/// divisor from the short arm to the long one made the hole much smaller — and left it open at one
+/// edge. Both halves are asserted here, so the round that reads *"783 is paid"* also reads what it
+/// was not.
+#[test]
+fn the_divisor_is_read_against_a_host_that_slows_down_mid_wait() {
+    /// The two windows the arms ask for.
+    const SHORT_W: u64 = 250;
+    const LONG_W: u64 = 1_000;
+
+    /// One HYPOTHETICAL host, not a reading: it looks every `fast` ms for `fast_phase` ms and
+    /// every `slow` ms after that. The short arm's window ends inside the fast phase or exactly at
+    /// its edge; the long arm's runs on into the slow one.
+    ///
+    /// ⚠⚠⚠ **A FAMILY, AND SAID SO.** Two rounds ago this gate carried a DERIVED elapsed asserted
+    /// as though it were a macOS measurement, and deleting it was the repair. This is a different
+    /// object: nothing here claims a host existed. It is the space of hosts item 666 named, and
+    /// what is asserted is how the RULE behaves over it — the same thing
+    /// `staging_control_by_window` is kept to say about the rule before it.
+    fn host(fast: u64, slow: u64, fast_phase: u64) -> (u64, Duration, u64, Duration) {
+        let short = SHORT_W / fast;
+        let long = fast_phase / fast + LONG_W.saturating_sub(fast_phase) / slow;
+        (
+            short,
+            Duration::from_millis(SHORT_W),
+            long,
+            Duration::from_millis(LONG_W),
+        )
+    }
+    let buys = |h: (u64, Duration, u64, Duration)| {
+        matches!(
+            staging_control(h.0, h.1, h.2, h.3, Duration::from_millis(750)),
+            Staged::Bought { .. }
+        )
+    };
+    let bought_by_old =
+        |h: (u64, Duration, u64, Duration)| staging_control_by_short_rate(h.0, h.1, h.2, h.3);
+
+    // ── ⭐⭐⭐⭐⭐ WHAT MOVING THE DIVISOR ACTUALLY BOUGHT ──────────────────────────────────────
+    //
+    // Item 666 recorded the finding this family is drawn from, in `readiness.rs`: *"a wait whose
+    // first 400 ms run at 10 ms a look and whose remaining 1.2 s run at 60 ms … reads as a
+    // shortfall — over a host that slowed down MID-WAIT, with nothing about the product changed.
+    // **Any rule phrased as looks per unit time has that hole.**"*
+    //
+    // This control is such a rule, so the hole is its too. Register item 783 moved the divisor
+    // from the short arm to the long one; these are the hosts that says something about.
+    for (fast, slow, phase) in [(10, 40, 400), (10, 60, 400), (10, 120, 400), (10, 600, 400)] {
+        let h = host(fast, slow, phase);
+        assert!(
+            buys(h) && !bought_by_old(h),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 783: a host that ran at {fast} ms a look for {phase} ms and \
+             {slow} ms after is HEALTHY — it never stopped polling — and the rule this replaced \
+             refused it while the shipped one buys it. That difference is the whole case for \
+             moving the divisor, and without this line it is a paragraph: {h:?}",
+        );
+    }
+
+    // ── ⛔⛔⛔⛔⛔ AND WHAT IT DID NOT BUY — THE RESIDUE, NAMED SO NOBODY READS THE REPAIR AS
+    //    COMPLETE ──────────────────────────────────────────────────────────────────────────────
+    //
+    // ⚠⚠⚠⚠⚠ When the slowdown begins exactly where the short window ENDS, the long arm's own
+    // average is dragged down by the slow phase it is being asked about, and the rule still
+    // refuses a host that never stopped polling. **666's class finding therefore SURVIVES this
+    // repair** — the divisor made the hole smaller, not absent.
+    //
+    // ⚠⚠ The answer 666 reached for itself is the one this file has not taken: stop reading counts
+    // and read WHEN THE PREDICATE WAS LAST CONSULTED (`polling_grew`'s `apart`), which has no rate
+    // in it and so cannot have this hole at all. Until that is done here, these three lines are
+    // what say so.
+    for (fast, slow, phase) in [(10, 60, 250), (10, 120, 250), (10, 600, 250)] {
+        let h = host(fast, slow, phase);
+        assert!(
+            !buys(h),
+            "⚠⚠⚠ THE RESIDUE MOVED WITHOUT BEING RECORDED: this host is one the shipped rule still \
+             refuses, and register item 783's own entry says so. If it buys now, the rule changed \
+             shape and the item's residue paragraph is stale — go and fix it rather than deleting \
+             this line: {h:?}",
+        );
+    }
+}
+
 /// ⛔⛔⛔⛔⛔ **THE STAGING CONTROL'S ARITHMETIC, ON THE PAIRS THAT HAVE ACTUALLY BEEN MEASURED** —
-/// register item 776, arm (3-f), and the gate that keeps [`staging_control`]'s two refusals alive
-/// on a machine where neither can fire.
+/// register item 776, arm (3-f), and the gate that keeps [`staging_control`]'s refusals alive on a
+/// machine where none of them can fire.
 ///
-/// # ⚠⚠⚠ Each arm is a READING somebody took, and the ones that are not are marked
+/// # ⚠⚠⚠ Every arm here is a READING somebody took
 ///
-/// Three of these are complete four-number readings off a real run. The macOS pair is **counts
-/// only** — that failure died before the summary printed, so its two elapsed times were never
-/// seen — and the model arm below says so in as many words rather than passing a derivation off
-/// as a measurement.
+/// Four complete four-number readings off real runs, two per platform, plus the two mutations that
+/// produced them. ⚠ A DERIVED pair was asserted here once, as though a constant look rate were a
+/// measurement of macOS; the reading that refuted it replaced it, and nothing here is a model now.
+/// The one place hypothetical hosts are reasoned about is
+/// [`the_divisor_is_read_against_a_host_that_slows_down_mid_wait`], which says so in its own name.
 #[test]
 fn the_staging_control_reads_the_pairs_that_have_been_measured() {
     /// The distance between the gate's two windows, which is what a pair is read against.
