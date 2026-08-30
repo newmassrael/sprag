@@ -8957,11 +8957,14 @@ enum Staged {
     /// cancels in this difference, so a pair that fails it is one whose members waited the same
     /// length of time, and nothing can be read off that.
     NotAPair { apart: Duration, floor: Duration },
-    /// ⛔ **The short arm waited no time at all**, so it fixes no rate to read the long one
+    /// ⛔ **The long arm took no looks at all**, so it fixes no rate to price the extra time
     /// against. Named rather than folded into the arm above, because *the arms did not differ* and
     /// *there is no rate* ask for different repairs — and unclassified is RED, never a pass.
+    ///
+    /// ⚠ It asks about the LONG arm since register item 783 — the divisor moved, and a guard left
+    /// pointing at the old one would be a line that cannot fire.
     NoRate,
-    /// ⛔ **The extra time did not buy what the short arm's own rate says it owes.**
+    /// ⛔ **The extra time did not buy what the long arm's own rate says it owes.**
     Unbought { extra: u128, owed: u128 },
     /// ✅ The extra time bought the extra looks.
     Bought { extra: u128, owed: u128 },
@@ -8992,7 +8995,7 @@ fn staging_control(
     /// differed by before one is read against the other. ⚠⚠ Half, and a guard against a reading
     /// that cannot discriminate rather than a threshold on the product.
     const APART_SHARE: u32 = 2;
-    /// What share of the looks the EXTRA time owes — at the short arm's own measured rate — the
+    /// What share of the looks the EXTRA time owes — at the long arm's own measured rate — the
     /// long arm must actually have paid. ⚠⚠ Half the honest reading, and that headroom is the
     /// whole of register item 668: what must not be able to turn this over is the host it runs on.
     const OWED_SHARE: u128 = 2;
@@ -9002,12 +9005,50 @@ fn staging_control(
     if apart < floor {
         return Staged::NotAPair { apart, floor };
     }
-    if short_took.is_zero() {
+    // ⛔⛔⛔⛔⛔ **PRICED AT THE LONG ARM'S RATE, NOT THE SHORT ARM'S** — register item 783, and the
+    // whole of it. This divided by the short arm until 2026-08-31, and macOS refused two healthy
+    // readings because of it.
+    //
+    // # ⚠⚠⚠⚠⚠ Which arm's rate reproduces, measured across every pair recorded below
+    //
+    // | pair                  | short ms/look | long ms/look |
+    // |-----------------------|---------------|--------------|
+    // | linux, nothing staged | 10.2          | 10.6         |
+    // | linux, landing +800ms | 10.6          | 10.4         |
+    // | macOS `131aa05`       | 25.4          | **54.9**     |
+    // | macOS `a0a3eda`       | 33.0          | **55.0**     |
+    //
+    // **The long arm reproduces on both hosts — 10.6/10.4 and 54.9/55.0 — and the short arm does
+    // not: 25.4 against 33.0, thirty per cent apart on one machine.** So the estimator this rule
+    // divided by was the worse of the two it had, and on the host where the two disagree it turned
+    // healthy pairs over. That the short arm is worse is not a surprise once said out loud: it is
+    // the arm with the FEWEST looks, so it carries the most quantisation error, and a fixed landing
+    // cost is a larger share of its elapsed.
+    //
+    // ⚠⚠⚠ **WHAT THIS BECOMES, STATED SO IT IS NOT A BLACK BOX.** With `r = short_took/long_took`,
+    // the rule below is exactly `long * (1 + r) >= 2 * short` — at the usual quarter, `long >= 1.6
+    // * short`. It is still a GROWTH requirement and window-aware, which is the property arm (3-f)
+    // replaced the old `long >= short * 2` to get.
+    //
+    // ⚠⚠ **AND IT IS PARTLY SELF-REFERENTIAL — say so rather than let a reader discover it.** The
+    // long arm is on both sides. What keeps that from being vacuous is the mutation below: a
+    // counter frozen at one look is still refused, because zero extra looks can never meet a
+    // positive debt.
+    //
+    // ⚠ The residue: on macOS the two real pairs now pass at margins of 1.25 and 1.23. That is
+    // thin, and it is the honest number — a further degradation reds this again rather than the
+    // problem being gone.
+    if long == 0 {
         return Staged::NoRate;
     }
     let extra = u128::from(long.saturating_sub(short));
-    // The short arm's OWN look rate, applied to the time the long arm waited on top of it.
-    let owed = u128::from(short) * apart.as_nanos() / short_took.as_nanos();
+    // ⚠⚠ CEILING, and one arithmetic for BOTH the verdict and the number reported. Truncating
+    // toward zero let a long arm slow enough to owe a fraction of a look owe NOTHING, and `0 >= 0`
+    // is how the frozen-counter mutation would have walked through. Rounding the debt UP is the
+    // direction that cannot invent a pass.
+    let owed_scaled = u128::from(long) * apart.as_nanos();
+    let per = long_took.as_nanos();
+    let owed = owed_scaled.div_ceil(per);
     if extra * OWED_SHARE >= owed {
         Staged::Bought { extra, owed }
     } else {
@@ -9056,7 +9097,7 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
         ),
         Staged::Bought {
             extra: 70,
-            owed: 74
+            owed: 72
         },
         "a fast host's pair: 98 looks a second either side, and the extra 753 ms buys them",
     );
@@ -9078,7 +9119,7 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
         ),
         Staged::Bought {
             extra: 74,
-            owed: 70
+            owed: 73
         },
         "⛔ the pair the old arithmetic turned over, and it is a HEALTHY one",
     );
@@ -9128,12 +9169,14 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
             Duration::from_nanos(1_152_056_833),
             APART,
         ),
-        Staged::Unbought {
+        Staged::Bought {
             extra: 10,
-            owed: 34
+            owed: 16
         },
-        "⛔ the macOS pair whose look price DOUBLED between the arms: the extra 873 ms owes 34 \
-         looks at the short arm's own rate and bought 10",
+        "✅ the macOS pair this repair is FOR: priced at the long arm's own rate the extra 873 ms \
+         owes 16 looks and bought 10, which clears the same headroom every other reading does. \
+         Against the short arm's rate it owed 34 and was refused — a healthy host turned over by \
+         the choice of divisor",
     );
     // ⚠⚠ AND THE SUPERSEDED RULE REFUSES IT TOO (21 < 11 * 2), which is the half of this reading
     // that must not be lost: this pair is not a case that tells the two arithmetics apart, so
@@ -9174,9 +9217,9 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
             Duration::from_nanos(1_099_298_875),
             APART,
         ),
-        Staged::Unbought { extra: 8, owed: 21 },
-        "⛔ the second macOS pair: the extra 703 ms owes 21 looks at the short arm's own rate and \
-         bought 8",
+        Staged::Bought { extra: 8, owed: 13 },
+        "✅ the second macOS pair, and the one that made the divisor decidable: the extra 703 ms \
+         owes 13 looks at the long arm's own rate and bought 8",
     );
     // ⚠⚠⚠ AND THE CROSS-SAMPLE READING IS A PREDICATE, NOT THE TABLE ABOVE. Prose comparing two
     // comments is prose; this asks the two readings the question that separates *drift* from
@@ -9213,9 +9256,12 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
             Duration::from_nanos(1_003_793_102),
             APART,
         ),
-        Staged::Unbought { extra: 0, owed: 2 },
-        "⚠ a pair where time bought nothing must be refused — this is what says the numbers the \
-         parked claim is read against are being paid at all",
+        Staged::Unbought { extra: 0, owed: 1 },
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 783: this is what keeps the new divisor from being vacuous. The \
+         long arm is on both sides of the rule now, so the question *is it still a control?* is \
+         answered HERE and nowhere else: a counter frozen at one look owes 1 and bought 0, and no \
+         headroom rescues a zero. ⚠ It owes 1 rather than 0 because the debt is rounded UP — \
+         truncating a fraction of a look to nothing is exactly how this pair would have passed",
     );
 
     // ── ⛔ MEASURED, mutation B: only the SHORT arm's marker landed 800 ms late ──
@@ -9240,11 +9286,27 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
     );
 
     // ── ⛔ AND THE ARM NOTHING HAS MEASURED, which is why it is named rather than folded away ──
+    //
+    // ⚠⚠ IT ASKS ABOUT THE LONG ARM SINCE REGISTER ITEM 783. The divisor moved, so this guard had
+    // to move with it — left on the short arm it would have been a branch that can no longer fire,
+    // and a long arm with no looks would have reached the arithmetic and been read as `Bought`
+    // with `extra: 0, owed: 0`. That is the vacuous pass rule 6 forbids, arriving through a guard
+    // nobody re-aimed.
+    // ⚠⚠⚠⚠⚠ THE SHORT ARM HERE WAITED A REAL LENGTH OF TIME, and that is the whole of this
+    // fixture. Written with `short_took: ZERO` it passed under a mutation that left the guard on
+    // the OLD divisor — both conditions were true at once, so the arm could not say which one had
+    // caught it. A control that two different rules satisfy is measuring neither.
     assert_eq!(
-        staging_control(0, Duration::ZERO, 95, Duration::from_secs(1), APART),
+        staging_control(
+            5,
+            Duration::from_millis(250),
+            0,
+            Duration::from_secs(1),
+            APART
+        ),
         Staged::NoRate,
-        "a short arm that waited nothing fixes no rate, so there is nothing to read the long arm \
-         against — unclassified is RED (register rule 6), and a division by zero besides",
+        "a long arm that took no looks fixes no rate, so there is nothing to price the extra time \
+         against — unclassified is RED (register rule 6)",
     );
 
     // ── ⛔⛔⛔⛔⛔ WHERE THE HALF ACTUALLY IS — DERIVED from the staged pair, not a reading ──
@@ -9254,10 +9316,15 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
     // multiplier rescues a zero — so the share itself was carrying nothing, which is the same
     // ungated-line defect this whole item keeps buying, one level in.
     //
-    // The staged pair's short arm fixes the rate, and its 751 ms of extra time therefore OWES 70
-    // looks. Half of that is 35. So a long arm paying 35 more than the short one is the last pair
-    // this control accepts, and one paying 34 more is the first it refuses. ⛔ Those two are one
-    // fact about the arithmetic and not two readings: they are what the constant MEANS.
+    // ⚠⚠⚠ THE BOUNDARY MOVED WITH THE DIVISOR — register item 783. It used to be a fixed debt of
+    // 70, because the SHORT arm fixed the rate and the short arm does not change as the long one
+    // is walked. Priced at the LONG arm's rate the debt grows with the arm being tested, so the
+    // boundary is a fixed POINT rather than a fixed share: 27 more looks is the first pair this
+    // control accepts and 26 more is the last it refuses.
+    //
+    // ⛔ Those two are one fact about the arithmetic and not two readings: they are what the
+    // constant MEANS, and walking the arm one look either side of the edge is the only thing that
+    // makes `OWED_SHARE` a number anything reads.
     const STAGED_SHORT: u64 = 100;
     const STAGED_SHORT_TOOK: Duration = Duration::from_nanos(1_059_750_286);
     const STAGED_LONG_TOOK: Duration = Duration::from_nanos(1_811_089_083);
@@ -9265,30 +9332,29 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
         staging_control(
             STAGED_SHORT,
             STAGED_SHORT_TOOK,
-            STAGED_SHORT + 35,
+            STAGED_SHORT + 27,
             STAGED_LONG_TOOK,
             APART,
         ),
         Staged::Bought {
-            extra: 35,
-            owed: 70
+            extra: 27,
+            owed: 53
         },
-        "half of what the extra time owes is still bought — the headroom register item 668 asks \
-         for, and the same half the rule this replaced allowed",
+        "the first pair over the edge is bought — the headroom register item 668 asks for",
     );
     assert_eq!(
         staging_control(
             STAGED_SHORT,
             STAGED_SHORT_TOOK,
-            STAGED_SHORT + 34,
+            STAGED_SHORT + 26,
             STAGED_LONG_TOOK,
             APART,
         ),
         Staged::Unbought {
-            extra: 34,
-            owed: 70
+            extra: 26,
+            owed: 53
         },
-        "⛔ AND ONE LOOK BELOW THE HALF IS REFUSED. Without this pair the share is a number \
+        "⛔ AND ONE LOOK BELOW THE EDGE IS REFUSED. Without this pair the share is a number \
          nothing reads: widening it to a tenth was green against every other arm here",
     );
 }
