@@ -798,6 +798,13 @@ struct Tui {
     /// It cannot say WHERE the text was painted, which is why it does not replace the trail: the
     /// pair is "it said this" (here) plus "it came to rest on that" (the trail's last row).
     transcript: Arc<Mutex<Vec<u8>>>,
+    /// The daemon this client was pointed at, so a failing wait can ask what the PANE holds — see
+    /// [`Tui::pane_behind`].
+    ///
+    /// ⚠ Not an `Option`. Both constructors are handed a socket and a session, so a client with no
+    /// address is not a state this harness can be in — and making it optional would invent an
+    /// unclassified case for the diagnostic to be silent about.
+    addressed: (PathBuf, String),
 }
 
 impl Drop for Tui {
@@ -826,7 +833,7 @@ impl Tui {
         for (key, value) in envs {
             command.env(key, value);
         }
-        Self::start(command)
+        Self::start(command, sock, session)
     }
 
     /// The same client, reached the way a USER reaches it: `sprag attach --tui SESSION`.
@@ -841,11 +848,15 @@ impl Tui {
         command.args(["attach", session, "--tui"]);
         command.env("SPRAG_HOST_RPC_SOCK", sock);
         command.env("SPRAG_TUI_BIN", env!("CARGO_BIN_EXE_sprag-tui"));
-        Self::start(command)
+        Self::start(command, sock, session)
     }
 
     /// Put `command` on a fresh pseudoterminal and start reading what it paints.
-    fn start(mut command: CommandBuilder) -> Self {
+    ///
+    /// `sock` and `session` are the daemon this client is being pointed at. They are taken here
+    /// rather than left to the caller precisely because a `Tui` without them cannot answer what the
+    /// PANE held when a wait on its screen ran out — see [`Tui::pane_behind`].
+    fn start(mut command: CommandBuilder, sock: &Path, session: &str) -> Self {
         let pair = Pty::open(BOOT_PTY.0, BOOT_PTY.1).expect("open a pseudoterminal");
 
         // Hermetic: if the connect ever failed, the client would spawn a daemon of its own, and it
@@ -933,6 +944,7 @@ impl Tui {
             written,
             status_trail,
             transcript,
+            addressed: (sock.to_owned(), session.to_owned()),
         }
     }
 
@@ -1179,9 +1191,73 @@ impl Tui {
     /// neither of these.
     fn standing(&self) -> String {
         format!(
-            "(status painted {:?}, client: {})",
+            "(status painted {:?}, client: {}, {})",
             self.status_rows(),
             self.liveness(),
+            self.pane_behind(),
+        )
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT THE DAEMON HOLDS FOR THE PANE THIS CLIENT IS SHOWING** — register item 519,
+    /// and the fork none of the three facts above can make.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Two different failures render identically, and item 519 is one of them unattributed
+    ///
+    /// Every screen wait in this file fails with what the CLIENT painted. That cannot separate
+    /// **a pane that is itself short** from **a pane that is complete and a client that stopped
+    /// painting it** — and those have nothing in common: the first is the daemon, the child or the
+    /// pty; the second is the client or the wire to it.
+    ///
+    /// **Measured on the failure this was built for** (`64f850d`, `headless (linux)`, 2026-08-30):
+    /// the client had painted `L01` and `L02` whole — 79 characters each, both ends named — and
+    /// then `L03` cut at **63** characters, followed by eighteen blank rows and a painted status
+    /// row, for the whole 45 seconds. A stop that precise is the thread item 519's own done-when
+    /// says to pull (*"the partial screen is the thread, not the 45s"*), and pulling it needs the
+    /// other end: whether those missing 16 characters had reached the pane at all.
+    ///
+    /// # ⚠⚠⚠ Why the done-when this repairs could never have been reached by waiting
+    ///
+    /// Item 519 asked for a rate *"big enough to decide on"*, gathered one sample per push. That is
+    /// a debt whose only road to zero is TIME — this workspace's rule 5 forbids exactly that shape,
+    /// and the same repair was made one item over (776's arm (d)): stop asking to know the cause
+    /// and start requiring that **the next occurrence necessarily carries the answer**.
+    ///
+    /// # ⚠⚠ It reports what it could not read rather than defaulting
+    ///
+    /// A daemon that has gone, a socket that refuses, a slot that answers nothing: each says so.
+    /// The one thing it must not do is render an absence as an empty pane, which is the shape that
+    /// would put a reader in the wrong half of the fork with nothing looking wrong.
+    fn pane_behind(&self) -> String {
+        let (sock, session) = &self.addressed;
+        // ⚠ A SHORT BOUND, not `DEADLINE`. This runs only on a path that has ALREADY spent the
+        // deadline, and a daemon that has stopped answering would otherwise add another 45s to
+        // every failure in the file — turning the diagnostic into a cost the next round pays.
+        let mut conn = match HostConn::connect(sock, Duration::from_secs(2)) {
+            Ok(conn) => conn,
+            Err(why) => return format!("pane 0 cannot be read here (no connection: {why})"),
+        };
+        let text = match conn.call(
+            "scene/query",
+            json!({ "session": session, "path": pane_input_path(0, FULL_TEXT_SLOT) }),
+        ) {
+            Ok(Value::String(text)) => text,
+            Ok(other) => return format!("pane 0 cannot be read here (answered {other})"),
+            Err(why) => return format!("pane 0 cannot be read here (refused: {why})"),
+        };
+        // The TAIL, because a wait times out on what has not arrived yet and the newest end of the
+        // pane is where that shows. The length goes with it so a truncated tail is not read as the
+        // whole of what the pane holds.
+        let tail: String = text
+            .chars()
+            .rev()
+            .take(160)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        format!(
+            "pane 0 holds {} char(s), tail {tail:?}",
+            text.chars().count()
         )
     }
 
@@ -1409,6 +1485,105 @@ fn typing_reaches_the_child_and_comes_back_painted() {
     wait_for("the typed text to come back painted", || {
         painted(&tui, "hello")
     });
+}
+
+/// ⛔⛔⛔⛔⛔ **A FAILING WAIT SAYS WHAT THE PANE HELD, NOT ONLY WHAT THE CLIENT PAINTED** —
+/// register item 519.
+///
+/// # ⚠⚠⚠⚠⚠ The two failures this file could not tell apart
+///
+/// A screen wait times out with the rows the client painted. That is one end of a rope with three
+/// processes on it, and it cannot separate **a pane that is itself short** from **a pane that is
+/// complete and a client that stopped painting it**. Item 519 has been open since 2026-08-21 for
+/// want of exactly that fork: a 45-second timeout on `headless (linux)` whose last observation was
+/// `L01` and `L02` painted whole and `L03` cut at 63 of its 79 characters. Whether those 16
+/// characters had reached the pane is the whole question, and nothing in the message answered it.
+///
+/// # ⚠⚠⚠ Rule 5: the done-when it replaces had no road to zero
+///
+/// 519 asked for a rate *"big enough to decide on"*, gathered one sample per push — a debt payable
+/// only by waiting weeks. The same shape was repaired one item over (776's arm (d)) the same way:
+/// stop requiring that somebody KNOW the cause and require instead that **the next occurrence
+/// necessarily carry the answer**. This is that requirement, made drivable.
+///
+/// # ⚠⚠ Three arms, because two of them would pass on a diagnostic that adds nothing
+///
+/// Wiring alone is satisfied by a clause that re-prints the screen; a clause that re-prints the
+/// screen is satisfied by wiring. So the second arm asks for a fact the SCREEN HAS AND THE PANE
+/// DOES NOT — the client's own status row, which is this client's chrome and was never the child's
+/// output. And the third is this workspace's rule 6: an absence must say so rather than render as a
+/// measurement, or a reader lands in the wrong half of the fork with nothing looking wrong.
+#[test]
+fn a_failing_wait_says_what_the_pane_behind_the_client_held() {
+    let (daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    tui.type_bytes(b"hello");
+    wait_for("the typed text to come back painted", || {
+        painted(&tui, "hello")
+    });
+    wait_for("the pane itself to hold the typed text", || {
+        let held = pane_text_of(&mut conn, &session, 0);
+        if held.contains("hello") {
+            Ok(())
+        } else {
+            Err(format!("pane 0 holds {held:?}"))
+        }
+    });
+
+    let standing = tui.standing();
+    assert!(
+        standing.contains("pane 0 holds") && standing.contains("hello"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 519: the standing facts a failing wait prints say what the CLIENT \
+         painted and never what the PANE held, so a client that stopped painting a complete pane \
+         and a pane that is short render identically. That fork is the whole of 519's remaining \
+         diagnosis: {standing}",
+    );
+
+    // ── AND IT IS THE DAEMON'S ANSWER, NOT A SECOND COPY OF THE SCREEN ───────────────────────
+    //
+    // ⚠⚠ THE CONTROL IS A FACT ONLY ONE OF THEM HAS. The status row is the CLIENT's chrome — it
+    // is on the screen this harness reads and it was never output by the child, so a clause built
+    // from `rows()` carries it and a clause built from the pane cannot. Without this arm the
+    // assertion above is satisfied by printing the screen twice, which would add a line and no
+    // information.
+    let status = tui.row(STATUS_ROW);
+    assert!(
+        !status.trim().is_empty(),
+        "⚠⚠⚠ THE CONTROL'S OWN PREMISE FAILED: the client has painted no status row, so what \
+         follows would not be distinguishing anything: rows {:?}",
+        tui.rows(),
+    );
+    let pane_clause = standing
+        .split_once("pane 0 holds")
+        .expect("the pane clause is present")
+        .1;
+    assert!(
+        !pane_clause.contains(status.trim()),
+        "⛔⛔⛔⛔ REGISTER ITEM 519: the pane clause carries the client's own status row, so it is \
+         reading the SCREEN and not the daemon. A diagnostic that re-prints the thing that already \
+         failed to say enough cannot be the fork — it is the same half of it, twice: {standing}",
+    );
+
+    // ── AND A DAEMON THAT HAS GONE SAYS SO RATHER THAN READING AS AN EMPTY PANE ──────────────
+    //
+    // ⛔⛔ This workspace's rule 6: an unclassified case is RED, never a pass. `0 char(s)` is a
+    // MEASUREMENT and it is what *the child printed nothing* looks like — so an absence rendered
+    // that way would put a reader in the wrong half of the fork, which is the exact failure item
+    // 776 recorded one level out (*an absence that renders like a measurement gets acted on like
+    // one*).
+    drop(daemon);
+    let orphaned = tui.standing();
+    assert!(
+        orphaned.contains("pane 0 cannot be read here"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 519: with no daemon to ask, the clause must say it could not read \
+         the pane: {orphaned}",
+    );
+    assert!(
+        !orphaned.contains("pane 0 holds"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 519: an absence is rendering as a measurement — *nobody could ask* \
+         is being printed as *the pane holds nothing*, and those are the two halves of the fork \
+         this whole clause exists to separate: {orphaned}",
+    );
 }
 
 /// A named key crosses as a NAME, not as the bytes this terminal spells it with — the property the
