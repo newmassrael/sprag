@@ -196,14 +196,40 @@ if [ -f Cargo.toml ] && [ -n "$staged_rs" ]; then
     # verdict, not an outage. Papering over it is how a hook reports "green"
     # about a tree nobody checked.
     lint_and_doc='cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS="-D warnings" CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items'
-    echo "pre-commit: cargo clippy --workspace --all-targets -- -D warnings && doc gate ..." >&2
+
+    # ⛔⛔⛔⛔⛔ THE RATCHET LANE — register item 784, and the mechanism this hook was missing.
+    #
+    # Until this line the hook ran clippy, rustfmt and rustdoc and NO TEST AT ALL. So a commit that
+    # broke a ratchet in another crate passed, and passed `pre-push` too, and the only thing that
+    # ever said so was CI — measured 2026-08-31: `1f81f93` added a `sprag-tui` test function whose
+    # NAME ended `held()`, which is the literal needle a `sprag-gate` ratchet scans the workspace
+    # for; two commits then stood red on two platforms for two rounds. A person re-running the gate
+    # by hand caught it, and a person is not a mechanism.
+    #
+    # ⚠⚠⚠⚠ WHY A LANE AND NOT THE SUITE, with the numbers that decided it. `cargo test --workspace`
+    # is **258.6 s** warm on the build machine (3819 tests) against **22.3 s** for `sprag-gate`
+    # alone (measured 2026-08-31, both after `cargo build --workspace --all-targets`). Item 457 is
+    # already open against this hook for costing too much per commit, and its remedy and this one
+    # pull in opposite directions — so what runs here is the tests whose INPUT IS THE TREE, which
+    # are exactly the ones an unrelated crate's commit can turn red.
+    #
+    # ⚠⚠⚠ THE MEMBERSHIP IS NOT A LIST SOMEBODY MAINTAINS. Every target named here is derived from
+    # a property a test HAS — it reads the repository rather than its own crate — and
+    # `a_ratchet_that_reads_the_tree_runs_before_the_commit_lands` reads this file against the tree
+    # and goes red if a test acquires that property without joining the lane. A hand-kept list is
+    # the escape hatch this workspace's rule 6 is about: it grows, and a real one hides under it.
+    #
+    # ⚠ IT TRAVELS IN THE SAME COMMAND as clippy and the doc gate, so the tree is synced once and
+    # `&&` keeps the fail-fast ordering: the cheap compile error is reported before the tests run.
+    ratchets='cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free'
+    echo "pre-commit: cargo clippy --workspace --all-targets -- -D warnings && doc gate && the ratchet lane ..." >&2
     if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
-        "${BX}" --label pre-commit-lint -- bash -c "$lint_and_doc"
+        "${BX}" --label pre-commit-lint -- bash -c "$lint_and_doc && $ratchets"
     else
-        bash -c "$lint_and_doc"
+        bash -c "$lint_and_doc && $ratchets"
     fi
 
-    # ⚠⚠⚠⚠⚠ RECORD WHICH TREE THESE TWO GATES CLEARED, so `pre-push` need not run them again on the
+    # ⚠⚠⚠⚠⚠ RECORD WHICH TREE THESE GATES CLEARED, so `pre-push` need not run them again on the
     # same content — register item 443, raised by the owner asking why a push takes minutes.
     #
     # MEASURED: the rustdoc gate is **250 s** on a change to a crate the workspace depends on (a
@@ -241,7 +267,7 @@ if [ -f Cargo.toml ] && [ -n "$staged_rs" ]; then
             rm -f "$git_dir/sprag-rust-gates-passed"
         fi
         echo "pre-commit: the working tree is not what this commit carries, so the push will run \
-clippy and the rustdoc gate again" >&2
+clippy, the rustdoc gate and the ratchet lane again" >&2
     fi
 fi
 
