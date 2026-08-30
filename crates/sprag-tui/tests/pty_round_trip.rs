@@ -1236,6 +1236,23 @@ impl Tui {
             Ok(conn) => conn,
             Err(why) => return format!("pane 0 cannot be read here (no connection: {why})"),
         };
+        // ⛔⛔⛔⛔⛔ **THE RECTANGLE IS ASKED FOR FIRST, AND THE ORDER IS THE WHOLE OF WHETHER ANY
+        // OF THIS IS TESTED** — register item 787, learned by a mutation that stayed green twice.
+        //
+        // ⚠⚠⚠⚠⚠ There is exactly ONE absence this harness can stage: *the daemon does not answer
+        // for this session*. Both queries below fail together in it, so whichever runs FIRST is the
+        // refusal a fixture can reach — and the other is a branch nothing drives. Asking for the
+        // rectangle second left its refusal unreachable, and two separate mutations of it were
+        // GREEN: one rendering it as `0x0`, one shipping a length beside the absence.
+        //
+        // ⚠⚠ AND THE WORDING HAS TO DIFFER PER QUERY, which is the second half. With both refusals
+        // spelled the same, a gate asserting *"cannot be read here"* passes whichever fired, so
+        // moving the failure from one query to the other changes nothing anybody asserts. The
+        // reachable one names the rectangle; that is what the gate pins.
+        let Some((cols, rows)) = pane_size(&mut conn, session) else {
+            return "pane 0 cannot be read here (its rectangle refused)".to_owned();
+        };
+        let rect = format!("the daemon has it at {cols}x{rows}");
         let text = match conn.call(
             "scene/query",
             json!({ "session": session, "path": pane_input_path(0, FULL_TEXT_SLOT) }),
@@ -1270,10 +1287,24 @@ impl Tui {
         // ⚠ So the two states say different words. A reader who has to know the expected length
         // before they can tell *complete* from *truncated* is being handed the same sentence for
         // both, which is the disease this whole clause was built to cure one level up.
+        // ⛔⛔⛔⛔⛔ **AND THE RECTANGLE THE DAEMON HAS FOR IT** — register item 787.
+        //
+        // ⚠⚠⚠⚠⚠ The failure that opened 787 is a test whose entire subject is *a clear that moved
+        // no rectangle*, and the standing facts could not say what the rectangle WAS. So a blank
+        // row 0 had two readings and no way to choose: the client cleared and never repainted the
+        // pane, or the pane is not where the harness is looking. Those ask for opposite repairs.
+        //
+        // ⚠⚠ It is the DAEMON's rectangle, deliberately — the harness knows only the size it
+        // pushed onto the pty, which is the client's terminal and not the pane. On a PINNED window
+        // those two differ on purpose, and that difference is the very thing the failing test
+        // stages.
+        //
+        // ⚠ A rectangle that cannot be read says so rather than being left out: an absent fact and
+        // a fact nobody asked for render identically once either is missing from the line.
         if held <= TAIL {
-            format!("pane 0 holds all {held} char(s): {tail:?}")
+            format!("pane 0 holds all {held} char(s): {tail:?}, {rect}")
         } else {
-            format!("pane 0 holds {held} char(s), last {TAIL}: {tail:?}")
+            format!("pane 0 holds {held} char(s), last {TAIL}: {tail:?}, {rect}")
         }
     }
 
@@ -1531,7 +1562,7 @@ fn typing_reaches_the_child_and_comes_back_painted() {
 /// measurement, or a reader lands in the wrong half of the fork with nothing looking wrong.
 #[test]
 fn a_failing_wait_says_what_the_pane_behind_the_client_holds() {
-    let (daemon, _sock, mut conn, session, mut tui) = attached_client();
+    let (daemon, sock, mut conn, session, mut tui) = attached_client();
 
     tui.type_bytes(b"hello");
     wait_for("the typed text to come back painted", || {
@@ -1568,6 +1599,26 @@ fn a_failing_wait_says_what_the_pane_behind_the_client_holds() {
          one on this diagnostic's first firing: {standing}",
     );
 
+    // ── AND THE RECTANGLE THE DAEMON HAS FOR THAT PANE ──────────────────────────────────────
+    //
+    // ⛔⛔⛔⛔⛔ REGISTER ITEM 787. The failure that opened it is `a_clear_that_moved_no_rectangle_
+    // still_redraws_the_panes`, and a blank screen beside a complete pane had two readings the
+    // standing facts could not choose between: *the client cleared and never repainted*, or *the
+    // pane is not the rectangle this harness is reading*. The daemon's own answer settles it.
+    //
+    // ⚠⚠ THE CONTROL IS THAT IT IS NOT THE PTY THE HARNESS PUSHED. This client's terminal is
+    // `BOOT_PTY` (80x24) and its pane is the boot pane; a clause that echoed the size this harness
+    // set would agree with the daemon here by coincidence and diverge exactly where it matters —
+    // on the PINNED window the failing test stages, where the two are different on purpose. So the
+    // assertion is against the wire's answer, read independently, rather than against a literal.
+    let rect = pane_size(&mut conn, &session).expect("the daemon reports the boot pane's size");
+    assert!(
+        standing.contains(&format!("the daemon has it at {}x{}", rect.0, rect.1)),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 787: a failing wait says what the pane HOLDS and never where the \
+         pane IS, so *the client painted nothing over a good pane* and *the harness is reading the \
+         wrong rectangle* arrive as the same blank screen. The wire says {rect:?}: {standing}",
+    );
+
     // ── AND IT IS THE DAEMON'S ANSWER, NOT A SECOND COPY OF THE SCREEN ───────────────────────
     //
     // ⚠⚠ THE CONTROL IS A FACT ONLY ONE OF THEM HAS. The status row is the CLIENT's chrome — it
@@ -1591,6 +1642,35 @@ fn a_failing_wait_says_what_the_pane_behind_the_client_holds() {
         "⛔⛔⛔⛔ REGISTER ITEM 519: the pane clause carries the client's own status row, so it is \
          reading the SCREEN and not the daemon. A diagnostic that re-prints the thing that already \
          failed to say enough cannot be the fork — it is the same half of it, twice: {standing}",
+    );
+
+    // ── AND A LIVE DAEMON THAT DOES NOT HAVE THIS SESSION IS A REFUSAL, NOT A MEASUREMENT ────
+    //
+    // ⛔⛔⛔⛔⛔ REGISTER ITEM 787. This arm exists because a mutation was GREEN: the rectangle's
+    // absence used to be a fallback clause rendered BESIDE a successful read, and no fixture could
+    // reach it, so turning it into `0x0` changed nothing anybody asserted. The repair was to make
+    // an unreadable rectangle refuse the whole clause — and a refusal is only worth anything if
+    // something reaches it.
+    //
+    // ⚠⚠ THE CONNECTION IS ALIVE HERE, which is what makes this different from the dead-daemon arm
+    // below: that one dies at `connect` and never reaches a query at all. This one connects, asks,
+    // and is answered *no such session* — the shape a real misdirected read has.
+    let elsewhere = {
+        let mut aimed = Tui::attach(&sock, &session);
+        aimed.addressed.1 = "a-session-this-daemon-does-not-have".to_owned();
+        aimed.standing()
+    };
+    assert!(
+        elsewhere.contains("cannot be read here (its rectangle refused)"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 787: a read aimed at a session the daemon does not have must \
+         REFUSE, and must say WHICH query refused. Both queries fail together in the only absence \
+         this harness can stage, so a gate that accepted either wording would pass whichever fired \
+         — and a mutation moving the failure between them changed nothing. Twice: {elsewhere}",
+    );
+    assert!(
+        !elsewhere.contains("the daemon has it at") && !elsewhere.contains("holds"),
+        "⛔⛔⛔⛔ REGISTER ITEM 787: the refusal is carrying a rectangle or a length anyway, so a \
+         reader is being handed numbers for a pane nobody found: {elsewhere}",
     );
 
     // ── AND A DAEMON THAT HAS GONE SAYS SO RATHER THAN READING AS AN EMPTY PANE ──────────────
