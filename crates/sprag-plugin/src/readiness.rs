@@ -3405,20 +3405,19 @@ mod tests {
     /// one wait read at two marks — register item 666.
     #[derive(Debug, PartialEq, Eq)]
     enum Grew {
-        /// ⛔ The predicate was never consulted inside the window: a PARKED wait, not a polling one.
+        /// ⛔ The wait ended before its mark, so there is nothing to read at all.
         NeverLooked,
-        /// ⛔ The two marks are not far enough apart to be read against each other. RED rather than
-        /// a pass — unclassified is not a pass — because nothing can be read off one reading.
-        NotAPair { apart: Duration, floor: Duration },
-        /// ⛔ The extra time bought fewer looks than the first mark's own rate says it owes.
-        Unbought { extra: u128, owed: u128 },
-        /// ✅ The extra time bought the extra looks.
-        Bought { extra: u128, owed: u128 },
+        /// ⛔ **The mark landed at the ENDING — a PARKED wait.** The predicate was not consulted
+        /// again between the mark and the end, which is what parking looks like from here.
+        Parked { apart: Duration, floor: Duration },
+        /// ✅ The mark landed early in the window, so the predicate was being consulted throughout
+        /// it — which is what polling MEANS.
+        Polled { apart: Duration },
     }
 
-    /// **DID THE EXTRA TIME BUY EXTRA LOOKS, AT THE RATE THE FIRST MARK ESTABLISHED?** — register
-    /// item 666's whole arithmetic, and a function so the readings that turned it over can be
-    /// driven through it with no peer, no pane and no clock.
+    /// **WAS THE PREDICATE STILL BEING CONSULTED LATE IN THE WINDOW?** — register item 666's whole
+    /// arithmetic, and a function so the readings that turned it over can be driven through it with
+    /// no peer, no pane and no clock.
     ///
     /// # ⚠⚠⚠⚠⚠ Why this is not a ratio of two WAITS, which is what it replaced
     ///
@@ -3430,42 +3429,55 @@ mod tests {
     /// build machine scores 42 and 159 on the same code, at 103 and 99 a second, so nothing about
     /// the product differs.
     ///
-    /// ⚠⚠ **So both readings now come from ONE wait**, marked partway through, and the runner's
-    /// speed is whatever it is for both. `marked_at` is that mark; `None` means the predicate was
-    /// never consulted inside the window, which is a PARKED wait and a finding of its own.
-    fn polling_grew(
-        marked_at: Option<(u64, Duration)>,
-        looks: u64,
-        took: Duration,
-        marks_apart: Duration,
-    ) -> Grew {
+    /// # ⛔⛔⛔⛔⛔ And why it does not count LOOKS either, which the first repair still did
+    ///
+    /// That repair read one wait at two marks and asked whether the time after the mark had bought
+    /// looks at the mark's own rate. **It let the runner back in through the same door.** Work it
+    /// through: a wait whose first 400 ms run at 10 ms a look and whose remaining 1.2 s run at
+    /// 60 ms scores 40 at the mark and 20 after it — the mark's rate owes 120, so it reads as a
+    /// shortfall. Nothing about the product changed; the host slowed down MID-WAIT. Any rule
+    /// phrased as *looks per unit time* has that hole, because the look rate is the runner's.
+    ///
+    /// ⚠⚠⚠ **What is the runner's is the RATE. What is the product's is WHETHER IT LOOKS AT ALL
+    /// between the mark and the end** — and that is what this reads. A polling wait is consulted
+    /// every [`POLL_INTERVAL`](crate::run::POLL_INTERVAL), so its mark lands within one interval of
+    /// `mark_at` and `apart` comes out near the full distance. A parked wait is consulted at its
+    /// deadline and not before, so its mark lands at the ENDING and `apart` is microseconds
+    /// (MEASURED: the told arm reads 17 µs, and a mutant whose `Settling::Unknown` names a deadline
+    /// five seconds out reads 12.8 µs). **A host 60 times slower than this one still passes**,
+    /// which is the property register item 666 asked for and the counting form could not give.
+    fn polling_grew(marked_at: Option<Duration>, took: Duration, marks_apart: Duration) -> Grew {
         /// How much of the distance between the two marks the wait must really have put between
-        /// them before one is read against the other. ⚠⚠ Half — a guard against a reading that
-        /// cannot discriminate, never a threshold on the product.
+        /// them. ⚠⚠ Half, and it is what buys the headroom: the mark can only slip by one poll
+        /// interval, so on this crate's 10 ms interval a runner would have to take 600 ms per look
+        /// before this could fire on speed alone.
         const APART_SHARE: u32 = 2;
-        /// What share of the looks the extra time owes — at the first mark's own measured rate —
-        /// the rest of the wait must have paid. ⚠⚠ Half the honest reading, and that headroom is
-        /// the whole of register item 666: what must not be able to turn this over is the host.
-        const OWED_SHARE: u128 = 2;
 
-        let Some((at_mark, mark_took)) = marked_at else {
+        let Some(mark_took) = marked_at else {
             return Grew::NeverLooked;
         };
-        if mark_took.is_zero() || at_mark == 0 {
-            return Grew::NeverLooked;
-        }
         let apart = took.saturating_sub(mark_took);
         let floor = marks_apart / APART_SHARE;
         if apart < floor {
-            return Grew::NotAPair { apart, floor };
+            Grew::Parked { apart, floor }
+        } else {
+            Grew::Polled { apart }
         }
+    }
+
+    /// **THE FIRST REPAIR'S RULE — looks per unit time**, kept as the second COUNTERFACTUAL.
+    ///
+    /// ⚠⚠⚠ It read one wait at two marks (which is right) and then asked whether the time after
+    /// the mark bought looks at the mark's own RATE (which is not): the rate is the runner's, so a
+    /// host that slows down mid-wait fails it with nothing about the product changed. Kept so that
+    /// *"this is why counting was dropped"* is a predicate rather than a paragraph.
+    fn polling_grew_by_rate(at_mark: u64, mark_took: Duration, looks: u64, took: Duration) -> bool {
+        /// What share of the looks the extra time owed at the mark's rate.
+        const OWED_SHARE: u128 = 2;
+        let apart = took.saturating_sub(mark_took);
         let extra = u128::from(looks.saturating_sub(at_mark));
         let owed = u128::from(at_mark) * apart.as_nanos() / mark_took.as_nanos();
-        if extra * OWED_SHARE >= owed {
-            Grew::Bought { extra, owed }
-        } else {
-            Grew::Unbought { extra, owed }
-        }
+        extra * OWED_SHARE >= owed
     }
 
     /// The rule register item 666's repair replaced — counts against the two WAITS' windows, kept
@@ -3491,15 +3503,16 @@ mod tests {
     fn the_settling_meter_reads_the_pairs_that_have_been_measured() {
         /// The distance between the gate's two marks.
         const APART: Duration = Duration::from_millis(1_200);
+        /// The build machine's own reading, 2026-08-30:
+        /// `unknown: 42 look(s) over 400ms (waited 408.29977ms), 159 over 1.6s (waited 1.60162238s)`
+        const POLLED_MARK: Duration = Duration::from_nanos(408_299_770);
+        const POLLED_TOOK: Duration = Duration::from_nanos(1_601_622_380);
 
         // ── ⛔ MEASURED, macOS at `7b71077`: 15 looks over 400 ms, 27 over 1.6 s ──
         //
-        // ⚠⚠⚠⚠ THIS IS THE WHOLE REPAIR. As two separate waits the counts are 15 and 27, a ratio
-        // of 1.8 against the 2 the old rule demanded, so it REFUSED this pair — and the product
-        // was not the thing that differed: the same code scores 42 and 159 on the build machine.
-        // Read as ONE wait marked at 400 ms, the 1.2 s that followed bought 12 looks where the
-        // mark's own rate owes 45 — and it is that reading, not the ratio, that the repair makes
-        // reachable at all.
+        // ⚠⚠⚠⚠ THIS IS WHY THE RULE CHANGED. As two separate waits the counts are 15 and 27, a
+        // ratio of 1.8 against the 2 the old rule demanded, so it REFUSED this pair — and the
+        // product was not the thing that differed: the same code scores 42 and 159 here.
         assert!(
             !polling_grew_by_window(15, 27),
             "⛔ the rule this replaced refused the macOS reading, which is the defect",
@@ -3509,87 +3522,109 @@ mod tests {
             "…and passed the build machine's, which is why it survived until macOS",
         );
 
-        // ── ✅ MEASURED, the build machine (2026-08-30), read as one wait at two marks ──
-        // `unknown: 42 look(s) over 400ms (waited 408.29977ms), 159 over 1.6s (waited 1.60162238s)`
+        // ── ✅ MEASURED, the build machine, read as ONE wait at two marks ──
         assert_eq!(
-            polling_grew(
-                Some((42, Duration::from_nanos(408_299_770))),
-                159,
-                Duration::from_nanos(1_601_622_380),
-                APART,
-            ),
-            Grew::Bought {
-                extra: 117,
-                owed: 122
+            polling_grew(Some(POLLED_MARK), POLLED_TOOK, APART),
+            Grew::Polled {
+                apart: Duration::from_nanos(1_193_322_610)
             },
-            "a steady host: 103 looks a second at the mark, and the extra 1.19 s buys them",
+            "a wait still being consulted 1.19 s after its mark is POLLING",
         );
 
         // ── ⛔ MEASURED, the PARKED arm over the same window ──
         // `told: Some((2, 1.607064611s)) at the 400ms mark, 3 look(s) over 1.6070817s`
         //
-        // ⚠⚠⚠⚠ AND THIS IS NOT WHAT THIS ROUND EXPECTED. The guess was that a parked wait would
-        // carry no mark at all; it carries one, taken at 1.607 s — because `park_until` consults
-        // the predicate the moment the deadline arrives and the mark is written on that pass. So
-        // **parking's signature is a mark that lands at the END**, and `NotAPair` is the answer
-        // for it. Guessed instead of measured, this arm would have asserted `NeverLooked` and
-        // been a line that could not fire.
+        // ⚠⚠⚠⚠ AND THIS IS NOT WHAT THE ROUND BEFORE EXPECTED. The guess was that a parked wait
+        // would carry no mark at all; it carries one, taken at 1.607 s — because `park_until`
+        // consults the predicate the moment the deadline arrives and the mark is written on that
+        // pass. **Parking's signature is a mark that lands at the ENDING**, 17 µs from it.
         assert_eq!(
             polling_grew(
-                Some((2, Duration::from_nanos(1_607_064_611))),
-                3,
+                Some(Duration::from_nanos(1_607_064_611)),
                 Duration::from_nanos(1_607_081_700),
                 APART,
             ),
-            Grew::NotAPair {
+            Grew::Parked {
                 apart: Duration::from_nanos(17_089),
                 floor: Duration::from_millis(600),
             },
-            "⛔ a wait whose only mark is its ending is PARKED — nothing can be read against it, \
-             and it must not read as an ordinary shortfall",
+            "⛔ a wait whose only mark is its ending is PARKED",
         );
-        // ⚠ `NeverLooked` is the wait that ended before the mark — reachable only through a
-        // caller that marks past its own window, which `blind.took >= LONG` refuses upstream. It
-        // is named rather than folded away because unclassified is RED, never a pass.
+        // ⚠ `NeverLooked` is the wait that ended before its mark — refused upstream by
+        // `blind.took >= LONG`, and named here because unclassified is RED, never a pass.
         assert_eq!(
-            polling_grew(None, 3, Duration::from_millis(10), APART),
+            polling_grew(None, Duration::from_millis(10), APART),
             Grew::NeverLooked,
-            "a wait that ended before its mark fixes no rate to read the rest against",
+            "a wait that ended before its mark has nothing to read at all",
         );
 
-        // ── ⛔⛔⛔⛔⛔ WHERE THE HALF ACTUALLY IS — DERIVED from the build machine's pair ──
+        // ── ⛔⛔⛔⛔⛔ THE READING THAT KILLED THE COUNTING FORM, AND THIS ONE SURVIVES IT ──
         //
-        // ⚠⚠⚠ Without this the share is a number nothing reads: the refusing arms above pay
-        // `extra: 0` or none at all, and no multiplier rescues those. The mark owes 122 looks for
-        // the 1.19 s that followed, so 61 more is the last total this accepts and 60 the first it
-        // refuses — one fact about the arithmetic, not two readings.
-        const MARK: (u64, Duration) = (42, Duration::from_nanos(408_299_770));
-        const TOOK: Duration = Duration::from_nanos(1_601_622_380);
-        assert_eq!(
-            polling_grew(Some(MARK), 42 + 61, TOOK, APART),
-            Grew::Bought {
-                extra: 61,
-                owed: 122
-            },
-            "half of what the extra time owes is still bought — item 666's headroom",
+        // ⚠⚠⚠⚠⚠ The first repair asked whether the time after the mark bought looks at the
+        // mark's own rate, and **that let the runner back in through the same door**: a wait whose
+        // first 400 ms run at 10 ms a look and whose remaining 1.2 s run at 60 ms scores 40 at the
+        // mark and 20 after it, so the mark's rate owes 120 and it reads as a shortfall — over a
+        // host that slowed down MID-WAIT, with nothing about the product changed. Any rule phrased
+        // as *looks per unit time* has that hole.
+        //
+        // This one does not read the counts at all. The same slowed wait is still being consulted
+        // 1.2 s after its mark, so it is still POLLING, which is the only thing the product
+        // promises. ⚠ The mark can slip by at most one poll interval, so on a 10 ms interval a
+        // runner would have to take 600 ms PER LOOK before this could fire on speed alone — sixty
+        // times slower than this machine and ten times slower than the macOS reading above.
+        assert!(
+            !polling_grew_by_rate(
+                40,
+                Duration::from_millis(400),
+                60,
+                Duration::from_millis(1_600)
+            ),
+            "⛔ THE COUNTING FORM REFUSES THE MID-WAIT SLOWDOWN — 40 looks by the mark and 20 \
+             after it, where the mark's rate owes 120. That is the hole, stated as a predicate so \
+             a round tempted back to counting has to read it",
+        );
+        assert!(
+            polling_grew_by_rate(42, POLLED_MARK, 159, POLLED_TOOK),
+            "…and it passes a steady host, which is why the hole was not visible here",
         );
         assert_eq!(
-            polling_grew(Some(MARK), 42 + 60, TOOK, APART),
-            Grew::Unbought {
-                extra: 60,
-                owed: 122
+            polling_grew(
+                Duration::from_millis(460).into(),
+                Duration::from_millis(1_660),
+                APART,
+            ),
+            Grew::Polled {
+                apart: Duration::from_millis(1_200)
             },
-            "⛔ AND ONE LOOK BELOW THE HALF IS REFUSED",
+            "⛔ a host that halves its own rate mid-wait is still a host being polled, and THIS \
+             rule says so",
         );
 
-        // ── ⛔ AND THE PAIR THAT CANNOT DISCRIMINATE, which is RED and not a pass ──
+        // ── ⛔⛔⛔ WHERE THE HALF ACTUALLY IS — the boundary, so the share is a number something
+        // reads. The marks are 1.2 s apart, so 600 ms of consulting after the mark is the last
+        // reading this accepts and one nanosecond less is the first it refuses.
         assert_eq!(
-            polling_grew(Some((42, TOOK)), 159, TOOK, APART),
-            Grew::NotAPair {
-                apart: Duration::ZERO,
+            polling_grew(
+                Some(Duration::from_millis(400)),
+                Duration::from_millis(1_000),
+                APART,
+            ),
+            Grew::Polled {
+                apart: Duration::from_millis(600)
+            },
+            "half the distance is still polling — item 666's headroom",
+        );
+        assert_eq!(
+            polling_grew(
+                Some(Duration::from_millis(400)),
+                Duration::from_nanos(999_999_999),
+                APART,
+            ),
+            Grew::Parked {
+                apart: Duration::from_nanos(599_999_999),
                 floor: Duration::from_millis(600),
             },
-            "a mark taken at the very end leaves nothing to read the rest of the wait against",
+            "⛔ AND ONE NANOSECOND BELOW THE HALF IS REFUSED",
         );
     }
 
@@ -3747,21 +3782,22 @@ mod tests {
         );
 
         // ── the claim: THIS ARM'S COST FOLLOWS THE CLOCK, which is what polling MEANS ──
-        let read = polling_grew(blind.mark, blind.looks, blind.took, LONG - SHORT);
+        let read = polling_grew(blind.mark.map(|(_, at)| at), blind.took, LONG - SHORT);
         assert!(
-            matches!(read, Grew::Bought { .. }),
-            "⚠⚠⚠⚠ THE ARM A REMOTE DRIVER WALKS HAS STOPPED FOLLOWING THE CLOCK, and that is news \
-             THREE ways. It answered {read:?} over one wait of {:?} whose {SHORT:?} mark read \
-             {:?}. ⑴ `NotAPair` — the mark landed at the ENDING — is what a PARKED wait looks \
-             like from here (MEASURED: the told arm reads exactly that, and so does a mutant whose \
-             `Settling::Unknown` names a deadline five seconds out), so either a remote surface \
-             has grown a deadline — register item 631 is PAID and this line is what says so — or \
-             `Settling::Unknown` is being read as *nothing pending*, which is the lost wakeup \
-             above. ⑵ `Unbought` is time that bought too few looks at the mark's own rate. \
-             ⑶ `NeverLooked` is the wait ending before its mark, which leaves no rate at all. \
-             ⛔ All three are RED and none is a pass: unclassified is not a pass. ⚠ Register item \
-             666: absolute look counts are the RUNNER'S speed — measured 15/27 on macOS against \
-             42/159 here for the same code — which is why both marks come from ONE wait",
+            matches!(read, Grew::Polled { .. }),
+            "⚠⚠⚠⚠ THE ARM A REMOTE DRIVER WALKS HAS STOPPED BEING CONSULTED LATE IN ITS WINDOW, \
+             and that is news either way. It answered {read:?} over one wait of {:?} whose \
+             {SHORT:?} mark read {:?}. ⑴ `Parked` — the mark landed at the ENDING — is what a \
+             PARKED wait looks like from here (MEASURED: the told arm reads 17 µs, and so does a \
+             mutant whose `Settling::Unknown` names a deadline five seconds out), so either a \
+             remote surface has grown a deadline — register item 631 is PAID and this line is what \
+             says so — or `Settling::Unknown` is being read as *nothing pending*, which is the \
+             lost wakeup above. ⑵ `NeverLooked` is the wait ending before its mark, which leaves \
+             nothing to read. ⛔ Both are RED and neither is a pass. ⚠⚠ Register item 666: this \
+             does NOT count looks, because look RATE is the runner's — 15/27 on macOS against \
+             42/159 here for the same code, and a host that halves its rate mid-wait would break \
+             any *looks per unit time* rule. What it reads is whether the predicate was still \
+             being consulted, which only the product decides",
             blind.took,
             blind.mark,
         );
