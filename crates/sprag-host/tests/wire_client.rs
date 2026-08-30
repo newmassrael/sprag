@@ -9143,6 +9143,65 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
         "⚠ the pair that turned the new arithmetic over turns the old one over as well",
     );
 
+    // ── ⛔⛔⛔⛔⛔ MEASURED, macOS CI at `a0a3eda` — THE SECOND SAMPLE, AND IT REFUTES WHAT THE
+    //    FIRST ONE WAS FILED AS ──
+    //
+    // `The 1s arm waited 1.099298875s for 20 look(s) and the 250ms arm 395.996959ms for 12.`
+    //
+    // The pair above was registered as *the runner's look price moved 2.16x inside one test* —
+    // drift. Two samples say something narrower and more useful:
+    //
+    // | sample    | short arm    | long arm     |
+    // |-----------|--------------|--------------|
+    // | `131aa05` | 25.4 ms/look | 54.9 ms/look |
+    // | `a0a3eda` | 33.0 ms/look | 55.0 ms/look |
+    //
+    // ⭐⭐⭐⭐⭐ **THE LONG ARM IS THE STABLE ONE — 54.9 against 55.0, two independent runs — AND
+    // THE SHORT ARM IS NOT (25.4 against 33.0, 30% apart).** So this runner does not wander; the
+    // two arms are systematically priced differently, and the control divides by the rate of the
+    // arm that is cheap and noisy. What fails here is the ASSUMPTION THAT ONE ARM'S RATE PRICES
+    // THE OTHER'S TIME, which is a different defect from *the host got slower half way through*
+    // and asks for a different repair.
+    //
+    // ⚠⚠ THE REFUSAL IS STILL CORRECT, twice. Nothing about park can be read off a pair bought at
+    // two prices — that is what this control is for, and it says so both times rather than
+    // averaging them into a verdict. It is the COST that is the debt.
+    assert_eq!(
+        staging_control(
+            12,
+            Duration::from_nanos(395_996_959),
+            20,
+            Duration::from_nanos(1_099_298_875),
+            APART,
+        ),
+        Staged::Unbought { extra: 8, owed: 21 },
+        "⛔ the second macOS pair: the extra 703 ms owes 21 looks at the short arm's own rate and \
+         bought 8",
+    );
+    // ⚠⚠⚠ AND THE CROSS-SAMPLE READING IS A PREDICATE, NOT THE TABLE ABOVE. Prose comparing two
+    // comments is prose; this asks the two readings the question that separates *drift* from
+    // *two prices*, so a third sample that contradicts it goes RED instead of being read past.
+    //
+    // ⚠ Nanoseconds per look, integer — the arms differ by tens of a percent and the long ones by
+    // fractions of one, so no rounding here can flatter either claim.
+    let per_look = |took_ns: u64, looks: u64| took_ns / looks;
+    let (long_a, long_b) = (per_look(1_152_056_833, 21), per_look(1_099_298_875, 20));
+    let (short_a, short_b) = (per_look(278_872_541, 11), per_look(395_996_959, 12));
+    assert!(
+        long_a.abs_diff(long_b) * 50 < long_a,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 783: the LONG arm's price is what two macOS samples agree on, and \
+         that agreement is the whole reason this is not drift. If it has stopped agreeing, the \
+         item's diagnosis is wrong again and the next repair must not be built on it: \
+         {long_a} ns/look against {long_b}",
+    );
+    assert!(
+        short_a.abs_diff(short_b) * 5 > short_a,
+        "⛔⛔⛔⛔ REGISTER ITEM 783: the SHORT arm was the variable one in both samples — that is \
+         what makes *the control divides by the noisy arm's rate* a reading rather than a story. \
+         Two short arms that now agree would mean this pair of samples no longer says what the \
+         item was re-filed on: {short_a} ns/look against {short_b}",
+    );
+
     // ── ⛔ MEASURED, mutation A: the look counter stopped growing (`store(1)`) ──
     // `The 1s arm waited 1.003793102s for 1 looks and the 250ms arm 256.379719ms for 1: the extra
     //  747.413383ms bought 0 look(s) where the short arm's own rate owes 2`
