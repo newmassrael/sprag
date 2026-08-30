@@ -9056,6 +9056,31 @@ fn staging_control(
     }
 }
 
+/// **THE RULE REGISTER ITEM 786 SAYS TO MOVE TO** — one wait read at TWO MARKS, asking whether it
+/// really SPENT the distance between them. A forward counterfactual, and the only one in this file.
+///
+/// # ⚠⚠⚠⚠⚠ Why a rule nothing calls yet is worth having here
+///
+/// 786's done-when is a claim about a rule that does not exist: *the control should stop dividing
+/// by a rate*. Written as prose that is a direction nobody can check, and the round that finally
+/// builds it would be the first to learn whether it works. As a predicate it is checkable now —
+/// and it had better be, because this file has twice shipped a repair whose case was a paragraph.
+///
+/// # ⭐⭐⭐⭐⭐ What makes it immune where every counting rule is holed
+///
+/// **Its inputs are wall time the wait SPENT, not looks the host BOUGHT.** A polling wait reaches
+/// the short window's mark at about 250 ms and the long one's end at about 1000 ms whatever its
+/// look price is, so a host that halves its own speed mid-wait moves neither number. A wait that
+/// was PARKED by accident returns at the change and hits both at the same instant, which is the
+/// one thing this control exists to catch. Item 666 reached this shape for its own gate
+/// (`readiness.rs::polling_grew`) after the same two wrong turns this file took.
+///
+/// ⚠ It is `marks_apart / 2` for [`staging_control`]'s `APART_SHARE` reason: half the nominal
+/// distance, as a guard against a reading that cannot discriminate rather than a threshold.
+fn staging_control_by_marks(mark_took: Duration, took: Duration, marks_apart: Duration) -> bool {
+    took.saturating_sub(mark_took) >= marks_apart / 2
+}
+
 /// **THE RULE REGISTER ITEM 783 REPLACED** — the extra time priced at the SHORT arm's rate, kept
 /// for the reason the window rule below is kept: the case for replacing it is a claim about what
 /// it does to healthy hosts, and a claim like that is a predicate or it is nothing.
@@ -9176,7 +9201,36 @@ fn the_divisor_is_read_against_a_host_that_slows_down_mid_wait() {
              shape and the item's residue paragraph is stale — go and fix it rather than deleting \
              this line: {h:?}",
         );
+        // ⭐⭐⭐⭐⭐ AND THE RULE 786 POINTS AT TAKES THE SAME HOST. Whatever its look price, a
+        // POLLING wait reaches the short window's mark at about 250 ms and the long one's end at
+        // about 1000 ms — so the marks form reads it as still polling, which it is.
+        assert!(
+            staging_control_by_marks(
+                Duration::from_millis(SHORT_W),
+                Duration::from_millis(LONG_W),
+                Duration::from_millis(750),
+            ),
+            "⛔⛔⛔ REGISTER ITEM 786: the form this item says to move to must accept the hosts the \
+             shipped one refuses, or its done-when is pointing somewhere that does not help",
+        );
     }
+
+    // ── ⛔ AND THE FORWARD FORM IS NOT SIMPLY *TRUE* — it still refuses the one thing this control
+    //    exists for ────────────────────────────────────────────────────────────────────────────
+    //
+    // ⚠⚠ Without this line the assertion above is met by a rule that accepts everything, which
+    // would make 786's direction look validated by a predicate that measures nothing. The reading
+    // is item 668's own, off a real parked arm: both marks hit 14 µs apart.
+    assert!(
+        !staging_control_by_marks(
+            Duration::from_nanos(1_608_935_776),
+            Duration::from_nanos(1_608_950_116),
+            Duration::from_millis(750),
+        ),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 786: a control arm that was PARKED by accident returns at the \
+         change instead of spending the window, and the forward form must refuse it — that refusal \
+         is the whole job this staging control has",
+    );
 }
 
 /// ⛔⛔⛔⛔⛔ **THE STAGING CONTROL'S ARITHMETIC, ON THE PAIRS THAT HAVE ACTUALLY BEEN MEASURED** —
