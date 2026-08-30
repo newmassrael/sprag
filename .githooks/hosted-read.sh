@@ -141,7 +141,25 @@ hosted_read_seen() {
     # absent: a clone where nothing has ever been READ must go on saying so
     # rather than acquiring a mark from a look that read nothing.
     mark="$(hosted_read_watermark)"
-    [ "$verdict" = settled ] && mark="$sha"
+    # ⛔⛔⛔⛔⛔ **THE MARK NEVER MOVES BACKWARD** — register item 779, measured on this repository's
+    # own marker the round after it was built. Two runs came back at once and were settled oldest
+    # LAST, so `--seen <older> settled` put the mark behind a commit that had already been read and
+    # the report said THREE rounds unread where two was the truth. A watermark that can regress is
+    # not a watermark; it over-states, which is the safe direction and is why nothing was buried,
+    # but a number nobody can trust in either direction stops being read at all.
+    #
+    # ⚠ Four cases and none of them defaults (this workspace's rule that unclassified is RED):
+    # nothing recorded yet takes the new sha; a mark this branch no longer contains is REPLACED,
+    # or a rebase would strand the reading for ever with no way back to zero; a sha at or behind
+    # the mark leaves it alone — the read still counts, and `kept` below still clears what it owed;
+    # anything else is forward and moves it.
+    if [ "$verdict" = settled ]; then
+        if [ -z "$mark" ] \
+           || ! git merge-base --is-ancestor "$mark" HEAD 2>/dev/null \
+           || ! git merge-base --is-ancestor "$sha" "$mark" 2>/dev/null; then
+            mark="$sha"
+        fi
+    fi
     # Every commit still owed, MINUS the one being recorded now — whichever word
     # it got, this look is the current word about that commit.
     kept="$(hosted_read_owed | command grep -v "^${sha}$" || true)"
@@ -342,7 +360,11 @@ hosted_read_selftest() {
         *)  echo "  FAIL  a bare --seen was accepted"
             fail=$((fail + 1)) ;;
     esac
-    ( cd "$tmp" && hosted_read_seen "$base" settled >/dev/null )
+    # ⚠ THE MARK IS STAGED BY WRITING THE FILE, not by `--seen`, and that is not a shortcut: the
+    # mark never moves BACKWARD (see `hosted_read_seen`), so a recorder call cannot put this clone
+    # behind where it already is. The file IS the state, which is what the `sprag-gate` suite
+    # stages with too.
+    ( cd "$tmp" && printf '%s\n' "$base" > "$(hosted_read_marker)" )
     ( cd "$tmp" && hosted_read_seen "$tip" unsettled >/dev/null )
     said="$( cd "$tmp" && hosted_read_gap )"
     case "$said" in
@@ -385,6 +407,20 @@ hosted_read_selftest() {
             echo "  ok    and it names WHICH commit is still owed"
             pass=$((pass + 1)) ;;
         *)  echo "  FAIL  the owed commit is not named: $said"
+            fail=$((fail + 1)) ;;
+    esac
+
+    # ⛔⛔⛔ AND THE MARK NEVER GOES BACKWARD — register item 779's own residue, measured on this
+    # repository's marker the round after it shipped: two runs finished together, the older was
+    # settled LAST, and the report claimed a round more unread than there was.
+    ( cd "$tmp" && hosted_read_seen "$tip" settled >/dev/null )
+    ( cd "$tmp" && hosted_read_seen "$base" settled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"0 round(s) unread"*)
+            echo "  ok    settling an older commit does not move the mark back"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  an older settled read moved the mark backward: $said"
             fail=$((fail + 1)) ;;
     esac
 
