@@ -8948,6 +8948,268 @@ fn a_park_the_daemon_refuses_degrades_the_wait_instead_of_reporting_a_still_pane
     );
 }
 
+/// What the staging control of [`a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen`]
+/// makes of one pair of polling readings — register item 776, arm (3-f).
+#[derive(Debug, PartialEq, Eq)]
+enum Staged {
+    /// ⛔ **The two arms did not wait times that differ by their windows**, so they are one reading
+    /// and not a pair. RED rather than a pass: the landing latency is common to both arms and
+    /// cancels in this difference, so a pair that fails it is one whose members waited the same
+    /// length of time, and nothing can be read off that.
+    NotAPair { apart: Duration, floor: Duration },
+    /// ⛔ **The short arm waited no time at all**, so it fixes no rate to read the long one
+    /// against. Named rather than folded into the arm above, because *the arms did not differ* and
+    /// *there is no rate* ask for different repairs — and unclassified is RED, never a pass.
+    NoRate,
+    /// ⛔ **The extra time did not buy what the short arm's own rate says it owes.**
+    Unbought { extra: u128, owed: u128 },
+    /// ✅ The extra time bought the extra looks.
+    Bought { extra: u128, owed: u128 },
+}
+
+/// **READ A PAIR OF POLLING READINGS AGAINST THE TIME THEY ACTUALLY WAITED** — the staging
+/// control's whole arithmetic, and a function rather than four assertions inside the gate.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is not inlined, which is register item 775's lesson arriving again
+///
+/// Every host anyone develops on answers this one way: `apart` comes out at the windows' full
+/// distance and the two rates agree to within a few per cent, so **both refusals are lines that
+/// cannot fail where they run**. Item 775 paid off exactly that shape, and arm (3-f) bought it
+/// back the moment it added a guard whose whole purpose is a host this one is not. Pulled out, the
+/// readings that DID turn it over — on macOS, and on the build machine with the marker's landing
+/// staged late — drive it in microseconds and with no daemon at all.
+///
+/// `windows_apart` is the distance between the two windows the arms were asked for; everything
+/// else is measured.
+fn staging_control(
+    short: u64,
+    short_took: Duration,
+    long: u64,
+    long_took: Duration,
+    windows_apart: Duration,
+) -> Staged {
+    /// How much of the distance between the two windows the two arms' waits must really have
+    /// differed by before one is read against the other. ⚠⚠ Half, and a guard against a reading
+    /// that cannot discriminate rather than a threshold on the product.
+    const APART_SHARE: u32 = 2;
+    /// What share of the looks the EXTRA time owes — at the short arm's own measured rate — the
+    /// long arm must actually have paid. ⚠⚠ Half the honest reading, and that headroom is the
+    /// whole of register item 668: what must not be able to turn this over is the host it runs on.
+    const OWED_SHARE: u128 = 2;
+
+    let apart = long_took.saturating_sub(short_took);
+    let floor = windows_apart / APART_SHARE;
+    if apart < floor {
+        return Staged::NotAPair { apart, floor };
+    }
+    if short_took.is_zero() {
+        return Staged::NoRate;
+    }
+    let extra = u128::from(long.saturating_sub(short));
+    // The short arm's OWN look rate, applied to the time the long arm waited on top of it.
+    let owed = u128::from(short) * apart.as_nanos() / short_took.as_nanos();
+    if extra * OWED_SHARE >= owed {
+        Staged::Bought { extra, owed }
+    } else {
+        Staged::Unbought { extra, owed }
+    }
+}
+
+/// **THE RULE ARM (3-f) REPLACED** — looks counted against the WINDOWS each arm asked for, kept
+/// because the case for replacing it is a claim about what it did to real readings.
+///
+/// ⚠⚠⚠ It is here as the COUNTERFACTUAL and nothing else. *"The old rule refused this healthy
+/// pair"* is the whole argument for the new one, and written as prose beside a literal it is a
+/// sentence nobody re-derives — so it is a predicate the measured pairs are put through instead.
+fn staging_control_by_window(short: u64, long: u64) -> bool {
+    /// What the long window had to cost over the short one. ⚠ The window ratio is four, so this
+    /// was *half the honest reading* — the same headroom the replacement keeps, which is why the
+    /// replacement is not a loosening.
+    const GROWTH: u64 = 2;
+    long >= short.saturating_mul(GROWTH)
+}
+
+/// ⛔⛔⛔⛔⛔ **THE STAGING CONTROL'S ARITHMETIC, ON THE PAIRS THAT HAVE ACTUALLY BEEN MEASURED** —
+/// register item 776, arm (3-f), and the gate that keeps [`staging_control`]'s two refusals alive
+/// on a machine where neither can fire.
+///
+/// # ⚠⚠⚠ Each arm is a READING somebody took, and the ones that are not are marked
+///
+/// Three of these are complete four-number readings off a real run. The macOS pair is **counts
+/// only** — that failure died before the summary printed, so its two elapsed times were never
+/// seen — and the model arm below says so in as many words rather than passing a derivation off
+/// as a measurement.
+#[test]
+fn the_staging_control_reads_the_pairs_that_have_been_measured() {
+    /// The distance between the gate's two windows, which is what a pair is read against.
+    const APART: Duration = Duration::from_millis(750);
+
+    // ── ✅ MEASURED, the build machine with nothing staged (2026-08-30) ──
+    // `polling: 25 look(s) over 250ms (waited 253.95731ms), 95 over 1s (waited 1.007140275s)`
+    assert_eq!(
+        staging_control(
+            25,
+            Duration::from_nanos(253_957_310),
+            95,
+            Duration::from_nanos(1_007_140_275),
+            APART,
+        ),
+        Staged::Bought {
+            extra: 70,
+            owed: 74
+        },
+        "a fast host's pair: 98 looks a second either side, and the extra 753 ms buys them",
+    );
+
+    // ── ✅ MEASURED, the same machine with the marker's landing staged 800 ms late ──
+    // `polling: 100 look(s) over 250ms (waited 1.059750286s), 174 over 1s (waited 1.811089083s)`
+    //
+    // ⚠⚠⚠⚠ THIS IS THE WHOLE REPAIR. The counts are 100 and 174, a ratio of 1.74 against a
+    // window ratio of 4, so the rule this replaced — `long >= short * 2` — REFUSED this pair. The
+    // rate never moved (94 a second against 96), and read against the time actually waited it is
+    // a host paying for every millisecond of it.
+    assert_eq!(
+        staging_control(
+            100,
+            Duration::from_nanos(1_059_750_286),
+            174,
+            Duration::from_nanos(1_811_089_083),
+            APART,
+        ),
+        Staged::Bought {
+            extra: 74,
+            owed: 70
+        },
+        "⛔ the pair the old arithmetic turned over, and it is a HEALTHY one",
+    );
+    // ⚠⚠ AND THE COUNTERFACTUAL, as a predicate rather than as prose: the rule this replaced was
+    // not simply always false — it passes the fast host's pair — and it refuses BOTH readings a
+    // landing latency stretched. That is the defect, stated so a round reverting the arithmetic
+    // cannot also quietly rewrite what it was reverting to.
+    assert!(
+        staging_control_by_window(25, 95),
+        "the superseded rule passes a fast host's pair, which is why it survived until macOS",
+    );
+    assert!(
+        !staging_control_by_window(100, 174) && !staging_control_by_window(14, 24),
+        "⛔ and it refuses the staged Linux pair AND the macOS one — two healthy hosts, both \
+         called a park by the denominator alone",
+    );
+
+    // ── ⚠ MODEL, not a measurement: the macOS reading, whose elapsed was never printed ──
+    //
+    // macOS CI scored 14 looks and 24 at `83aedd0`, a ratio of 1.71. Those two counts are the
+    // measurement and all of it. The elapsed pair below is the one a CONSTANT look rate implies
+    // for them — 1.05 s and 1.80 s, i.e. a landing latency of 800 ms — and the reason it is worth
+    // asserting is that the staged arm above is the same shape MEASURED end to end on a machine
+    // this repository can run. ⛔ If the next macOS verdict contradicts this, the model is wrong
+    // and the elapsed times now printed on both the summary and the failure are what will say so.
+    assert_eq!(
+        staging_control(
+            14,
+            Duration::from_millis(1_050),
+            24,
+            Duration::from_millis(1_800),
+            APART,
+        ),
+        Staged::Bought {
+            extra: 10,
+            owed: 10
+        },
+        "the macOS counts, against the elapsed a steady rate implies for them",
+    );
+
+    // ── ⛔ MEASURED, mutation A: the look counter stopped growing (`store(1)`) ──
+    // `The 1s arm waited 1.003793102s for 1 looks and the 250ms arm 256.379719ms for 1: the extra
+    //  747.413383ms bought 0 look(s) where the short arm's own rate owes 2`
+    assert_eq!(
+        staging_control(
+            1,
+            Duration::from_nanos(256_379_719),
+            1,
+            Duration::from_nanos(1_003_793_102),
+            APART,
+        ),
+        Staged::Unbought { extra: 0, owed: 2 },
+        "⚠ a pair where time bought nothing must be refused — this is what says the numbers the \
+         parked claim is read against are being paid at all",
+    );
+
+    // ── ⛔ MEASURED, mutation B: only the SHORT arm's marker landed 800 ms late ──
+    // `1s waited 1.001861371s and 250ms waited 1.053107514s, 0ns apart against the 750ms`
+    //
+    // ⚠⚠ The counts are deliberately a HEALTHY pair here: the refusal is about the two waits, and
+    // it has to come first whatever the counts say, or a pair that cannot discriminate would be
+    // read anyway and pass on the strength of numbers that mean nothing.
+    assert_eq!(
+        staging_control(
+            25,
+            Duration::from_nanos(1_053_107_514),
+            95,
+            Duration::from_nanos(1_001_861_371),
+            APART,
+        ),
+        Staged::NotAPair {
+            apart: Duration::ZERO,
+            floor: Duration::from_millis(375),
+        },
+        "⛔ a pair whose two members waited the same length of time is RED, never a pass",
+    );
+
+    // ── ⛔ AND THE ARM NOTHING HAS MEASURED, which is why it is named rather than folded away ──
+    assert_eq!(
+        staging_control(0, Duration::ZERO, 95, Duration::from_secs(1), APART),
+        Staged::NoRate,
+        "a short arm that waited nothing fixes no rate, so there is nothing to read the long arm \
+         against — unclassified is RED (register rule 6), and a division by zero besides",
+    );
+
+    // ── ⛔⛔⛔⛔⛔ WHERE THE HALF ACTUALLY IS — DERIVED from the staged pair, not a reading ──
+    //
+    // ⚠⚠⚠⚠⚠ This arm exists because loosening `OWED_SHARE` from a half to a tenth was MEASURED
+    // GREEN against every arm above (2026-08-30). The refusing arm there pays `extra: 0`, and no
+    // multiplier rescues a zero — so the share itself was carrying nothing, which is the same
+    // ungated-line defect this whole item keeps buying, one level in.
+    //
+    // The staged pair's short arm fixes the rate, and its 751 ms of extra time therefore OWES 70
+    // looks. Half of that is 35. So a long arm paying 35 more than the short one is the last pair
+    // this control accepts, and one paying 34 more is the first it refuses. ⛔ Those two are one
+    // fact about the arithmetic and not two readings: they are what the constant MEANS.
+    const STAGED_SHORT: u64 = 100;
+    const STAGED_SHORT_TOOK: Duration = Duration::from_nanos(1_059_750_286);
+    const STAGED_LONG_TOOK: Duration = Duration::from_nanos(1_811_089_083);
+    assert_eq!(
+        staging_control(
+            STAGED_SHORT,
+            STAGED_SHORT_TOOK,
+            STAGED_SHORT + 35,
+            STAGED_LONG_TOOK,
+            APART,
+        ),
+        Staged::Bought {
+            extra: 35,
+            owed: 70
+        },
+        "half of what the extra time owes is still bought — the headroom register item 668 asks \
+         for, and the same half the rule this replaced allowed",
+    );
+    assert_eq!(
+        staging_control(
+            STAGED_SHORT,
+            STAGED_SHORT_TOOK,
+            STAGED_SHORT + 34,
+            STAGED_LONG_TOOK,
+            APART,
+        ),
+        Staged::Unbought {
+            extra: 34,
+            owed: 70
+        },
+        "⛔ AND ONE LOOK BELOW THE HALF IS REFUSED. Without this pair the share is a number \
+         nothing reads: widening it to a tenth was green against every other arm here",
+    );
+}
+
 /// ⛔⛔⛔⛔ **A RUN DRIVEN OVER THE WIRE WAITS ON A PANE INSTEAD OF RE-READING ITS SCREEN** —
 /// register item 631, and the number it was open for.
 ///
@@ -9041,19 +9303,6 @@ fn a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen() {
     /// cost a function of the window. ⚠ Generous on purpose: the claim is *flat*, and a park that
     /// woke a handful of extra times would still be a park.
     const SLACK: u64 = 8;
-    /// How much of the distance between the two windows the two POLLING arms' waits must really
-    /// have differed by before one is read against the other. ⚠⚠ Half, and it is a guard against
-    /// a reading that cannot discriminate rather than a threshold on the product: the landing
-    /// latency below is common to both arms and cancels in this difference, so a pair that fails
-    /// it is a pair whose two members waited the same length of time — RED, because there is
-    /// nothing to read off it, and never a pass.
-    const APART_SHARE: u32 = 2;
-    /// What share of the looks the EXTRA time owes — at the short arm's own measured rate — the
-    /// long arm must actually have paid before this gate believes the wait buys looks with time at
-    /// all. ⚠⚠ Half the honest reading, and that headroom is the whole of register item 668: what
-    /// must not be able to turn this over is the host it runs on.
-    const OWED_SHARE: u128 = 2;
-
     /// Wait out one window on one driver, answering **how many looks it cost**, how long it took,
     /// and how it ended.
     fn waited_out(
@@ -9183,28 +9432,32 @@ fn a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen() {
     // runner itself charged over the short arm. Both terms are differences, so the landing latency
     // cancels out of each — which is what makes this the same sentence as before on a fast host
     // and a true one on a slow host, rather than a looser sentence on both.
-    let apart = control_long_took.saturating_sub(control_short_took);
-    assert!(
-        apart >= (LONG - SHORT) / APART_SHARE,
-        "⛔⛔⛔ THE TWO POLLING ARMS DID NOT WAIT TIMES THAT DIFFER BY THEIR WINDOWS, so they are \
-         one reading and not a pair, and nothing can be read off them — this is RED rather than a \
-         pass for exactly that reason. {LONG:?} waited {control_long_took:?} and {SHORT:?} waited \
-         {control_short_took:?}, {apart:?} apart against the {:?} between the windows: the \
-         marker's landing latency is not the same on the two arms",
+    //
+    // ⚠⚠ THE ARITHMETIC ITSELF IS A FUNCTION AND NOT FOUR LINES HERE, because on any host fast
+    // enough to be worth developing on it can only ever come out one way: `apart` is 750 ms and
+    // the rates agree, so the two refusals below are lines that cannot fail where they run —
+    // register item 775's dead line, which this item has now bought twice. `staging_control` is
+    // driven by the readings that HAVE been measured in
+    // `the_staging_control_reads_the_pairs_that_have_been_measured`.
+    let staged = staging_control(
+        control_short,
+        control_short_took,
+        control_long,
+        control_long_took,
         LONG - SHORT,
     );
-    let extra_looks = u128::from(control_long.saturating_sub(control_short));
-    // The short arm's OWN look rate, applied to the time the long arm waited on top of it.
-    let owed = u128::from(control_short) * apart.as_nanos() / control_short_took.as_nanos();
     assert!(
-        extra_looks * OWED_SHARE >= owed,
+        matches!(staged, Staged::Bought { .. }),
         "⚠⚠⚠⚠ THE STAGING CONTROL: a surface that cannot be told MUST pay for the time it waits, \
          or this host is not buying looks with time and the claim below is true of a fixture \
-         rather than of a park. The {LONG:?} arm waited {control_long_took:?} for {control_long} \
-         look(s) and the {SHORT:?} arm {control_short_took:?} for {control_short}: the extra \
-         {apart:?} bought {extra_looks} look(s) where the short arm's own rate owes {owed}. ⚠ If \
-         the two rates differ, that is this runner's look cost changing between the arms and not \
-         the product — register item 668",
+         rather than of a park. It answered {staged:?}. The {LONG:?} arm waited \
+         {control_long_took:?} for {control_long} look(s) and the {SHORT:?} arm \
+         {control_short_took:?} for {control_short}. ⚠ `NotAPair` is the two arms' waits failing \
+         to differ by the {:?} between the windows — one reading and not a pair, RED rather than a \
+         pass because nothing can be read off it. `Unbought` is the extra time failing to buy what \
+         the short arm's own rate owes; if the two rates differ, that is this runner's look cost \
+         changing between the arms and not the product — register item 668",
+        LONG - SHORT,
     );
 
     // ── the claim: A PARKED WAIT'S COST DOES NOT FOLLOW THE WINDOW ──
