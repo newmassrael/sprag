@@ -71,15 +71,120 @@ hosted_read_marker() {
 HOSTED_READ_COST="the last time this gap was left to grow it reached 33 rounds \
 and two days of unread red"
 
-# RECORD that the hosted result for `$1` (default HEAD) has been read.
+# ⛔⛔⛔⛔⛔ WHAT A LOOK THAT FOUND NO VERDICT COSTS — register item 779, and a
+# SECOND sentence rather than a number added to the one above.
+#
+# ⚠⚠⚠⚠⚠ Two debts, two clauses, because the remedies differ. An open gap is
+# *nobody looked*; this is *somebody looked and there was nothing there yet*, and
+# what it asks for is going BACK to a commit already under the watermark. A
+# reader handed one sentence for both would come away thinking the second was
+# discharged by the same act as the first, which is exactly the covering this
+# item is about.
+#
+# ⚠ MEASURED, and it is the queue this repository actually has rather than an
+# imagined one: on 2026-08-30 three pushes were outstanding at once, the oldest
+# run still `in_progress` an hour and three quarters after it was created and
+# the two behind it `queued`. Nothing in this repository serialises them --
+# `.github/workflows` declares no `concurrency:` group -- so the wait is the
+# hosting's and cannot be shortened from here. A watermark that assumes a
+# verdict is waiting is therefore wrong on an ORDINARY round, not a rare one.
+HOSTED_READ_UNSETTLED_COST="a run that had not spoken when it was looked at is \
+not a run that was read, and the next --seen would bury it"
+
+# RECORD what was found when the hosted result for `$1` (default HEAD) was
+# looked at: `$2` is `settled` (a verdict was there and was read) or `unsettled`
+# (there was none yet).
+#
+# ⛔⛔⛔⛔⛔ THE VERDICT WORD IS REQUIRED — register item 779, and refusing the
+# bare form is the whole repair.
+#
+# `--seen SHA` used to write a watermark and nothing else, which made *I read a
+# verdict* and *I looked and there was none yet* the SAME act. A reader who
+# looks at the top of a round and finds `queued` can stamp that honestly -- they
+# really did look -- and every run under the mark is then covered for ever. The
+# unit was wrong: the file counts COMMITS and what has to be read is RUNS, and
+# a push that lands before the last run has spoken makes those two differ.
+#
+# ⚠⚠ So an unclassified look is REFUSED rather than defaulted to either word.
+# Defaulting to `settled` is the shipped defect; defaulting to `unsettled` would
+# make an honest reader's mark stop counting and turn the report into noise.
+# This workspace's rule is that an unclassified case is RED and not a pass, and
+# here the classification is a fact only the reader has.
+#
+# ⚠ An `unsettled` mark does NOT move the watermark: nothing was read, so the
+# distance the gap measures has not changed. It is remembered separately, and
+# `hosted_read_gap` keeps naming it until that commit is marked `settled`.
 hosted_read_seen() {
-    local sha
+    local sha verdict marker kept mark
     sha="$(git rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null)" || {
         echo "hosted-read: '${1:-HEAD}' is not a commit in this tree" >&2
         return 1
     }
-    printf '%s\n' "$sha" > "$(hosted_read_marker)"
-    echo "hosted-read: recorded that the hosted result for ${sha:0:7} was read"
+    verdict="${2:-}"
+    case "$verdict" in
+        settled|unsettled) ;;
+        *)  echo "hosted-read: say WHAT was found -- '--seen ${1:-HEAD} settled'" \
+                 "if a verdict was there and you read it, '--seen ${1:-HEAD}" \
+                 "unsettled' if the run had not spoken yet. A look that found" \
+                 "nothing is not a read, and recording it as one buries that" \
+                 "run under the mark for good (register item 779)." >&2
+            return 2 ;;
+    esac
+    marker="$(hosted_read_marker)"
+    # ⛔⛔⛔⛔⛔ BOTH HALVES OF THE OLD FILE ARE READ BEFORE ONE BYTE IS WRITTEN.
+    # `> "$marker"` truncates when the group STARTS, so a `$(...)` inside it that
+    # reads the marker reads an empty file — measured by this file's own selftest
+    # on the first run of this arm: an unsettled look wiped the watermark and the
+    # clone went back to saying nobody had ever read anything.
+    #
+    # ⚠ THE WATERMARK STAYS PUT for an unsettled look, and an absent one stays
+    # absent: a clone where nothing has ever been READ must go on saying so
+    # rather than acquiring a mark from a look that read nothing.
+    mark="$(hosted_read_watermark)"
+    [ "$verdict" = settled ] && mark="$sha"
+    # Every commit still owed, MINUS the one being recorded now — whichever word
+    # it got, this look is the current word about that commit.
+    kept="$(hosted_read_owed | command grep -v "^${sha}$" || true)"
+    if [ "$verdict" = unsettled ]; then
+        kept="$(printf '%s\n%s\n' "$kept" "$sha" | command grep -v '^$' || true)"
+    fi
+    {
+        printf '%s\n' "$mark"
+        printf '%s\n' "$kept" | command sed '/^$/d;s/^/owed /'
+    } > "$marker"
+    if [ "$verdict" = settled ]; then
+        echo "hosted-read: recorded that the hosted result for ${sha:0:7} was read"
+    else
+        echo "hosted-read: recorded that ${sha:0:7} was looked at and its run had" \
+             "not spoken yet -- it stays owed until '--seen ${sha:0:7} settled'"
+    fi
+}
+
+# The watermark line, or empty where no read has ever been recorded.
+hosted_read_watermark() {
+    local marker
+    marker="$(hosted_read_marker)"
+    [ -r "$marker" ] || return 0
+    command head -n 1 "$marker" | command tr -d '[:space:]'
+}
+
+# Every commit LOOKED AT whose run had not spoken, one sha per line — and only
+# those this tree still contains on HEAD's own history.
+#
+# ⛔ THE PRUNE IS A CLASSIFIED DROP AND NOT A CONVENIENCE. A commit that is no
+# longer an ancestor of HEAD was rebased or reset away, so no verdict about it
+# is a verdict about anything this branch will publish — and without the prune
+# the owed list could never reach empty, which is the shape that makes a count
+# stop being actionable. It is the same reading `hosted_read_gap` gives a
+# watermark this tree does not contain.
+hosted_read_owed() {
+    local marker sha
+    marker="$(hosted_read_marker)"
+    [ -r "$marker" ] || return 0
+    command sed -n 's/^owed //p' "$marker" | while read -r sha; do
+        [ -n "$sha" ] || continue
+        git merge-base --is-ancestor "$sha" HEAD 2>/dev/null && printf '%s\n' "$sha"
+    done
 }
 
 # THE SENTENCE. Four states, and none of them may be silent about which it is.
@@ -98,18 +203,33 @@ hosted_read_gap() {
     if [ ! -r "$marker" ]; then
         echo "hosted-read: NOBODY HAS RECORDED READING a hosted result in this" \
              "clone, so how long this has gone unread cannot be read here --" \
-             "run '.githooks/hosted-read.sh --seen' after reading one"
+             "run '.githooks/hosted-read.sh --seen HEAD settled' after reading one"
         return 0
     fi
     recorded="$(head -n 1 "$marker" | tr -d '[:space:]')"
+    if [ -z "$recorded" ]; then
+        # ⛔ A MARKER THAT HOLDS ONLY OWED COMMITS — register item 779. A clone
+        # where the only look so far found no verdict has read NOTHING, and
+        # saying otherwise is the covering this item exists to stop. It reads as
+        # the unrecorded state, plus what is owed.
+        echo "hosted-read: NOBODY HAS RECORDED READING a hosted result in this" \
+             "clone, so how long this has gone unread cannot be read here" \
+             "--$(hosted_read_owed_clause)"
+        return 0
+    fi
     if ! git rev-parse --verify --quiet "${recorded}^{commit}" >/dev/null 2>&1; then
         echo "hosted-read: the recorded read names ${recorded:-<empty>}, which" \
              "this tree does not contain -- the gap cannot be read here"
         return 0
     fi
     if [ "$recorded" = "$head" ]; then
+        # ⛔⛔⛔⛔⛔ A RECEIPT ONLY WHEN NOTHING IS OWED — register item 779. The
+        # gap being zero says every commit since the mark was read; it says
+        # nothing about a commit UNDER the mark whose run had not spoken when
+        # somebody looked. Those two were one sentence, and that is how a run
+        # that never answered got buried by the next `--seen`.
         echo "hosted-read: the hosted result was read at HEAD (${head:0:7}) --" \
-             "0 round(s) unread"
+             "0 round(s) unread$(hosted_read_owed_clause)"
         return 0
     fi
     count="$(git rev-list --count "${recorded}..HEAD" 2>/dev/null || echo "")"
@@ -119,7 +239,19 @@ hosted_read_gap() {
         return 0
     fi
     echo "hosted-read: ${count} round(s) published since a hosted result was" \
-         "read (last read at ${recorded:0:7}) -- ${HOSTED_READ_COST}"
+         "read (last read at ${recorded:0:7}) -- ${HOSTED_READ_COST}$(hosted_read_owed_clause)"
+}
+
+# The clause naming what was LOOKED AT and had not spoken — empty when nothing
+# is owed, which is what keeps a receipt a receipt (register item 776, arm 5).
+hosted_read_owed_clause() {
+    local owed count listed
+    owed="$(hosted_read_owed)"
+    [ -n "$owed" ] || return 0
+    count="$(printf '%s\n' "$owed" | command grep -c .)"
+    listed="$(printf '%s\n' "$owed" | command cut -c1-7 | command tr '\n' ' ')"
+    printf '%s' "; and ${count} commit(s) were looked at before their runs had \
+spoken (${listed% }) -- ${HOSTED_READ_UNSETTLED_COST}"
 }
 
 # ⚠⚠⚠⚠⚠ EVERY ARM, against throwaway repositories -- because a report reachable
@@ -147,7 +279,7 @@ hosted_read_selftest() {
             fail=$((fail + 1)) ;;
     esac
 
-    ( cd "$tmp" && hosted_read_seen HEAD >/dev/null )
+    ( cd "$tmp" && hosted_read_seen HEAD settled >/dev/null )
     said="$( cd "$tmp" && hosted_read_gap )"
     case "$said" in
         *"0 round(s) unread"*)
@@ -186,7 +318,7 @@ hosted_read_selftest() {
         *)  echo "  FAIL  an open gap does not name the cost: $said"
             fail=$((fail + 1)) ;;
     esac
-    ( cd "$tmp" && hosted_read_seen HEAD >/dev/null )
+    ( cd "$tmp" && hosted_read_seen HEAD settled >/dev/null )
     case "$( cd "$tmp" && hosted_read_gap )" in
         *"$HOSTED_READ_COST"*)
             echo "  FAIL  a settled gap is scolding about a debt it does not owe"
@@ -194,7 +326,84 @@ hosted_read_selftest() {
         *)  echo "  ok    and a settled gap is a receipt, not a debt"
             pass=$((pass + 1)) ;;
     esac
-    ( cd "$tmp" && hosted_read_seen "$base" >/dev/null )
+
+    # ⛔⛔⛔⛔⛔ REGISTER ITEM 779 — THE SIX ARMS THE WATERMARK ALONE CANNOT HOLD
+    # (a seventh, the prune, has its own block below).
+    #
+    # The mark used to say only THAT something was read. A reader at the top of a
+    # round who finds the run still `queued` has looked honestly and can stamp it
+    # honestly, and every run under the mark is then covered for good. So the
+    # word is required, an unsettled look does not move the mark, and a later
+    # settled read does not bury it.
+    case "$( cd "$tmp" && hosted_read_seen HEAD 2>&1 >/dev/null )" in
+        *"say WHAT was found"*)
+            echo "  ok    a look that does not say what it found is refused"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a bare --seen was accepted"
+            fail=$((fail + 1)) ;;
+    esac
+    ( cd "$tmp" && hosted_read_seen "$base" settled >/dev/null )
+    ( cd "$tmp" && hosted_read_seen "$tip" unsettled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"2 round(s) published since"*)
+            echo "  ok    a look that found no verdict does not move the mark"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  an unsettled look moved the watermark: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    ( cd "$tmp" && hosted_read_seen "$tip" settled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"0 round(s) unread"*)
+            echo "  ok    reading that verdict later settles it"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a settled read did not clear its own owed mark: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    case "$said" in
+        *"$HOSTED_READ_UNSETTLED_COST"*)
+            echo "  FAIL  a cleared debt is still being scolded about: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    and nothing is owed once it has been read"
+            pass=$((pass + 1)) ;;
+    esac
+
+    # ⛔⛔⛔ THE ARM THIS ITEM IS: A LATER READ MUST NOT BURY AN EARLIER LOOK.
+    ( cd "$tmp" && hosted_read_seen "$base" unsettled >/dev/null )
+    ( cd "$tmp" && hosted_read_seen "$tip" settled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"0 round(s) unread"*"$HOSTED_READ_UNSETTLED_COST"*)
+            echo "  ok    a gap of zero still names a run that never spoke"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a later read buried an unsettled look: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    case "$said" in
+        *"${base:0:7}"*)
+            echo "  ok    and it names WHICH commit is still owed"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  the owed commit is not named: $said"
+            fail=$((fail + 1)) ;;
+    esac
+
+    # ⛔⛔ AND THE DEBT CAN REACH ZERO BY A ROAD THAT IS NOT A READ — an owed
+    # commit this branch no longer contains. Without the prune the list could
+    # never empty after a rebase, and a count that cannot reach zero is one
+    # nobody can act on. It is a CLASSIFIED drop, so it gets an arm of its own
+    # rather than being a silent filter.
+    ( cd "$tmp" && printf '%s\nowed %s\n' "$tip" \
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" > "$(hosted_read_marker)" )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"$HOSTED_READ_UNSETTLED_COST"*)
+            echo "  FAIL  a commit this tree does not contain is owed for ever: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    an owed commit this branch dropped stops being owed"
+            pass=$((pass + 1)) ;;
+    esac
+    ( cd "$tmp" && hosted_read_seen "$base" settled >/dev/null )
 
     # ⛔ THE UNCLASSIFIED STATE IS NOT A ZERO. A marker naming something this
     # tree does not have is the shape a rebase, a reset or a copied clone
@@ -220,7 +429,7 @@ hosted_read_selftest() {
 
     # ⚠ AND THE FOUR STATES ARE FOUR SENTENCES. One wearing another's words
     # would put a reader in the wrong one without anything going wrong.
-    ( cd "$tmp" && hosted_read_seen "$tip" >/dev/null )
+    ( cd "$tmp" && hosted_read_seen "$tip" settled >/dev/null )
     if [ "$( cd "$tmp" && hosted_read_gap )" != "$said" ]; then
         echo "  ok    recording again changes what it says"
         pass=$((pass + 1))
@@ -257,8 +466,9 @@ hosted_read_selftest() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     case "${1:-}" in
         --selftest) hosted_read_selftest ;;
-        --seen) shift; hosted_read_seen "${1:-HEAD}" ;;
+        --seen) shift; hosted_read_seen "${1:-HEAD}" "${2:-}" ;;
         --gap|"") hosted_read_gap ;;
-        *) echo "usage: hosted-read.sh [--gap|--seen [SHA]|--selftest]" >&2; exit 2 ;;
+        *) echo "usage: hosted-read.sh [--gap|--seen SHA <settled|unsettled>|--selftest]" >&2
+           exit 2 ;;
     esac
 fi

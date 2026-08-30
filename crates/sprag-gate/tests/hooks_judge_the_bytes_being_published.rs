@@ -1299,5 +1299,46 @@ fn a_push_says_how_long_this_clone_has_gone_without_reading_a_hosted_result() {
          signal this arm exists to stop the rare one turning into — and after a few rounds of it, \
          the round that does owe something reads the same as the ones that did not: {told}",
     );
+
+    // ── AND A GAP OF ZERO IS NOT A RECEIPT WHEN A RUN WAS LOOKED AT BEFORE IT SPOKE ──────────
+    //
+    // ⛔⛔⛔⛔⛔ REGISTER ITEM 779, and it is arm (5)'s own shape one unit over. The mark counts
+    // COMMITS; what has to be read is RUNS. **Measured 2026-08-30**: three pushes were outstanding
+    // at once — the oldest run still `in_progress` an hour and three quarters after it was created,
+    // the two behind it `queued`, and nothing in `.github/workflows` serialising them. A reader at
+    // the top of a round therefore meets `queued` on an ORDINARY round, looks honestly, and stamps
+    // it — and the next `--seen` buries that run for good, because the mark could not tell *I read
+    // a verdict* from *I looked and there was none*.
+    //
+    // ⚠⚠ The state is staged in the marker FILE rather than through `--seen`, deliberately: this
+    // gate is about what a PUSH says, and driving the recorder here would make it a test of two
+    // things at once. The recorder's own arms are `hosted-read.sh --selftest`, which this suite
+    // runs elsewhere.
+    std::fs::write(
+        std::path::Path::new(marker.trim()).join("sprag-hosted-read"),
+        format!("{head}\nowed {base}\n"),
+    )
+    .expect("record a look that found no verdict");
+    let run = push.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        told.contains("0 round(s) unread"),
+        "⚠⚠⚠ THE PREMISE OF THE ARM BELOW: the gap has to be SETTLED for this to be about the \
+         other debt at all — otherwise the sentence is carried by the gap and this proves nothing \
+         about a run that never spoke: {told}",
+    );
+    assert!(
+        told.contains(&base[..7]),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 779: a commit whose run had not spoken when somebody looked at it \
+         is buried by the next read, and the push says nothing. That is register item 776's own \
+         finding one unit over — *a round that never looked and a round that looked and saw green \
+         render identically* — except here the round DID look, at a run that had not answered: \
+         {told}",
+    );
+    assert!(
+        run.status.success(),
+        "⚠⚠ AND IT STILL MUST NOT REFUSE. Item 776 settled that the ceiling is not zero here, and \
+         a second kind of debt does not reopen that decision: {told}",
+    );
     push.done();
 }
