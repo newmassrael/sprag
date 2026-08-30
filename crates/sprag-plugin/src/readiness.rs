@@ -3444,8 +3444,20 @@ mod tests {
     /// `mark_at` and `apart` comes out near the full distance. A parked wait is consulted at its
     /// deadline and not before, so its mark lands at the ENDING and `apart` is microseconds
     /// (MEASURED: the told arm reads 17 µs, and a mutant whose `Settling::Unknown` names a deadline
-    /// five seconds out reads 12.8 µs). **A host 60 times slower than this one still passes**,
-    /// which is the property register item 666 asked for and the counting form could not give.
+    /// five seconds out reads 12.8 µs).
+    ///
+    /// # ⭐⭐⭐ How much room that leaves, MEASURED rather than estimated
+    ///
+    /// A first draft of this doc guessed the gate would fire on speed alone at ~600 ms a look. **It
+    /// was staged and the guess was wrong — it passes there comfortably.** With a look costing
+    /// 600 ms (sixty times this machine, ten times the macOS runner) the whole wait spends **three
+    /// looks**, its mark lands at 600 ms and it ends at 1.81 s: `apart` is **1.21 s**.
+    ///
+    /// ⚠⚠⚠⚠ **And the parked arm spends three looks too** — the same number — yet reads 17 µs
+    /// apart. **That pair is the whole case for not counting**: no rule phrased over look COUNTS
+    /// can separate those two readings, and this one separates them by four orders of magnitude.
+    /// The gate can only be turned over by a look interval as long as the WINDOW itself, which is
+    /// not a slow host but a parked wait — the thing it is here to find.
     fn polling_grew(marked_at: Option<Duration>, took: Duration, marks_apart: Duration) -> Grew {
         /// How much of the distance between the two marks the wait must really have put between
         /// them. ⚠⚠ Half, and it is what buys the headroom: the mark can only slip by one poll
@@ -3569,9 +3581,7 @@ mod tests {
         //
         // This one does not read the counts at all. The same slowed wait is still being consulted
         // 1.2 s after its mark, so it is still POLLING, which is the only thing the product
-        // promises. ⚠ The mark can slip by at most one poll interval, so on a 10 ms interval a
-        // runner would have to take 600 ms PER LOOK before this could fire on speed alone — sixty
-        // times slower than this machine and ten times slower than the macOS reading above.
+        // promises.
         assert!(
             !polling_grew_by_rate(
                 40,
@@ -3598,6 +3608,39 @@ mod tests {
             },
             "⛔ a host that halves its own rate mid-wait is still a host being polled, and THIS \
              rule says so",
+        );
+
+        // ── ⭐⭐⭐⭐⭐ THE PAIR THAT SETTLES IT: SAME LOOK COUNT, OPPOSITE VERDICTS ──
+        //
+        // Both readings below cost THREE looks. One is a wait on a runner staged at 600 ms a look
+        // — sixty times this machine, ten times the macOS one — and the other is the parked arm.
+        // **No rule phrased over look counts can separate them.** This one separates them by four
+        // orders of magnitude, because what it reads is when the predicate was last consulted.
+        // MEASURED: `crawling (600ms a look): Some((0, 600.172599ms)), 3 look(s) over 1.81061695s`
+        // against `told: Some((2, 1.608935776s)), 3 look(s) over 1.608950116s`.
+        assert_eq!(
+            polling_grew(
+                Some(Duration::from_nanos(600_172_599)),
+                Duration::from_nanos(1_810_616_950),
+                APART,
+            ),
+            Grew::Polled {
+                apart: Duration::from_nanos(1_210_444_351)
+            },
+            "a runner ten times slower than macOS spends three looks and is still POLLING",
+        );
+        assert_eq!(
+            polling_grew(
+                Some(Duration::from_nanos(1_608_935_776)),
+                Duration::from_nanos(1_608_950_116),
+                APART,
+            ),
+            Grew::Parked {
+                apart: Duration::from_nanos(14_340),
+                floor: Duration::from_millis(600),
+            },
+            "⛔ and the parked arm spends the SAME three looks and is not — which is why this rule \
+             does not count them",
         );
 
         // ── ⛔⛔⛔ WHERE THE HALF ACTUALLY IS — the boundary, so the share is a number something
@@ -3711,7 +3754,12 @@ mod tests {
         /// Wait out the same peer over a surface that either can or cannot say WHEN, reading the
         /// cost at `mark_at` and at the end — **one wait, so the runner's speed is the same for
         /// both readings**.
-        fn waited_out(publishes: bool, after: Duration, mark_at: Duration) -> Marked {
+        fn waited_out(
+            publishes: bool,
+            after: Duration,
+            mark_at: Duration,
+            look_cost: Duration,
+        ) -> Marked {
             let (access, pane) = if publishes {
                 crate::testing::peer_blocked_unreadably_settling(after)
             } else {
@@ -3726,6 +3774,11 @@ mod tests {
             let began = Instant::now();
             let mut mark: Option<(u64, Duration)> = None;
             let ended = park_until(&run, &counted, pane, PATIENCE, || {
+                // ⚠⚠ THE RUNNER'S OWN SPEED, PUT ON THE STAGE. A look on a loaded macOS runner
+                // took ~59 ms against ~10 ms here, and that difference is what turned the counting
+                // form over. Staged rather than hoped for, so the property is a case the suite
+                // RUNS instead of one CI meets.
+                std::thread::sleep(look_cost);
                 let so_far = began.elapsed();
                 // ⚠ TAKEN BEFORE THIS PASS'S OWN LOOK, so the mark is what the wait had already
                 // spent rather than what it is about to.
@@ -3745,16 +3798,30 @@ mod tests {
             }
         }
 
-        let blind = waited_out(false, LONG, SHORT);
-        let told = waited_out(true, LONG, SHORT);
+        let blind = waited_out(false, LONG, SHORT, Duration::ZERO);
+        let told = waited_out(true, LONG, SHORT, Duration::ZERO);
+        // ⛔⛔⛔⛔⛔ AND THE SAME ARM OVER A RUNNER SIXTY TIMES SLOWER THAN THIS ONE — register
+        // item 666's done-when, which asks for the exclusion to be BUILDABLE here rather than
+        // argued. A look costs ~10 ms on this machine and ~59 ms on the macOS runner that turned
+        // the old rule over; 600 ms is ten times THAT.
+        let crawling = waited_out(false, LONG, SHORT, Duration::from_millis(600));
         // ⚠⚠⚠ PRINTED, because register item 666 exists because a round reasoned from counts it
         // had not read — and the ELAPSED is what tells a wait that paid for its own window apart
         // from one whose ending was late.
         println!(
             "\n== what one settling wait costs, at two marks ==\n  unknown: {:?} at the \
              {SHORT:?} mark, {} look(s) over {:?}\n  told:    {:?} at the {SHORT:?} mark, {} \
-             look(s) over {:?}\n  the claim is the SHAPE of each row, never the numbers in it\n",
-            blind.mark, blind.looks, blind.took, told.mark, told.looks, told.took,
+             look(s) over {:?}\n  crawling (600ms a look): {:?} at the {SHORT:?} mark, {} look(s) \
+             over {:?}\n  the claim is the SHAPE of each row, never the numbers in it\n",
+            blind.mark,
+            blind.looks,
+            blind.took,
+            told.mark,
+            told.looks,
+            told.took,
+            crawling.mark,
+            crawling.looks,
+            crawling.took,
         );
 
         assert_eq!(
@@ -3801,6 +3868,28 @@ mod tests {
             blind.took,
             blind.mark,
         );
+        // ⚠⚠⚠⚠ THE STAGED SLOW RUNNER, and it is what says this rule cannot be turned over by the
+        // host. Its whole wait cost a handful of looks — FEWER than a fast host spends before the
+        // mark — and it still reads as polling, because what is read is WHETHER the predicate was
+        // consulted late in the window and not how often.
+        let crawled = polling_grew(crawling.mark.map(|(_, at)| at), crawling.took, LONG - SHORT);
+        assert!(
+            matches!(crawled, Grew::Polled { .. }),
+            "⛔⛔⛔⛔⛔ A RUNNER TEN TIMES SLOWER THAN THE ONE THAT TURNED THE OLD RULE OVER MUST \
+             STILL READ AS POLLING. It answered {crawled:?} over a wait of {:?} whose mark read \
+             {:?} and which cost {} look(s) in total. ⚠ Register item 666's done-when asks for \
+             this exclusion to be BUILT here rather than argued, and a rule that this reddens is a \
+             rule the host can turn over",
+            crawling.took,
+            crawling.mark,
+            crawling.looks,
+        );
+        assert_eq!(
+            crawling.ended,
+            Waited::Ready,
+            "⚠ and the slow arm must still END, or it is measuring a hang",
+        );
+
         assert!(
             blind.looks > told.looks,
             "⚠⚠⚠ AND IT STILL COSTS MORE THAN THE ARM THAT IS TOLD WHEN — {} against {} over the \
