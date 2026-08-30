@@ -1340,5 +1340,55 @@ fn a_push_says_how_long_this_clone_has_gone_without_reading_a_hosted_result() {
         "⚠⚠ AND IT STILL MUST NOT REFUSE. Item 776 settled that the ceiling is not zero here, and \
          a second kind of debt does not reopen that decision: {told}",
     );
+
+    // ── AND A GAP OF ZERO IS NOT A RECEIPT WHEN THE MARK STEPPED OVER A COMMIT ───────────────
+    //
+    // ⛔⛔⛔⛔⛔ REGISTER ITEM 781, and it is this item's own finding a THIRD time. Arm (5) held
+    // that *nobody looked* and *somebody looked and saw green* must not render alike; item 779
+    // held that *a verdict was read* and *a run had not spoken* must not either. What was left is
+    // that **a commit the mark stepped over renders like one that was read** — because
+    // `--seen <sha> settled` covers everything beneath it by construction, and the act that moved
+    // the mark looked at exactly one run.
+    //
+    // ⚠⚠⚠ MEASURED ON THIS REPOSITORY'S OWN MARKER, 2026-08-30~31: `7b71077`'s macOS job was RED
+    // — a pty-exhaustion refusal and a readiness assertion — the mark advanced past it to
+    // `69a46db`, the commits in between were green so the DISTANCE was zero, and the push said
+    // `0 round(s) unread`. A person following a written rule found that red; nothing on the screen
+    // did, which is the same sentence this whole item was opened over.
+    //
+    // ⚠⚠ Staged in the marker FILE for the same reason the arm above is: this gate is about what a
+    // PUSH says. The recorder's own arms — that a jump is enumerated at all, that reading each one
+    // clears it, that a first read files no history — are `hosted-read.sh --selftest`.
+    std::fs::write(
+        std::path::Path::new(marker.trim()).join("sprag-hosted-read"),
+        format!("{head}\nskipped {base}\n"),
+    )
+    .expect("record a commit the mark stepped over");
+    let run = push.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        told.contains("0 round(s) unread"),
+        "⚠⚠⚠ THE PREMISE OF THE ARM BELOW: the gap has to be SETTLED for this to be about the \
+         stepped-over commit at all — otherwise the sentence is carried by the distance and this \
+         proves nothing about what the mark went past: {told}",
+    );
+    assert!(
+        told.contains("STEPPED OVER"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 781: the mark advanced past a commit whose run nobody has ever \
+         looked at, and the push says the clone is up to date. That is exactly the screen that let \
+         `7b71077`'s red through — the commits around it were green, so the distance was zero and \
+         the debt had nowhere to appear: {told}",
+    );
+    assert!(
+        told.contains(&base[..7]),
+        "⛔⛔⛔ REGISTER ITEM 781: the report says something was stepped over and does not say \
+         WHICH commit, so nobody can go and read that run — and a debt with no address is one that \
+         cannot be paid off: {told}",
+    );
+    assert!(
+        run.status.success(),
+        "⚠⚠ AND IT STILL MUST NOT REFUSE. Item 776 settled that the ceiling is not zero here; a \
+         third kind of debt does not reopen that decision either: {told}",
+    );
     push.done();
 }

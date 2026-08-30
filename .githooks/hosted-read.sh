@@ -91,6 +91,30 @@ and two days of unread red"
 HOSTED_READ_UNSETTLED_COST="a run that had not spoken when it was looked at is \
 not a run that was read, and the next --seen would bury it"
 
+# ⛔⛔⛔⛔⛔ WHAT A COMMIT THE MARK JUMPED OVER COSTS — register item 781, and a
+# THIRD sentence for the same reason the second one exists: the remedy differs
+# again. An open gap is *nobody looked*; an unsettled mark is *somebody looked
+# and there was nothing there*; this is *a verdict was there, it was never
+# looked at, and the mark went past it anyway*.
+#
+# ⚠⚠⚠⚠⚠ THE UNIT IS WRONG ONE MORE TIME, and that is the whole of this item. Item
+# 779 separated COMMITS from RUNS. What is left is that a watermark is a LINE and
+# what has to be settled is a SET: `--seen <sha> settled` covers everything under
+# it by construction, so a commit between the old mark and the new one is
+# declared read by an act that never looked at it. **Any design that moves a line
+# has this hole** — so the line is kept for the distance it measures, and the
+# commits it steps over are recorded one by one.
+#
+# ⚠ MEASURED, on this repository's own marker: `7b71077`'s macOS job was RED (a
+# pty-exhaustion refusal and a plugin readiness assertion), the mark advanced to
+# `69a46db`, the commits in between were `success` so the distance was zero — and
+# the report read `0 round(s) unread` with the red nowhere in it. It was found by
+# a person following a rule, which is exactly the thing this file exists to stop
+# being the only mechanism.
+HOSTED_READ_SKIPPED_COST="a verdict that was there and was never looked at is \
+the one this mark used to step over in silence -- 7b71077's macOS job was red \
+while the gap read 0"
+
 # RECORD what was found when the hosted result for `$1` (default HEAD) was
 # looked at: `$2` is `settled` (a verdict was there and was read) or `unsettled`
 # (there was none yet).
@@ -115,7 +139,7 @@ not a run that was read, and the next --seen would bury it"
 # distance the gap measures has not changed. It is remembered separately, and
 # `hosted_read_gap` keeps naming it until that commit is marked `settled`.
 hosted_read_seen() {
-    local sha verdict marker kept mark
+    local sha verdict marker kept mark was passed skipped one acc
     sha="$(git rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null)" || {
         echo "hosted-read: '${1:-HEAD}' is not a commit in this tree" >&2
         return 1
@@ -141,6 +165,7 @@ hosted_read_seen() {
     # absent: a clone where nothing has ever been READ must go on saying so
     # rather than acquiring a mark from a look that read nothing.
     mark="$(hosted_read_watermark)"
+    was="$mark"
     # ⛔⛔⛔⛔⛔ **THE MARK NEVER MOVES BACKWARD** — register item 779, measured on this repository's
     # own marker the round after it was built. Two runs came back at once and were settled oldest
     # LAST, so `--seen <older> settled` put the mark behind a commit that had already been read and
@@ -153,10 +178,27 @@ hosted_read_seen() {
     # or a rebase would strand the reading for ever with no way back to zero; a sha at or behind
     # the mark leaves it alone — the read still counts, and `kept` below still clears what it owed;
     # anything else is forward and moves it.
+    passed=""
     if [ "$verdict" = settled ]; then
         if [ -z "$mark" ] \
            || ! git merge-base --is-ancestor "$mark" HEAD 2>/dev/null \
            || ! git merge-base --is-ancestor "$sha" "$mark" 2>/dev/null; then
+            # ⛔⛔⛔⛔⛔ EVERY COMMIT THE MARK STEPS OVER IS NAMED — register item
+            # 781. A line that advances declares everything beneath it read, and
+            # the act that advanced it looked at exactly ONE run. So the jump is
+            # enumerated here, at the only moment the two endpoints are both
+            # known, and each commit in between becomes its own debt.
+            #
+            # ⚠ ONLY FOR AN ORDINARY FORWARD MOVE. A clone with no mark is
+            # starting to track, not stepping over its own history; a mark this
+            # branch no longer contains was rebased away, and no commit can be
+            # attributed across that. Both take the mark and record nothing —
+            # which is a CLASSIFIED silence, not a default.
+            if [ -n "$was" ] \
+               && git merge-base --is-ancestor "$was" "$sha" 2>/dev/null; then
+                passed="$(git rev-list "${was}..${sha}" 2>/dev/null \
+                          | command grep -v "^${sha}$" || true)"
+            fi
             mark="$sha"
         fi
     fi
@@ -166,9 +208,29 @@ hosted_read_seen() {
     if [ "$verdict" = unsettled ]; then
         kept="$(printf '%s\n%s\n' "$kept" "$sha" | command grep -v '^$' || true)"
     fi
+    # Every commit still stepped over, plus the ones this move just stepped over.
+    #
+    # ⚠ A commit that was LOOKED AT is not one nobody looked at, so `kept` wins:
+    # the two debts have different remedies and a commit carrying both would be
+    # reported twice for one absence. And the one being recorded now leaves the
+    # list whichever word it got — this look is the current word about it.
+    skipped="$(hosted_read_skipped | command grep -v "^${sha}$" || true)"
+    acc=""
+    while read -r one; do
+        [ -n "$one" ] || continue
+        case "$acc" in *"$one"*) continue ;; esac
+        printf '%s\n' "$kept" | command grep -qx "$one" && continue
+        acc="${acc}${one}
+"
+    done <<SEEN
+$skipped
+$passed
+SEEN
+    skipped="$acc"
     {
         printf '%s\n' "$mark"
         printf '%s\n' "$kept" | command sed '/^$/d;s/^/owed /'
+        printf '%s\n' "$skipped" | command sed '/^$/d;s/^/skipped /'
     } > "$marker"
     if [ "$verdict" = settled ]; then
         echo "hosted-read: recorded that the hosted result for ${sha:0:7} was read"
@@ -205,6 +267,20 @@ hosted_read_owed() {
     done
 }
 
+# Every commit THE MARK STEPPED OVER whose run nobody ever looked at, one sha per
+# line — register item 781, and the same ancestry prune `hosted_read_owed` gets
+# and for the same reason: a commit this branch dropped is not a debt, and a
+# count that cannot reach zero stops being acted on.
+hosted_read_skipped() {
+    local marker sha
+    marker="$(hosted_read_marker)"
+    [ -r "$marker" ] || return 0
+    command sed -n 's/^skipped //p' "$marker" | while read -r sha; do
+        [ -n "$sha" ] || continue
+        git merge-base --is-ancestor "$sha" HEAD 2>/dev/null && printf '%s\n' "$sha"
+    done
+}
+
 # THE SENTENCE. Four states, and none of them may be silent about which it is.
 #
 # ⛔ The unreadable and the unknown-commit states are NOT folded into "0", which
@@ -232,7 +308,7 @@ hosted_read_gap() {
         # the unrecorded state, plus what is owed.
         echo "hosted-read: NOBODY HAS RECORDED READING a hosted result in this" \
              "clone, so how long this has gone unread cannot be read here" \
-             "--$(hosted_read_owed_clause)"
+             "--$(hosted_read_owed_clause)$(hosted_read_skipped_clause)"
         return 0
     fi
     if ! git rev-parse --verify --quiet "${recorded}^{commit}" >/dev/null 2>&1; then
@@ -247,7 +323,7 @@ hosted_read_gap() {
         # somebody looked. Those two were one sentence, and that is how a run
         # that never answered got buried by the next `--seen`.
         echo "hosted-read: the hosted result was read at HEAD (${head:0:7}) --" \
-             "0 round(s) unread$(hosted_read_owed_clause)"
+             "0 round(s) unread$(hosted_read_owed_clause)$(hosted_read_skipped_clause)"
         return 0
     fi
     count="$(git rev-list --count "${recorded}..HEAD" 2>/dev/null || echo "")"
@@ -257,7 +333,7 @@ hosted_read_gap() {
         return 0
     fi
     echo "hosted-read: ${count} round(s) published since a hosted result was" \
-         "read (last read at ${recorded:0:7}) -- ${HOSTED_READ_COST}$(hosted_read_owed_clause)"
+         "read (last read at ${recorded:0:7}) -- ${HOSTED_READ_COST}$(hosted_read_owed_clause)$(hosted_read_skipped_clause)"
 }
 
 # The clause naming what was LOOKED AT and had not spoken — empty when nothing
@@ -270,6 +346,25 @@ hosted_read_owed_clause() {
     listed="$(printf '%s\n' "$owed" | command cut -c1-7 | command tr '\n' ' ')"
     printf '%s' "; and ${count} commit(s) were looked at before their runs had \
 spoken (${listed% }) -- ${HOSTED_READ_UNSETTLED_COST}"
+}
+
+# The clause naming what the mark WENT PAST — empty when nothing was stepped
+# over, for the same reason the owed clause is (register item 776, arm 5): a
+# sentence that reads the same either way is one nobody has a reason to read.
+#
+# ⚠ A THIRD CLAUSE AND NOT A THIRD NUMBER IN THE FIRST ONE. The three states are
+# *nobody looked*, *somebody looked at a run that had not spoken*, and *the mark
+# went past a run that had*. A reader handed one sentence for two of them comes
+# away thinking one act discharges both, which is the covering item 779 was
+# about — and this is its third face, not a bigger version of it.
+hosted_read_skipped_clause() {
+    local skipped count listed
+    skipped="$(hosted_read_skipped)"
+    [ -n "$skipped" ] || return 0
+    count="$(printf '%s\n' "$skipped" | command grep -c .)"
+    listed="$(printf '%s\n' "$skipped" | command cut -c1-7 | command tr '\n' ' ')"
+    printf '%s' "; and ${count} commit(s) were STEPPED OVER by the mark and \
+nobody has looked at their runs at all (${listed% }) -- ${HOSTED_READ_SKIPPED_COST}"
 }
 
 # ⚠⚠⚠⚠⚠ EVERY ARM, against throwaway repositories -- because a report reachable
@@ -424,6 +519,88 @@ hosted_read_selftest() {
             fail=$((fail + 1)) ;;
     esac
 
+    # ⛔⛔⛔⛔⛔ REGISTER ITEM 781 — THE MARK STEPS OVER COMMITS AND SAYS NOTHING.
+    #
+    # Measured on this repository's own marker: `7b71077`'s macOS job was red, the mark advanced
+    # past it to `69a46db`, the commits in between were green so the DISTANCE was zero, and the
+    # report said `0 round(s) unread`. A person following a rule found the red; nothing on the
+    # screen did. So the fixture stages exactly that: a mark two commits back, one `--seen` at the
+    # tip, and the question is what the two in the middle look like afterwards.
+    ( cd "$tmp" && printf '%s\n' "$base" > "$(hosted_read_marker)" )
+    ( cd "$tmp" && : > d && git add d && git commit -qm fourth )
+    local jumped
+    jumped="$(git -C "$tmp" rev-parse HEAD~1)"
+    ( cd "$tmp" && hosted_read_seen HEAD settled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"STEPPED OVER"*)
+            echo "  ok    a mark that jumped names the commits it jumped"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a jump over three commits was silent: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    case "$said" in
+        *"${jumped:0:7}"*)
+            echo "  ok    and it names WHICH commit was stepped over"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  the stepped-over commit ${jumped:0:7} is not named: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    case "$said" in
+        *"$HOSTED_READ_SKIPPED_COST"*)
+            echo "  ok    and it says what a stepped-over verdict cost here"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a stepped-over commit does not name the cost: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⛔ AND THE ZERO-GAP RECEIPT IS NOT A RECEIPT WHILE ONE IS OUTSTANDING — the same shape arm
+    # (5) and item 779 each needed, and the reason this is a THIRD clause rather than a number.
+    case "$said" in
+        *"0 round(s) unread"*"STEPPED OVER"*)
+            echo "  ok    a gap of zero still names what the mark went past"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  the settled gap swallowed the commits it stepped over: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⛔⛔ AND IT REACHES ZERO BY BEING READ (this workspace's rule 5: a count with no road to zero
+    # is not actionable). Reading each stepped-over run clears it, and the clause goes.
+    ( cd "$tmp" && for s in $(hosted_read_skipped); do
+          hosted_read_seen "$s" settled >/dev/null
+      done )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"STEPPED OVER"*)
+            echo "  FAIL  a stepped-over commit that has now been read is still owed: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    reading a stepped-over run clears it"
+            pass=$((pass + 1)) ;;
+    esac
+    # ⚠ A LOOK THAT FOUND NO VERDICT IS NOT A COMMIT NOBODY LOOKED AT. The two debts have
+    # different remedies, so a commit must not be filed under both — `unsettled` owns it.
+    ( cd "$tmp" && printf '%s\n' "$base" > "$(hosted_read_marker)" )
+    ( cd "$tmp" && hosted_read_seen "$jumped" unsettled >/dev/null )
+    ( cd "$tmp" && hosted_read_seen HEAD settled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_skipped )"
+    case "$said" in
+        *"$jumped"*)
+            echo "  FAIL  a commit already looked at was also filed as stepped over"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    a commit looked at before its run spoke is not also stepped over"
+            pass=$((pass + 1)) ;;
+    esac
+    # ⚠ AND A CLONE THAT IS ONLY NOW STARTING TO TRACK HAS STEPPED OVER NOTHING. Without a mark
+    # there are no two endpoints, and enumerating the whole history would file every commit ever
+    # made as a debt — a count that starts at the size of the repository is one nobody can act on.
+    ( cd "$tmp" && rm -f "$(hosted_read_marker)" )
+    ( cd "$tmp" && hosted_read_seen HEAD settled >/dev/null )
+    if [ -z "$( cd "$tmp" && hosted_read_skipped )" ]; then
+        echo "  ok    a first read files no history as stepped over"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  a clone's first read filed its own history as a debt"
+        fail=$((fail + 1))
+    fi
+
     # ⛔⛔ AND THE DEBT CAN REACH ZERO BY A ROAD THAT IS NOT A READ — an owed
     # commit this branch no longer contains. Without the prune the list could
     # never empty after a rebase, and a count that cannot reach zero is one
@@ -437,6 +614,19 @@ hosted_read_selftest() {
             echo "  FAIL  a commit this tree does not contain is owed for ever: $said"
             fail=$((fail + 1)) ;;
         *)  echo "  ok    an owed commit this branch dropped stops being owed"
+            pass=$((pass + 1)) ;;
+    esac
+    # ⛔ AND THE SAME ROAD FOR THE THIRD DEBT — register item 781. A stepped-over
+    # commit a rebase took away is not a verdict this branch will ever publish,
+    # and without the prune this list is the one that can no longer reach zero.
+    ( cd "$tmp" && printf '%s\nskipped %s\n' "$tip" \
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" > "$(hosted_read_marker)" )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"STEPPED OVER"*)
+            echo "  FAIL  a stepped-over commit this tree dropped is a debt for ever: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    a stepped-over commit this branch dropped stops being one"
             pass=$((pass + 1)) ;;
     esac
     ( cd "$tmp" && hosted_read_seen "$base" settled >/dev/null )
