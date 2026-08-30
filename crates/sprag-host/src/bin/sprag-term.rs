@@ -789,13 +789,13 @@ fn put_back_inherited_runs(
                  put back on one driver rather than two",
             );
         }
-        let Some(pane) = sprag_host::plugins::pane_named(&run.request) else {
-            tracing::warn!(
-                target: "sprag_host::runs",
-                run = run.id.0,
-                "a run was inherited with a place but its request names no pane, so nothing \
-                 could say which pane pool to put it back over",
-            );
+        // ⛔⛔⛔⛔⛔ **THE PANE THE RUN IS ON, WHICH IS NOT ALWAYS THE PANE IT WAS ASKED OVER** —
+        // register item 771. `InheritedRun::pane` prefers what the run's own driver last reported
+        // over the request's number, because a loop REPLACES its inner session as it works and
+        // every replacement is a new pane. Reading the request alone put a run that had moved back
+        // over a pane that had closed — or, as measured, refused to put it back at all.
+        let Some(pane) = run.pane() else {
+            not_resumed(runs, &run, &sprag_host::runs::NotResumed::NoPane);
             continue;
         };
         let held = host
@@ -804,11 +804,16 @@ fn put_back_inherited_runs(
             .unwrap_or_else(PoisonError::into_inner)
             .pool_holding(pane);
         let Some(home) = held else {
-            tracing::info!(
-                target: "sprag_host::runs",
-                run = run.id.0,
-                pane = pane.0,
-                "the pane a run was driving did not come back, so the run stays interrupted",
+            not_resumed(
+                runs,
+                &run,
+                &sprag_host::runs::NotResumed::PaneGone {
+                    pane: pane.0,
+                    // ⚠ WHICH OF THE TWO THIS IS, because the remedies differ — see
+                    // `plugins::not_resumed_sentence`. `drove` is `Some` exactly when the run's own
+                    // driver reported a pane, so this is that fact and not a guess from the number.
+                    reported: run.drove.is_some(),
+                },
             );
             continue;
         };
@@ -851,14 +856,66 @@ fn put_back_inherited_runs(
                 "put a run this daemon inherited back where its log said: {}",
                 run.label,
             ),
-            Err(why) => tracing::warn!(
-                target: "sprag_host::runs",
-                run = run.id.0,
-                pane = pane.0,
-                "a run this daemon inherited stays interrupted: {why:?}",
+            // ⛔⛔⛔⛔⛔ AND THE REFUSAL GOES TO THE ROW AS WELL AS TO THIS LOG — register item 771,
+            // the third and last way out of this loop. `put_back` refuses a plugin word this build
+            // no longer spells, a guardrail it cannot parse and a machine it will not place, and
+            // every one of those left the row saying `interrupted` and nothing else.
+            // ⚠⚠⚠⚠⚠ **`Display` AND NOT `Debug`, BECAUSE THIS ONE REACHES A PERSON.** `InvokeError`
+            // carries a `Display` written for exactly this (pinion's R1699: *"`Debug` is what eight
+            // call sites across three screens were using to put a refusal in front of somebody, and
+            // `Debug` is Rust syntax"*), and the sibling line above it — an operator's log — uses
+            // `{why:?}` legitimately, because there the variant name IS the useful half. Rendered
+            // once, here, so the row and this boot's log carry the same sentence.
+            Err(why) => not_resumed(
+                runs,
+                &run,
+                &sprag_host::runs::NotResumed::Refused(why.to_string()),
             ),
         }
     }
+}
+
+/// ⛔⛔⛔⛔⛔ **SAY, ONCE, WHY A RUN THIS BOOT MEANT TO PUT BACK IS STAYING INTERRUPTED** — register
+/// item 771, and the one exit from [`put_back_inherited_runs`]'s resume loop.
+///
+/// # ⚠⚠⚠⚠⚠ It writes to BOTH mouths, which is the whole of the item
+///
+/// The operator's log is read by whoever was watching the terminal the daemon was restarted in, and
+/// **a promotion exists so that nobody has to be**. The person who comes back to `sprag runs` is the
+/// one who has to decide whether to start the loop again — register item 744's class, and the same
+/// argument the withheld loop above already takes for its own two facts. Before this, all three
+/// exits below wrote to the log alone.
+///
+/// ⚠ One spelling for both, composed by `plugins::not_resumed_sentence` — `withheld_sentence`'s
+/// rule: two compositions of one refusal are free to drift into disagreeing about one run.
+fn not_resumed(
+    runs: &Arc<Mutex<RunRegistry>>,
+    run: &sprag_host::runs::InheritedRun,
+    why: &sprag_host::runs::NotResumed,
+) {
+    let said = sprag_host::plugins::not_resumed_sentence(why);
+    if !runs
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .not_resumed(run.id, why.clone())
+    {
+        // ⚠ THE DOOR'S REFUSAL IS SAID RATHER THAN DISCARDED — the withheld loop's rule above. It
+        // can only answer `false` if this registry no longer holds the run `inheritance()` handed
+        // over a moment ago, or holds it with a withheld reason that would contradict this one:
+        // either way the two have stopped agreeing, and the row is about to not say why it stayed.
+        tracing::warn!(
+            target: "sprag_host::runs",
+            run = run.id.0,
+            "this boot could not put a run back and could not record why against it, so the row \
+             will say `interrupted` and nothing else: {said}",
+        );
+    }
+    tracing::warn!(
+        target: "sprag_host::runs",
+        run = run.id.0,
+        label = %run.label,
+        "this boot could not put a predecessor's run back, and it stays interrupted: {said}",
+    );
 }
 
 fn spawn_durability_saver(

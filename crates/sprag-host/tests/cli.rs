@@ -4496,6 +4496,507 @@ fn a_promotion_that_changes_the_documents_ends_the_drivers_it_is_not_bringing_ba
     drop(guard);
 }
 
+/// ⛔⛔⛔⛔⛔ **A PROMOTION PUTS A LOOP THAT REPLACED ITS SESSION BACK ON THE PANE IT MOVED TO, AND
+/// SAYS SO WHEN IT CANNOT** — register item 771, and the arm the two gates above structurally
+/// cannot reach because both of them stage a CHANGED FINGERPRINT.
+///
+/// # ⛔⛔⛔⛔⛔ Item 737's gate passed on all four loops and only three came back
+///
+/// **Measured 2026-08-30 across one promotion of this machine's loop daemon**, four repositories'
+/// loops, and the split was 4/4 clean:
+///
+/// ```text
+/// run 101(sprag)  recorded pane=369  gone (2 replacements: 369 -> 389 -> 394)  -> did NOT come back
+/// run 102(pinion) recorded pane=378  present (0 replacements)                  -> came back
+/// run 104(wz)     recorded pane=390  present (0 replacements)                  -> came back
+/// run 106(sce)    recorded pane=395  present (0 replacements)                  -> came back
+/// ```
+///
+/// All four carried the SAME fingerprint (`b92e993a99bd7d46` — that promotion touched no `.scxml`),
+/// so `PersistedRun::resumable_place` handed all four over as resumable and item 737 withheld none
+/// of them. What told them apart was the PANE: a loop replaces its inner session as it works
+/// (`sprag_plugin::OuterLoop`), the log recorded the pane the run was BORN on, and that pane was
+/// gone. **In the same reading, `driving` was absent from all 111 records in that log**, because
+/// nothing wrote it — so the successor had no way to learn where the run had moved to. Re-measured
+/// the same afternoon: 113 records, still zero. ⚠ The count ages and the predicate does not —
+/// re-derive with `jq '[.runs[] | select(has("driving"))] | length'`, never by quoting a number.
+///
+/// And nothing said so. The row read `interrupted`; its `withheld` clause was empty, correctly,
+/// because nothing had been withheld; the boot log carried no line anybody found. The way this was
+/// diagnosed at all was comparing four log records by hand.
+///
+/// # ⚠⚠⚠⚠⚠ The premise, asserted inside — a foreign fingerprint would make this vacuous
+///
+/// If the staged records' `document` stopped matching this build's, every run would fall down item
+/// 737's arm, every row would carry that item's sentence, and this gate would be green about a code
+/// path it never entered. So the fingerprint is asserted EQUAL for all three records, and the pane
+/// is the only thing rewritten. The second half of the premise is asserted too: the pane each
+/// rewritten request names must be held by no pool, or *the run came back* proves nothing about
+/// where it was put back.
+///
+/// # ⚠⚠⚠ Five loops through ONE promotion, because the claim is the SPLIT
+///
+/// * **moved** — its request is rewritten to a pane nothing holds and its `driving` left as the
+///   live pane it is actually on. This is run 101 exactly: recorded address dead, real address
+///   alive. It must come BACK, and its row must name the live pane.
+/// * **lost** — both are rewritten to panes nothing holds. Nothing can put it back, and the claim
+///   is that its row NAMES THE REASON instead of saying `interrupted` alone — and names it as a
+///   pane rather than as item 737's foreign documents, which is the distinction the word covered.
+/// * **refused** — both panes fine, and an unknown guardrail key in its brief, so the put-back's
+///   OWN door refuses it. Its row must carry that door's sentence and not a `Debug` of the error.
+/// * **elsewhere** — its recorded fingerprint is moved to another build's, so item 737 withholds
+///   it while the log is READ and this item's code never runs for it. It is the ONE row that stays
+///   `interrupted` while being owed no sentence from here, which is what makes *a resumed run says
+///   none of this* a testable statement at all: `render_run`'s `running` arm prints neither
+///   clause, so a row that came back cannot fail a rubber stamp. Measured in this round — a
+///   `run_to_json` stamping a pane-gone sentence onto every reasonless row left this gate green.
+/// * **control** — untouched. Without it, a boot that resumed NOTHING would satisfy *lost stayed
+///   behind* and the moved arm's failure would be the only thing separating the two.
+#[test]
+fn a_promotion_follows_a_loop_that_replaced_its_session_and_says_when_it_cannot() {
+    /// A pane no workspace in this test holds. Panes are minted from a counter that starts at zero,
+    /// so a number this large is unreachable by construction rather than by luck.
+    const NO_SUCH_PANE: u64 = 900_001;
+    /// A second one, for the arm where the run's own report is dead too.
+    const NOR_THIS_ONE: u64 = 900_002;
+    /// A fingerprint no build of these documents has — item 737's own gates' word for *another
+    /// image wrote this*, borrowed here to stage the one row that must NOT carry this item's
+    /// sentence. Sixteen hex digits, the shape `stamp_fingerprint` emits.
+    const FOREIGN: &str = "0000000000000000";
+
+    assert_ne!(
+        FOREIGN,
+        sprag_plugin::STATECHARTS_FINGERPRINT,
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: the word this gate writes into one record must not be the \
+         one this binary's documents hash to, or the row that is supposed to fall down item 737's \
+         arm comes back like the rest and this gate keeps no control at all.",
+    );
+
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-loop-that-moved-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    // ── FIVE LOOPS THROUGH ONE PROMOTION, and the fifth is the one that keeps a control alive ──
+    let moved = loop_session(&mut conn, "moved");
+    start_loop(
+        &mut conn,
+        "moved",
+        moved,
+        "the loop whose recorded pane dies and whose reported pane lives",
+    );
+    let lost = loop_session(&mut conn, "lost");
+    start_loop(
+        &mut conn,
+        "lost",
+        lost,
+        "the loop whose panes are both gone by the time a successor looks",
+    );
+    let refused = loop_session(&mut conn, "refused");
+    start_loop(
+        &mut conn,
+        "refused",
+        refused,
+        "the loop whose panes are both fine and whose brief this build will not take",
+    );
+    // ⛔⛔⛔⛔⛔ **THE ONE ROW THAT IS `interrupted` FOR A REASON THIS ITEM DID NOT WRITE** — and
+    // without it the two "a resumed run says none of this" controls below are DEAD LINES. Measured
+    // in this round: a renderer stamping the clause onto every row that has no reason left this
+    // gate GREEN, because `render_run`'s `running` arm prints neither this clause nor item 737's —
+    // so a run that came back cannot carry either sentence however wrong the writer is. The only
+    // row that can catch a rubber stamp is one that STAYS `interrupted` and is owed no sentence
+    // from here, and item 737's withheld arm is exactly that row.
+    let elsewhere = loop_session(&mut conn, "elsewhere");
+    start_loop(
+        &mut conn,
+        "elsewhere",
+        elsewhere,
+        "the loop whose documents move, so it is withheld before this item's code is reached",
+    );
+    let control = loop_session(&mut conn, "control");
+    start_loop(
+        &mut conn,
+        "control",
+        control,
+        "the control, whose record is not touched at all",
+    );
+    assert!(
+        wait_for(Duration::from_secs(120), || resumable_runs(&state, 5)),
+        "⚠⚠ THE PREMISE FAILED: the daemon never persisted FIVE live loops each carrying a place \
+         and a request, so there is nothing for a promotion to put back and this gate would be \
+         measuring an empty log.",
+    );
+    let runs_dir = state.join("sprag");
+    assert!(
+        wait_for(Duration::from_secs(60), || std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".snapshot.json"))),
+        "⚠⚠ THE PREMISE FAILED: the daemon never wrote a workspace snapshot, so its successor \
+         would boot with no panes and NOTHING could be put back — which would make the control \
+         agree with the claim for the wrong reason",
+    );
+    drop(conn);
+
+    // THE PROMOTION: outright, so nothing writes a tidy terminal state on the way out.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+
+    // ── AND THE PANES MOVE UNDERNEATH TWO OF THEM, WITH THE DOCUMENTS LEFT ALONE ─────────────
+    let log_file = std::fs::read_dir(&runs_dir)
+        .expect("the state directory exists")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(".runs.json"))
+        })
+        .expect("the daemon wrote a run log");
+    let mut log = sprag_host::load_runs(&log_file).expect("and it decodes");
+    let mut staged = 0;
+    for run in &mut log.runs {
+        // ⚠⚠⚠⚠⚠ **THE PREMISE, ON EVERY RECORD AS PERSISTED AND NOT ONLY THE ONES REWRITTEN.** A
+        // record whose fingerprint had moved would be withheld by item 737 before this item's code
+        // was ever reached, and the whole gate would go green on an arm it never entered. It is
+        // read here, BEFORE the `elsewhere` record is deliberately moved off it below, so the one
+        // foreign fingerprint in this fixture is the one this test wrote and not one it inherited.
+        assert_eq!(
+            run.document.as_deref(),
+            Some(sprag_plugin::STATECHARTS_FINGERPRINT),
+            "⚠⚠⚠ THE PREMISE FAILED: run {} was persisted without this build's fingerprint beside \
+             its place, so it would fall down item 737's arm and this gate would measure that item \
+             a second time instead of this one.",
+            run.id,
+        );
+        // ⛔⛔⛔ **AND THE OTHER PREMISE: the log has to CARRY the pane at all.** This field is the
+        // whole repair; a log without it is the log the promotion of 2026-08-30 actually had, and
+        // a fixture built on one could stage nothing.
+        assert!(
+            run.driving.is_some(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 771: run {} was persisted with no record of which pane it was \
+             on, so a successor has only the pane its request was opened with — which is the pane \
+             a loop that replaced its session is no longer standing in. Measured on the live \
+             daemon's log the day this was filed, and again that afternoon: 111 then 113 records, \
+             zero carrying this either time.",
+            run.id,
+        );
+        let request = run
+            .request
+            .as_mut()
+            .expect("a resumable record carries the request it was asked with");
+        let asked = request[sprag_host::plugins::RUN_PANE_KEY]
+            .as_u64()
+            .expect("and that request names a pane");
+        if asked == moved || asked == lost {
+            // THE DEAD ADDRESS: what the log recorded when the run opened, now naming nothing.
+            request.insert(
+                sprag_host::plugins::RUN_PANE_KEY.to_owned(),
+                json!(NO_SUCH_PANE),
+            );
+            staged += 1;
+        }
+        if asked == lost {
+            // AND FOR THE LOST ONE, the live address dies too — so nothing anywhere can find it.
+            run.driving = Some(NOR_THIS_ONE);
+        }
+        if asked == refused {
+            // ⛔ AND THE THIRD EXIT FROM THAT LOOP: both panes are FINE and the put-back's own door
+            // says no. An unknown guardrail key is what `parse_guardrails` refuses, in a sentence
+            // of its own — which is what makes this arm able to measure whether the row carries
+            // that sentence or a `Debug` rendering of the error that holds it.
+            let Some(Value::Object(bounds)) = request.get_mut("guardrails") else {
+                panic!("the persisted request carries the guardrails the run was started with");
+            };
+            bounds.insert("max_bananas".to_owned(), json!(1));
+            staged += 1;
+        }
+        if asked == elsewhere {
+            // ⛔⛔⛔ AND THE ROW THAT KEEPS THE CONTROLS ALIVE: item 737's arm, staged the way that
+            // item's own gates stage it — the fingerprint a successor compares is the ONE
+            // observable of a document change, so rewriting it is the whole of one. This run is
+            // withheld while the log is READ, never reaches the put-back loop, and must therefore
+            // carry item 737's sentence and NOT this item's.
+            run.document = Some(FOREIGN.to_owned());
+            staged += 1;
+        }
+    }
+    assert_eq!(
+        staged, 4,
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: exactly four of the five records must be staged — two off \
+         their panes, one onto a brief this build refuses, one onto another build's documents. \
+         Staging all five leaves no control; staging fewer stages no promotion.",
+    );
+    std::fs::write(
+        &log_file,
+        serde_json::to_string(&log).expect("the run log encodes"),
+    )
+    .expect("the predecessor's log is left where its successor reads it");
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the replacement daemon never started serving",
+    );
+
+    // ⚠⚠⚠ **AND THE PANES NAMED IN THOSE REQUESTS REALLY ARE HELD BY NOBODY.** Without this the
+    // moved arm below could be green because the successor happened to mint a pane with that
+    // number, and *it came back* would say nothing about which address was used. Asked of the
+    // daemon's own pane list rather than reasoned from the counter: the successor restored these
+    // three sessions and nothing else, so their panes are every pane there is.
+    let mut back = HostConn::connect(&sock, Duration::from_secs(5)).expect("reconnect");
+    let mut held: Vec<u64> = Vec::new();
+    for session in ["moved", "lost", "refused", "elsewhere", "control"] {
+        held.extend(
+            back.call(
+                "scene/query",
+                json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+            )
+            .expect("the pane list answers")
+            .as_array()
+            .expect("a list of panes")
+            .iter()
+            .filter_map(|pane| pane["id"].as_u64()),
+        );
+    }
+    drop(back);
+    for absent in [NO_SUCH_PANE, NOR_THIS_ONE] {
+        assert!(
+            !held.contains(&absent),
+            "⚠⚠⚠ THE PREMISE FAILED: pane {absent} is held by this successor after all, so a run \
+             addressed to it could be put back at the pane its request names and this gate would \
+             not be about the pane it MOVED to. Panes: {held:?}",
+        );
+    }
+    for present in [moved, control] {
+        assert!(
+            held.contains(&present),
+            "⚠⚠⚠ THE PREMISE FAILED: pane {present} did not come back, so *this run was not put \
+             back* has an explanation that is not the one this gate is about. Panes: {held:?}",
+        );
+    }
+
+    let block_for = |listed: &str, pane: u64| -> String {
+        let heading = format!("ai_loop pane={pane}");
+        listed
+            .split("\nrun ")
+            .map(|chunk| chunk.trim_end().to_owned())
+            .find(|chunk| {
+                chunk
+                    .lines()
+                    .next()
+                    .is_some_and(|head| head.trim_end().ends_with(&heading))
+            })
+            .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
+    };
+
+    // ── THE CONTROL FIRST: something came back, so *nothing was resumed* is off the table ────
+    let control_back = wait_for(Duration::from_secs(45), || {
+        let listed = sprag(&sock, &["runs", "-t", "control"]);
+        listed.ok && !block_for(&listed.stdout, control).contains("interrupted")
+    });
+    assert!(
+        control_back,
+        "⚠⚠⚠ THE CONTROL FAILED: the loop whose record was not touched did not come back either, \
+         so this successor resumes nothing at all and every claim below would be about that \
+         instead of about a pane. Row: {:?}",
+        block_for(&sprag(&sock, &["runs", "-t", "control"]).stdout, control),
+    );
+
+    // ── CLAIM ⑴: the run that MOVED comes back, at the pane it moved to ──────────────────────
+    let moved_back = wait_for(Duration::from_secs(45), || {
+        let listed = sprag(&sock, &["runs", "-t", "moved"]);
+        listed.ok && !block_for(&listed.stdout, moved).contains("interrupted")
+    });
+    let moved_row = block_for(&sprag(&sock, &["runs", "-t", "moved"]).stdout, moved);
+    assert!(
+        moved_back,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 771: this run's own driver reported it was working in pane \
+         {moved}, and the successor looked for pane {NO_SUCH_PANE} — the one its request was \
+         opened with — found no pool holding it and left the run behind. Nothing was withheld from \
+         it: its place is spelled in THIS build's documents and the control beside it came back. A \
+         loop replaces its inner session as it works, so the pane a run was born on is not the pane \
+         it is standing in. Row: {moved_row:?}",
+    );
+    // ⚠⚠⚠⚠⚠ **AND WHICH PANE IT CAME BACK OVER IS ASSERTED BY THE PREVIOUS LINE, NOT MISSING FROM
+    // THIS GATE** — worth writing down, because the obvious extra assertion is to read
+    // `RUN_DRIVING_KEY` off the row and it is the wrong one. That key is written by a STEP, and a
+    // resumed loop's first step waits on its restored pane; reading it here would be a timing race
+    // dressed as a claim, which is register item 683's class.
+    //
+    // What makes the line above sufficient is the door: `PluginName::pane_keys` names
+    // `RUN_PANE_KEY` for `ai_loop`, so `plugin_from_request` REFUSES a request whose pane no pool
+    // holds — that is `every_form_that_names_a_pane_refuses_one_this_pool_does_not_hold`'s claim,
+    // and it is asserted there rather than assumed here. So a boot that resolved the pool from the
+    // live pane and then rebuilt the plugin from the request's dead one would have this run
+    // `interrupted` with a refusal, not `running`. **Coming back at all is only possible if BOTH
+    // halves read the pane the driver reported.**
+    // ⚠ A READING AND NOT A CONTROL, said so rather than left to look like one: this row is
+    // `running`, and `render_run`'s `running` arm prints no such clause at all — so no writer of it
+    // could make this line fail. The control that CAN fail is the `elsewhere` row at the end.
+    assert!(
+        !moved_row.contains("no pane pool here holds"),
+        "⛔⛔⛔ REGISTER ITEM 771: the run is running and its row still carries the sentence that \
+         says nothing will pick it up. Row: {moved_row:?}",
+    );
+
+    // ── CLAIM ⑵: the run that is really LOST says WHY, by name ───────────────────────────────
+    //
+    // ⚠⚠ A BOUNDED WAIT AND NOT A SINGLE READ, because a boot writes this while it is still
+    // starting: reading once could catch the row before the put-back loop reached it, and a red
+    // that survives the bound is still a red.
+    let lost_said = wait_for(Duration::from_secs(45), || {
+        let listed = sprag(&sock, &["runs", "-t", "lost"]);
+        listed.ok && block_for(&listed.stdout, lost).contains(&NOR_THIS_ONE.to_string())
+    });
+    let lost_row = block_for(&sprag(&sock, &["runs", "-t", "lost"]).stdout, lost);
+    assert!(
+        lost_row.contains("interrupted"),
+        "⚠⚠ THE PREMISE FAILED: the run whose panes are both gone is not reported as interrupted, \
+         so what follows would be about a row nobody is looking at: {lost_row:?}",
+    );
+    assert!(
+        lost_said,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 771: this run could not be put back because pane \
+         {NOR_THIS_ONE} — the pane its own driver last reported — is held by nobody, and the row \
+         says `interrupted` and nothing else. That is the same word it says about a run that is \
+         waiting to be picked up, and the control on this very listing came back. The person who \
+         has to decide whether to start the loop again learns nothing from this row. Row: \
+         {lost_row:?}",
+    );
+    assert!(
+        lost_row.contains("Start it again"),
+        "⛔⛔⛔ REGISTER ITEM 771: the row names the pane and not the DECISION. A person shown a \
+         number has been given evidence, not told what happened to their loop — and the thing they \
+         must not go on believing is that some daemon will pick it up. Row: {lost_row:?}",
+    );
+    // ⚠⚠ AND IT SAYS WHERE THAT NUMBER CAME FROM. This run's OWN DRIVER reported that pane, which
+    // is a different fact from *the pane it was opened over is gone* — the second is also what a
+    // run that never took a step looks like, and what every record in a log older than
+    // `PersistedRun::driving` looks like. A person told the second about the first goes looking for
+    // a loop that never started. `a_missing_pane_and_a_missing_report_are_not_one_sentence` holds
+    // the other arm, which this fixture structurally cannot reach.
+    assert!(
+        lost_row.contains("its own driver last reported"),
+        "⛔⛔⛔ REGISTER ITEM 771: the row says a pane is missing without saying that the run \
+         itself is what named it, so *this loop moved and the pane it moved to is gone* reads \
+         exactly like *this loop never moved at all*. Row: {lost_row:?}",
+    );
+    // ⚠⚠⚠⚠ AND IT IS NOT ITEM 737's SENTENCE WEARING A SECOND NAME. The two answer the same
+    // question — *why is this row still `interrupted`?* — from opposite sides of the log's door,
+    // and a reader told *the documents moved* about a run whose documents did not move would go
+    // and diff two `.scxml` trees that are identical.
+    assert!(
+        !lost_row.contains("documents this build does not have"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 771: the row explains a missing PANE with item 737's foreign-\
+         documents sentence. Nothing was withheld from this run — its fingerprint is this build's, \
+         which the fixture asserts on every record — so that clause sends a person to compare two \
+         document trees that agree. Row: {lost_row:?}",
+    );
+
+    // ── CLAIM ⑵, SECOND ARM: the put-back's OWN refusal reaches the row, as a sentence ───────
+    //
+    // ⚠⚠⚠⚠⚠ **AND NOT AS `Debug`, WHICH IS THE HALF THAT NEEDED A GATE.** `InvokeError` carries a
+    // `Display` written for exactly this — pinion's R1699 measured *eight call sites across three
+    // screens* putting `Rejected(RefusalReason("…"))` in front of a person — and this row is a
+    // person's mouth. The negative assertion is the load-bearing one: a `{why:?}` here still
+    // CONTAINS the sentence, so an assertion that only looked for the words would be green on the
+    // rendering this exists to keep out.
+    let refused_said = wait_for(Duration::from_secs(45), || {
+        let listed = sprag(&sock, &["runs", "-t", "refused"]);
+        listed.ok && block_for(&listed.stdout, refused).contains("is not a guardrail")
+    });
+    let refused_row = block_for(&sprag(&sock, &["runs", "-t", "refused"]).stdout, refused);
+    assert!(
+        refused_said,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 771: this run's panes both came back and the put-back's own door \
+         refused its brief, and the row says `interrupted` with nothing beside it. Item 737's \
+         clause cannot reach this — nothing was withheld — so the person who has to decide whether \
+         to start the loop again is told a word that also means *waiting to be picked up*. Row: \
+         {refused_row:?}",
+    );
+    assert!(
+        !refused_row.contains("RefusalReason"),
+        "⛔⛔⛔⛔ REGISTER ITEM 771 / pinion R1699: the row hands a person Rust syntax. \
+         `InvokeError` has a `Display` for this and the boot rendered it with `Debug` instead — \
+         the same defect R1699 measured at eight call sites, arriving at a mouth this repository \
+         built on purpose. Row: {refused_row:?}",
+    );
+
+    // ── AND THE ROW THAT IS `interrupted` FOR SOMEBODY ELSE'S REASON SAYS NONE OF IT ─────────
+    //
+    // ⛔⛔⛔⛔⛔ **THIS IS THE CONTROL THAT CAN ACTUALLY FAIL, AND FINDING THAT OUT COST A
+    // MUTATION.** The obvious control is the run that came BACK — and it is a dead line:
+    // `render_run`'s `running` arm prints neither this clause nor item 737's, so a resumed row
+    // cannot carry either sentence however unconditionally the writer stamps it. Measured in this
+    // round: a `run_to_json` that stamped a pane-gone sentence onto every row with no reason left
+    // the whole gate GREEN.
+    //
+    // A withheld run is the row that catches it. It STAYS `interrupted`, so it renders through the
+    // same arm as the two claims above; item 737 owes it a sentence and this item owes it none;
+    // and the exclusion is the one `RunRegistry::not_resumed` asserts structurally by refusing a
+    // record that already carries a withheld reason. So this reads BOTH ways: the sentence it is
+    // owed is there, and the sentence it is not owed is absent.
+    let elsewhere_row = block_for(
+        &sprag(&sock, &["runs", "-t", "elsewhere"]).stdout,
+        elsewhere,
+    );
+    assert!(
+        elsewhere_row.contains("interrupted") && elsewhere_row.contains(FOREIGN),
+        "⚠⚠⚠ THE CONTROL'S OWN PREMISE FAILED: the run whose documents were moved is not reported \
+         as interrupted with item 737's comparison beside it, so it did not go down that item's \
+         arm and what follows would be a control over nothing. Row: {elsewhere_row:?}",
+    );
+    // ⚠⚠⚠⚠⚠ **ONE PROBE PER ARM OF `not_resumed_sentence`, AND NOT THE WORDS THE TWO ITEMS
+    // SHARE.** Staging this row is what proved the obvious probe wrong: item 737's sentence ALSO
+    // ends *Start it again*, deliberately — both items exist to replace a bare `interrupted` with
+    // a DECISION — so a control looking for that phrase calls a row a rubber stamp for doing its
+    // job. What separates the two is the CAUSE each names, so these are the four causes this item
+    // can name and no other clause on this row can.
+    for stamped in [
+        "no pane pool here holds",
+        "nothing ever reported a newer one",
+        "names no pane at all",
+        "its own door refused",
+    ] {
+        assert!(
+            !elsewhere_row.contains(stamped),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 771: a run WITHHELD because its documents moved is being told \
+             `{stamped}`. Both clauses answer *why is this row still `interrupted`?* and only item \
+             737's was ever asked of this run — a reader given this one goes looking for a pane, \
+             when what happened is that no successor is coming at all. Row: {elsewhere_row:?}",
+        );
+    }
+    // ⚠ AND THE RESUMED ROW, kept as the weaker statement it is: it says none of this either, but
+    // it is `running`, so no writer of this clause could make it fail. It stands as a reading of
+    // the row a person actually gets back, not as a control.
+    let kept = block_for(&sprag(&sock, &["runs", "-t", "control"]).stdout, control);
+    assert!(
+        !kept.contains("no pane pool here holds"),
+        "⚠⚠⚠ a run that WAS put back carries the sentence that says nothing will pick it up. Row: \
+         {kept:?}",
+    );
+    drop(guard);
+}
+
 /// ⛔⛔⛔⛔⛔ **A DAEMON WHOSE BINARY IS REPLACED UNDER IT CAN STILL START A DRIVER** — register item
 /// 763, and the arm no gate in this suite could reach because none of them had a binary of its own
 /// to overwrite.

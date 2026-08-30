@@ -271,6 +271,33 @@ pub const RUN_WITHHELD_KEY: &str = "withheld";
 /// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_STOOD_DOWN_KEY`]'s argument unchanged: an added
 /// answer key withdraws no address and widens no value space a peer decodes whole.
 pub const RUN_LEFTOVER_KEY: &str = "leftover";
+/// ⛔⛔⛔⛔⛔ **WHY A BOOT THAT WAS WILLING TO PUT THIS RUN BACK COULD NOT** — register item 771. A
+/// SENTENCE on the row (composed by [`not_resumed_sentence`]), and ABSENT for every run a boot did
+/// not try to resume or did resume.
+///
+/// # ⛔⛔⛔⛔⛔ [`RUN_WITHHELD_KEY`] answers a question asked one step earlier, and only that one
+///
+/// That key is decided while READING a predecessor's log: are these words this build's? Item 737
+/// made its answer visible, and it is the common case. It is not the only one. A run whose place,
+/// request and fingerprint all crossed intact is handed to the boot as resumable, and the boot then
+/// has to find a pane, build a plugin and place a machine — every one of which can refuse. Those
+/// refusals reached the operator's log and nothing else, so the row said `interrupted`, exactly
+/// what it says for a run still waiting to be picked up.
+///
+/// **Measured 2026-08-30, one promotion, four loops.** All four carried this build's fingerprint,
+/// so nothing was withheld from any of them; three came back. The fourth had replaced its inner
+/// session twice while it worked (369 → 389 → 394), its log recorded the pane it was BORN on, and
+/// that pane was gone. Its row said `interrupted` and carried no clause at all — the withheld one
+/// was empty because nothing had been withheld — and the only way anybody found out was reading
+/// four log records side by side.
+///
+/// ⚠⚠ **IT IS EXCLUSIVE WITH [`RUN_WITHHELD_KEY`] BY CONSTRUCTION** rather than by a reader's
+/// discipline: `crate::runs::RunRegistry::not_resumed` refuses a record that already carries a
+/// withheld reason, so no row can ever say both *the documents moved* and *the pane was gone*.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_STOOD_DOWN_KEY`]'s argument unchanged: an added
+/// answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_NOT_RESUMED_KEY: &str = "not_resumed";
 /// The key a driver's [`REPORT_PROGRESS_ACTION`] carries its counters under.
 ///
 /// ⚠⚠ **THE WHOLE OBJECT UNDER ONE KEY, not its fields spread across the request.** What is inside
@@ -2369,9 +2396,15 @@ impl PluginsExternal {
     /// a row that stopped being resumable between [`crate::runs::RunRegistry::inheritance`] and
     /// here.
     pub fn put_back(&self, inherited: &crate::runs::InheritedRun) -> Result<(), InvokeError> {
-        let (mut plugin, _label) = plugin_from_request(self, &inherited.request)?;
-        let guardrails =
-            parse_guardrails(&inherited.request, plugin.cost_unit(), plugin.own_bounds())?;
+        // ⛔⛔⛔⛔⛔ **THE REQUEST WITH THE RUN'S CURRENT PANE IN IT** — register item 771, and read
+        // ONCE so every line below is about one pane. `plugin_from_request` takes the pane out of
+        // this map and validates it exists; the boot resolved a pool from
+        // `crate::runs::InheritedRun::pane`; and before this item those were different numbers for
+        // a loop that had replaced its inner session — so a run put back over the live pane would
+        // have been rebuilt to type into the dead one.
+        let asked = inherited.asked_here();
+        let (mut plugin, _label) = plugin_from_request(self, &asked)?;
+        let guardrails = parse_guardrails(&asked, plugin.cost_unit(), plugin.own_bounds())?;
         // ⚠⚠⚠⚠ THE SAME FOUR ANSWERS `drive_request` READS, and they are worth spelling separately
         // here rather than collapsing to *it did not work*: the person who meets one of these is
         // holding a run log and a daemon that has just decided not to bring their run back.
@@ -2422,7 +2455,12 @@ impl PluginsExternal {
                 // putting an INHERITED run back may, because these words came out of its own
                 // predecessor's log and were checked against this image's statechart fingerprint
                 // (`crate::runs::PersistedRun::resumable_place`) before they got here.
-                let mut handed = inherited.request.clone();
+                // ⚠⚠ AND THE PANE IS ALREADY IN IT — register item 771. `asked` is the same map
+                // the plugin was built and validated from twenty lines up, so the child process
+                // rebuilds the run over the pane this daemon just checked rather than over the one
+                // the request was born with. Two builds of one plugin, one answer, is
+                // `spawn_driven_run`'s own property and it is only true if both read one map.
+                let mut handed = asked.clone();
                 handed.insert(
                     RUN_PLACE_KEY.to_owned(),
                     Value::Array(
@@ -2438,8 +2476,10 @@ impl PluginsExternal {
             // ⚠ THE RESTORED RUN LEARNS ITS TREE THE SAME WAY A NEW ONE DOES — from the request it
             // is being rebuilt from, which is the only place either of them ever reads it.
             None => {
-                let tree =
-                    pane_named(&inherited.request).and_then(|pane| self.pane_start_dir(pane));
+                // ⚠ FROM THE SAME MAP THE PLUGIN CAME OUT OF — register item 771. A tree read off
+                // the pane the run was BORN over would be a directory nobody is working in the
+                // moment that pane has been replaced.
+                let tree = pane_named(&asked).and_then(|pane| self.pane_start_dir(pane));
                 self.drive_on_a_thread(inherited.id, &inherited.progress, plugin, guardrails, tree)
             }
         };
@@ -4980,6 +5020,19 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
             entry[RUN_LEFTOVER_KEY] = json!(leftover_sentence(pid));
         }
     }
+    // ⛔⛔⛔⛔⛔ AND WHY A BOOT THAT WAS WILLING TO PUT IT BACK COULD NOT — register item 771, under
+    // the clause above's state guard and for its reason: this sentence asserts that nothing is
+    // going to pick the run up, which is a claim about a run that is still `interrupted`.
+    //
+    // ⚠⚠⚠⚠ IT IS ITS OWN `if` AND NOT NESTED INSIDE THE WITHHELD ONE, which is the opposite of
+    // `RUN_LEFTOVER_KEY` one clause up and is the whole point of the pair. That key is the OTHER
+    // HALF of a withheld run's story, so nesting is what keeps it from being printed alone; this
+    // one is the story a withheld run does not have. `crate::runs::RunRegistry::not_resumed`
+    // refuses a record that carries a withheld reason, so the two can never both appear — the
+    // exclusion lives at the door that WRITES it, where a reader cannot forget it.
+    if let (Some(why), RunState::Interrupted) = (&run.not_resumed, &run.state) {
+        entry[RUN_NOT_RESUMED_KEY] = json!(not_resumed_sentence(why));
+    }
     // ⚠⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register item 540, present only once a step has said so,
     // which is `RUN_CEILING_KEY`'s presence-is-the-claim rule. ⚠ The NUMBER and not the label's
     // prose: a reader that had to parse `ai_loop pane=3` would be deriving a fact from a name.
@@ -5644,6 +5697,60 @@ pub fn leftover_sentence(pid: u32) -> String {
     )
 }
 
+/// ⛔⛔⛔⛔⛔ **WHY A BOOT COULD NOT STAND A DRIVER UP FOR A RUN ITS LOG SAID WAS RESUMABLE** —
+/// register item 771, and the sentence [`RUN_NOT_RESUMED_KEY`] carries.
+///
+/// # ⚠⚠⚠⚠⚠ One spelling, read twice — [`withheld_sentence`]'s rule, one question over
+///
+/// `put_back_inherited_runs` writes it to the operator's log beside the run id, and the row carries
+/// it to whoever opens `sprag runs` afterwards. A promotion's whole point is that those need not be
+/// the same person: **measured 2026-08-30**, the boot log of the promotion that lost a loop
+/// contained no line a person went looking for, and the fact was recovered by comparing four run
+/// records by hand.
+///
+/// # ⚠⚠⚠ Why the pane-gone arm says where the number came from
+///
+/// Because the remedy differs. *Your loop's CURRENT pane is gone* means the run really did move and
+/// the pane it moved to did not come back — start it again. *The pane it was OPENED over is gone,
+/// and nothing ever reported a newer one* is also what a run that never took a step looks like, and
+/// it is the shape a log written before `crate::runs::PersistedRun::driving` existed always has. A
+/// single sentence for both would tell the second reader a thing that was never measured.
+#[must_use]
+pub fn not_resumed_sentence(why: &crate::runs::NotResumed) -> String {
+    match why {
+        crate::runs::NotResumed::PaneGone {
+            pane,
+            reported: true,
+        } => format!(
+            "its own driver last reported it was working in pane {pane}, and no pane pool here \
+             holds that pane — a loop replaces its inner session as it goes, so the pane it was on \
+             is not the one its name was composed from. Nothing was withheld from this run: its \
+             place is spelled in this build's documents. Start it again"
+        ),
+        crate::runs::NotResumed::PaneGone {
+            pane,
+            reported: false,
+        } => format!(
+            "the pane it was opened over ({pane}) did not come back, and nothing ever reported a \
+             newer one — so this is either a run that never moved off it or one whose daemon was \
+             too old to record where it went. Nothing was withheld from this run: its place is \
+             spelled in this build's documents. Start it again"
+        ),
+        crate::runs::NotResumed::NoPane => "what it was asked with names no pane at all, so \
+             nothing here could say which pane pool to put it back over — its position crossed the \
+             log and the address it works at did not"
+            .to_owned(),
+        // ⚠ THE DOOR'S OWN WORDS, carried rather than re-authored — `Revival::not_put_back`'s rule.
+        // The refusal was composed by whatever refused (a plugin word this build no longer spells,
+        // a guardrail it cannot parse, a machine that will not be placed), and a second wording
+        // here would be free to drift from the one the operator's log already carries.
+        crate::runs::NotResumed::Refused(said) => format!(
+            "this daemon tried to put it back and its own door refused: {said}. Nothing was \
+             withheld from this run — its place is spelled in this build's documents"
+        ),
+    }
+}
+
 /// **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES**, or [`None`] for a run that put
 /// no claim to a checker — register item 601, and the sentence [`RUN_CHECKS_KEY`] carries.
 ///
@@ -5872,6 +5979,78 @@ mod tests {
     use sprag_plugin::PaneAccess;
     use sprag_terminal::CommandBuilder;
     use std::time::Instant;
+
+    /// ⛔⛔⛔⛔⛔ **FOUR WAYS A BOOT CAN FAIL TO PUT A RUN BACK, FOUR SENTENCES, AND THE TWO THAT
+    /// SHARE A SHAPE ARE THE ONES A READER MOST NEEDS SPLIT** — register item 771, at
+    /// [`not_resumed_sentence`].
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the pane arms are asserted to DIFFER rather than merely to speak
+    ///
+    /// Both say *a pane is gone*, and the remedies are not the same. *Your loop's own driver
+    /// reported it had moved to pane N, and pane N did not come back* is a loop that WAS working.
+    /// *The pane it was opened over is gone and nothing ever reported a newer one* is also exactly
+    /// what a run that never took a step looks like, and what **every record in a log older than
+    /// `crate::runs::PersistedRun::driving` looks like** — measured 2026-08-30 on the live loop
+    /// daemon: 111 records, then 113 that afternoon, zero carrying that field either time. A person
+    /// told the second about the first goes looking for a loop that never started.
+    ///
+    /// ⚠⚠ The end-to-end gate `a_promotion_follows_a_loop_that_replaced_its_session_and_says_when_
+    /// it_cannot` drives the REPORTED arm through a real promotion and can reach no other: staging
+    /// the unreported one needs a log this build cannot write. So every arm has a reader here, on
+    /// this workspace's rule that an unclassified path is RED and not a pass.
+    #[test]
+    fn a_missing_pane_and_a_missing_report_are_not_one_sentence() {
+        let reported = not_resumed_sentence(&crate::runs::NotResumed::PaneGone {
+            pane: 394,
+            reported: true,
+        });
+        let born = not_resumed_sentence(&crate::runs::NotResumed::PaneGone {
+            pane: 369,
+            reported: false,
+        });
+        assert!(
+            reported.contains("394") && born.contains("369"),
+            "⚠ THE PREMISE: each sentence has to name the pane it is about, or a reader has been \
+             told a class of thing happened and not which one. Got {reported:?} and {born:?}",
+        );
+        assert!(
+            reported.contains("its own driver last reported"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 771: a run that MOVED and lost the pane it moved to is \
+             described without saying the run itself named that pane — so the reader cannot tell \
+             it from a loop that never moved at all. Got: {reported:?}",
+        );
+        assert!(
+            born.contains("nothing ever reported a newer one"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 771: a run whose ORIGINAL pane is gone and which never \
+             reported a newer one is described as though the run had chosen that pane, which sends \
+             a person after a replacement that never happened. Got: {born:?}",
+        );
+        assert_ne!(
+            reported.replace("394", "N"),
+            born.replace("369", "N"),
+            "⛔⛔⛔ REGISTER ITEM 771: the two arms differ only in the number they interpolate, so \
+             the distinction the enum carries reaches no reader — which is the same thing as not \
+             carrying it. Got {reported:?} and {born:?}",
+        );
+
+        // ── AND THE OTHER TWO ARMS ARE NOT THE PANE ONES WEARING A NUMBER ────────────────────
+        let no_pane = not_resumed_sentence(&crate::runs::NotResumed::NoPane);
+        assert!(
+            no_pane.contains("names no pane at all"),
+            "⛔⛔⛔ REGISTER ITEM 771: a request that carried no pane KEY is reported as a pane \
+             that went missing, which sends a person to look for a pane nobody ever named. Got: \
+             {no_pane:?}",
+        );
+        let refused = not_resumed_sentence(&crate::runs::NotResumed::Refused(
+            "this build has no plugin called ai_loop".to_owned(),
+        ));
+        assert!(
+            refused.contains("this build has no plugin called ai_loop"),
+            "⛔⛔⛔ REGISTER ITEM 771: the door's own refusal is dropped and re-authored here, so \
+             the row and the operator's log are two accounts of one run that are free to disagree \
+             — `Revival::not_put_back`'s rule, one door over. Got: {refused:?}",
+        );
+    }
 
     /// ⛔⛔⛔⛔⛔ **THREE REFUSALS, THREE SENTENCES, AND ONLY ONE OF THEM IS ABOUT A `<data>`
     /// BLOCK** — register item 510, arriving at the mouth a caller actually reads.
@@ -6159,6 +6338,7 @@ mod tests {
                 output: None,
                 build: None,
                 driver: None,
+                driving: None,
                 opened_by_session: Some(RESUMED.to_owned()),
                 at: None,
                 document: None,
@@ -6416,6 +6596,7 @@ mod tests {
                 output: None,
                 build: None,
                 driver: None,
+                driving: None,
                 opened_by_session: None,
                 at: None,
                 document: None,
@@ -7322,6 +7503,7 @@ mod tests {
                     cancelled_by: None,
                     withheld: None,
                     ended_driver: None,
+                    not_resumed: None,
                 },
                 None,
                 // ⚠ NO LIVE LOOK HERE. This gate is about the PLUGIN's sentence reaching the row;
@@ -7399,6 +7581,7 @@ mod tests {
                 cancelled_by: None,
                 withheld: None,
                 ended_driver: None,
+                not_resumed: None,
             },
             None,
             None,
@@ -10911,6 +11094,7 @@ mod tests {
             cancelled_by: None,
             withheld: None,
             ended_driver: None,
+            not_resumed: None,
         };
         assert_eq!(
             run.progress.waiting, None,
@@ -13014,6 +13198,7 @@ mod tests {
                     output: None,
                     build: None,
                     driver: None,
+                    driving: None,
                     opened_by_session: None,
                     at: None,
                     document: document.map(str::to_owned),

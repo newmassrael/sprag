@@ -2792,6 +2792,19 @@ fn render_run(run: &Value) -> String {
     let withheld = run[sprag_host::plugins::RUN_WITHHELD_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!(" {said}."));
+    // ⛔⛔⛔⛔⛔ AND WHY A BOOT THAT WAS WILLING TO PUT IT BACK COULD NOT — register item 771, from
+    // the host's own renderer on the clause above's argument, and it costs an agent the same thing
+    // for a reason that clause cannot cover.
+    //
+    // ⚠⚠⚠ A SUPERVISING AGENT READS AN EMPTY `withheld` AS *nothing was withheld, so it is coming
+    // back* — which is true, and is not the same as *it came back*. A run whose fingerprint matched
+    // this build is withheld from nothing and can still be left behind at the next step, over a
+    // pane that did not return; with both clauses empty the agent waits for a resume no boot is
+    // going to attempt. **Measured 2026-08-30**: one promotion, four loops, three back and one not,
+    // and the one that stayed carried no clause at all.
+    let not_resumed = run[sprag_host::plugins::RUN_NOT_RESUMED_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!(" {said}."));
     match state["status"].as_str() {
         // The counters, for the reason the person's renderer prints them: an agent that polls a
         // long run and sees the same numbers twice has learned it is stuck, and `still running`
@@ -2845,7 +2858,7 @@ fn render_run(run: &Value) -> String {
         // under a standing order left a reader a bare word and no way to learn that what was asked
         // for had never happened.
         _ => format!(
-            "Run {id} ({label}): {}.{withheld}{order}{prompts}{verified}{canceller}\n",
+            "Run {id} ({label}): {}.{withheld}{not_resumed}{order}{prompts}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("in an unknown state"),
         ),
     }
@@ -9168,6 +9181,35 @@ mod tests {
              about whether any daemon will pick the run up — so it waits, and after a promotion \
              that changed the documents it waits for ever. Got:\n{}",
             render_run(&stopped),
+        );
+
+        // ── AND THE OTHER HALF OF THAT QUESTION — register item 771 ─────────────────────────
+        //
+        // ⛔⛔⛔ **THE CLAUSE ABOVE IS EMPTY FOR THE RUN THIS ONE IS ABOUT, AND THAT IS THE WHOLE
+        // FINDING.** `withheld` is decided while READING a predecessor's log; a run whose
+        // fingerprint matched is withheld from nothing, and the boot can still fail to stand a
+        // driver up over a pane that did not come back. A supervisor reading an empty `withheld`
+        // concludes *nothing was withheld, so it is coming back* — true, and not the same as *it
+        // came back*. **Measured 2026-08-30**: one promotion, four loops, one identical
+        // fingerprint, three back and one not, and the one that stayed carried no clause at all.
+        const PANE_GONE: &str = "its own driver last reported it was working in pane 394";
+        let mut behind = run_entry(&blocked_run(sprag_plugin::Refusal::NoConsent, 0));
+        behind["state"] = serde_json::json!({ "status": "interrupted" });
+        assert!(
+            !render_run(&behind).contains(PANE_GONE),
+            "⚠⚠⚠ THE CONTROL: an interrupted run that publishes no `{}` must say nothing about a \
+             missing pane — a mouth printing this unconditionally would tell every supervisor to \
+             give up on runs a successor is about to put back",
+            sprag_host::plugins::RUN_NOT_RESUMED_KEY,
+        );
+        behind[sprag_host::plugins::RUN_NOT_RESUMED_KEY] = Value::String(PANE_GONE.to_owned());
+        assert!(
+            render_run(&behind).contains(PANE_GONE),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 771: the daemon says WHY this run was not put back and the \
+             agent's mouth drops it, so a supervisor sees `interrupted` with an empty `{}` beside \
+             it and waits for a resume no boot is going to attempt. Got:\n{}",
+            sprag_host::plugins::RUN_WITHHELD_KEY,
+            render_run(&behind),
         );
     }
 

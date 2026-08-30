@@ -5973,6 +5973,21 @@ fn render_run(run: &Value) -> String {
     let leftover = run[sprag_host::plugins::RUN_LEFTOVER_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⛔⛔⛔⛔⛔ AND WHY A BOOT THAT WAS WILLING TO PUT IT BACK COULD NOT — register item 771, in the
+    // same place and under the same constraint as the two clauses above, and printed straight after
+    // them because all three answer one question: *why is this row still `interrupted`?*
+    //
+    // ⚠⚠⚠⚠ THE CLAUSE ABOVE COULD NOT REACH THIS RUN, WHICH IS WHY THERE ARE TWO. `withheld` is
+    // decided while READING a predecessor's log — are these words this build's? — and a run whose
+    // fingerprint matched is withheld from nothing, so that clause is empty for it. The boot then
+    // fails on the NEXT step, over a pane, and until this item that failure reached the operator's
+    // log and no reader at all. **Measured 2026-08-30**: one promotion, four loops, one identical
+    // fingerprint; three came back and the fourth — a loop that had replaced its inner session
+    // twice, so the pane its log recorded was gone — read `interrupted` with no clause beside it.
+    // The person who found out did it by comparing four log records by hand.
+    let not_resumed = run[sprag_host::plugins::RUN_NOT_RESUMED_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     // ⚠⚠⚠⚠⚠ AND WHICH PANE A PERSON SHOULD ACTUALLY WALK TO — register item 726, in the same place
     // and under the same constraint as the four clauses above.
     //
@@ -6122,7 +6137,7 @@ fn render_run(run: &Value) -> String {
         // had happened was a `kill-server`. **A fact that reaches the wire and dies at the mouth
         // somebody actually reads** is the sentence the `Reported` arm above already wrote down.
         _ => format!(
-            "{head}  {}{}{withheld}{leftover}{order}{prompts}{verified}{canceller}\n",
+            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("?"),
             render_why_it_ended(state),
         ),

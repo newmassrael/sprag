@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use sprag_plugin::{Outcome, Progress, ProgressCell};
+use sprag_terminal::PaneId;
 
 use crate::external::lock;
 
@@ -1074,6 +1075,42 @@ struct RunRecord {
     /// argument: a promotion's whole point is that the person who reads it need not be the person
     /// who ran it.
     ended_driver: Option<u32>,
+    /// ⛔⛔⛔⛔⛔ **THE PANE A PREDECESSOR'S DRIVER LAST REPORTED THIS RUN WAS ON** — register item
+    /// 771, read once by [`RunRegistry::restore`] out of [`PersistedRun::driving`] and kept for the
+    /// boot.
+    ///
+    /// [`None`] for every run this daemon started itself (a live run's pane is
+    /// `Progress::driving`, which moves) and for a restored one whose log recorded no pane.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why it is not `Progress::driving`, which is the cell it came out of
+    ///
+    /// Because that cell is a LEVEL — *something is driving that pane right now* (register item
+    /// 595) — and after a restart nothing is. `restore` says so at that field in as many words, and
+    /// putting a stale pane there would make the row assert the opposite of what item 595 exists to
+    /// make visible. This is the same number as a RECORD, held where only the boot reads it:
+    /// [`InheritedRun::pane`] is its one consumer, and no projection publishes it.
+    drove: Option<PaneId>,
+    /// ⛔⛔⛔⛔⛔ **WHY THIS BOOT DID NOT PUT AN INHERITED RUN BACK, THOUGH ITS LOG SAID IT COULD** —
+    /// register item 771, written once by `put_back_inherited_runs` through
+    /// [`RunRegistry::not_resumed`].
+    ///
+    /// [`None`] for a run this daemon started, for one that came back, and for one
+    /// [`withheld`](Self::withheld) already explains.
+    ///
+    /// # ⛔⛔⛔⛔⛔ It is the OTHER half of `withheld`, and `interrupted` covered both
+    ///
+    /// Item 737 split *waiting to be put back* from *no successor ever will, because the documents
+    /// moved*. What it could not say is the third thing, which is what a loop actually hit: the
+    /// documents were THIS build's, the log's place was resumable, item 737's gate passed — and the
+    /// boot still could not stand a driver up, because the pane the run was on is gone.
+    /// **Measured 2026-08-30 across one promotion**: four loops, one identical fingerprint, three
+    /// back and one not, and the row of the one said `interrupted` and nothing else. The only way
+    /// anybody learned why was comparing four log records by hand.
+    ///
+    /// ⚠⚠ A REASON PER RUN AND NEVER A COUNT, on [`Withheld`]'s argument: *one run stayed behind*
+    /// cannot be acted on, and the remedies differ — a pane that did not come back wants a new run,
+    /// and a request naming no pane at all is a predecessor that wrote an incomplete record.
+    not_resumed: Option<NotResumed>,
 }
 
 /// **WHAT A DAEMON SHOULD DO ABOUT A RUN WHOSE DRIVER PROCESS DIED WITHOUT AN OUTCOME** — register
@@ -1204,6 +1241,15 @@ pub struct RunSummary {
     /// nobody is still working on it either — and until item 740 the second half was decided by
     /// whichever processes a person happened to `kill` by hand first.
     pub ended_driver: Option<u32>,
+    /// ⛔⛔⛔⛔⛔ **WHY A BOOT COULD NOT PUT THIS RUN BACK, THOUGH ITS LOG SAID IT COULD** — register
+    /// item 771, and [`None`] both for a run nothing tried to resume and for one that came back.
+    ///
+    /// ⚠⚠ **IT IS EXCLUSIVE WITH [`withheld`](Self::withheld) BY CONSTRUCTION**, not by a reader's
+    /// discipline: `RunRegistry::not_resumed` refuses a record that already carries a withheld
+    /// reason. The two are the two halves of *why is this row still `interrupted`* — one decided
+    /// while reading the log, the other while acting on it — and item 737 could only ever see the
+    /// first.
+    pub not_resumed: Option<NotResumed>,
 }
 
 /// EVERYTHING A RUN BRINGS WITH IT — the argument list of [`RunRegistry::submit`], as a struct.
@@ -1291,6 +1337,71 @@ pub struct InheritedRun {
     /// finish work nobody will ever be able to read. The run log is the channel that survives a
     /// restart, which is why the run comes back through the log and the leftover process does not.
     pub driver: Option<u32>,
+    /// ⛔⛔⛔⛔⛔ **THE PANE ITS OWN DRIVER LAST SAID IT WAS ON** — register item 771,
+    /// [`PersistedRun::driving`] carried through `RunRecord::drove`, and [`None`] when nothing ever
+    /// reported one.
+    ///
+    /// ⚠⚠ **READ THROUGH [`pane`](Self::pane), NEVER DIRECTLY.** A caller that took this field on
+    /// its own would put a loop back on a pane while rebuilding its plugin from a request that
+    /// names a different one — two answers to *where does this run type*, which is the failure this
+    /// field was added to end rather than to re-create one layer down.
+    pub drove: Option<PaneId>,
+}
+
+impl InheritedRun {
+    /// ⛔⛔⛔⛔⛔ **WHERE THIS RUN ACTUALLY IS** — register item 771, and the ONE answer both the
+    /// boot and [`crate::plugins::PluginsExternal::put_back`] take.
+    ///
+    /// The live pane its driver last reported, and the pane its REQUEST names only when nothing
+    /// reported one. [`None`] when neither does.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the report wins over the request, and it is not a preference
+    ///
+    /// The request's pane is a birth certificate. `sprag_plugin::OuterLoop` replaces its inner
+    /// session as it works — that is what `restarting` IS — and every replacement is a new pane, so
+    /// a loop that has reflected even once is not on the pane it was asked over. The same
+    /// distinction is already drawn for the PERSON reading the row: `crate::plugins::RUN_DRIVING_KEY`
+    /// exists because a watcher followed a run's label to a pane that no longer existed (register
+    /// item 726). This is that repair, for the reader that is a boot.
+    ///
+    /// ⚠⚠ A run whose driver reported nothing falls back rather than refusing, and that is the
+    /// honest direction: a plugin that never moves (`agent`, `dialogue`) reports the pane it was
+    /// asked over anyway, and one that took no step at all has nothing better to offer than what it
+    /// was asked with.
+    #[must_use]
+    pub fn pane(&self) -> Option<PaneId> {
+        self.drove
+            .or_else(|| crate::plugins::pane_named(&self.request))
+    }
+
+    /// **THE REQUEST TO REBUILD THIS RUN FROM**, with [`pane`](Self::pane)'s answer written into it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Because putting it back over the right pane is not enough on its own
+    ///
+    /// The boot resolves a pool from [`pane`](Self::pane), and `put_back` then builds the plugin
+    /// from a MAP — `crate::plugins::plugin_from_request`, which reads the pane out of the request
+    /// and validates it exists. Left alone, those two are different numbers for a run that moved:
+    /// the boot would find the live pane, and the plugin it stood up would type into the dead one
+    /// (or, more usually, be refused because that pane is gone). One question, one answer.
+    ///
+    /// ⚠⚠ **A DAEMON MAY SAY THIS AND A CLIENT MAY NOT**, which is `put_back`'s own argument for
+    /// being the one writer of `crate::plugins::RUN_PLACE_KEY`: this number did not come from
+    /// anybody's request, it came out of this daemon's predecessor's log, where the run's OWN
+    /// driver put it.
+    ///
+    /// ⚠ Unchanged when nothing was reported — the map then already carries whatever the log had,
+    /// including nothing.
+    #[must_use]
+    pub fn asked_here(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut asked = self.request.clone();
+        if let Some(pane) = self.drove {
+            asked.insert(
+                crate::plugins::RUN_PANE_KEY.to_owned(),
+                serde_json::json!(pane.0),
+            );
+        }
+        asked
+    }
 }
 
 /// ⚠⚠⚠⚠⚠ **WHY A RUN A SUCCESSOR FOUND IN ITS PREDECESSOR'S LOG IS NOT COMING BACK** — register
@@ -1339,6 +1450,62 @@ pub enum Withheld {
     /// A place this image CAN read, and nothing recorded what the run was asked with, so no plugin
     /// could be rebuilt to enter at it.
     NoRequest,
+}
+
+/// ⛔⛔⛔⛔⛔ **WHY A BOOT COULD NOT STAND A DRIVER UP FOR A RUN ITS LOG SAID WAS RESUMABLE** —
+/// register item 771, and the half of a promotion [`Withheld`] cannot reach.
+///
+/// # ⛔⛔⛔⛔⛔ *Withheld* and *tried and could not* were the same word, and it was `interrupted`
+///
+/// [`Withheld`] answers a question asked while READING the log: are these words this build's? Item
+/// 737 made that answer visible on the row, and it is the common case. It is not the only case. A
+/// run whose place, request and fingerprint all crossed intact is handed to the boot as resumable —
+/// and the boot then has to find the pane, build the plugin and place the machine, any of which can
+/// refuse. Before this type every one of those refusals reached the operator's log and NOTHING
+/// else: the row said `interrupted`, exactly as it says for a run waiting to be picked up.
+///
+/// **Measured 2026-08-30, one promotion, four loops.** All four carried fingerprint
+/// `b92e993a99bd7d46` — this build's — so item 737 withheld none of them. Three came back. The
+/// fourth had replaced its inner session twice while it worked (369 → 389 → 394), its log recorded
+/// the pane it was BORN on, that pane was gone, and it stayed behind. Its row said `interrupted`,
+/// its `withheld` clause was empty because nothing was withheld, and the daemon's boot log said
+/// nothing a person went looking for. **The only way anybody found out was reading four log records
+/// side by side.**
+///
+/// # ⚠⚠⚠⚠⚠ Every exit from that loop has an arm, and there is deliberately no catch-all
+///
+/// A boot that could not put a run back and did not say which of these it was would be the silence
+/// this type is for, one level in. So `put_back_inherited_runs` has no `continue` this does not
+/// name — the workspace's own rule that *unclassified is RED and not a pass* — and a fourth way of
+/// failing gets a fourth arm on the day it exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotResumed {
+    /// ⛔ **THE PANE IT WAS ON DID NOT COME BACK.** Carries the pane this boot looked for, which is
+    /// the one [`InheritedRun::pane`] chose — the live one its driver last reported when there is
+    /// one, and the request's otherwise.
+    PaneGone {
+        /// The pane that was looked for and is not held by any pool.
+        pane: u64,
+        /// Whether that number came from the run's own driver ([`InheritedRun::drove`]) rather than
+        /// from the request it was opened with.
+        ///
+        /// ⚠⚠ It is the difference between *your loop's current pane is gone* and *the pane this
+        /// run was opened over is gone, and nothing ever reported a newer one* — the second is also
+        /// what a run that never took a step looks like, and a person deciding whether to start the
+        /// loop again reads them differently.
+        reported: bool,
+    },
+    /// Nothing named a pane at all: the request crossed the log without the key that says which
+    /// pane the run works in, so nothing could say which pane pool to put it back over.
+    NoPane,
+    /// ⛔ **THE PUT-BACK ITSELF REFUSED**, in the words `crate::plugins::PluginsExternal::put_back`
+    /// used — a plugin word this build no longer spells, a guardrail it cannot parse, or a machine
+    /// that will not be placed where the log said.
+    ///
+    /// ⚠ The sentence is carried rather than re-authored, on `Revival::not_put_back`'s rule: the
+    /// door that refused is the one that knows why, and a second wording here would be free to
+    /// drift from it.
+    Refused(String),
 }
 
 /// **ONE RUN A SUCCESSOR IS NOT PUTTING BACK, AND WHY** — register item 737, the members of
@@ -1448,6 +1615,45 @@ pub struct PersistedRun {
     /// [`RUN_LOG_VERSION`] does not move for it, on [`build`](Self::build)'s argument.
     #[serde(default)]
     pub driver: Option<u32>,
+    /// ⛔⛔⛔⛔⛔ **WHICH PANE THE RUN WAS ACTUALLY ON WHEN THE DAEMON DIED** — register item 771,
+    /// `Progress::driving` as its own driver last reported it, and the answer that is NOT in
+    /// [`request`](Self::request).
+    ///
+    /// # ⛔⛔⛔⛔⛔ A run that replaced its session came back to a pane that was gone
+    ///
+    /// The request names the pane the run was ASKED over, and for most plugins that is where it
+    /// stays. A loop is not most plugins: `sprag_plugin::OuterLoop` REPLACES its inner session as it
+    /// goes, and each replacement is a new pane — so the request's number is a birth certificate
+    /// and the run is somewhere else. `crate::plugins::RUN_DRIVING_KEY` exists because a person
+    /// reading the row had the same problem (register items 540 and 726), and until this field the
+    /// BOOT did not have the answer that mouth did.
+    ///
+    /// **Measured 2026-08-30 across one promotion, four loops, 4/4 clean**: run 101 had replaced
+    /// its session twice (369 → 389 → 394), its log recorded 369, and pane 369 was gone — so
+    /// `put_back_inherited_runs` found no pool holding it and the run stayed `interrupted`. The
+    /// three that had replaced nothing came back. All four carried the SAME fingerprint
+    /// (`b92e993a99bd7d46`), so item 737's gate passed on all four and only the pane told them
+    /// apart. **Measured in the same reading**: `driving` was absent from all 111 records in that
+    /// log, because nothing wrote it — and re-measured that afternoon at 113 records, still zero.
+    /// ⚠ Do not carry the count forward; re-derive the PREDICATE, which is what does not age:
+    /// `jq '[.runs[] | select(has("driving"))] | length'` over the live daemon's `*.runs.json`.
+    ///
+    /// ⚠⚠⚠ **THIS IS NOT THE PANE ID [`opened_by_session`](Self::opened_by_session) REFUSES TO
+    /// CARRY.** That one is a SEAT — *who asked* — and the objection to persisting it is that a
+    /// successor cannot know whether the occupant of pane 3 is still the asker. This is a
+    /// WORKPLACE — *where the run types* — and it crosses already, in
+    /// [`request`](Self::request)'s own `pane` key. What this adds is the CURRENT one beside the
+    /// original, which is the whole of what a run that moved was unable to say.
+    ///
+    /// ⚠⚠ **AND IT IS A RECORD RATHER THAN A LIVE READING**, which is why
+    /// [`RunRegistry::restore`] does not put it back into `Progress::driving`: that cell means
+    /// *something is driving that pane right now* (register item 595) and after a restart nothing
+    /// is. It goes to `RunRecord::drove`, which the boot reads and no row publishes as live.
+    ///
+    /// ⚠ [`None`] for a run that never reported a pane and for a log written before this field
+    /// existed — [`RUN_LOG_VERSION`] does not move for it, on [`build`](Self::build)'s argument.
+    #[serde(default)]
+    pub driving: Option<u64>,
     /// **WHICH CONVERSATION ASKED FOR IT** — `RunRecord::opened_by_session`, and the ONE piece of
     /// provenance that means anything to a successor daemon.
     ///
@@ -2027,6 +2233,13 @@ impl RunRegistry {
             // ⚠ AND NO PREDECESSOR LEFT A PROCESS DRIVING IT — register item 740, on the line
             // above's argument: this daemon is spawning this run's only driver, right now.
             ended_driver: None,
+            // ⚠ AND WHERE A LIVE RUN IS TYPING IS `Progress::driving` AND NOT THIS — register item
+            // 771. This field is a predecessor's last word about a run nobody is driving; a run
+            // this daemon is starting has a driver that answers the question fresh on every step.
+            drove: None,
+            // ⚠ AND NOTHING FAILED TO PUT BACK A RUN NOBODY INHERITED — register item 771, on
+            // `withheld` above's argument.
+            not_resumed: None,
         });
         id
     }
@@ -2095,6 +2308,10 @@ impl RunRegistry {
                 request,
                 progress: Arc::clone(&record.progress),
                 driver: record.run.driver_pid(),
+                // ⛔⛔⛔ **AND WHERE IT HAD GOT TO ON THE SCREEN** — register item 771, beside where
+                // its machine had got to. A loop that replaced its session is not on the pane its
+                // request names, and this is the only record that says so.
+                drove: record.drove,
             });
         }
         answer
@@ -2135,6 +2352,49 @@ impl RunRegistry {
             return false;
         };
         record.ended_driver = Some(pid);
+        true
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THIS BOOT TRIED TO PUT AN INHERITED RUN BACK AND COULD NOT, AND HERE IS WHY** —
+    /// register item 771, and [`inheritance`](Self::inheritance)'s other companion:
+    /// [`ended_leftover_driver`](Self::ended_leftover_driver) records what a boot did to a process,
+    /// and this records what a boot could not do about a run.
+    ///
+    /// Returns whether such a run is held here, so a caller writing about a run this registry has
+    /// never heard of learns it rather than writing into nothing —
+    /// [`ended_leftover_driver`](Self::ended_leftover_driver)'s rule.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Only over a run [`Withheld`] does NOT already explain, and the guard is structural
+    ///
+    /// The two answer the same question — *why is this row still `interrupted`?* — from opposite
+    /// sides of the log's own door, and a row carrying both would be telling a person that its
+    /// documents were foreign AND that its pane was gone, when only the first was ever asked. A
+    /// withheld run is never handed to the boot's put-back loop at all
+    /// ([`Inheritance::withheld`] is the other list), so this refuses such a record rather than
+    /// trusting its caller — and the row's publish guard is nested the same way, on
+    /// `RunRegistry::ended_leftover_driver`'s argument that a clause which can only be SET where it
+    /// can be PRINTED cannot drift apart from it.
+    ///
+    /// ⚠ It does not touch the run's state, on that door's argument: the record is already
+    /// [`RunState::Interrupted`], and the whole finding of item 771 is that the WORD was never the
+    /// problem — the missing thing was the clause beside it.
+    ///
+    /// ⚠⚠ **AND THE RESIDUE, MEASURED RATHER THAN CLAIMED: no gate can reach that guard.**
+    /// [`inheritance`](Self::inheritance) pushes a withheld record onto its OTHER list and
+    /// `continue`s, so the boot's put-back loop — this door's only caller — never holds one. Struck
+    /// out under mutation on 2026-08-30, the end-to-end gate stayed GREEN. It is the shape item 740
+    /// already named: one rule spelled in two places, where neither spelling alone is reachable. It
+    /// is kept because the two spellings are what make the exclusion true of the ROW rather than of
+    /// this caller, and a second caller is the day it starts mattering.
+    pub fn not_resumed(&mut self, id: RunId, why: NotResumed) -> bool {
+        let Some(record) = self
+            .runs
+            .iter_mut()
+            .find(|record| record.id == id && record.withheld.is_none())
+        else {
+            return false;
+        };
+        record.not_resumed = Some(why);
         true
     }
 
@@ -2284,6 +2544,16 @@ impl RunRegistry {
             .as_ref()
             .and_then(|reported| crate::plugins::progress_from_report(reported).place)
             .or_else(|| lock(&record.progress).place.clone());
+        // ⛔⛔⛔⛔⛔ **AND WHICH PANE, ON THE LINE ABOVE'S ARGUMENT AND FOR REGISTER ITEM 771's
+        // REASON.** This door is a boot's one fact over: nothing is driving the run, and something
+        // is about to be stood up over a pane. A loop that replaced its inner session while it
+        // worked is not on the pane its request names, and the report is the only thing that says
+        // where it went — so reading the request alone here would rebuild the run over a pane that
+        // closed, exactly as a promotion did on 2026-08-30.
+        let drove = lock(&record.reported)
+            .as_ref()
+            .and_then(|reported| crate::plugins::progress_from_report(reported).driving)
+            .or_else(|| lock(&record.progress).driving);
         let outcome = if record.revived_at.is_some_and(|watermark| said <= watermark) {
             Revival::NoProgress
         } else if let Some(place) = place {
@@ -2305,6 +2575,7 @@ impl RunRegistry {
                     // the daemon which spawned it (register item 526); the driver this answer is
                     // about died in front of the thread asking, which is how the question got here.
                     driver: None,
+                    drove,
                 }))
             } else {
                 Revival::NoRequest
@@ -2575,6 +2846,16 @@ impl RunRegistry {
                         // that a request means the same thing either way). This is a fact the
                         // directory keeps for its SUCCESSOR, and the handle is what holds it.
                         driver: record.run.driver_pid(),
+                        // ⛔⛔⛔⛔⛔ **AND WHICH PANE IT IS ON NOW** — register item 771, read the
+                        // same way and in the same order as `at` and `place` above: the report
+                        // first, the cell behind it. For an out-of-process driver the cell never
+                        // moves (register item 662), so reading the cell first would write `null`
+                        // for exactly the runs a promotion has to put back.
+                        //
+                        // ⚠ NOT filled in from the request when neither says. *Nobody reported a
+                        // pane* and *the run is on the pane it was asked over* are different facts,
+                        // and `InheritedRun::pane` is the one place allowed to weigh them.
+                        driving: reported.driving.or(run.progress.driving).map(|pane| pane.0),
                         opened_by_session: run.opened_by_session.clone(),
                         // ⚠⚠⚠ WHERE IT WAS, AND WHOSE WORD THAT IS — register items 543 and 544,
                         // written as a PAIR because either alone misleads. The fingerprint is
@@ -2962,6 +3243,17 @@ impl RunRegistry {
                 // arrived here claiming a process had been dealt with would be asserting something
                 // no reading can know.
                 ended_driver: None,
+                // ⛔⛔⛔⛔⛔ **AND THE PANE THE RUN WAS ON IS KEPT, WHERE `Progress::driving` ABOVE
+                // REFUSES IT** — register item 771. That cell is a level about NOW and nothing is
+                // driving now; this is a record of where the work was, which is the only thing that
+                // lets a boot put a loop that replaced its session back where it actually is.
+                // `InheritedRun::pane` is its one reader.
+                drove: saved.driving.map(PaneId),
+                // ⚠⚠ AND NOTHING HAS BEEN TRIED YET — register item 771, `ended_driver` above's
+                // argument verbatim. This reads the log; `put_back_inherited_runs` is what learns
+                // whether a driver could be stood up, and a record that arrived here already
+                // claiming a reason would be the file answering a question only a boot can ask.
+                not_resumed: None,
             });
         }
     }
@@ -3002,6 +3294,9 @@ impl RunRegistry {
                 // boot ends a leftover once and writes it here once; a row that showed this
                 // appearing and going away would be reporting on the daemon, not on the run.
                 ended_driver: record.ended_driver,
+                // ⚠ AND SO IS THIS — item 771, on the line above's argument: a boot decides it once,
+                // writes it once, and nothing later takes it away.
+                not_resumed: record.not_resumed.clone(),
             })
             .collect()
     }
@@ -4191,6 +4486,7 @@ mod tests {
                 output: None,
                 build: None,
                 driver: None,
+                driving: None,
                 opened_by_session: Some(A_CONVERSATION.to_owned()),
                 at: None,
                 document: None,
@@ -4431,6 +4727,7 @@ mod tests {
             output: None,
             build: None,
             driver: None,
+            driving: None,
             opened_by_session: None,
             at: at.map(str::to_owned),
             document: document.map(str::to_owned),
@@ -4536,6 +4833,7 @@ mod tests {
             output: None,
             build: None,
             driver: None,
+            driving: None,
             opened_by_session: None,
             at: None,
             document: document.map(str::to_owned),
@@ -4631,6 +4929,7 @@ mod tests {
             output: None,
             build: None,
             driver: None,
+            driving: None,
             opened_by_session: None,
             at: None,
             document: document.map(str::to_owned),
@@ -5046,6 +5345,7 @@ mod tests {
                 output: None,
                 build: None,
                 driver: None,
+                driving: None,
                 opened_by_session: None,
                 at: None,
                 document: None,
