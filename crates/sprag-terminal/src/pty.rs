@@ -500,7 +500,7 @@ fn pool_sentence(pool: crate::procfs::PtyPool) -> String {
              was in use, so the host's own total cannot be read here"
             .to_owned(),
     };
-    format!("{host}; {}", ours_sentence(OPEN_HERE.held()))
+    format!("{host}; {}", ours_sentence(OPEN_HERE.live()))
 }
 
 /// **HOW MANY PSEUDOTERMINALS THIS PROCESS ITSELF WAS HOLDING** — register item 776, arm (d), and
@@ -537,21 +537,27 @@ fn ours_sentence(ours: u64) -> String {
 /// This process's live pseudoterminal count — see [`ours_sentence`].
 static OPEN_HERE: OpenHere = OpenHere(std::sync::atomic::AtomicU64::new(0));
 
-/// The ledger behind [`OPEN_HERE`], kept as a type so the only way to add to it is to hold a
-/// [`Held`] that gives the count back when it drops.
+/// The ledger behind [`OPEN_HERE`], kept as a type so the only way to add to it is to take a
+/// [`Place`] that gives the count back when it drops.
+///
+/// ⚠⚠ **The count is `live()` and the guard is `Place`, deliberately not `held()`/`Held`** — the
+/// first spelling of this collided with the vocabulary of a HOLD a person puts on a run, and
+/// `the_only_plugin_that_can_be_held_is_the_one_that_reads_a_hold` went red on it. That gate was
+/// right: *held* is that wire word's, and a second meaning for it in another crate is how one
+/// sentence starts covering two facts.
 #[derive(Debug)]
 struct OpenHere(std::sync::atomic::AtomicU64);
 
 impl OpenHere {
     /// How many are live right now.
-    fn held(&'static self) -> u64 {
+    fn live(&'static self) -> u64 {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Count one more, until the returned guard drops.
-    fn take(&'static self) -> Held {
+    fn take(&'static self) -> Place {
         self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Held(self)
+        Place(self)
     }
 }
 
@@ -561,9 +567,9 @@ impl OpenHere {
 /// happen on EVERY path a `Pty` leaves by — including a panic between opening and spawning, which
 /// is precisely when a leaked count would make the next refusal's sentence lie.
 #[derive(Debug)]
-struct Held(&'static OpenHere);
+struct Place(&'static OpenHere);
 
-impl Drop for Held {
+impl Drop for Place {
     fn drop(&mut self) {
         self.0.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -580,9 +586,9 @@ pub struct Pty {
     master: OwnedFd,
     /// The child's side, taken by [`AttachedPty::spawn`] and dropped there.
     slave: Option<OwnedFd>,
-    /// This pair's place in this process's own ledger — see [`ours_sentence`]. Held for exactly as
+    /// This pair's place in this process's own ledger — see [`ours_sentence`]. Kept for exactly as
     /// long as the pair is, so the count a refusal reports is the count that was live.
-    _held: Held,
+    _place: Place,
 }
 
 impl Pty {
@@ -653,7 +659,7 @@ impl Pty {
             slave: Some(slave),
             // ⚠ TAKEN LAST, after every fallible step, so a pair that failed to be set up is not
             // counted as one this process is holding.
-            _held: OPEN_HERE.take(),
+            _place: OPEN_HERE.take(),
         })
     }
 
@@ -1259,30 +1265,30 @@ mod tests {
         // life of a test binary.
         let ledger: &'static OpenHere =
             Box::leak(Box::new(OpenHere(std::sync::atomic::AtomicU64::new(0))));
-        assert_eq!(ledger.held(), 0, "a fresh ledger holds nothing");
+        assert_eq!(ledger.live(), 0, "a fresh ledger counts nothing");
         let first = ledger.take();
         let second = ledger.take();
-        assert_eq!(ledger.held(), 2, "two places taken must read as two");
+        assert_eq!(ledger.live(), 2, "two places taken must read as two");
         drop(first);
         assert_eq!(
-            ledger.held(),
+            ledger.live(),
             1,
             "⛔⛔⛔⛔⛔ A PLACE THAT IS NOT GIVEN BACK MAKES EVERY LATER SENTENCE LIE, and it lies \
              in the direction that invents exhaustion — the very cause this arm was filed for \
              having no evidence behind it",
         );
         drop(second);
-        assert_eq!(ledger.held(), 0, "and the last one too");
+        assert_eq!(ledger.live(), 0, "and the last one too");
 
         // ── ⚠ AND THE DOOR IS WIRED TO IT: a live pseudoterminal cannot read as none of ours ──
-        let live = Pty::open(20, 5).expect("open a pseudoterminal");
+        let open_now = Pty::open(20, 5).expect("open a pseudoterminal");
         let while_open = pool_sentence(crate::procfs::pty_pool());
         assert!(
             !while_open.contains("holding 0 of them"),
             "⛔⛔⛔ `Pty::open` is not taking a place in the ledger, so the half added for macOS \
              would report zero however many this process held. Got: {while_open:?}",
         );
-        drop(live);
+        drop(open_now);
 
         // ── AND THE FOUR ARE FOUR SENTENCES, not one wearing different numbers ────────────────
         let said = [&both, &ceiling_only, &count_only, &neither];

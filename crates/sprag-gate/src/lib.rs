@@ -105,6 +105,14 @@ pub mod owners;
 /// than holding a number.
 pub mod sweep;
 
+/// Whether every pseudoterminal comes from the one door that explains a refusal — register item
+/// 776, arm (d).
+///
+/// A bare `ENXIO` from a second call site would carry none of the pool's size, the host's in-use
+/// count or this process's own share, and the reader would complete it from memory — which is how
+/// *the runner's pty pool was exhausted* got written down with nothing behind it.
+pub mod refusals;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
