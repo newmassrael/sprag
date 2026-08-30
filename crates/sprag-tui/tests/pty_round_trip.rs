@@ -1245,20 +1245,36 @@ impl Tui {
             Err(why) => return format!("pane 0 cannot be read here (refused: {why})"),
         };
         // The TAIL, because a wait times out on what has not arrived yet and the newest end of the
-        // pane is where that shows. The length goes with it so a truncated tail is not read as the
-        // whole of what the pane holds.
+        // pane is where that shows.
+        const TAIL: usize = 160;
+        let held = text.chars().count();
         let tail: String = text
             .chars()
             .rev()
-            .take(160)
+            .take(TAIL)
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
             .collect();
-        format!(
-            "pane 0 holds {} char(s), tail {tail:?}",
-            text.chars().count()
-        )
+        // ⛔⛔⛔⛔⛔ **"TAIL" IS ONLY SAID WHEN SOMETHING WAS CUT** — register item 787, and this
+        // wording cost a misreading the same day it first fired.
+        //
+        // The first live failure to carry this clause answered `pane 0 holds 5 char(s), tail
+        // "hello"`, and the round reading it took *5 characters* for a SHORT pane — the half of the
+        // fork where the content never arrived. It was the other half: `"hello"` is five characters,
+        // so the pane held **all** of what was ever put in it, and the blank screen beside it was a
+        // client that repainted nothing over a complete pane. The word `tail` invites exactly that
+        // error when the tail IS the whole thing, because a tail implies a head somebody is not
+        // being shown.
+        //
+        // ⚠ So the two states say different words. A reader who has to know the expected length
+        // before they can tell *complete* from *truncated* is being handed the same sentence for
+        // both, which is the disease this whole clause was built to cure one level up.
+        if held <= TAIL {
+            format!("pane 0 holds all {held} char(s): {tail:?}")
+        } else {
+            format!("pane 0 holds {held} char(s), last {TAIL}: {tail:?}")
+        }
     }
 
     /// [`wait_for`], for a condition about THIS client — the deadline carries [`Tui::standing`]
@@ -1537,6 +1553,19 @@ fn a_failing_wait_says_what_the_pane_behind_the_client_holds() {
          painted and never what the PANE held, so a client that stopped painting a complete pane \
          and a pane that is short render identically. That fork is the whole of 519's remaining \
          diagnosis: {standing}",
+    );
+    // ⛔⛔⛔⛔ AND IT SAYS *ALL* WHEN NOTHING WAS CUT — register item 787.
+    //
+    // ⚠⚠ This clause's first live failure said `holds 5 char(s), tail "hello"` and the round
+    // reading it concluded the pane was SHORT. It was complete: `"hello"` is five characters. A
+    // reader who must already know the expected length before they can tell *complete* from
+    // *truncated* has been handed one sentence for two states, which is the very thing this clause
+    // exists to stop — so the word `tail` is now spent only where a tail is what they are getting.
+    assert!(
+        standing.contains("holds all 5 char(s)") && !standing.contains("tail"),
+        "⛔⛔⛔⛔ REGISTER ITEM 787: the pane holds everything that was ever typed into it, and the \
+         clause is calling that a TAIL — the wording that made a complete pane read as a truncated \
+         one on this diagnostic's first firing: {standing}",
     );
 
     // ── AND IT IS THE DAEMON'S ANSWER, NOT A SECOND COPY OF THE SCREEN ───────────────────────
