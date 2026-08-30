@@ -1257,5 +1257,47 @@ fn a_push_says_how_long_this_clone_has_gone_without_reading_a_hosted_result() {
         "⛔⛔⛔ REGISTER ITEM 776: the report names a count and not the commit it counted from, so \
          nobody can check it or record the next one against it: {told}",
     );
+
+    // ── AND AN OPEN GAP READS AS A DEBT, WHILE A SETTLED ONE READS AS A RECEIPT ──────────────
+    //
+    // ⛔⛔⛔⛔⛔ REGISTER ITEM 776, arm (5) — the half arm (2) does not reach. A sibling
+    // repository's watcher named why an audible line is not yet enough: *"the more often
+    // transition notifications come, the less they get looked at — there never seems to be a
+    // reason."* A report that reads the same whether or not anything is owed becomes one more of
+    // those, and the prescription item 776 settled on is NOT *look more often* — it is that an
+    // opening gap has to arrive as something other than the routine line beside it.
+    //
+    // ⚠⚠⚠ THE CONTROL HERE IS ALIVE, unlike the two this workspace spent three rounds repairing
+    // (register items 771 and 775): a gap of zero is a state this fixture can actually stage, it
+    // renders through the same code as the open one, and a writer that stamped the cost clause
+    // unconditionally is caught by the second assertion rather than by nothing.
+    const COST: &str = "33 rounds";
+    assert!(
+        told.contains(COST),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 776 arm (5): the gap is open and the report says only a number. \
+         What makes a rare signal survive beside a frequent one is that it stops looking like the \
+         frequent one the moment it means something — and the number this repository owes here is \
+         its own: {told}",
+    );
+
+    std::fs::write(
+        std::path::Path::new(marker.trim()).join("sprag-hosted-read"),
+        format!("{head}\n"),
+    )
+    .expect("record a hosted read at HEAD in the sandbox");
+    let run = push.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        told.contains("0 round(s) unread"),
+        "⚠⚠⚠ THE CONTROL'S OWN PREMISE FAILED: a read recorded at HEAD is not reported as a \
+         settled gap, so what follows would be a control over some other state: {told}",
+    );
+    assert!(
+        !told.contains(COST),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 776 arm (5): a clone that owes NOTHING is being told what an \
+         unread gap cost. A warning that arrives whether or not it applies is exactly the frequent \
+         signal this arm exists to stop the rare one turning into — and after a few rounds of it, \
+         the round that does owe something reads the same as the ones that did not: {told}",
+    );
     push.done();
 }

@@ -47,6 +47,30 @@ hosted_read_marker() {
     printf '%s\n' "$(git rev-parse --absolute-git-dir)/sprag-hosted-read"
 }
 
+# ⛔⛔⛔⛔⛔ WHAT AN OPEN GAP COSTS, IN THIS REPOSITORY'S OWN NUMBER — register
+# item 776, arm (5), and carried ONLY by the sentence for a gap that has opened.
+#
+# ⚠⚠⚠⚠⚠ WHY THE ZERO-GAP LINE MUST NOT CARRY IT, which is the whole of arm (5).
+#
+# Arm (2) made the omission audible. A sibling repository's watcher named why
+# that is not yet enough: *"the more often transition notifications come, the
+# less they get looked at -- there never seems to be a reason."* A report that
+# reads the same whether or not anything is owed becomes one more of those. So
+# the two states are not one sentence with a different number in it: a gap of
+# zero is a RECEIPT and says only that, and a gap that has opened is a DEBT and
+# says what the debt cost here the last time it was left alone.
+#
+# ⚠⚠ THE BOUNDARY IS ZERO AND NOT A TUNED THRESHOLD. A number somebody chooses
+# is an escape hatch with a dial on it -- set it high enough and the loud shape
+# never appears. *Anything at all is owed* is the only line this file can draw
+# without inventing one.
+#
+# ⚠ The figure is MEASURED and not rhetoric: CI carried 33 consecutive failures
+# across two days while this repository's own rule already said to read the
+# previous run at the start of every round.
+HOSTED_READ_COST="the last time this gap was left to grow it reached 33 rounds \
+and two days of unread red"
+
 # RECORD that the hosted result for `$1` (default HEAD) has been read.
 hosted_read_seen() {
     local sha
@@ -95,7 +119,7 @@ hosted_read_gap() {
         return 0
     fi
     echo "hosted-read: ${count} round(s) published since a hosted result was" \
-         "read (last read at ${recorded:0:7})"
+         "read (last read at ${recorded:0:7}) -- ${HOSTED_READ_COST}"
 }
 
 # ⚠⚠⚠⚠⚠ EVERY ARM, against throwaway repositories -- because a report reachable
@@ -151,6 +175,26 @@ hosted_read_selftest() {
         *)  echo "  FAIL  it does not name ${base:0:7}: $said"
             fail=$((fail + 1)) ;;
     esac
+
+    # ⛔⛔⛔ ARM (5): AN OPEN GAP IS A DEBT AND SAYS WHAT IT COSTS -- and the
+    # receipt must NOT, or the report reads the same either way and becomes one
+    # more line nobody has a reason to look at.
+    case "$said" in
+        *"$HOSTED_READ_COST"*)
+            echo "  ok    an open gap says what it cost here last time"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  an open gap does not name the cost: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    ( cd "$tmp" && hosted_read_seen HEAD >/dev/null )
+    case "$( cd "$tmp" && hosted_read_gap )" in
+        *"$HOSTED_READ_COST"*)
+            echo "  FAIL  a settled gap is scolding about a debt it does not owe"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    and a settled gap is a receipt, not a debt"
+            pass=$((pass + 1)) ;;
+    esac
+    ( cd "$tmp" && hosted_read_seen "$base" >/dev/null )
 
     # ⛔ THE UNCLASSIFIED STATE IS NOT A ZERO. A marker naming something this
     # tree does not have is the shape a rebase, a reset or a copied clone
