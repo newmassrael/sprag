@@ -1514,7 +1514,7 @@ fn typing_reaches_the_child_and_comes_back_painted() {
 /// output. And the third is this workspace's rule 6: an absence must say so rather than render as a
 /// measurement, or a reader lands in the wrong half of the fork with nothing looking wrong.
 #[test]
-fn a_failing_wait_says_what_the_pane_behind_the_client_held() {
+fn a_failing_wait_says_what_the_pane_behind_the_client_holds() {
     let (daemon, _sock, mut conn, session, mut tui) = attached_client();
 
     tui.type_bytes(b"hello");
