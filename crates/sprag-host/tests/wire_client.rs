@@ -8957,17 +8957,16 @@ enum Staged {
     /// cancels in this difference, so a pair that fails it is one whose members waited the same
     /// length of time, and nothing can be read off that.
     NotAPair { apart: Duration, floor: Duration },
-    /// ⛔ **The long arm took no looks at all**, so it fixes no rate to price the extra time
-    /// against. Named rather than folded into the arm above, because *the arms did not differ* and
-    /// *there is no rate* ask for different repairs — and unclassified is RED, never a pass.
-    ///
-    /// ⚠ It asks about the LONG arm since register item 783 — the divisor moved, and a guard left
-    /// pointing at the old one would be a line that cannot fire.
-    NoRate,
-    /// ⛔ **The extra time did not buy what the long arm's own rate says it owes.**
-    Unbought { extra: u128, owed: u128 },
-    /// ✅ The extra time bought the extra looks.
-    Bought { extra: u128, owed: u128 },
+    /// ⛔ **The long arm took no looks at all.** Named rather than folded into the one below,
+    /// because *nothing ever looked* and *it looked and did not grow* are different stories about
+    /// the fixture — and unclassified is RED, never a pass.
+    NeverLooked,
+    /// ⛔ **It looked, and the extra time bought nothing.** The frozen-counter shape: a control arm
+    /// whose count cannot move satisfies the park claim vacuously, so this is the refusal that
+    /// keeps `parked_long <= parked_short + SLACK` from being read off a dead instrument.
+    DidNotGrow { short: u64, long: u64 },
+    /// ✅ The long arm really spent the extra time, and its counter moved while it did.
+    Grew { short: u64, long: u64 },
 }
 
 /// **READ A PAIR OF POLLING READINGS AGAINST THE TIME THEY ACTUALLY WAITED** — the staging
@@ -8995,11 +8994,6 @@ fn staging_control(
     /// differed by before one is read against the other. ⚠⚠ Half, and a guard against a reading
     /// that cannot discriminate rather than a threshold on the product.
     const APART_SHARE: u32 = 2;
-    /// What share of the looks the EXTRA time owes — at the long arm's own measured rate — the
-    /// long arm must actually have paid. ⚠⚠ Half the honest reading, and that headroom is the
-    /// whole of register item 668: what must not be able to turn this over is the host it runs on.
-    const OWED_SHARE: u128 = 2;
-
     let apart = long_took.saturating_sub(short_took);
     let floor = windows_apart / APART_SHARE;
     if apart < floor {
@@ -9039,25 +9033,64 @@ fn staging_control(
     // thin, and it is the honest number — a further degradation reds this again rather than the
     // problem being gone.
     if long == 0 {
-        return Staged::NoRate;
+        return Staged::NeverLooked;
     }
-    let extra = u128::from(long.saturating_sub(short));
-    // ⚠⚠ CEILING, and one arithmetic for BOTH the verdict and the number reported. Truncating
-    // toward zero let a long arm slow enough to owe a fraction of a look owe NOTHING, and `0 >= 0`
-    // is how the frozen-counter mutation would have walked through. Rounding the debt UP is the
-    // direction that cannot invent a pass.
-    let owed_scaled = u128::from(long) * apart.as_nanos();
-    let per = long_took.as_nanos();
-    let owed = owed_scaled.div_ceil(per);
-    if extra * OWED_SHARE >= owed {
-        Staged::Bought { extra, owed }
+    // ⛔⛔⛔⛔⛔ **AND THAT IS THE WHOLE RULE — THERE IS NO RATE LEFT IN IT** — register item 786.
+    //
+    // ⚠⚠⚠⚠⚠ Item 666 held that ANY rule phrased as looks per unit time is turned over by a host
+    // that changes pace mid-wait, and this control was such a rule twice over: first divided by the
+    // short arm (which refused two healthy macOS readings), then by the long arm (better, and still
+    // refusing three healthy hosts of a swept fifteen). The pace cannot get in here at all now:
+    // above, that the long arm really SPENT the extra time — measured in wall clock, which a
+    // host's speed does not move; and here, that its counter is ALIVE.
+    //
+    // ⚠⚠ **WHY THE COUNTER STILL HAS TO BE WITNESSED, where `readiness.rs` could drop counts
+    // entirely.** That sibling's park claim is about WHEN a wait ended, so time answers all of it.
+    // The claim THIS control stages is `parked_long <= parked_short + SLACK`, which is about LOOK
+    // COUNTS — so a frozen counter would satisfy it vacuously, and a staging control that could
+    // not see that is staging nothing. Measured: the marks-only form accepts the frozen-counter
+    // mutation, which is why it is not what shipped.
+    //
+    // ⚠ **THE RESIDUE, STATED: rate-free growth is BINARY.** All this can ask is that the extra
+    // time bought at least one look; it cannot ask for growth in proportion without inventing a
+    // denominator, and a denominator is what both previous versions were turned over by. The
+    // strength that buys is measured rather than argued — 19 healthy readings accepted where the
+    // shipped rule took 16, and both recorded mutations still refused.
+    if long > short {
+        Staged::Grew { short, long }
     } else {
-        Staged::Unbought { extra, owed }
+        Staged::DidNotGrow { short, long }
     }
 }
 
-/// **THE RULE REGISTER ITEM 786 SAYS TO MOVE TO** — one wait read at TWO MARKS, asking whether it
-/// really SPENT the distance between them. A forward counterfactual, and the only one in this file.
+/// **THE RULE REGISTER ITEM 786 REPLACED** — the extra time priced at the LONG arm's rate. Kept as
+/// the third counterfactual, for its two siblings' reason: *"the rule we dropped refused a healthy
+/// host"* written beside a literal is a sentence nobody re-derives.
+///
+/// ⚠ It shipped for one day and was the best of the three counting forms — 16 of 19 healthy
+/// readings, where the short-arm rule took 9. That it was still turned over by three of them is the
+/// measurement that ended counting here, and this predicate is where that measurement lives.
+fn staging_control_by_long_rate(
+    short: u64,
+    short_took: Duration,
+    long: u64,
+    long_took: Duration,
+) -> bool {
+    let apart = long_took.saturating_sub(short_took);
+    if long == 0 {
+        return false;
+    }
+    let extra = u128::from(long.saturating_sub(short));
+    let owed = (u128::from(long) * apart.as_nanos()).div_ceil(long_took.as_nanos());
+    extra * 2 >= owed
+}
+
+/// **THE TIME HALF OF WHAT SHIPPED** — one wait read at TWO MARKS, asking whether it really SPENT
+/// the distance between them.
+///
+/// ⚠⚠ It is HALF and not the whole, which is register item 786's own correction: this alone accepts
+/// the frozen-counter mutation, because a wait can spend time without its counter moving. The
+/// shipped rule pairs it with a liveness check — see [`staging_control`].
 ///
 /// # ⚠⚠⚠⚠⚠ Why a rule nothing calls yet is worth having here
 ///
@@ -9154,11 +9187,13 @@ fn the_divisor_is_read_against_a_host_that_slows_down_mid_wait() {
     let buys = |h: (u64, Duration, u64, Duration)| {
         matches!(
             staging_control(h.0, h.1, h.2, h.3, Duration::from_millis(750)),
-            Staged::Bought { .. }
+            Staged::Grew { .. }
         )
     };
     let bought_by_old =
         |h: (u64, Duration, u64, Duration)| staging_control_by_short_rate(h.0, h.1, h.2, h.3);
+    let bought_by_long_rate =
+        |h: (u64, Duration, u64, Duration)| staging_control_by_long_rate(h.0, h.1, h.2, h.3);
 
     // ── ⭐⭐⭐⭐⭐ WHAT MOVING THE DIVISOR ACTUALLY BOUGHT ──────────────────────────────────────
     //
@@ -9188,48 +9223,65 @@ fn the_divisor_is_read_against_a_host_that_slows_down_mid_wait() {
     // refuses a host that never stopped polling. **666's class finding therefore SURVIVES this
     // repair** — the divisor made the hole smaller, not absent.
     //
-    // ⚠⚠ The answer 666 reached for itself is the one this file has not taken: stop reading counts
-    // and read WHEN THE PREDICATE WAS LAST CONSULTED (`polling_grew`'s `apart`), which has no rate
-    // in it and so cannot have this hole at all. Until that is done here, these three lines are
-    // what say so.
+    // ⚠⚠ **AND THAT IS WHY COUNTING IS GONE — register item 786, paid here.** Both rate forms are
+    // kept as counterfactuals so this is a predicate: the three hosts below are the ones the
+    // LONG-rate rule refused, and the shipped rule takes them, because it asks for wall time spent
+    // and a live counter rather than for looks at somebody's measured pace.
     for (fast, slow, phase) in [(10, 60, 250), (10, 120, 250), (10, 600, 250)] {
         let h = host(fast, slow, phase);
         assert!(
-            !buys(h),
-            "⚠⚠⚠ THE RESIDUE MOVED WITHOUT BEING RECORDED: this host is one the shipped rule still \
-             refuses, and register item 783's own entry says so. If it buys now, the rule changed \
-             shape and the item's residue paragraph is stale — go and fix it rather than deleting \
-             this line: {h:?}",
-        );
-        // ⭐⭐⭐⭐⭐ AND THE RULE 786 POINTS AT TAKES THE SAME HOST. Whatever its look price, a
-        // POLLING wait reaches the short window's mark at about 250 ms and the long one's end at
-        // about 1000 ms — so the marks form reads it as still polling, which it is.
-        assert!(
-            staging_control_by_marks(
-                Duration::from_millis(SHORT_W),
-                Duration::from_millis(LONG_W),
-                Duration::from_millis(750),
-            ),
-            "⛔⛔⛔ REGISTER ITEM 786: the form this item says to move to must accept the hosts the \
-             shipped one refuses, or its done-when is pointing somewhere that does not help",
+            buys(h) && !bought_by_long_rate(h),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 786: this host polls without ever stopping — it only changes \
+             pace where the short window ends — and the rate rule that shipped for a day refused \
+             it while the rate-free one takes it. That contrast is the whole case for dropping the \
+             denominator, and without this line it is a paragraph: {h:?}",
         );
     }
 
-    // ── ⛔ AND THE FORWARD FORM IS NOT SIMPLY *TRUE* — it still refuses the one thing this control
+    // ── ⛔ AND THE RATE-FREE RULE IS NOT SIMPLY *TRUE* — it still refuses both things this control
     //    exists for ────────────────────────────────────────────────────────────────────────────
     //
-    // ⚠⚠ Without this line the assertion above is met by a rule that accepts everything, which
-    // would make 786's direction look validated by a predicate that measures nothing. The reading
-    // is item 668's own, off a real parked arm: both marks hit 14 µs apart.
+    // ⚠⚠ Without these two the loop above is satisfied by a rule that accepts everything, which
+    // would make 786 look paid by a predicate that measures nothing.
+    //
+    // ⑴ A control arm PARKED by accident returns at the change instead of spending the window —
+    //    item 668's own reading off a real parked arm, both marks 14 µs apart.
     assert!(
         !staging_control_by_marks(
             Duration::from_nanos(1_608_935_776),
             Duration::from_nanos(1_608_950_116),
             Duration::from_millis(750),
         ),
-        "⛔⛔⛔⛔⛔ REGISTER ITEM 786: a control arm that was PARKED by accident returns at the \
-         change instead of spending the window, and the forward form must refuse it — that refusal \
-         is the whole job this staging control has",
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 786: a parked arm must be refused by the time half — that refusal \
+         is half the job this staging control has",
+    );
+    // ⑵ ⭐⭐⭐⭐⭐ AND A COUNTER THAT CANNOT MOVE, which is the half the time test does NOT cover and
+    //    the reason this rule is a PAIR. Measured: the marks form alone ACCEPTS the frozen-counter
+    //    mutation, because a wait can spend its window without its counter moving — so 786's own
+    //    done-when, *drop the counts and the mutation still reds*, was not satisfiable as written.
+    //    It is satisfiable as a pair, and this is where that is said.
+    assert!(
+        staging_control_by_marks(
+            Duration::from_nanos(256_379_719),
+            Duration::from_nanos(1_003_793_102),
+            Duration::from_millis(750),
+        ),
+        "⚠⚠⚠ THE PREMISE OF THE LINE BELOW: the frozen-counter reading passes the TIME half, which \
+         is exactly why time alone cannot be the whole rule",
+    );
+    assert!(
+        matches!(
+            staging_control(
+                1,
+                Duration::from_nanos(256_379_719),
+                1,
+                Duration::from_nanos(1_003_793_102),
+                Duration::from_millis(750),
+            ),
+            Staged::DidNotGrow { .. }
+        ),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 786: the shipped rule must refuse a counter that never moved, or \
+         `parked_long <= parked_short + SLACK` is being read off a dead instrument",
     );
 }
 
@@ -9259,11 +9311,11 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
             Duration::from_nanos(1_007_140_275),
             APART,
         ),
-        Staged::Bought {
-            extra: 70,
-            owed: 72
+        Staged::Grew {
+            short: 25,
+            long: 95
         },
-        "a fast host's pair: 98 looks a second either side, and the extra 753 ms buys them",
+        "a fast host's pair: it spent the extra 753 ms and its counter moved while it did",
     );
 
     // ── ✅ MEASURED, the same machine with the marker's landing staged 800 ms late ──
@@ -9281,9 +9333,9 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
             Duration::from_nanos(1_811_089_083),
             APART,
         ),
-        Staged::Bought {
-            extra: 74,
-            owed: 73
+        Staged::Grew {
+            short: 100,
+            long: 174
         },
         "⛔ the pair the old arithmetic turned over, and it is a HEALTHY one",
     );
@@ -9333,14 +9385,13 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
             Duration::from_nanos(1_152_056_833),
             APART,
         ),
-        Staged::Bought {
-            extra: 10,
-            owed: 16
+        Staged::Grew {
+            short: 11,
+            long: 21
         },
-        "✅ the macOS pair this repair is FOR: priced at the long arm's own rate the extra 873 ms \
-         owes 16 looks and bought 10, which clears the same headroom every other reading does. \
-         Against the short arm's rate it owed 34 and was refused — a healthy host turned over by \
-         the choice of divisor",
+        "✅ the macOS pair two repairs were aimed at. Against the SHORT arm's rate it owed 34 and \
+         was refused; against the LONG arm's it owed 16 and passed at a margin of 1.25. It needs \
+         neither: it spent the extra 873 ms and its counter moved from 11 to 21 while it did",
     );
     // ⚠⚠ AND THE SUPERSEDED RULE REFUSES IT TOO (21 < 11 * 2), which is the half of this reading
     // that must not be lost: this pair is not a case that tells the two arithmetics apart, so
@@ -9381,9 +9432,12 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
             Duration::from_nanos(1_099_298_875),
             APART,
         ),
-        Staged::Bought { extra: 8, owed: 13 },
-        "✅ the second macOS pair, and the one that made the divisor decidable: the extra 703 ms \
-         owes 13 looks at the long arm's own rate and bought 8",
+        Staged::Grew {
+            short: 12,
+            long: 20
+        },
+        "✅ the second macOS pair, and the one that made the divisor decidable before the divisor \
+         was dropped: 703 ms really spent, counter 12 to 20",
     );
     // ⚠⚠⚠ AND THE CROSS-SAMPLE READING IS A PREDICATE, NOT THE TABLE ABOVE. Prose comparing two
     // comments is prose; this asks the two readings the question that separates *drift* from
@@ -9420,12 +9474,11 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
             Duration::from_nanos(1_003_793_102),
             APART,
         ),
-        Staged::Unbought { extra: 0, owed: 1 },
-        "⛔⛔⛔⛔⛔ REGISTER ITEM 783: this is what keeps the new divisor from being vacuous. The \
-         long arm is on both sides of the rule now, so the question *is it still a control?* is \
-         answered HERE and nowhere else: a counter frozen at one look owes 1 and bought 0, and no \
-         headroom rescues a zero. ⚠ It owes 1 rather than 0 because the debt is rounded UP — \
-         truncating a fraction of a look to nothing is exactly how this pair would have passed",
+        Staged::DidNotGrow { short: 1, long: 1 },
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 786: this is the whole reason the shipped rule is a PAIR and not \
+         just the time test. This reading SPENDS its window — 747 ms of it — so the time half takes \
+         it, and it is exactly the fixture the parked claim must not be read off. A counter that \
+         cannot move is what `DidNotGrow` is for, and it is the only thing left asking about counts",
     );
 
     // ── ⛔ MEASURED, mutation B: only the SHORT arm's marker landed 800 ms late ──
@@ -9451,11 +9504,10 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
 
     // ── ⛔ AND THE ARM NOTHING HAS MEASURED, which is why it is named rather than folded away ──
     //
-    // ⚠⚠ IT ASKS ABOUT THE LONG ARM SINCE REGISTER ITEM 783. The divisor moved, so this guard had
-    // to move with it — left on the short arm it would have been a branch that can no longer fire,
-    // and a long arm with no looks would have reached the arithmetic and been read as `Bought`
-    // with `extra: 0, owed: 0`. That is the vacuous pass rule 6 forbids, arriving through a guard
-    // nobody re-aimed.
+    // ⚠⚠ *NOTHING EVER LOOKED* IS NAMED APART FROM *IT LOOKED AND DID NOT GROW*, though both are
+    // refusals: they are different stories about the fixture, and folding them would leave a
+    // reader chasing a counter that was never wired at all as though it had merely stalled.
+    //
     // ⚠⚠⚠⚠⚠ THE SHORT ARM HERE WAITED A REAL LENGTH OF TIME, and that is the whole of this
     // fixture. Written with `short_took: ZERO` it passed under a mutation that left the guard on
     // the OLD divisor — both conditions were true at once, so the arm could not say which one had
@@ -9468,27 +9520,26 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
             Duration::from_secs(1),
             APART
         ),
-        Staged::NoRate,
-        "a long arm that took no looks fixes no rate, so there is nothing to price the extra time \
-         against — unclassified is RED (register rule 6)",
+        Staged::NeverLooked,
+        "a long arm that took no looks at all is refused before any question about growth — \
+         unclassified is RED (register rule 6)",
     );
 
     // ── ⛔⛔⛔⛔⛔ WHERE THE HALF ACTUALLY IS — DERIVED from the staged pair, not a reading ──
     //
     // ⚠⚠⚠⚠⚠ This arm exists because loosening `OWED_SHARE` from a half to a tenth was MEASURED
-    // GREEN against every arm above (2026-08-30). The refusing arm there pays `extra: 0`, and no
-    // multiplier rescues a zero — so the share itself was carrying nothing, which is the same
-    // ungated-line defect this whole item keeps buying, one level in.
+    // GREEN against every arm above (2026-08-30) — a share that carried nothing.
     //
-    // ⚠⚠⚠ THE BOUNDARY MOVED WITH THE DIVISOR — register item 783. It used to be a fixed debt of
-    // 70, because the SHORT arm fixed the rate and the short arm does not change as the long one
-    // is walked. Priced at the LONG arm's rate the debt grows with the arm being tested, so the
-    // boundary is a fixed POINT rather than a fixed share: 27 more looks is the first pair this
-    // control accepts and 26 more is the last it refuses.
+    // ⛔⛔⛔ **THE EDGE IS NOW ONE LOOK, and that is register item 786's residue said as a
+    // predicate.** With no denominator there is no share to walk: all the rule can ask is that the
+    // extra time bought at least one look. So the boundary is `long == short + 1` accepted and
+    // `long == short` refused, and walking the arm across it is the only thing that makes the
+    // liveness half a claim rather than a sentence.
     //
-    // ⛔ Those two are one fact about the arithmetic and not two readings: they are what the
-    // constant MEANS, and walking the arm one look either side of the edge is the only thing that
-    // makes `OWED_SHARE` a number anything reads.
+    // ⚠⚠ It is WEAKER than what it replaced — the old rule demanded growth in proportion — and
+    // that is the trade, stated: proportion needs a denominator, and a denominator is what refused
+    // three healthy hosts of fifteen and two real macOS readings. Binary growth is what rate-free
+    // costs.
     const STAGED_SHORT: u64 = 100;
     const STAGED_SHORT_TOOK: Duration = Duration::from_nanos(1_059_750_286);
     const STAGED_LONG_TOOK: Duration = Duration::from_nanos(1_811_089_083);
@@ -9496,30 +9547,30 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
         staging_control(
             STAGED_SHORT,
             STAGED_SHORT_TOOK,
-            STAGED_SHORT + 27,
+            STAGED_SHORT + 1,
             STAGED_LONG_TOOK,
             APART,
         ),
-        Staged::Bought {
-            extra: 27,
-            owed: 53
+        Staged::Grew {
+            short: 100,
+            long: 101
         },
-        "the first pair over the edge is bought — the headroom register item 668 asks for",
+        "one look over the edge is growth — all a rule with no denominator in it can ask",
     );
     assert_eq!(
         staging_control(
             STAGED_SHORT,
             STAGED_SHORT_TOOK,
-            STAGED_SHORT + 26,
+            STAGED_SHORT,
             STAGED_LONG_TOOK,
             APART,
         ),
-        Staged::Unbought {
-            extra: 26,
-            owed: 53
+        Staged::DidNotGrow {
+            short: 100,
+            long: 100
         },
-        "⛔ AND ONE LOOK BELOW THE EDGE IS REFUSED. Without this pair the share is a number \
-         nothing reads: widening it to a tenth was green against every other arm here",
+        "⛔ AND AT THE EDGE IT IS REFUSED. Without this pair the liveness half is a line nothing \
+         reads, which is exactly what happened to the share it replaced",
     );
 }
 
@@ -9760,16 +9811,18 @@ fn a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen() {
         LONG - SHORT,
     );
     assert!(
-        matches!(staged, Staged::Bought { .. }),
-        "⚠⚠⚠⚠ THE STAGING CONTROL: a surface that cannot be told MUST pay for the time it waits, \
-         or this host is not buying looks with time and the claim below is true of a fixture \
+        matches!(staged, Staged::Grew { .. }),
+        "⚠⚠⚠⚠ THE STAGING CONTROL: a surface that cannot be told must really SPEND the longer \
+         window and its counter must move while it does, or the claim below is true of a fixture \
          rather than of a park. It answered {staged:?}. The {LONG:?} arm waited \
          {control_long_took:?} for {control_long} look(s) and the {SHORT:?} arm \
          {control_short_took:?} for {control_short}. ⚠ `NotAPair` is the two arms' waits failing \
          to differ by the {:?} between the windows — one reading and not a pair, RED rather than a \
-         pass because nothing can be read off it. `Unbought` is the extra time failing to buy what \
-         the short arm's own rate owes; if the two rates differ, that is this runner's look cost \
-         changing between the arms and not the product — register item 668",
+         pass because nothing can be read off it. `DidNotGrow` is a counter that never moved over \
+         the extra time, which would satisfy the parked claim below vacuously. ⚠⚠ Neither reads a \
+         RATE any more — register item 786: this asked twice how many looks the extra time bought \
+         at some arm's measured pace, and both times a host that changed pace mid-wait was refused \
+         with nothing about the product changed",
         LONG - SHORT,
     );
 
