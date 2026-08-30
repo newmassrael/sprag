@@ -1756,15 +1756,83 @@ mod tests {
     ///   that and reported a whole capture.**
     /// * THE SUBJECT — the same reader, reaped ([`REAP_THE_STANDIN`]), cannot be holding a read
     ///   when the prompt arrives, so the question reaches the peer whole.
+    ///
+    /// # ⛔⛔⛔⛔⛔ THE CONTROL WAITED ON A CLOCK FOR A FACT, AND macOS CI BILLED IT
+    ///
+    /// Register item 776, arm ⑶-e. The fixture backgrounded the stand-in and then `sleep 0.3` —
+    /// a wall-clock stand-in for *the reader is parked in its read by now*. On a loaded runner that
+    /// is simply false: the fork and exec of `dd` have not finished, the barrier clears, the reply
+    /// shell takes the whole line, and **the control reports a complete capture** — measured on
+    /// `53b6cbe`'s `headless (macos)` job, and the run before it, `ee9e60b`, passed. A control that
+    /// holds only when the machine is quiet is the shape registers 771 and 775 spent two rounds
+    /// removing, arriving through the fixture instead of through the assertion.
+    ///
+    /// # ⚠⚠⚠⚠ So the script waits for THE THEFT, and each arm waits for its own fact
+    ///
+    /// The pseudoterminal buffers input until somebody reads it, so *when* the prompt arrives does
+    /// not matter — **who reads first** does. The stand-in now writes its stolen byte to a file and
+    /// the reply shell does not start until that file is non-empty, so the ordering is a fact the
+    /// script waits on rather than a race it hopes to win. The subject arm waits for its own fact
+    /// and always did: `wait $!` is *this process is gone*, which is why [`REAP_THE_STANDIN`]
+    /// exists at all.
+    ///
+    /// ⚠⚠ **AND THE LOADED SHAPE IS STAGED RATHER THAN HOPED FOR** — the second arm gives the
+    /// stand-in a deliberate delay before it reads, which is precisely what a busy runner does to
+    /// it. Under the fixture this replaces that arm fails every time; under this one it passes
+    /// every time, and it is what a mutation dropping the wait reddens.
+    ///
+    /// # ⛔⛔⛔ THE TWO FACES CI SHOWED ARE TWO CAUSES, AND ONLY ONE IS PAID HERE
+    ///
+    /// Item 776 recorded ⑶-e failing macOS two ways — a complete capture, and `Exhausted(Duration)`
+    /// with the turn still in flight — and the round that filed it left them as one entry. They are
+    /// not one thing, which this round measured by reproducing each on Linux:
+    ///
+    /// * **the complete capture is the THEFT race**, and the wait below removes it. Dropping that
+    ///   wait reddens the handicapped arm every time.
+    /// * **`Exhausted(Duration)` is the ARMING race** — a marker printed before the run's first
+    ///   step is one `ReadyWhen::Prints` can never count, so the barrier waits out the ceiling with
+    ///   NOTHING delivered. `sleep 0.3` is what stages the arming window, it is load-marginal, and
+    ///   it is left exactly as it was. **That half is still owed.**
+    ///
+    /// ⚠⚠ The ending WORD does not identify the cause: a fixture whose theft is unobservable
+    /// reaches `Exhausted(Duration)` by a third road (nothing ever completes the line for the reply
+    /// shell). ⚠ And `stopped` differs only by platform — macOS answers `CannotTellIfItWouldEnd`
+    /// because `procfs::signal_ends` is `None` there, which is item 776 ⑶-b and already paid.
     #[test]
     fn a_reader_that_outlives_the_barrier_steals_the_prompts_first_byte() {
         /// One turn against a pane whose stand-in reader is dealt with by `how`, answering what the
-        /// peer was actually asked.
-        fn asked(how: &str) -> String {
+        /// peer was actually asked. `slow` delays the stand-in's read the way runner load does.
+        fn asked(how: &str, slow: &str) -> String {
+            // ⚠ `of=` CREATES THE FILE AT ONCE AND `-s` TESTS ITS SIZE, which is the whole
+            // discrimination: the file existing means `dd` started, and the file being NON-EMPTY
+            // means its read RETURNED — the fact the control needs and the only one it waits for.
+            // ⚠⚠ A stand-in that is never reaped and never fed would spin here for ever; it cannot
+            // happen, because the arm that does not reap is the arm whose barrier clears and whose
+            // prompt therefore arrives. The run's own duration ceiling is the backstop.
+            //
+            // ⛔⛔⛔⛔⛔ **AND THE `sleep 0.3` STAYS, BECAUSE IT WAS DOING A SECOND JOB.** A draft of
+            // this repair removed it — it looked like the clock the theft-wait replaces — and the
+            // suite answered `Exhausted(Duration)` with NOTHING delivered, twice out of three
+            // whole-suite runs. That is a DIFFERENT race: `ReadyWhen::Prints` counts occurrences
+            // AFTER the barrier arms, so a marker printed before the run's first step is a marker
+            // it can never see. The delay is the window in which the run arms, it is load-marginal
+            // for exactly that reason, and it is register item 776 ⑶-e's REMAINING half — kept
+            // unchanged here rather than tuned, so this round changes one thing.
+            //
+            // ⚠ The stolen byte's file is left in `/tmp` under the pane's own pid. A draft that
+            // removed it before the `exec` was measured red too, and the two reds are the same
+            // one: what broke was never the `rm`.
             let script = format!(
-                "dd bs=1 count=1 of=/dev/null 2>/dev/null {STANDIN_READS_TTY} & \
+                "S=/tmp/sprag-standin-$$; \
+                 sh -c '{slow} exec dd bs=1 count=1 of='\"$S\"' 2>/dev/null' {STANDIN_READS_TTY} & \
                  sleep 0.3; {how} printf 'TOOL-UP\\n'; \
-                 exec sh -c 'in=$(cat); echo \"REPLY[$in]\"'"
+                 {} \
+                 exec sh -c 'in=$(cat); echo \"REPLY[$in]\"'",
+                if how.is_empty() {
+                    "until [ -s \"$S\" ]; do sleep 0.01; done;"
+                } else {
+                    ""
+                },
             );
             let (access, pane) = sh_access(&script, 40, 8);
             let mut agent = Agent::new(
@@ -1787,13 +1855,26 @@ mod tests {
         }
 
         assert_eq!(
-            asked(""),
+            asked("", ""),
             "REPLY[ummarise the repo]",
             "the control must really lose the first byte, or the subject below proves nothing — \
              and this is the shape a whole-suite run hit for real",
         );
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 776 ⑶-e: THE SAME CONTROL WITH THE RUNNER'S OWN HANDICAP.
+        //
+        // A second of delay before the stand-in reads is what a loaded macOS runner does to a fork
+        // it has not scheduled yet, and under the fixture this replaces — `sleep 0.3` standing in
+        // for *the reader is parked by now* — this arm loses the byte only by luck. Staged rather
+        // than waited for, so the flake is a case the suite RUNS instead of one CI meets.
         assert_eq!(
-            asked(REAP_THE_STANDIN),
+            asked("", "sleep 1;"),
+            "REPLY[ummarise the repo]",
+            "⛔ a stand-in that is slow to reach its read still gets the first byte, because the \
+             terminal holds the line until somebody reads it. A fixture that assumed otherwise was \
+             asserting the machine was quiet",
+        );
+        assert_eq!(
+            asked(REAP_THE_STANDIN, ""),
             "REPLY[summarise the repo]",
             "a barrier may only clear once the reader that was there before it is GONE — \
              signalling it is an act, and what a fixture must wait for is the fact",
