@@ -2430,6 +2430,101 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE ARMING LOOK IS THE RUN'S FIRST `pane_collapsed`** — register item 610 (and
+    /// item 776 arm ⑶-e), whose repair rests on this and could not otherwise ask for it.
+    ///
+    /// # ⚠⚠⚠⚠ A fixture cannot print its readiness marker until the barrier has armed
+    ///
+    /// [`ReadyWhen::Prints`] clears on *more than when I armed*, so a marker printed before the
+    /// run's first step lands inside the baseline and the wait spends its whole ceiling with
+    /// nothing delivered. `a_reader_that_outlives_the_barrier_steals_the_prompts_first_byte` used
+    /// to guess that instant with `sleep 0.3`; it now makes it a FACT by publishing a file once the
+    /// run's first `pane_collapsed` has returned.
+    ///
+    /// **That is only the arming look because the two gates ahead of the baseline read other
+    /// doors** — `interrupted` asks [`PaneAccess::hands`] and `settled_question` asks
+    /// [`PaneAccess::supervision`], neither of which renders a screen.
+    ///
+    /// # ⛔⛔⛔ And that is a claim about THIS function's code path, so it is asked, not written
+    ///
+    /// A gate added above the baseline that reads the screen through this door would falsify it
+    /// **silently**: the fixture would publish early, the marker would be back inside the baseline,
+    /// and the failure would arrive as an ordinary `Exhausted(Duration)` — the very confusion
+    /// register item 776 recorded twice. So the screen below hides the marker from the FIRST
+    /// collapsed read alone. A barrier that arms on that read sees a baseline of zero and clears on
+    /// the next one; a barrier that arms any later sees the marker already there and can never rise
+    /// above its own baseline.
+    #[test]
+    fn the_arming_look_is_the_runs_first_collapsed_read() {
+        /// A pane that is blank to its first collapsed read and shows the marker to every one
+        /// after — every optional capability at its default, as the run's own host is not.
+        struct MarkerAfterTheFirstLook {
+            looks: std::sync::atomic::AtomicUsize,
+        }
+        impl MarkerAfterTheFirstLook {
+            fn screen(seen: usize) -> String {
+                if seen == 0 {
+                    "starting up".to_string()
+                } else {
+                    "BANNER up".to_string()
+                }
+            }
+        }
+        impl PaneAccess for MarkerAfterTheFirstLook {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                let seen = self.looks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some(Self::screen(seen))
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            /// ⚠ It does NOT advance the count: only the collapsed read is the look this gate is
+            /// about, and charging another door for it would make the first look land somewhere
+            /// nothing arms from.
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(Self::screen(
+                    self.looks.load(std::sync::atomic::Ordering::SeqCst),
+                ))
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                panic!("⚠ this gate is about the BASELINE alone; a barrier does not inject")
+            }
+        }
+
+        let panes = MarkerAfterTheFirstLook {
+            looks: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let reached = Readiness::new(
+            Some(ReadyWhen::Prints("BANNER".to_string())),
+            // ⚠ Short on purpose: the failure this gate is for is a wait that never ends, so the
+            // bound is what makes it ANSWER rather than what it measures.
+            Some(Duration::from_secs(2)),
+            None,
+            Attended::NoOne,
+        )
+        .reached(&panes, PaneId(1), &RunContext::uncancellable());
+        assert_eq!(
+            reached,
+            Ok(Reached::Yes),
+            "⛔⛔⛔⛔⛔ THE BASELINE WAS NOT TAKEN ON THE FIRST COLLAPSED READ, so a marker printed \
+             the moment that read returns is one this barrier has ALREADY counted and can never \
+             rise above. Register item 610's fixture publishes its arming fact exactly there, so a \
+             gate added above the baseline that renders a screen breaks it — and breaks it into an \
+             ordinary `Exhausted(Duration)` that names nothing. Collapsed reads taken: {}",
+            panes.looks.load(std::sync::atomic::Ordering::SeqCst),
+        );
+    }
+
     /// ⚠⚠ **A JOB'S LEADER IS NOT EVERY PROCESS IN IT** — the documented limit of
     /// [`ReadyWhen::Runs`], measured rather than left as prose.
     ///

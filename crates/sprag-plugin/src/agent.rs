@@ -2056,15 +2056,19 @@ mod tests {
                  until the arming look has RETURNED, and a gate reading the screen ahead of that \
                  look would put it back inside the baseline. Outcome: {outcome:?}",
             );
-            // ⚠⚠ AND THE ENDING, now that the cause above is excluded. `Exhausted(Duration)` with
-            // `Bytes(20)` is a delivered prompt whose reply never completed — the third road, and
-            // a different debt from the one the line above names.
+            // ⚠⚠ AND THE ENDING. ⛔ It does NOT claim the arming race is excluded: `armed_on`
+            // holds the FIRST collapsed read, which is the arming look only while
+            // `the_arming_look_is_the_runs_first_collapsed_read` holds. That gate is where the
+            // claim lives; this message names it rather than asserting past it.
             assert_eq!(
                 outcome.state,
                 OutcomeState::Converged,
-                "⛔ the barrier armed on a clean screen, so this ending is NOT the arming race: \
-                 `Bytes(20)` here is a prompt delivered and a reply that never completed. \
-                 {outcome:?}",
+                "⛔ `Bytes(0)` here is the marker inside the barrier's baseline and `Bytes(20)` is \
+                 a prompt delivered whose reply never completed — two debts, and the cost is what \
+                 tells them apart. ⚠ For `Bytes(0)`, read \
+                 `the_arming_look_is_the_runs_first_collapsed_read` FIRST: it is what makes the \
+                 first collapsed read the arming one, and this fixture publishes its arming fact \
+                 exactly there. {outcome:?}",
             );
             let captured = agent.captured().expect("a captured reply");
             access.lifecycle().expect("lifecycle").close(pane);
