@@ -58,7 +58,7 @@ use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
 use sprag_terminal::CommandBuilder;
 use sprag_terminal::pty::Pty;
-use sprag_vt::{Emulator, InputModes, MouseProtocol, VtPort};
+use sprag_vt::{Emulator, InputModes, MouseProtocol, ScreenKind, VtPort};
 
 /// How long any single condition may take before the test calls it a failure.
 ///
@@ -600,6 +600,262 @@ fn painted(tui: &Tui, want: &str) -> Result<(), String> {
     Err(tui.picture())
 }
 
+/// **WHERE THE CLIENT'S FRAME ENDS, against where the screen says it must end** — register item
+/// 787, and the fork a screenful of blanks cannot make on its own.
+///
+/// # ⚠⚠⚠⚠⚠ The reading that was made backwards, and why the rows could not stop it
+///
+/// Item 787's macOS failure printed thirty rows of which two carried anything: the client's status
+/// sentence, on rows 21 AND 22, of a screen whose last row is 29. Everything else — the pane's own
+/// `hello` included — was blank. The round reading it took that for *a client that repainted
+/// nothing*, because the standing facts said what had been painted and never WHERE the painting
+/// stopped: a frame that ends seven rows early and a frame that is empty arrive as the same list.
+///
+/// **They ask for opposite repairs.** A client that painted nothing is `PaintCache` or the wire to
+/// it. A frame sitting above the bottom of the screen is the harness reading rows the client's
+/// frame no longer occupies — and no amount of looking at `PaintCache` would ever reach it. That is
+/// the fork item 787's own done-when asks the NEXT occurrence to carry, made a fact rather than a
+/// thing a reader has to notice in a list of thirty strings.
+///
+/// # ⚠⚠ The LAST painted row, not the first
+///
+/// `sprag-tui` reserves the last row of its terminal for its own status line ([`panes_of`]), so a
+/// working client's lowest painted row IS the screen's last row, whatever the panes above it hold.
+/// Anchoring on the first painted row instead would call a healthy client displaced the moment the
+/// top pane had text in it, which is every test in this file.
+///
+/// # ⚠ Three states, three sentences
+///
+/// The lesson item 787 paid for one level down, applied here before it costs anything: two states
+/// spelled the same way let a failure move between them with nobody able to tell. *Ends where it
+/// must*, *ends early*, and *nothing painted at all* are three different facts about a client, and
+/// they read as three different lines.
+fn where_the_frame_ends(rows: &[String]) -> String {
+    let Some(last) = rows.len().checked_sub(1) else {
+        return "the screen has no rows to paint".to_owned();
+    };
+    match rows.iter().rposition(|row| !row.trim().is_empty()) {
+        None => format!("NOTHING is painted on any of its {} rows", rows.len()),
+        Some(ends) if ends == last => {
+            format!("the frame ends on its last row {last}, where it must")
+        }
+        Some(ends) => format!(
+            "the frame's lowest painted row is {ends}, {} above the screen's last row {last} — the \
+             frame is DISPLACED",
+            match last - ends {
+                1 => "1 row".to_owned(),
+                gap => format!("{gap} rows"),
+            },
+        ),
+    }
+}
+
+/// **WHICH GRID THE HARNESS IS READING** — the question [`where_the_frame_ends`] raises and cannot
+/// answer, register item 787.
+///
+/// A frame that ends above the bottom of the screen was moved by something, and exactly one of the
+/// candidates is a property of this harness's own emulator rather than of the client: **whether the
+/// grid is the alternate screen at all.** `sprag-tui` takes it at startup (`enter_alternate_screen`)
+/// and an alternate screen does not scroll its rows into history — so a client that is on it owns
+/// every cell position, and a displacement has to have come from somewhere else. A client that is
+/// NOT on it is painting into a grid its own output scrolls, which moves every row under the
+/// harness's feet and needs no defect at all to do it.
+///
+/// # ⛔⛔⛔⛔⛔ THE COUNT IS THE ONE THAT SURVIVES AN ALTERNATE SCREEN, AND THE OBVIOUS ONE DOES NOT
+///
+/// *Which grid* alone does not finish the question — an alternate screen can still scroll WITHIN
+/// itself, and then the frame moved with no defect anywhere either. So the clause carries a number,
+/// and **the number cannot be `Screen::scrollback_len`**: `sprag-vt` refuses retention on the
+/// alternate screen on purpose (`port.rs`, *"THE ALT SCREEN KEEPS NOTHING AND MUST STILL COUNT"*,
+/// register item 367), so that length is **structurally zero** on every client this file spawns. A
+/// clause printing it would print `0` whether or not the grid had moved, and a reader would take
+/// the `0` for evidence it had not — this workspace's rule 6, an escape hatch that reads like an
+/// answer.
+///
+/// Item 367 built the count that does survive: the monotonic tally of rows that have left the top,
+/// kept for the alternate screen precisely because nothing else records the loss there. It is
+/// public as [`LinesSince::lost`] — *"how many complete lines were shed and evicted before this
+/// reader asked for them"* — which on a screen that retains nothing is every row that has gone.
+/// `retained` is reported beside it rather than folded in, because on the MAIN screen a shed row is
+/// still readable and on the alternate one it is not, and those are different facts.
+///
+/// ⚠⚠ **A pure function over the values, not a read of the live emulator**, and that is the whole
+/// reason it can be trusted: only one of these states is stageable here — every client this file
+/// spawns takes the alternate screen and none of them scrolls it — so a clause that could only be
+/// exercised live would have its other arms driven by nothing. Item 787's own history is the
+/// argument: two mutations of an unreachable branch came back GREEN.
+///
+/// ⚠ **THE RESIDUE, STATED RATHER THAN HIDDEN.** What is held here is the FUNCTION, over both kinds
+/// and over a shed count of zero and non-zero, plus that [`Tui::grid`] calls it with the emulator's
+/// own reading. What is NOT held is the live feed of `shed` being non-zero: no fixture in this file
+/// makes a client scroll its alternate grid, so a [`Tui::grid`] that passed a literal `0` would go
+/// green. That is the state the next occurrence is being sent to measure, and it is why the number
+/// is printed rather than turned into a verdict here.
+fn what_the_grid_is(kind: ScreenKind, shed: u64, retained: usize) -> String {
+    match kind {
+        ScreenKind::Alternate => format!(
+            "its grid is the ALTERNATE screen, which retains nothing, so the {shed} row(s) that \
+             have left its top are the whole record of whether it scrolled"
+        ),
+        ScreenKind::Main => format!(
+            "its grid is the MAIN screen, which this client's OWN output scrolls — {retained} \
+             row(s) still in history and {shed} shed past it, so a displaced frame here needs no \
+             defect anywhere"
+        ),
+    }
+}
+
+/// **The thirty rows item 787's failure actually printed** — read off the job log of `2232e5b`,
+/// `headless (macos)`, 2026-08-30, which is the only place they exist.
+///
+/// Data, not prose, for the reason item 785 recorded one item over: a sample written into a comment
+/// is a sample nothing compares anything against. Two rows carry the client's status sentence and
+/// twenty-eight are blank — including row 0, where the pane's `hello` had been.
+/// ⚠ Laid out so the two painted rows sit on their own line: WHICH rows carry anything is the
+/// whole of what this sample is for, and reflowed into a paragraph of `""` it stops showing that.
+#[rustfmt::skip]
+const MACOS_2232E5B: [&str; 30] = [
+    "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    "[0] 0:0*", "[0] 0:0*",
+    "", "", "", "", "", "", "",
+];
+
+/// **THE GATE for [`where_the_frame_ends`]: the same painted rows on two screen heights get
+/// OPPOSITE verdicts** — register item 787.
+///
+/// The arms are ordered so that each kills something the one before it cannot:
+///
+/// * the failure's own rows say DISPLACED, and name both ends of the gap;
+/// * **the same rows on a screen one row shorter say the frame is where it must be** — the verdict
+///   comes from the screen's height, so a reading anchored on a constant (`BOOT_PTY.1 - 1`, which
+///   is what this file used until item 787) gets this one backwards;
+/// * a healthy 30-row client — pane text at the top, status at the bottom — is NOT displaced, which
+///   is what a reading anchored on the FIRST painted row would call it;
+/// * a screen nobody has painted says so in its own words rather than borrowing either verdict,
+///   this workspace's rule 6.
+#[test]
+fn the_same_rows_on_two_screen_heights_do_not_get_the_same_verdict() {
+    let screen = |rows: &[&str]| rows.iter().map(|row| (*row).to_owned()).collect::<Vec<_>>();
+
+    let displaced = where_the_frame_ends(&screen(&MACOS_2232E5B));
+    assert_eq!(
+        displaced,
+        "the frame's lowest painted row is 22, 7 rows above the screen's last row 29 — the frame \
+         is DISPLACED",
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 787: this is the observation the round that opened 787 read as *a \
+         client that repainted nothing*. The client's own status sentence is sitting seven rows \
+         above the bottom of its screen, and a standing fact that does not say so hands *the frame \
+         moved* and *the frame is empty* to a reader as the same list of blanks — two failures \
+         whose repairs are in different processes",
+    );
+
+    // THE SAME PAINTED ROWS, one row less of screen. Nothing about what the client did has changed;
+    // the only thing that moved is where the bottom is.
+    assert_eq!(
+        where_the_frame_ends(&screen(&MACOS_2232E5B[..23])),
+        "the frame ends on its last row 22, where it must",
+        "⛔⛔⛔⛔ REGISTER ITEM 787: the verdict is not being taken from the SCREEN. These are the \
+         same rows as above and this screen ends where the client stopped painting, so calling it \
+         displaced is a boot-sized constant answering a question about a resized client — the \
+         exact fault `Tui::status_row` was made a method to end",
+    );
+
+    // A HEALTHY thirty-row client: the pane's text at the top, the client's row at the bottom.
+    let mut healthy = screen(&[""; 30]);
+    healthy[0] = "hello".to_owned();
+    healthy[29] = "[0] 0:0*".to_owned();
+    assert_eq!(
+        where_the_frame_ends(&healthy),
+        "the frame ends on its last row 29, where it must",
+        "⛔⛔⛔⛔ REGISTER ITEM 787: a client with text in its top pane is being called displaced, \
+         so this reads the FIRST painted row. Every test in this file paints something at the top; \
+         a verdict that fires on all of them separates nothing",
+    );
+
+    assert_eq!(
+        where_the_frame_ends(&screen(&[""; 30])),
+        "NOTHING is painted on any of its 30 rows",
+        "⛔⛔⛔ REGISTER ITEM 787: a screen with no painting at all is being given one of the two \
+         verdicts about WHERE the painting stopped. It is the third state, and rule 6 says an \
+         unclassified case is red rather than whichever answer it falls into",
+    );
+
+    // ── AND ITEM 519's FAILURE, WHICH THIS FUNCTION ANSWERS THE OTHER WAY ───────────────────
+    //
+    // ⭐⭐ Item 787 asks, in its own register entry, whether it is the same defect as item 519.
+    // The two recorded screens answer DIFFERENTLY through this one function, and that is a better
+    // answer than the paragraph the question was asked in.
+    //
+    // 519's linux timeout (`64f850d`) recorded its screen by COUNTS: rows 0-3 painted whole at 79
+    // characters, row 4 stopped at 63, rows 5-22 empty, row 23 the client's status row. Rebuilt
+    // here from those counts rather than copied — what this function reads is WHICH rows carry
+    // anything, and that is exactly what the record fixes. 519's frame ENDS WHERE IT MUST and its
+    // content is short; 787's content is whole and its frame is seven rows up.
+    let mut linux_64f850d = screen(&[""; 24]);
+    for row in linux_64f850d.iter_mut().take(4) {
+        *row = format!("L0x{}", "-".repeat(76));
+    }
+    linux_64f850d[4] = format!("L03{}", "-".repeat(60));
+    linux_64f850d[23] = "[0] 0:0*".to_owned();
+    assert_eq!(
+        where_the_frame_ends(&linux_64f850d),
+        "the frame ends on its last row 23, where it must",
+        "⛔⛔⛔⛔ REGISTER ITEMS 519 AND 787: item 519's client painted its status row where its \
+         screen ends and stopped part-way through a PANE row. Calling that displaced would merge \
+         the two items into one defect on the strength of a shared panic line — which is the \
+         reading 519's own entry had to correct once already",
+    );
+    assert_ne!(
+        where_the_frame_ends(&linux_64f850d),
+        where_the_frame_ends(&screen(&MACOS_2232E5B)),
+        "⛔⛔⛔⛔⛔ REGISTER ITEMS 519 AND 787: the two registered timeouts read alike here, so this \
+         function cannot be what tells them apart — and they die on the SAME LINE of this file \
+         (the shared `wait_bounded` panic), which is the only thing they were ever known to share",
+    );
+
+    // ── AND WHICH GRID THAT VERDICT IS ABOUT ────────────────────────────────────────────────
+    //
+    // ⚠ The arm no fixture here can stage: every client this file spawns takes the alternate
+    // screen, so *main screen* is reachable only as DATA. Driving it from data is what stops it
+    // being a branch nobody drives — the shape that let two mutations of this clause's neighbour
+    // come back green (item 787's own record).
+    let alternate = what_the_grid_is(ScreenKind::Alternate, 0, 0);
+    let scrolled = what_the_grid_is(ScreenKind::Alternate, 7, 0);
+    let main = what_the_grid_is(ScreenKind::Main, 7, 4);
+    assert!(
+        alternate.contains("ALTERNATE") && !alternate.contains("MAIN"),
+        "⛔⛔ REGISTER ITEM 787: an alternate-screen grid retains nothing, and saying so is what \
+         tells a reader what its count of shed rows is worth: {alternate}",
+    );
+    assert!(
+        main.contains("MAIN") && main.contains('7') && main.contains('4'),
+        "⛔⛔⛔⛔ REGISTER ITEM 787: a client that never took the alternate screen paints into a \
+         grid its own output scrolls — the one mechanism that moves a whole frame with no defect \
+         anywhere. The clause must name it, count the rows it has shed AND say how many of them \
+         are still readable, which is the half the alternate screen does not have: {main}",
+    );
+    assert_ne!(
+        alternate, main,
+        "⛔⛔⛔ REGISTER ITEM 787: the two grids read the same, so the fact carries nothing — the \
+         same disease as the two refusals this item already had to give different words",
+    );
+
+    // ⛔⛔⛔⛔⛔ AND THE COUNT MOVES ON THE ALTERNATE SCREEN. This is the arm `Screen::scrollback_len`
+    // cannot satisfy: `sprag-vt` refuses retention there (item 367), so that length is zero for
+    // every state a client of this file can be in, and a clause built on it says `0` about a grid
+    // that scrolled seven rows exactly as loudly as about one that never moved.
+    assert_ne!(
+        alternate, scrolled,
+        "⛔⛔⛔⛔⛔ REGISTER ITEMS 367 AND 787: an alternate screen that has shed seven rows reads \
+         the same as one that has shed none, so the number in this clause is structurally dead and \
+         a reader taking it for *the grid did not move* is being misled by a constant",
+    );
+    assert!(
+        scrolled.contains('7'),
+        "⛔⛔⛔⛔ REGISTER ITEM 787: the shed count is not reaching the sentence: {scrolled}",
+    );
+}
+
 /// `Ok` when the client's STATUS ROW reads `want`, else [`Tui::picture`] as the diagnostic.
 ///
 /// # ⚠ THE ROW ALONE COST THREE ROUNDS, AND THIS IS WHAT IT COST THEM
@@ -619,7 +875,7 @@ fn painted(tui: &Tui, want: &str) -> Result<(), String> {
 /// So the picture is not a nicety here, it is the instrument: an assertion's message is part of it,
 /// and a gate that cannot say what it saw costs a reproduce cycle every time it fires.
 fn says(tui: &Tui, want: &str) -> Result<(), String> {
-    if tui.row(STATUS_ROW) == want {
+    if tui.status_row_text() == want {
         return Ok(());
     }
     Err(tui.picture())
@@ -628,7 +884,7 @@ fn says(tui: &Tui, want: &str) -> Result<(), String> {
 /// [`says`] for a row asserted by its CONTENTS rather than whole — the same diagnostic, because the
 /// three failures it cannot tell apart are the same three.
 fn mentions(tui: &Tui, needle: &str) -> Result<(), String> {
-    if tui.row(STATUS_ROW).contains(needle) {
+    if tui.status_row_text().contains(needle) {
         return Ok(());
     }
     Err(tui.picture())
@@ -716,7 +972,7 @@ fn end_the_repeat_window(tui: &mut Tui) {
 ///
 /// **The sound reading for a message that EXPIRES**, and the reason is the one [`Tui::status_trail`]
 /// is written around: a `display-time` message is on the row for its deadline and then gone, so
-/// `tui.row(STATUS_ROW)` inside a [`wait_for`] can only see it by happening to look while it is
+/// `tui.status_row_text()` inside a [`wait_for`] can only see it by happening to look while it is
 /// there — and under load the whole test process is descheduled for longer than the message lives.
 /// The trail is a history of the client's frames, so this question has no clock in it.
 ///
@@ -902,8 +1158,13 @@ impl Tui {
                                 // Read INSIDE the same lock the frame was applied under, so the trail
                                 // cannot record a row from a state no frame produced. See `status_trail`
                                 // for why this is here and not in a polling loop.
-                                let row = VtPort::screen(&*emulator)
-                                    .row_text(STATUS_ROW)
+                                //
+                                // ⛔ THE SCREEN'S OWN LAST ROW, not a constant — see
+                                // `Tui::status_row`, and item 787, whose trail recorded row 23 of a
+                                // client that had been resized to thirty rows.
+                                let screen = VtPort::screen(&*emulator);
+                                let row = screen
+                                    .row_text(screen.rows().saturating_sub(1))
                                     .trim_end()
                                     .to_owned();
                                 let mut trail =
@@ -1102,6 +1363,51 @@ impl Tui {
             .to_owned()
     }
 
+    /// The row this client's own status line is on — the LAST row of the screen it is painting.
+    ///
+    /// ⛔⛔⛔⛔⛔ **A METHOD ON THE CLIENT, BECAUSE IT WAS A CONSTANT AND THE CONSTANT WENT STALE** —
+    /// register item 787. `STATUS_ROW` was `BOOT_PTY.1 - 1`, the last row of a *24-row* terminal,
+    /// and every reader in this file spelled it that way including the status TRAIL. A test that
+    /// resizes its client to another height moves the client's status line and leaves all of them
+    /// reading a row inside the PANES. This file already said so — `two_clients_on_two_windows…`
+    /// calls it *a fixture fault that reads exactly like a client painting nothing, and did for one
+    /// run* — and nothing enforced it, which is this workspace's rule 10 exactly: a reason written
+    /// as prose is a reason nobody measures.
+    ///
+    /// ⚠⚠ **It cost the reading of item 787's own failure.** That client had been resized to
+    /// 100x30, so every trail reading taken after the resize is of row 23 of a screen whose status
+    /// row is 29 — a row inside the panes. The trail printed `["[0] 0:0*", ""]` and the round read
+    /// that `""` as *the client closed a frame with an empty status row*: a claim about the product
+    /// that the reading cannot carry, because the row it came from was not the client's.
+    ///
+    /// ⚠ Derived from the SCREEN rather than from the size this harness pushed, so the two cannot
+    /// drift: [`Tui::resize`] moves the pty and the reading emulator together, and the emulator is
+    /// what every reader here is actually looking at.
+    fn status_row(&self) -> u16 {
+        let emulator = self.screen.lock().expect("the screen mutex");
+        VtPort::screen(&*emulator).rows().saturating_sub(1)
+    }
+
+    /// The text of this client's status row, trailing blanks trimmed — [`Tui::status_row`] read now.
+    fn status_row_text(&self) -> String {
+        self.row(self.status_row())
+    }
+
+    /// Which grid this harness is reading, and how much has left the top of it — the live half of
+    /// [`what_the_grid_is`].
+    fn grid(&self) -> String {
+        let emulator = self.screen.lock().expect("the screen mutex");
+        let screen = VtPort::screen(&*emulator);
+        // ⚠ `lines_since(0).lost` rather than `scrollback_len()`: on the alternate screen this
+        // client lives on, retention is refused by design and the length is structurally zero. See
+        // [`what_the_grid_is`], which is where that costs a paragraph.
+        what_the_grid_is(
+            screen.screen_kind(),
+            screen.lines_since(0).lost,
+            screen.scrollback_len(),
+        )
+    }
+
     /// The character painted at `(col, row)`, or `None` past the end of that row.
     ///
     /// UNtrimmed, unlike [`Tui::row`]: a divider's column is exactly what the padding question is
@@ -1183,17 +1489,24 @@ impl Tui {
         format!("{:?} {}", self.rows(), self.standing())
     }
 
-    /// The two facts about this client that a CONDITION can never put in its own diagnostic: what it
-    /// painted while nobody was looking, and whether it is still there.
+    /// The facts about this client that a CONDITION can never put in its own diagnostic: what it
+    /// painted while nobody was looking, whether it is still there, WHERE its frame ends, and what
+    /// the daemon holds for the pane behind it.
     ///
     /// Split out of [`Tui::picture`] so [`Tui::wait_for`] can append it to a bespoke observation
     /// without printing the screen twice — most of those already print the rows they are about, and
-    /// neither of these.
+    /// none of these.
+    ///
+    /// ⚠ [`where_the_frame_ends`] is here rather than in [`Tui::picture`] deliberately: the rows are
+    /// what a condition prints, and the fact that they END EARLY is precisely what a reader looking
+    /// at those rows did not see (item 787).
     fn standing(&self) -> String {
         format!(
-            "(status painted {:?}, client: {}, {})",
+            "(status painted {:?}, client: {}, {}, {}, {})",
             self.status_rows(),
             self.liveness(),
+            where_the_frame_ends(&self.rows()),
+            self.grid(),
             self.pane_behind(),
         )
     }
@@ -1599,6 +1912,30 @@ fn a_failing_wait_says_what_the_pane_behind_the_client_holds() {
          one on this diagnostic's first firing: {standing}",
     );
 
+    // ── AND WHERE THE CLIENT'S FRAME ENDS ───────────────────────────────────────────────────
+    //
+    // ⛔⛔⛔⛔⛔ REGISTER ITEM 787. The rows are already printed and that is exactly the problem:
+    // item 787's failure printed thirty of them, two painted and twenty-eight blank, and the round
+    // reading them took it for a client that painted nothing. The client's sentence was seven rows
+    // above the bottom of its own screen — the frame had MOVED, which is a different failure in a
+    // different process. A reader is not obliged to notice that in a list; the clause says it.
+    assert!(
+        standing.contains("the frame ends on its last row"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 787: this client is painting its status row where its screen ends, \
+         and the standing facts do not say so — so when a frame is NOT there, the blanks a reader \
+         gets say nothing about whether the client stopped painting or the harness is reading rows \
+         the frame no longer occupies: {standing}",
+    );
+    // ...AND WHICH GRID THAT IS ABOUT. A live client is the ALTERNATE arm of `what_the_grid_is`,
+    // and it is the only arm a fixture here reaches — the other is driven from data.
+    assert!(
+        standing.contains("its grid is the ALTERNATE screen"),
+        "⛔⛔⛔⛔ REGISTER ITEM 787: `sprag-tui` takes the alternate screen at startup and the \
+         standing facts do not say which grid they are describing, so *the frame moved* leaves a \
+         reader unable to rule out the one mechanism that needs no defect at all — a client \
+         painting into a grid its own output scrolls: {standing}",
+    );
+
     // ── AND THE RECTANGLE THE DAEMON HAS FOR THAT PANE ──────────────────────────────────────
     //
     // ⛔⛔⛔⛔⛔ REGISTER ITEM 787. The failure that opened it is `a_clear_that_moved_no_rectangle_
@@ -1626,7 +1963,7 @@ fn a_failing_wait_says_what_the_pane_behind_the_client_holds() {
     // from `rows()` carries it and a clause built from the pane cannot. Without this arm the
     // assertion above is satisfied by printing the screen twice, which would add a line and no
     // information.
-    let status = tui.row(STATUS_ROW);
+    let status = tui.status_row_text();
     assert!(
         !status.trim().is_empty(),
         "⚠⚠⚠ THE CONTROL'S OWN PREMISE FAILED: the client has painted no status row, so what \
@@ -1692,6 +2029,79 @@ fn a_failing_wait_says_what_the_pane_behind_the_client_holds() {
         "⛔⛔⛔⛔⛔ REGISTER ITEM 519: an absence is rendering as a measurement — *nobody could ask* \
          is being printed as *the pane holds nothing*, and those are the two halves of the fork \
          this whole clause exists to separate: {orphaned}",
+    );
+}
+
+/// **THE STATUS TRAIL FOLLOWS A CLIENT WHOSE TERMINAL CHANGED HEIGHT** — register item 787, and
+/// the arm that makes [`Tui::status_row`] a measurement rather than a rename.
+///
+/// # ⚠⚠⚠⚠⚠ What the constant did to the reading of item 787's failure
+///
+/// The trail used to record `BOOT_PTY.1 - 1` — row 23 — for the life of the client. The failure
+/// that opened item 787 happens in a test that resizes its client to **100x30**, where the status
+/// row is 29, so every reading the trail took after that resize was of a row inside the PANES. It
+/// printed `["[0] 0:0*", ""]`, and the round read that `""` as *the client closed a frame whose
+/// status row was empty*. The reading cannot carry that: the row it came from was not the client's.
+///
+/// # ⚠⚠ The control is that the row MOVES
+///
+/// A resize that left the status row where it was would let a frozen reader pass, so the assertions
+/// state both halves: the new row is the new terminal's last, and the boot row is no longer the
+/// client's. Without the second, this test is satisfied by a client that never resized at all.
+#[test]
+fn the_status_trail_follows_a_client_whose_terminal_changed_height() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+    let sentence = format!("[{session}]");
+
+    tui.type_bytes(b"hello");
+    wait_for("the typed text to come back painted", || {
+        painted(&tui, "hello")
+    });
+    let boot_row = tui.status_row();
+    assert_eq!(
+        boot_row,
+        BOOT_PTY.1 - 1,
+        "the boot client's status row is the last row of the terminal it was born on",
+    );
+
+    let terminal = (100, 30);
+    tui.resize(terminal.0, terminal.1);
+    wait_for("the daemon to take the new size", || {
+        settled(pane_size(&mut conn, &session), &Some(panes_of(terminal)))
+    });
+    tui.wait_for("the client to paint its row at the new height", || {
+        settled(tui.status_row_text().starts_with(&sentence), &true)
+    });
+
+    assert_eq!(
+        tui.status_row(),
+        terminal.1 - 1,
+        "the client's status row is the last row of the terminal it is on NOW: {:?}",
+        tui.rows(),
+    );
+    assert_ne!(
+        tui.status_row(),
+        boot_row,
+        "THE CONTROL: a resize that did not move the row would let a frozen reader pass",
+    );
+    assert!(
+        !tui.row(boot_row).starts_with(&sentence),
+        "⛔⛔⛔⛔ THE CONTROL'S OTHER HALF: the boot row still carries the client's sentence, so \
+         nothing below distinguishes a reader that followed the screen from one that did not: {:?}",
+        tui.rows(),
+    );
+
+    let trail = tui.status_rows();
+    let newest = trail
+        .last()
+        .expect("the client has closed at least one frame");
+    assert!(
+        newest.starts_with(&sentence),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 787: the status trail is recording a row this client no longer \
+         paints its status on, so its newest entry is the blank inside a pane. That empty string \
+         is what got read as *the client closed a frame with an empty status row* on the failure \
+         that opened 787: trail {trail:?}, screen {:?}",
+        tui.rows(),
     );
 }
 
@@ -2712,11 +3122,11 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
     tui.type_bytes(ARROW_LEFT);
     tui.wait_for("the edge to be reported on the status row", || {
         settled(
-            tui.row(BOOT_PTY.1 - 1)
+            tui.status_row_text()
                 .contains("select-pane -L: nowhere to go"),
             &true,
         )
-        .map_err(|got| format!("{got}: row reads {:?}", tui.row(BOOT_PTY.1 - 1)))
+        .map_err(|got| format!("{got}: row reads {:?}", tui.status_row_text()))
     });
     // ⚠ THE REPEAT WINDOW AGAIN, and this time it was a BINDING that opened the hole rather than a
     // timing change. The arrow above is `-r`, so for `repeat-time` afterwards the prefix table is
@@ -3933,9 +4343,10 @@ fn two_clients_on_two_windows_of_one_session_size_them_separately() {
     let mut conn = observe(&sock);
     let session = boot_session(&mut conn);
 
-    // Same HEIGHT, different WIDTH: `STATUS_ROW` is the last row of a 24-row terminal, so a
-    // shorter client would put its own row somewhere this file's readers do not look — a fixture
-    // fault that reads exactly like a client painting nothing, and did for one run.
+    // Same HEIGHT, different WIDTH — kept, though the fixture fault it was avoiding is now gone:
+    // this file's readers ask [`Tui::status_row`] rather than a boot-sized constant, so a shorter
+    // client's own row is where they look. ⚠ The two clients still differ in ONE dimension only,
+    // because what this test arbitrates is a WIDTH and a second moving number would blur it.
     let (wide_pty, narrow_pty) = ((100u16, BOOT_PTY.1), (60u16, BOOT_PTY.1));
     let (wide_area, narrow_area) = (panes_of(wide_pty), panes_of(narrow_pty));
 
@@ -3984,7 +4395,7 @@ fn two_clients_on_two_windows_of_one_session_size_them_separately() {
     narrow.type_bytes(PREFIX);
     narrow.type_bytes(b"n");
     narrow.wait_for("the narrow client's row to name the second window", || {
-        settled(narrow.row(STATUS_ROW), &format!("[{session}] 0:0 1:1*"))
+        settled(narrow.status_row_text(), &format!("[{session}] 0:0 1:1*"))
     });
 
     // 1. THE WIDE CLIENT DID NOT FOLLOW. Its row still marks window 0 as the one it is on.
@@ -3999,9 +4410,9 @@ fn two_clients_on_two_windows_of_one_session_size_them_separately() {
     // ⚠ It is not weaker than the assertion it replaces: a wide client that had wrongly FOLLOWED
     // would paint `0:0 1:1*` and never reach this, so the wait ends in a refusal naming the row.
     wide.wait_for("the wide client's row to list both windows", || {
-        settled(wide.row(STATUS_ROW), &format!("[{session}] 0:0* 1:1"))
+        settled(wide.status_row_text(), &format!("[{session}] 0:0* 1:1"))
     });
-    let wides_row = wide.row(STATUS_ROW);
+    let wides_row = wide.status_row_text();
     assert_eq!(
         wides_row,
         format!("[{session}] 0:0* 1:1"),
@@ -4182,7 +4593,7 @@ fn a_client_narrower_than_the_window_clips_it_and_keeps_its_own_status_row() {
     narrow.wait_for(
         "the narrow client's view to reach the cursor's column",
         || {
-            let status = narrow.row(STATUS_ROW);
+            let status = narrow.status_row_text();
             if status.starts_with(&showing) {
                 Ok(())
             } else {
@@ -4198,7 +4609,7 @@ fn a_client_narrower_than_the_window_clips_it_and_keeps_its_own_status_row() {
          cell, left blank: {}",
         narrow.picture(),
     );
-    let status = narrow.row(STATUS_ROW);
+    let status = narrow.status_row_text();
     assert!(
         status.contains(&format!("[{session}]")),
         "...without having given up the session it was always there to name: {status:?}",
@@ -6386,12 +6797,9 @@ fn a_frame_boundary_survives_a_read_that_splits_it() {
     );
 }
 
-/// The status row's index on a [`BOOT_PTY`]-sized terminal — the last one, which is what
-/// `sprag_tui::Split` reserves.
-///
-/// Derived rather than typed, so a terminal size change here cannot leave a test asserting about a
-/// pane's last line while calling it the status row.
-const STATUS_ROW: u16 = BOOT_PTY.1 - 1;
+// ⛔⛔⛔⛔⛔ `STATUS_ROW` WAS HERE, and it was `BOOT_PTY.1 - 1` — the status row's index on a
+// terminal nobody had resized. It is now [`Tui::status_row`], a method that reads the screen the
+// client is painting, and that doc carries what the constant cost (item 787).
 
 /// **THE GATE for R316: a key bound to a session that does not exist SAYS SO.**
 ///
@@ -6429,7 +6837,7 @@ fn a_key_bound_to_a_session_that_does_not_exist_says_so() {
     let where_it_is = format!("[{session}]");
     wait_for("the status row to say where the client is", || {
         mentions(&tui, &where_it_is)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+            .map_err(|got| format!("{got}: row reads {:?}", tui.status_row_text()))
     });
 
     // THE CONTROL, pressed first: `q` is bound to nothing, so the row must go on saying where the
@@ -6438,9 +6846,9 @@ fn a_key_bound_to_a_session_that_does_not_exist_says_so() {
     tui.type_bytes(b"q");
     std::thread::sleep(Duration::from_millis(300));
     assert!(
-        tui.row(STATUS_ROW).contains(&where_it_is),
+        tui.status_row_text().contains(&where_it_is),
         "an UNBOUND key says nothing, so the row still reads where the client is: {:?}",
-        tui.row(STATUS_ROW),
+        tui.status_row_text(),
     );
 
     // ...and the bound one names what is not there.
@@ -6488,7 +6896,7 @@ fn the_message_goes_away_on_its_own_and_the_row_comes_back() {
     let where_it_is = format!("[{session}]");
     wait_for("the status row to say where the client is", || {
         mentions(&tui, &where_it_is)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+            .map_err(|got| format!("{got}: row reads {:?}", tui.status_row_text()))
     });
 
     tui.type_bytes(PREFIX);
@@ -6503,7 +6911,7 @@ fn the_message_goes_away_on_its_own_and_the_row_comes_back() {
         "the row to come back with no keystroke to prompt it",
         || {
             mentions(&tui, &where_it_is)
-                .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+                .map_err(|got| format!("{got}: row reads {:?}", tui.status_row_text()))
         },
     );
 }
@@ -6627,7 +7035,7 @@ fn the_panes_stop_one_row_above_what_the_client_says() {
         Err(tui.picture())
     });
 
-    let status = tui.row(STATUS_ROW);
+    let status = tui.status_row_text();
     assert!(
         status.starts_with(&format!("[{session}]")),
         "the last row is the CLIENT's, not the pane's overflow: {status:?} (screen {:?})",
@@ -6666,7 +7074,7 @@ fn a_key_bound_to_a_window_that_does_not_exist_says_so() {
     tui.type_bytes(b"e");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
-        tui.row(STATUS_ROW),
+        tui.status_row_text(),
         where_it_is,
         "selecting the window this client is already on says nothing",
     );
@@ -6733,7 +7141,7 @@ fn display_time_zero_reports_nothing_at_all() {
     let deadline = Instant::now() + Duration::from_millis(1500);
     while Instant::now() < deadline {
         assert_eq!(
-            tui.row(STATUS_ROW),
+            tui.status_row_text(),
             where_it_is,
             "`display-time 0` is a message that has already expired, so the row never changes",
         );
@@ -7008,14 +7416,14 @@ fn an_alert_waits_for_a_keystroke_where_a_note_waits_for_the_clock() {
     send("alert", "the deploy needs you");
     wait_for("the alert to be painted", || {
         mentions(&tui, "the deploy needs you")
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+            .map_err(|got| format!("{got}: row reads {:?}", tui.status_row_text()))
     });
     let deadline = Instant::now() + Duration::from_millis(1800);
     while Instant::now() < deadline {
         assert!(
-            tui.row(STATUS_ROW).contains("the deploy needs you"),
+            tui.status_row_text().contains("the deploy needs you"),
             "an alert has no deadline; the row reads {:?} after {:?} of a {}ms display-time",
-            tui.row(STATUS_ROW),
+            tui.status_row_text(),
             deadline - Instant::now(),
             300,
         );
@@ -7025,9 +7433,10 @@ fn an_alert_waits_for_a_keystroke_where_a_note_waits_for_the_clock() {
     // THE MARK: an alert says so in front of its sentence. The audit's finding was that
     // `Message::severity` had NO reader while its own doc claimed a surface marked something.
     assert!(
-        tui.row(STATUS_ROW).contains("alert: the deploy needs you"),
+        tui.status_row_text()
+            .contains("alert: the deploy needs you"),
         "an alert is MARKED, so a person can see why the row is not clearing: {:?}",
-        tui.row(STATUS_ROW),
+        tui.status_row_text(),
     );
 
     // ...until a person touches a key. `Escape` is bound to nothing and reaches no pane arm, so what
@@ -7089,7 +7498,7 @@ fn a_note_does_not_take_the_row_from_a_live_alert() {
     send("alert", "the deploy needs you");
     wait_for("the alert to be painted", || {
         mentions(&tui, "the deploy needs you")
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+            .map_err(|got| format!("{got}: row reads {:?}", tui.status_row_text()))
     });
     send("note", "a passing note");
     // The WINDOW is still a window — the note has to arrive and lose, and nothing observable says
@@ -7106,9 +7515,9 @@ fn a_note_does_not_take_the_row_from_a_live_alert() {
         tui.status_rows(),
     );
     assert!(
-        tui.row(STATUS_ROW).contains("the deploy needs you"),
+        tui.status_row_text().contains("the deploy needs you"),
         "and the alert is still the one being shown: {:?}",
-        tui.row(STATUS_ROW),
+        tui.status_row_text(),
     );
 
     // THE CONTROL, the other way round: acknowledge, put a NOTE up, and the alert takes it.
@@ -7122,7 +7531,7 @@ fn a_note_does_not_take_the_row_from_a_live_alert() {
     send("alert", "the deploy needs you");
     wait_for("the alert to take the row from the note", || {
         mentions(&tui, "the deploy needs you")
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+            .map_err(|got| format!("{got}: row reads {:?}", tui.status_row_text()))
     });
 }
 
@@ -7458,10 +7867,10 @@ fn a_critical_notification_holds_the_row_until_a_key_is_pressed() {
     tui.type_bytes(b"2 the build needs you\r");
     wait_for("the critical notification to paint", || {
         mentions(&tui, "the build needs you")
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+            .map_err(|got| format!("{got}: row reads {:?}", tui.status_row_text()))
     });
     std::thread::sleep(Duration::from_millis(2500));
-    let held = tui.row(STATUS_ROW);
+    let held = tui.status_row_text();
     assert!(
         held.contains("the build needs you"),
         "an alert waits for a person, not for a clock: {held:?}",
@@ -8973,7 +9382,7 @@ fn no_detached_leaves_rather_than_join_an_occupied_session() {
         "the client to LEAVE rather than sit down beside somebody",
         || match mine.liveness() {
             gone if gone.starts_with("EXITED") => Ok(()),
-            still => Err(format!("{still}; row reads {:?}", mine.row(STATUS_ROW))),
+            still => Err(format!("{still}; row reads {:?}", mine.status_row_text())),
         },
     );
     assert_eq!(
@@ -9039,9 +9448,8 @@ fn a_client_too_small_for_its_window_follows_the_pane_it_is_typing_into() {
 
     // 1. THE NARROW CLIENT SAYS SO, and it leads the row — the note is first precisely because the
     //    client that owes it is the one whose row is shortest.
-    let short_status = short_pty.1 - 1;
     short.wait_for("the short client to say what it is showing", || {
-        let row = short.row(short_status);
+        let row = short.status_row_text();
         if row.starts_with(&format!(
             "<{}x{} of {}x{}>",
             short_pty.0,
@@ -9055,9 +9463,9 @@ fn a_client_too_small_for_its_window_follows_the_pane_it_is_typing_into() {
         }
     });
     assert!(
-        !tall.row(tall_pty.1 - 1).starts_with('<'),
+        !tall.status_row_text().starts_with('<'),
         "a client showing the whole window says nothing about a view: {:?}",
-        tall.row(tall_pty.1 - 1),
+        tall.status_row_text(),
     );
 
     // Stack two panes, so the second one lives below the short client's last row.
@@ -9092,7 +9500,7 @@ fn a_client_too_small_for_its_window_follows_the_pane_it_is_typing_into() {
         window.1
     );
     short.wait_for("the short client's view to follow the new pane", || {
-        let row = short.row(short_status);
+        let row = short.status_row_text();
         if row.starts_with(&panned) {
             Ok(())
         } else {
@@ -9287,7 +9695,7 @@ fn a_client_too_narrow_for_a_pane_reads_the_whole_line_re_wrapped() {
     //    cursor into column 78 would say `+19`, and one showing the pane's own first column says
     //    nothing after the size. This is what makes the re-wrap a replacement for the pan rather
     //    than a thing layered over it.
-    let status = narrow.row(STATUS_ROW);
+    let status = narrow.status_row_text();
     assert!(
         status.starts_with(&format!(
             "<{}x{} of {}x{}> ",
