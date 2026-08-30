@@ -1030,12 +1030,173 @@ impl Plugin for Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::WorkspacePaneAccess;
+    use crate::access::{
+        KeyStroke, PaneChanges, PaneCheckout, PaneForegroundJob, PaneHands, PaneInputEcho,
+        PaneInputTrail, PaneJobControl, PaneLifecycle, PaneOrigin, PaneOutputLines, PaneRawCapture,
+        PaneRow, PaneSupervision, PaneTerminalModes, WorkspacePaneAccess, Written,
+    };
     use crate::driver::{Ceiling, Driver, Guardrails, Outcome, OutcomeState};
     use crate::testing::{REAP_THE_STANDIN, STANDIN_READS_TTY, started};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
+
+    /// **THE MOMENT A READINESS BARRIER ARMS, MADE INTO A FACT A SHELL SCRIPT CAN WAIT ON** —
+    /// register item 776, arm ⑶-e's second face.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a fixture cannot just print its marker
+    ///
+    /// [`ReadyWhen::Prints`] counts occurrences AFTER the barrier arms — deliberately, so a marker
+    /// left on the screen by a previous turn is not read as this one's readiness. A fixture that
+    /// prints its marker before the run's first step therefore prints one the barrier can NEVER
+    /// count: the baseline already includes it, nothing raises the count again, and the wait spends
+    /// its whole ceiling with nothing delivered. That is macOS CI's `Exhausted(Duration)` with
+    /// `Bytes(0)`, and a `sleep` before the print is a wall-clock GUESS that the run has armed by
+    /// now — false on a runner that has not scheduled the run's first step yet.
+    ///
+    /// # ⚠⚠⚠⚠ Arming is the run's first `pane_collapsed`, and that is MEASURED, not assumed
+    ///
+    /// `Readiness::reached` runs two gates ahead of the baseline, and neither reads the screen
+    /// through this door: `interrupted` asks [`PaneAccess::hands`] and `settled_question` asks
+    /// [`PaneAccess::supervision`]. The baseline itself is
+    /// `panes.pane_collapsed(pane).matches(marker).count()`. So the run's FIRST call here is the
+    /// arming look, and a file created once it has returned is *the barrier has armed* — a fact,
+    /// not a clock.
+    ///
+    /// ⚠⚠ **AND THAT SENTENCE IS ASKED RATHER THAN ASSERTED IN PROSE.** A gate added above the
+    /// baseline that reads the screen through this door would make the file land BEFORE arming
+    /// again, and the marker would be back inside the baseline. `armed_on` keeps what the first
+    /// look saw, the caller asserts that it carried no marker, and the outcome's own assertion
+    /// names this cause — because the ending word cannot tell it apart from a theft that went
+    /// unobserved, which is the confusion register item 776 recorded twice.
+    ///
+    /// # ⚠⚠⚠ And `slow_to_arm` STAGES the runner that made this fail
+    ///
+    /// A loaded macOS runner delays the run's first step, not the fixture. Delaying the arming look
+    /// is precisely that, put on the stage rather than hoped for: under a fixture that sleeps
+    /// instead of waiting, this reddens every time.
+    struct ArmingIsAFact<'a> {
+        inner: &'a WorkspacePaneAccess,
+        /// Written once the arming look has returned. The script waits for it to exist.
+        armed: std::path::PathBuf,
+        /// Cleared by the first look, so only that one is the arming one.
+        first: std::sync::atomic::AtomicBool,
+        /// How long the run takes to reach its first look — the runner's own handicap, staged.
+        slow_to_arm: Duration,
+        /// What the arming look actually saw, so the baseline it took can be asserted rather than
+        /// reasoned about. `None` until it has happened.
+        armed_on: Mutex<Option<String>>,
+    }
+
+    impl PaneAccess for ArmingIsAFact<'_> {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            self.inner.pane_ids()
+        }
+
+        fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+            let first = self.first.swap(false, std::sync::atomic::Ordering::SeqCst);
+            if first {
+                // ⚠ BEFORE the look, because what is being staged is a run that is SLOW TO ARM.
+                std::thread::sleep(self.slow_to_arm);
+            }
+            let text = self.inner.pane_collapsed(id);
+            if first {
+                *self.armed_on.lock().unwrap() = Some(text.clone().unwrap_or_default());
+                // ⚠ AFTER the look has returned, so the screen this baseline was taken from cannot
+                // contain the marker the script prints on seeing this file.
+                std::fs::write(&self.armed, b"armed").expect("publish the arming fact");
+            }
+            text
+        }
+
+        fn pane_rows(&self, id: PaneId) -> Option<Vec<PaneRow>> {
+            self.inner.pane_rows(id)
+        }
+
+        fn pane_has_painted(&self, id: PaneId) -> Option<bool> {
+            self.inner.pane_has_painted(id)
+        }
+
+        fn pane_eof(&self, id: PaneId) -> Option<bool> {
+            self.inner.pane_eof(id)
+        }
+
+        fn pane_full_text(&self, id: PaneId) -> Option<String> {
+            self.inner.pane_full_text(id)
+        }
+
+        fn pane_full_lines(&self, id: PaneId) -> Option<Vec<String>> {
+            self.inner.pane_full_lines(id)
+        }
+
+        fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
+            self.inner.inject(id, keys)
+        }
+
+        fn inject_yielding_to_a_person(
+            &self,
+            id: PaneId,
+            keys: &[KeyStroke],
+            seen: u64,
+        ) -> Result<Written, PaneError> {
+            self.inner.inject_yielding_to_a_person(id, keys, seen)
+        }
+
+        // ⚠⚠ EVERY OPTIONAL DOOR IS HANDED THROUGH, because the trait's defaults answer `None` and
+        // a door dropped here would change what this gate MEANS rather than fail to compile —
+        // `input_echo` alone is what lets `Prints` refuse a marker the caller typed.
+        fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
+            self.inner.lifecycle()
+        }
+
+        fn raw_capture(&self) -> Option<&dyn PaneRawCapture> {
+            self.inner.raw_capture()
+        }
+
+        fn supervision(&self) -> Option<&dyn PaneSupervision> {
+            self.inner.supervision()
+        }
+
+        fn origin(&self) -> Option<&dyn PaneOrigin> {
+            self.inner.origin()
+        }
+
+        fn checkout(&self) -> Option<&dyn PaneCheckout> {
+            self.inner.checkout()
+        }
+
+        fn input_echo(&self) -> Option<&dyn PaneInputEcho> {
+            self.inner.input_echo()
+        }
+
+        fn input_trail(&self) -> Option<&dyn PaneInputTrail> {
+            self.inner.input_trail()
+        }
+
+        fn terminal_modes(&self) -> Option<&dyn PaneTerminalModes> {
+            self.inner.terminal_modes()
+        }
+
+        fn foreground_job(&self) -> Option<&dyn PaneForegroundJob> {
+            self.inner.foreground_job()
+        }
+
+        fn output_lines(&self) -> Option<&dyn PaneOutputLines> {
+            self.inner.output_lines()
+        }
+
+        fn hands(&self) -> Option<&dyn PaneHands> {
+            self.inner.hands()
+        }
+
+        fn job_control(&self) -> Option<&dyn PaneJobControl> {
+            self.inner.job_control()
+        }
+
+        fn changes(&self) -> Option<&dyn PaneChanges> {
+            self.inner.changes()
+        }
+    }
 
     /// A workspace with one pane running `script`, wrapped as pane-access.
     fn sh_access(script: &str, cols: u16, rows: u16) -> (WorkspacePaneAccess, PaneId) {
@@ -1802,7 +1963,7 @@ mod tests {
     fn a_reader_that_outlives_the_barrier_steals_the_prompts_first_byte() {
         /// One turn against a pane whose stand-in reader is dealt with by `how`, answering what the
         /// peer was actually asked. `slow` delays the stand-in's read the way runner load does.
-        fn asked(how: &str, slow: &str) -> String {
+        fn asked(how: &str, slow: &str, slow_to_arm: Duration) -> String {
             // ⚠ `of=` CREATES THE FILE AT ONCE AND `-s` TESTS ITS SIZE, which is the whole
             // discrimination: the file existing means `dd` started, and the file being NON-EMPTY
             // means its read RETURNED — the fact the control needs and the only one it waits for.
@@ -1810,22 +1971,37 @@ mod tests {
             // happen, because the arm that does not reap is the arm whose barrier clears and whose
             // prompt therefore arrives. The run's own duration ceiling is the backstop.
             //
-            // ⛔⛔⛔⛔⛔ **AND THE `sleep 0.3` STAYS, BECAUSE IT WAS DOING A SECOND JOB.** A draft of
-            // this repair removed it — it looked like the clock the theft-wait replaces — and the
-            // suite answered `Exhausted(Duration)` with NOTHING delivered, twice out of three
-            // whole-suite runs. That is a DIFFERENT race: `ReadyWhen::Prints` counts occurrences
-            // AFTER the barrier arms, so a marker printed before the run's first step is a marker
-            // it can never see. The delay is the window in which the run arms, it is load-marginal
-            // for exactly that reason, and it is register item 776 ⑶-e's REMAINING half — kept
-            // unchanged here rather than tuned, so this round changes one thing.
+            // ⛔⛔⛔⛔⛔ **THE `sleep 0.3` THAT USED TO STAND HERE WAS THE SECOND RACE, AND IT IS
+            // GONE** — register item 776 ⑶-e's remaining half, paid.
+            //
+            // It was a wall-clock guess that *the run has armed its barrier by now*. It had to be
+            // one, because `ReadyWhen::Prints` counts occurrences AFTER the barrier arms, so a
+            // marker printed before the run's first step is one it can never see: the baseline
+            // already includes it, nothing raises the count again, and the wait spends its ceiling
+            // with NOTHING delivered. On a runner that has not scheduled the run's first step
+            // inside 300 ms the guess is simply false — macOS CI, `Exhausted(Duration)` with
+            // `Bytes(0)`.
+            //
+            // ⚠⚠ So the script waits for the ARMING ITSELF, the way the theft-wait below waits for
+            // the theft: [`ArmingIsAFact`] publishes a file once the barrier's own look has
+            // returned, and nothing prints the marker until that file exists. Not a longer sleep —
+            // a fact. ⛔ And the handicap that used to turn this over is now an ARM of the gate
+            // (`slow_to_arm`) rather than a property of the runner.
             //
             // ⚠ The stolen byte's file is left in `/tmp` under the pane's own pid. A draft that
             // removed it before the `exec` was measured red too, and the two reds are the same
             // one: what broke was never the `rm`.
+            let armed = std::env::temp_dir().join(format!(
+                "sprag-armed-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id(),
+            ));
+            let _ = std::fs::remove_file(&armed);
             let script = format!(
                 "S=/tmp/sprag-standin-$$; \
                  sh -c '{slow} exec dd bs=1 count=1 of='\"$S\"' 2>/dev/null' {STANDIN_READS_TTY} & \
-                 sleep 0.3; {how} printf 'TOOL-UP\\n'; \
+                 until [ -e '{armed}' ]; do sleep 0.01; done; \
+                 {how} printf 'TOOL-UP\\n'; \
                  {} \
                  exec sh -c 'in=$(cat); echo \"REPLY[$in]\"'",
                 if how.is_empty() {
@@ -1833,8 +2009,16 @@ mod tests {
                 } else {
                     ""
                 },
+                armed = armed.display(),
             );
             let (access, pane) = sh_access(&script, 40, 8);
+            let watched = ArmingIsAFact {
+                inner: &access,
+                armed: armed.clone(),
+                first: std::sync::atomic::AtomicBool::new(true),
+                slow_to_arm,
+                armed_on: Mutex::new(None),
+            };
             let mut agent = Agent::new(
                 pane,
                 AgentSpec {
@@ -1847,18 +2031,68 @@ mod tests {
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             })
-            .run(&mut agent, &access, &RunContext::uncancellable());
-            assert_eq!(outcome.state, OutcomeState::Converged, "{outcome:?}");
+            .run(&mut agent, &watched, &RunContext::uncancellable());
+            // ⛔⛔⛔⛔⛔ **THE BASELINE IS ASKED BEFORE THE ENDING, AND THE ORDER IS THE WHOLE
+            // POINT** — register item 776 ⑶-e, whose recorded病 is *the ending word does not
+            // identify the cause*.
+            //
+            // A barrier that armed on a screen already showing the marker can NEVER clear, so it
+            // always reaches the ending assertion too — and read there it is just
+            // `Exhausted(Duration)` again, indistinguishable from a theft that went unobserved.
+            // Asked second, this line could not fail: the ending would have fired first and this
+            // would be a line that cannot fail where it runs, which is register item 775's dead
+            // line arriving through assertion ORDER instead of through a threshold. **Measured**:
+            // ordered the other way, the mutation that publishes the arming fact early reddened
+            // the ending assertion and never reached this one.
+            let armed_on = watched.armed_on.lock().unwrap().clone();
+            assert_eq!(
+                armed_on
+                    .as_deref()
+                    .map(|seen| seen.matches("TOOL-UP").count()),
+                Some(0),
+                "⛔⛔⛔⛔⛔ THE BARRIER ARMED ON A SCREEN THAT ALREADY SHOWED THE MARKER, so its \
+                 count can never rise above its own baseline and this run was doomed before its \
+                 first step — register item 776 ⑶-e's second face. Nothing may print the marker \
+                 until the arming look has RETURNED, and a gate reading the screen ahead of that \
+                 look would put it back inside the baseline. Outcome: {outcome:?}",
+            );
+            // ⚠⚠ AND THE ENDING, now that the cause above is excluded. `Exhausted(Duration)` with
+            // `Bytes(20)` is a delivered prompt whose reply never completed — the third road, and
+            // a different debt from the one the line above names.
+            assert_eq!(
+                outcome.state,
+                OutcomeState::Converged,
+                "⛔ the barrier armed on a clean screen, so this ending is NOT the arming race: \
+                 `Bytes(20)` here is a prompt delivered and a reply that never completed. \
+                 {outcome:?}",
+            );
             let captured = agent.captured().expect("a captured reply");
             access.lifecycle().expect("lifecycle").close(pane);
+            let _ = std::fs::remove_file(&armed);
             captured
         }
 
         assert_eq!(
-            asked("", ""),
+            asked("", "", Duration::ZERO),
             "REPLY[ummarise the repo]",
             "the control must really lose the first byte, or the subject below proves nothing — \
              and this is the shape a whole-suite run hit for real",
+        );
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 776 ⑶-e, SECOND FACE: A RUN THAT IS SLOW TO ARM.
+        //
+        // A second before the barrier's own look is what a loaded macOS runner does to a run whose
+        // first step it has not scheduled — and under the fixture this replaces, `sleep 0.3`
+        // standing in for *the run has armed by now*, the marker lands on the screen first, the
+        // baseline swallows it, and the wait ends `Exhausted(Duration)` with `Bytes(0)` delivered.
+        // Staged rather than waited for, so the flake is a case the suite RUNS instead of one CI
+        // meets. ⚠ A second is longer than the guess it replaces by more than three times, on
+        // purpose: what must not hold this up is a number.
+        assert_eq!(
+            asked("", "", Duration::from_secs(1)),
+            "REPLY[ummarise the repo]",
+            "⛔ a run that is slow to arm still gets its marker, because nothing prints one until \
+             the barrier's own look has returned. A fixture that slept instead was asserting the \
+             runner had scheduled it",
         );
         // ⛔⛔⛔⛔⛔ REGISTER ITEM 776 ⑶-e: THE SAME CONTROL WITH THE RUNNER'S OWN HANDICAP.
         //
@@ -1867,14 +2101,14 @@ mod tests {
         // for *the reader is parked by now* — this arm loses the byte only by luck. Staged rather
         // than waited for, so the flake is a case the suite RUNS instead of one CI meets.
         assert_eq!(
-            asked("", "sleep 1;"),
+            asked("", "sleep 1;", Duration::ZERO),
             "REPLY[ummarise the repo]",
             "⛔ a stand-in that is slow to reach its read still gets the first byte, because the \
              terminal holds the line until somebody reads it. A fixture that assumed otherwise was \
              asserting the machine was quiet",
         );
         assert_eq!(
-            asked(REAP_THE_STANDIN, ""),
+            asked(REAP_THE_STANDIN, "", Duration::ZERO),
             "REPLY[summarise the repo]",
             "a barrier may only clear once the reader that was there before it is GONE — \
              signalling it is an act, and what a fixture must wait for is the fact",
