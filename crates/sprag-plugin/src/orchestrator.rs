@@ -3229,6 +3229,24 @@ mod tests {
         // margin was zero: it held while the person's thread won a race against the run's step
         // cadence, and macOS is where it lost. The sibling above spends the whole budget, so
         // stopping this far short of it cannot be the budget.
+        //
+        // ⛔⛔⛔⛔⛔ **AND *"about the fourth step"* IS MEASURED FALSE — register item 776, arm (c).**
+        // Twenty consecutive runs of this test on Linux: **24 iterations seventeen times and 25
+        // three times**, never fewer. So the widening from `< 4` to `< 40` did not buy the margin
+        // it looks like — the real distance is **fifteen steps, not thirty-six** — and a host whose
+        // peer echoes slower relative to this thread's cadence spends the rest of it. That is what
+        // macOS does: it reports `Exhausted(Iterations)` at the full 40, which is not *slower* but
+        // *never got there*.
+        //
+        // ⚠⚠ THE COUPLING IS THE FIXTURE'S, NOT THE PRODUCT'S. The watcher waits for `SAW 112` —
+        // 112 bytes ECHOED by a peer that reads one byte at a time — so *how many iterations the
+        // run has taken when the person reaches in* is set by that peer's throughput. A witness
+        // that did not depend on it (the write count this fixture already reads for `typed_at`)
+        // would make the margin a property of the test rather than of the machine.
+        //
+        // ⚠ Measured in the same twenty: one run failed here on Linux too, and on the OTHER
+        // assertion — the write-order witness, `23` program writes against `22` at the keystroke.
+        // Two races in one fixture, and only one of them is the one macOS loses.
         assert!(
             outcome.iterations < INTERRUPTION_BUDGET,
             "⚠⚠⚠ the run must have stopped BEFORE its ceiling — it ran {} of \
