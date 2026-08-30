@@ -471,6 +471,37 @@ impl TerminalQuery {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT THE HOST SAYS ABOUT ITS PSEUDOTERMINAL POOL, FOR THE ONE READER WHO MEETS A
+/// REFUSAL** — register item 776, arm (d), and the sentence [`Pty::open`]'s error carries.
+///
+/// # ⚠⚠⚠⚠⚠ Three sentences, because *unknown* is not *zero* and must not read as one
+///
+/// A pool that answers `62 of 4096` tells a reader the refusal was not exhaustion. One that answers
+/// only a ceiling tells them the ceiling and, explicitly, that the in-use half is **not being
+/// withheld by this code but not published by their kernel**. One that answers neither says that
+/// too, rather than leaving a bare `Device not configured` for somebody to complete from memory —
+/// which is exactly what happened: it was completed as *the pool was exhausted*, and re-measuring
+/// found nothing supporting it.
+#[must_use]
+fn pool_sentence(pool: crate::procfs::PtyPool) -> String {
+    match (pool.in_use, pool.max) {
+        (Some(in_use), Some(max)) => {
+            format!("this host's pty pool was {in_use} of {max} in use when it refused")
+        }
+        (Some(in_use), None) => format!(
+            "this host had {in_use} pty(s) in use when it refused and does not publish how many it \
+             allows"
+        ),
+        (None, Some(max)) => format!(
+            "this host allows at most {max} pty(s) and does not publish how many were in use when \
+             it refused, so whether the pool was full cannot be read here"
+        ),
+        (None, None) => "this host publishes neither the size of its pty pool nor how much of it \
+             was in use, so whether the pool was full cannot be read here"
+            .to_owned(),
+    }
+}
+
 /// A pseudoterminal pair: the master this process reads and writes, and the slave the child gets.
 ///
 /// The slave is held only until a child is spawned onto it. Holding it any longer would keep the
@@ -512,7 +543,20 @@ impl Pty {
             )
         };
         if opened != 0 {
-            return Err(io::Error::last_os_error());
+            // ⛔⛔⛔⛔⛔ **AND HOW FULL THE POOL WAS WHEN IT REFUSED** — register item 776, arm (d).
+            // The bare errno sent a reader guessing: `ENXIO` on one macOS CI job was filed as
+            // *the runner's pty pool was exhausted*, which was an inference nothing in the message
+            // supported. `pool_sentence` says what this host publishes and says so when it
+            // publishes nothing, which is the difference between a reading and a guess.
+            //
+            // ⚠ The KIND is preserved and only the sentence grows: `PanePtyError` stores its source
+            // as a `Display` string, so nothing downstream reads the errno off this — but a caller
+            // that later wants to MATCH on it still can.
+            let raw = io::Error::last_os_error();
+            return Err(io::Error::new(
+                raw.kind(),
+                format!("{raw} — {}", pool_sentence(crate::procfs::pty_pool())),
+            ));
         }
         // SAFETY: both are freshly opened descriptors this process now owns.
         let (master, slave) =
@@ -1035,6 +1079,80 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    /// ⛔⛔⛔⛔⛔ **A REFUSAL SAYS WHAT THE HOST PUBLISHES, AND SAYS WHEN IT PUBLISHES NOTHING** —
+    /// register item 776, arm (d), at [`pool_sentence`].
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why all four combinations have a reader here and not just the one this host makes
+    ///
+    /// The failure this exists for happened on macOS, where `in_use` is `None` — the arm a Linux
+    /// suite can never reach through [`Pty::open`]. An assertion only over the pair this kernel
+    /// produces would leave the arm that matters unread, which is this workspace's rule that an
+    /// unclassified path is RED rather than a pass.
+    ///
+    /// ⚠⚠ AND THE *unknown* ARMS ARE ASSERTED TO SAY SO IN WORDS. The whole finding is that a bare
+    /// `Device not configured` was completed from memory as *the pool was exhausted*; a sentence
+    /// that merely omitted the missing half would be completed the same way.
+    #[test]
+    fn a_pty_refusal_says_how_full_the_pool_was_or_that_it_cannot() {
+        use crate::procfs::PtyPool;
+
+        let both = pool_sentence(PtyPool {
+            in_use: Some(62),
+            max: Some(4096),
+        });
+        assert!(
+            both.contains("62") && both.contains("4096"),
+            "⛔⛔⛔ REGISTER ITEM 776: a host that publishes both halves is not quoting them, so a \
+             reader still cannot tell exhaustion from anything else. Got: {both:?}",
+        );
+
+        // ── THE ARM THE macOS FAILURE LANDS ON, and the one no Linux run can produce ──────────
+        let ceiling_only = pool_sentence(PtyPool {
+            in_use: None,
+            max: Some(127),
+        });
+        assert!(
+            ceiling_only.contains("127") && ceiling_only.contains("cannot be read here"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 776: this host publishes the ceiling and NOT the count, and the \
+             sentence does not say the second half is missing — so a reader completes it from \
+             memory, which is how *the runner's pty pool was exhausted* got written down as a \
+             cause with nothing behind it. Got: {ceiling_only:?}",
+        );
+
+        let count_only = pool_sentence(PtyPool {
+            in_use: Some(9),
+            max: None,
+        });
+        assert!(
+            count_only.contains('9') && count_only.contains("does not publish how many it allows"),
+            "⛔⛔⛔ REGISTER ITEM 776: a host that knows the count and not the ceiling must say \
+             which half is missing, or `9` reads as `9 of 9`. Got: {count_only:?}",
+        );
+
+        let neither = pool_sentence(PtyPool {
+            in_use: None,
+            max: None,
+        });
+        assert!(
+            neither.contains("neither") && neither.contains("cannot be read here"),
+            "⛔⛔⛔ REGISTER ITEM 776: a host that publishes nothing must say so. Silence here is \
+             what the bare errno already was. Got: {neither:?}",
+        );
+
+        // ── AND THE FOUR ARE FOUR SENTENCES, not one wearing different numbers ────────────────
+        let said = [&both, &ceiling_only, &count_only, &neither];
+        for (i, one) in said.iter().enumerate() {
+            for other in said.iter().skip(i + 1) {
+                assert_ne!(
+                    one, other,
+                    "⛔⛔⛔ REGISTER ITEM 776: two of the four pool states compose the SAME \
+                     sentence, so the distinction this type carries reaches no reader — which is \
+                     the same thing as not carrying it.",
+                );
+            }
+        }
+    }
 
     /// Throw away everything the device is holding that nobody has read — what a kernel discarding
     /// a dead child's output does on its own, done deliberately so it can be OBSERVED on a kernel

@@ -230,6 +230,86 @@ pub(crate) fn signal_ends(_pid: u32, _signal: i32) -> Option<bool> {
     None
 }
 
+/// ⛔⛔⛔⛔⛔ **HOW FULL THIS HOST'S PSEUDOTERMINAL POOL IS** — register item 776, arm (d). Each half
+/// is [`None`] where the host does not publish it, and the ABSENCE is the answer rather than a
+/// reason to guess.
+///
+/// # ⛔⛔⛔⛔⛔ Somebody already guessed, and it was written into the register as a cause
+///
+/// `openpty` failed once on a macOS CI job with `ENXIO` — *Device not configured* — and the round
+/// that met it filed *"the runner's pty pool was exhausted"*. **That was an inference, not a
+/// reading.** Re-measured the same day: the target's peak concurrent pty demand is 63 above
+/// baseline **at 32-way parallelism**, the macOS runner has three or four cores, and the whole job
+/// contained exactly ONE such failure. None of that settles it either way — and nothing in the
+/// failure itself said so, which is why the guess looked like a finding.
+///
+/// So the door says what it can see. A reader who meets this next gets the pool's own numbers where
+/// the host publishes them, and *this host does not publish them* where it does not — which is a
+/// fact about the DEPLOYMENT they can act on, exactly as [`signal_ends`] is one arm over.
+///
+/// ⚠ The two halves are separate because the two systems publish different amounts: Linux has both,
+/// macOS publishes the ceiling (`kern.tty.ptmx_max`) and no in-use count at all. Folding them into
+/// one `Option` would make the ceiling unreportable wherever the count is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PtyPool {
+    /// Pseudoterminals allocated on this host right now, where the kernel publishes it.
+    pub(crate) in_use: Option<u64>,
+    /// The most this host will allocate, where the kernel publishes it.
+    pub(crate) max: Option<u64>,
+}
+
+/// Linux: both halves, from `/proc/sys/kernel/pty/{nr,max}`.
+#[cfg(target_os = "linux")]
+pub(crate) fn pty_pool() -> PtyPool {
+    let read = |path: &str| -> Option<u64> {
+        std::fs::read_to_string(path)
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()
+    };
+    PtyPool {
+        in_use: read("/proc/sys/kernel/pty/nr"),
+        max: read("/proc/sys/kernel/pty/max"),
+    }
+}
+
+/// macOS: the CEILING only, from `kern.tty.ptmx_max`.
+///
+/// ⚠⚠ **`in_use` STAYS [`None`] DELIBERATELY.** Darwin publishes no in-use count for this pool, and
+/// the tempting stand-in — counting the `/dev/ttys*` nodes devfs has cloned — is a claim about
+/// devfs that nothing here can check. Register item 776's whole finding is that an unchecked
+/// stand-in gets read as a measurement, so this answers the half it knows.
+#[cfg(target_os = "macos")]
+pub(crate) fn pty_pool() -> PtyPool {
+    let mut value: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: the name is a NUL-terminated literal, `value` and `len` are fully owned and correctly
+    // sized out-parameters, and the new-value pointer is null because nothing is being set.
+    let read = unsafe {
+        libc::sysctlbyname(
+            c"kern.tty.ptmx_max".as_ptr(),
+            std::ptr::addr_of_mut!(value).cast(),
+            std::ptr::addr_of_mut!(len),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    PtyPool {
+        in_use: None,
+        max: (read == 0).then(|| u64::try_from(value).unwrap_or_default()),
+    }
+}
+
+/// Anything else: neither half, said rather than assumed.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn pty_pool() -> PtyPool {
+    PtyPool {
+        in_use: None,
+        max: None,
+    }
+}
+
 /// EVERY process on the box, as `(pid, its stat)`, from one pass over `/proc`.
 ///
 /// The single walk this crate's whole-machine questions are built from — a `pid → children` map for
