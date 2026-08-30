@@ -11274,6 +11274,141 @@ fn a_real_run_driven_from_another_process_outlives_the_daemon_it_drives() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **A RUN THAT COULD NOT READ ITS PANE MUST NOT REPORT WHAT WAS RUNNING IN IT** —
+/// register item 778, and register item 556's finding arriving at the READINESS ending.
+///
+/// # ⚠⚠⚠⚠⚠ The sentence this exists to stop, measured before it was written
+///
+/// A run told to wait for its pane before driving it, over a LIVE daemon, against a pane that
+/// daemon does not hold, ended in 304 ms with
+/// `NeverReady { wanted: Runs("sh"), instead: Nothing }` — which renders as
+/// *"…so nothing was injected; **nothing owned its terminal — the pane's child had gone**"*. Every
+/// clause after the semicolon is a claim about a pane that was not there, and a person acting on it
+/// goes looking for a program that never ran. The same false sentence came back for a driver whose
+/// daemon had been REPLACED, where `RemotePaneAccess::unseen()` was answering `Replaced` at that
+/// exact moment with **no production reader anywhere** (register item 492's shape, in a reading
+/// register item 556 built for precisely this).
+///
+/// # ⚠⚠⚠⚠ Why a live daemon is the arm that matters, and the replacement is the second
+///
+/// A leftover driver's ending goes to the pipe of a parent that is gone (`driver_spawn` gives it
+/// `Stdio::piped()`), so **nothing reads it**. A run whose pane goes away under a daemon that is
+/// STILL THERE has its outcome reaped into the row a person opens — and a loop replaces its inner
+/// pane as it works, so that is the ordinary case rather than the exotic one. Both are asserted,
+/// live arm first.
+///
+/// ⚠⚠ **THE CONTROL IS A ROW THAT CAN FAIL** (register item 775): a pane this daemon really holds,
+/// running a program that really is not the one the run waits for, must still NAME that program.
+/// Without it every assertion here is satisfied by a build that had stopped diagnosing at all.
+#[test]
+fn a_run_that_could_not_read_its_pane_does_not_report_what_was_running_in_it() {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let host = spawn_host_at(&sock, &["sh"]);
+    let (remote, _setup) = remote_driver(&sock);
+    let pane = *remote
+        .pane_ids()
+        .first()
+        .expect("the daemon's boot pane is there to drive");
+    // The wait is for a program this pane is NOT running, so every arm below ends unsatisfied and
+    // the only thing that differs between them is whether the pane could be read at all.
+    let waiting = || OrchestrationSpec {
+        stimulus: "echo run-$((6*7))".to_owned(),
+        sentinel: Some("run-42".to_owned()),
+        ready_when: Some(ReadyWhen::Runs("claude".to_owned())),
+        ready_within: Some(Duration::from_millis(200)),
+        may_answer: None,
+        attended: Attended::NoOne,
+        turn: None,
+    };
+    let rails = Guardrails {
+        max_iterations: 2,
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(20)),
+    };
+    let ending = |access: &RemotePaneAccess, on: PaneId| {
+        let mut run = Orchestrator::new(on, waiting());
+        Driver::new(rails)
+            .run(&mut run, access, &RunContext::uncancellable())
+            .failure
+            .expect("a run that never became ready ends with a failure")
+            .to_string()
+    };
+
+    // ── THE CONTROL: A PANE THIS DAEMON REALLY HOLDS, RUNNING SOMETHING ELSE ────────────────────
+    let held = ending(&remote, pane);
+    assert!(
+        held.contains("belonged to"),
+        "⚠⚠⚠⚠⚠ A CONTROL FAILED: a pane this run COULD read, running a program that is not the \
+         one it waited for, must still be diagnosed by name — that diagnostic is the whole value \
+         of this failure and the thing the arms below must not cost. Got: {held:?}",
+    );
+
+    // ── THE SUBJECT, LIVE DAEMON: A PANE IT DOES NOT HOLD ──────────────────────────────────────
+    // ⚠ THE PREMISE, ASSERTED INSIDE: this run really cannot see that pane. Against a pane the
+    // daemon happened to hold, the arm under test is unreachable and the assertion passes by never
+    // being tested.
+    assert_eq!(
+        remote.pane_collapsed(PaneId(9999)),
+        None,
+        "⚠⚠ the fixture's premise: this daemon must not hold pane 9999, or nothing below is about \
+         a pane that could not be read",
+    );
+    let unread = ending(&remote, PaneId(9999));
+    assert!(
+        !unread.contains("child had gone") && !unread.contains("belonged to"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 778: the run could not read that pane at all and its failure \
+         reports what was running in it — *the pane's child had gone* is a claim about a program, \
+         told about a pane that is not there, and it sends whoever reads it after something that \
+         never existed. Got: {unread:?}",
+    );
+    assert!(
+        unread.contains("could not read the pane") && unread.contains("still there"),
+        "⚠⚠⚠ and it has to SAY which question went unanswered and where to look — a failure that \
+         merely stops naming the program leaves the reader with a wait that ended for no stated \
+         reason, which is register item 685's silence wearing a shorter coat. Got: {unread:?}",
+    );
+
+    // ── THE SECOND FACE: THE DAEMON UNDER THE DRIVER IS REPLACED ───────────────────────────────
+    drop(host);
+    let _successor = spawn_host_at(&sock, &["cat"]);
+    assert!(
+        wait_until(Duration::from_secs(10), || HostConn::connect(
+            &sock,
+            Duration::from_millis(200)
+        )
+        .is_ok()),
+        "the replacement daemon never bound {sock:?}",
+    );
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let _ = remote.pane_collapsed(pane);
+            remote.world_changed()
+        }),
+        "⚠⚠ THE PREMISE: the surface must have latched its world as changed, or this arm is the \
+         live one over again",
+    );
+    // ⚠⚠ ONE MORE READ BEFORE THE READING IS ASKED FOR, and the reason is a property of `unseen`
+    // rather than a nicety: it is a LEVEL describing the MOST RECENT read, and the read that
+    // DISCOVERS the replacement is the one whose redial failed — it reports `Unreachable`. Only a
+    // read taken with the latch already up answers `Replaced`. Measured here, not reasoned.
+    let _ = remote.pane_collapsed(pane);
+    assert_eq!(
+        remote.unseen(),
+        Some(Unseen::Replaced),
+        "⚠⚠⚠ AND THE SURFACE KNOWS WHICH OF THE FOUR IT IS. That reading is what register item 556 \
+         built and what nothing in the product asks; this arm is about the ending being honest \
+         WITHOUT it, which is the only thing this layer can do on its own",
+    );
+    let replaced = ending(&remote, pane);
+    assert!(
+        !replaced.contains("child had gone") && !replaced.contains("belonged to"),
+        "⛔⛔⛔⛔ REGISTER ITEM 778, second face: this driver's daemon was replaced — the pane it \
+         names is a stranger's and it read nothing at all — and the failure still reports what was \
+         running in it. Got: {replaced:?}",
+    );
+}
+
 /// **THE JOB THAT OWNS `pane`'s TERMINAL, read on a connection the driver has never touched.**
 ///
 /// # ⚠⚠⚠⚠ Why the instrument is deliberately NOT the surface under test

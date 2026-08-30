@@ -1817,26 +1817,42 @@ impl Readiness {
     /// needs is what the pane was doing when the wait gave up. One read, on the way out of a run
     /// that is already over.
     fn not_ready(&self, panes: &dyn PaneAccess, pane: PaneId, when: ReadyWhen) -> PaneError {
+        // ⛔⛔⛔⛔⛔ **ONE READ, AND IT DECIDES WHETHER ANY OF THIS IS ABOUT A PANE AT ALL** —
+        // register item 778. A `None` here is *this run cannot see that pane* — the one thing this
+        // layer can say without knowing whether the pane closed, the daemon was replaced, the two
+        // builds disagree or the wire failed (register item 556's four causes, which belong to the
+        // surface). It was read for `already_showing` alone, and only for one of the four
+        // `ReadyWhen` kinds, so the diagnostic below was composed for panes nobody had looked at.
+        let seen = panes.pane_collapsed(pane);
         PaneError::NeverReady {
             // ⚠⚠⚠ READ HERE, WHERE THE MARKER IS STILL IN HAND. `wanted` is moved into the error
             // below, and this is the only fact of the three that has to be asked of the SCREEN
             // rather than of the process table — see `already_showing`.
             already_showing: matches!(when, ReadyWhen::Prints(_))
-                && panes
-                    .pane_collapsed(pane)
+                && seen
+                    .as_deref()
                     .is_some_and(|text| text.contains(when.marker())),
             wanted: when,
             // ⚠ THE ABSENCE OF THE CAPABILITY AND THE ABSENCE OF A JOB ARE DIFFERENT ANSWERS —
             // one is about this build, the other about this pane. See [`PaneDoing`].
-            instead: panes.foreground_job().map_or(PaneDoing::Unknown, |jobs| {
-                jobs.pane_foreground_leader(pane).map_or(
-                    PaneDoing::Nothing,
-                    // ⚠⚠ THE SAME TYPE THE PREDICATE DECIDED WITH. Reporting one of the two names
-                    // it accepts is what named `"bash"` at a caller who launched `/bin/sh`, and it
-                    // differed by platform. See [`JobLeader`].
-                    |leader| PaneDoing::Job(JobLeader::of(&leader)),
-                )
-            }),
+            // ⛔⛔⛔ **AND THE ABSENCE OF THE PANE IS A THIRD, which arrived as the second** —
+            // register item 778. `pane_foreground_leader` answers `None` for a pane whose terminal
+            // nobody owns AND for a pane this run cannot reach, and folding them made the failure
+            // say *the pane's child had gone* about a pane that was not there. Measured over a live
+            // daemon and a pane it does not hold, and again over a daemon that had been REPLACED.
+            instead: if seen.is_none() {
+                PaneDoing::Unseen
+            } else {
+                panes.foreground_job().map_or(PaneDoing::Unknown, |jobs| {
+                    jobs.pane_foreground_leader(pane).map_or(
+                        PaneDoing::Nothing,
+                        // ⚠⚠ THE SAME TYPE THE PREDICATE DECIDED WITH. Reporting one of the two
+                        // names it accepts is what named `"bash"` at a caller who launched
+                        // `/bin/sh`, and it differed by platform. See [`JobLeader`].
+                        |leader| PaneDoing::Job(JobLeader::of(&leader)),
+                    )
+                })
+            },
         }
     }
 }

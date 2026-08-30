@@ -548,6 +548,29 @@ pub enum PaneDoing {
     Nothing,
     /// This host has no view of the process table at all, so it cannot say.
     Unknown,
+    /// ⛔⛔⛔⛔⛔ **THIS RUN COULD NOT SEE THE PANE AT ALL**, so nothing here is a fact about
+    /// anybody's pane — register item 778.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The third absence, and it was being reported as the second
+    ///
+    /// [`Nothing`](Self::Nothing) is *the host looked at the process table and this pane's
+    /// terminal is unowned*, and [`Unknown`](Self::Unknown) is *this build has no view of the
+    /// process table*. Both are answers about a pane the run could READ. A pane the run cannot read
+    /// at all is a third thing, and it arrived as `Nothing` — so the sentence a person got was
+    /// *"; nothing owned its terminal — the pane's child had gone"*, **about a pane that was not
+    /// there**, which sends them after a program that never existed.
+    ///
+    /// **Measured 2026-08-30** over a live daemon and a pane it does not hold, with a run told to
+    /// wait before driving: `NeverReady { wanted: Runs("sh"), instead: Nothing }` in 304 ms — and
+    /// the same false sentence again for a driver whose daemon had been REPLACED, where
+    /// `RemotePaneAccess::unseen()` was answering `Replaced` at that very moment with no reader.
+    ///
+    /// ⚠⚠ It names no cause, deliberately, and that is register item 556's ruling rather than
+    /// timidity: *the pane is gone*, *this driver's daemon was replaced*, *the two builds disagree*
+    /// and *the wire failed* are four different remedies, and which one it is belongs to the
+    /// surface. What this layer knows — and all it knows — is that it looked and saw nothing, so
+    /// the clause points at the pane's existence and the connection rather than at its program.
+    Unseen,
 }
 }
 
@@ -562,7 +585,10 @@ impl PaneDoing {
     pub const fn leader(&self) -> Option<&JobLeader> {
         match self {
             Self::Job(leader) => Some(leader),
-            Self::Nothing | Self::Unknown => None,
+            // ⚠ THREE ABSENCES, ONE ANSWER HERE — and they are three because their SENTENCES
+            // differ, not because a caller asking for a leader wants them apart. Register item 778
+            // added the third.
+            Self::Nothing | Self::Unknown | Self::Unseen => None,
         }
     }
 }
@@ -578,6 +604,16 @@ impl std::fmt::Display for PaneDoing {
                 "; nothing owned its terminal — the pane's child had gone"
             ),
             Self::Unknown => Ok(()),
+            // ⚠⚠⚠ IT POINTS AT THE PANE'S EXISTENCE AND AT THE CONNECTION, never at its program —
+            // register item 778. The `Nothing` arm above is the sentence this one was arriving as,
+            // and *the pane's child had gone* is a claim about a program: a reader who acts on it
+            // opens a pane that is not there and looks for something that never ran.
+            Self::Unseen => write!(
+                f,
+                "; look at whether that pane is still there and at the connection this run drives \
+                 through — nothing here is a fact about its program, because nothing about it \
+                 could be read"
+            ),
         }
     }
 }
@@ -647,12 +683,31 @@ impl std::fmt::Display for PaneError {
                 instead,
                 already_showing,
             } => {
-                write!(
-                    f,
-                    "the pane never {}, which this run was told to wait for before driving it, so \
-                     nothing was injected",
-                    wanted.describe(),
-                )?;
+                // ⛔⛔⛔⛔⛔ **THE LEAD IS A CLAIM, AND IT IS FALSE FOR ONE OF THE ARMS BELOW** —
+                // register item 778. *The pane never runs `sh`* asserts a pane that was looked at;
+                // a run that could not READ the pane knows nothing of the kind, and saying it
+                // anyway sends the reader to a program instead of to the pane's existence. So the
+                // unseen arm leads with what is actually known — the wait ended, nothing was
+                // injected — and [`PaneDoing::Unseen`]'s own clause carries the remedy, which
+                // keeps one fact in one spelling.
+                if matches!(instead, PaneDoing::Unseen) {
+                    // ⚠ `describe` is a PAST-TENSE clause by contract (`ran "claude"`), so the lead
+                    // is built to take one — a first draft read *"willing to wait for it to ran
+                    // «claude»"*, which a mutation run printed back.
+                    write!(
+                        f,
+                        "this run could not read the pane at all while it waited to see whether it \
+                         ever {}, so it cannot say, and nothing was injected",
+                        wanted.describe(),
+                    )?;
+                } else {
+                    write!(
+                        f,
+                        "the pane never {}, which this run was told to wait for before driving it, \
+                         so nothing was injected",
+                        wanted.describe(),
+                    )?;
+                }
                 write!(f, "{instead}")?;
                 // ⚠⚠⚠ LAST, AND ONLY WHEN IT IS TRUE. This is the clause that ends the caller's
                 // search, so it goes where a sentence puts its point — and a `prints` that failed
