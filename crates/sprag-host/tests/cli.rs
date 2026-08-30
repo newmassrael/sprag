@@ -2800,6 +2800,73 @@ fn resumable_runs(state: &Path, want: usize) -> bool {
         })
 }
 
+/// **THE STATE WORD A RUN'S ROW IS RENDERED UNDER** — the first token of the row's second line,
+/// which is where `render_run` puts it in every one of its arms (`running — N iterations`,
+/// `converged after N iterations`, `interrupted`).
+///
+/// ⚠ Read out of the ROW rather than asked of the daemon, because what
+/// [`a_clause_this_row_could_have_carried_is_absent`] needs to know is which arm of that renderer
+/// produced this text — and the row is the only evidence of that a test has.
+fn state_word(row: &str) -> &str {
+    row.lines()
+        .nth(1)
+        .unwrap_or_default()
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+}
+
+/// ⛔⛔⛔⛔⛔ **A NEGATIVE CONTROL OVER A ROW THAT COULD NOT HAVE CARRIED THE CLAUSE IS A DEAD
+/// LINE** — register item 775, and the shape that makes that mistake impossible instead of
+/// remembered.
+///
+/// # ⛔⛔⛔⛔⛔ Measured, twice, in two gates one day apart
+///
+/// `render_run` splits on a run's STATUS — `running`, `done`, and everything else — and the clauses
+/// that say why a run is not coming back (`withheld`, `leftover`, `not_resumed`) are printed by the
+/// last arm ALONE. So *a run that came back says none of this* is not a control at all: that row is
+/// `running`, the arm that would print the clause never runs for it, and the assertion cannot be
+/// made false by any writer however wrong.
+///
+/// **Item 771's gate had exactly that line and a rubber-stamp mutation left it GREEN.** It was
+/// repaired by staging a row that STAYS `interrupted`. **Item 737's gate had the same line**, and
+/// the same mutation — `run_to_json` publishing the withheld sentence over every row — left 152 of
+/// the 153 tests in this file passing, the one red being 771's newly repaired gate. That is the
+/// measurement item 775 was filed on, and this function is its repair.
+///
+/// # ⚠⚠⚠⚠⚠ Why a WITNESS and not a list of clause-bearing states
+///
+/// The obvious fix is to assert the control's state is one of the states that reach the printing
+/// arm. That list is a COPY of a fact `render_run` owns, and it ages the day a fourth arm is added
+/// — register item 747's disease, one file over. Instead the caller names a row from the SAME
+/// listing that DOES carry the clause: the witness proves the clause is printable, `state_word`
+/// proves both rows went through the same arm, and nothing here needs to know which arm that is.
+///
+/// ⚠ `why` is the caller's sentence for the real failure — that the clause is being printed about
+/// something other than what it claims.
+fn a_clause_this_row_could_have_carried_is_absent(
+    control: &str,
+    witness: &str,
+    clause: &str,
+    why: &str,
+) {
+    assert!(
+        witness.contains(clause),
+        "⚠⚠⚠ THE CONTROL'S OWN PREMISE FAILED: the witness row does not carry {clause:?} either, \
+         so this control cannot tell *the clause is correctly absent* from *nothing prints this \
+         clause at all* — which is the dead line register item 775 is about. Witness: {witness:?}",
+    );
+    assert_eq!(
+        state_word(control),
+        state_word(witness),
+        "⚠⚠⚠ THE CONTROL'S OWN PREMISE FAILED: the control row and the witness are rendered under \
+         different states, so they go through different arms of `render_run` and the clause could \
+         not have appeared on the control whatever the writer did. REGISTER ITEM 775. \
+         Control: {control:?}\nWitness: {witness:?}",
+    );
+    assert!(!control.contains(clause), "{why}\nRow: {control:?}");
+}
+
 /// Whether any DURABLE saved pane history under `state` contains `needle`.
 ///
 /// "Durable" is the whole point, and it is why the file filter is
@@ -3963,12 +4030,30 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
 /// run's record must really carry this build's. Against a fixture where they matched, every claim
 /// below would be true without being tested — which is the vacuity item 737 was filed about, one
 /// level up.
+///
+/// # ⛔⛔⛔⛔⛔ THREE LOOPS, and the third exists because this gate's control was DEAD
+///
+/// Register item 775. Until 2026-08-30 there were two — `promoted` (documents moved) and
+/// `untouched` (comes back) — and the negative control was `!kept.contains(…)` over `untouched`.
+/// That row is `running`, and `render_run` prints the withheld clause in its LAST arm only, so the
+/// assertion could not be made false by any writer however unconditionally it stamped the sentence.
+/// **Measured**: publishing the withheld sentence over every row from `run_to_json` left 152 of the
+/// 153 tests in this file passing, and this gate was one of them — the single red was item 771's
+/// gate, which had been repaired for exactly this the day before.
+///
+/// So a third loop is staged: `adrift` keeps THIS build's fingerprint — nothing is withheld from it
+/// — and loses the pane it was on, so it stays `interrupted` anyway (item 771's arm) and renders
+/// through the SAME arm as `promoted`. It is the row on which *this clause is absent* is a claim
+/// about the writer. `untouched`'s line is kept as what it is: a reading, not a control.
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_back() {
     /// A fingerprint no build of these documents has — the log's word for *another image wrote
     /// this*. Sixteen hex digits, the shape `stamp_fingerprint` emits.
     const FOREIGN: &str = "0000000000000000";
+    /// A pane no workspace in this test holds — register item 775. Panes are minted from a counter
+    /// that starts at zero, so a number this large is unreachable by construction, not by luck.
+    const NO_SUCH_PANE: u64 = 900_003;
 
     let sock = socket_path();
     let state = std::env::temp_dir().join(format!(
@@ -3996,13 +4081,27 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
 
-    // ── THE PROMOTED REPOSITORY'S LOOP, and a second one whose record is left alone ──────────
+    // ── THE PROMOTED REPOSITORY'S LOOP, one whose record is left alone, and one left ADRIFT ──
     let promoted = loop_session(&mut conn, "promoted");
     start_loop(
         &mut conn,
         "promoted",
         promoted,
         "the loop whose documents are about to change under it",
+    );
+    // ⛔⛔⛔⛔⛔ **THE ROW THAT STAYS `interrupted` AND IS OWED NO SENTENCE FROM THIS ITEM** —
+    // register item 775, and the run that makes this gate's control a control. Its documents are
+    // THIS build's, so nothing is withheld from it; the pane it was on is gone, so it stays behind
+    // anyway and renders through the same arm as `promoted`. Without it the only negative control
+    // here is over a row that came back `running`, and `render_run` prints no such clause on that
+    // arm — measured: a `run_to_json` publishing the withheld sentence over every row left this
+    // gate GREEN and 152 of the 153 tests in this file with it.
+    let adrift = loop_session(&mut conn, "adrift");
+    start_loop(
+        &mut conn,
+        "adrift",
+        adrift,
+        "the loop whose fingerprint is this build's and whose pane does not come back",
     );
     let untouched = loop_session(&mut conn, "untouched");
     start_loop(
@@ -4012,8 +4111,8 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
         "the control, whose record keeps the fingerprint the daemon wrote",
     );
     assert!(
-        wait_for(Duration::from_secs(90), || resumable_runs(&state, 2)),
-        "⚠⚠ THE PREMISE FAILED: the daemon never persisted TWO live loops each carrying a place \
+        wait_for(Duration::from_secs(90), || resumable_runs(&state, 3)),
+        "⚠⚠ THE PREMISE FAILED: the daemon never persisted THREE live loops each carrying a place \
          and a request, so there is nothing for a promotion to withhold and this gate would be \
          measuring an empty log.",
     );
@@ -4054,7 +4153,9 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
         .expect("the daemon wrote a run log");
     let mut log = sprag_host::load_runs(&log_file).expect("and it decodes");
     let mine = format!("pane={promoted}");
+    let cast_off = format!("pane={adrift}");
     let mut rewritten = 0;
+    let mut stranded = 0;
     for run in &mut log.runs {
         assert_eq!(
             run.document.as_deref(),
@@ -4068,11 +4169,31 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
             run.document = Some(FOREIGN.to_owned());
             rewritten += 1;
         }
+        // ⛔⛔⛔ AND THE ADRIFT ONE KEEPS ITS FINGERPRINT AND LOSES ITS PANE — register item 775.
+        // Both addresses are moved, because either alone would still find the run: the request's
+        // pane is what a boot falls back to, and `driving` is what it prefers (register item 771).
+        if run.label.contains(&cast_off) {
+            if let Some(request) = run.request.as_mut() {
+                request.insert(
+                    sprag_host::plugins::RUN_PANE_KEY.to_owned(),
+                    json!(NO_SUCH_PANE),
+                );
+            }
+            run.driving = Some(NO_SUCH_PANE);
+            stranded += 1;
+        }
     }
     assert_eq!(
         rewritten, 1,
-        "⚠⚠ THE FIXTURE'S OWN PREMISE: exactly one of the two records must be moved to another \
+        "⚠⚠ THE FIXTURE'S OWN PREMISE: exactly one of the three records must be moved to another \
          build's documents. Rewriting both leaves no control; rewriting none stages no promotion.",
+    );
+    assert_eq!(
+        stranded, 1,
+        "⚠⚠ THE FIXTURE'S OWN PREMISE — REGISTER ITEM 775: exactly one record must be left with \
+         this build's documents and no pane to come back to. It is the only row here that stays \
+         `interrupted` while being owed no withheld sentence, and without it this gate's negative \
+         control is over a row that came back `running` — an assertion no writer can falsify.",
     );
     std::fs::write(
         &log_file,
@@ -4130,12 +4251,12 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
          {moved:?}",
     );
 
-    // ── THE CONTROL: the run whose record was left alone comes back, and says none of this ───
+    // ── THE FIRST CONTROL: the run whose record was left alone comes back ────────────────────
     //
     // ⚠⚠⚠⚠ WITHOUT IT THIS GATE PASSES AGAINST A BOOT THAT RESUMES NOTHING AT ALL — a successor
     // whose panes never came back, or one that had simply stopped putting runs back, would leave
-    // both rows `interrupted`, and a sentence printed over every restored run would satisfy every
-    // assertion above. The control is what makes the FINGERPRINT the cause.
+    // every row `interrupted` and the claim above would be true for a reason that is not the
+    // fingerprint. This is what makes the FINGERPRINT the cause.
     let came_back = wait_for(Duration::from_secs(30), || {
         let control = sprag(&sock, &["runs", "-t", "untouched"]);
         control.ok && !block_for(&control.stdout, untouched).contains("interrupted")
@@ -4148,11 +4269,44 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
          back either, so *nothing was resumed* is the explanation for the claim above rather than \
          *the documents moved*. Row: {kept:?}",
     );
+
+    // ── AND THE SECOND CONTROL, WHICH IS THE ONE A WRITER CAN FAIL ───────────────────────────
+    //
+    // ⛔⛔⛔⛔⛔ **REGISTER ITEM 775. THIS LINE USED TO BE `!kept.contains(…)` AND IT WAS DEAD.**
+    // `kept` is the row of a run that came BACK, so it is `running`, and `render_run`'s `running`
+    // arm prints no withheld clause at all — the assertion could not be made false by any writer,
+    // however unconditionally it stamped the sentence. Measured on 2026-08-30 by publishing the
+    // withheld sentence over every row from `run_to_json`: 152 of the 153 tests in this file passed
+    // and THIS GATE WAS ONE OF THEM.
+    //
+    // The row that can fail is one that stays `interrupted` and is owed no withheld sentence: its
+    // fingerprint is this build's, so nothing was withheld from it, and it stayed behind anyway
+    // because the pane it was on did not come back (register item 771's arm). It renders through
+    // the same arm as `moved`, which is what `a_clause_this_row_could_have_carried_is_absent`
+    // asserts rather than assumes — the witness is `moved` itself.
+    let cast_off = block_for(&sprag(&sock, &["runs", "-t", "adrift"]).stdout, adrift);
     assert!(
-        !kept.contains("no successor can put it back"),
-        "⚠⚠⚠ THE CONTROL FAILED: a run that WAS put back is carrying the sentence that says \
-         nothing will pick it up, so the clause is printed about restoration itself rather than \
-         about the refusal. Row: {kept:?}",
+        cast_off.contains("no pane pool here holds"),
+        "⚠⚠⚠ THE CONTROL'S OWN PREMISE FAILED — REGISTER ITEM 775: the adrift loop's row does not \
+         say its pane is gone, so it did not stay behind for the reason this fixture staged and \
+         what follows is a control over a row in some other state. Row: {cast_off:?}",
+    );
+    a_clause_this_row_could_have_carried_is_absent(
+        &cast_off,
+        &moved,
+        "no successor can put it back",
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 737 / 775: a run whose documents are THIS BUILD'S is being told \
+         that no successor can put it back because its documents moved. Nothing was withheld from \
+         it — it stayed behind over a pane — so the clause is printed about staying behind rather \
+         than about the fingerprint, and a reader is sent to compare two document trees that agree.",
+    );
+    a_clause_this_row_could_have_carried_is_absent(
+        &cast_off,
+        &moved,
+        FOREIGN,
+        "⛔⛔⛔⛔ REGISTER ITEM 737 / 775: a row whose record was never rewritten is quoting the \
+         foreign fingerprint, so the COMPARISON this item exists to put in front of a person is \
+         being printed about a run that has nothing to compare.",
     );
     drop(guard);
 }
@@ -4482,16 +4636,31 @@ fn a_promotion_that_changes_the_documents_ends_the_drivers_it_is_not_bringing_ba
     // ⚠⚠⚠⚠ WITHOUT IT A RENDERER THAT PRINTED THE CLAUSE OVER EVERY WITHHELD ROW WOULD PASS — and
     // that is register item 744's predicate exactly: a key is carried by the mouth only if the row
     // that has it and the row that does not RENDER DIFFERENTLY.
-    assert!(
-        !control.contains("this boot ended it"),
+    //
+    // ⚠⚠ AND IT GOES THROUGH `a_clause_this_row_could_have_carried_is_absent` — register item 775.
+    // This control happens to be live (both rows here are withheld, so both are `interrupted`) and
+    // "happens to be" is exactly what that item is about: the sibling gate's control was written
+    // the same way, over a row that came back `running`, and was dead for a year of rounds. Stating
+    // the witness makes the liveness a thing this fixture ASSERTS rather than a thing that is true.
+    a_clause_this_row_could_have_carried_is_absent(
+        &control,
+        &subject,
+        "this boot ended it",
         "⚠⚠⚠ THE CONTROL FAILED: a run whose driver was already gone is carrying the sentence that \
          says this boot ended one, so the clause is printed about being withheld rather than about \
-         a process. Row: {control:?}",
+         a process.",
+    );
+    a_clause_this_row_could_have_carried_is_absent(
+        &control,
+        &subject,
+        &stranded_driver.to_string(),
+        "⚠⚠⚠ THE CONTROL FAILED: the row names a pid nothing ended, which would make the number in \
+         the subject's row evidence of nothing.",
     );
     assert!(
         !control.contains(&hand_driver.to_string()),
-        "⚠⚠⚠ THE CONTROL FAILED: the row names a pid nothing ended, which would make the number in \
-         the subject's row evidence of nothing. Row: {control:?}",
+        "⚠⚠⚠ THE CONTROL FAILED: the row names the pid a PERSON killed, so the clause is printed \
+         about any dead driver rather than about the one this boot ended. Row: {control:?}",
     );
     drop(guard);
 }
@@ -4971,8 +5140,27 @@ fn a_promotion_follows_a_loop_that_replaced_its_session_and_says_when_it_cannot(
     // a DECISION — so a control looking for that phrase calls a row a rubber stamp for doing its
     // job. What separates the two is the CAUSE each names, so these are the four causes this item
     // can name and no other clause on this row can.
-    for stamped in [
+    //
+    // ⚠⚠ EACH ONE GOES THROUGH `a_clause_this_row_could_have_carried_is_absent` — register item
+    // 775 — with `lost_row` as the witness: that row is `interrupted` too and DOES carry this
+    // item's clause, which is what makes *this row does not* a statement about the writer rather
+    // than about the arm. The witness only literally carries the first probe, so the other three
+    // borrow it: they are arms of ONE sentence key, and a mouth that prints the key prints whichever
+    // arm it was handed.
+    a_clause_this_row_could_have_carried_is_absent(
+        &elsewhere_row,
+        &lost_row,
         "no pane pool here holds",
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 771: a run WITHHELD because its documents moved is being told its \
+         pane is gone. Both clauses answer *why is this row still `interrupted`?* and only item \
+         737's was ever asked of this run — a reader given this one goes looking for a pane, when \
+         what happened is that no successor is coming at all.",
+    );
+    // ⚠ AND THE OTHER THREE ARMS PLAINLY, because the witness above has already established what
+    // they need: they are arms of ONE key, and a mouth that prints the key at all prints whichever
+    // arm it was handed. A witness per arm would need a fixture that can stage all four, and two of
+    // them cannot be staged by any log this build writes.
+    for stamped in [
         "nothing ever reported a newer one",
         "names no pane at all",
         "its own door refused",
@@ -4980,14 +5168,14 @@ fn a_promotion_follows_a_loop_that_replaced_its_session_and_says_when_it_cannot(
         assert!(
             !elsewhere_row.contains(stamped),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 771: a run WITHHELD because its documents moved is being told \
-             `{stamped}`. Both clauses answer *why is this row still `interrupted`?* and only item \
-             737's was ever asked of this run — a reader given this one goes looking for a pane, \
-             when what happened is that no successor is coming at all. Row: {elsewhere_row:?}",
+             `{stamped}`. Row: {elsewhere_row:?}",
         );
     }
-    // ⚠ AND THE RESUMED ROW, kept as the weaker statement it is: it says none of this either, but
-    // it is `running`, so no writer of this clause could make it fail. It stands as a reading of
-    // the row a person actually gets back, not as a control.
+    // ⚠ AND THE RESUMED ROW, kept as the weaker statement it is — register item 775 names this
+    // shape: it is `running`, so `render_run`'s arm for it prints no such clause and no writer
+    // could make this line fail. It stands as a READING of the row a person actually gets back,
+    // and the control that can fail is `elsewhere_row` above. It deliberately does NOT go through
+    // the witness helper, which would refuse it.
     let kept = block_for(&sprag(&sock, &["runs", "-t", "control"]).stdout, control);
     assert!(
         !kept.contains("no pane pool here holds"),
