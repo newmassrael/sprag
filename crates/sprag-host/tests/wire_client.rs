@@ -8857,12 +8857,19 @@ fn the_world_a_run_is_checked_against_answers_the_same_two_things_over_the_wire(
 ///
 /// On the test's own connection and not the driver's, for [`spawn_pane`]'s reason: what the driver
 /// did, it did through [`PaneAccess`] alone.
+///
+/// # ⚠⚠⚠ THE CONNECTION IS MADE BEFORE THE SLEEP, and that is register item 776's arm (3-f)
+///
+/// `after` is what a caller measures its wait against, so everything between the sleep ending and
+/// the marker reaching the screen is error on that measurement — and connecting to a daemon a
+/// polling arm is hammering is the dearest part of it. Made first, it costs the caller nothing;
+/// made after, it lands inside the window the caller thinks it chose.
 fn print_into_pane_after(sock: &Path, pane: PaneId, after: Duration, text: &'static str) {
     let sock = sock.to_path_buf();
     std::thread::spawn(move || {
-        std::thread::sleep(after);
         let mut conn =
             HostConn::connect(&sock, Duration::from_secs(5)).expect("the prodder's connection");
+        std::thread::sleep(after);
         let _ = conn.call(
             "scene/invoke",
             json!({
@@ -8965,13 +8972,29 @@ fn a_park_the_daemon_refuses_degrades_the_wait_instead_of_reporting_a_still_pane
 /// lane's colour is not evidence about a gate of this shape and the ratio is.
 ///
 /// ⚠⚠⚠ **So each arm is now waited out over TWO windows a factor of four apart, and what is
-/// asserted is the SHAPE of each arm's cost.** A slow host stretches both windows alike, so the
-/// ratio survives exactly what the count could not:
+/// asserted is the SHAPE of each arm's cost.** A slow host charges more for every look alike, so
+/// the shape survives exactly what the count could not:
 ///
 /// * **the parked arm's cost does NOT follow the window** — the claim, and item 631's whole content;
-/// * **the polling arm's cost DOES** — the staging control, which is what says the windows really
-///   buy looks on this runner and that the line above was not made true by a fixture that waits for
-///   nothing (register item 646).
+/// * **the polling arm's cost DOES follow the time it spends waiting** — the staging control, which
+///   is what says that time really buys looks on this runner and that the line above was not made
+///   true by a fixture that waits for nothing (register item 646). ⛔ *The time it spends waiting*,
+///   never *the window it asked for*; the section below is what that distinction cost.
+///
+/// # ⛔⛔⛔⛔⛔ A slow host does NOT stretch both windows alike — register item 776, arm (3-f)
+///
+/// The sentence above said it did, and macOS turned it over at `83aedd0`. A wait here ends when the
+/// marker LANDS, not when its window closes, so each arm really waits `window + landing`, and the
+/// landing is a CONSTANT the host charges — not a factor it scales by. It therefore does not
+/// cancel out of a ratio of counts read against the windows: it drags that ratio towards 1 as it
+/// grows, and a perfectly steady look rate reads as a park.
+///
+/// **MEASURED 2026-08-30, the same reading on two machines**: macOS CI scored 14 looks and 24
+/// against those windows; this Linux build machine, with the marker's landing staged 800 ms late,
+/// scored 101 and 171. Ratios 1.71 and 1.69 against a window ratio of 4 — and 96 and 95 looks a
+/// second, against 98 and 95 with nothing staged. **The rate never moved.** So the staging control
+/// is read against the time each arm ACTUALLY waited, in differences, which is where the landing
+/// latency cancels.
 ///
 /// # ⚠⚠⚠ MEASURED 2026-08-24 on the build machine (32 cores, 125 GB), and it is the HOST'S number
 ///
@@ -9018,11 +9041,18 @@ fn a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen() {
     /// cost a function of the window. ⚠ Generous on purpose: the claim is *flat*, and a park that
     /// woke a handful of extra times would still be a park.
     const SLACK: u64 = 8;
-    /// What the long window must cost the POLLING arm over the short one before this gate believes
-    /// the windows buy looks at all. ⚠⚠ Half the honest reading against a window four times longer,
-    /// and that headroom is the whole of register item 668: what must not be able to turn this over
-    /// is the host it runs on.
-    const GROWTH: u64 = 2;
+    /// How much of the distance between the two windows the two POLLING arms' waits must really
+    /// have differed by before one is read against the other. ⚠⚠ Half, and it is a guard against
+    /// a reading that cannot discriminate rather than a threshold on the product: the landing
+    /// latency below is common to both arms and cancels in this difference, so a pair that fails
+    /// it is a pair whose two members waited the same length of time — RED, because there is
+    /// nothing to read off it, and never a pass.
+    const APART_SHARE: u32 = 2;
+    /// What share of the looks the EXTRA time owes — at the short arm's own measured rate — the
+    /// long arm must actually have paid before this gate believes the wait buys looks with time at
+    /// all. ⚠⚠ Half the honest reading, and that headroom is the whole of register item 668: what
+    /// must not be able to turn this over is the host it runs on.
+    const OWED_SHARE: u128 = 2;
 
     /// Wait out one window on one driver, answering **how many looks it cost**, how long it took,
     /// and how it ended.
@@ -9135,12 +9165,46 @@ fn a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen() {
     );
 
     // ── the staging control's claim: A WINDOW REALLY DOES BUY LOOKS ON THIS RUNNER ──
+    //
+    // ⛔⛔⛔⛔⛔ AND IT IS READ AGAINST THE TIME EACH ARM ACTUALLY WAITED, NEVER AGAINST THE
+    // WINDOW IT ASKED FOR — register item 776, arm (3-f).
+    //
+    // A wait here does not end when its window does. It ends when the marker LANDS, and landing
+    // costs an RPC, a line discipline, `cat`, and the reader thread that applies the batch — on a
+    // daemon the polling arm is hammering with a whole screen every slice. That latency is the
+    // HOST's, it is common to both windows, and counting looks against `SHORT` and `LONG` divides
+    // by a denominator neither arm used. **MEASURED 2026-08-30, the same reading twice**: macOS CI
+    // scored 14 looks and 24 at `83aedd0` — a ratio of 1.71 against a window ratio of 4 — and this
+    // Linux build machine scores 101 and 171, a ratio of 1.69, when the landing is staged 800 ms
+    // late. ⚠ Both hosts' looks per second never moved (96 and 95 on the staged Linux run, against
+    // 98 and 95 unstaged). Only the denominator was wrong.
+    //
+    // ⚠⚠⚠ So what is asserted is that THE EXTRA TIME BOUGHT THE EXTRA LOOKS, at the rate this
+    // runner itself charged over the short arm. Both terms are differences, so the landing latency
+    // cancels out of each — which is what makes this the same sentence as before on a fast host
+    // and a true one on a slow host, rather than a looser sentence on both.
+    let apart = control_long_took.saturating_sub(control_short_took);
     assert!(
-        control_long >= control_short.saturating_mul(GROWTH),
-        "⚠⚠⚠⚠ THE STAGING CONTROL: a surface that cannot be told MUST pay for the window, or this \
-         host is not buying looks with time and the claim below is true of a fixture rather than \
-         of a park. A {LONG:?} window cost {control_long} looks where a {SHORT:?} one cost \
-         {control_short}",
+        apart >= (LONG - SHORT) / APART_SHARE,
+        "⛔⛔⛔ THE TWO POLLING ARMS DID NOT WAIT TIMES THAT DIFFER BY THEIR WINDOWS, so they are \
+         one reading and not a pair, and nothing can be read off them — this is RED rather than a \
+         pass for exactly that reason. {LONG:?} waited {control_long_took:?} and {SHORT:?} waited \
+         {control_short_took:?}, {apart:?} apart against the {:?} between the windows: the \
+         marker's landing latency is not the same on the two arms",
+        LONG - SHORT,
+    );
+    let extra_looks = u128::from(control_long.saturating_sub(control_short));
+    // The short arm's OWN look rate, applied to the time the long arm waited on top of it.
+    let owed = u128::from(control_short) * apart.as_nanos() / control_short_took.as_nanos();
+    assert!(
+        extra_looks * OWED_SHARE >= owed,
+        "⚠⚠⚠⚠ THE STAGING CONTROL: a surface that cannot be told MUST pay for the time it waits, \
+         or this host is not buying looks with time and the claim below is true of a fixture \
+         rather than of a park. The {LONG:?} arm waited {control_long_took:?} for {control_long} \
+         look(s) and the {SHORT:?} arm {control_short_took:?} for {control_short}: the extra \
+         {apart:?} bought {extra_looks} look(s) where the short arm's own rate owes {owed}. ⚠ If \
+         the two rates differ, that is this runner's look cost changing between the arms and not \
+         the product — register item 668",
     );
 
     // ── the claim: A PARKED WAIT'S COST DOES NOT FOLLOW THE WINDOW ──
@@ -9165,9 +9229,10 @@ fn a_remote_driver_parks_on_a_pane_instead_of_re_reading_its_screen() {
     // from counts it had not read. Absolute counts are the runner's; the shapes are the product's.
     println!(
         "\n== what one wire-driven wait costs, per window ==\n  parked:  {parked_short} look(s) \
-         over {SHORT:?}, {parked_long} over {LONG:?}\n  polling: {control_short} look(s) over \
-         {SHORT:?}, {control_long} over {LONG:?}\n  the claim is the SHAPE of each row, never the \
-         numbers in it\n",
+         over {SHORT:?} (waited {parked_short_took:?}), {parked_long} over {LONG:?} (waited \
+         {parked_long_took:?})\n  polling: {control_short} look(s) over {SHORT:?} (waited \
+         {control_short_took:?}), {control_long} over {LONG:?} (waited \
+         {control_long_took:?})\n  the claim is the SHAPE of each row, never the numbers in it\n",
     );
 }
 
