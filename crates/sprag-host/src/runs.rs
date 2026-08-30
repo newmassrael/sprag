@@ -264,6 +264,112 @@ impl Unordered {
     }
 }
 
+/// **WHY A PROGRESS REPORT WAS NOT TAKEN** — register item 764, and [`Unordered`]'s shape one door
+/// over.
+///
+/// # ⚠⚠⚠⚠⚠ The door answered *received* for a run it had decided nothing would ever drive
+///
+/// [`RunRegistry::report`] was a `find` and nothing else, while the door above it
+/// (`crate::plugins::PluginsExternal::report_progress`) wrote this in its own doc: *"a run this
+/// daemon does not hold is REFUSED rather than ignored: a driver reporting for an id nobody has is
+/// a driver that has outlived its run, and telling it so is what lets it stop."* A successor daemon
+/// **holds the id** of every run it inherited — including the ones register item 737 withheld and
+/// the ones item 771 could not stand a driver up for — so at exactly the promotion that sentence
+/// was written for, the answer was *received*.
+///
+/// # ⚠⚠⚠⚠ Where that costs something is the LOG, not the row
+///
+/// `crate::plugins::run_to_json`'s `interrupted` arm reads no report at all, so nothing a person
+/// opens moves — measured, and it is why this is not filed as a lie on a screen.
+/// [`RunRegistry::persistable`] is the reader that matters: it merges a record's report into the
+/// durable log for a `Running` **and an `Interrupted`** run alike — `place`, the `driving` pane,
+/// the counters — and stamps [`sprag_plugin::STATECHARTS_FINGERPRINT`] beside the words. So a
+/// report taken for a set-aside run **rewrites where the next boot would put that run back**,
+/// vouched for by a daemon that never drove it.
+///
+/// ⚠ Each arm is a different thing for the reporter to do, which is why this is a type and not a
+/// `false`: an unknown id is a driver that has outlived its run, a set-aside one is a run somebody
+/// has to start again, and an ended one already has its answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unreported {
+    /// No run of that id is in this directory — the answer the `false` already gave.
+    NoSuchRun,
+    /// **NO SUCCESSOR WILL EVER PUT THIS RUN BACK**, in the words register item 737 recorded at the
+    /// boot that read the log — the promotion case, and the one this item was filed about.
+    Withheld(Withheld),
+    /// **THIS BOOT TRIED AND COULD NOT**, in the words register item 771 recorded — a different
+    /// fact with a different remedy, kept apart here for the reason those two items kept them apart
+    /// on the row.
+    NotResumed(NotResumed),
+    /// **THE RUN'S ENDING IS ALREADY RECORDED HERE.** A driver still reporting into one is a driver
+    /// whose own process was collected — its stdout read to EOF — so there is nothing left for it
+    /// to say and nothing here that would keep it.
+    Ended,
+}
+
+impl Unreported {
+    /// The words every one of these clauses opens with, and **the ONE thing a driver matches on**.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the sentence is the channel, and why that is not the two-mouths defect
+    ///
+    /// `pinion_core::external::InvokeError::rejected` carries a STRING and nothing else, so a
+    /// refusal's reason reaches the far side of a socket as prose or not at all. What makes prose
+    /// safe to match on is that both ends read one const: [`describe`](Self::describe) composes
+    /// with it and [`spoken_in`](Self::spoken_in) recognises with it, they sit here together, and a
+    /// gate drives the one into the other. `crate::wire::unknown_slot` is the same arrangement
+    /// against a word pinion authored.
+    ///
+    /// ⚠ It names the RUN and not the reason, deliberately: the reason differs per arm and a reader
+    /// that had to know all four would go stale the day a fifth is added, while *this daemon is not
+    /// driving that run* is the whole of what a driver has to act on.
+    pub const NOT_DRIVING: &'static str = "this daemon is not driving run";
+
+    /// **WHAT HAPPENED AND WHAT TO DO ABOUT IT** — prose, and never the arm's own name, the rule
+    /// every describing vocabulary in this workspace follows. [`Unordered::describe`]'s twin.
+    ///
+    /// ⚠⚠ The two set-aside arms carry the boot's OWN sentence rather than re-authoring it
+    /// (`crate::plugins::withheld_sentence` and `crate::plugins::not_resumed_sentence`), which is
+    /// [`NotResumed::Refused`]'s rule: the party that decided is the party that says why, and a
+    /// second wording here would be free to drift from the one the row and the operator's log
+    /// already carry.
+    ///
+    /// ⚠⚠⚠ **AND NO REMEDY IS APPENDED TO THEM**, which is the same rule and was measured rather
+    /// than reasoned: a first draft added *"Start a new run"* to both, and against the arm a
+    /// promotion actually causes the clause came out ending *"…Start it again. Start a new run"* —
+    /// the carried sentence already says it. A wrapper that re-instructs a reader the wrapped
+    /// sentence has already instructed is a second mouth wearing a helpful coat.
+    #[must_use]
+    pub fn describe(&self, id: RunId) -> String {
+        let subject = format!("{} {}", Self::NOT_DRIVING, id.0);
+        match self {
+            Self::NoSuchRun => format!(
+                "{subject}: it holds no such run. A driver reporting for an id nobody has has \
+                 outlived its run and should stop"
+            ),
+            Self::Withheld(why) => {
+                format!("{subject}: {}", crate::plugins::withheld_sentence(why))
+            }
+            Self::NotResumed(why) => {
+                format!("{subject}: {}", crate::plugins::not_resumed_sentence(why))
+            }
+            Self::Ended => format!(
+                "{subject}: its ending is already recorded here, so there is nothing left for a \
+                 driver of it to report"
+            ),
+        }
+    }
+
+    /// **IS THIS REFUSAL CLAUSE ONE OF THESE?** — the far side of [`describe`](Self::describe), and
+    /// the whole of what `crate::drive` needs in order to know it has been abandoned.
+    ///
+    /// ⚠ A PREFIX and not a `contains`: a clause that merely mentions the words — one refusal
+    /// quoting another, a plugin's own prose — is not this daemon speaking about the reporter's run.
+    #[must_use]
+    pub fn spoken_in(clause: &str) -> bool {
+        clause.starts_with(Self::NOT_DRIVING)
+    }
+}
+
 /// ⚠⚠ `Serialize`/`Deserialize` because it is written into the durable run log, and
 /// `rename_all = "snake_case"` so the log holds `"person"` and not `"Person"` — the shape every
 /// other word in [`PersistedRun`] already takes. An arm added later must keep the old spellings
@@ -2472,8 +2578,8 @@ impl RunRegistry {
         true
     }
 
-    /// **A DRIVER IN ANOTHER PROCESS SAYS WHAT ITS RUN HAS DONE** — register item 650. Returns
-    /// whether such a run exists, the answer [`cancel`](Self::cancel) gives for its reason.
+    /// **A DRIVER IN ANOTHER PROCESS SAYS WHAT ITS RUN HAS DONE** — register item 650, refusing
+    /// with a REASON where nothing here will ever drive that run — register item 764.
     ///
     /// ⚠⚠ `progress` is stored WITHOUT being read apart — see `RunRecord::reported`. It is
     /// `crate::plugins::progress_to_json`'s own output, so a key that renderer grows reaches the
@@ -2482,17 +2588,60 @@ impl RunRegistry {
     /// ⚠ EACH REPORT REPLACES THE LAST. What a reader wants is what the run has done so far, and a
     /// report that arrived late or not at all costs nothing once the next one lands — the same
     /// *this is a LEVEL* reasoning [`sprag_plugin::ProgressCell`] states for itself.
-    pub fn report(&self, id: RunId, progress: serde_json::Value) -> bool {
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the refusal is FOR, and the one thing it must not do
+    ///
+    /// [`Unreported`] carries the whole argument. The line to hold here is that it refuses on a
+    /// **decision this daemon took**, never on a state it is passing through: `put_back` validates
+    /// a plugin, spawns its driver and only THEN installs the row (its own *everything is checked
+    /// before the row is touched* rule), so between those two acts a run that is being rescued is
+    /// still `Interrupted` — and a door that refused on the WORD would answer *nothing is driving
+    /// you* to the very driver this daemon had just stood up for it. `Panicked` is the same window
+    /// one item over (register item 671: a lost driver's replacement is built while the row still
+    /// says the last one died), and the gate above it already asserts that a report puts such a run
+    /// back in business.
+    ///
+    /// So the refusing arms are the two that RECORD a decision — item 737's `withheld` and item
+    /// 771's `not_resumed` — plus a run whose ending is in hand. ⚠ No `_` arm: a sixth
+    /// [`RunState`] is classified on the day it exists rather than defaulting into *take the
+    /// report*, which is the answer that made this defect invisible.
+    ///
+    /// # Errors
+    ///
+    /// [`Unreported`], whose arms are four different things for the reporter to do.
+    pub fn report(&self, id: RunId, progress: serde_json::Value) -> Result<(), Unreported> {
         let Some(record) = self.runs.iter().find(|run| run.id == id) else {
-            return false;
+            return Err(Unreported::NoSuchRun);
         };
+        // ⚠⚠ THE VERDICT IS TAKEN AS A VALUE AND THE STATE LOCK IS GONE BEFORE ANYTHING ACTS ON IT.
+        // A `match lock(..)` holds its guard for the whole match — the scrutinee's temporaries live
+        // that long — and both arms below go on to take a SECOND lock on the same record. This
+        // workspace has measured that shape as a hang that is green for as long as the assertion
+        // passes; `crate::remote_access::RemotePaneAccess::read` states it at length.
+        let refusal = {
+            let state = lock(&record.state);
+            match &*state {
+                // Driven here, or about to be: see the doc above on why the second of these is an
+                // accept and not an oversight.
+                RunState::Running | RunState::Panicked(_) => None,
+                RunState::Interrupted => record
+                    .withheld
+                    .clone()
+                    .map(Unreported::Withheld)
+                    .or_else(|| record.not_resumed.clone().map(Unreported::NotResumed)),
+                RunState::Done { .. } | RunState::Reported(_) => Some(Unreported::Ended),
+            }
+        };
+        if let Some(why) = refusal {
+            return Err(why);
+        }
         *lock(&record.reported) = Some(progress);
         // ⚠⚠⚠ AND THE COUNT GOES UP EVEN THOUGH THE VALUE ABOVE WAS REPLACED — register item 671.
         // What the row shows is a LEVEL and each report overwrites the last; what
         // [`Self::revival`] needs is the opposite question — *has the driver I started said
         // anything at all* — and only something that never goes down can answer it.
         record.reports.fetch_add(1, Ordering::Relaxed);
-        true
+        Ok(())
     }
 
     /// **WHAT TO DO ABOUT A RUN WHOSE DRIVER PROCESS DIED WITHOUT REPORTING AN OUTCOME** — register
@@ -3881,9 +4030,13 @@ mod tests {
         drop(said);
 
         // ── AND A REPORT PUTS IT BACK IN BUSINESS ───────────────────────────────────────────
-        assert!(
+        assert_eq!(
             registry.report(id, serde_json::json!({ "iterations": 1 })),
-            "the run takes a report"
+            Ok(()),
+            "⛔⛔⛔ REGISTER ITEM 764's OWN LINE NOT TO CROSS: a `panicked` run is one whose \
+             replacement driver is being built RIGHT NOW (`put_back_a_lost_driver`), so the door \
+             that refuses a set-aside run must not refuse this one — it would answer *nothing is \
+             driving you* to the driver this daemon had just stood up",
         );
         assert!(
             matches!(registry.revival(id), Revival::PutBack(_)),

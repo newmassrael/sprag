@@ -298,6 +298,21 @@ pub const RUN_LEFTOVER_KEY: &str = "leftover";
 /// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_STOOD_DOWN_KEY`]'s argument unchanged: an added
 /// answer key withdraws no address and widens no value space a peer decodes whole.
 pub const RUN_NOT_RESUMED_KEY: &str = "not_resumed";
+/// ⛔⛔⛔⛔⛔ **THE SENTENCE A DRIVER STOPPED ON, WRITTEN INTO ITS OWN ENDING** — register item 764.
+///
+/// A driver whose progress report is refused with [`crate::runs::Unreported`]'s clause has been
+/// told, by the daemon holding the socket, that nothing there will ever drive its run. It stops —
+/// and this is where the REASON goes, so the ending is a reason rather than the silence register
+/// item 685 spent a round naming. `crate::drive::report` is the one writer; it rides into the row
+/// inside the reported object, which `run_to_json`'s `Reported` arm splices whole.
+///
+/// ⚠⚠ The daemon's own words, carried and never re-authored — [`withheld_sentence`]'s rule across
+/// a socket. The clause was composed by [`crate::runs::Unreported::describe`], and a driver that
+/// wrote its own account of why it was refused would be a second mouth on a fact it did not decide.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_NOT_RESUMED_KEY`]'s argument unchanged: an
+/// added answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_ABANDONED_KEY: &str = "abandoned";
 /// The key a driver's [`REPORT_PROGRESS_ACTION`] carries its counters under.
 ///
 /// ⚠⚠ **THE WHOLE OBJECT UNDER ONE KEY, not its fields spread across the request.** What is inside
@@ -1510,6 +1525,13 @@ impl PluginsExternal {
     ///
     /// ⚠ A run this daemon does not hold is REFUSED rather than ignored: a driver reporting for an
     /// id nobody has is a driver that has outlived its run, and telling it so is what lets it stop.
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND A RUN IT HOLDS BUT WILL NEVER DRIVE IS REFUSED TOO** — register item 764,
+    /// which is the sentence above measured against a PROMOTION and found not to hold. A successor
+    /// daemon holds the id of every run it inherited, so the one case the refusal was written for —
+    /// a driver that has outlived the daemon that spawned it — was the one case answered *received*.
+    /// The reason is the registry's, printed verbatim, on `stand_down`'s rule beside this
+    /// (items 539 and 597): four ways of not being driven are four different things to do next.
     fn report_progress(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
         let id = map
@@ -1520,22 +1542,23 @@ impl PluginsExternal {
             Some(Value::Object(progress)) => Value::Object(progress.clone()),
             _ => return Err(InvokeError::TypeMismatch),
         };
-        if lock(&self.runs).report(RunId(id), progress) {
-            // ⛔⛔⛔⛔⛔ AND THIS IS WHERE A RUN'S STEP BECOMES SOMETHING A WATCHER CAN BE WOKEN BY —
-            // register item 706. The default driver is out of process, so this call is the one
-            // moment this daemon learns a run moved at all; before it announced, every consumer
-            // rebuilt the same `runs` poller and lost transitions between its polls.
-            //
-            // ⚠ AFTER the report is stored, never before — `on_run_end`'s rule one hook over: a
-            // client woken by this asks `runs` immediately, and an announcement that raced the
-            // write would hand it the step it was woken FOR as not yet there.
-            if let Some(announce) = &self.on_run_stepped {
-                announce(RunId(id));
-            }
-            Ok(IntrospectValue::Null)
-        } else {
-            Err(refused(format!("this daemon holds no run {id}")))
-        }
+        lock(&self.runs)
+            .report(RunId(id), progress)
+            .map(|()| {
+                // ⛔⛔⛔⛔⛔ AND THIS IS WHERE A RUN'S STEP BECOMES SOMETHING A WATCHER CAN BE WOKEN
+                // BY — register item 706. The default driver is out of process, so this call is
+                // the one moment this daemon learns a run moved at all; before it announced, every
+                // consumer rebuilt the same `runs` poller and lost transitions between its polls.
+                //
+                // ⚠ AFTER the report is stored, never before — `on_run_end`'s rule one hook over: a
+                // client woken by this asks `runs` immediately, and an announcement that raced the
+                // write would hand it the step it was woken FOR as not yet there.
+                if let Some(announce) = &self.on_run_stepped {
+                    announce(RunId(id));
+                }
+                IntrospectValue::Null
+            })
+            .map_err(|why| refused(why.describe(RunId(id))))
     }
 
     /// **HALT A RUN BETWEEN TURNS, OR LET IT GO AGAIN** — [`HOLD_RUN_ACTION`], and the word a person
@@ -6049,6 +6072,309 @@ mod tests {
             "⛔⛔⛔ REGISTER ITEM 771: the door's own refusal is dropped and re-authored here, so \
              the row and the operator's log are two accounts of one run that are free to disagree \
              — `Revival::not_put_back`'s rule, one door over. Got: {refused:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PROGRESS REPORT FOR A RUN THIS DAEMON WILL NEVER DRIVE IS REFUSED WITH A
+    /// REASON, AND THAT REASON IS WHAT ENDS THE DRIVER** — register item 764, end to end.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The premises are staged rather than assumed, because without them it is vacuous
+    ///
+    /// The arm only exists for a run a boot did NOT put back and whose leftover driver the boot
+    /// could NOT identify — `PersistedRun::driver` is [`None`], which is item 740's residue and the
+    /// only thing left after that item ends every driver it can name. A fixture whose run came back
+    /// whole, or whose pid the boot killed, never reaches this door at all, and its assertions
+    /// would pass by never being tested. So three facts are asserted before the subject: the run is
+    /// `interrupted`, it carries item 737's reason, and nothing was ended for it.
+    ///
+    /// # ⚠⚠⚠⚠ What the refusal is worth, measured rather than reasoned
+    ///
+    /// [`run_to_json`]'s `interrupted` arm reads no report, so a taken report dirties nothing a
+    /// person opens — which is why the cost is asserted at the DURABLE LOG instead (block 3).
+    /// `RunRegistry::persistable` merges a record's report for an interrupted run exactly as for a
+    /// running one, and stamps this image's statechart fingerprint beside the words: so a report
+    /// taken here writes a POSITION into a record that had none and vouches for it, which is the
+    /// assertion a repair confined to a sentence cannot satisfy.
+    ///
+    /// # ⚠⚠⚠ And the far end is driven with the door's OWN clause, never a copy
+    ///
+    /// `crate::drive::carry_refusal_in`'s doc holds the argument (`carry_orders_in` measured it the
+    /// hard way): a gate that called the type while the product called the socket came back GREEN
+    /// against the shipped defect. The refusal here is the payload this door really produced,
+    /// carried into the fault shape the wire really uses, and the reader is the one the driver
+    /// really runs.
+    ///
+    /// ⚠⚠ **SIX MUTATIONS WERE RUN AGAINST IT AND ALL SIX REDDEN IT** — the shipped defect
+    /// (`report`'s `Interrupted` arm answering `None`), the old flat sentence in place of
+    /// `Unreported::describe`, a `spoken_in` that matches the old wording, a `carry_refusal_in`
+    /// that keeps the reason without raising the cancel, a `report` that refuses on the STATE WORD
+    /// (block 2 catches it), and an `ending` that drops the key.
+    ///
+    /// ⚠⚠ **THE CONTROLS ARE LIVE ROWS AND NOT DEAD ONES** (register item 775): the run put back
+    /// whole is asserted to TAKE its report through the same door — an arm that could fail, and
+    /// does the moment the refusal is written on the state word instead of on the decision.
+    #[test]
+    fn a_report_for_a_run_this_daemon_will_never_drive_is_refused_and_the_reason_ends_the_driver() {
+        let words = vec!["working".to_owned(), "work".to_owned()];
+        let asked = || {
+            json!({ "plugin": "orchestrator", "pane": 3 })
+                .as_object()
+                .cloned()
+                .expect("an object")
+        };
+        let saved = |id: u64, document: &str| crate::runs::PersistedRun {
+            id,
+            label: "a loop a promotion caught mid-turn".to_owned(),
+            request: Some(asked()),
+            iterations: 12,
+            cost: None,
+            unit: None,
+            finished: false,
+            outcome: None,
+            ceiling: None,
+            output: None,
+            build: None,
+            // ⛔ ITEM 740's RESIDUE, WHICH IS THE WHOLE POPULATION OF THIS ARM: a boot ends every
+            // leftover driver whose pid it can name, so the driver still reporting is the one whose
+            // record never carried a pid.
+            driver: None,
+            driving: Some(4),
+            opened_by_session: None,
+            at: None,
+            document: Some(document.to_owned()),
+            stood_down: None,
+            cancelled_by: None,
+            deliveries: None,
+            banked: None,
+            briefed: None,
+            done_reason: None,
+            place: Some(words.clone()),
+        };
+        let here = sprag_plugin::STATECHARTS_FINGERPRINT;
+        let theirs = "0000000000000000";
+        assert_ne!(
+            theirs, here,
+            "⚠⚠ THE PREMISE: the foreign fingerprint has to really be foreign, or the run comes \
+             back whole and this gate measures nothing",
+        );
+        let log = crate::runs::RunLog {
+            version: crate::runs::RUN_LOG_VERSION,
+            // ⚠ TWO RUNS, and the second is the control: one promotion, one document change, and
+            // the only difference between them is whose documents wrote their place.
+            runs: vec![saved(9, theirs), saved(10, here)],
+        };
+
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        lock(&registry).restore(&log);
+
+        // ── THE PREMISES, ASSERTED INSIDE ───────────────────────────────────────────────────
+        let listed = lock(&registry).snapshot();
+        let set_aside = listed
+            .iter()
+            .find(|run| run.id == RunId(9))
+            .expect("the withheld run is in the directory");
+        assert!(
+            matches!(set_aside.state, crate::runs::RunState::Interrupted),
+            "the run has to be one nothing is driving, or the door under test is not reached: \
+             {:?}",
+            set_aside.state,
+        );
+        assert!(
+            set_aside.withheld.is_some(),
+            "⚠⚠ AND THE DAEMON HAS TO HAVE DECIDED — item 737's reason is what separates *no \
+             successor will put this back* from *one is being stood up right now*, and without it \
+             this gate would be asserting the state word",
+        );
+        assert_eq!(
+            set_aside.ended_driver, None,
+            "⚠⚠⚠ AND THE BOOT ENDED NOTHING. Item 740 kills every leftover driver it can name, so \
+             a fixture whose pid was killed has no driver left to be refused and this arm is \
+             vacuous",
+        );
+
+        // ── 1. THE DOOR ─────────────────────────────────────────────────────────────────────
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let stranger = json!({
+            RUN_ID_KEY: 9,
+            PROGRESS_KEY: { "iterations": 400, RUN_PLACE_KEY: ["somewhere", "else"] },
+        });
+        let refusal = external.invoke(REPORT_PROGRESS_ACTION, IntrospectValue::Json(stranger));
+        let said = match &refusal {
+            Err(InvokeError::Rejected(why)) => why.as_str().to_owned(),
+            other => panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 764: this door told a driver its progress had been \
+                 RECEIVED for a run the boot had already decided no successor would ever put back \
+                 — and this door's own doc says a refusal *is what lets it stop*. Got: {other:?}",
+            ),
+        };
+        assert!(
+            said.contains(&withheld_sentence(
+                set_aside.withheld.as_ref().expect("asserted above")
+            )),
+            "⚠⚠⚠ THE REFUSAL CARRIES THE BOOT'S OWN REASON, never a second wording: *it was \
+             refused* sends a person to check the id they typed, and *the documents moved, start a \
+             new run* is the thing they can act on. Got: {said:?}",
+        );
+
+        // ── 2. THE CONTROL: A RUN THIS BOOT IS STILL STANDING A DRIVER UP FOR TAKES ITS REPORT ─
+        let mine = json!({
+            RUN_ID_KEY: 10,
+            PROGRESS_KEY: { "iterations": 13, RUN_PLACE_KEY: ["judging"] },
+        });
+        assert!(
+            external
+                .invoke(REPORT_PROGRESS_ACTION, IntrospectValue::Json(mine))
+                .is_ok(),
+            "⚠⚠⚠⚠⚠ A CONTROL FAILED, and it is the one that keeps this repair from breaking the \
+             rescue it sits next to: `put_back` validates a plugin, SPAWNS its driver and only \
+             then installs the row, so a run being rescued is still `interrupted` in that window. \
+             A door that refused on the STATE WORD would answer *nothing is driving you* to the \
+             very driver this daemon had just stood up. It refuses on the DECISION",
+        );
+
+        // ── 3. WHAT THE REFUSAL PROTECTS: THE DURABLE LOG, WITH A LIVE CONTROL BESIDE IT ────
+        //
+        // ⚠⚠⚠⚠⚠ MEASURED, AND NOT WHAT THIS ROUND FIRST WROTE DOWN. The first form of this block
+        // asserted that a taken report would OVERWRITE the withheld run's saved place — and the
+        // run has no saved place to overwrite: `restore` drops a position recorded against foreign
+        // documents on purpose, so the record comes back with `place: None`. The real cost is
+        // sharper than that: a taken report puts a place there where the record had NONE, and
+        // `persistable` stamps THIS image's fingerprint beside whatever place it finds — so the
+        // next boot reads a foreign run as resumable at a position a stranger named.
+        let written = lock(&registry).persistable();
+        let of = |id: u64| {
+            written
+                .runs
+                .iter()
+                .find(|run| run.id == id)
+                .unwrap_or_else(|| panic!("run {id} is still in the log"))
+                .clone()
+        };
+        let refused_run = of(9);
+        assert_eq!(
+            (
+                refused_run.place.as_deref(),
+                refused_run.document.as_deref()
+            ),
+            (None, None),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 764's REAL COST: `persistable` merges a report into the log \
+             for an INTERRUPTED run exactly as for a running one, and stamps this build's \
+             statechart fingerprint beside whatever place it finds. So a report taken for a run \
+             nothing here drives writes a POSITION into a record that had none — and vouches for \
+             it — which is the next boot putting a foreign run back where a stranger said. \
+             Got: {refused_run:?}",
+        );
+        assert_eq!(
+            refused_run.iterations, 12,
+            "⚠⚠ and its counters with it — the same merge, the same file, the same next boot",
+        );
+        // ⚠⚠⚠ THE CONTROL IS A ROW THAT COULD HAVE FAILED (register item 775): the merge is REAL
+        // and reaches the file, and the only thing that kept it off the run above is the refusal.
+        // Without this pair the block would pass on a `persistable` that had stopped reading
+        // reports at all.
+        let taken = of(10);
+        assert_eq!(
+            (
+                taken.place.as_deref(),
+                taken.document.as_deref(),
+                taken.iterations
+            ),
+            (Some(["judging".to_owned()].as_slice()), Some(here), 13),
+            "⚠⚠⚠⚠ A CONTROL FAILED: a report TAKEN has to reach the log, position, fingerprint \
+             and counters — that is the mechanism the assertion above says was kept off a \
+             set-aside run, and a gate whose mechanism does not fire is asserting nothing. \
+             Got: {taken:?}",
+        );
+
+        // ── 4. AND THE FAR END: THE DRIVER ACTS ON THAT CLAUSE ──────────────────────────────
+        let fault = sprag_rpc::RpcFault {
+            code: sprag_rpc::ACTION_REFUSED,
+            message: "Invalid params".to_owned(),
+            data: Some(json!(said)),
+        };
+        let abandoned = Mutex::new(None);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            crate::drive::carry_refusal_in(
+                &sprag_rpc::CallError::Fault(fault),
+                &abandoned,
+                &cancel
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 764: the daemon said *nothing here will ever drive your run* \
+             and the driver read it as one more failed status update — so it goes on typing at \
+             somebody's pane with its answer bound for a pipe that closed with the daemon that \
+             spawned it. Clause: {said:?}",
+        );
+        assert!(
+            cancel.load(std::sync::atomic::Ordering::Acquire),
+            "⚠⚠⚠ THE RUN HAS TO ACTUALLY STOP. The cancel flag is the only channel a progress sink \
+             has into a plugin that is mid-turn, and recording the reason without raising it would \
+             leave the driver working on with a nicely-worded note about why it should not",
+        );
+        assert_eq!(
+            lock(&abandoned).as_deref(),
+            Some(said.as_str()),
+            "⚠⚠ AND THE ENDING IS A REASON RATHER THAN A SILENCE (register item 685): the clause \
+             kept here is what `crate::drive::report` writes beside the outcome, so a `cancelled` \
+             this daemon caused cannot be read as the one a person raised",
+        );
+
+        // ── 5. AND THE ENDING THE PARENT WOULD REAP CARRIES IT ──────────────────────────────
+        //
+        // ⚠⚠ The outcome is `cancelled` because the sink raises the run's cancel, and `cancelled`
+        // ALONE is register item 596's collapse arriving by a third road — a person's stop, a
+        // daemon's shutdown and *the daemon holding the socket set your run aside* reading alike.
+        // This is the clause that separates them.
+        let stopped = Driven {
+            outcome: finished(OutcomeState::Cancelled, 0),
+            output: None,
+        };
+        let written_out = crate::drive::ending(&stopped, lock(&abandoned).as_deref());
+        assert_eq!(
+            written_out[RUN_ABANDONED_KEY].as_str(),
+            Some(said.as_str()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 764: the driver stopped and its ENDING does not say why, so \
+             what reaches the pipe — and the row, through `run_to_json`'s `Reported` splice — is a \
+             bare `cancelled`. Register item 685's finding is that silence is an outcome; this one \
+             is worse than silence, because it names a cause that did not happen. Got: \
+             {written_out}",
+        );
+        assert!(
+            crate::drive::ending(&stopped, None)
+                .get(RUN_ABANDONED_KEY)
+                .is_none(),
+            "⚠⚠⚠ A CONTROL FAILED: an ordinary ending must carry NO such key. The key's presence \
+             is the claim — the rule every added answer key on this row follows — so an empty one \
+             on every run that ever converged would make the sentence noise",
+        );
+
+        // ── 6. THE CONTROL AT THAT END TOO: AN ORDINARY REFUSAL MUST NOT END A RUN ──────────
+        let ordinary = sprag_rpc::RpcFault {
+            code: sprag_rpc::ACTION_REFUSED,
+            message: "Invalid params".to_owned(),
+            data: Some(json!("this daemon does not serve that address")),
+        };
+        let untouched = Mutex::new(None);
+        let unraised = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            !crate::drive::carry_refusal_in(
+                &sprag_rpc::CallError::Fault(ordinary),
+                &untouched,
+                &unraised
+            ) && !unraised.load(std::sync::atomic::Ordering::Acquire),
+            "⚠⚠⚠⚠ A CONTROL FAILED: a driver that ended on ANY refusal would throw away hours of \
+             work over a skewed address or a malformed argument — the failures `reporting` \
+             deliberately carries on through, because progress is a level and the next one carries \
+             the whole of it",
         );
     }
 

@@ -66,6 +66,7 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use sprag_rpc::HostConn;
 
+use crate::external::lock;
 use crate::plugins::{Driven, drive_request};
 use crate::remote_access::{RemotePaneAccess, RemotePluginWorld};
 
@@ -157,13 +158,25 @@ pub fn drive(
         std::thread::spawn(move || watch_orders(watching, run, &cancel, &stand_down, &hold))
     };
 
+    // ⛔⛔⛔⛔⛔ **WHERE A DAEMON'S REFUSAL OF THIS RUN LANDS** — register item 764. The reporting
+    // sink is the one channel that asks *are you still driving me* on every step, and until this
+    // existed its answer was dropped: a driver whose run had been set aside by a successor daemon
+    // was told so and typed on. It stops (the cancel below) and its ENDING carries the daemon's own
+    // sentence, which is the difference between register item 685's silence and a reason.
+    let abandoned: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
     let world = RemotePluginWorld::over(&access);
     let driven = drive_request(
         &world,
         &request,
         &access,
         &context,
-        reporting(reporting_on, run),
+        reporting(
+            reporting_on,
+            run,
+            Arc::clone(&abandoned),
+            Arc::clone(&cancel),
+        ),
     )
     .map_err(|why| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{why:?}")))?;
 
@@ -172,7 +185,7 @@ pub fn drive(
     // is released (`EVENTS_UNSUBSCRIBE_METHOD`'s own doc says the disconnect arm does it). Waiting
     // for it would be waiting for a wake nobody is going to send.
     drop(orders);
-    report(&driven)
+    report(&driven, lock(&abandoned).as_deref())
 }
 
 /// **WHERE THIS DRIVER'S PROGRESS GOES** — a call that puts it on the wire, for
@@ -198,7 +211,19 @@ pub fn drive(
 /// swallowed error is register item 492's shape wearing a different coat: something happened and
 /// nobody can read it. So a refusal is written to stderr ONCE, which is what `watch_orders` beside
 /// this already does for the same reason and is all a driver can do about it.
-fn reporting(conn: Arc<Mutex<HostConn>>, run: u64) -> sprag_plugin::ProgressSink {
+///
+/// # ⛔⛔⛔⛔⛔ Except for ONE refusal, which is not a reporting problem at all — item 764
+///
+/// *Nothing here is driving your run* is a fact about the RUN and not about this call, and the
+/// paragraph above does not reach it: dropping it leaves a driver typing at somebody's pane on
+/// behalf of a run that no daemon will ever collect, with its answer bound for a pipe that closed
+/// with the daemon that spawned it. [`carry_refusal_in`] is what tells the two apart.
+fn reporting(
+    conn: Arc<Mutex<HostConn>>,
+    run: u64,
+    abandoned: Arc<Mutex<Option<String>>>,
+    cancel: Arc<AtomicBool>,
+) -> sprag_plugin::ProgressSink {
     // ⚠ ONCE, not per step: a driver whose reports are all refused would otherwise fill the
     // daemon's log with one line per turn, which buries the first one — the only one that says
     // anything new.
@@ -207,7 +232,10 @@ fn reporting(conn: Arc<Mutex<HostConn>>, run: u64) -> sprag_plugin::ProgressSink
         let mut held = conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let sent = held.call(
+        // ⚠⚠ `try_call` and not `call`: this caller has to ACT on which failure it was, and that
+        // method's own doc names exactly this case — recovering a code from a rendered sentence
+        // means one crate matching on another's wording.
+        let sent = held.try_call(
             "scene/invoke",
             json!({
                 "path": crate::plugins_path(crate::plugins::REPORT_PROGRESS_ACTION),
@@ -217,15 +245,72 @@ fn reporting(conn: Arc<Mutex<HostConn>>, run: u64) -> sprag_plugin::ProgressSink
                 },
             }),
         );
-        if let Err(why) = sent
-            && !said.swap(true, Ordering::Release)
-        {
+        let Err(why) = sent else { return };
+        // ⛔⛔⛔ THE RUN IS ENDED BEFORE THE LINE IS PRINTED, because this arm is not a degradation
+        // to be reported and lived with — it is the run being over.
+        let ending = carry_refusal_in(&why, &abandoned, &cancel);
+        // ⚠ THE WIRE'S OWN RENDERING and not a second one spelled here — `From<CallError> for
+        // io::Error` exists so a caller that opted into the typed error still prints what
+        // `HostConn::call` would have printed.
+        let rendered = std::io::Error::from(why);
+        if ending {
+            eprintln!(
+                "sprag-term --drive {run}: this daemon will not take this run's progress, so the \
+                 run is ending here rather than typing on. {rendered}"
+            );
+            return;
+        }
+        if !said.swap(true, Ordering::Release) {
             eprintln!(
                 "sprag-term --drive {run}: this daemon refused a progress report, so the run's row \
-                 will not move while it works. Reported once; later refusals are silent. {why}"
+                 will not move while it works. Reported once; later refusals are silent. {rendered}"
             );
         }
     })
+}
+
+/// **TURN ONE REFUSED PROGRESS REPORT INTO THE END OF THIS RUN** — register item 764, and
+/// [`carry_orders_in`]'s shape one channel over.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a function and not four lines inside the sink above
+///
+/// [`carry_orders_in`]'s own doc holds the argument and it was earned rather than reasoned: a gate
+/// on the TYPE came back green against the shipped defect, because the gate called the type and the
+/// loop called the socket. The step between is what has to be nameable. So the daemon's clause is
+/// recognised HERE, by [`crate::runs::Unreported::spoken_in`] — the far side of the very
+/// [`describe`](crate::runs::Unreported::describe) that composed it — and a gate can drive one into
+/// the other with no socket in the way.
+///
+/// # ⚠⚠⚠ What it must NOT fire on, which is most of what can go wrong here
+///
+/// * **A transport failure.** The daemon is unreachable, which says nothing about whether the run
+///   is still somebody's — and a driver that ended on a socket hiccup would throw away work over a
+///   fact it never established.
+/// * **Any other refusal.** An older daemon that does not serve the address, a malformed argument,
+///   a scope it will not answer: all of those are this CALL failing, which is the paragraph
+///   [`reporting`] already answers by carrying on.
+///
+/// ⚠⚠ Answering `true` does two things and they are one decision: the reason is kept for the ENDING
+/// (register item 685 — *silence is an outcome and it is not converged*), and the run's cancel is
+/// raised, which is the only channel a sink has into a plugin that is mid-turn. The flag is the one
+/// a person's cancel arrives on, so nothing new has to be honoured for this to take effect.
+pub(crate) fn carry_refusal_in(
+    failure: &sprag_rpc::CallError,
+    abandoned: &Mutex<Option<String>>,
+    cancel: &AtomicBool,
+) -> bool {
+    let sprag_rpc::CallError::Fault(fault) = failure else {
+        return false;
+    };
+    let Some(clause) = fault
+        .refusal()
+        .filter(|clause| crate::runs::Unreported::spoken_in(clause))
+    else {
+        return false;
+    };
+    *lock(abandoned) = Some(clause.to_owned());
+    cancel.store(true, Ordering::Release);
+    true
 }
 
 /// One scoped connection to `socket`, **through the door every other client of this daemon passes
@@ -428,15 +513,38 @@ fn read_row(conn: &mut HostConn, run: u64) -> Option<Map<String, Value>> {
 /// ⚠⚠ FLUSHED, and the flush is checked: a driver whose last act is buffered is a run whose ending
 /// the parent reads as *the process died without saying anything*, which is a real and different
 /// outcome this must not manufacture.
-fn report(driven: &Driven) -> std::io::Result<()> {
+///
+/// # ⛔⛔⛔⛔⛔ `abandoned` is why this ending is a REASON and not a bare `cancelled` — item 764
+///
+/// A driver that [`carry_refusal_in`] stopped ends with the outcome its plugin produced under a
+/// raised cancel, and `cancelled` alone is register item 596's collapse arriving by a third road:
+/// a person's stop, a daemon's shutdown and *the daemon holding the socket has set your run aside*
+/// would all read the same. The daemon's own clause rides beside it under
+/// [`RUN_ABANDONED_KEY`](crate::plugins::RUN_ABANDONED_KEY).
+///
+/// ⚠ [`None`] is the ordinary run and writes NOTHING, on the row's own rule for every added answer
+/// key: the key's presence is the claim, so a run that ended on its own terms must not carry an
+/// empty one.
+fn report(driven: &Driven, abandoned: Option<&str>) -> std::io::Result<()> {
+    let answer = ending(driven, abandoned);
+    let mut out = std::io::stdout().lock();
+    serde_json::to_writer(&mut out, &answer)?;
+    writeln!(out)?;
+    out.flush()
+}
+
+/// **THE OBJECT [`report`] WRITES**, as a value — [`carry_orders_in`]'s rule applied to this end:
+/// the step between the fact and the pipe is named, so a gate can read what a parent would reap
+/// without a process in the way.
+pub(crate) fn ending(driven: &Driven, abandoned: Option<&str>) -> Value {
     let mut answer = crate::plugins::outcome_to_json(&driven.outcome);
     // ⚠ CARRIED BESIDE THE OUTCOME rather than folded into it: the capture is what the plugin
     // produced, and the daemon's own worker reads it as a separate field for the same reason.
     if let Some(output) = &driven.output {
         answer["output"] = json!(output);
     }
-    let mut out = std::io::stdout().lock();
-    serde_json::to_writer(&mut out, &answer)?;
-    writeln!(out)?;
-    out.flush()
+    if let Some(why) = abandoned {
+        answer[crate::plugins::RUN_ABANDONED_KEY] = json!(why);
+    }
+    answer
 }
