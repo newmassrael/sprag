@@ -647,7 +647,95 @@ pub(crate) const DEFAULT_SERVICE_RETRY_TEXT: &str = "continue";
 /// ⚠ It is a constant and not a `<data>`, on register item 314's correction: the rule that a
 /// duration belongs to the document bites on durations a CALLER can pass, and no caller can pass
 /// this. The day a check becomes a wire argument, its bound goes beside it.
+///
+/// ⛔⛔⛔⛔⛔ **AND THE READINGS IT RESTS ON ARE NOW A PREDICATE, NOT THIS PARAGRAPH** — see
+/// `CHECK_READINGS` and `check_headroom`, driven by
+/// `the_milestone_checks_bound_is_read_against_the_latencies_that_were_timed`. Every sentence above
+/// was prose defending a literal, which is the one shape this workspace has decided nobody
+/// re-derives.
+///
+/// ⚠ Named rather than LINKED, deliberately: those two are `#[cfg(test)]`, so an intra-doc link
+/// would resolve while the suite compiles and break the rustdoc gate — which is what it did, once.
 const CHECK_WITHIN: Duration = Duration::from_secs(600);
+
+/// **EVERY CHECKER LATENCY ANYBODY HAS ACTUALLY TIMED**, in milliseconds, with where it came from.
+///
+/// # ⚠⚠⚠⚠⚠ Why the numbers moved out of [`CHECK_WITHIN`]'s prose
+///
+/// That doc named five readings and a bound, and nothing compared them. So the bound could not tell
+/// anyone when it had stopped being generous — which is exactly what it is for. The readings are
+/// data now and [`check_headroom`] is the comparison, so a sixth reading that eats the margin is a
+/// RED rather than a paragraph somebody would have had to re-derive by hand.
+///
+/// ⚠⚠ **THE JUDGE IS PART OF THE READING.** The same question put to a cheap model and to the
+/// default one differs by more than an order of magnitude, so a latency with no judge beside it is
+/// not a measurement of anything — and *"give it longer, or a faster judge"*, which is the sentence
+/// a reader actually meets ([`crate::judge::Unheard::Unfinished`]), is only choosable once both
+/// arms have a number.
+///
+/// ⚠⚠⚠ **TEST-ONLY, AND THAT IS THE HONEST PLACEMENT RATHER THAN A CONCESSION TO `dead_code`.**
+/// These are a RECORD of what was timed and a COMPARISON against the shipped literal — they are not
+/// an input to what the product does. The obvious-looking alternative, deriving [`CHECK_WITHIN`]
+/// from them, would encode today's margin backwards and make the gate an identity: the bound would
+/// agree with the readings because it was computed from them, which is precisely the thing this
+/// workspace refuses to call evidence. The literal stays a decision somebody made; this says out
+/// loud when the readings have caught up with it.
+#[cfg(test)]
+const CHECK_READINGS: &[(u64, &str)] = &[
+    // ── 2026-08-25, register item 674: a real `claude -p` shown a real turn's account, five runs
+    //    on an IDLE host (load average 0.84 across 32 cores). These are what sized the bound.
+    (48_500, "2026-08-25 claude -p, idle 32-core host"),
+    (65_300, "2026-08-25 claude -p, idle 32-core host"),
+    (67_700, "2026-08-25 claude -p, idle 32-core host"),
+    (100_200, "2026-08-25 claude -p, idle 32-core host"),
+    (118_200, "2026-08-25 claude -p, idle 32-core host"),
+    // ⛔⛔⛔⛔⛔ 2026-08-31 — TAKEN BECAUSE A REAL CHECK CAME BACK `Unfinished(NotYet)` ON A
+    // MILESTONE CLAIM, and it is 1.57x the worst reading the bound was sized on — on a host that
+    // was ALSO idle (load 0.82). So the distribution above was understated before contention is
+    // even in the picture, which is the residue that doc stated and could not measure.
+    (
+        185_200,
+        "2026-08-31 claude -p default model, idle host (load 0.82)",
+    ),
+    // ⭐ AND THE OTHER ARM OF THE REMEDY, same host, same question, same minute: naming a cheap
+    // model answered the identical question correctly in a fraction of the time. It is here so
+    // *a faster judge* is a measured option rather than a suggestion.
+    (
+        14_000,
+        "2026-08-31 claude -p --model haiku, idle host (load 0.82)",
+    ),
+];
+
+/// **HOW MUCH ROOM THE BOUND HAS OVER THE SLOWEST THING ANYBODY HAS TIMED**, as a percentage, or
+/// [`None`] where there is nothing to compare against.
+///
+/// A function rather than an assertion inside the gate, for [`CHECK_WITHIN`]'s own reason and for
+/// register item 775's: on the machines this is developed on the answer is never close to the
+/// edge, so an inline comparison would be a line that cannot fail where it runs. Pulled out, the
+/// readings that DO squeeze it drive it in microseconds.
+///
+/// ⚠ **Percent and not a ratio**, because the interesting movement is fractional: 600 s over the
+/// old worst is 507%, and over the new one 323%. Integer ratios would render both as `5` and `3`
+/// and lose that the margin fell by a third.
+///
+/// ⚠⚠ **`None` for an empty table is not a zero.** No readings is *nobody has timed this*, and a
+/// bound with nothing behind it must not report as one with infinite room — this workspace's rule
+/// that an unclassified case is never a pass.
+///
+/// ⚠ Test-only for [`CHECK_READINGS`]' reason, which is written out there.
+#[cfg(test)]
+fn check_headroom(readings: &[(u64, &str)], bound: Duration) -> Option<u64> {
+    let worst = readings.iter().map(|(took, _)| *took).max()?;
+    if worst == 0 {
+        return None;
+    }
+    Some(
+        u64::try_from(bound.as_millis())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(100)
+            / worst,
+    )
+}
 
 /// The datamodel variable holding the word the agent says when there is **nothing left at all** —
 /// asked for by the reflection, and the only thing that reaches `closing`.
@@ -19532,6 +19620,100 @@ mod tests {
     /// `ai_loop.scxml` is what declines, and this gate reads which door the run left by.
     /// [`crate::testing::Billed::pays`] is asserted first only as a PREMISE, so that a red here
     /// separates *the fixture drifted* from *the document changed its mind*.
+    /// ⛔⛔⛔⛔⛔ **THE MILESTONE CHECK'S BOUND, READ AGAINST THE LATENCIES SOMEBODY ACTUALLY
+    /// TIMED** — [`CHECK_WITHIN`], [`CHECK_READINGS`] and [`check_headroom`].
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was wrong with the paragraph this replaces
+    ///
+    /// `CHECK_WITHIN`'s doc carried five measured readings and a bound, and **nothing compared
+    /// them**. So the number could not say when it had stopped being generous — which is the only
+    /// job it has. That is prose defending a literal, and this workspace's standing rule is that
+    /// prose is not evidence: what a reader can act on is a predicate.
+    ///
+    /// # ⚠⚠⚠ Why it is being written now, rather than when the constant was chosen
+    ///
+    /// A real milestone check came back `Unheard::Unfinished` — *"the checker was started and never
+    /// answered: the wait ended NotYet — give it longer, or a faster judge"*. Timing the same shape
+    /// of question on this host put the default judge at **185.2 s**, which is **1.57x the worst of
+    /// the five readings the bound was sized on**, with the host idle either time. The residue
+    /// `CHECK_WITHIN`'s doc stated — *what the distribution does under real contention is NOT
+    /// measured* — turned out to understate the IDLE distribution first.
+    ///
+    /// # ⚠⚠ The headroom is asserted exactly, and that is deliberate
+    ///
+    /// A `>` against a floor would let the margin be eaten one reading at a time by authors who
+    /// each saw a green suite. An exact figure makes any movement — a slower reading recorded, or
+    /// the bound edited — a RED that has to be answered in words. It is the same shape
+    /// `the_staging_control_reads_the_pairs_that_have_been_measured` uses for its arithmetic.
+    #[test]
+    fn the_milestone_checks_bound_is_read_against_the_latencies_that_were_timed() {
+        // ⚠ THE PREMISE, BEFORE THE FIGURE: a table nobody has filled would make every assertion
+        // below vacuously satisfiable, so it is stated rather than assumed.
+        assert!(
+            CHECK_READINGS.len() >= 6,
+            "⚠ the readings table has been emptied, so what follows is a bound compared with \
+             nothing: {CHECK_READINGS:?}",
+        );
+
+        // ── THE SHIPPED PAIR ──────────────────────────────────────────────────────────────────
+        //
+        // ⛔ 323%, and it was 507% when the bound was chosen. A third of the margin is already
+        // gone, to a reading taken on an IDLE host — so the next author to add a slow reading, or
+        // to trim this bound, meets this line instead of a comment.
+        assert_eq!(
+            check_headroom(CHECK_READINGS, CHECK_WITHIN),
+            Some(323),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 674: the milestone check's bound no longer clears the slowest \
+             latency anybody has timed by the margin it was chosen with. A check that outruns this \
+             is `Unheard::Unfinished`, and item 428's rule means the milestone then rests on the \
+             working agent's own word — the exact outcome this bound exists to prevent",
+        );
+
+        // ── AND THE READING THAT MOVED IT IS IN THE TABLE, NOT ONLY IN THE PROSE ───────────────
+        let worst = CHECK_READINGS
+            .iter()
+            .max_by_key(|(took, _)| *took)
+            .expect("a non-empty table has a worst reading");
+        assert_eq!(
+            worst.0, 185_200,
+            "⚠⚠⚠ THE CONTROL'S OWN PREMISE: the 2026-08-31 reading is what makes this gate say \
+             anything the five older ones did not, so a table that has lost it is one where the \
+             figure above is the old margin under a new name: {worst:?}",
+        );
+
+        // ── AND A FASTER JUDGE IS A MEASURED OPTION, NOT A SUGGESTION ─────────────────────────
+        //
+        // ⚠⚠ `Unheard::Unfinished` offers a reader two remedies and, until this reading, exactly
+        // one of them had a number. The cheap model answered the SAME question on the SAME host in
+        // a thirteenth of the time, so *a faster judge* is now the arm a reader can price.
+        let fastest = CHECK_READINGS
+            .iter()
+            .min_by_key(|(took, _)| *took)
+            .expect("a non-empty table has a fastest reading");
+        assert!(
+            fastest.0 * 13 <= worst.0 && fastest.1.contains("haiku"),
+            "⛔⛔⛔ REGISTER ITEM 674: the two arms of *give it longer, or a faster judge* are not \
+             both priced here. A remedy with no number beside it is one nobody chooses: \
+             {fastest:?} against {worst:?}",
+        );
+
+        // ── AND AN EMPTY TABLE IS NOT INFINITE ROOM ───────────────────────────────────────────
+        //
+        // ⛔⛔ This workspace's rule that an unclassified case is RED, never a pass: *nobody has
+        // timed this* must not render as *the bound has all the room in the world*, which is the
+        // reading a `0` or a huge number would both invite.
+        assert_eq!(
+            check_headroom(&[], CHECK_WITHIN),
+            None,
+            "⛔ a bound with no readings behind it must say so rather than report a margin",
+        );
+        assert_eq!(
+            check_headroom(&[(0, "a reading of no duration at all")], CHECK_WITHIN),
+            None,
+            "⛔ and a zero-length reading fixes no rate to divide by — named, not divided by",
+        );
+    }
+
     #[test]
     fn the_economic_door_is_priced_in_the_population_it_will_run_in() {
         /// Above both readings, so `capacity` can never be what moves either run — the same
