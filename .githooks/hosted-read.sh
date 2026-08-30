@@ -185,7 +185,19 @@ hosted_read_selftest() {
         fail=$((fail + 1))
     fi
 
-    if command grep -q 'hosted_read_gap' "$here/pre-push"; then
+    # ⛔⛔⛔ CODE ONLY, WITH TRAILING COMMENTS CUT. This file's own reasoning
+    # names the function it is about, and `pre-push` quotes its commands in
+    # prose the way every hook here does -- so a whole-file grep is satisfied by
+    # a COMMENT. Measured while writing this, twice: replacing the call with
+    # `: # MUTATION: hosted_read_gap removed` reddened the suite that DRIVES the
+    # hook and left this arm green, and dropping only WHOLE comment lines did
+    # not fix it because that mutation's comment is a TRAILING one.
+    # ⚠ `sed` and not a parser: a `#` inside a quoted string would be cut too.
+    # That is this scan's stated limit, the same one
+    # `hooks_cannot_pass_in_silence` writes down -- it is why the gate that
+    # DRIVES the hook is the one that decides, and this arm is a wiring check.
+    if command sed 's/#.*//' "$here/pre-push" \
+       | command grep -q 'hosted_read_gap'; then
         echo "  ok    the pre-push hook calls the gap arm"
         pass=$((pass + 1))
     else
