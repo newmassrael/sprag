@@ -2670,18 +2670,66 @@ mod tests {
                 .unwrap_or_default()
                 .contains("GOT-INT")
         };
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < deadline && !said_so() {
-            std::thread::sleep(Duration::from_millis(20));
+        // ⛔⛔⛔⛔⛔ **WHICH HOST THIS IS, ASKED OF THE PRODUCT AND NOT OF `cfg!`** — register item
+        // 776. The delivery below is only permitted where the kernel will say whether the signal
+        // would kill the pane's own program: `stop_foreground_job` reads that disposition out of
+        // `/proc/<pid>/status` (`SigIgn` | `SigCgt`), Linux publishes it and macOS does not, and on
+        // a host that cannot say the product REFUSES to send — deliberately, because a bounded run
+        // must not be able to close somebody's pane.
+        //
+        // **Measured 2026-08-30**: this gate asserted the delivery arm alone and therefore failed on
+        // EVERY macOS CI run since it landed, with a message accusing the product of leaving a peer
+        // mid-turn — which was FALSE there: nothing was left mid-turn, the stop was correctly
+        // declined. A gate that names the wrong culprit is worse than one that is merely red.
+        //
+        // ⚠⚠⚠ THE BRANCH IS ON `outcome.stopped`, WHICH IS THE PRODUCT'S OWN ANSWER TO *could this
+        // host tell?*. A `cfg!(target_os = "linux")` here would be a SECOND copy of the rule
+        // `procfs::signal_ends` owns, and it would age the day a third platform learns to answer.
+        //
+        // ⚠⚠ AND THERE IS NO CATCH-ALL: a refusal for any OTHER reason is this workspace's RED, not
+        // a pass. Both arms below assert something, and neither is reachable by the other's world.
+        match &outcome.stopped {
+            Some(crate::driver::Stopped::Job(_)) => {
+                let deadline = Instant::now() + Duration::from_secs(15);
+                while Instant::now() < deadline && !said_so() {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                assert!(
+                    said_so(),
+                    "⚠⚠⚠⚠⚠ THE TURN WAS NOT REACHED. `stop_the_work`'s first fact is that a TURN \
+                     ends, and this peer traps `SIGINT` rather than dying of it — so the kernel \
+                     permits the delivery and there is nothing else for a refusal to protect. A run \
+                     that leaves the peer mid-turn hands the next run a pane that is still \
+                     answering the last one. Screen: {:?}",
+                    access.pane_collapsed(pane),
+                );
+            }
+            Some(crate::driver::Stopped::Unreached(crate::access::PaneError::NotStopped(
+                sprag_terminal::Unstopped::CannotTellIfItWouldEnd,
+            ))) => {
+                // ⚠⚠ THE OTHER WORLD IS ASSERTED, NOT SKIPPED. *Nothing was sent* is a claim, and
+                // its evidence is that the peer's trap never fired — so a host that quietly
+                // signalled anyway while reporting this refusal is caught here rather than passing
+                // as *the platform cannot do it*.
+                std::thread::sleep(Duration::from_millis(200));
+                assert!(
+                    !said_so(),
+                    "⛔⛔⛔⛔⛔ REGISTER ITEM 776: this host reported that it could not read whether \
+                     the signal would end the pane — so NOTHING should have been sent — and the \
+                     peer's `SIGINT` trap fired anyway. The refusal and the delivery cannot both be \
+                     true, and a caller told *your work is still running* about a turn that was in \
+                     fact interrupted acts on the wrong one. Screen: {:?}",
+                    access.pane_collapsed(pane),
+                );
+            }
+            other => panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 776: a cancelled run against a trapping peer neither \
+                 signalled it nor declined for the one reason a host is allowed to decline for. \
+                 `Reach::UnderTheProgram` refuses only when the kernel says the signal would END \
+                 the pane, or when this host cannot read that disposition at all — and this peer \
+                 TRAPS the signal, so the first cannot be true of it. Got: {other:?}",
+            ),
         }
-        assert!(
-            said_so(),
-            "⚠⚠⚠⚠⚠ THE TURN WAS NOT REACHED. `stop_the_work`'s first fact is that a TURN ends, and \
-             this peer traps `SIGINT` rather than dying of it — so the kernel permits the delivery \
-             and there is nothing else for a refusal to protect. A run that leaves the peer mid-turn \
-             hands the next run a pane that is still answering the last one. Screen: {:?}",
-            access.pane_collapsed(pane),
-        );
 
         // ── (b) AND IT IS STILL THERE FOR THE NEXT RUN ─────────────────────────────────────────
         //

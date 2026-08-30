@@ -337,6 +337,48 @@ fn mux_pane_text(sock: &Path, window: &str, pane: u64) -> String {
 /// over the ancestor walk — the precedence `the_child_env_socket_wins_over_an_ancestors` holds — so
 /// there is no second address for it to reach, and a bypass would show up as a count that is too
 /// LOW rather than as a silent pass.
+/// ⛔⛔⛔⛔⛔ **AN ACCEPTED CONNECTION WITH THE LISTENER'S FLAGS TAKEN OFF IT** — register item 776,
+/// and this workspace's answer to the same divergence for the second time.
+///
+/// # ⛔⛔⛔⛔⛔ `accept()`'s treatment of `O_NONBLOCK` is unspecified, and the two kernels disagree
+///
+/// Linux hands back a blocking socket; BSD — so macOS — copies the listener's flag onto it. This
+/// relay polls a NON-blocking listener so its accept loop can be stopped, so on macOS every
+/// connection it accepted arrived non-blocking, [`DaemonRelay::splice`]'s `std::io::copy` returned
+/// `WouldBlock` on its first read, and both halves were shut down before a byte moved — the server
+/// saw its very first request die.
+///
+/// **Measured 2026-08-30**: the gate this relay serves failed on EVERY macOS CI run from the day it
+/// landed (`write_pane failed: … host closed the connection`) and on no Linux run. Reproduced on
+/// Linux by setting the flag deliberately: same call, same assertion,
+/// `… Broken pipe (os error 32)` — one tear-down, seen from whichever side noticed first.
+///
+/// # ⚠⚠⚠⚠⚠ Why a TYPE, when one `set_nonblocking(false)` would fix today's call site
+///
+/// Because that is the fix this workspace already made once and already wrote the epitaph for.
+/// `sprag_peer`'s `Served` carries the same repair and its doc says, in as many words, that a bare
+/// call *"would fix today's two call sites and leave the next one to rediscover this"* — and this
+/// relay, added months later in another crate, is that next one. It cost 33 red CI runs. So the raw
+/// accepted stream is not passed anywhere: `splice` takes this, and the wrong thing is
+/// unrepresentable rather than merely absent.
+///
+/// ⚠ `Served` itself is private to `sprag-peer` and this is a test harness in another crate, so the
+/// TYPE is mirrored rather than shared. What must not be mirrored is the reasoning — it lives at
+/// `sprag_peer`'s door, and this points at it.
+struct Relayed(UnixStream);
+
+impl Relayed {
+    /// Take an accepted connection and clear whatever the listener left on it.
+    ///
+    /// Infallible by design, on `Served::from_accepted`'s argument: `set_nonblocking` on a live
+    /// socket fails only for a bad descriptor, and a relay that cannot normalise the connection it
+    /// just accepted has nothing useful to do with the error — the copy would report it anyway.
+    fn from_accepted(stream: UnixStream) -> Self {
+        let _ = stream.set_nonblocking(false);
+        Self(stream)
+    }
+}
+
 struct DaemonRelay {
     /// The address handed to the server — the path it will connect to for every request.
     path: PathBuf,
@@ -392,7 +434,7 @@ impl DaemonRelay {
                             lost.fetch_add(1, Ordering::Relaxed);
                             continue;
                         };
-                        Self::splice(client, daemon);
+                        Self::splice(Relayed::from_accepted(client), daemon);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(2));
@@ -429,7 +471,12 @@ impl DaemonRelay {
     /// ⚠ A half-close has to be PROPAGATED. `HostConn` reads lines until EOF, so a direction left
     /// open after its partner went away parks the server on a socket nobody will ever write to —
     /// which would look exactly like the daemon hanging.
-    fn splice(client: UnixStream, daemon: UnixStream) {
+    ///
+    /// ⚠⚠ It takes a [`Relayed`] and not a `UnixStream`, which is register item 776's repair: the
+    /// accepted half has to be normalised, and a function that CANNOT be handed a raw accepted
+    /// stream is the only version of that rule which survives the next person to add a door here.
+    fn splice(client: Relayed, daemon: UnixStream) {
+        let client = client.0;
         let pairs = [
             (
                 client.try_clone().expect("clone the client half"),
