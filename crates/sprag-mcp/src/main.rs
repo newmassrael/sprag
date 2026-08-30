@@ -206,9 +206,35 @@ fn serve() -> io::Result<()> {
     }
 }
 
+/// How many messages this server has BEGUN to serve.
+///
+/// # ⛔⛔⛔⛔⛔ It is the lifetime of every fact about WHERE THIS PROCESS STANDS — register item 767
+///
+/// A long-lived server may cache a fact about the world only for as long as it can say the fact
+/// cannot have moved, and the only span this process can say that of is one message: between two of
+/// them an operator can move its pane into another window or rename the window it is in, and both
+/// are ordinary things for a person to do. So the answers that describe *here* ([`our_window`]) are
+/// stamped with this number and recomputed the moment it moves on.
+///
+/// ⚠⚠ Bumped in [`dispatch`], which is the ONE door every message passes — a request, a
+/// notification and an unknown method alike. Item 687's finding is that a rule kept by one of two
+/// doors is where the defects live, so it is kept by the door under all of them rather than by each
+/// tool remembering; a tool added later inherits the lifetime without knowing it exists.
+static MESSAGES_BEGUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Which message is being served — the stamp a cached fact about *here* is held under.
+fn messages_begun() -> u64 {
+    MESSAGES_BEGUN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Route one parsed message. Requests (with `id`) get a response; notifications
 /// (no `id`) are handled silently.
 fn dispatch(out: &mut impl Write, message: &Value) -> io::Result<()> {
+    // ⛔⛔⛔⛔⛔ A NEW MESSAGE IS A NEW MOMENT — register item 767, and this is the one line that
+    // says so. Everything this process believes about where it is standing was true of the message
+    // before this one, and between the two an operator may have moved its pane or renamed its
+    // window. See [`MESSAGES_BEGUN`] for why the mark belongs at this door and nowhere else.
+    MESSAGES_BEGUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let id = message.get("id").cloned();
     let method = message
         .get("method")
@@ -5837,7 +5863,11 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
     // has always made: a server that cannot place itself narrows nothing rather than picking.
     let id = host_call_kinded(
         "scene/invoke",
-        windowed_invoke(mux_action_path(SPAWN_ACTION), spawn_args, our_window()),
+        windowed_invoke(
+            mux_action_path(SPAWN_ACTION),
+            spawn_args,
+            our_window().as_deref(),
+        ),
     )
     // A birth that carries a name has a second way to be refused, and the daemon cannot say which
     // (`InvokeError::Rejected` has no payload — upstream PINION-PR82). So the sentence names the
@@ -8186,14 +8216,11 @@ fn windowed_params(path: String, window: Option<&str>) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("path".to_owned(), Value::String(path));
     let named = match window {
-        named @ Some(_) => named,
+        Some(named) => Some(named.to_owned()),
         None => our_window(),
     };
     if let Some(window) = named {
-        map.insert(
-            sprag_rpc::WINDOW_PARAM.to_owned(),
-            Value::String(window.to_owned()),
-        );
+        map.insert(sprag_rpc::WINDOW_PARAM.to_owned(), Value::String(window));
     }
     Value::Object(map)
 }
@@ -8348,7 +8375,7 @@ fn query_panes_and_daemon() -> Result<(Vec<PaneInfo>, DaemonSaid), String> {
     // pane one window over stays reachable — the control this narrowing must not break.
     let answered = host_call_answered(
         "scene/query",
-        windowed_params(mux_action_path(PANES_SLOT), our_window()),
+        windowed_params(mux_action_path(PANES_SLOT), our_window().as_deref()),
     )?;
     let array = answered
         .value
@@ -8740,6 +8767,14 @@ fn in_our_session(mut params: Value) -> Value {
 /// socket and not the id, an id left over from a daemon that has exited, or a daemon too old to
 /// serve the tree. Each of those means the same thing to a caller (*nobody said which session*),
 /// which is the behaviour that was already there, so none of them is worth an error.
+///
+/// # ⚠⚠⚠⚠ Why THIS one may be asked once and [`our_window`] may not — register item 767
+///
+/// A cache is honest only where the fact cannot change under it, and these two siblings differ on
+/// exactly that. **Nothing moves a pane between SESSIONS**: `join_pane` names a window of the
+/// scoped session, `break_pane` makes one there, and `move-window` re-orders a session's own ring —
+/// so the session holding a pane is fixed for that pane's life. **A pane's WINDOW is not**, which
+/// is what item 767 is, and it is why the answer one level down is stamped instead of frozen.
 fn our_session() -> Option<&'static str> {
     static OURS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     OURS.get_or_init(|| {
@@ -8757,8 +8792,8 @@ fn our_session() -> Option<&'static str> {
     .as_deref()
 }
 
-/// The WINDOW holding [`own_pane`], asked once — [`our_session`]'s sibling one level down, and here
-/// for register item 754.
+/// The WINDOW holding [`own_pane`], asked afresh for each message — [`our_session`]'s sibling one
+/// level down, and here for register item 754.
 ///
 /// # ⛔⛔⛔⛔⛔ What it costs when nobody asks
 ///
@@ -8774,19 +8809,98 @@ fn our_session() -> Option<&'static str> {
 ///
 /// [`None`] on [`our_session`]'s terms exactly — and it means the same thing there: *nobody said
 /// which window*, so the daemon's current one is what a caller gets.
-fn our_window() -> Option<&'static str> {
-    static OURS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    OURS.get_or_init(|| {
-        let pane = own_pane()?;
-        let answer = host_call_unscoped(
-            "scene/query",
-            json!({ "path": mux_action_path(sprag_host::wire::TREE_SLOT) }),
-        )
-        .ok()?;
-        let tree: Vec<sprag_terminal::TreeSession> = serde_json::from_value(answer).ok()?;
-        sprag_host::wire::window_holding(&tree, sprag_terminal::PaneId(pane)).map(str::to_owned)
-    })
-    .as_deref()
+///
+/// # ⛔⛔⛔⛔⛔ IT WAS ASKED **ONCE** AND HELD FOREVER, AND THAT IS A LIE IN A SERVER —
+/// register item 767
+///
+/// The shape came from the `sprag` CLI, whose own doc states the premise that makes it sound:
+/// *"A CLI process makes one connection and exits; the value cannot change underneath it, which is
+/// what makes a cache honest rather than a shortcut"* (`sprag.rs`, `here`). **`sprag-mcp` copied
+/// the cache and not the premise.** This process lives for an agent's whole session and answers
+/// thousands of messages, and across them the fact moves — under **two** distinct events, only the
+/// first of which the register predicted:
+///
+/// | event | who can cause it | what a frozen answer then names |
+/// |---|---|---|
+/// | the pane is moved to another window | `sprag join-pane` / `break-pane` / `move-pane`, the GUI, this agent by typing one of those into a shell, or [`tool_swap_pane`] here | a window that still EXISTS and no longer holds it |
+/// | the window is RENAMED | `sprag rename-window`, the GUI, [`tool_rename_window`] here | a name nothing answers to |
+///
+/// ⚠⚠⚠ **The three tools the register named cannot do it to THIS pane**: `move_pane`, `break_pane`
+/// and `join_pane` all pass [`require_own_pane`], and a pane cannot have been opened by the process
+/// running inside it — [`tool_swap_pane`]'s doc says so in words, *"the pane this server runs in was
+/// opened by a person and handed to the agent"*. So the hand is ordinarily an operator's, or this
+/// agent's through a shell, and the gate stages it that way.
+///
+/// ⚠⚠⚠⚠ **AND THERE IS ONE DOOR HERE THAT DOES REACH IT, WHICH IS `swap_pane`'S PARTNER.** That
+/// gate is on the pane being placed and not on the one it trades with — deliberately, because a
+/// join's destination is displaced rather than decided about. **A swap is the one arrangement verb
+/// where both panes move**, so `swap_pane {pane: <a pane this agent opened, one window over>,
+/// with: <this agent's own pane>}` carries this process into that window with nothing refusing it.
+/// It is not a hole to close — the authorship split is right, and R294's *an agent that can
+/// `write_pane` into a shell can run `sprag swap-pane` itself* says a gate here would buy nothing.
+/// It is a reason the staleness is REACHABLE BY THE AGENT'S OWN HAND, which is what the register
+/// claimed and named the wrong three tools for.
+///
+/// ⛔⛔ **What a stale answer does is not an error, it is a WRONG PANE.** With the window frozen at
+/// the one the agent has left, [`query_panes_and_daemon`] lists THAT window's panes (item 759
+/// narrows it here), and [`resolve_pane_ref_at_from_a_daemon`] counts a caller's `pane: 1` against
+/// that listing. The read succeeds and answers about a stranger; the write types into one. That is
+/// why this cannot be left to a refusal for somebody to notice.
+///
+/// # ⚠⚠⚠⚠ Why a STAMP, and not *ask every time* nor an event subscription
+///
+/// Asking on every consultation would put a tree read in front of every pane-addressed request —
+/// two of them per `read_pane` — and the register forbids paying that. Parking on the daemon's
+/// change feed would need a background subscription in a server that is a straight-line stdin loop.
+///
+/// The honest middle is to give the cache back the premise the CLI has: **hold it for exactly one
+/// message.** [`messages_begun`] is bumped by [`dispatch`], the one door every message on this wire
+/// passes, and an answer stamped with an earlier message is recomputed. So a message costs at most
+/// ONE tree read however many times it consults this, the next message cannot inherit a fact that
+/// has since moved, and no tool has to remember anything.
+///
+/// ⚠ The residue, stated rather than hidden: a pane moved *during* a message is still answered from
+/// before the move. That is the CLI's exposure exactly — it is what *one unit of work* means — and
+/// no cache can close it; only a daemon that resolves a pane id without a window could.
+///
+/// ⚠⚠ And the bound in the paragraph above — *at most ONE tree read per message* — is readable off
+/// the body below and **nothing measures it**: deleting the stamp and asking every time leaves every
+/// gate green, because cost is all that moves. That is register item 770, filed rather than left as
+/// a sentence a reader would trust instead of checking.
+fn our_window() -> Option<String> {
+    /// Which message the held answer was true for, and the answer.
+    static OURS: Mutex<Option<(u64, Option<String>)>> = Mutex::new(None);
+    let asked_during = messages_begun();
+    // ⚠ The lock is not held across the host call below. This server is a single-threaded loop, so
+    // there is nothing to contend with today; if that ever stopped being true the whole cost would
+    // be a duplicated tree read, and a torn answer would still not be among the outcomes.
+    if let Some((_, window)) = OURS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .filter(|(stamped, _)| *stamped == asked_during)
+    {
+        return window.clone();
+    }
+    let fresh = where_our_pane_stands();
+    *OURS.lock().unwrap_or_else(PoisonError::into_inner) = Some((asked_during, fresh.clone()));
+    fresh
+}
+
+/// [`our_window`]'s reading, with nothing remembered — the question as it is put to the daemon.
+///
+/// ⚠⚠ Through the daemon's own reader ([`sprag_host::wire::window_holding`]), shared with the
+/// `sprag` CLI, so the tool an agent acts with and the command a person acts with cannot come to
+/// disagree about which window that agent is standing in.
+fn where_our_pane_stands() -> Option<String> {
+    let pane = own_pane()?;
+    let answer = host_call_unscoped(
+        "scene/query",
+        json!({ "path": mux_action_path(sprag_host::wire::TREE_SLOT) }),
+    )
+    .ok()?;
+    let tree: Vec<sprag_terminal::TreeSession> = serde_json::from_value(answer).ok()?;
+    sprag_host::wire::window_holding(&tree, sprag_terminal::PaneId(pane)).map(str::to_owned)
 }
 
 /// Resolve the host socket path: this process's `SPRAG_HOST_RPC_SOCK`, else the first

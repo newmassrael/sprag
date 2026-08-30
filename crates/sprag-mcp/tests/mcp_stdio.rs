@@ -67,8 +67,8 @@ use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{
     KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, RENAME_PANE_ACTION,
-    REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SET_FLOATING_ACTION, SPAWN_ACTION, SPLIT_ACTION,
-    SelectAsk, ZOOM_PANE_ACTION,
+    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SET_FLOATING_ACTION,
+    SPAWN_ACTION, SPLIT_ACTION, SelectAsk, WindowRef, ZOOM_PANE_ACTION,
 };
 use sprag_rpc::HostConn;
 
@@ -278,6 +278,33 @@ fn mux_query_panes_in(sock: &Path, window: &str) -> Vec<u64> {
             .collect()
     })
     .unwrap_or_default()
+}
+
+/// One pane's screen, read by THIS FILE rather than through the server under test.
+///
+/// # ⚠⚠⚠⚠ Why a claim about WHICH pane an agent reached cannot be read off the agent's own answer
+///
+/// Register item 767's failure is not a refusal, it is a wrong pane: a server holding a stale window
+/// lists that window's panes, counts a caller's `pane: 1` against that listing, and answers happily
+/// about a stranger. Reading the result back through the same server would then confirm the write —
+/// it would be reading the stranger it just typed into. So the marker is looked for HERE, in the
+/// daemon's own answer for a pane named by ID, which no amount of mis-addressing can move.
+///
+/// ⚠ The window is named because the wire requires it: a pane path with no window is resolved
+/// against the session's CURRENT window, which is item 766's whole finding.
+fn mux_pane_text(sock: &Path, window: &str, pane: u64) -> String {
+    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    conn.call(
+        "scene/query",
+        json!({
+            "path": sprag_host::pane_input_path(pane, sprag_host::wire::FULL_TEXT_SLOT),
+            sprag_rpc::WINDOW_PARAM: window,
+        }),
+    )
+    .unwrap_or_else(|error| panic!("the daemon's own read of pane {pane} in {window}: {error}"))
+    .as_str()
+    .unwrap_or_default()
+    .to_owned()
 }
 
 /// The name of the window the session is CURRENTLY on — the one fact `open_window` must not move
@@ -4493,6 +4520,288 @@ fn an_agent_reads_and_drives_its_own_pane_while_the_person_looks_elsewhere() {
         theirs,
         "⚠⚠ reading and typing at its own pane moved the person's screen — R313's rule, and a \
          repair that took a window to reach a pane would be worse than the defect",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **AN AGENT WHOSE PANE HAS BEEN MOVED TO ANOTHER WINDOW STILL READS AND DRIVES IT** —
+/// register item 767.
+///
+/// # ⚠⚠⚠⚠⚠ The fact this server holds about itself was frozen at boot, and it MOVES
+///
+/// `our_window` cached *the window holding my pane* in a `OnceLock`: asked once, held for the life
+/// of the process. The shape came from the `sprag` CLI, whose own doc states the premise that makes
+/// it sound — *"A CLI process makes one connection and exits; the value cannot change underneath
+/// it, which is what makes a cache honest rather than a shortcut"*. **`sprag-mcp` copied the cache
+/// and not the premise.** It lives for an agent's whole session, and across that session its pane
+/// can move — by an operator's `sprag break-pane`, or, as this gate stages, by the agent's own
+/// `swap_pane`.
+///
+/// # ⛔⛔ What a stale answer does is not a refusal — it is a WRONG PANE, and it looks like success
+///
+/// Item 759 narrows the LISTING to `our_window`, and a caller's `pane: 1` is counted against that
+/// listing. So a server frozen at the window it has left lists **that** window's panes, hands out
+/// numbers for them, and types into whichever pane happens to be first there. That is why this gate
+/// reads the marker out of the DAEMON (`mux_pane_text`) and not out of the server's own answer: a
+/// read back through the same wrong address would find the stranger it had just written to and
+/// report success.
+///
+/// # ⚠⚠⚠ The premises, all four asserted inside
+///
+/// * **The server must have LEARNED the old window before the move**, or a lazily-computed cache
+///   would be fresh by accident and this would measure nothing. So a tool that consults it is
+///   called first, and the answer is checked for the pane that only the old window holds.
+/// * **The old window must still EXIST**, holding a stranger. A stale name that named nothing would
+///   fail loudly; the defect worth gating is the one that succeeds against a real, wrong window.
+/// * **The person must be on a THIRD window.** With the current window equal to either of the other
+///   two, a broken address lands correctly by luck — which is how item 686's one-window fixtures let
+///   this whole family through.
+/// * **The move is made BY THE AGENT, through the door the register did not name.** Item 767 said
+///   the agent could do this with `move_pane` / `break_pane` / `join_pane`; those three all pass
+///   `require_own_pane`, and a pane cannot have been opened by the process inside it — the refusal
+///   is asserted below rather than described, so the day it stops being true this file says so.
+///   What DOES reach it is **`swap_pane`'s partner**, which is ungated on purpose: the gate is on
+///   the pane being placed, and a swap is the one arrangement verb where both panes move. So the
+///   agent opens a pane, breaks it into a window of its own, and trades itself for it.
+#[test]
+fn an_agent_reads_and_drives_its_own_pane_after_it_is_moved_to_another_window() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    // A SECOND pane in the agent's window: `break_pane` refuses to take the only pane a window
+    // tiles (that is a rename dressed as a move), and this pane is also the stranger a stale
+    // address lands on.
+    let stranger = add_pane(&sock, &["cat"]);
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": stranger, "name": "stranger" }),
+    );
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": 0, "name": "agentpane" }),
+    );
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let born_in = mux_current_window(&sock);
+
+    // ── PREMISE ONE: the server has LEARNED where it stands, while that is still true ────────
+    let before = server.call_tool("list_panes", json!({}));
+    assert!(
+        before.contains("stranger"),
+        "⛔ THE PREMISE: the server has not yet read the window it was born in, so nothing it holds \
+         about itself can go stale and this gate would measure nothing: {before}",
+    );
+
+    // ── PREMISE TWO: the door the register NAMED refuses this pane, which is why the route is a swap
+    //
+    // ⚠ By NAME, not by the number the agent's pane happens to hold: a number is pool order, and a
+    // premise that quietly started asserting a refusal about the STRANGER would still be green.
+    let refused = server.call_tool_error("break_pane", json!({ "pane": "agentpane" }));
+    assert!(
+        refused.contains("opened by a person"),
+        "⚠⚠⚠ REGISTER ITEM 767 NAMED `break_pane` AS THE AGENT'S OWN HAND HERE, and the authorship \
+         gate is what says otherwise: a pane cannot have been opened by the process inside it. If \
+         this has started being accepted, the register was right and the route below is the wrong \
+         staging — read the refusal: {refused}",
+    );
+
+    // ── THE MOVE, BY THE AGENT'S OWN HAND — through the door the register did not name ───────
+    //
+    // ⭐ `swap_pane`'s PARTNER is ungated, deliberately (the gate is on the pane being placed, since
+    // a destination is displaced rather than decided about). A swap is the one arrangement verb
+    // where BOTH panes move, so trading a pane this agent opened for the pane it is running in
+    // carries this process into another window with nothing refusing it. That is the register's
+    // *"a state it can reach with its own hand"*, at a door it did not name.
+    server.call_tool("open_pane", json!({ "cmd": ["cat"], "name": "worker" }));
+    server.call_tool(
+        "break_pane",
+        json!({ "pane": "worker", "name": "agentwin" }),
+    );
+    // ⚠ BY NAME, not by the number the agent's own pane happens to hold: a number is pool order,
+    // and this trade is precisely what changes it.
+    server.call_tool(
+        "swap_pane",
+        json!({ "pane": "worker", "with": "agentpane" }),
+    );
+
+    // ── PREMISE THREE: the person is on a THIRD window ───────────────────────────────────────
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let theirs = mux_current_window(&sock);
+    assert_eq!(
+        mux_query_panes_in(&sock, "agentwin"),
+        vec![0],
+        "⛔ THE PREMISE: the agent's own pane is not in the window it traded itself into",
+    );
+    assert_eq!(
+        mux_query_panes_in(&sock, &born_in).len(),
+        2,
+        "⛔ THE PREMISE: the window the agent LEFT must still exist and hold strangers — a stale \
+         name that named nothing would fail for a different reason than this item's. It holds {:?}",
+        mux_query_panes_in(&sock, &born_in),
+    );
+    assert!(
+        !mux_query_panes_in(&sock, &born_in).contains(&0),
+        "⛔ THE PREMISE: the agent's own pane never left the window it was born in",
+    );
+    assert!(
+        theirs != born_in && theirs != "agentwin",
+        "⛔ THE PREMISE: the person must be on a THIRD window ({theirs} vs {born_in}), or a stale \
+         address lands correctly by luck and this passes in a world it cannot measure",
+    );
+
+    // ── THE CLAIM, PART ONE: the listing is of the window the agent is in NOW ────────────────
+    let listed = server.call_tool("list_panes", json!({}));
+    assert!(
+        listed.contains("agentpane") && !listed.contains("stranger"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 767: `list_panes` IS STILL LISTING THE WINDOW THE AGENT LEFT. The \
+         window holding this pane was read once at boot and held for the life of the process, and \
+         the pane has moved since. Every NUMBER in this listing now names a stranger, and \
+         `write_pane` takes those numbers. Listing: {listed}",
+    );
+
+    // ── THE CLAIM, PART TWO: a write by NUMBER reaches the agent's OWN pane ──────────────────
+    //
+    // ⚠ `call_tool_raw`, which judges nothing: a refusal has to arrive as text this gate can put in
+    // front of a reader rather than as somebody else's panic inside a helper.
+    const MARKER: &str = "R767-MOVED-PANE";
+    let wrote = tool_text(
+        &server.call_tool_raw("write_pane", json!({ "pane": 1, "text": MARKER }))["result"],
+    );
+    let mut mine = String::new();
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
+        mine = mux_pane_text(&sock, "agentwin", 0);
+        if mine.contains(MARKER) {
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    assert!(
+        mine.contains(MARKER),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 767: THE AGENT TYPED AT `pane 1` AND ITS OWN PANE NEVER SAW IT. \
+         The window this server holds for itself was read once at boot and the pane has moved \
+         since, so the keystrokes went to the window it left — either counted into that window's \
+         pane list (and landing on a stranger, which the next assertion catches) or addressed at \
+         it and refused. The server answered {wrote:?}; its own pane holds {mine:?}",
+    );
+    // ⚠⚠ EVERY pane of the window the agent left, not just one: which of them a stale number lands
+    // on is pool order, and a check against the wrong one would pass while the keystrokes were in
+    // the other. The claim is that NOTHING over there took the text.
+    for left_behind in mux_query_panes_in(&sock, &born_in) {
+        let screen = mux_pane_text(&sock, &born_in, left_behind);
+        assert!(
+            !screen.contains(MARKER),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 767, THE SHARP END: THE AGENT'S KEYSTROKES WENT INTO SOMEBODY \
+             ELSE'S PANE. `pane 1` was counted against the listing of the window the agent left, \
+             and pane {left_behind} over there took the text. This is not an error an agent can \
+             see — it reads back through the same wrong address and is satisfied. Screen: \
+             {screen:?}",
+        );
+    }
+
+    // ── THE CLAIM, PART THREE: and a READ answers about that same pane ───────────────────────
+    let read = tool_text(&server.call_tool_raw("read_pane", json!({ "pane": 1 }))["result"]);
+    assert!(
+        read.contains(MARKER),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 767: THE AGENT CANNOT READ ITS OWN PANE AFTER IT WAS MOVED. The \
+         marker is on that pane's screen — this file just read it off the daemon — so what came \
+         back is either a refusal or a stranger. Answer: {read:?}",
+    );
+
+    // ── THE CLAIM, PART FOUR: the arrangement it steers by is its own window's ───────────────
+    //
+    // ⚠ Item 768 put every WINDOW-addressed call through the same door, which is what made this
+    // item's blast radius grow: a stale window now decides which arrangement an agent reads a
+    // DIRECTION out of, so `(you are here)` is asserted after the move as well as before it.
+    let drawn = tool_text(&server.call_tool_raw("pane_layout", json!({}))["result"]);
+    assert!(
+        drawn.contains("(you are here)"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 767 AT ITEM 768'S DOOR: `pane_layout` DREW THE WINDOW THE AGENT \
+         LEFT. Every direction chosen from this drawing is a step in a window the agent is not in. \
+         Drawing: {drawn:?}",
+    );
+
+    // ── AND THE PERSON WAS NOT MOVED — R313's rule, which no repair here may buy its way out of ─
+    assert_eq!(
+        mux_current_window(&sock),
+        theirs,
+        "⚠⚠ reaching its own pane took the person's screen — a repair that selects a window to \
+         reach a pane is worse than the defect",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **AND WHEN THE AGENT'S WINDOW IS RENAMED, WHICH THE REGISTER DID NOT PREDICT** —
+/// register item 767's second event.
+///
+/// # ⚠⚠⚠ The cached fact is a NAME, so it goes stale without the pane moving at all
+///
+/// Item 767 was filed about `move_pane` / `break_pane` / `join_pane` — *the pane can change window*.
+/// Re-measuring it found a second event with the same effect and a cheaper trigger: **the window
+/// can change NAME while the pane sits still.** `sprag rename-window`, the GUI's rename and this
+/// surface's own `rename_window` all do it, and none of them is gated on the agent being elsewhere.
+///
+/// ⚠⚠ It fails DIFFERENTLY from the move, which is why it is its own arm: a moved pane leaves a
+/// stale name that still names a real window, so the request lands somewhere wrong and succeeds. A
+/// renamed window leaves a name nothing answers to, so the request lands nowhere and the agent is
+/// simply cut off from its own pane — the shape item 766 was first reported as.
+#[test]
+fn an_agent_reads_its_own_pane_after_its_window_is_renamed() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let born_in = mux_current_window(&sock);
+
+    // ── PREMISE ONE: the server has LEARNED the name, while it is still the name ─────────────
+    let before = server.call_tool("list_panes", json!({}));
+    assert!(
+        before.contains("id=0"),
+        "⛔ THE PREMISE: the server has not yet read the window it stands in, so its name cannot go \
+         stale under it: {before}",
+    );
+
+    // ── PREMISE TWO: the person is looking at a window that is not the agent's ───────────────
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let theirs = mux_current_window(&sock);
+    assert_ne!(
+        theirs, born_in,
+        "⛔ THE PREMISE: the current window must not be the agent's, or a request that names no \
+         window lands correctly by luck",
+    );
+
+    // ── THE EVENT: a person renames the window the agent is standing in ──────────────────────
+    mux_invoke(
+        &sock,
+        RENAME_WINDOW_ACTION,
+        json!({ WindowRef::WINDOW_KEY: born_in, "name": "renamed" }),
+    );
+    assert_eq!(
+        mux_query_panes_in(&sock, "renamed"),
+        vec![0],
+        "⛔ THE PREMISE: the rename did not take, so nothing below is about a stale name",
+    );
+
+    // ── THE CLAIM: the agent still reaches its own pane ──────────────────────────────────────
+    const MARKER: &str = "R767-RENAMED-WINDOW";
+    let wrote = tool_text(
+        &server.call_tool_raw("write_pane", json!({ "pane": 1, "text": MARKER }))["result"],
+    );
+    let mut mine = String::new();
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
+        mine = mux_pane_text(&sock, "renamed", 0);
+        if mine.contains(MARKER) {
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    assert!(
+        mine.contains(MARKER),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 767: RENAMING THE AGENT'S WINDOW CUT THE AGENT OFF FROM ITS OWN \
+         PANE. The name was read once at boot, and every request since carries a window this \
+         session no longer has. The server said {wrote:?}; the pane holds {mine:?}",
+    );
+    let read = tool_text(&server.call_tool_raw("read_pane", json!({ "pane": 1 }))["result"]);
+    assert!(
+        read.contains(MARKER),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 767: the agent cannot READ its own pane after its window was \
+         renamed, though this file can see the marker on that pane's screen. Answer: {read:?}",
     );
 }
 
