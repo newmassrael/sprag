@@ -3063,6 +3063,16 @@ mod tests {
     /// the other half mean something — the same fixture, the same person, one capability withheld.
     const INTERRUPTION_BUDGET: u32 = 40;
 
+    /// ⛔⛔⛔⛔⛔ **HOW SOON A RUN MUST NOTICE, AND THE ONE NUMBER THAT WOULD HAVE CAUGHT ITEM 776** —
+    /// the ceiling above says *it stopped at all*, and that is not the same claim.
+    ///
+    /// A person who reaches in after the run's FIRST write is noticed in **3 or 4 iterations**
+    /// (measured 2026-08-30, twenty consecutive Linux runs: twelve at 3, eight at 4). This is 10 —
+    /// generous by two and a half times — because what it separates is that from **25**, which is
+    /// what the same fixture produced while its witness waited on the peer's echo, and which
+    /// `< INTERRUPTION_BUDGET` welcomes. macOS spent the whole 40 on that coupling for 33 CI runs.
+    const TAKEOVER_MARGIN: u32 = 10;
+
     /// ⚠⚠⚠ **A HOST THAT CANNOT SAY WHOSE KEYSTROKES THESE WERE GOES ON DRIVING — THE ABSENCE IS
     /// NOT READ AS A PERSON.**
     ///
@@ -3101,12 +3111,17 @@ mod tests {
             },
         );
 
-        // The person waits until the run has plainly started (its first stimulus has been seen by
-        // the peer, byte by byte), then types one key of their own: `X`, byte 88. Through the
-        // pane's own door, which this host simply has no way to distinguish.
+        // The person waits until the run has plainly started — its first stimulus WRITTEN, not the
+        // peer's echo of it — then types one key of their own: `X`, byte 88. Through the pane's own
+        // door, which this host simply has no way to distinguish.
+        //
+        // ⚠⚠ THE SAME WITNESS AS THE SIBLING, ASKED OF THE INNER WORKSPACE — register item 776, arm
+        // (c). `hands` is withheld from THE RUN here and not from this thread, which already reaches
+        // through `access.0` for the person's own door. One witness for both fixtures is what makes
+        // *the same fixture, the same person, one capability withheld* true rather than nearly so.
         let outcome = std::thread::scope(|watching| {
             let watcher = watching.spawn(|| {
-                crate::testing::screen_showing(&access.0, pane, "SAW 112");
+                crate::testing::the_run_has_typed(&access.0, pane, 1);
                 crate::testing::person_types(&access.0, pane, b"X");
             });
             let outcome = run_any(
@@ -3179,7 +3194,11 @@ mod tests {
         let watermark = Arc::clone(&typed_at);
         let outcome = std::thread::scope(|watching| {
             let watcher = watching.spawn(|| {
-                crate::testing::screen_showing(&access, pane, "SAW 112");
+                // ⛔⛔⛔ **THE RUN'S OWN WRITE, NOT THE PEER'S ECHO OF IT** — register item 776, arm
+                // (c). `crate::testing::the_run_has_typed` carries the measurement: the echo
+                // witness this replaces let the run reach 22 writes first, which spent more than
+                // half the budget before the person had even reached in.
+                crate::testing::the_run_has_typed(&access, pane, 1);
                 // ⚠ READ BEFORE THE KEY, never after: a run write landing between this read and the
                 // keystroke must count as BEFORE, or the arm accuses the product of a write the
                 // person's own thread raced it to.
@@ -3230,28 +3249,53 @@ mod tests {
         // cadence, and macOS is where it lost. The sibling above spends the whole budget, so
         // stopping this far short of it cannot be the budget.
         //
-        // ⛔⛔⛔⛔⛔ **AND *"about the fourth step"* IS MEASURED FALSE — register item 776, arm (c).**
-        // Twenty consecutive runs of this test on Linux: **24 iterations seventeen times and 25
-        // three times**, never fewer. So the widening from `< 4` to `< 40` did not buy the margin
-        // it looks like — the real distance is **fifteen steps, not thirty-six** — and a host whose
-        // peer echoes slower relative to this thread's cadence spends the rest of it. That is what
-        // macOS does: it reports `Exhausted(Iterations)` at the full 40, which is not *slower* but
-        // *never got there*.
+        // ⛔⛔⛔⛔⛔ **AND *"about the fourth step"* WAS THE INTENT AND NOT THE FACT, UNTIL ITEM
+        // 776's ARM (c).** The person used to reach in on the peer's ECHO (`SAW 112`), and
+        // `silent_peer`'s peer forks `dd`, `od` and `tr` per byte — so the run had 22 writes behind
+        // it before the witness fired. **Measured on Linux, twenty consecutive runs each way:**
         //
-        // ⚠⚠ THE COUPLING IS THE FIXTURE'S, NOT THE PRODUCT'S. The watcher waits for `SAW 112` —
-        // 112 bytes ECHOED by a peer that reads one byte at a time — so *how many iterations the
-        // run has taken when the person reaches in* is set by that peer's throughput. A witness
-        // that did not depend on it (the write count this fixture already reads for `typed_at`)
-        // would make the margin a property of the test rather than of the machine.
+        // ```text
+        // echo witness   : 24 iterations x17, 25 x3   — margin 15 of 40, one run failed
+        // write witness  :  3 iterations x12,  4 x8   — margin 36, none failed
+        // ```
         //
-        // ⚠ Measured in the same twenty: one run failed here on Linux too, and on the OTHER
-        // assertion — the write-order witness, `23` program writes against `22` at the keystroke.
-        // Two races in one fixture, and only one of them is the one macOS loses.
+        // So the widening from `< 4` to `< 40` had been paying for a coupling rather than for a
+        // margin, and macOS — spending the rest of the budget and reporting
+        // `Exhausted(Iterations)` — was not *slower* but *never got there*. `the_run_has_typed`
+        // moves the witness onto the run's own writes, which is what this fixture already reads for
+        // `typed_at`, and the distance is a property of the test again.
+        //
+        // ⚠ THE OTHER RACE IN THIS FIXTURE IS NOT CLAIMED FIXED. The write-order witness below
+        // failed once in the twenty runs BEFORE this change (`23` program writes against `22` at
+        // the keystroke) and none in the twenty after — which is one sample, not a verdict. Two
+        // races live here and only one of them is the one measured above.
         assert!(
             outcome.iterations < INTERRUPTION_BUDGET,
             "⚠⚠⚠ the run must have stopped BEFORE its ceiling — it ran {} of \
              {INTERRUPTION_BUDGET} iterations, which means it went on typing and only the word \
              changed: {outcome:?}",
+            outcome.iterations,
+        );
+        // ⛔⛔⛔⛔⛔ **AND THE MARGIN IS ASSERTED, NOT MERELY ENJOYED** — register item 776, arm (c).
+        //
+        // The line above is the CONTRACT (*it stopped before the ceiling*) and it cannot see the
+        // defect that made this test red on macOS for 33 CI runs: with the echo witness the run
+        // reached 25 of 40, which passes `< 40` on every machine that finishes at all. **Measured
+        // by mutation in the same round**: putting the witness back on the peer's echo gives 25
+        // again, and this line is what turns that back into a red.
+        //
+        // ⚠ The bound is 10 against a measured 3–4 (twenty runs, twelve at 3 and eight at 4) — two
+        // and a half times the observed maximum, and four times below the ceiling. It is generous
+        // on purpose: what it must separate is *the person stopped it* from *the witness drifted
+        // back onto something the peer controls*, and those are 4 and 25.
+        assert!(
+            outcome.iterations < TAKEOVER_MARGIN,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 776: the run took {} iterations to stop for a person who \
+             reached in after its FIRST write — measured at 3 or 4 across twenty runs, so this is \
+             not slowness, it is the person arriving late. The likeliest cause is a witness that \
+             waits on something the PEER produces: `silent_peer` forks three processes per byte, so \
+             an echo-shaped witness lets the run spend half its budget before anybody types. \
+             {outcome:?}",
             outcome.iterations,
         );
         // ⚠⚠ WAIT FOR THE PERSON'S OWN BYTE TO BE ON THE SCREEN BEFORE READING THE WITNESS. The

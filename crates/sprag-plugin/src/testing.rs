@@ -972,6 +972,46 @@ pub(crate) fn screen_showing(access: &WorkspacePaneAccess, pane: PaneId, needle:
     access.pane_collapsed(pane).unwrap_or_default()
 }
 
+/// ⛔⛔⛔⛔⛔ **WAIT UNTIL THE RUN HAS PLAINLY STARTED — WITHOUT ASKING THE PEER** — register item
+/// 776, arm (c). Answers the write count it saw, or [`None`] where this host cannot name a hand.
+///
+/// # ⛔⛔⛔⛔⛔ The screen witness it replaces made the answer the PEER's to give
+///
+/// *The run has started* used to be read as `screen_showing(access, pane, "SAW 112")` — the first
+/// stimulus byte echoed back. That is a fact about the peer's THROUGHPUT, and [`silent_peer`]'s
+/// peer forks `dd`, `od` and `tr` for every single byte. **Measured 2026-08-30**: the run had made
+/// **22 program writes** by the time that echo was painted, and the run stopped at **24 or 25** of
+/// a 40-iteration budget across twenty consecutive Linux runs — so a control that reads *it stopped
+/// early* had a margin of fifteen steps, not the thirty-six it looks like. macOS spent the rest and
+/// reported `Exhausted(Iterations)`, which is not *slower* but *never got there*.
+///
+/// The write count is the SAME instrument the caller already reads for its write-order watermark,
+/// and it moves with the run rather than with the peer — so the person reaches in after the first
+/// stimulus rather than after the peer has caught up with it.
+///
+/// ⚠⚠ **ASKED OF THE PANE'S OWN WORKSPACE, so the withheld-hands control can use it too.**
+/// [`HandlessAccess`] withholds `hands` from THE RUN; the person's thread here already reaches
+/// through the inner workspace for its own door ([`person_types`]), and this is that door's
+/// sibling. One witness for both fixtures is what keeps them *the same person* — which is the
+/// claim the pair rests on.
+pub(crate) fn the_run_has_typed(
+    access: &WorkspacePaneAccess,
+    pane: PaneId,
+    writes: u64,
+) -> Option<u64> {
+    let seen = || {
+        access
+            .hands()
+            .and_then(|hands| hands.pane_hands(pane))
+            .map(sprag_terminal::Hands::by_a_program)
+    };
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(15) && !seen().is_some_and(|made| made >= writes) {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    seen()
+}
+
 /// A pane whose peer is plainly NOT asking anything — the control every *"it answered"* gate needs
 /// beside it, and the state a supervisor's read races.
 ///
