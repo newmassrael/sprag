@@ -185,7 +185,120 @@ pub fn drive(
     // is released (`EVENTS_UNSUBSCRIBE_METHOD`'s own doc says the disconnect arm does it). Waiting
     // for it would be waiting for a wake nobody is going to send.
     drop(orders);
-    report(&driven, lock(&abandoned).as_deref())
+    // ⛔⛔⛔⛔⛔ **AND IF THE DAEMON UNDER THIS RUN WAS REPLACED, ASK THE ONE THAT IS THERE NOW** —
+    // register item 777. The refusal register item 764 built reaches a driver only over a live
+    // connection, and a promotion leaves this process holding four dead ones; what survives is the
+    // read surface, which redials and judges the daemon's identity for itself. So the reason comes
+    // from the SUCCESSOR's row rather than from a refusal that cannot arrive.
+    let why = lock(&abandoned)
+        .clone()
+        .or_else(|| replaced_under_this_run(&access, run));
+    report(&driven, why.as_deref())
+}
+
+/// **WHAT THE DAEMON THAT IS THERE NOW SAYS ABOUT THIS RUN**, or [`None`] while the world under
+/// this driver is the one it adopted — register item 777.
+///
+/// # ⚠⚠⚠⚠⚠ Why a leftover driver has to ask at all, when it is already stopping
+///
+/// It stops on its own: every read answers `None` once
+/// [`RemotePaneAccess::world_changed`] latches, and the write door refuses in words — **measured at
+/// 192.9 µs, 0 iterations**, so *within one step* was true before this existed. What was NOT true
+/// is that its ending said anything a person could act on. The write door's sentence names THIS
+/// driver's problem (*the daemon behind this connection was replaced*) and cannot name the one that
+/// matters: **what the successor decided about the run itself** — item 737's *the documents moved,
+/// start a new run*, item 771's *the pane it was on did not come back*, or simply *there is no such
+/// run here*. Those are the remedies, and only the daemon holding the socket now knows which.
+///
+/// # ⚠⚠⚠⚠ It READS, and never reports — the safety argument this round was built on
+///
+/// The obvious repair is to redial the reporting connection and let register item 764's refusal
+/// come back. **It is unsafe**, and the refutation is this repository's own: run ids are seeded
+/// from the log (`RunRegistry::restore`), so a successor with no log to read mints them FROM ZERO —
+/// and a progress report sent blind would land on a stranger's row, which is the pane-id hazard
+/// [`RemotePaneAccess::world_changed`] exists for, one axis over. So nothing is sent. The question
+/// is asked through [`RemotePaneAccess::through_the_latch`], which is read-only and rides the one
+/// connection that has already redialled and already compared identities.
+///
+/// ⚠⚠ **THE SUCCESSOR'S OWN WORDS, CARRIED AND NEVER RE-AUTHORED.** `RUN_WITHHELD_KEY`,
+/// `RUN_NOT_RESUMED_KEY` and `RUN_LEFTOVER_KEY` are sentences that daemon composed for the row a
+/// person opens (`crate::plugins::withheld_sentence` and its siblings), so a driver that wrote its
+/// own account would be a second mouth on a decision it did not take.
+///
+/// ⚠ A row with no such clause still answers: *what became of it* is the run's own status word, and
+/// **an absent row is an answer too** — this driver's id names nothing there, which is the one
+/// thing a person reading a stopped loop most needs to know.
+///
+/// # ⚠⚠ `pub` so a gate can stage two daemons on one socket, and it has to be
+///
+/// The end-to-end path CANNOT be observed: a leftover driver writes its ending to the stdout pipe
+/// of the daemon that spawned it, and that daemon is dead by definition here (`driver_spawn` gives
+/// the child `Stdio::piped()` for both streams). So the only place this behaviour can be measured
+/// is the seam, and the seam has to be reachable from the suite that already knows how to put a
+/// second daemon on one socket path. That absence of a reader is the RESIDUE of register item 777,
+/// stated rather than hidden: the ending is composed correctly and nobody is there to read it —
+/// which is the trade register item 764's own entry accepted in as many words (*"the answer goes to
+/// a dead pipe, but the ending is a REASON rather than a silence"*).
+#[must_use]
+pub fn replaced_under_this_run(access: &RemotePaneAccess, run: u64) -> Option<String> {
+    if !access.world_changed() {
+        return None;
+    }
+    let listing = access.through_the_latch(&crate::plugins_path(crate::plugins::RUNS_SLOT));
+    let row = listing
+        .as_ref()
+        .and_then(|value| value.as_array())
+        .and_then(|rows| {
+            rows.iter()
+                .find(|entry| entry.get("id").and_then(Value::as_u64) == Some(run))
+        });
+    let Some(row) = row else {
+        // ⚠⚠ TWO ABSENCES, TWO SENTENCES — register item 778's rule at this door. A daemon that
+        // ANSWERED and holds no such run is a fact a person can act on; a daemon that would not
+        // answer at all is not, and saying the first about the second would be this round's own
+        // defect arriving one layer up.
+        return Some(match listing {
+            Some(_) => format!(
+                "the daemon holding this socket was replaced while this run was working, and the \
+                 one there now holds no run {run} — nothing is going to collect this run's answer, \
+                 so it stopped here rather than typing on"
+            ),
+            None => format!(
+                "the daemon holding this socket was replaced while run {run} was working, and the \
+                 one there now would not say what became of it — this driver stopped rather than \
+                 typing into a world it cannot read"
+            ),
+        });
+    };
+    // ⚠ THE ROW'S OWN CLAUSES, in the order a reader wants them: the decision first, because that
+    // is what says whether to start the loop again, and the status word last as the fallback for a
+    // successor that recorded no decision.
+    let said = [
+        crate::plugins::RUN_WITHHELD_KEY,
+        crate::plugins::RUN_NOT_RESUMED_KEY,
+        crate::plugins::RUN_LEFTOVER_KEY,
+    ]
+    .into_iter()
+    .filter_map(|key| row.get(key).and_then(Value::as_str))
+    .collect::<Vec<_>>()
+    .join("; ");
+    let status = row
+        .get("state")
+        .and_then(|state| state.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("unreadable");
+    Some(if said.is_empty() {
+        format!(
+            "the daemon holding this socket was replaced while this run was working, and the one \
+             there now holds run {run} as {status:?} with no reason recorded — this driver stopped \
+             rather than typing into a world it no longer belongs to"
+        )
+    } else {
+        format!(
+            "the daemon holding this socket was replaced while this run was working, and the one \
+             there now says of run {run} ({status}): {said}"
+        )
+    })
 }
 
 /// **WHERE THIS DRIVER'S PROGRESS GOES** — a call that puts it on the wire, for

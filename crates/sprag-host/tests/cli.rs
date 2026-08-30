@@ -3127,6 +3127,227 @@ fn kill_server_leaves_every_session_in_the_saved_workspace() {
 /// takes the same mailbox to the same client on the same daemon, so it establishes that the
 /// attachment, the delivery and the collect all work here; it is then COLLECTED, leaving the mailbox
 /// provably empty, so the sentence the claim reads cannot be the control's.
+/// ⛔⛔⛔⛔⛔ **A DRIVER A PROMOTION LEFT BEHIND ENDS WITH THE SUCCESSOR'S OWN REASON** — register
+/// item 777, over two real daemons on one socket path.
+///
+/// # ⚠⚠⚠⚠⚠ What the ending said before, and why that was not enough
+///
+/// A leftover driver already stops by itself — **measured at 192.9 µs, 0 iterations**, because
+/// `RemotePaneAccess`'s `world_changed` latch makes every read answer nothing and the write door
+/// refuses in words. But those words are about THIS DRIVER (*the daemon behind this connection was
+/// replaced*) and cannot name the thing a person coming back to a stopped loop has to act on:
+/// **what the successor decided about the run**. Item 737's *the documents moved, start a new run*,
+/// item 771's *the pane it was on did not come back*, or simply *there is no such run here* — only
+/// the daemon holding the socket now knows which, and nothing was asking it.
+///
+/// # ⚠⚠⚠⚠ It READS the successor and never reports to it, which refutes this item's own repair
+///
+/// Item 777 was filed as *redial the reporting connection so item 764's refusal can come back*.
+/// Measured and refused: run ids are seeded from the log
+/// ([`sprag_host::runs::RunRegistry::restore`]), so a successor with no log mints them FROM ZERO
+/// and a progress report sent blind lands on a stranger's row — the pane-id hazard `world_changed`
+/// exists for, one axis over. So the question goes through `RemotePaneAccess::through_the_latch`:
+/// read-only, on the ONE connection that has already redialled and already compared identities, so
+/// no second copy of that judgement is minted (register item 747's disease).
+///
+/// # ⚠⚠⚠ The successor really WITHHOLDS this run, rather than merely lacking it
+///
+/// A fresh daemon that never heard of run 7 answers *no such run*, and a build that had stopped
+/// asking anything could produce that from a constant. So a predecessor's run log is planted under
+/// this test's OWN state home before the successor boots — one unfinished run whose place was
+/// recorded against FOREIGN documents, which is exactly what a promotion leaves — and the driver's
+/// reason is asserted to CONTAIN the successor's own withheld sentence, read back independently on
+/// the test's own connection. It has to have asked, and quoted.
+///
+/// ⚠⚠ **THE CONTROL IS LIVE** (register item 775): against the world it adopted this must answer
+/// NOTHING, an arm that fails the moment the reading stops being conditional on a replacement.
+///
+/// ⚠ **THE RESIDUE, STATED**: a leftover's ending goes to the stdout pipe of the daemon that
+/// spawned it (`driver_spawn` gives the child `Stdio::piped()` for both streams), and that daemon
+/// is dead here by definition — so nothing READS this sentence today. That is the trade register
+/// item 764's entry already accepted in as many words, and it is why this gate measures the seam
+/// rather than a process's output.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
+    use sprag_plugin::PaneAccess as _;
+
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-promoted-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    // ── DAEMON A, AND A DRIVER SURFACE THAT ADOPTS IT ──────────────────────────────────────────
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("the test's connection");
+    // ⚠ A `--daemon` boots with no session of its own, so the surface is given one to read — the
+    // sibling gate below stages its pane the same way, and for the same reason.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "work", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
+        }),
+    )
+    .expect("new_session answers");
+    let pane = conn
+        .call(
+            "scene/query",
+            json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .map(sprag_terminal::PaneId)
+        .expect("the daemon's boot pane");
+    // ⚠⚠ SCOPED, exactly as `crate::drive::connect` scopes a real driver's four connections: a
+    // daemon serves a pane read against the session the connection resolves to, and an unscoped one
+    // resolves to a session holding no panes — which reads as *I cannot see that pane* and would
+    // stage this whole gate against a surface that never worked.
+    let mut driving =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the driver's socket");
+    driving.scope_to("work");
+    let remote = sprag_host::remote_access::RemotePaneAccess::over(driving);
+    assert!(
+        remote.pane_collapsed(pane).is_some(),
+        "⚠⚠ THE PREMISE: the surface has to read a real daemon and ADOPT it, or the latch below \
+         cannot fire and every arm here is about a surface that never worked",
+    );
+
+    // ── THE CONTROL: THE WORLD IS THE ONE THIS DRIVER ADOPTED ──────────────────────────────────
+    assert_eq!(
+        sprag_host::drive::replaced_under_this_run(&remote, 7),
+        None,
+        "⚠⚠⚠⚠⚠ A CONTROL FAILED: a driver whose daemon is the one it adopted must say NOTHING \
+         here. A reading that answers anyway would print *your world was replaced* on the ending of \
+         every ordinary run there is",
+    );
+
+    // ── THE PROMOTION: a predecessor's run log the successor will WITHHOLD ─────────────────────
+    let pid = daemon_pid(&sock).expect("the first daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+    // ⚠⚠ THE PATH IS DERIVED THE WAY THE DAEMON DERIVES IT, from THIS TEST'S state home — asking
+    // `runs_path` would resolve `XDG_STATE_HOME` in the CALLING process, which is the developer's,
+    // and point this fixture at some other daemon's file. The sibling gate below paid for that.
+    let planted = state.join("sprag").join(format!(
+        "{}.runs.json",
+        sock.file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .expect("the socket has a stem"),
+    ));
+    std::fs::create_dir_all(planted.parent().expect("the state dir")).expect("the state directory");
+    std::fs::write(
+        &planted,
+        serde_json::to_vec(&sprag_host::runs::RunLog {
+            version: sprag_host::runs::RUN_LOG_VERSION,
+            runs: vec![sprag_host::runs::PersistedRun {
+                id: 7,
+                label: "a loop a promotion caught mid-turn".to_owned(),
+                request: Some(
+                    json!({ "plugin": "orchestrator", "pane": 3 })
+                        .as_object()
+                        .cloned()
+                        .expect("an object"),
+                ),
+                iterations: 12,
+                cost: None,
+                unit: None,
+                finished: false,
+                outcome: None,
+                ceiling: None,
+                output: None,
+                build: None,
+                // ⛔ ITEM 740's RESIDUE, and the whole population this item is about: a boot ends
+                // every leftover driver whose pid it can NAME, so the one still running is the one
+                // whose record never carried a pid.
+                driver: None,
+                driving: Some(4),
+                opened_by_session: None,
+                at: None,
+                // ⚠ FOREIGN, which is what makes the successor WITHHOLD rather than resume — 737.
+                document: Some("0000000000000000".to_owned()),
+                stood_down: None,
+                cancelled_by: None,
+                deliveries: None,
+                banked: None,
+                briefed: None,
+                done_reason: None,
+                place: Some(vec!["working".to_owned(), "work".to_owned()]),
+            }],
+        })
+        .expect("a run log serialises"),
+    )
+    .expect("plant the predecessor's run log");
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the successor daemon never started serving",
+    );
+
+    // ── THE PREMISE, READ ON THE TEST'S OWN CONNECTION ─────────────────────────────────────────
+    let mut fresh = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to successor");
+    let withheld = fresh
+        .call(
+            "scene/query",
+            json!({ "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT) }),
+        )
+        .expect("the successor serves its run list")
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| row.get("id").and_then(serde_json::Value::as_u64) == Some(7))
+        .and_then(|row| {
+            row.get(sprag_host::plugins::RUN_WITHHELD_KEY)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .expect(
+            "⚠⚠ THE FIXTURE'S PREMISE: the successor must have restored run 7 AND withheld it, or \
+             there is no successor reason for a driver to carry and this gate measures nothing",
+        );
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            let _ = remote.pane_collapsed(pane);
+            remote.world_changed()
+        }),
+        "⚠⚠ THE PREMISE: the driver's surface must latch its world as changed, or the reading below \
+         is about a driver that never met the replacement",
+    );
+
+    // ── THE SUBJECT ────────────────────────────────────────────────────────────────────────────
+    let said = sprag_host::drive::replaced_under_this_run(&remote, 7).expect(
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 777: this driver's daemon was replaced under a run the successor \
+         has WITHHELD, and the driver has nothing to put in its ending about it",
+    );
+    assert!(
+        said.contains(&withheld),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 777: the ending must carry the SUCCESSOR'S OWN sentence — the one \
+         its row shows a person — rather than this driver's account of its own socket. A driver \
+         that re-authored it would be a second mouth on a decision it did not take, and the two \
+         would drift the day item 737's wording changes.\n  successor said: {withheld:?}\n  driver \
+         said: {said:?}",
+    );
+    assert!(
+        said.contains("run 7"),
+        "⚠⚠⚠ and it has to name WHICH run, or a person reading a stopped loop cannot tell which of \
+         their loops this ending belongs to: {said:?}",
+    );
+    drop(guard);
+}
+
 ///
 /// Linux-gated: it finds the forked daemon through `/proc`, like its two siblings above.
 #[test]

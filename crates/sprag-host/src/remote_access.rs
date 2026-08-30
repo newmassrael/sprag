@@ -625,17 +625,43 @@ impl RemotePaneAccess {
     /// come back*, and is a run's cue to end rather than to type.
     #[must_use]
     pub fn pane_named(&self, name: &str) -> Option<PaneId> {
-        let listing = lock(&self.conn)
-            .try_call(
-                QUERY_METHOD,
-                json!({ PATH_PARAM: mux_action_path(PANES_SLOT) }),
-            )
-            .ok()?;
+        let listing = self.through_the_latch(&mux_action_path(PANES_SLOT))?;
         listing.as_array()?.iter().find_map(|entry| {
             (entry[SPAWN_NAME_KEY].as_str() == Some(name))
                 .then(|| entry[PANE_SUMMARY_ID_KEY].as_u64().map(PaneId))
                 .flatten()
         })
+    }
+
+    /// **ASK THE DAEMON THAT IS THERE NOW, THROUGH THE LATCH** — one address, read only, on the
+    /// connection `recover` has already re-established. Register item 777.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is the door and not a redial of the caller's own connection
+    ///
+    /// A driver holds four connections and only ONE of them redials — this one, because
+    /// its own `read` has to. So a caller that wanted to ask the successor something opened
+    /// the question of who redials and who compares [`DAEMON_INSTANCE_SLOT`], and **a second
+    /// implementation of that comparison is the defect register item 747 is about**. There is one
+    /// connection here that has already redialled and one latch that has already judged; asking
+    /// through them costs no socket and mints no second rule.
+    ///
+    /// ⚠⚠⚠ **READ ONLY, AND THAT IS THE WHOLE SAFETY ARGUMENT.** After a replacement the ids this
+    /// driver holds name whatever the new daemon minted — pane ids from zero, and run ids from
+    /// zero for a successor with no log to seed them ([`crate::runs::RunRegistry::restore`]'s
+    /// second authority decision). A WRITE sent through here would therefore be a run's report
+    /// landing on a stranger's row, which is exactly what [`world_changed`](Self::world_changed)
+    /// exists to prevent one door over. A read can be wrong about whose answer it got; it cannot
+    /// make anybody else's row wrong, and the caller weighs it knowing the world changed.
+    ///
+    /// ⚠⚠ It reads THROUGH the latch, like [`pane_named`](Self::pane_named), and for that method's
+    /// reason: these are the questions a caller asks PRECISELY when every other read is answering
+    /// `None`. ⚠ [`None`] for a daemon that refuses the address or a wire that failed — the caller
+    /// gets *nothing was learned*, never a fabricated answer.
+    #[must_use]
+    pub fn through_the_latch(&self, path: &str) -> Option<Value> {
+        lock(&self.conn)
+            .try_call(QUERY_METHOD, json!({ PATH_PARAM: path }))
+            .ok()
     }
 
     /// Redial the socket this connection names, answering whether the SAME daemon is there.
