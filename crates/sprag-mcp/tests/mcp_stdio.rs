@@ -56,9 +56,10 @@
 //! the notification produced none.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -305,6 +306,145 @@ fn mux_pane_text(sock: &Path, window: &str, pane: u64) -> String {
     .as_str()
     .unwrap_or_default()
     .to_owned()
+}
+
+// ----- the relay: a socket the harness owns, so round trips can be counted -----
+
+/// A Unix socket **the server under test is given instead of the daemon's**, forwarding every byte
+/// to the real daemon and COUNTING the connections that pass through it.
+///
+/// # ⛔⛔⛔⛔⛔ Why a claim about ROUND TRIPS cannot be measured inside the product — item 770
+///
+/// `our_window`'s doc claims *"a message costs at most ONE tree read however many times it consults
+/// this"*. Nothing measured it: deleting the stamp and asking the daemon every time leaves every
+/// gate in this file green, because the only thing that moves is COST. And a counter added to
+/// `sprag-mcp` for a test to read would be a product surface built for a test — the shape the
+/// register forbids by name.
+///
+/// What a harness may own instead is the SOCKET. `HostConn::connect` opens a FRESH connection per
+/// request — `host_call_unscoped_answered` resolves the socket and connects on every single call —
+/// so on this wire **one connection is one round trip**, and counting them needs no product change
+/// at all. That equivalence is the whole reason this works, and it is asserted rather than assumed:
+/// the gate below pins an EXACT figure, so the day `sprag-mcp` starts pooling connections the number
+/// moves and this file says so instead of quietly measuring something else.
+///
+/// # ⚠⚠⚠⚠ It has to be the server's ONLY door, and an undercount is the dangerous direction
+///
+/// A relay that saw half the traffic would report half the round trips — and half passes an upper
+/// bound. That is register item 770's own warning (`host_sock` has TWO layers: this process's
+/// `SPRAG_HOST_RPC_SOCK`, else the first `/proc` ancestor carrying one), and it is why the gate
+/// asserts `==` rather than `<=`. The child is handed THIS path in its own environment, which wins
+/// over the ancestor walk — the precedence `the_child_env_socket_wins_over_an_ancestors` holds — so
+/// there is no second address for it to reach, and a bypass would show up as a count that is too
+/// LOW rather than as a silent pass.
+struct DaemonRelay {
+    /// The address handed to the server — the path it will connect to for every request.
+    path: PathBuf,
+    /// Connections accepted so far. One per round trip, by the equivalence above.
+    connections: Arc<AtomicU64>,
+    /// Accepted connections this relay could NOT carry to the daemon.
+    ///
+    /// ⚠⚠ Counted rather than swallowed, and asserted zero by the gate. A relay that dropped a
+    /// connection on the floor would still have COUNTED it, so the arithmetic would look right while
+    /// the server got `Connection reset by peer` — a red for a reason that is not this item's. It is
+    /// how the first run of this gate was diagnosed: the daemon had not finished binding, and
+    /// `HostConn::connect` retries where a bare `UnixStream::connect` does not.
+    unreachable: Arc<AtomicU64>,
+    /// Set on drop, so the accept loop stops instead of outliving the test.
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for DaemonRelay {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+impl DaemonRelay {
+    /// Stand in front of the daemon at `daemon`, on an address of this relay's own.
+    fn in_front_of(daemon: &Path) -> Self {
+        let path = socket_path();
+        let listener = UnixListener::bind(&path).expect("bind the relay socket");
+        // Non-blocking accept plus a short sleep, rather than a wake-up connection on drop: a
+        // connection made to unblock `accept` would be counted, and a counter with an exemption in
+        // it is the thing this gate exists to refuse.
+        listener
+            .set_nonblocking(true)
+            .expect("the relay listener takes a non-blocking mode");
+        let connections = Arc::new(AtomicU64::new(0));
+        let unreachable = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (counter, lost, stopped, upstream) = (
+            Arc::clone(&connections),
+            Arc::clone(&unreachable),
+            Arc::clone(&stop),
+            daemon.to_path_buf(),
+        );
+        std::thread::spawn(move || {
+            while !stopped.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((client, _)) => {
+                        // Counted at ACCEPT, before anything can go wrong upstream: a round trip
+                        // the server paid for is a round trip whether or not it got an answer.
+                        counter.fetch_add(1, Ordering::Relaxed);
+                        let Ok(daemon) = UnixStream::connect(&upstream) else {
+                            lost.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        };
+                        Self::splice(client, daemon);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+        Self {
+            path,
+            connections,
+            unreachable,
+            stop,
+        }
+    }
+
+    /// The address to hand the server.
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Round trips this relay has carried.
+    fn round_trips(&self) -> u64 {
+        self.connections.load(Ordering::Relaxed)
+    }
+
+    /// Round trips it ACCEPTED and could not carry — zero, or the count above is fiction.
+    fn unreachable(&self) -> u64 {
+        self.unreachable.load(Ordering::Relaxed)
+    }
+
+    /// Copy bytes both ways until either end closes, then close the other.
+    ///
+    /// ⚠ A half-close has to be PROPAGATED. `HostConn` reads lines until EOF, so a direction left
+    /// open after its partner went away parks the server on a socket nobody will ever write to —
+    /// which would look exactly like the daemon hanging.
+    fn splice(client: UnixStream, daemon: UnixStream) {
+        let pairs = [
+            (
+                client.try_clone().expect("clone the client half"),
+                daemon.try_clone().expect("clone the daemon half"),
+            ),
+            (daemon, client),
+        ];
+        for (mut from, mut to) in pairs {
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut from, &mut to);
+                let _ = to.shutdown(std::net::Shutdown::Write);
+                let _ = from.shutdown(std::net::Shutdown::Read);
+            });
+        }
+    }
 }
 
 /// The name of the window the session is CURRENTLY on — the one fact `open_window` must not move
@@ -4802,6 +4942,124 @@ fn an_agent_reads_its_own_pane_after_its_window_is_renamed() {
         read.contains(MARKER),
         "⛔⛔⛔⛔⛔ REGISTER ITEM 767: the agent cannot READ its own pane after its window was \
          renamed, though this file can see the marker on that pane's screen. Answer: {read:?}",
+    );
+}
+
+/// The daemon round trips ONE `read_pane` message costs once the server is warm — register item 770.
+///
+/// ⚠ The figure is MEASURED, not derived — it was read off the relay, not predicted from the source.
+/// Two of the three are accounted for by mutations rather than by this sentence, which is the only
+/// kind of account that stays true: deleting `our_window`'s stamp makes it **4**, so one of the three
+/// is that tree read; and taking the figure from a COLD server makes the first message **4** and the
+/// second 3, so `our_session`'s `OnceLock` spends one more at boot and never again.
+const ROUND_TRIPS_PER_PANE_READ: u64 = 3;
+
+/// ⛔⛔⛔⛔⛔ **ONE PANE-ADDRESSED MESSAGE COSTS A FIXED NUMBER OF DAEMON ROUND TRIPS** —
+/// register item 770, and the gate `our_window`'s doc was owed.
+///
+/// # ⚠⚠ The claim that had no gate
+///
+/// Item 767's repair holds *where this server stands* for exactly one message, and its doc says so:
+/// *"a message costs at most ONE tree read however many times it consults this"*. That sentence is
+/// true of the six lines under it and **nothing measured it** — delete the stamp comparison, ask the
+/// daemon every time, and every other gate in this file stays green, because correctness does not
+/// move. Only cost does. So the property could regress in silence, which is exactly the shape items
+/// 629-640 already paid for on the waiting axis.
+///
+/// # ⚠⚠⚠ Why this counts CONNECTIONS, and why the assertion is `==` rather than `<=`
+///
+/// See [`DaemonRelay`] for both: one connection is one round trip because `HostConn::connect` opens
+/// a fresh one per request, and a relay that saw only part of the traffic would under-report — which
+/// an upper bound would happily accept. An exact figure fails in both directions, so a bypass reads
+/// as a failure instead of as a pass.
+///
+/// # ⚠⚠⚠⚠ The premises, asserted inside
+///
+/// * **The relay is the door and it reaches the REAL daemon** — a marker typed through the server
+///   has to appear on the pane's screen when this file asks the daemon DIRECTLY, and the relay's
+///   count has to be non-zero. A relay nobody used would report a beautiful, meaningless zero.
+/// * **The server is WARM.** Some of what this process asks is once-per-process — `our_session`'s
+///   `OnceLock`, the `/proc` ancestor walk — and counting a cold message would measure the boot
+///   rather than the message. So the figure is taken from two CONSECUTIVE reads and they must AGREE:
+///   that equality is what says the number is a steady state rather than a moment.
+#[test]
+fn one_pane_addressed_message_costs_a_fixed_number_of_daemon_round_trips() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    // ⚠ The daemon is asked something BEFORE the relay is put in front of it, and the order is the
+    // fix rather than a tidy-up: `HostConn::connect` retries until the socket exists, a bare
+    // `UnixStream::connect` does not, and a relay standing in front of a daemon that has not
+    // finished binding resets the server's first connection.
+    let window = mux_current_window(&sock);
+    let relay = DaemonRelay::in_front_of(&sock);
+    let mut server = McpServer::spawn_in_pane(relay.path(), 0);
+
+    // ── PREMISE ONE: the relay is the server's door, and it reaches the real daemon ──────────
+    //
+    // ⚠ The screen is read straight off `sock` — not through the relay — so this check cannot
+    // itself move the number the gate is about.
+    const MARKER: &str = "R770-THROUGH-THE-RELAY";
+    server.call_tool("write_pane", json!({ "pane": 1, "text": MARKER }));
+    let mut screen = String::new();
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
+        screen = mux_pane_text(&sock, &window, 0);
+        if screen.contains(MARKER) {
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    assert!(
+        screen.contains(MARKER),
+        "⛔ THE PREMISE: the server's traffic does not reach the daemon through this relay, so \
+         whatever it counts below is not this server's round trips. The pane holds {screen:?}",
+    );
+    assert!(
+        relay.round_trips() > 0,
+        "⛔ THE PREMISE: the relay carried NOTHING while the server was plainly working, so it is \
+         not the door — count it and every bound below passes vacuously",
+    );
+    assert_eq!(
+        relay.unreachable(),
+        0,
+        "⛔ THE PREMISE: the relay accepted connections it could not carry to the daemon, so its \
+         count includes round trips that never happened",
+    );
+
+    // ── PREMISE TWO: warm, and steady ────────────────────────────────────────────────────────
+    //
+    // ⚠⚠ There is NO warm-up call here, and its absence is measured rather than assumed. One was
+    // written first — a `read_pane` before the counting started, to spend what is once-per-process
+    // (`our_session`'s `OnceLock`, the `/proc` ancestor walk) — and deleting it left this gate GREEN,
+    // which is this repository's definition of a line that was doing nothing. The write above has
+    // already spent all of it. What holds the premise is the equality below, not a call: two
+    // consecutive messages that cost different amounts fail it, whichever of them was the cold one.
+    let cold = relay.round_trips();
+    let first = server.call_tool("read_pane", json!({ "pane": 1 }));
+    let between = relay.round_trips();
+    let second = server.call_tool("read_pane", json!({ "pane": 1 }));
+    let warm = relay.round_trips();
+    let (one, two) = (between - cold, warm - between);
+    assert!(
+        first.contains(MARKER) && second.contains(MARKER),
+        "⛔ THE PREMISE: a read that answered about the wrong pane would cost a different number of \
+         round trips for a reason that is not this item's. Got {first:?} then {second:?}",
+    );
+    assert_eq!(
+        one, two,
+        "⛔ THE PREMISE: two identical messages cost different amounts ({one} then {two}), so the \
+         server is not in a steady state and this figure is a moment rather than a rule",
+    );
+
+    // ── THE CLAIM ────────────────────────────────────────────────────────────────────────────
+    assert_eq!(
+        two, ROUND_TRIPS_PER_PANE_READ,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 770: ONE `read_pane` NOW COSTS {two} DAEMON ROUND TRIPS, NOT \
+         {ROUND_TRIPS_PER_PANE_READ}. Each one is a fresh connect + handshake, and this surface is \
+         called hundreds of times a round by the debt loop. If the number went UP, the likeliest \
+         cause is `our_window` answering afresh where it used to answer from the message's own \
+         stamp (item 767) — the regression that moves nothing but cost, which is why this gate \
+         exists. If it went DOWN, do not just lower the constant: check the relay is still the \
+         server's only door, because a bypass reports too few.",
     );
 }
 
