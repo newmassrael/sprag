@@ -1175,3 +1175,87 @@ fn neither_hook_swallows_a_report_whose_summary_line_changed_shape() {
     );
     push.done();
 }
+
+/// ⛔⛔⛔⛔⛔ **A PUSH SAYS HOW LONG THIS CLONE HAS GONE WITHOUT READING A HOSTED RESULT** —
+/// register item 776, arms (1), (2) and (4).
+///
+/// # ⛔⛔⛔⛔⛔ The rule was in force for all 33 of the red runs
+///
+/// `CLAUDE.md` pre-authorises the push here and says to read the previous run at the START of the
+/// next round. It was not followed while CI carried **33 consecutive failures over two days** —
+/// and the reason is not a missing rule. **A round that never looked and a round that looked and
+/// saw green render identically**, so nothing about the second-to-last round could tell anybody
+/// which one it had been.
+///
+/// # ⚠⚠⚠⚠ Why the GAP and not the reds
+///
+/// Item 776's own done-when (4) settles the axis on a sibling repository's measurement: it was
+/// GREEN while nobody had read a hosted result for five rounds. Same structure, and the green was
+/// luck. Counting reds scores those five rounds as zero — so what is counted here is the distance
+/// from *the commit whose hosted result was read* to HEAD.
+///
+/// # ⚠⚠⚠ It is asserted to REPORT and asserted not to REFUSE, and both halves matter
+///
+/// A hook that refused would overturn *push and continue*, which this repository chose
+/// deliberately — item 776 says the ceiling is not zero in as many words. So the claim is that the
+/// push SAYS the number and still stands. Without the second half the obvious "improvement" is to
+/// make it a gate, and the round that made it would be answering a question nobody asked.
+#[test]
+fn a_push_says_how_long_this_clone_has_gone_without_reading_a_hosted_result() {
+    let push = Sandbox::new("push-hosted-read");
+    push.write("notes.md", "a tree with no rust in it\n");
+    push.git(&["add", "notes.md"]);
+    let base = push.commit("base");
+    push.write("notes.md", "a second commit\n");
+    push.git(&["add", "notes.md"]);
+    let head = push.commit("more notes");
+
+    // ── A CLONE NOBODY HAS RECORDED A READING IN — the state every fresh worker starts in ────
+    let run = push.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        told.contains("NOBODY HAS RECORDED READING"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 776: this push publishes without saying that nothing in this clone \
+         has ever read a hosted result. That is the screen which is indistinguishable from *the \
+         last run was green*, and being indistinguishable is what let 33 reds through: {told}",
+    );
+    assert!(
+        !told.contains("0 round(s)"),
+        "⛔⛔⛔ REGISTER ITEM 776: *nobody has read one* is being rendered as a count, and a count \
+         of zero is what *I read it just now* looks like. An absence that renders like a \
+         measurement gets acted on like one: {told}",
+    );
+    assert!(
+        run.status.success(),
+        "⚠⚠⚠ AND IT MUST NOT REFUSE. `CLAUDE.md` chose *push and continue* for this repository and \
+         item 776's own done-when says the ceiling is not zero — a hook that stopped the push here \
+         would be overturning that decision rather than measuring it: {told}",
+    );
+
+    // ── AND ONCE A READING IS RECORDED, IT COUNTS THE ROUNDS SINCE ───────────────────────────
+    //
+    // ⚠⚠ Recorded at BASE and not at HEAD, so the answer has to be a NUMBER rather than the
+    // zero-shaped sentence — a report that only ever said *0 unread* would pass an assertion that
+    // merely looked for a reading having happened.
+    let marker = push.git(&["rev-parse", "--absolute-git-dir"]);
+    std::fs::write(
+        std::path::Path::new(marker.trim()).join("sprag-hosted-read"),
+        format!("{base}\n"),
+    )
+    .expect("record a hosted read in the sandbox");
+    let run = push.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        told.contains("1 round(s) published since"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 776: a reading recorded one commit back must be reported as the \
+         DISTANCE to HEAD. That distance is the axis this item settled on — a sibling repository \
+         was green while five rounds went unread, so *how many reds* scores exactly the wrong \
+         thing: {told}",
+    );
+    assert!(
+        told.contains(&base[..7]),
+        "⛔⛔⛔ REGISTER ITEM 776: the report names a count and not the commit it counted from, so \
+         nobody can check it or record the next one against it: {told}",
+    );
+    push.done();
+}

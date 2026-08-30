@@ -44,6 +44,26 @@ cd "$repo_root"
 . "$repo_root/.githooks/content-gate.sh"
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/ident-gate.sh"
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/hosted-read.sh"
+
+# ── HOW LONG THIS CLONE HAS GONE WITHOUT READING A HOSTED RESULT ─────────────
+#
+# ⛔⛔⛔⛔⛔ REGISTER ITEM 776, arms (1), (2) and (4). A REPORT AND NOT A GATE,
+# said here so nobody wires it to an exit status later by reflex.
+#
+# The push in this repository is pre-authorised and `CLAUDE.md` says push and
+# continue, reading the previous run at the start of the next round. That rule
+# was in force while CI carried 33 consecutive reds over two days. What was
+# missing is not a rule: it is that a round which never looked and a round which
+# looked and saw green render IDENTICALLY. So the number is said at the one
+# moment it is certainly being decided -- publishing -- and refusing is left
+# alone, because "push and continue" is this repository's deliberate choice and
+# a hook that overturned it would be answering a question nobody asked here.
+#
+# ⚠ Its arithmetic is gated where arithmetic can be: `hosted-read.sh
+# --selftest`, and `sprag-gate` drives this hook and reads for this line.
+hosted_read_gap
 
 # ⚠⚠⚠⚠ THE REFS ARE READ ONCE, HERE, BEFORE ANYTHING ELSE RUNS.
 #
