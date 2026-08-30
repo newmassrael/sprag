@@ -484,7 +484,7 @@ impl TerminalQuery {
 /// found nothing supporting it.
 #[must_use]
 fn pool_sentence(pool: crate::procfs::PtyPool) -> String {
-    match (pool.in_use, pool.max) {
+    let host = match (pool.in_use, pool.max) {
         (Some(in_use), Some(max)) => {
             format!("this host's pty pool was {in_use} of {max} in use when it refused")
         }
@@ -494,11 +494,78 @@ fn pool_sentence(pool: crate::procfs::PtyPool) -> String {
         ),
         (None, Some(max)) => format!(
             "this host allows at most {max} pty(s) and does not publish how many were in use when \
-             it refused, so whether the pool was full cannot be read here"
+             it refused, so the host's own total cannot be read here"
         ),
         (None, None) => "this host publishes neither the size of its pty pool nor how much of it \
-             was in use, so whether the pool was full cannot be read here"
+             was in use, so the host's own total cannot be read here"
             .to_owned(),
+    };
+    format!("{host}; {}", ours_sentence(OPEN_HERE.held()))
+}
+
+/// **HOW MANY PSEUDOTERMINALS THIS PROCESS ITSELF WAS HOLDING** — register item 776, arm (d), and
+/// the half a Darwin host does not publish.
+///
+/// # ⛔⛔⛔⛔⛔ Why this exists, and why it is not the stand-in that was refused
+///
+/// The host half above answers *how full the pool was* on Linux and, on macOS, only *how big it
+/// is*. So the sentence a macOS reader got was a ceiling and an apology — **and that is not enough
+/// to tell exhaustion from anything else**, which is the whole of this arm's remaining debt: the
+/// round that built the host half wrote *"the next macOS failure brings the answer"*, and on macOS
+/// it does not.
+///
+/// The refused stand-in was counting `/dev/ttys*`, which is a claim about devfs that nothing here
+/// can check. **This is not that.** It is this process's own ledger — incremented where a
+/// pseudoterminal is opened and decremented where it is dropped — so it is checkable by
+/// construction and true on every platform.
+///
+/// # ⚠⚠⚠⚠ It cuts ONE WAY, and the sentence says so
+///
+/// A process holding 3 of a 127-place pool did not exhaust it **by itself**; a process holding 120
+/// very likely did. But nothing here can see other processes, so a small number does not RULE OUT
+/// exhaustion — somebody else may hold the rest. The sentence states the count and that limit
+/// rather than letting a reader complete it from memory, which is exactly the failure this arm was
+/// filed for.
+#[must_use]
+fn ours_sentence(ours: u64) -> String {
+    format!(
+        "this process was holding {ours} of them itself, which cannot rule exhaustion out (another \
+         process may hold the rest) but does say how much of any of it was ours"
+    )
+}
+
+/// This process's live pseudoterminal count — see [`ours_sentence`].
+static OPEN_HERE: OpenHere = OpenHere(std::sync::atomic::AtomicU64::new(0));
+
+/// The ledger behind [`OPEN_HERE`], kept as a type so the only way to add to it is to hold a
+/// [`Held`] that gives the count back when it drops.
+#[derive(Debug)]
+struct OpenHere(std::sync::atomic::AtomicU64);
+
+impl OpenHere {
+    /// How many are live right now.
+    fn held(&'static self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Count one more, until the returned guard drops.
+    fn take(&'static self) -> Held {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Held(self)
+    }
+}
+
+/// One pseudoterminal's place in [`OPEN_HERE`], returned on drop.
+///
+/// ⚠ A guard rather than a pair of bare `fetch_add`/`fetch_sub` calls, because the decrement has to
+/// happen on EVERY path a `Pty` leaves by — including a panic between opening and spawning, which
+/// is precisely when a leaked count would make the next refusal's sentence lie.
+#[derive(Debug)]
+struct Held(&'static OpenHere);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.0.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -513,6 +580,9 @@ pub struct Pty {
     master: OwnedFd,
     /// The child's side, taken by [`AttachedPty::spawn`] and dropped there.
     slave: Option<OwnedFd>,
+    /// This pair's place in this process's own ledger — see [`ours_sentence`]. Held for exactly as
+    /// long as the pair is, so the count a refusal reports is the count that was live.
+    _held: Held,
 }
 
 impl Pty {
@@ -581,6 +651,9 @@ impl Pty {
         Ok(Self {
             master,
             slave: Some(slave),
+            // ⚠ TAKEN LAST, after every fallible step, so a pair that failed to be set up is not
+            // counted as one this process is holding.
+            _held: OPEN_HERE.take(),
         })
     }
 
@@ -1139,6 +1212,77 @@ mod tests {
             "⛔⛔⛔ REGISTER ITEM 776: a host that publishes nothing must say so. Silence here is \
              what the bare errno already was. Got: {neither:?}",
         );
+
+        // ── ⛔⛔⛔⛔⛔ AND THIS PROCESS'S OWN SHARE, ON EVERY ARM ────────────────────────────
+        //
+        // ⚠⚠⚠⚠⚠ The round that built the four arms above wrote *"the next macOS failure brings
+        // the answer"*. **On macOS it does not**: the arm that lands there is `ceiling_only`, which
+        // is a ceiling and an apology — a reader still cannot tell exhaustion from anything else,
+        // which was the debt. The half Darwin will not publish is added here from the one ledger
+        // that is checkable: this process's own.
+        //
+        // ⚠ It cuts ONE WAY and the sentence has to say so, for the reason the arms above exist:
+        // a small number does not RULE OUT exhaustion, because another process may hold the rest.
+        // Left unqualified it would be completed from memory as *the pool was not full*, which is
+        // the same defect pointed the other way.
+        for (label, sentence) in [
+            ("both", &both),
+            ("ceiling only", &ceiling_only),
+            ("count only", &count_only),
+            ("neither", &neither),
+        ] {
+            assert!(
+                sentence.contains("this process was holding"),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 776 arm (d): the {label} arm drops this process's own \
+                 share, and on the arm macOS lands on that share is the ONLY half a reader gets. \
+                 Got: {sentence:?}",
+            );
+        }
+        let ours = ours_sentence(3);
+        assert!(
+            ours.contains('3') && ours.contains("cannot rule exhaustion out"),
+            "⛔⛔⛔⛔ a count without its limit is worse than none: three of a hundred reads as \
+             *the pool was not full* unless the sentence says another process may hold the rest. \
+             Got: {ours:?}",
+        );
+        assert_ne!(
+            ours_sentence(0),
+            ours_sentence(120),
+            "⚠ and the count must actually be IN the sentence, not a constant beside it",
+        );
+
+        // ── ⛔⛔⛔ AND THE LEDGER ITSELF, which the sentence is only worth what it is ──────────
+        //
+        // ⚠⚠ Driven on a ledger of its OWN rather than the process-wide one, because this crate's
+        // suite opens pseudoterminals on many threads at once: a reading of the shared counter is
+        // not a fact about this test. Leaked so it is `'static`, which costs one `u64` for the
+        // life of a test binary.
+        let ledger: &'static OpenHere =
+            Box::leak(Box::new(OpenHere(std::sync::atomic::AtomicU64::new(0))));
+        assert_eq!(ledger.held(), 0, "a fresh ledger holds nothing");
+        let first = ledger.take();
+        let second = ledger.take();
+        assert_eq!(ledger.held(), 2, "two places taken must read as two");
+        drop(first);
+        assert_eq!(
+            ledger.held(),
+            1,
+            "⛔⛔⛔⛔⛔ A PLACE THAT IS NOT GIVEN BACK MAKES EVERY LATER SENTENCE LIE, and it lies \
+             in the direction that invents exhaustion — the very cause this arm was filed for \
+             having no evidence behind it",
+        );
+        drop(second);
+        assert_eq!(ledger.held(), 0, "and the last one too");
+
+        // ── ⚠ AND THE DOOR IS WIRED TO IT: a live pseudoterminal cannot read as none of ours ──
+        let live = Pty::open(20, 5).expect("open a pseudoterminal");
+        let while_open = pool_sentence(crate::procfs::pty_pool());
+        assert!(
+            !while_open.contains("holding 0 of them"),
+            "⛔⛔⛔ `Pty::open` is not taking a place in the ledger, so the half added for macOS \
+             would report zero however many this process held. Got: {while_open:?}",
+        );
+        drop(live);
 
         // ── AND THE FOUR ARE FOUR SENTENCES, not one wearing different numbers ────────────────
         let said = [&both, &ceiling_only, &count_only, &neither];
