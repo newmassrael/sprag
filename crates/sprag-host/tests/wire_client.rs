@@ -9096,27 +9096,51 @@ fn the_staging_control_reads_the_pairs_that_have_been_measured() {
          called a park by the denominator alone",
     );
 
-    // ── ⚠ MODEL, not a measurement: the macOS reading, whose elapsed was never printed ──
+    // ── ⛔⛔⛔⛔⛔ MEASURED, macOS CI at `131aa05` (2026-08-31) — AND IT REFUTES THE MODEL THAT
+    //    STOOD HERE, exactly the way that model asked to be refuted ──
     //
-    // macOS CI scored 14 looks and 24 at `83aedd0`, a ratio of 1.71. Those two counts are the
-    // measurement and all of it. The elapsed pair below is the one a CONSTANT look rate implies
-    // for them — 1.05 s and 1.80 s, i.e. a landing latency of 800 ms — and the reason it is worth
-    // asserting is that the staged arm above is the same shape MEASURED end to end on a machine
-    // this repository can run. ⛔ If the next macOS verdict contradicts this, the model is wrong
-    // and the elapsed times now printed on both the summary and the failure are what will say so.
+    // What stood here was a DERIVATION. macOS had scored 14 looks and 24 at `83aedd0` and its
+    // elapsed times were never printed, so this arm asserted the pair a **constant look rate**
+    // implies for those counts — and said, in as many words, *"if the next macOS verdict
+    // contradicts this, the model is wrong and the elapsed times now printed are what will say
+    // so."* The next macOS verdict is below, and it contradicts the PREMISE rather than the
+    // arithmetic:
+    //
+    // `The 1s arm waited 1.152056833s for 21 look(s) and the 250ms arm 278.872541ms for 11.`
+    //
+    // ⚠⚠⚠⚠⚠ **THE RATE MOVED 2.16x BETWEEN THE TWO ARMS** — 25.4 ms per look on the short arm,
+    // 54.9 ms on the long one, inside one test and about 1.4 seconds apart. A constant rate is
+    // therefore not a property of this runner, and no derivation resting on one can be asserted
+    // here as though it were a reading. So the model is GONE rather than kept beside the fact that
+    // beat it; what survives of `83aedd0` is its two COUNTS, which were measured, and they are
+    // still driven by the counterfactual predicate above.
+    //
+    // ⚠⚠⚠ **AND THE REFUSAL IS CORRECT.** Nothing about park can be read off a pair whose two
+    // members were bought at different prices — that is what this control is for, and `Unbought`
+    // is it working rather than failing. What it costs is a RED on an ordinary macOS run, and that
+    // cost is the debt: it is registered rather than absorbed by widening `OWED_SHARE`, because a
+    // threshold moved on one reading is a threshold nobody can defend on the next one.
     assert_eq!(
         staging_control(
-            14,
-            Duration::from_millis(1_050),
-            24,
-            Duration::from_millis(1_800),
+            11,
+            Duration::from_nanos(278_872_541),
+            21,
+            Duration::from_nanos(1_152_056_833),
             APART,
         ),
-        Staged::Bought {
+        Staged::Unbought {
             extra: 10,
-            owed: 10
+            owed: 34
         },
-        "the macOS counts, against the elapsed a steady rate implies for them",
+        "⛔ the macOS pair whose look price DOUBLED between the arms: the extra 873 ms owes 34 \
+         looks at the short arm's own rate and bought 10",
+    );
+    // ⚠⚠ AND THE SUPERSEDED RULE REFUSES IT TOO (21 < 11 * 2), which is the half of this reading
+    // that must not be lost: this pair is not a case that tells the two arithmetics apart, so
+    // nobody can read today's red as the replacement having made things worse.
+    assert!(
+        !staging_control_by_window(11, 21),
+        "⚠ the pair that turned the new arithmetic over turns the old one over as well",
     );
 
     // ── ⛔ MEASURED, mutation A: the look counter stopped growing (`store(1)`) ──
