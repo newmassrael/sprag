@@ -406,12 +406,24 @@ impl Cost {
 pub struct Deliveries {
     /// How many prompts this run has put into its pane and had accepted.
     pub made: u32,
-    /// How many of [`made`](Self::made) were confirmed on the AGENT'S OWN ACCOUNT because the
-    /// peer's composer folded the paste away — [`Witnessed::Account`](crate::deliver::Witnessed).
+    /// How many of [`made`](Self::made) were accepted although the peer's composer FOLDED THE PASTE
+    /// AWAY — [`Witnessed::Account`](crate::deliver::Witnessed) and
+    /// [`Witnessed::LetGo`](crate::deliver::Witnessed).
     ///
-    /// ⚠ **THE ONE ROAD WHERE LOOKING AT THE PANE ANSWERS NOTHING.** Every other road leaves the
-    /// text somewhere a person can find it; this one leaves `[Pasted text +N lines]` where they
-    /// were told to expect their prompt.
+    /// ⚠ **THE ROADS WHERE LOOKING AT THE PANE ANSWERS NOTHING.** Every other road leaves the text
+    /// somewhere a person can find it; these leave `[Pasted text +N lines]` where they were told to
+    /// expect their prompt.
+    ///
+    /// ⚠⚠ **TWO WITNESSES, ONE NUMBER, AND THAT IS THIS STRUCT'S OWN RULE APPLIED** — register item
+    /// 762. `Account` is the agent naming the question; `LetGo` is the composer emptying without
+    /// anybody naming it. They carry the SAME remedy — *do not go to that pane* — and
+    /// [`unsubmitted`](Self::unsubmitted)'s doc is explicit that a split is earned by remedies
+    /// differing, not by evidence differing.
+    ///
+    /// ⚠ The residue, stated rather than hidden: **a run cannot tell here how many of its folds the
+    /// agent actually named.** A run whose folds are all `LetGo` has hooks reporting nothing, which
+    /// is a real diagnosis and a real question — and it earns a fifth field the day somebody
+    /// measures it, on this struct's rule that a number the product does not read is folklore.
     pub folded: u32,
     /// How many prompts this run typed onto a pane, saw painted there, and **never got asked** —
     /// [`crate::deliver::Delivered::Unsubmitted`], the composer holding a question nobody

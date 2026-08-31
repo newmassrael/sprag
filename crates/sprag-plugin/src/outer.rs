@@ -6797,11 +6797,30 @@ impl OuterLoop {
             return;
         };
         self.deliveries.made = self.deliveries.made.saturating_add(1);
-        // ⚠⚠⚠ THE ONE ROAD WHERE THE PANE CANNOT ANSWER. `Account` means the agent named the
-        // question and its screen never carried the text — see `Witnessed::Account`. Every other
-        // road leaves the prompt somewhere a person can find it, so every other road is a delivery
-        // this count deliberately does not flag.
-        if evidence == crate::deliver::Witnessed::Account {
+        // ⚠⚠⚠ THE ROADS WHERE THE PANE CANNOT ANSWER. `Account` means the agent named the question
+        // and its screen never carried the text — see `Witnessed::Account`. Every other road leaves
+        // the prompt somewhere a person can find it, so every other road is a delivery this count
+        // deliberately does not flag.
+        //
+        // ⚠⚠⚠⚠ **`LetGo` IS THE SECOND ONE, AND IT IS COUNTED HERE BY THIS STRUCT'S OWN RULE** —
+        // register item 762. `Deliveries` splits a number when two roads carry two REMEDIES
+        // (`unsubmitted`'s doc: *"counting them as one number would be counting two remedies as
+        // one"*), and these two carry ONE: the paste was folded away, a question was asked anyway,
+        // and **do not go and look at that pane** is the answer either way. What differs is which
+        // witness settled it, and that is not a remedy.
+        //
+        // ⚠⚠ **AND A FIFTH FIELD WAS DELIBERATELY NOT ADDED**, on the same struct's other rule: a
+        // road earns its own number *with its own measurement*, and this one has never run in
+        // production. The residue, stated: **an account-witnessed fold and a composer-witnessed one
+        // are not told apart here**, and the question that would earn the split is a real one — a
+        // run whose folds are ALL `LetGo` has hooks that report nothing, which is register item
+        // 709's territory. It earns the field the day somebody measures it.
+        //
+        // ⚠⚠⚠ THE CLASSIFICATION IS THE TYPE'S, NOT THIS LINE'S — `Witnessed::folded_away`, an
+        // exhaustive match a seventh witness cannot be added past. It read `== Account` here, where
+        // a new road would have joined the majority in SILENCE and been published as *this run's
+        // prompts are visible*.
+        if evidence.folded_away() {
             self.deliveries.folded = self.deliveries.folded.saturating_add(1);
         }
     }

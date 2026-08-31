@@ -230,7 +230,16 @@ impl Prompted {
             // ⚠ `Delivered::Reported` answers the same and for a stronger reason: the prompt was
             // never on that screen at all — a composer folded it away and the AGENT is what said it
             // arrived — so there is no echo of this run's own question for a capture to open with.
-            Self::Delivered(Delivered::Confirmed { .. } | Delivered::Reported { .. }) => {
+            // ⚠⚠ `Delivered::Released` joins them on the SCREEN half of that argument, which is the
+            // half this answer is about — register item 762. Its road is the same folded paste, so
+            // the text was never painted and there is no echo of it for a capture to open with;
+            // what it knows less of than `Reported` is WHICH question was asked, and this is not a
+            // question about that.
+            Self::Delivered(
+                Delivered::Confirmed { .. }
+                | Delivered::Reported { .. }
+                | Delivered::Released { .. },
+            ) => {
                 return false;
             }
             Self::Delivered(Delivered::OnScreenOnly { echo, .. }) | Self::Written { echo, .. } => {
@@ -243,6 +252,9 @@ impl Prompted {
                 | Delivered::Unreported { .. }
                 | Delivered::Unwitnessed { .. },
             ) => {
+                // ⚠ `Released` is NOT among them and the compiler is what said so: it is answered
+                // by the first arm, where a folded paste has no echo of its own to open a capture
+                // with (register item 762). Listing it here as well was unreachable.
                 // None of the five reaches a capture: the step returns before one is taken. ⚠ The
                 // last three cannot arise here at all while this adapter asks nothing of its submit
                 // (see `deliver_prompt`), and they are ANSWERED rather than left to a panic,
@@ -265,6 +277,12 @@ impl Prompted {
             // ⚠ And `Reported` for the same reason read one step further: the peer NAMED the
             // question it was asked, which is the evidence every caveat below is about the absence
             // of. A caution attached to that would be a caution about the strongest answer there is.
+            // ⛔ AND `Released` DOES NOT JOIN THEM HERE, which is the difference between this
+            // answer and its neighbour above — register item 762. Every caveat below is about the
+            // absence of evidence that the model was ASKED THIS QUESTION, and that is precisely
+            // what a released composer cannot say: the box is empty, so something was submitted,
+            // and nothing here names it. It therefore keeps the caveat rather than being waved
+            // through with the two answers that DO name the text.
             Self::Delivered(Delivered::Confirmed { .. } | Delivered::Reported { .. }) => {
                 return None;
             }
@@ -276,6 +294,7 @@ impl Prompted {
                 | Delivered::Stopped { .. }
                 | Delivered::Unsubmitted { .. }
                 | Delivered::Unreported { .. }
+                | Delivered::Released { .. }
                 | Delivered::Unwitnessed { .. },
             ) => {
                 return None;
@@ -653,10 +672,15 @@ impl Agent {
         match prompted {
             // The prompt is in the pane, by whichever route, and something was submitted. What each
             // route established is carried into the note below.
+            // ⚠⚠ `Released` IS ONE OF THEM — register item 762. The composer let go of the folded
+            // prompt, so something WAS submitted, which is the whole of what this arm asks; that
+            // the agent never named it is a weaker account and not a missing delivery, and the
+            // caveat one function up is where that weakness is stated to a reader.
             Prompted::Written { .. }
             | Prompted::Delivered(
                 Delivered::Confirmed { .. }
                 | Delivered::Reported { .. }
+                | Delivered::Released { .. }
                 | Delivered::OnScreenOnly { .. },
             ) => {}
             // Nothing was submitted (`deliver` withholds the press when the text is demonstrably

@@ -641,6 +641,40 @@ pub enum Delivered {
     /// that reports no question can never satisfy the contract that produces this, so its deliveries
     /// stay on the screen predicate rather than being pressed blind.
     Reported { attempts: u32, written: Written },
+    /// ⛔⛔⛔⛔⛔ **THE COMPOSER LET GO OF THE FOLDED PROMPT, AND THE AGENT NEVER NAMED IT** —
+    /// register item 762, and the answer that used to be [`Unreported`](Self::Unreported).
+    ///
+    /// # ⛔⛔⛔⛔ Why the two had to be separated, measured
+    ///
+    /// The fold road had ONE channel: the agent's own account ([`SubmittedWhen::Took`]). That
+    /// contract EXPIRES — when the account does not come there is nothing to tell *not yet* from
+    /// *never* — so its silence was reported as *the peer would not take the question*, which the
+    /// driver answers with a session replacement. Register item 669 measured the cost of a single
+    /// expiring channel (four of five live runs held prompts that were never asked and could not
+    /// say so); register item 762 watched `run110` die of it at 187 iterations, with the pane it
+    /// had just been driving reading `working seq=26 said=12`.
+    ///
+    /// **Those are two situations with opposite remedies.** A prompt still sitting in the composer
+    /// is a wedged session and replacing it is right (register item 446). A prompt that has LEFT
+    /// the composer was asked — the peer is working on it — and replacing that session throws away
+    /// a turn already paid for. [`SubmittedWhen::Released`] CONVERGES where `Took` expires, so
+    /// arming it beside the account is what makes the two distinguishable at all.
+    ///
+    /// # ⚠⚠⚠ What it does NOT claim, and the care is the point
+    ///
+    /// * **Not which question was asked.** `Reported` compares the agent's account against this
+    ///   delivery's text; this knows only that the box is empty. A composer that was already dirty
+    ///   submits this text appended to somebody else's, and this answer cannot tell — the residue
+    ///   [`SubmittedWhen::Released`]'s own doc records, not a new one.
+    /// * **Not that the text is on the screen.** It never was: this road is
+    ///   the road where the screen MOVED WITHOUT THE TEXT, a folded paste, so
+    ///   [`is_on_screen`](Self::is_on_screen) stays false.
+    ///
+    /// ⚠ Unreachable where nothing can read a composer — a host with no supervisor, a pane no
+    /// manifest claims, a manifest authoring no `Holding` rule, or a daemon too old to send the
+    /// key. All of those keep the old answer, which is [`Unreported`](Self::Unreported): an absence
+    /// of the instrument is not evidence that anything was asked.
+    Released { attempts: u32, written: Written },
     /// Every attempt was written and none of them ever appeared. The bytes went to the pty; the
     /// program behind it did not show them.
     ///
@@ -807,6 +841,7 @@ impl Delivered {
             | Self::OnScreenOnly { written, .. }
             | Self::Unconfirmed { written, .. }
             | Self::Unsubmitted { written, .. }
+            | Self::Released { written, .. }
             | Self::Unreported { written, .. }
             | Self::Stopped { written, .. }
             | Self::Unwitnessed { written, .. } => written,
@@ -866,6 +901,16 @@ pub enum Witnessed {
     /// the composer folded the paste away, so a supervisor sent there finds `[Pasted text +N lines]`
     /// where they were told to expect a prompt.
     Account,
+    /// ⛔⛔⛔⛔⛔ **THE COMPOSER LET GO OF IT AND NOBODY NAMED IT** — [`Delivered::Released`],
+    /// register item 762.
+    ///
+    /// Weaker than [`Account`](Self::Account) by exactly one thing and the gap is worth a word: the
+    /// account names the TEXT, and this names only that the box the prompt was folded into is empty
+    /// now. A question was asked; which one is the peer's to say and it has not said.
+    ///
+    /// ⚠ It is still EVIDENCE OF A DELIVERY, which is what separates it from the refusals below: a
+    /// prompt that left the composer is not a prompt a session replacement would rescue.
+    LetGo,
     /// Nothing was asked of the screen, because this peer paints nothing until its prompt is
     /// submitted — the caller's `shows_the_prompt` is false, so the bytes went in and the submit
     /// was pressed on trust.
@@ -895,6 +940,10 @@ impl Witnessed {
             Delivered::Confirmed { .. } => Some(Self::Painted),
             Delivered::OnScreenOnly { .. } => Some(Self::Echoed),
             Delivered::Reported { .. } => Some(Self::Account),
+            // ⚠⚠ A DELIVERY, and that is the decision — register item 762. Its evidence is weaker
+            // than `Account` and it is evidence all the same: the prompt left the composer, so a
+            // walk has something true to publish and the run has no wedged session to replace.
+            Delivered::Released { .. } => Some(Self::LetGo),
             Delivered::Stopped { .. } => Some(Self::Unasked),
             Delivered::Unwitnessed { .. } => Some(Self::Unproven),
             // ⚠ `Unreported` joins them for the same reason, register item 762: a folded paste the
@@ -904,6 +953,38 @@ impl Witnessed {
             Delivered::Unconfirmed { .. }
             | Delivered::Unsubmitted { .. }
             | Delivered::Unreported { .. } => None,
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER THE PANE CAN ANSWER FOR THIS PROMPT AT ALL** — what
+    /// [`crate::plugin::Deliveries::folded`] counts, and register item 762's second road joining
+    /// the first.
+    ///
+    /// `true` says: the composer swallowed the paste, the prompt is on no screen, and **sending a
+    /// person to look at that pane is the wrong instruction**. That is the whole remedy `folded`
+    /// carries, and it is why the two roads share one number: `Account` is the agent naming the
+    /// question, [`LetGo`](Self::LetGo) is the composer emptying without anybody naming it, and a
+    /// reader acts identically on both.
+    ///
+    /// # ⚠⚠ EXHAUSTIVE, WITH NO `_` ARM, AND THAT IS THE POINT
+    ///
+    /// A seventh witness cannot be added without somebody deciding which side of this line it falls
+    /// on — the compiler asks. The classification used to live as a `==` against one variant at the
+    /// counter's own call site, where a new road would have joined the majority in silence: not
+    /// flagged, and therefore reported as *this run's prompts are visible*, which is the
+    /// reassuring answer and register item 453's shape.
+    #[must_use]
+    pub const fn folded_away(self) -> bool {
+        match self {
+            // The two roads through a composer that ate the paste. Nothing of the prompt is on
+            // that screen on either.
+            Self::Account | Self::LetGo => true,
+            // Every other road leaves the text somewhere a person can find it — painted by the
+            // program, echoed by the terminal — or leaves nothing established at all, and neither
+            // is a fold.
+            Self::Painted | Self::Echoed | Self::Unchecked | Self::Unasked | Self::Unproven => {
+                false
+            }
         }
     }
 
@@ -921,6 +1002,13 @@ impl Witnessed {
                 "the agent itself named this question as the one it received and the prompt is \
                  NOWHERE ON THAT SCREEN — its composer folded the paste away, so a person sent to \
                  look at the pane for it will find a fold and not the text"
+            }
+            Self::LetGo => {
+                "its composer folded the paste away and then LET GO of it, so the question was \
+                 asked — but the agent never named it, so which question is not known here. ⚠ Do \
+                 NOT replace this session: the prompt is not sitting in that box, and the peer has \
+                 it. What is worth knowing is why the agent's hooks reported no question, which is \
+                 the run's own journal and not the pane"
             }
             Self::Unchecked => {
                 "nothing was asked of the screen: this peer paints nothing before a submit, so the \
@@ -1175,7 +1263,11 @@ pub fn deliver(
                 // rather than a byte appended to the same unread pty read as the prompt. Sent for
                 // BOTH on-screen answers — see `Delivered::OnScreenOnly`.
                 if !spec.then_press.is_empty() {
-                    match submit(panes, run, pane, text, spec, &mut written)? {
+                    // ⚠ NO SECOND WITNESS ON THIS ROAD — register item 762's is the fold's alone.
+                    // The text is ON the screen here, so the caller's own contract is answerable by
+                    // construction; arming a composer read beside it would buy a channel nothing
+                    // needs and pay a supervisor read for every ordinary delivery there is.
+                    match submit(panes, run, pane, text, spec, &mut written, None)? {
                         Seen::No => {
                             return Ok(Delivered::Unsubmitted {
                                 attempts,
@@ -1192,7 +1284,12 @@ pub fn deliver(
                                 wanted: spec.submitted_when,
                             });
                         }
-                        Seen::Yes => {}
+                        // ⚠⚠ UNREACHABLE BY CONSTRUCTION, AND ANSWERED RATHER THAN IGNORED —
+                        // register item 762. `Seen::LetGo` is the second witness speaking, and this
+                        // road arms none (`also` is `None` four lines up). It is spelled out so
+                        // that a future caller which DOES arm one here has to decide what this road
+                        // means by it, rather than inheriting `Yes`'s answer by a wildcard.
+                        Seen::Yes | Seen::LetGo => {}
                     }
                 }
                 let written = Written::of(written);
@@ -1233,8 +1330,32 @@ pub fn deliver(
                 if !spec.then_press.is_empty()
                     && matches!(spec.submitted_when, SubmittedWhen::Took { .. }) =>
             {
-                return Ok(match submit(panes, run, pane, text, spec, &mut written)? {
+                // ⛔⛔⛔⛔⛔ **AND THE COMPOSER IS ARMED BESIDE THE ACCOUNT** — register item 762,
+                // and this line is what turns one channel into two on the ONE road that had only
+                // one. `Took` expires: when the account does not come there is nothing to tell
+                // *not yet* from *never*, so the answer is a timeout wearing the clothes of a fact.
+                // `Released` CONVERGES — a composer is holding or it is not, and both readings are
+                // stable — so the same wait now also learns *the prompt left the box*.
+                //
+                // ⚠⚠ THE SAME WINDOW, because it is the same wait: a second duration here would be
+                // a bound nobody authored, and the caller sized this one for its peer.
+                //
+                // ⚠ The account still WINS where both could speak (`Submission::landed`), because
+                // it names the TEXT and this names only that a question was asked.
+                let also = spec
+                    .submitted_when
+                    .within()
+                    .map(|within| SubmittedWhen::Released { within });
+                let landed = submit(panes, run, pane, text, spec, &mut written, also)?;
+                return Ok(match landed {
                     Seen::Yes => Delivered::Reported {
+                        attempts,
+                        written: Written::of(written),
+                    },
+                    // ⛔⛔⛔⛔⛔ **THE COMPOSER LET GO AND NOBODY NAMED IT** — register item 762's
+                    // second half. The prompt is no longer in that box, so a question WAS asked;
+                    // which one is not known, and this word is careful not to claim it.
+                    Seen::LetGo => Delivered::Released {
                         attempts,
                         written: Written::of(written),
                     },
@@ -1293,8 +1414,9 @@ fn submit(
     text: &str,
     spec: &Delivery,
     written: &mut u64,
+    also: Option<SubmittedWhen>,
 ) -> Result<Seen, PaneError> {
-    let witness = Submission::arm(panes, pane, spec.submitted_when, text);
+    let witness = Submission::arm(panes, pane, spec.submitted_when, also, text);
     *written += panes.inject(pane, &spec.then_press)?.bytes();
     Ok(witness.await_landing(panes, run, pane))
 }
@@ -1347,9 +1469,37 @@ pub fn has_painted(panes: &dyn PaneAccess, pane: PaneId) -> bool {
 /// What a bounded wait for a pane's own evidence saw — the submit's ([`Submission::await_landing`]).
 enum Seen {
     Yes,
+    /// ⛔⛔⛔⛔⛔ **THE SECOND WITNESS SETTLED IT: the composer let go of the prompt, and the agent
+    /// never named it** — register item 762, and only ever answered on the FOLD road.
+    ///
+    /// It is a separate word from [`Yes`](Self::Yes) because the two know different things. `Yes`
+    /// is the agent's own account and names the TEXT; this is a property of the pane and names
+    /// nothing — *a question was asked* without *which one*. Collapsing them would let the weaker
+    /// evidence be reported as the stronger, which is the whole disease register item 421 and its
+    /// neighbours keep paying for.
+    LetGo,
     No,
     /// The run ended under it — cancelled, or past its deadline.
     Stopped,
+}
+
+/// What ONE poll of a submit's witnesses saw — [`Submission::landed`]'s answer.
+///
+/// # ⚠⚠⚠ Why *never* is its own arm rather than an absent yes
+///
+/// A contract nothing can answer must end the wait AT ONCE rather than spend the window
+/// discovering it — `Released` armed against a pane that was not holding, `Took` against a host
+/// with no supervisor. With two witnesses that judgement stops being a property of one contract:
+/// the wait may only be abandoned when **every armed witness** can never speak, which is what
+/// `Never` means here and what a bare `Option<bool>` could not express.
+enum Poll {
+    /// One of them spoke, and this is which — [`Seen::Yes`] for the primary contract,
+    /// [`Seen::LetGo`] for the composer.
+    Landed(Seen),
+    /// Nobody has spoken yet, and at least one of them still could.
+    NotYet,
+    /// No armed witness can ever speak. Waiting buys nothing.
+    Never,
 }
 
 /// What a bounded wait for the delivered TEXT saw — [`Seen`]'s three answers plus the ONE
@@ -1491,6 +1641,27 @@ fn await_text(
 struct Submission {
     /// What the caller said would show them the submit landed.
     wanted: SubmittedWhen,
+    /// ⛔⛔⛔⛔⛔ **A SECOND WITNESS, ARMED FROM THE SAME OBSERVATION** — register item 762, and
+    /// [`None`] everywhere but the fold road.
+    ///
+    /// # ⛔⛔⛔⛔ What one witness cost
+    ///
+    /// A composer that FOLDS a paste leaves the delivery with the agent's own account and nothing
+    /// else ([`SubmittedWhen::Took`]), and that channel EXPIRES: when the account does not come
+    /// there is nothing to tell *not yet* from *never*, so the answer is a timeout wearing the
+    /// clothes of a fact. Register item 669 measured it as four of five live runs holding prompts
+    /// that were never asked, unable to say so, and register item 762 watched a run die of it —
+    /// 187 iterations in, with the pane it had been driving reading `working seq=26 said=12`.
+    ///
+    /// [`SubmittedWhen::Released`] is the contract that CONVERGES, because a composer is holding or
+    /// it is not and both readings are stable. Arming it beside the account gives the fold road two
+    /// channels where it had one, and the stronger one still wins — see [`landed`](Self::landed).
+    ///
+    /// ⚠⚠ **ARMED OUT OF THE SAME `pane_agent_state` READ, WHICH IS WHY IT IS A FIELD HERE AND NOT
+    /// A SECOND `Submission`.** Two arms would take two observations, and a change landing between
+    /// them would date the pair to different moments — the drift this whole type exists to prevent,
+    /// written out one field down.
+    also: Option<SubmittedWhen>,
     /// The pane's collapsed screen as the submit went in — [`SubmittedWhen::Repaints`]' baseline.
     ///
     /// `None` both for a contract that never reads it and for a pane that could not be read, which
@@ -1524,31 +1695,57 @@ struct Submission {
 }
 
 impl Submission {
-    /// Read what this contract will be compared against — **called before the submit is injected**.
-    fn arm(panes: &dyn PaneAccess, pane: PaneId, wanted: SubmittedWhen, text: &str) -> Self {
+    /// Read what these contracts will be compared against — **called before the submit is
+    /// injected**.
+    ///
+    /// ⚠⚠ `also` is a SECOND witness armed from the same reading; see the field. Everything below
+    /// asks *does EITHER contract need this baseline*, because a baseline the second one needs and
+    /// the first does not is exactly the fold road.
+    fn arm(
+        panes: &dyn PaneAccess,
+        pane: PaneId,
+        wanted: SubmittedWhen,
+        also: Option<SubmittedWhen>,
+        text: &str,
+    ) -> Self {
+        /// Whether either armed contract is one of the kinds `needs` names.
+        fn either(
+            wanted: SubmittedWhen,
+            also: Option<SubmittedWhen>,
+            needs: fn(SubmittedWhen) -> bool,
+        ) -> bool {
+            needs(wanted) || also.is_some_and(needs)
+        }
         // Nothing is asked, so nothing is read. A baseline taken for an unchecked submit would be
         // a pane read every delivery pays for and nothing consults.
-        let screen = match wanted {
-            SubmittedWhen::Repaints { .. } => panes.pane_collapsed(pane),
-            SubmittedWhen::Unchecked
-            | SubmittedWhen::Stirs { .. }
-            | SubmittedWhen::Released { .. }
-            | SubmittedWhen::Took { .. } => None,
-        };
+        let screen = either(wanted, also, |kind| {
+            matches!(kind, SubmittedWhen::Repaints { .. })
+        })
+        .then(|| panes.pane_collapsed(pane))
+        .flatten();
         // ⚠⚠ ONE READING for every kind that asks about the agent, because `Released` draws TWO
         // baselines out of it — who the peer is, and whether its composer was holding. Two reads
         // could straddle a change and arm the pair against different moments, which is the drift
-        // this whole type exists to prevent.
-        let seen = match wanted {
-            SubmittedWhen::Stirs { .. }
-            | SubmittedWhen::Released { .. }
-            | SubmittedWhen::Took { .. } => panes
+        // this whole type exists to prevent. ⚠⚠⚠ AND IT IS ONE READING ACROSS BOTH WITNESSES too
+        // (register item 762): the fold road arms `Took` and `Released` together, and a second
+        // `pane_agent_state` for the second contract would date them to different moments.
+        let seen = either(wanted, also, |kind| {
+            matches!(
+                kind,
+                SubmittedWhen::Stirs { .. }
+                    | SubmittedWhen::Released { .. }
+                    | SubmittedWhen::Took { .. }
+            )
+        })
+        .then(|| {
+            panes
                 .supervision()
-                .and_then(|supervisor| supervisor.pane_agent_state(pane).seen()),
-            SubmittedWhen::Unchecked | SubmittedWhen::Repaints { .. } => None,
-        };
+                .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
+        })
+        .flatten();
         Self {
             wanted,
+            also,
             screen,
             // Only the contract that compares it keeps it, for `asked`'s reason below: a pane that
             // was NOT holding arms nothing, so the contract can never be satisfied and says so.
@@ -1558,27 +1755,79 @@ impl Submission {
             // every pane a supervisor drives. This contract therefore refused on exactly the
             // population it was built for. `AgentObservation::holding` is the same screen reading
             // in a slot the arbitration does not touch.
-            holding: matches!(wanted, SubmittedWhen::Released { .. })
-                .then(|| {
-                    seen.as_ref()
-                        .filter(|seen| seen.holding == Some(true))
-                        .and_then(|seen| seen.agent.clone())
-                })
-                .flatten(),
+            holding: either(wanted, also, |kind| {
+                matches!(kind, SubmittedWhen::Released { .. })
+            })
+            .then(|| {
+                seen.as_ref()
+                    .filter(|seen| seen.holding == Some(true))
+                    .and_then(|seen| seen.agent.clone())
+            })
+            .flatten(),
             agent: seen.and_then(|seen| seen.agent.map(|agent| (agent, seen.seq))),
             // Only the contract that compares it keeps it: a delivery that asks nothing of the
             // agent's account has no business holding a copy of its own prompt.
-            asked: matches!(wanted, SubmittedWhen::Took { .. }).then(|| text.to_owned()),
+            asked: either(wanted, also, |kind| {
+                matches!(kind, SubmittedWhen::Took { .. })
+            })
+            .then(|| text.to_owned()),
         }
     }
 
-    /// Whether the submit's evidence is here YET — `None` where it can never come.
+    /// ⛔⛔⛔⛔⛔ **WHAT ONE POLL OF EVERY ARMED WITNESS SAW** — register item 762, and the
+    /// combination rule is the whole of it.
+    ///
+    /// * **The primary contract is asked FIRST and wins**, because it is the stronger claim. On the
+    ///   fold road that is the agent's own account, which names the TEXT; the composer names only
+    ///   that a question was asked. Letting the weaker one answer where the stronger could have
+    ///   would report less than was known.
+    /// * **The wait is abandoned only when EVERY armed witness can never speak.** With one contract
+    ///   that judgement was the contract's own; with two it is not, and a `Never` taken off the
+    ///   primary alone would throw away the channel this item exists to add — a host with no
+    ///   supervisor refuses `Took` at once, and on the fold road the composer would never be asked.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The second half of that rule is UNREACHABLE TODAY, and saying so is the honest
+    /// report
+    ///
+    /// Mutating it away — `Never` off the primary alone — leaves every gate in this file GREEN.
+    /// Measured, not assumed. The reason is a COUPLING in [`arm`](Self::arm): both baselines hang
+    /// off one `pane_agent_state` read and both need the observation to NAME AN AGENT, so a
+    /// `Submission` that can never satisfy `Took` can never satisfy `Released` either.
+    /// `a_composer_baseline_is_never_armed_without_an_agent_baseline` pins that implication, which
+    /// is what makes the simpler code equivalent rather than merely untested.
+    ///
+    /// ⚠⚠ **IT IS KEPT ANYWAY, AND DELIBERATELY.** The coupling is a property of how the baselines
+    /// are read today, not of what these witnesses mean; the day a contract is armed off something
+    /// other than an agent's name, the primary-only rule silently stops waiting on a witness that
+    /// could still speak. A rule that is right for the reason it is written costs nothing here, and
+    /// the gate above is what will notice when its premise moves.
+    fn landed(&self, panes: &dyn PaneAccess, pane: PaneId) -> Poll {
+        let primary = self.judged(self.wanted, panes, pane);
+        if primary == Some(true) {
+            return Poll::Landed(Seen::Yes);
+        }
+        let second = self.also.map(|kind| self.judged(kind, panes, pane));
+        if second == Some(Some(true)) {
+            return Poll::Landed(Seen::LetGo);
+        }
+        // ⚠ `None` at either level is *this one can never speak*: the outer for a witness that was
+        // never armed, the inner for one that was and has nothing to compare against.
+        if primary.is_none() && !matches!(second, Some(Some(_))) {
+            return Poll::Never;
+        }
+        Poll::NotYet
+    }
+
+    /// Whether ONE contract's evidence is here YET — `None` where it can never come.
     ///
     /// Three answers for [`await_text`]'s reason one door up: *not yet* and *never* end the wait
     /// differently, and spending a whole grace on a question nothing can answer is a delay with no
     /// information in it.
-    fn landed(&self, panes: &dyn PaneAccess, pane: PaneId) -> Option<bool> {
-        match self.wanted {
+    ///
+    /// ⚠ It takes the kind as an ARGUMENT rather than reading `self.wanted`, because register item
+    /// 762 arms two of them and both are judged against the one set of baselines above.
+    fn judged(&self, wanted: SubmittedWhen, panes: &dyn PaneAccess, pane: PaneId) -> Option<bool> {
+        match wanted {
             // Unreachable: `await_landing` returns before asking. Answered rather than panicking,
             // because *nobody asked* is satisfied by anything at all.
             SubmittedWhen::Unchecked => Some(true),
@@ -1670,9 +1919,9 @@ impl Submission {
                 return Seen::Stopped;
             }
             match self.landed(panes, pane) {
-                Some(true) => return Seen::Yes,
-                None => return Seen::No,
-                Some(false) => {}
+                Poll::Landed(seen) => return seen,
+                Poll::Never => return Seen::No,
+                Poll::NotYet => {}
             }
             if start.elapsed() >= within {
                 return Seen::No;
@@ -2369,6 +2618,9 @@ mod tests {
             Reporting {
                 inner: self,
                 said: said.map(str::to_owned),
+                // ⚠ NOTHING CAN SAY, which is what every gate predating register item 762 means by
+                // saying nothing about a composer — and it keeps their answers exactly as measured.
+                composer: (None, None),
             }
         }
 
@@ -2468,6 +2720,17 @@ mod tests {
         /// What the agent says it was asked, or `None` for a peer with no hooks — which reports
         /// nothing, ever, and is the population the screen predicate stays for.
         said: Option<String>,
+        /// ⛔⛔⛔⛔⛔ **WHAT THIS PANE'S COMPOSER SAYS BEFORE AND AFTER THE SUBMIT** — register item
+        /// 762's second witness, `(before, after)`.
+        ///
+        /// `(None, None)` is a supervisor that cannot say, which is what every gate written before
+        /// that item stages and is why they keep their old answers: with no composer reading there
+        /// is no second channel, and the fold road is back to the account alone.
+        ///
+        /// ⚠⚠ The pair is separate from [`said`](Self::said) ON PURPOSE, because the whole claim is
+        /// that the two channels are independent: a peer whose hooks are silent can still have a
+        /// composer that empties, and that is the run this item was filed for.
+        composer: (Option<bool>, Option<bool>),
     }
 
     impl Reporting {
@@ -2532,7 +2795,14 @@ mod tests {
             let submitted = self.inner.submitted();
             crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
                 state: sprag_detect::AgentState::Working,
-                holding: None,
+                // ⚠ THE COMPOSER, BEFORE AND AFTER THE KEYSTROKE — register item 762. The state
+                // beside it stays `Working` on both, which is the product's shape: this pane's
+                // agent REPORTS, so a manifest rule never decides its state.
+                holding: if submitted {
+                    self.composer.1
+                } else {
+                    self.composer.0
+                },
                 agent: Some("claude".to_owned()),
                 authority: crate::access::Authority::Reported {
                     source: "hook:claude".to_owned(),
@@ -3017,6 +3287,147 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A COMPOSER BASELINE IS NEVER ARMED WITHOUT AN AGENT BASELINE** — register item
+    /// 762, and the predicate that explains why one half of [`Submission::landed`]'s rule cannot be
+    /// mutated red.
+    ///
+    /// # ⚠⚠⚠ What this is standing in for
+    ///
+    /// `landed` abandons a wait only when EVERY armed witness can never speak. That is the right
+    /// rule and its second half is unreachable today: mutating it to *abandon when the PRIMARY
+    /// cannot speak* leaves every gate green. The reason is here rather than in prose — both
+    /// baselines are drawn from ONE `pane_agent_state` reading and both require it to NAME AN
+    /// AGENT, so *`Took` can never speak* implies *`Released` can never speak*.
+    ///
+    /// **A gate for an implication, because that implication is what makes an untested branch
+    /// safe.** The day a contract is armed off something that is not an agent's name, this goes red
+    /// and the rule up there stops being decoration.
+    #[test]
+    fn a_composer_baseline_is_never_armed_without_an_agent_baseline() {
+        /// A supervisor whose pane is holding a paste and whose observation names NOBODY — the one
+        /// shape that could arm a composer baseline while leaving the agent one empty.
+        struct Nameless;
+
+        impl crate::access::PaneSupervision for Nameless {
+            fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
+                crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
+                    state: AgentState::Working,
+                    // ⚠ THE COMPOSER SAYS YES and the identity says nothing, which is the pair
+                    // this gate exists to hold apart.
+                    holding: Some(true),
+                    agent: None,
+                    authority: crate::access::Authority::Scraped { rule: None },
+                    seq: 0,
+                    asked_seq: 0,
+                    reports: 0,
+                    asking: None,
+                    asked: None,
+                    said: None,
+                    said_seq: 0,
+                    noticed: None,
+                    running: None,
+                    transcript: None,
+                    settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
+                }))
+            }
+        }
+
+        struct Watched(Recorder, Nameless);
+
+        impl PaneAccess for Watched {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                self.0.pane_ids()
+            }
+            fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+                self.0.pane_collapsed(id)
+            }
+            fn pane_rows(&self, id: PaneId) -> Option<Vec<PaneRow>> {
+                self.0.pane_rows(id)
+            }
+            fn pane_eof(&self, id: PaneId) -> Option<bool> {
+                self.0.pane_eof(id)
+            }
+            fn pane_full_text(&self, id: PaneId) -> Option<String> {
+                self.0.pane_full_text(id)
+            }
+            fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
+                self.0.inject(id, keys)
+            }
+            fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+                Some(&self.1)
+            }
+        }
+
+        let watched = Watched(Recorder::showing("ORTHOGONAL-762"), Nameless);
+        let armed = Submission::arm(
+            &watched,
+            PaneId(1),
+            SubmittedWhen::Took {
+                within: Duration::from_millis(1),
+            },
+            Some(SubmittedWhen::Released {
+                within: Duration::from_millis(1),
+            }),
+            "ORTHOGONAL-762",
+        );
+        assert!(
+            armed.agent.is_none(),
+            "the staging: this observation must name NOBODY, or the implication below is being \
+             checked on a pane that has an identity after all",
+        );
+        assert!(
+            armed.holding.is_none(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: an observation that names no agent must arm NO composer \
+             baseline, because a claim about *this peer's* composer needs to know which peer that \
+             is. It is also what makes `landed`'s untested half safe — the day this holds a value, \
+             `Never` taken off the primary contract alone starts abandoning waits the composer \
+             could have answered",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHICH WITNESSES MEAN *THE PANE CANNOT ANSWER FOR THIS PROMPT*** — register item
+    /// 762, and the gate that keeps [`Witnessed::folded_away`] from being a classification only one
+    /// call site knows.
+    ///
+    /// # ⚠⚠⚠ Why both directions are asserted, and by NAME
+    ///
+    /// [`crate::plugin::Deliveries::folded`] carries one remedy — *do not go and look at that pane*
+    /// — and it is read by a person deciding where to look. A witness wrongly IN it sends them
+    /// away from a prompt that is sitting on a screen; a witness wrongly OUT of it sends them to a
+    /// pane showing `[Pasted text +N lines]`. Both halves are the number being wrong, so both are
+    /// pinned, and each variant is named rather than counted — a test asserting *two of them* would
+    /// stay green when a road swapped sides.
+    ///
+    /// ⚠ The classification itself is exhaustive in the type, so a SEVENTH witness fails to
+    /// compile rather than failing here. What this adds is the decision for the six that exist.
+    #[test]
+    fn the_witnesses_that_mean_the_pane_cannot_answer_are_named() {
+        for witness in [Witnessed::Account, Witnessed::LetGo] {
+            assert!(
+                witness.folded_away(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 762: {witness:?} is a composer that ATE the paste — the \
+                 prompt is on no screen — so a person sent to that pane finds a placeholder. \
+                 `Deliveries::folded` is the number that says so, and leaving this road out of it \
+                 publishes the reassuring answer: *this run's prompts are visible*",
+            );
+        }
+        for witness in [
+            Witnessed::Painted,
+            Witnessed::Echoed,
+            Witnessed::Unchecked,
+            Witnessed::Unasked,
+            Witnessed::Unproven,
+        ] {
+            assert!(
+                !witness.folded_away(),
+                "⚠⚠⚠⚠ AND THE OTHER DIRECTION: {witness:?} did not go through a folded composer, \
+                 so counting it would tell a person NOT to look at a pane their prompt may well be \
+                 sitting on. A predicate that says yes to everything carries no remedy at all",
+            );
+        }
+    }
+
     /// ⚠⚠⚠⚠ **A PANE THAT WAS NOT HOLDING ANYTHING CANNOT SATISFY THIS, AND SAYS SO AT ONCE.**
     ///
     /// The baseline is what makes an ABSENCE into evidence. Without it, *the composer is not
@@ -3313,6 +3724,113 @@ mod tests {
              out of the injection loop, so the spare attempts are unreachable. Log: {:?}",
             unnamed.log(),
         );
+
+        // ── ⛔⛔⛔⛔⛔ AND THE SECOND CHANNEL, WHICH IS WHAT THAT DEATH WAS MISSING ─────────────
+        //
+        // Everything above this line has ONE witness: the agent's own account. That contract
+        // EXPIRES — when the account does not come there is nothing to tell *not yet* from *never*
+        // — so its silence was answered *the peer would not take the question*, which the driver
+        // pays for with a session. `SubmittedWhen::Released` CONVERGES instead, because a composer
+        // is holding or it is not; arming it beside the account is register item 762's repair, and
+        // these four arms are the four things the pair can say.
+        //
+        // ⚠⚠ THE FIXTURE'S ONLY CHANGE IS THE COMPOSER PAIR. Same folded screen, same silent peer,
+        // same spec — so what separates these answers from `lost` above is the second witness and
+        // nothing else.
+        let let_go = Reporting {
+            composer: (Some(true), Some(false)),
+            ..folded().reporting(None)
+        };
+        let asked = let_go.deliver_under(SENT, &asking_once());
+        assert!(
+            matches!(asked, Delivered::Released { attempts: 1, .. }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: this composer was holding the folded paste when the Enter \
+             went in and is empty afterwards, so THE QUESTION WAS ASKED — the peer has it. An \
+             `Unreported` here is the answer that killed `run110`: it reaches the driver as *the \
+             peer would not take the question*, which buys a session replacement for a session that \
+             is working. Got {asked:?}, log {:?}",
+            let_go.log(),
+        );
+        assert!(
+            !asked.is_on_screen(),
+            "⚠⚠ and it is still not on any screen — the paste was folded, which is the road we are \
+             on. A caller asking whether a person can go and read the prompt must still hear no: \
+             {asked:?}",
+        );
+
+        // ⚠⚠⚠⚠ THE STRONGER WITNESS WINS WHERE BOTH COULD SPEAK. The account names the TEXT and
+        // the composer names only that something was submitted, so a delivery that reported the
+        // weaker one where the stronger was available would publish less than it knew.
+        let both = Reporting {
+            composer: (Some(true), Some(false)),
+            ..folded().reporting(Some(SENT))
+        };
+        let named = both.deliver_under(SENT, &asking_once());
+        assert!(
+            matches!(named, Delivered::Reported { attempts: 1, .. }),
+            "⛔⛔⛔ REGISTER ITEM 762: the agent named this question AND the composer let go. The \
+             answer must be the account's, because it is the one that says WHICH question was \
+             asked. Got {named:?}",
+        );
+
+        // ⚠⚠⚠⚠⚠ AND A COMPOSER THAT IS STILL HOLDING IS STILL THE OLD REFUSAL. This is the arm
+        // that keeps the repair from being *call every fold a delivery*: the prompt is in that box,
+        // nobody was asked, and a session replacement is exactly right (register item 446).
+        let stuck = Reporting {
+            composer: (Some(true), Some(true)),
+            ..folded().reporting(None)
+        };
+        let held = stuck.deliver_under(SENT, &asking_once());
+        assert!(
+            matches!(held, Delivered::Unreported { attempts: 1, .. }),
+            "⛔⛔⛔⛔ REGISTER ITEM 762: the Enter went out and the composer is STILL holding the \
+             paste, so nothing was asked. A `Released` here means the second witness stopped \
+             reading the composer and started answering yes on sight. Got {held:?}",
+        );
+
+        // ⛔⛔⛔⛔⛔ AND THE ABSENCE THAT ARRIVES *AFTER* THE KEYSTROKE IS NOT *IT LET GO*. Armed,
+        // then blind — a daemon that went away, a manifest reload, a pane whose agent changed under
+        // the submit. The prompt may be sitting in that box untouched and the only thing that
+        // changed is that nobody can look.
+        //
+        // ⚠⚠ IT IS THE ARM A DEAD CONTROL TAUGHT: a supervisor blind from the START never arms the
+        // baseline, so it is refused before the judging comparison is ever reached and a mutation
+        // there stays green. Measured, on this file, one round earlier.
+        let went_away = Reporting {
+            composer: (Some(true), None),
+            ..folded().reporting(None)
+        };
+        let unknown = went_away.deliver_under(SENT, &asking_once());
+        assert!(
+            matches!(unknown, Delivered::Unreported { attempts: 1, .. }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the composer could be read when the Enter went in and not \
+             afterwards, so nothing is known about where that prompt is. A `Released` here settles \
+             a delivery on the disappearance of the instrument. Got {unknown:?}",
+        );
+
+        // ⚠⚠⚠⚠⚠ AND A COMPOSER THAT WAS EMPTY WHEN THE ENTER WENT IN CANNOT SATISFY IT EITHER,
+        // however empty it is afterwards. *It is not holding now* was true before the keystroke, so
+        // it is not evidence about the keystroke — the rule `SubmittedWhen::Released`'s baseline
+        // exists for, met on the road that arms it beside another contract.
+        //
+        // ⚠⚠ IT IS A DIFFERENT ARM FROM THE ONE ABOVE and both are needed: that one goes blind
+        // AFTER arming (the judging comparison sees an absence), this one never arms (the baseline
+        // is absent). They are read by different code.
+        let never_held = Reporting {
+            composer: (Some(false), Some(false)),
+            ..folded().reporting(None)
+        };
+        let vacuous = never_held.deliver_under(SENT, &asking_once());
+        assert!(
+            matches!(vacuous, Delivered::Unreported { attempts: 1, .. }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: this composer was empty BEFORE the Enter, so *it is empty \
+             now* says nothing about the submit — a `Released` here would be a yes for every \
+             delivery ever made down this road. Got {vacuous:?}",
+        );
+
+        // ⚠⚠ AND WITH NO COMPOSER READING AT ALL, THE ROAD IS EXACTLY AS IT WAS — which is what
+        // `lost` above already asserts, and is why every gate written before this item keeps its
+        // answer: an absence of the instrument is not a second channel.
 
         // ⚠⚠⚠ THE CONTROL THAT SAYS WHAT THE NEW ARM KEYS ON: a screen that never MOVED at all. The
         // bytes are unaccounted for — nothing took them, nothing painted them — so this is the
