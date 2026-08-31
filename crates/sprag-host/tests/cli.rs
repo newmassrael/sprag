@@ -13550,6 +13550,126 @@ fn an_order_only_the_loop_reads_is_refused_at_the_command_a_person_types() {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **`resume-run` SAYS WHAT IT ACTUALLY LET GO, AND A RUN NOBODY WAS HOLDING IS TOLD
+/// APART** — register item 694, at the surface a person types.
+///
+/// # What was printed, and what was true
+///
+/// `resume-run` printed *"run N let go; it takes a fresh turn at its next pass"* for every run it
+/// reached, because the sentence was chosen from the DIRECTION the caller asked for rather than
+/// from anything the daemon found. Measured 2026-08-25 in a sibling repository, twice: a run
+/// standing down and a run waiting on a silent peer — neither of them ever held — were each told
+/// they had been let go, and neither moved a step in the twenty-three minutes that followed.
+///
+/// **The product was right and only the sentence was false.** `resume` is a transition of
+/// `awaiting_human` and three OTHER doors lead into that state, which
+/// `sprag_plugin`'s own `a_person_can_hold_the_loop_and_send_it_on_and_only_their_own_hold_is_undone`
+/// drives and asserts the loop stays put through. The cost is recorded with a name on it: the
+/// person watching believed the `rc=0` and reported a lifted stand-down to their own user before
+/// correcting themselves.
+///
+/// ⚠⚠⚠ **THE GATE IS AT THE CLI ON PURPOSE**, its neighbour above's reason exactly. The level
+/// crosses the wire now, and *a fact that reaches the wire and dies at the mouth* is this
+/// repository's most repeated defect — so what is asserted is the text a person reads.
+///
+/// ⚠⚠ **AND THE FOUR SENTENCES MUST DIFFER FROM ONE ANOTHER.** Two of the four orders moved the
+/// level and two did not; a build that collapses either pair is back to printing a remedy for a
+/// state the run was never in, and that arm is what a re-wording alone cannot pass.
+///
+/// ⚠ The run parks in its readiness barrier and never types: this gate is about what the LEVEL
+/// answers, which the registry knows whatever the document is doing with the order.
+#[test]
+fn a_resume_says_what_it_let_go_and_a_run_nobody_held_is_told_apart() {
+    let (_guard, sock, pane) = daemon_with_one_pane("holds");
+    let pane = pane.to_string();
+
+    let started = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "ai_loop",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--north-star",
+            "SPRAG-HOLD-SENTENCE",
+            "--milestone",
+            "be held and let go",
+            "--reference",
+            "register item 694",
+            "--max-turns",
+            "1000000",
+            // ⚠ The three an `ai_loop` form requires, and the marker is one this pane never prints
+            // — the barrier is where this run sits for the whole gate, which is what keeps it in
+            // the directory to be ordered.
+            "--agent",
+            "claude",
+            "--match",
+            "shows",
+            "--marker",
+            "SPRAG-HOLD-SENTENCE-READY",
+        ],
+    );
+    assert!(started.ok, "{}", started.stderr);
+
+    /// What a person types, and the word that must come back — in the order that makes the first
+    /// one the CONTROL rather than an afterthought.
+    ///
+    /// ⚠⚠ THE CONTROL IS FIRST BECAUSE IT IS THE SHIPPED DEFECT ITSELF: a `resume-run` at a run
+    /// nobody has ever spoken to. Run it after a hold-and-release and it is still the right answer,
+    /// but it is no longer the case that was measured.
+    const SAID: [(&str, &str); 4] = [
+        ("resume-run", "nothing to let go"),
+        ("hold-run", "asked to hold"),
+        ("hold-run", "already being held"),
+        ("resume-run", "let go; it takes a fresh turn"),
+    ];
+
+    let mut printed: Vec<String> = Vec::new();
+    for (verb, wanted) in SAID {
+        let said = sprag(&sock, &[verb, "0", "-t", "work"]);
+        assert!(
+            said.ok,
+            "⚠⚠⚠⚠ THE FIXTURE, NOT THE SUBJECT: `sprag {verb} 0` was refused, so this run had \
+             already left the directory and nothing below is about the sentence: {} / {}",
+            said.stdout, said.stderr,
+        );
+        assert!(
+            said.stdout.contains(wanted),
+            "⛔⛔⛔⛔⛔ ITEM 694: `sprag {verb} 0`, given at this point in the sequence, must say \
+             {wanted:?}. The order is what makes each answer what it is — the level it FOUND, not \
+             the level it was asked for — and a build that reads the caller's own request back to \
+             them is the defect this item was filed on. Got: {}",
+            said.stdout,
+        );
+        printed.push(said.stdout);
+    }
+
+    // ⚠⚠⚠⚠ THE ARM A RE-WORDING CANNOT PASS. Each pair of orders above left the level in a
+    // different place, and the two that changed nothing are the two a person most needs told from
+    // the two that did.
+    for (first, second) in [(0, 3), (1, 2), (0, 1), (2, 3)] {
+        assert_ne!(
+            printed[first], printed[second],
+            "⛔⛔⛔⛔ ITEM 694: `sprag {} …` and `sprag {} …` printed the SAME sentence over two \
+             different worlds, which is the whole defect — one of them is a promise about a run \
+             that is exactly where it was",
+            SAID[first].0, SAID[second].0,
+        );
+    }
+
+    // ⚠⚠⚠ AND THE FALSE REMEDY IN PARTICULAR. *It takes a fresh turn* is the half a person acts
+    // on, and printing it over a run nobody held is what sent one away believing a stand-down had
+    // been lifted. Named separately from the arms above so the failure says WHICH sentence leaked.
+    assert!(
+        !printed[0].contains("takes a fresh turn"),
+        "⛔⛔⛔⛔⛔ ITEM 694: a `resume-run` over a run nobody was holding still promised it would \
+         take a fresh turn: {}",
+        printed[0],
+    );
+}
+
 /// ⚠⚠ **A RUNNING LOOP CAN BE STOPPED, AND STOPPING ONE THAT IS NOT THERE IS A DIFFERENT ANSWER.**
 ///
 /// The cancel flag is polled by every wait inside the driver, so a cancel lands BETWEEN steps

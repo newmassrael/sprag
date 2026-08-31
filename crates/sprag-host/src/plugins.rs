@@ -1700,9 +1700,14 @@ impl PluginsExternal {
         // `crate::runs::Orders::deliver`, register item 664. The event says *a person spoke*, not
         // *the level moved*, and suppressing it would need a reader of the previous level, which
         // was never this surface's fact to hold.
+        // ⚠⚠⚠⚠⚠ AND IT ANSWERS WHAT THE ORDER FOUND — register item 694. This door returned
+        // `Null`, so the one mouth above it had nothing to compose from and printed *"let go"* over
+        // a run nobody was holding. The level before the order is the registry's fact and this is
+        // the seam it crosses; the WORDS are `hold_sentence`'s, so a second mouth cannot invent its
+        // own arithmetic over the same four arms.
         lock(&self.runs)
             .hold(RunId(id), held)
-            .map(|()| IntrospectValue::Null)
+            .map(|holding| IntrospectValue::Json(json!(holding.wire_str())))
             .map_err(|why| refused(why.describe(RunId(id))))
     }
 
@@ -5612,6 +5617,73 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
                  {CUT_SHORT}"
             )
         }
+    }
+}
+
+/// **WHAT A PERSON IS TOLD THEIR HOLD OR RESUME DID** — register item 694, and
+/// [`stand_down_sentence`]'s rule at the one order that is a level.
+///
+/// # ⛔⛔⛔⛔⛔ The sentence that was true of half the runs it was printed for
+///
+/// `resume-run` printed *"run N let go; it takes a fresh turn at its next pass"* for every run it
+/// reached, and [`crate::runs::Holding`]'s doc records the two live runs that were told it while
+/// nobody was holding them. The promise is a REMEDY — *it takes a fresh turn* — and a person given
+/// a remedy for a state their run was never in goes away believing the thing they came to fix is
+/// fixed. That is what happened, and it was reported onward before being caught.
+///
+/// # ⚠⚠⚠⚠⚠ Why the composing lives here and not at the mouth
+///
+/// [`stand_down_sentence`]'s argument verbatim: publishing the fact as a bare value would hand
+/// every mouth the job of doing this arithmetic, and R431's rule says what happens then — the
+/// broken state and the healthy state render identically and nobody can tell. There is one mouth
+/// today (`sprag hold-run` / `sprag resume-run`) and the second one is the reason this is a
+/// function rather than four `format!`s inside it.
+///
+/// ⚠⚠⚠ **THE PROMISE ITSELF IS STILL NOT THIS CRATE'S WORD.** The two arms that leave a run held
+/// carry [`sprag_plugin::HOLD_TAKES_EFFECT`], because what parking MEANS is the loop document's
+/// fact and register item 522 is the round that moved it there. What this function owns is which of
+/// four things happened — never what a held run then does.
+///
+/// ⚠⚠ **NO ARM CLAIMS THE RUN HAS ACTED.** A hold lands at the run's next pass, so *asked to hold*
+/// is as far as any of these go; the level is the only thing that has certainly moved by the time
+/// this is printed.
+///
+/// ⚠ It is exhaustive over [`crate::runs::Holding`], so a fifth arm gets a sentence on the day it
+/// exists rather than inheriting whichever one was written last.
+#[must_use]
+pub fn hold_sentence(id: RunId, holding: crate::runs::Holding) -> String {
+    let id = id.0;
+    match holding {
+        crate::runs::Holding::Took => format!(
+            "run {id} asked to hold; {} — `sprag resume-run {id}` sends it on",
+            sprag_plugin::HOLD_TAKES_EFFECT,
+        ),
+        // ⚠⚠ A REPEATED ORDER IS STILL AN EVENT — register item 664, which is why the order was
+        // delivered and announced rather than swallowed. What is new is that the person is told
+        // their second word changed nothing, so they do not go looking for what it did.
+        crate::runs::Holding::Already => format!(
+            "run {id} was already being held, so this changed nothing; {} — `sprag resume-run \
+             {id}` sends it on",
+            sprag_plugin::HOLD_TAKES_EFFECT,
+        ),
+        crate::runs::Holding::LetGo => {
+            format!("run {id} let go; it takes a fresh turn at its next pass")
+        }
+        // ⚠⚠⚠ IT NAMES THE OTHER DOORS RATHER THAN STOPPING AT *nothing happened*. A person types
+        // `resume-run` because a run is sitting still, and `sprag_plugin`'s own gate is built on
+        // there being three other ways into the state they are looking at — so the half they act on
+        // is that the stillness has another cause and this verb reaches none of them.
+        //
+        // ⚠⚠ AND IT SENDS THEM NOWHERE IT HAS NOT MEASURED. Register item 594's own defect was a
+        // promise about ANOTHER command — *`sprag runs` says when it has*, over a surface that
+        // published nothing of the kind — so this names the causes and stops there rather than
+        // vouching for what a second mouth would show.
+        crate::runs::Holding::NothingHeld => format!(
+            "nothing to let go — nobody was holding run {id}, so it is exactly where it was. A run \
+             sitting still is being kept there by something else: a person typing in its pane, a \
+             peer that has gone quiet, or a screen it is waiting on — and this verb reaches none \
+             of them.",
+        ),
     }
 }
 

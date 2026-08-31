@@ -264,6 +264,100 @@ impl Unordered {
     }
 }
 
+/// **WHAT A HOLD ORDER FOUND, AND WHAT IT LEFT** — register item 694, and the fact `resume-run`
+/// answered about without ever asking for.
+///
+/// # ⛔⛔⛔⛔⛔ One sentence was printed over two different worlds
+///
+/// `resume-run` printed *"run N let go; it takes a fresh turn at its next pass"* unconditionally,
+/// and [`RunOrder::Hold`] is the one order that is a LEVEL rather than a latch — so *the order was
+/// delivered* and *the order changed something* are different facts about it, and that sentence
+/// claimed the second while the door could only answer the first.
+///
+/// Measured 2026-08-25 in a sibling repository, twice: two runs nobody was holding — one standing
+/// down, one waiting on a silent peer — were each told they had been let go, and neither moved a
+/// step in the twenty-three minutes after. **The product was right and only the sentence was
+/// false**: `resume` is a transition of `awaiting_human`, three OTHER doors lead into that state,
+/// and `sprag_plugin`'s own gate drives one of them and asserts the loop stays put. The cost is
+/// recorded with a name on it — the person watching believed the `rc=0` and reported to their own
+/// user that a stand-down had been lifted, then corrected themselves.
+///
+/// # ⚠⚠⚠⚠ Four arms rather than a boolean
+///
+/// Register item 594's rule at a second door: a bare *did it move* hands every mouth the job of
+/// pairing it back up with the direction that was asked for, and the two pairings that changed
+/// nothing are exactly the two a person needs told apart from the two that did.
+///
+/// ⚠⚠ **IT IS A FACT ABOUT THE LEVEL AND NEVER ABOUT THE RUN'S BEHAVIOUR**, which is
+/// [`RunHandle::held`]'s own warning one seam out. A run this order took the hold of parks at its
+/// NEXT pass; it has not parked yet, and nothing here says it has.
+///
+/// ⚠ **AND IT CANNOT SAY *never*.** The level is the current value and no history is kept, so a run
+/// held and let go an hour ago is [`NothingHeld`](Self::NothingHeld) today — which is what a person
+/// resuming it needs to know, while *this run was never held* would be a claim nothing measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Holding {
+    /// It was running free and this order holds it.
+    Took,
+    /// It was already held and still is — a person said it twice.
+    Already,
+    /// A person was holding it and this order lets it go.
+    LetGo,
+    /// Nobody was holding it, so this order let nothing go.
+    NothingHeld,
+}
+
+impl Holding {
+    /// **EVERY ARM, BUILT FROM THE DOMAIN ITSELF** so the list cannot go stale.
+    ///
+    /// ⚠⚠⚠ The four `(before, after)` pairs ARE the four arms, so a fifth one would need a fifth
+    /// pair of booleans — where a hand-written list is free to forget a variant, which is the
+    /// defect `crate::plugins::outcome_word`'s own doc records paying for.
+    pub const ALL: [Self; 4] = [
+        Self::of(false, true),
+        Self::of(true, true),
+        Self::of(true, false),
+        Self::of(false, false),
+    ];
+
+    /// Pair the level as the order FOUND it with the level it left.
+    ///
+    /// ⚠ No `_` arm, this workspace's rule for a classifier: an unclassified pairing must not fall
+    /// through into whichever answer was written last.
+    #[must_use]
+    pub const fn of(before: bool, after: bool) -> Self {
+        match (before, after) {
+            (false, true) => Self::Took,
+            (true, true) => Self::Already,
+            (true, false) => Self::LetGo,
+            (false, false) => Self::NothingHeld,
+        }
+    }
+
+    /// The word this fact crosses a socket as.
+    ///
+    /// ⚠ There is deliberately no `moved()` beside this. *Did the level move* is the arithmetic
+    /// this type exists to stop a mouth doing for itself, and a predicate nobody reads is register
+    /// item 492's shape — an answer authored and never asked for — in the very feature whose
+    /// defect was a fact that reached the wire and died at the mouth.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Took => "took",
+            Self::Already => "already",
+            Self::LetGo => "let_go",
+            Self::NothingHeld => "nothing_held",
+        }
+    }
+
+    /// Read it back, or [`None`] for a word this build has no arm for — which is what a daemon
+    /// older than this answer sends, and a caller must be able to tell from an answer it knows.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|it| it.wire_str() == word)
+    }
+}
+
 /// **WHY A PROGRESS REPORT WAS NOT TAKEN** — register item 764, and [`Unordered`]'s shape one door
 /// over.
 ///
@@ -1020,7 +1114,7 @@ struct RunRecord {
     ///
     /// ⚠ [`None`] for a run RESTORED from disk: the log records the run, not the request, so a
     /// successor daemon does not know and does not guess. Such a run has no driver either, so the
-    /// order would be refused regardless — see [`RunRegistry::standing_order`].
+    /// order would be refused regardless — see [`RunRegistry::orderable`].
     plugin: Option<crate::plugins::PluginName>,
     /// **THE REQUEST THIS RUN WAS ASKED WITH**, or [`None`] for a run nothing could rebuild —
     /// register item 543's sixth brick. See [`PersistedRun::request`], which is where it goes.
@@ -2811,7 +2905,15 @@ impl RunRegistry {
     ///
     /// ⚠⚠ **THE PLUGIN IS ASKED, NEVER LOOKED UP.** `RunHandle::honours` forwards the question to
     /// the plugin's own answer, so the day a second one grows a reader nothing here changes.
-    fn standing_order(&self, id: RunId, order: RunOrder) -> Result<(), Unordered> {
+    ///
+    /// ⚠⚠⚠⚠ **IT FINDS AND REFUSES; IT DOES NOT DELIVER** — register item 694. Its two callers used
+    /// to hand it the order and get back a bare `Ok(())`, which left them unable to say anything
+    /// about the run they had just ordered: [`hold`](Self::hold) has to read the LEVEL this order
+    /// found, and a door that had already delivered by the time it answered could only be asked
+    /// afterwards, when the answer is the level this very call just wrote. So the lookup answers the
+    /// record and each caller delivers — which is this file's own sentence one line up, *finding the
+    /// run is the directory's job*, carried through to its end.
+    fn orderable(&self, id: RunId, order: RunOrder) -> Result<&RunRecord, Unordered> {
         let Some(record) = self.runs.iter().find(|record| record.id == id) else {
             return Err(Unordered::NoSuchRun);
         };
@@ -2834,8 +2936,7 @@ impl RunRegistry {
                 None => Unordered::NoDriver,
             });
         }
-        record.run.deliver(order);
-        Ok(())
+        Ok(record)
     }
 
     /// **ASK RUN `id` TO FINISH WHAT IT IS DOING AND THEN STOP**, returning whether such a run
@@ -2850,7 +2951,10 @@ impl RunRegistry {
     /// *stand down, no wait, carry on* racing a milestone would make a run's ending depend on which
     /// message arrived first.
     pub fn stand_down(&self, id: RunId) -> Result<(), Unordered> {
-        self.standing_order(id, RunOrder::StandDown)
+        self.orderable(id, RunOrder::StandDown)?
+            .run
+            .deliver(RunOrder::StandDown);
+        Ok(())
     }
 
     /// **HALT RUN `id` BETWEEN TURNS, OR LET IT GO AGAIN**, returning whether such a run exists.
@@ -2870,8 +2974,20 @@ impl RunRegistry {
     /// ⚠ NOTHING IS INTERRUPTED and nothing ends. The turn in flight runs to its end, the loop then
     /// stops at `awaiting_human` — which sends nothing, so the pane stays exactly as the person
     /// found it — and their declared patience does not run while they hold it.
-    pub fn hold(&self, id: RunId, held: bool) -> Result<(), Unordered> {
-        self.standing_order(id, RunOrder::Hold(held))
+    ///
+    /// # ⚠⚠⚠⚠⚠ It answers [`Holding`], and the level is read BEFORE the order lands
+    ///
+    /// Register item 694. A level's *delivered* is not its *changed something*, and the order is
+    /// what makes them differ — so the read has to happen on the near side of the write or it
+    /// answers what this very call just stored. Both happen under the caller's lock on this
+    /// directory, which is what makes the pair one observation: every other door that delivers an
+    /// order takes the same lock, and a driver only ever LOADS the flag.
+    pub fn hold(&self, id: RunId, held: bool) -> Result<Holding, Unordered> {
+        let order = RunOrder::Hold(held);
+        let record = self.orderable(id, order)?;
+        let before = record.run.held();
+        record.run.deliver(order);
+        Ok(Holding::of(before, held))
     }
 
     /// Raise every run's cancel flag — used on host shutdown so in-flight runs abort promptly
@@ -3271,7 +3387,7 @@ impl RunRegistry {
                 //
                 // ⚠⚠ AND IT IS STILL `None` THOUGH THE REQUEST BELOW MAY NAME ONE, which is not an
                 // oversight but the same rule one line down: this record describes a run with no
-                // driver, and the word is read by `standing_order` to say what an order would
+                // driver, and the word is read by `orderable` to say what an order would
                 // reach. What names the plugin again is `crate::plugins::PluginsExternal::put_back`
                 // — the moment a driver exists to be named.
                 plugin: None,
@@ -5404,15 +5520,20 @@ mod tests {
     fn a_hold_and_its_release_are_forwarded_as_the_two_way_order_they_are() {
         let (registry, log) = a_directory_holding_a_run_that_is_not_a_thread();
 
+        // ⚠⚠ THE ANSWERS ARE THE LEVELS THIS RECORDER CANNOT SHOW — register item 694. `heard`
+        // below proves both orders were DELIVERED and as themselves; what it cannot see is that the
+        // first found a run running free and the second found one a person was holding, which is
+        // the pair `resume-run` printed one sentence over.
         assert_eq!(
             registry.hold(RunId(0), true),
-            Ok(()),
-            "the run is in the directory and its handle reads the order",
+            Ok(Holding::Took),
+            "the run is in the directory, its handle reads the order, and nobody was holding it",
         );
         assert_eq!(
             registry.hold(RunId(0), false),
-            Ok(()),
-            "and it is still there, and a release is the same order lowered",
+            Ok(Holding::LetGo),
+            "and it is still there, and a release is the same order lowered — over a run the line \
+             above left held, so this one has something to let go",
         );
         let told = heard(&log);
         assert_eq!(
@@ -5571,9 +5692,12 @@ mod tests {
         // because *the boolean answers does this run exist*. It does — and a person who stood down
         // a run whose driver died with its daemon was told their order had landed. Existence was
         // never the whole question for an order somebody has to READ.
+        // ⚠ THE HOLD'S `Ok` IS DROPPED TO `()` SO THE TWO REFUSALS SIT IN ONE LIST — item 694 gave
+        // it a level to answer and this gate is about the `Err` arm, which the two share. What the
+        // level says when there IS one is driven where a run has a driver.
         for (order, answer) in [
             ("stand-down", registry.stand_down(RunId(4))),
-            ("hold", registry.hold(RunId(4), true)),
+            ("hold", registry.hold(RunId(4), true).map(|_| ())),
         ] {
             assert_eq!(
                 answer,

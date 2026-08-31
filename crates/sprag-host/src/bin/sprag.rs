@@ -6389,6 +6389,12 @@ fn stand_down(args: Vec<String>) -> io::Result<()> {
 /// ⚠ ONE FUNCTION FOR BOTH DIRECTIONS, because they are one order with a sign. Two bodies would be
 /// two places for the id-parsing and the sentence to drift apart, and the wire verb takes the
 /// direction as an argument for exactly this reason.
+///
+/// ⚠⚠ **AND THE SENTENCE IS CHOSEN BY WHAT THE DAEMON FOUND, NEVER BY THE DIRECTION ASKED FOR** —
+/// register item 694. `held` is what this caller WANTS; the level the order arrived at is a fact
+/// only the registry holds, and reading the first as the second is what made `resume-run` promise
+/// a fresh turn to runs nobody was holding. The four pairings are
+/// `sprag_host::plugins::hold_sentence`'s to spell.
 fn hold_run(args: Vec<String>, held: bool) -> io::Result<()> {
     let verb = if held { "hold-run" } else { "resume-run" };
     let (session, args) = scope_and_rest(args, verb)?;
@@ -6408,7 +6414,7 @@ fn hold_run(args: Vec<String>, held: bool) -> io::Result<()> {
     })?;
     // Pre-flighted for [`cancel_run`]'s reason, which is [`runs`]'.
     let mut conn = connect_scoped(session.as_deref())?;
-    invoke_action(
+    let answer = invoke_action(
         &mut conn,
         scoped_call(
             session.as_deref(),
@@ -6425,13 +6431,29 @@ fn hold_run(args: Vec<String>, held: bool) -> io::Result<()> {
     // pass, mid-turn; a person told to expect a boundary waits for one. The sentence now belongs to
     // the crate that holds the document that does it ([`sprag_plugin::HOLD_TAKES_EFFECT`]), where a
     // gate reads BOTH and neither can move alone. This command holds no wording of its own to drift.
-    if held {
-        println!(
-            "run {id} asked to hold; {} — `sprag resume-run {id}` sends it on",
-            sprag_plugin::HOLD_TAKES_EFFECT,
-        );
-    } else {
-        println!("run {id} let go; it takes a fresh turn at its next pass");
+    //
+    // ⛔⛔⛔⛔⛔ AND NEITHER IS THE DIRECTION THE SENTENCE IS CHOSEN BY — register item 694. What
+    // stood here branched on `held`, which is what this command ASKED FOR, so `resume-run` said
+    // *"let go"* over runs nobody was holding: the word a person acts on was picked from their own
+    // request rather than from anything the daemon found. The daemon answers the level now, and the
+    // four pairings of *found* against *left* are `hold_sentence`'s to spell.
+    match answer
+        .as_str()
+        .and_then(sprag_host::runs::Holding::from_wire)
+    {
+        Some(holding) => println!(
+            "{}",
+            sprag_host::plugins::hold_sentence(sprag_host::runs::RunId(id), holding)
+        ),
+        // ⚠⚠⚠ A DAEMON OLDER THAN THIS ANSWER SAYS SO, and does not get a sentence composed on its
+        // behalf. It took the order — the call returned — and the level it found is the one thing
+        // it cannot tell us; guessing from `held` here would rebuild the exact defect above, and
+        // this is the surface where client and daemon skew is ordinary rather than hypothetical.
+        None => println!(
+            "run {id} was sent the {verb} order and this daemon took it, but it does not say what \
+             it found — it is older than this command, so whether the level actually moved cannot \
+             be stated here.",
+        ),
     }
     Ok(())
 }
