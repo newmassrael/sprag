@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# A `gh` that answers THE COUNT STAGED IN THE SANDBOX, and answers nothing at
+# all when none was staged -- the two shapes `hosted_read_runs_for` has to tell
+# apart (register item 790): a number it measured, against a question it could
+# not put.
+#
+# ⚠ WITHOUT THIS DOUBLE THE HOOK REACHES GITHUB. `hosted-read.sh` asks whether a
+# stepped-over commit ever had a run, and the sandbox's shas exist nowhere, so an
+# undoubled suite would be measuring the network, the developer's `gh` auth and a
+# rate limit -- and would answer differently on a machine with none of them.
+#
+# ⚠ The answer is a FILE in the sandbox rather than an environment variable,
+# because `Sandbox::run` fixes the hook's environment; a case that had to thread
+# a variable through it would be staging the harness rather than the world. An
+# ABSENT file is deliberately the *could not be asked* case, which this
+# repository's rule keeps apart from a measured zero rather than folding in.
+#
+# TRACKED rather than written by the suite: register item 467.
+printf 'gh %s\n' "$*" >> "$DOUBLE_LOG"
+[ -r ./gh-total-count ] || exit 1
+cat ./gh-total-count

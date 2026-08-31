@@ -115,6 +115,65 @@ HOSTED_READ_SKIPPED_COST="a verdict that was there and was never looked at is \
 the one this mark used to step over in silence -- 7b71077's macOS job was red \
 while the gap read 0"
 
+# ⛔⛔⛔⛔⛔ WHAT A COMMIT WITH NO RUN OF ITS OWN COSTS — register item 790, and a
+# FOURTH sentence for the reason the third one exists: the remedy differs again,
+# and this time there is no remedy at all to hand the reader.
+#
+# ⚠⚠⚠⚠⚠ THE CORRESPONDENCE IS EMPTY, which is the whole of this item and the
+# fourth way the unit has been wrong. Item 779 separated COMMITS from RUNS
+# (one-to-many); item 781 separated a LINE from the SET beneath it (order). Here
+# the commit maps to NOTHING: GitHub hangs a workflow run on the TIP of a push,
+# so a commit published underneath one never gets a run at all.
+#
+# ⚠⚠ AND NEITHER WORD CAN PAY IT OFF. `settled` would claim a verdict that does
+# not exist; `unsettled` waits for a run that will never speak, so the commit
+# sits in the list FOR EVER -- and a count that cannot reach zero stops being
+# acted on, which is this file's own reason for pruning elsewhere.
+#
+# ⚠ MEASURED on this repository, 2026-08-31: `0642aa7` was pushed together with
+# `c772057`, `actions/runs?head_sha=` answers `total_count` 0 for it and 1 for
+# the tip, and the push still read *nobody has looked at their runs at all* --
+# a true sentence about an absence, pointing a reader at nothing to look at.
+HOSTED_READ_NORUN_COST="a commit published underneath another one never gets a \
+run, so neither word can retire it -- 0642aa7 answered total_count 0 while the \
+report sent readers to look at its run"
+
+# ⛔⛔⛔ WHAT AN UNANSWERED QUESTION COSTS — register item 790, and the arm that
+# keeps the repair from becoming its own escape hatch.
+#
+# ⚠ *It had no run* and *nobody could ask* are different facts, and this
+# workspace's rule is that an unclassified case is RED rather than a pass. So a
+# commit the asking could not reach keeps its place in the list and says why,
+# instead of being folded into either of the two answers that were measured.
+HOSTED_READ_UNASKED_COST="a commit nobody could ask about is not a commit that \
+had no run -- folding the two together is the covering this file exists to stop"
+
+# WHETHER `$1` EVER HAD A HOSTED RUN AT ALL: a count, or `unknown` where the
+# question could not be put — register item 790.
+#
+# ⛔⛔ IT ASKS RATHER THAN RESTING ON A RULE. "push one commit at a time" is a
+# mitigation leaning on a person's memory, which item 790 rules out in as many
+# words. Whether a run exists is GitHub's fact, so this asks GitHub for it.
+#
+# ⚠⚠ THREE ANSWERS AND NONE OF THEM A DEFAULT. A number is what was found; `0`
+# is a measured absence; `unknown` is no answer at all — an absent `gh`, a
+# refused call, a reply that is not a count. The third keeps its own word so a
+# caller cannot mistake *not asked* for *asked and found none*.
+#
+# ⚠ `{owner}/{repo}` is `gh`'s own substitution from the checkout it is run in,
+# so this file names no repository and works in a clone under any name.
+hosted_read_runs_for() {
+    local sha count
+    sha="$1"
+    command -v gh >/dev/null 2>&1 || { printf 'unknown\n'; return 0; }
+    count="$(gh api "repos/{owner}/{repo}/actions/runs?head_sha=${sha}" \
+                 --jq '.total_count' 2>/dev/null)" || count=""
+    case "$count" in
+        '' | *[!0-9]*) printf 'unknown\n' ;;
+        *)             printf '%s\n' "$count" ;;
+    esac
+}
+
 # RECORD what was found when the hosted result for `$1` (default HEAD) was
 # looked at: `$2` is `settled` (a verdict was there and was read) or `unsettled`
 # (there was none yet).
@@ -139,7 +198,7 @@ while the gap read 0"
 # distance the gap measures has not changed. It is remembered separately, and
 # `hosted_read_gap` keeps naming it until that commit is marked `settled`.
 hosted_read_seen() {
-    local sha verdict marker kept mark was passed skipped one acc
+    local sha verdict marker kept mark was passed skipped one acc gone listed
     sha="$(git rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null)" || {
         echo "hosted-read: '${1:-HEAD}' is not a commit in this tree" >&2
         return 1
@@ -216,10 +275,29 @@ hosted_read_seen() {
     # list whichever word it got — this look is the current word about it.
     skipped="$(hosted_read_skipped | command grep -v "^${sha}$" || true)"
     acc=""
+    gone=""
     while read -r one; do
         [ -n "$one" ] || continue
         case "$acc" in *"$one"*) continue ;; esac
         printf '%s\n' "$kept" | command grep -qx "$one" && continue
+        # ⛔⛔⛔⛔⛔ A COMMIT THAT NEVER HAD A RUN LEAVES THE LIST HERE — register
+        # item 790, and this is the only place the list can reach zero. Neither
+        # word retires such a commit (see `HOSTED_READ_NORUN_COST`), so it would
+        # otherwise sit here for ever pointing readers at nothing.
+        #
+        # ⚠⚠ IT IS DROPPED OUT LOUD, never in silence: the sentence below names
+        # each one. A silent prune here would be item 781's own defect wearing
+        # this item's clothes — the mark quietly declaring something handled.
+        #
+        # ⚠ ONLY A MEASURED `0` DROPS ANYTHING. `unknown` stays, because *not
+        # asked* is not *asked and found none*, and an unclassified case is RED
+        # in this workspace rather than a pass.
+        if [ "$(hosted_read_runs_for "$one")" = 0 ]; then
+            case "$gone" in *"$one"*) continue ;; esac
+            gone="${gone}${one}
+"
+            continue
+        fi
         acc="${acc}${one}
 "
     done <<SEEN
@@ -237,6 +315,17 @@ SEEN
     else
         echo "hosted-read: recorded that ${sha:0:7} was looked at and its run had" \
              "not spoken yet -- it stays owed until '--seen ${sha:0:7} settled'"
+    fi
+    # ⚠ SAID SEPARATELY FROM THE RECORD ABOVE, because it is a different act: the
+    # line above is what this reader looked at, and this is what the asking found
+    # about commits nobody can ever look at. Silent would be the defect.
+    if [ -n "$gone" ]; then
+        listed="$(printf '%s\n' "$gone" | command sed '/^$/d' \
+                  | command cut -c1-7 | command tr '\n' ' ')"
+        echo "hosted-read: $(printf '%s\n' "$gone" | command grep -c .) commit(s)" \
+             "the mark stepped over never had a hosted run of their own" \
+             "(${listed% }), so there is nothing to read and they are dropped --" \
+             "${HOSTED_READ_NORUN_COST}"
     fi
 }
 
@@ -357,31 +446,163 @@ spoken (${listed% }) -- ${HOSTED_READ_UNSETTLED_COST}"
 # went past a run that had*. A reader handed one sentence for two of them comes
 # away thinking one act discharges both, which is the covering item 779 was
 # about — and this is its third face, not a bigger version of it.
+#
+# ⛔⛔⛔⛔⛔ AND IT IS THREE CLAUSES, NOT ONE — register item 790. *Nobody looked
+# at a run that is there*, *there is no run to look at*, and *nobody could ask*
+# are three different states with three different remedies, and the first
+# sentence was printed over all three. A reader sent to read `0642aa7`'s run
+# finds nothing, stops, and the commit stays in the list for ever.
 hosted_read_skipped_clause() {
-    local skipped count listed
-    skipped="$(hosted_read_skipped)"
-    [ -n "$skipped" ] || return 0
-    count="$(printf '%s\n' "$skipped" | command grep -c .)"
-    listed="$(printf '%s\n' "$skipped" | command cut -c1-7 | command tr '\n' ' ')"
-    printf '%s' "; and ${count} commit(s) were STEPPED OVER by the mark and \
-nobody has looked at their runs at all (${listed% }) -- ${HOSTED_READ_SKIPPED_COST}"
+    local classified
+    classified="$(hosted_read_skipped_classified)"
+    [ -n "$classified" ] || return 0
+    hosted_read_skipped_arm "$classified" unread \
+        "were STEPPED OVER by the mark and nobody has looked at their runs at all" \
+        "$HOSTED_READ_SKIPPED_COST"
+    hosted_read_skipped_arm "$classified" norun \
+        "the mark stepped over never had a hosted run of their own, so there is nothing to read" \
+        "$HOSTED_READ_NORUN_COST"
+    hosted_read_skipped_arm "$classified" unasked \
+        "the mark stepped over could not be asked whether they ever had a run" \
+        "$HOSTED_READ_UNASKED_COST"
+}
+
+# Every stepped-over commit paired with what ASKING found — `unread`, `norun` or
+# `unasked`, one `<word> <sha>` per line (register item 790).
+#
+# ⚠ The three words are the three answers `hosted_read_runs_for` can give, so a
+# commit cannot fall between them and arrive in no clause at all.
+hosted_read_skipped_classified() {
+    local sha found
+    hosted_read_skipped | while read -r sha; do
+        [ -n "$sha" ] || continue
+        found="$(hosted_read_runs_for "$sha")"
+        case "$found" in
+            0)       printf 'norun %s\n' "$sha" ;;
+            unknown) printf 'unasked %s\n' "$sha" ;;
+            *)       printf 'unread %s\n' "$sha" ;;
+        esac
+    done
+}
+
+# One clause of `hosted_read_skipped_clause`, or nothing where that word claims
+# no commit — the emptiness rule arm (5) established, applied per state.
+hosted_read_skipped_arm() {
+    local classified word saying cost list count listed
+    classified="$1"
+    word="$2"
+    saying="$3"
+    cost="$4"
+    list="$(printf '%s\n' "$classified" | command sed -n "s/^${word} //p")"
+    [ -n "$list" ] || return 0
+    count="$(printf '%s\n' "$list" | command grep -c .)"
+    listed="$(printf '%s\n' "$list" | command cut -c1-7 | command tr '\n' ' ')"
+    printf '%s' "; and ${count} commit(s) ${saying} (${listed% }) -- ${cost}"
 }
 
 # ⚠⚠⚠⚠⚠ EVERY ARM, against throwaway repositories -- because a report reachable
 # only from a hook cannot otherwise be told apart from one that always says the
 # same thing, which is the defect this whole item is about.
 hosted_read_selftest() {
-    local here tmp pass fail said base tip
+    # ⛔⛔⛔ `PATH` IS SAVED AND RESTORED, NEVER `local` — measured on the first
+    # run of the double below: `local PATH` starts the variable EMPTY, so `here`
+    # was computed with no `dirname` on it and every arm then read the real
+    # repository instead of the throwaway one. The arms went green-ish against
+    # the wrong subject, which is the shape this whole file is about.
+    local here tmp pass fail said base tip saved_path FAKE_GH_TOTAL FAKE_GH_FAIL
+    saved_path="$PATH"
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     tmp="$(mktemp -d)"
     pass=0
     fail=0
+
+    # ⛔⛔⛔⛔⛔ NOTHING BELOW RUNS BEFORE THERE IS A SCRATCH DIRECTORY TO RUN IN —
+    # measured 2026-08-31, and it is FIRST in the function because every line
+    # after it treats `$tmp` as a place and writes there.
+    #
+    # A `local PATH` in this function started the variable EMPTY, so `mktemp` was
+    # not found and `$tmp` was the empty string. What followed, in order, against
+    # the REAL repository this process was standing in: `mkdir -p "$tmp/bin"`
+    # became `mkdir -p /bin`; `git -C "" init` RE-INITIALISED it; `git -C ""
+    # config user.email probe@example.com` wrote a `[user]` section into its
+    # `.git/config`, replacing the operator's identity with the harness's on a
+    # tree whose next commit would have carried it; and the arms then overwrote
+    # the operator's marker, moving the watermark onto a commit whose run had not
+    # spoken and erasing a stepped-over one.
+    #
+    # ⚠⚠ `git -C ""` is the mechanism worth naming: git reads an empty `-C` as
+    # *stay where you are*, so a scratch-repository command silently becomes a
+    # command against the caller's own repository. Nothing warns.
+    #
+    # ⚠ It STOPS rather than scoring an arm: a run that is not standing in its
+    # own subject has no verdict to give about anything.
+    if [ -z "$tmp" ] || [ ! -d "$tmp" ]; then
+        echo "hosted-read selftest: REFUSING to run -- mktemp gave no scratch" \
+             "directory ('${tmp:-<empty>}'), and every line below would write" \
+             "into $(pwd) instead" >&2
+        return 1
+    fi
+
+    # ⛔⛔⛔⛔⛔ THE ASKING IS A DOUBLE HERE — register item 790. `hosted_read_runs_for`
+    # puts its question to `gh`, and a selftest that let it reach GitHub would
+    # answer differently on a laptop with no network, in a throwaway repository
+    # with no origin, and under a rate limit — which is a harness that measures
+    # the weather. The double is a `gh` on PATH, so the SUBJECT is untouched: the
+    # file names no environment variable of its own and there is no arm to
+    # disable the asking with. `1` is the default because it is the world the
+    # arms written before this item assume — a stepped-over commit whose run is
+    # there and unread.
+    mkdir -p "$tmp/bin"
+    cat > "$tmp/bin/gh" <<'ASKED'
+#!/usr/bin/env bash
+# The double `hosted-read.sh --selftest` asks instead of GitHub (item 790).
+[ "${FAKE_GH_FAIL:-0}" = 1 ] && exit 1
+printf '%s\n' "${FAKE_GH_TOTAL:-1}"
+ASKED
+    chmod +x "$tmp/bin/gh"
+    PATH="$tmp/bin:$PATH"
+    FAKE_GH_TOTAL=1
+    FAKE_GH_FAIL=0
+    export PATH FAKE_GH_TOTAL FAKE_GH_FAIL
 
     git -C "$tmp" init -q -b main
     git -C "$tmp" config user.email "probe@example.com"
     git -C "$tmp" config user.name "Probe"
     ( cd "$tmp" && : > a && git add a && git commit -qm base )
     base="$(git -C "$tmp" rev-parse HEAD)"
+
+    # ⛔⛔⛔⛔⛔ THE SUBJECT IS THE SCRATCH REPOSITORY OR THIS DOES NOT RUN AT ALL
+    # — measured 2026-08-31, and it is the SECOND time this file has written
+    # somebody else's marker (`hosted_read_marker`'s own note records the first,
+    # which is why that path is absolute).
+    #
+    # A `local PATH` in this function started the variable EMPTY, so `mktemp` and
+    # `git` were not found the way every line above assumes, and the arms ran
+    # against the REAL repository: they overwrote the operator's marker, moved
+    # the watermark onto a commit whose run had not spoken, and erased a
+    # stepped-over commit. **A harness that can write outside its subject can
+    # destroy exactly the record this file exists to keep** — and it did.
+    #
+    # ⚠⚠ IT IS CHECKED, NOT ASSUMED. Every arm below reaches the marker through
+    # `hosted_read_marker`, which answers whatever repository the process is
+    # standing in; the one thing that makes those answers safe is that this
+    # process is standing in `$tmp`. So that is asserted once, here, before any
+    # arm writes — and a failure STOPS rather than scoring, because a run that is
+    # not testing what it thinks it is has no verdict to give.
+    #
+    # ⚠ The comparison is the git dir the scratch repository itself reports, so
+    # a `$tmp` that is a symlink or was never initialised both fail it.
+    if [ -z "$tmp" ] || [ ! -d "$tmp" ] \
+       || [ "$( cd "$tmp" && git rev-parse --absolute-git-dir 2>/dev/null )" \
+            != "$( cd "$tmp" && pwd )/.git" ]; then
+        echo "hosted-read selftest: REFUSING to run -- the scratch repository" \
+             "'${tmp:-<empty>}' is not this process's git dir, so every arm" \
+             "would read and WRITE $(git rev-parse --absolute-git-dir \
+             2>/dev/null || echo "some other repository")'s marker instead" >&2
+        PATH="$saved_path"
+        export PATH
+        return 1
+    fi
 
     said="$( cd "$tmp" && hosted_read_gap )"
     case "$said" in
@@ -631,6 +852,82 @@ hosted_read_selftest() {
     esac
     ( cd "$tmp" && hosted_read_seen "$base" settled >/dev/null )
 
+    # ── AND A COMMIT THAT NEVER HAD A RUN IS NOT ONE NOBODY LOOKED AT ──────────
+    #
+    # ⛔⛔⛔⛔⛔ REGISTER ITEM 790, and the FOURTH face of the unit being wrong.
+    # GitHub hangs a run on the TIP of a push, so a commit published underneath
+    # one never gets a run at all — and the sentence above sent a reader to go
+    # and read it. They find nothing, and the commit sits in the list for ever
+    # because `settled` would read a verdict that does not exist and `unsettled`
+    # waits for a run that will never speak.
+    ( cd "$tmp" && printf '%s\nskipped %s\n' "$tip" "$base" > "$(hosted_read_marker)" )
+    FAKE_GH_TOTAL=0
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"never had a hosted run of their own"*)
+            echo "  ok    a stepped-over commit with no run of its own says so"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a commit with no run reads as one nobody looked at: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⚠⚠ AND IT IS NOT ALSO THE OTHER SENTENCE. Two clauses over one commit is
+    # the covering again: the reader is told both to go and read a run and that
+    # there is none, and acts on the first.
+    case "$said" in
+        *"STEPPED OVER"*)
+            echo "  FAIL  a commit with no run is ALSO sent to be read: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    and it is not also called one nobody has looked at"
+            pass=$((pass + 1)) ;;
+    esac
+    # ⚠⚠⚠ AND THE LIST CAN REACH ZERO, which is what makes this a repair rather
+    # than a fourth thing to read. `--seen` drops it — OUT LOUD, because a mark
+    # quietly declaring something handled is item 781's own defect.
+    said="$( cd "$tmp" && hosted_read_seen "$tip" settled )"
+    case "$said" in
+        *"never had a hosted run of their own"*)
+            echo "  ok    dropping a commit with no run is said out loud"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a commit left the list in silence: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"${base:0:7}"*)
+            echo "  FAIL  a commit that never had a run is owed for ever: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    and it is gone, so this list can reach zero"
+            pass=$((pass + 1)) ;;
+    esac
+
+    # ⚠⚠⚠⚠ AND *NOBODY COULD ASK* IS A THIRD STATE, not a quiet pass. An absent
+    # `gh`, a refused call or a reply that is not a count answers nothing, and
+    # this workspace's rule is that an unclassified case is RED. So the commit
+    # keeps its place and the report says the question went unanswered.
+    ( cd "$tmp" && printf '%s\nskipped %s\n' "$tip" "$base" > "$(hosted_read_marker)" )
+    FAKE_GH_TOTAL=1
+    FAKE_GH_FAIL=1
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"could not be asked"*)
+            echo "  ok    a question that went unanswered keeps its own word"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  an unasked commit was folded into a measured answer: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    ( cd "$tmp" && hosted_read_seen "$tip" settled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"${base:0:7}"*)
+            echo "  ok    and it is NOT dropped — not asked is not asked and none"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a commit nobody could ask about was dropped anyway: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    FAKE_GH_FAIL=0
+    ( cd "$tmp" && printf '%s\n' "$tip" > "$(hosted_read_marker)" )
+    ( cd "$tmp" && hosted_read_seen "$base" settled >/dev/null )
+
     # ⛔ THE UNCLASSIFIED STATE IS NOT A ZERO. A marker naming something this
     # tree does not have is the shape a rebase, a reset or a copied clone
     # leaves behind, and reading it as "0 unread" would be the silent pass.
@@ -685,6 +982,10 @@ hosted_read_selftest() {
     fi
 
     rm -rf "$tmp"
+    # ⚠ The double goes with it: the directory it lived in is gone, and PATH goes
+    # back to what the caller had so nothing downstream is asking a fake.
+    PATH="$saved_path"
+    export PATH
     echo "hosted-read selftest: ${pass}/$((pass + fail)) arm(s) pass"
     [ "$fail" -eq 0 ]
 }

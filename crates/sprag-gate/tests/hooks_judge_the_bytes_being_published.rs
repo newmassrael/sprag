@@ -170,6 +170,14 @@ impl Sandbox {
         sandbox.double("cargo");
         sandbox.double("actionlint");
         sandbox.double("xvfb-run");
+        // ⛔⛔⛔ WITHOUT THIS THE HOOK REACHES GITHUB — register item 790. `hosted-read.sh` asks
+        // whether a stepped-over commit ever had a run, and every sha in this sandbox exists
+        // nowhere, so an undoubled suite would be measuring the network and the developer's `gh`
+        // auth. `1` is the world every case written before that item assumes — a stepped-over
+        // commit whose run is there and unread — and the cases for the other two answers stage
+        // their own count over it.
+        sandbox.double("gh");
+        sandbox.write("gh-total-count", "1\n");
 
         sandbox.git(&["init", "-q", "."]);
         // ⚠⚠⚠⚠⚠ AN IDENTITY THE LINKED HOOKS ACCEPT — register item 688, and see
@@ -1390,5 +1398,64 @@ fn a_push_says_how_long_this_clone_has_gone_without_reading_a_hosted_result() {
         "⚠⚠ AND IT STILL MUST NOT REFUSE. Item 776 settled that the ceiling is not zero here; a \
          third kind of debt does not reopen that decision either: {told}",
     );
+
+    // ── AND A COMMIT THAT NEVER HAD A RUN IS NOT ONE NOBODY LOOKED AT ────────────────────────
+    //
+    // ⛔⛔⛔⛔⛔ REGISTER ITEM 790, and this item's finding a FOURTH time. GitHub hangs a run on the
+    // TIP of a push, so a commit published underneath one never gets a run at all — and the
+    // sentence the arm above asserts then sends a reader to go and read it. They find nothing.
+    //
+    // ⚠⚠⚠ MEASURED ON THIS REPOSITORY, 2026-08-31: `0642aa7` went out with `c772057`,
+    // `actions/runs?head_sha=` answered `total_count` 0 for it and 1 for the tip, and the push
+    // said *nobody has looked at their runs at all* — true about an absence, and pointing at
+    // nothing. Worse, NEITHER word retires such a commit: `settled` would read a verdict that does
+    // not exist and `unsettled` waits for a run that will never speak, so it sits in the list for
+    // ever and the count stops being one anybody acts on.
+    push.write("gh-total-count", "0\n");
+    let run = push.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        told.contains("never had a hosted run of their own"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 790: a commit the mark stepped over that never had a run of its \
+         own reads exactly like one whose run is sitting there unread. The reader goes to look, \
+         finds nothing, and the commit cannot be cleared by either word: {told}",
+    );
+    assert!(
+        !told.contains("STEPPED OVER"),
+        "⛔⛔⛔⛔ REGISTER ITEM 790: the same commit is ALSO called one nobody has looked at, so \
+         the report says both *go and read this run* and *there is no run* — and a reader acts on \
+         the first. Two clauses over one commit is the covering, not the repair: {told}",
+    );
+    assert!(
+        run.status.success(),
+        "⚠⚠ AND IT STILL MUST NOT REFUSE — item 776's ceiling, a fourth time: {told}",
+    );
+
+    // ── AND *NOBODY COULD ASK* IS A THIRD STATE, NOT A QUIET PASS ────────────────────────────
+    //
+    // ⚠⚠⚠⚠ An absent `gh`, a refused call or a reply that is not a count answers NOTHING, and
+    // this workspace's rule is that an unclassified case is RED rather than a pass. Folding it
+    // into either measured answer is what would make the asking an escape hatch: *had no run* is
+    // the one that DROPS a commit, so a silent fallback there would bury a real red the day the
+    // network was down.
+    std::fs::remove_file(push.dir.join("gh-total-count")).expect("take the staged count away");
+    let run = push.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        told.contains("could not be asked"),
+        "⛔⛔⛔⛔ REGISTER ITEM 790: the question about this commit went unanswered and the report \
+         gave one of the two answers it never got. *Not asked* and *asked and found none* have \
+         different remedies, and only the second may retire a commit: {told}",
+    );
+    assert!(
+        told.contains(&base[..7]),
+        "⛔⛔⛔ REGISTER ITEM 790: a commit whose question went unanswered is not named, so nobody \
+         can go and settle it by hand — a debt with no address cannot be paid: {told}",
+    );
+    assert!(
+        run.status.success(),
+        "⚠⚠ AND IT STILL MUST NOT REFUSE — item 776's ceiling once more: {told}",
+    );
+    push.write("gh-total-count", "1\n");
     push.done();
 }
