@@ -832,6 +832,105 @@ impl Delivered {
         )
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE REFUSAL THIS ANSWER IS, OR [`None`] WHERE A QUESTION WAS ASKED** — register
+    /// item 762, and the one authority on a decision that used to live in a driver's `if let`
+    /// cascade.
+    ///
+    /// # ⛔⛔⛔⛔ What a cascade of `if let`s does to a NEW answer
+    ///
+    /// `OuterLoop::deliver_prompt` tested three variants in turn and fell through to `Ok` — so an
+    /// answer added later was **carried on with, silently, as a delivery that asked a question**.
+    /// That is the reassuring reading of an unclassified value, which is this workspace's rule 6
+    /// and register item 453's shape: not flagged, therefore reported as fine. When
+    /// [`Released`](Self::Released) was added one round earlier the fall-through happened to be
+    /// RIGHT, and nothing in the build said so — the claim *it does not buy a session replacement*
+    /// was a sentence in a commit message.
+    ///
+    /// ⚠⚠ **EXHAUSTIVE, WITH NO `_` ARM.** A ninth answer cannot be added without somebody saying
+    /// whether a run carries on with it, and `a_delivery_is_a_refusal_exactly_where_it_witnesses_nothing`
+    /// holds this against [`Witnessed::of`] so the two classifications cannot drift.
+    ///
+    /// ⚠ It builds the error and does not RAISE it: the counters a refusal moves are the driver's,
+    /// and a type that reached into them would be two authorities on one tally.
+    #[must_use]
+    pub const fn refused(self) -> Option<PaneError> {
+        match self {
+            // Nothing ever appeared on that pane: the bytes went to the pty and the program behind
+            // it showed none of them. A turn waited out here is a turn nobody was asked for.
+            Self::Unconfirmed { attempts, written } => Some(PaneError::NeverTook {
+                attempts,
+                written: written.bytes(),
+            }),
+            // The text is ON that pane and the submit established nothing — the composer is holding
+            // a question nobody put. Go and look at it.
+            Self::Unsubmitted {
+                attempts,
+                written,
+                wanted,
+            } => Some(PaneError::NeverSubmitted {
+                attempts,
+                written: written.bytes(),
+                wanted,
+            }),
+            // The composer SWALLOWED it and nothing since has placed it anywhere — neither the
+            // agent's account nor the composer letting go. The opposite instruction to the one
+            // above: the pane is showing a placeholder.
+            Self::Unreported {
+                attempts,
+                written,
+                wanted,
+            } => Some(PaneError::NeverReported {
+                attempts,
+                written: written.bytes(),
+                wanted,
+            }),
+            // ⚠⚠⚠ AND THE FIVE A RUN CARRIES ON WITH. `Released` is here BY DECISION and not by
+            // falling off the end of a cascade — register item 762: the composer let go of the
+            // folded prompt, so a question was asked and a session replacement would throw away a
+            // peer that is working on it. `Stopped` and `Unwitnessed` are the run's own clock
+            // rather than a fault of the pane, and each is answered elsewhere — see
+            // [`asked_nothing`](Self::asked_nothing).
+            Self::Confirmed { .. }
+            | Self::OnScreenOnly { .. }
+            | Self::Reported { .. }
+            | Self::Released { .. }
+            | Self::Stopped { .. }
+            | Self::Unwitnessed { .. } => None,
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS ANSWER MEANS NO QUESTION WAS ASKED AND NOTHING IS BROKEN** — the
+    /// second decision the driver's cascade held implicitly, register item 762.
+    ///
+    /// [`deliver`] writes the text and presses only once the text is on the screen, so a run whose
+    /// clock expires between those two leaves the prompt SITTING IN THE COMPOSER — measured against
+    /// a real `claude` twice in a row, with the loop then waiting out its whole bound for a turn
+    /// that had never started. It is not an error: the run's own clock running out is not a fault of
+    /// the pane, and `failed` would send a reader looking for a break that is not there.
+    ///
+    /// ⚠⚠ **[`Unwitnessed`](Self::Unwitnessed) IS DELIBERATELY NOT ONE.** That answer is the clock
+    /// expiring INSIDE the wait for the submit's evidence — the Enter is on the pseudoterminal, so
+    /// the peer may be answering right now, and *no question was asked* would be the same sentence
+    /// the wrong way round. The two endings differ by one keystroke and a supervisor acts on them
+    /// oppositely.
+    ///
+    /// ⚠ Exhaustive for [`refused`](Self::refused)'s reason: it was `matches!(.., Stopped { .. })`
+    /// at the call site, where every later answer defaulted to *a question was asked*.
+    #[must_use]
+    pub const fn asked_nothing(self) -> bool {
+        match self {
+            Self::Stopped { .. } => true,
+            Self::Confirmed { .. }
+            | Self::OnScreenOnly { .. }
+            | Self::Reported { .. }
+            | Self::Released { .. }
+            | Self::Unconfirmed { .. }
+            | Self::Unsubmitted { .. }
+            | Self::Unreported { .. }
+            | Self::Unwitnessed { .. } => false,
+        }
+    }
+
     /// How many bytes reached the pty across every attempt — what a plugin charges as its
     /// [`Cost`](crate::plugin::Cost), since a swallowed write cost the same as a landed one.
     pub const fn written(self) -> Written {
@@ -3383,6 +3482,157 @@ mod tests {
              is. It is also what makes `landed`'s untested half safe — the day this holds a value, \
              `Never` taken off the primary contract alone starts abandoning waits the composer \
              could have answered",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A DELIVERY IS A REFUSAL EXACTLY WHERE IT WITNESSES NOTHING** — register item 762,
+    /// and the ratchet over two exhaustive classifications of one type.
+    ///
+    /// # ⚠⚠⚠ Two artefacts, one decision, and neither can be the only one
+    ///
+    /// [`Witnessed::of`] says what a walk publishes about a delivery; [`Delivered::refused`] says
+    /// whether the run carries on with it. They are written apart because they answer different
+    /// questions, and they must not DISAGREE: a `Some` witness on an answer the driver refuses
+    /// would put a prompt that never arrived into `Deliveries::made`, and a `None` on one it
+    /// carries on with would make a delivery the walk says nothing about.
+    ///
+    /// **Neither function alone can hold it.** Both are exhaustive, so a ninth answer fails to
+    /// compile in two places — and a person answering both could still answer them inconsistently,
+    /// which is precisely what this equality refuses.
+    ///
+    /// ⚠⚠ **AND IT IS WHERE `Released` STOPS BEING A CLAIM IN A COMMIT MESSAGE.** That answer was
+    /// added one round earlier and the sentence *it does not buy a session replacement* was true
+    /// because it fell off the end of an `if let` cascade. It is asserted here, by name, in both
+    /// directions.
+    #[test]
+    fn a_delivery_is_a_refusal_exactly_where_it_witnesses_nothing() {
+        let written = Written::of(9);
+        let wanted = SubmittedWhen::Took {
+            within: Duration::from_millis(1),
+        };
+        // ⚠ EVERY VARIANT, SPELLED. A list built from a helper would be the same omission this
+        // gate is about, one layer up.
+        let every = [
+            Delivered::Confirmed {
+                attempts: 1,
+                written,
+            },
+            Delivered::OnScreenOnly {
+                attempts: 1,
+                written,
+                echo: None,
+            },
+            Delivered::Reported {
+                attempts: 1,
+                written,
+            },
+            Delivered::Released {
+                attempts: 1,
+                written,
+            },
+            Delivered::Unconfirmed {
+                attempts: 1,
+                written,
+            },
+            Delivered::Unsubmitted {
+                attempts: 1,
+                written,
+                wanted,
+            },
+            Delivered::Unreported {
+                attempts: 1,
+                written,
+                wanted,
+            },
+            Delivered::Stopped {
+                attempts: 1,
+                written,
+            },
+            Delivered::Unwitnessed {
+                attempts: 1,
+                written,
+                wanted,
+            },
+        ];
+        for delivered in every {
+            assert_eq!(
+                delivered.refused().is_none(),
+                Witnessed::of(delivered).is_some(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 762: {delivered:?} is classified one way by \
+                 `Delivered::refused` and the other by `Witnessed::of`. A refusal with a witness \
+                 puts a prompt that never arrived into `Deliveries::made`; a delivery without one \
+                 is a prompt the walk says nothing about. Both are exhaustive, so what this catches \
+                 is a person answering them inconsistently",
+            );
+        }
+
+        // ── ⛔⛔⛔⛔⛔ AND *NO QUESTION WAS ASKED* IS ONE ANSWER, NOT TWO ──
+        //
+        // `Delivered::Stopped` is the run's clock expiring BEFORE the Enter, so the prompt is
+        // typed and sitting in a composer and nothing was asked. `Unwitnessed` is the clock
+        // expiring AFTER it — the keystroke is on the pseudoterminal and the peer may be answering
+        // right now. **They differ by one keystroke and a supervisor acts on them oppositely**, and
+        // the type says so in as many words while NOTHING MEASURED IT: mutating `Unwitnessed` onto
+        // the `true` side left every gate in this crate green. Measured, this round.
+        assert!(
+            Delivered::Stopped {
+                attempts: 1,
+                written,
+            }
+            .asked_nothing(),
+            "⚠⚠⚠ the run's clock ran out before the Enter, so the prompt is in a composer and no \
+             turn exists to wait for — a `false` here is the loop waiting out its whole bound for a \
+             turn that never started, which is what this answer was added for",
+        );
+        assert!(
+            !Delivered::Unwitnessed {
+                attempts: 1,
+                written,
+                wanted,
+            }
+            .asked_nothing(),
+            "⛔⛔⛔⛔⛔ AND `Unwitnessed` IS NOT THAT: the Enter is out, so the peer may be answering \
+             this question right now. Recording *no question was asked* about it is the same \
+             sentence the wrong way round, and it would make a run discard a turn it had already \
+             paid for",
+        );
+        for delivered in every {
+            assert!(
+                delivered.asked_nothing() == matches!(delivered, Delivered::Stopped { .. }),
+                "⚠⚠ AND EXACTLY ONE ANSWER MEANS IT — {delivered:?} disagrees. A second variant \
+                 leaking onto this side makes a run report a turn that does not exist; one leaking \
+                 off it makes the run wait out a bound for a turn that never started",
+            );
+        }
+
+        // ── ⛔⛔⛔⛔⛔ AND THE ONE THIS ITEM IS ABOUT, BY NAME ──
+        //
+        // The composer let go of the folded prompt, so a question WAS asked. Refusing it here is
+        // what the driver turns into `prompt.unasked`, which the document answers with a session
+        // replacement — thrown at a peer that is working on the question. That was true by
+        // fall-through for one round and asserted nowhere.
+        assert!(
+            Delivered::Released {
+                attempts: 1,
+                written,
+            }
+            .refused()
+            .is_none(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: a folded prompt the composer LET GO of was asked. A \
+             refusal here reaches the document as `prompt.unasked` and buys a session replacement \
+             for a session that is working",
+        );
+        assert!(
+            Delivered::Unreported {
+                attempts: 1,
+                written,
+                wanted,
+            }
+            .refused()
+            .is_some(),
+            "⚠⚠⚠ AND ITS SIBLING MUST STILL BE ONE, or the repair is *call every fold a delivery*: \
+             this prompt is in nobody's hands, and a replacement is register item 446's remedy for \
+             exactly that",
         );
     }
 

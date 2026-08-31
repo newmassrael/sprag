@@ -7342,6 +7342,35 @@ mod tests {
              thing whichever road was walked",
         );
 
+        // ── ⛔⛔⛔⛔⛔ AND THE SECOND FOLD ROAD SAYS THE ONE THING ITS READER WOULD GET WRONG ──
+        //
+        // Register item 762. `LetGo` is a fold too — nothing of the prompt is on that pane — but
+        // the agent named NOTHING, so a reader who has only `Account`'s sentence would conclude the
+        // peer never took it. It did: the composer let go. **The instruction that separates them is
+        // *do not replace this session*,** and a run that reached this road and said `Account`'s
+        // words would send a supervisor to buy a session for a peer that is working.
+        //
+        // ⚠ The CLAUSE is asserted and not the sentence, this gate's own rule one screen up: a
+        // reword must not fail here, a silence must.
+        let let_go = walked(crate::deliver::Witnessed::LetGo);
+        assert!(
+            let_go.contains("LET GO") && let_go.contains("Do NOT replace this session"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: this fold RECOVERED — the composer emptied — and the walk \
+             is the only place a supervisor learns it. Without the instruction the sentence reads \
+             as the road above, whose remedy is the opposite: {let_go:?}",
+        );
+        assert_ne!(
+            let_go, account,
+            "⛔⛔⛔ AND IT IS NOT `Account`'S SENTENCE. Both are folds and only one of them has the \
+             agent's own account behind it; publishing one word for the two would put a delivery \
+             nobody named under the sentence that says somebody did",
+        );
+        assert_ne!(
+            let_go, painted,
+            "⚠⚠ nor the painted road's — this prompt is on NO screen, and a reader sent to look \
+             finds a placeholder",
+        );
+
         // ── AND A PASS THAT DELIVERED NOTHING SAYS NOTHING ──
         assert_eq!(
             bare, "Priming --PromptSent--> Working",

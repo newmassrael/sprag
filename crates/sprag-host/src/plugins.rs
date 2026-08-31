@@ -360,6 +360,13 @@ pub const RUN_DELIVERED_KEY: &str = "delivered";
 /// ⚠⚠ A run whose `folded` equals its [`RUN_DELIVERED_KEY`] is one where *go and look at the pane*
 /// is the wrong instruction — `sprag_plugin::Deliveries::all_folded` is the predicate, and both
 /// mouths say it in words rather than leaving a reader to divide two numbers.
+///
+/// ⚠⚠⚠ **TWO ROADS REACH IT AND THEY ARE NOT TOLD APART HERE** — register item 762. A fold is
+/// counted when the AGENT named the question anyway (`Witnessed::Account`) and when the COMPOSER
+/// let go of it without anybody naming it (`Witnessed::LetGo`). One number because one remedy:
+/// *do not go and look at that pane*. The residue is stated on
+/// `sprag_plugin::Deliveries::folded` — a run whose folds are all `LetGo` has hooks reporting
+/// nothing, which is a different diagnosis and earns its own key the day somebody measures it.
 pub const RUN_FOLDED_KEY: &str = "folded";
 /// The answer key carrying **HOW MANY OF A RUN'S PROMPTS ARE SITTING IN A COMPOSER, TYPED AND NEVER
 /// ASKED** — register item 617, present beside [`RUN_DELIVERED_KEY`] and never alone.
@@ -388,8 +395,11 @@ pub const RUN_UNSUBMITTED_KEY: &str = "unsubmitted";
 /// bother*. Both roads produced the same count until this key existed, so a run that died with its
 /// question in nobody's hands published the sentence for a run whose question was sitting visible.
 ///
-/// ⚠⚠ **AND IT IS NOT [`RUN_FOLDED_KEY`]**: that counts folds that RECOVERED, because the agent
-/// named the question anyway. This counts the ones that did not.
+/// ⚠⚠ **AND IT IS NOT [`RUN_FOLDED_KEY`]**: that counts folds that RECOVERED — the agent named the
+/// question anyway, or the composer let go of it — and this counts the ones that did NEITHER.
+/// ⛔ The clause used to read *because the agent named the question anyway*, which stopped being
+/// the whole of it when register item 762 gave the fold road its second witness: a fold whose
+/// composer emptied is a delivery too, and it is on the other side of this line.
 ///
 /// ⚠ MEASURED: `run110` (2026-08-31) ended on this road twice, eighteen hours apart, and the round
 /// diagnosing it read the wrong remedy off the wire and spent itself on brief size.

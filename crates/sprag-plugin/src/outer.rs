@@ -9891,11 +9891,40 @@ impl OuterLoop {
         // ⚠ A prompt the pane never took is a REFUSAL, not a turn to wait out. The alternative is
         // a loop that waits its whole bound for an answer to a question that was never asked, and
         // then judges the screen anyway — this crate's most expensive failure class.
-        if let Delivered::Unconfirmed { attempts, written } = delivered {
-            return Err(PaneError::NeverTook {
-                attempts,
-                written: written.bytes(),
-            });
+        // ⛔⛔⛔⛔⛔ **WHICH ANSWERS ARE REFUSALS IS THE TYPE'S DECISION NOW, NOT THIS CASCADE'S** —
+        // register item 762. These three `if let`s fell through to `Ok`, so an answer added later
+        // was carried on with as *a delivery that asked a question* — the reassuring reading of an
+        // unclassified value (rule 6). When `Delivered::Released` was added the fall-through was
+        // right, and NOTHING IN THE BUILD SAID SO. `Delivered::refused` is exhaustive, so a ninth
+        // answer cannot be added without deciding, and the counters below stay here because they
+        // are this driver's tally rather than the type's.
+        if let Some(refusal) = delivered.refused() {
+            // ⚠⚠⚠⚠⚠ **COUNTED HERE, AND NOWHERE ELSE, BECAUSE THIS IS WHERE THE ANSWER IS READ** —
+            // register item 617. `record_delivery` above cannot do it: it is handed
+            // `Witnessed::of(delivered)`, which maps every refusal to the same `None`, and they are
+            // not one fact — one prompt is on the pane and the other never got there.
+            //
+            // ⚠⚠ EXHAUSTIVE, for the same reason the classification above is: a refusal added
+            // later with no counter would publish the tally of a run that had refused nothing.
+            match delivered {
+                Delivered::Unsubmitted { .. } => {
+                    self.deliveries.unsubmitted = self.deliveries.unsubmitted.saturating_add(1);
+                }
+                Delivered::Unreported { .. } => {
+                    self.deliveries.unreported = self.deliveries.unreported.saturating_add(1);
+                }
+                // ⚠ `Unconfirmed` has no counter and that is register item 617's own decision: it
+                // is a prompt that never reached the pane at all, so it is in no denominator here.
+                // The five below are not refusals and cannot arrive.
+                Delivered::Unconfirmed { .. }
+                | Delivered::Confirmed { .. }
+                | Delivered::OnScreenOnly { .. }
+                | Delivered::Reported { .. }
+                | Delivered::Released { .. }
+                | Delivered::Stopped { .. }
+                | Delivered::Unwitnessed { .. } => {}
+            }
+            return Err(refusal);
         }
         // ⚠⚠⚠ **AND A PROMPT THAT WAS TYPED AND NOT SUBMITTED IS THE SAME REFUSAL ONE KEYSTROKE
         // LATER**, which is register item 222's live symptom read from the loop's side: the prompt
@@ -9907,48 +9936,17 @@ impl OuterLoop {
         // second delivery would concatenate onto it (and a second Enter, if the first one did land,
         // asks an empty question) — so what a supervisor does here is look at the pane, which is
         // exactly what `Delivered::Unconfirmed`'s remedy already is.
-        if let Delivered::Unsubmitted {
-            attempts,
-            written,
-            wanted,
-        } = delivered
-        {
-            // ⚠⚠⚠⚠⚠ **COUNTED HERE, AND NOWHERE ELSE, BECAUSE THIS IS WHERE THE ANSWER IS READ** —
-            // register item 617. `record_delivery` above cannot do it: it is handed
-            // `Witnessed::of(delivered)`, which maps BOTH refusals to the same `None`, and the two
-            // are not one fact — this prompt is on the pane and the other one never got there.
-            //
-            // ⚠⚠ The argument is the one the `shows_the_prompt` road above already makes for
-            // recording `Unchecked`: *recording nothing here would leave it indistinguishable from
-            // a pass that delivered nothing at all*. That call was made once and missed here, and
-            // what it cost is a live run measured 2026-08-23 whose own sentence said the text had
-            // been read back off the screen while its counters said `0 of 0`.
-            self.deliveries.unsubmitted = self.deliveries.unsubmitted.saturating_add(1);
-            return Err(PaneError::NeverSubmitted {
-                attempts,
-                written: written.bytes(),
-                wanted,
-            });
-        }
+        // ⚠⚠ The argument for counting it is the one the `shows_the_prompt` road above already
+        // makes for recording `Unchecked`: *recording nothing here would leave it
+        // indistinguishable from a pass that delivered nothing at all*. That call was made once and
+        // missed here, and what it cost is a live run measured 2026-08-23 whose own sentence said
+        // the text had been read back off the screen while its counters said `0 of 0`.
         // ⚠⚠⚠⚠⚠ **AND THE SAME REFUSAL OVER A COMPOSER THAT SWALLOWED THE PASTE IS A DIFFERENT
         // FACT** — register item 762. Both roads used to arrive as `Unsubmitted`, so both were
         // counted by `unsubmitted` and both reached a reader as *the prompt is sitting in the pane*.
         // On this one the screen moved WITHOUT the text, so the prompt is on no screen at all and
         // the remedy is the opposite one. `Deliveries::unsubmitted`'s own doc had already ruled that
         // two remedies must not be one number; the fold road was missed when that call was made.
-        if let Delivered::Unreported {
-            attempts,
-            written,
-            wanted,
-        } = delivered
-        {
-            self.deliveries.unreported = self.deliveries.unreported.saturating_add(1);
-            return Err(PaneError::NeverReported {
-                attempts,
-                written: written.bytes(),
-                wanted,
-            });
-        }
         // ⚠⚠⚠ **AND A DELIVERY THE RUN'S OWN CLOCK CUT SHORT IS NOT A PROMPT EITHER**, which is a
         // distinction this driver did not make until a LIVE run showed what it costs.
         //
@@ -9974,7 +9972,11 @@ impl OuterLoop {
         // pseudoterminal, so the peer may be answering right now, and recording *no question was
         // asked* about it would be the same sentence the other way round. The two endings differ by
         // one keystroke and a supervisor acts on them oppositely.
-        self.unasked = matches!(delivered, Delivered::Stopped { .. });
+        // ⚠⚠ AND THE SECOND DECISION IS THE TYPE'S TOO — register item 762. It was
+        // `matches!(delivered, Delivered::Stopped { .. })`, where every answer added later defaulted
+        // to *a question was asked*; `Delivered::asked_nothing` is exhaustive, so the day there is
+        // a ninth the compiler asks which of the two it is.
+        self.unasked = delivered.asked_nothing();
         Ok(delivered.written().bytes())
     }
 
