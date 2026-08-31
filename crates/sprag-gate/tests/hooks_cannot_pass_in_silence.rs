@@ -1,4 +1,5 @@
-//! **THE THREE SHAPES IN WHICH A HOOK SAYS NOTHING** — register item 404, second payment.
+//! **THE FOUR SHAPES IN WHICH A HOOK SAYS NOTHING** — register item 404, second payment; the
+//! fourth arrived with register item 792.
 //!
 //! # ⚠⚠⚠ Why this file exists
 //!
@@ -133,6 +134,85 @@ fn no_hook_throws_away_what_a_checker_told_it() {
         "a checker's report is the one thing a person needs when it refuses, and \
          `/dev/null` is where it went:\n{}",
         discarded.join("\n"),
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A HARNESS THAT CANNOT GET ITS SCRATCH MUST NOT GO ON** — register item 792, and the
+/// fourth shape of saying nothing: the other three let a VERDICT vanish, and this one lets the
+/// harness carry on **against the caller's own repository** with no verdict involved at all.
+///
+/// # ⚠⚠⚠⚠⚠ Measured, in this repository, on 2026-08-31
+///
+/// `hosted-read.sh --selftest` opened with `tmp="$(mktemp -d)"` and nothing read the status. A
+/// `local PATH` inside that function started the variable EMPTY — `local` initialises, it does not
+/// save — so `mktemp` was not on PATH, exited 127, and `$tmp` became the empty string. Every line
+/// below then ran against the REAL clone, in this order: `mkdir -p "$tmp/bin"` became
+/// `mkdir -p /bin`; `git -C "$tmp" init` re-initialised this repository; `git -C "$tmp" config
+/// user.email probe@example.com` wrote a `[user]` section into its `.git/config`, replacing the
+/// operator's identity on a tree whose next commit would have carried it; and the arms overwrote
+/// the operator's own marker file, advancing its watermark onto a commit whose run had not spoken.
+///
+/// **Nothing warned.** It was found because an unrelated `git add` printed four empty files the
+/// harness had left staged.
+///
+/// # ⛔⛔ Why an empty scratch is not a harmless empty string
+///
+/// `git -C ""` is read by git as *stay where you are*, so a scratch command silently becomes a
+/// command against the caller's repository. `GIT_INDEX_FILE=""` is read as *unset*, which is the
+/// REAL index — so `content-gate.sh`'s scratch index, unchecked, would have had `git read-tree`
+/// overwrite whatever the operator had staged. And `--prefix="$mirror/"` collapses to
+/// `--prefix="/"`, which is `checkout-index` writing the tree at the filesystem root.
+///
+/// # ⚠⚠ What is required, and what is deliberately NOT
+///
+/// The status must be read **in the same statement** (`|| …`). That is the narrowest thing that
+/// catches what actually happened: a missing `mktemp` exits 127, and a `||` on the assignment ends
+/// it there. A stronger guard below the assignment is welcome — `hosted-read.sh` keeps one that
+/// also asks whether the path is a directory — but it may not be the ONLY thing, because the
+/// statement that assigns is the one place no later edit can drift away from.
+///
+/// ⚠⚠ **THE RUST SIDE CARRIES A DIFFERENT, WEAKER SHAPE — AND WHAT WAS FIRST WRITTEN HERE WAS
+/// WRONG.** This paragraph began as *`std::env::temp_dir()` returns a path unconditionally and
+/// cannot yield the empty string*, which was prose nobody had measured. Measured with `rustc` on
+/// 2026-08-31: with `TMPDIR` merely SET AND EMPTY it answers `""`, and `join` then yields a
+/// RELATIVE path. So the 51 Rust harnesses CAN lose their scratch.
+///
+/// What follows from it is not the same hazard, which is why they are not in this population: a
+/// relative path makes a directory under the CURRENT one, which is then removed — nothing takes the
+/// caller's repository as its SUBJECT the way `git -C ""` and `GIT_INDEX_FILE=""` do. It is
+/// recorded on its own axis rather than folded in here, because folding two hazards into one gate
+/// is how the weaker one sets the bar. (And `sprag-gate`'s `Sandbox` pins `core.hooksPath` against
+/// a THIRD thing again: its own commits running the real hooks.)
+///
+/// ⚠ So the population this walk reaches is the SHELL harnesses — and it reaches the whole of it,
+/// which is what makes zero a number this gate can actually arrive at.
+#[test]
+fn no_hook_uses_a_scratch_it_never_checked_it_got() {
+    let mut unchecked: Vec<String> = Vec::new();
+    for (name, text) in hook_files() {
+        for (number, line) in code_lines(&text) {
+            // ⚠ The CALL, not the word: these hooks name `mktemp` in their own refusal messages,
+            // and a scan that matched those would red on the very sentence this gate wants written.
+            if !line.contains("$(mktemp") && !line.contains('`') {
+                continue;
+            }
+            if line.contains('`') && !line.contains("`mktemp") {
+                continue;
+            }
+            if line.contains("||") {
+                continue;
+            }
+            unchecked.push(format!(".githooks/{name}:{number}: {line}"));
+        }
+    }
+    assert!(
+        unchecked.is_empty(),
+        "⛔ ITEM 792: a scratch was taken and nothing read whether it arrived. `mktemp` exits 127 \
+         when it is not on PATH, the variable is then the empty string, and `git -C \"\"`, \
+         `GIT_INDEX_FILE=\"\"` and `--prefix=\"/\"` all read that as the CALLER'S OWN repository or \
+         filesystem root. Put the check in the same statement — `x=\"$(mktemp -d)\" || return \
+         1`:\n{}",
+        unchecked.join("\n"),
     );
 }
 

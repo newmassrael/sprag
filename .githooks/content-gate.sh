@@ -58,12 +58,23 @@
 # Answers nonzero, having printed nothing, if the layout fails.
 content_mirror() {
     local rev="$1" mirror index
-    mirror="$(mktemp -d)"
+    # ⛔⛔⛔⛔⛔ THE SCRATCH IS CHECKED IN THE STATEMENT THAT TAKES IT — register
+    # item 792. `mktemp` exits 127 when it is not on PATH and the variable is
+    # then the EMPTY STRING, which nothing below would notice: `--prefix="$mirror/"`
+    # collapses to `--prefix="/"`, and that is `checkout-index` writing this
+    # commit's whole tree at the FILESYSTEM ROOT.
+    mirror="$(mktemp -d)" || return 1
 
     if [ -n "$rev" ]; then
         # A scratch index so the layout is that commit's tree and nothing else —
         # in particular not whatever this clone happens to have staged.
-        index="$(mktemp)"
+        #
+        # ⛔⛔⛔⛔⛔ AND THE SAME CHECK, FOR A SHARPER REASON — register item 792.
+        # `GIT_INDEX_FILE=""` is read by git as UNSET, which is the REAL index, so
+        # an unchecked `mktemp` here would have `git read-tree` overwrite exactly
+        # what the operator had staged — the thing this scratch index exists to
+        # avoid touching.
+        index="$(mktemp)" || { rm -rf "$mirror"; return 1; }
         if ! GIT_INDEX_FILE="$index" git read-tree "$rev" ||
             ! GIT_INDEX_FILE="$index" git checkout-index -a --prefix="$mirror/"; then
             rm -rf "$mirror" "$index"

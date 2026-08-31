@@ -321,7 +321,11 @@ run_pixel_smoke() {
     fi
 
     local home
-    home="$(mktemp -d)"
+    # ⛔⛔⛔ THE SCRATCH IS CHECKED WHERE IT IS TAKEN — register item 792. An
+    # unchecked `mktemp` (127 when it is off PATH) leaves this empty, and the
+    # next line becomes `mkdir -p /config /data /state` with the smoke then
+    # pointed at them by `XDG_*`.
+    home="$(mktemp -d)" || return 1
     mkdir -p "$home/config" "$home/data" "$home/state"
     echo "pre-push: pixel smoke ..." >&2
     if ! XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" XDG_STATE_HOME="$home/state" \

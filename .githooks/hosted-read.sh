@@ -512,7 +512,13 @@ hosted_read_selftest() {
     local here tmp pass fail said base tip saved_path FAKE_GH_TOTAL FAKE_GH_FAIL
     saved_path="$PATH"
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    tmp="$(mktemp -d)"
+    # ⚠⚠ CHECKED HERE **AND** BELOW, and the pair is not redundant — register item
+    # 792. This catches the status (`mktemp` off PATH exits 127), which is exactly
+    # what happened; the block below additionally asks whether the path is a
+    # DIRECTORY, which a status alone cannot answer. The statement that assigns is
+    # the one place no later edit can drift away from, so the narrow check lives
+    # there and `hooks_cannot_pass_in_silence` reads for it.
+    tmp="$(mktemp -d)" || return 1
     pass=0
     fail=0
 
