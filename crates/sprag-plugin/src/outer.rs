@@ -6917,7 +6917,19 @@ impl OuterLoop {
             // gate's control holds exactly that line
             // (`a_loop_delivers_a_prompt_its_peer_folded_away_when_the_agent_can_name_it`), and
             // reading `wanted` rather than asking supervision again keeps one authority on it.
+            // ⚠⚠⚠⚠⚠ **BOTH REFUSALS, AND THE SPLIT MUST NOT NARROW THIS ROAD** — register item
+            // 762. `NeverReported` is `NeverSubmitted`'s fold-road half, split out because the two
+            // send a READER to different places; what the DOCUMENT is owed is identical, because
+            // the question was not asked either way and a session replacement is the one recovery
+            // this loop has for that. Matching only the first would have quietly taken the fold
+            // road — the road every measured occurrence of this item took — off the recovery it
+            // has always had, and a run would have died where it used to be replaced.
             Err(PaneError::NeverSubmitted {
+                attempts,
+                written,
+                wanted: crate::deliver::SubmittedWhen::Took { .. },
+            })
+            | Err(PaneError::NeverReported {
                 attempts,
                 written,
                 wanted: crate::deliver::SubmittedWhen::Took { .. },
@@ -9840,6 +9852,25 @@ impl OuterLoop {
                 wanted,
             });
         }
+        // ⚠⚠⚠⚠⚠ **AND THE SAME REFUSAL OVER A COMPOSER THAT SWALLOWED THE PASTE IS A DIFFERENT
+        // FACT** — register item 762. Both roads used to arrive as `Unsubmitted`, so both were
+        // counted by `unsubmitted` and both reached a reader as *the prompt is sitting in the pane*.
+        // On this one the screen moved WITHOUT the text, so the prompt is on no screen at all and
+        // the remedy is the opposite one. `Deliveries::unsubmitted`'s own doc had already ruled that
+        // two remedies must not be one number; the fold road was missed when that call was made.
+        if let Delivered::Unreported {
+            attempts,
+            written,
+            wanted,
+        } = delivered
+        {
+            self.deliveries.unreported = self.deliveries.unreported.saturating_add(1);
+            return Err(PaneError::NeverReported {
+                attempts,
+                written: written.bytes(),
+                wanted,
+            });
+        }
         // ⚠⚠⚠ **AND A DELIVERY THE RUN'S OWN CLOCK CUT SHORT IS NOT A PROMPT EITHER**, which is a
         // distinction this driver did not make until a LIVE run showed what it costs.
         //
@@ -12599,7 +12630,12 @@ mod tests {
              dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '[Pasted text #2 +5 lines]'; \
              exec cat > /dev/null";
 
-        let start = |hooked: bool| {
+        // ⚠ `names` is register item 762's knob: a peer whose hooks REPORT (so the loop asks the
+        // `Took` contract) and which never names the question it was handed. That is the fold road's
+        // refusal, and it had no fixture at all — the two arms below stage the fold RECOVERING and
+        // the fold under a scraped pane, so the road every measured occurrence of item 762 took was
+        // the one nothing drove.
+        let start = |hooked: bool, names: bool| {
             let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
             let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
             let pane = {
@@ -12624,7 +12660,9 @@ mod tests {
                     .input_trail()
                     .and_then(|echo| echo.pane_recent_input(id))
                     .unwrap_or_default();
-                let submitted = typed.contains('\r');
+                // ⚠ `names` gates the submit being NOTICED at all, which is what a hook that never
+                // fires looks like from here — register item 762.
+                let submitted = names && typed.contains('\r');
                 let mut seq = published.lock().expect("the published verdict");
                 if submitted && *seq == 0 {
                     *seq = 1;
@@ -12692,11 +12730,15 @@ mod tests {
             }
             let pumped = loops.pump(&access, &RunContext::uncancellable());
             let screen = access.pane_collapsed(pane).unwrap_or_default();
+            // ⚠ READ BEFORE THE PANE IS CLOSED and returned with the verdict — register item 762.
+            // The counters are what say WHICH refusal this was to anybody who arrives later, and
+            // the answer alone cannot: `NeverSubmitted` and `NeverReported` carry the same numbers.
+            let counted = loops.deliveries();
             access.lifecycle().expect("lifecycle").close(pane);
-            (pumped, screen)
+            (pumped, screen, counted)
         };
 
-        let (delivered, screen) = start(true);
+        let (delivered, screen, _) = start(true, true);
         assert!(
             screen.contains("[Pasted text"),
             "⚠ THE FIXTURE'S OWN PREMISE: the peer must have painted its placeholder, or this gate \
@@ -12734,7 +12776,7 @@ mod tests {
              {moved:?}",
         );
 
-        let (refused, control_screen) = start(false);
+        let (refused, control_screen, _) = start(false, true);
         assert!(
             control_screen.contains("[Pasted text"),
             "the control's peer must fold it too, or the two runs differ in more than the \
@@ -12751,6 +12793,51 @@ mod tests {
             said.contains("could not be read back off the pane") && said.contains("FOLDED"),
             "⚠⚠ AND THE SENTENCE NAMES THE CAUSE IT MET. Two rounds were spent widening a pane \
              this refusal had blamed: {said:?}",
+        );
+
+        // ── ⛔⛔⛔⛔⛔ AND THE ROAD ITEM 762 DIED ON: HOOKED, FOLDED, AND NEVER NAMED ──────────────
+        //
+        // The two arms above stage the fold RECOVERING and the fold at a pane that cannot report.
+        // Neither is `run110`'s: its peer's hooks were live (`Reported`), its composer swallowed the
+        // paste, and the account never came. That road had no fixture, so nothing held which of the
+        // driver's two counters it raises — and merging them back was GREEN against every gate in
+        // this crate until this arm existed (measured, this round).
+        let (lost, lost_screen, counted) = start(true, false);
+        assert!(
+            lost_screen.contains("[Pasted text"),
+            "the third peer must fold it too, or this arm differs from the two above in more than \
+             the account: {lost_screen:?}",
+        );
+        // ⚠⚠⚠⚠⚠ **AND THE RECOVERY IS UNCHANGED, WHICH IS HALF OF WHAT THIS ARM IS FOR.** Splitting
+        // the refusal in two is a chance to take this road OFF the one recovery the loop has for a
+        // question nobody was asked: the document answers `prompt.unasked` with a session
+        // replacement, and the driver reaches it through a pattern that used to name one refusal.
+        // A split that matched only the old name would have died here where it used to be replaced
+        // — silently, because a run that stops moving looks like a run that finished.
+        let walked = lost.expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the fold road lost its replacement. `prompt.unasked` is the \
+             one recovery this loop has for a question that was never asked, and the driver must \
+             raise it for BOTH refusals — the peer being silent is exactly when it is needed",
+        );
+        assert!(
+            matches!(
+                walked,
+                Pumped::Moved {
+                    raised: AiLoopEvent::PromptUnasked,
+                    to: AiLoopState::Restarting,
+                    ..
+                },
+            ),
+            "⛔⛔⛔⛔ REGISTER ITEM 762: the run must spend its one replacement here rather than stop. \
+             Got {walked:?}",
+        );
+        assert_eq!(
+            (counted.unreported, counted.unsubmitted, counted.made),
+            (1, 0, 0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the counters put this on the wrong number. `unsubmitted` \
+             means *the prompt is on that pane, go and look*; this prompt is on no pane, and \
+             `Deliveries::unsubmitted`'s own doc forbids the merge in as many words — *counting \
+             them as one number would be counting two remedies as one*. Counted {counted:?}",
         );
     }
 

@@ -380,6 +380,20 @@ pub const RUN_FOLDED_KEY: &str = "folded";
 /// sentence said *the text was read back off a screen this delivery changed* while its counters
 /// said `made: 0, folded: 0`.
 pub const RUN_UNSUBMITTED_KEY: &str = "unsubmitted";
+/// The answer key carrying **HOW MANY PROMPTS A COMPOSER SWALLOWED AND THE PEER NEVER NAMED** —
+/// register item 762, and the number this workspace did not have.
+///
+/// ⚠⚠⚠⚠⚠ **IT IS NOT [`RUN_UNSUBMITTED_KEY`] AND THE REMEDIES ARE OPPOSITE.** That one means *the
+/// prompt is on that pane, go and look*; this one means *the pane is showing a placeholder, do not
+/// bother*. Both roads produced the same count until this key existed, so a run that died with its
+/// question in nobody's hands published the sentence for a run whose question was sitting visible.
+///
+/// ⚠⚠ **AND IT IS NOT [`RUN_FOLDED_KEY`]**: that counts folds that RECOVERED, because the agent
+/// named the question anyway. This counts the ones that did not.
+///
+/// ⚠ MEASURED: `run110` (2026-08-31) ended on this road twice, eighteen hours apart, and the round
+/// diagnosing it read the wrong remedy off the wire and spent itself on brief size.
+pub const RUN_UNREPORTED_KEY: &str = "unreported";
 /// The answer key carrying **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES** —
 /// register item 601, a sentence and absent for a run that put no claim to a checker.
 ///
@@ -4506,6 +4520,7 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         RUN_DELIVERED_KEY: progress.deliveries.made,
         RUN_FOLDED_KEY: progress.deliveries.folded,
         RUN_UNSUBMITTED_KEY: progress.deliveries.unsubmitted,
+        RUN_UNREPORTED_KEY: progress.deliveries.unreported,
         RUN_CHECKS_KEY: {
             "asked": progress.checks.asked,
             "silent": progress.checks.silent,
@@ -4647,6 +4662,13 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             made: small(beside.get(RUN_DELIVERED_KEY))?,
             folded: small(beside.get(RUN_FOLDED_KEY))?,
             unsubmitted: small(beside.get(RUN_UNSUBMITTED_KEY))?,
+            // ⚠⚠ AND THE FOURTH IS `?` TOO, WHICH RETIRES OLDER RECORDS' TRIPLE RATHER THAN
+            // INVENTING A ZERO FOR IT — register item 762, and this block's own whole-or-nothing
+            // rule applied to a key that did not used to exist. A driver that never counted folds
+            // it lost is not a driver reporting none, and `Deliveries` has no word for *unknown*:
+            // filling in `0` would publish *no question of this run's went missing* about every run
+            // written before the counter existed, which is this workspace's rule 6 exactly.
+            unreported: small(beside.get(RUN_UNREPORTED_KEY))?,
         })
     })();
     let checks = (|| {
@@ -4983,13 +5005,18 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
     // all zeros for ever, so reading it first published *nothing was ever typed* about a run that
     // had filled somebody's pane.
     let deliveries = reported.deliveries.unwrap_or(run.progress.deliveries);
-    if deliveries.made > 0 || deliveries.unsubmitted > 0 {
+    // ⚠⚠⚠ `unreported` JOINS THE PREDICATE — register item 762. A run whose every prompt was
+    // swallowed by a composer has `made == 0` AND `unsubmitted == 0`, so without this clause the
+    // one run this counter was built for publishes nothing at all — which is the exact shape item
+    // 617 had to repair here for its own counter one line down.
+    if deliveries.made > 0 || deliveries.unsubmitted > 0 || deliveries.unreported > 0 {
         entry[RUN_DELIVERED_KEY] = json!(deliveries.made);
         entry[RUN_FOLDED_KEY] = json!(deliveries.folded);
         // ⚠ AND THE THIRD OF THE TRIPLE — register item 617. Published beside its two neighbours
         // because they are ONE value (`sprag_plugin::Deliveries`), and a key a writer can omit
         // half of is what that type exists to prevent.
         entry[RUN_UNSUBMITTED_KEY] = json!(deliveries.unsubmitted);
+        entry[RUN_UNREPORTED_KEY] = json!(deliveries.unreported);
     }
     // ⚠⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601,
     // beside the state for the two keys above's reason and absent when no claim was ever put to a
@@ -5579,7 +5606,30 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
         made: count(run, RUN_DELIVERED_KEY),
         folded: count(run, RUN_FOLDED_KEY),
         unsubmitted: count(run, RUN_UNSUBMITTED_KEY),
+        unreported: count(run, RUN_UNREPORTED_KEY),
     };
+    // ⚠⚠⚠⚠⚠ **AND A PROMPT A COMPOSER SWALLOWED IS SAID FIRST OF ALL, BECAUSE ITS INSTRUCTION IS
+    // THE ONE A READER GETS WRONG** — register item 762. It is read before the wedged clause below
+    // for that clause's own reason turned around: `unsubmitted` says *go and look at that pane* and
+    // this says **do not**, so a run that has both must not be handed the visible one's sentence
+    // for the invisible one's prompt. On the run that measured this, the reader went to the pane,
+    // found a healthy agent, and spent a session on the wrong quantity.
+    if deliveries.unreported > 0 {
+        let swallowed = format!(
+            "⚠ {} prompt(s) were typed into a composer that swallowed them and the peer never named \
+             the question — do NOT go and look at that pane: it is showing a placeholder and the \
+             prompt is nowhere a person can read it. What is worth checking is whether that peer's \
+             hooks report at all",
+            deliveries.unreported,
+        );
+        if deliveries.made == 0 && deliveries.unsubmitted == 0 {
+            return Some(swallowed);
+        }
+        return Some(match delivered_clause(deliveries) {
+            Some(delivered) => format!("{swallowed}; {delivered}"),
+            None => swallowed,
+        });
+    }
     // ⚠⚠⚠⚠⚠ **A PROMPT NOBODY WAS ASKED IS SAID FIRST, BECAUSE IT IS THE ONE STILL SITTING
     // SOMEWHERE** — register item 617. It is read BEFORE the zero-denominator return below, and
     // that ordering is the whole repair: a wedged run has no deliveries by definition (nothing was
@@ -6949,6 +6999,11 @@ mod tests {
                         made: 0,
                         folded: 0,
                         unsubmitted: 1,
+                        // ⚠ ZERO ON PURPOSE, and it is the CONTROL for register item 762: this
+                        // fixture is the WEDGED run, whose prompt is sitting visible in a composer.
+                        // Its sentence must stay *go and look at that pane*, so a swallowed count
+                        // leaking in here would prove nothing and hide the split.
+                        unreported: 0,
                     }),
                 ),
                 // ── AND THE CONTROL: a run that put nothing into any pane ──
@@ -6972,7 +7027,12 @@ mod tests {
              {:?}",
             entry(0),
         );
-        for key in [RUN_DELIVERED_KEY, RUN_FOLDED_KEY, RUN_UNSUBMITTED_KEY] {
+        for key in [
+            RUN_DELIVERED_KEY,
+            RUN_FOLDED_KEY,
+            RUN_UNSUBMITTED_KEY,
+            RUN_UNREPORTED_KEY,
+        ] {
             assert!(
                 entry(1).get(key).is_none(),
                 "⚠⚠⚠⚠⚠ THE CONTROL: this run composed no prompt at all, and the absence of {key:?} \
@@ -6982,6 +7042,69 @@ mod tests {
                 entry(1),
             );
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A SWALLOWED PROMPT AND A WEDGED ONE GET OPPOSITE INSTRUCTIONS** — register item
+    /// 762, held at the sentence a person actually reads.
+    ///
+    /// # What it cost to have one sentence for both
+    ///
+    /// `unsubmitted` says *go and look at that pane — your prompt is sitting there*, and until this
+    /// round a prompt a composer had SWALLOWED raised that same count. So `run110`'s record told
+    /// its reader to go to a pane showing `[Pasted text +N lines]`. They went, found a healthy
+    /// agent, and spent the round measuring brief size — the one quantity the product had already
+    /// disproved (a 2,055-byte brief folded the same way half an hour later).
+    ///
+    /// ⚠ Driven over the JSON a client reads, not over the struct: the split is only worth anything
+    /// if it survives the wire, and the wire is where a reader meets it.
+    #[test]
+    fn a_swallowed_prompt_and_a_wedged_one_do_not_get_the_same_instruction() {
+        let wedged = delivery_sentence(&json!({
+            RUN_DELIVERED_KEY: 0,
+            RUN_FOLDED_KEY: 0,
+            RUN_UNSUBMITTED_KEY: 1,
+            RUN_UNREPORTED_KEY: 0,
+        }))
+        .expect("a wedged run has a sentence");
+        let swallowed = delivery_sentence(&json!({
+            RUN_DELIVERED_KEY: 0,
+            RUN_FOLDED_KEY: 0,
+            RUN_UNSUBMITTED_KEY: 0,
+            RUN_UNREPORTED_KEY: 1,
+        }))
+        .expect("a swallowed run has a sentence");
+
+        assert!(
+            wedged.contains("go and look at that pane"),
+            "⚠⚠⚠ THIS GATE'S OWN PREMISE: the wedged sentence must still send a reader to the pane, \
+             or the assertion below separates nothing: {wedged:?}",
+        );
+        assert!(
+            swallowed.contains("do NOT go and look at that pane"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: a prompt a composer swallowed is on no pane, and the wire's \
+             sentence does not say so. This is the exact reading that cost a round: {swallowed:?}",
+        );
+        assert_ne!(
+            wedged, swallowed,
+            "⛔⛔⛔⛔ REGISTER ITEM 762: the two counts produce one sentence, so splitting them \
+             bought a number nobody can act on differently",
+        );
+
+        // ⚠⚠ AND A RUN THAT HAS BOTH SAYS BOTH, SWALLOWED FIRST. The earlier prompts are somewhere
+        // a person can read and the swallowed one is not, and neither survives being dropped for
+        // the other — `delivery_sentence`'s own rule for its two existing readings.
+        let both = delivery_sentence(&json!({
+            RUN_DELIVERED_KEY: 0,
+            RUN_FOLDED_KEY: 0,
+            RUN_UNSUBMITTED_KEY: 1,
+            RUN_UNREPORTED_KEY: 1,
+        }))
+        .expect("a run with both has a sentence");
+        assert!(
+            both.contains("do NOT go and look at that pane"),
+            "⛔⛔⛔⛔ REGISTER ITEM 762: a run with both readings dropped the swallowed one, which is \
+             the half a reader gets wrong: {both:?}",
+        );
     }
 
     /// `query("runs")` as a client reads it — through the product's own door.
@@ -14125,6 +14248,10 @@ mod tests {
                             made: 5,
                             folded: 2,
                             unsubmitted: 1,
+                            // ⚠ Distinct from its three neighbours — register item 762 — so a
+                            // relay that dropped this count, or read it off one of them, fails
+                            // here rather than agreeing by coincidence.
+                            unreported: 4,
                         },
                         checks: sprag_plugin::Checks {
                             asked: 3,
@@ -14237,6 +14364,7 @@ mod tests {
                 made: 5,
                 folded: 2,
                 unsubmitted: 1,
+                unreported: 4,
             }),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 663 / 606: this is the column item 606 was filed for, and it \
              came back empty for the driver kind that fills it from a report. A run is READ after \
@@ -14294,6 +14422,7 @@ mod tests {
                 made: 7,
                 folded: 0,
                 unsubmitted: 0,
+                unreported: 0,
             };
             moving.driving = Some(pane);
             moving.banked = Some(sprag_plugin::Banked {

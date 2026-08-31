@@ -1988,6 +1988,16 @@ pub struct PersistedDeliveries {
     /// already has, to gain nothing.
     #[serde(default)]
     pub unsubmitted: u32,
+    /// [`sprag_plugin::Deliveries::unreported`] — register item 762.
+    ///
+    /// ⚠⚠ `#[serde(default)]` for its neighbour's reason, and the residue is NOT the same one. An
+    /// older log's missing `unsubmitted` reads as *no wedged prompts*, which is nearly always true;
+    /// a missing `unreported` reads as *no prompt of this run was swallowed*, and the runs whose
+    /// records predate this field are exactly the runs that were dying of it. The alternative — a
+    /// version bump — would refuse every run this machine already has to gain a `0` nobody would
+    /// read differently, so the default stays and the caveat is written down instead of implied.
+    #[serde(default)]
+    pub unreported: u32,
 }
 
 impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
@@ -1996,6 +2006,7 @@ impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
             made: live.made,
             folded: live.folded,
             unsubmitted: live.unsubmitted,
+            unreported: live.unreported,
         }
     }
 }
@@ -2006,6 +2017,7 @@ impl From<PersistedDeliveries> for sprag_plugin::Deliveries {
             made: stored.made,
             folded: stored.folded,
             unsubmitted: stored.unsubmitted,
+            unreported: stored.unreported,
         }
     }
 }
@@ -4249,6 +4261,11 @@ mod tests {
             // MOST needs to survive its daemon: the text is still sitting in a composer somebody
             // can walk over and look at, long after the run that typed it is gone.
             unsubmitted: 5,
+            // ⚠ AND THE FOURTH, distinct from all three above for the same reason — register item
+            // 762. A restore that dropped it, or filled it from a neighbour, would publish *no
+            // question of this run went missing* about the one run that most needs the opposite
+            // said, and it would agree with `folded` by coincidence if it were 3.
+            unreported: 7,
         };
         registry.submit(NewRun {
             id,

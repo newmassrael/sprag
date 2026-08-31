@@ -240,10 +240,11 @@ impl Prompted {
                 Delivered::Unconfirmed { .. }
                 | Delivered::Stopped { .. }
                 | Delivered::Unsubmitted { .. }
+                | Delivered::Unreported { .. }
                 | Delivered::Unwitnessed { .. },
             ) => {
-                // None of the four reaches a capture: the step returns before one is taken. ⚠ The
-                // last two cannot arise here at all while this adapter asks nothing of its submit
+                // None of the five reaches a capture: the step returns before one is taken. ⚠ The
+                // last three cannot arise here at all while this adapter asks nothing of its submit
                 // (see `deliver_prompt`), and they are ANSWERED rather than left to a panic,
                 // because the day it does ask is a one-line change and a panic is a poor way for
                 // that to announce itself.
@@ -274,6 +275,7 @@ impl Prompted {
                 Delivered::Unconfirmed { .. }
                 | Delivered::Stopped { .. }
                 | Delivered::Unsubmitted { .. }
+                | Delivered::Unreported { .. }
                 | Delivered::Unwitnessed { .. },
             ) => {
                 return None;
@@ -678,6 +680,22 @@ impl Agent {
                 wanted,
             }) => {
                 return Err(PaneError::NeverSubmitted {
+                    attempts,
+                    written: written.bytes(),
+                    wanted,
+                });
+            }
+            // ⚠ AND THE FOLD ROAD'S REFUSAL, WHICH IS THE OPPOSITE SENTENCE — register item 762.
+            // Unreachable here for the same reason as its sibling above, and answered rather than
+            // wildcarded so the day this adapter asks something of its submit it inherits the RIGHT
+            // remedy: this one's prompt is on no screen, so *the text is sitting in its composer*
+            // would send a reader to a pane holding a placeholder.
+            Prompted::Delivered(Delivered::Unreported {
+                attempts,
+                written,
+                wanted,
+            }) => {
+                return Err(PaneError::NeverReported {
                     attempts,
                     written: written.bytes(),
                     wanted,

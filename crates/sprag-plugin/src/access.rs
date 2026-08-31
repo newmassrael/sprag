@@ -402,6 +402,33 @@ pub enum PaneError {
         written: 0,
         wanted: crate::deliver::SubmittedWhen::Repaints { within: std::time::Duration::ZERO },
     },
+    /// **THE COMPOSER SWALLOWED THE PASTE AND THE PEER NEVER NAMED WHAT IT WAS ASKED** — register
+    /// item 762, and the refusal [`NeverSubmitted`](Self::NeverSubmitted) used to answer for.
+    ///
+    /// The two are one keystroke apart and their REMEDIES point at different places, which is the
+    /// whole reason for a second word. `NeverSubmitted`'s says *the prompt is sitting in the pane*;
+    /// on this road the pane is showing `[Pasted text +N lines]` and the prompt is nowhere a person
+    /// can read it. A supervisor sent to that pane finds a healthy agent and nothing to act on —
+    /// measured on `run110`, which cost the round that read it a whole session.
+    ///
+    /// ⚠ Same fields as its sibling deliberately: what differs is not the measurement, it is what
+    /// the measurement MEANS, and a reader who gets the same three numbers with the other sentence
+    /// is being told the opposite thing about the same pane.
+    NeverReported {
+        /// How many injections carried the TEXT. One, by construction — see
+        /// [`crate::deliver::Delivered::Unreported`].
+        attempts: u32,
+        /// How many bytes reached the pseudoterminal, the submit's own among them.
+        written: u64,
+        /// What the caller said would show them the submit had landed — a
+        /// [`SubmittedWhen::Took`](crate::deliver::SubmittedWhen::Took), because no other contract
+        /// reaches this road.
+        wanted: crate::deliver::SubmittedWhen,
+    } = {
+        attempts: 0,
+        written: 0,
+        wanted: crate::deliver::SubmittedWhen::Repaints { within: std::time::Duration::ZERO },
+    },
     /// ⚠⚠ **THE MACHINE DRIVING THIS RUN COULD NOT BE DRIVEN ON**, and the clause saying why.
     ///
     /// The one arm that is not about the pane, and it is here because this type is what
@@ -760,6 +787,24 @@ impl std::fmt::Display for PaneError {
                      window this run allowed. The prompt is therefore sitting in the pane — a \
                      composer holding an unsent question — and nothing pressed again, because a \
                      second submit onto a composer the first one emptied asks an empty one",
+                    wanted.describe(),
+                )
+            }
+            Self::NeverReported {
+                attempts,
+                written,
+                wanted,
+            } => {
+                write!(
+                    f,
+                    "the pane took the prompt, showed something else for it, and the peer never \
+                     named the question: {attempts} injection(s) put {written} bytes on its \
+                     pseudoterminal, the screen moved WITHOUT the text — a composer folding a long \
+                     paste — and then the peer {} inside the window this run allowed. ⚠ Do NOT go \
+                     and look at that pane: what is on it is a placeholder, and the prompt is \
+                     nowhere a person can read it. The peer's own report is the only evidence this \
+                     road can ever produce, so what is worth checking is whether its hooks report \
+                     at all, and what this run has left to replace the session with",
                     wanted.describe(),
                 )
             }

@@ -680,6 +680,45 @@ pub enum Delivered {
         /// The contract that went unsatisfied.
         wanted: SubmittedWhen,
     },
+    /// **THE COMPOSER SWALLOWED THE PASTE AND THE AGENT NEVER NAMED THE QUESTION** — the refusal
+    /// that pairs with [`Reported`](Self::Reported), on the one road where the pane cannot answer.
+    /// Register item 762.
+    ///
+    /// # ⛔⛔⛔⛔⛔ It was [`Unsubmitted`](Self::Unsubmitted), and that answer's remedy is the
+    /// opposite of this one's
+    ///
+    /// Both refusals used to be spelled `Unsubmitted`, so both reached a supervisor as *"the text
+    /// was read back off a screen this delivery changed … the prompt is therefore sitting in the
+    /// pane"*. On THIS road the screen moved **without** the text (`OnScreen::MovedWithoutIt`) —
+    /// that is what a composer folding a long paste does — so neither half is true: nothing was
+    /// read back, and what is sitting in the pane is `[Pasted text +N lines]`.
+    ///
+    /// **Measured, at the cost of a session.** `run110` (2026-08-31) ended here, its record said
+    /// *go and look at the pane*, and the round reading it went and looked, found a healthy pane,
+    /// and spent its round on brief SIZE instead. [`crate::plugin::Deliveries::unsubmitted`]'s own
+    /// doc had already
+    /// forbidden exactly this — *"counting them as one number would be counting two remedies as
+    /// one"* — and the fold road was simply missed when that call was made.
+    ///
+    /// ⚠⚠ The remedy this one carries: **do not go to the pane, go to the agent's own record.** The
+    /// only evidence a folded paste can ever produce is the peer naming what it was asked, and it
+    /// did not — so what is worth knowing is whether the peer's hooks are reporting at all, and
+    /// what this run's session-replacement budget has left ([`crate::outer::Retyped`]).
+    ///
+    /// ⚠ `attempts` is 1 by construction here and that is not a measurement of the peer: the fold
+    /// road returns out of the injection loop, so the two spare attempts
+    /// ([`DEFAULT_ATTEMPTS`]) are unreachable. A second injection would land on the first one's
+    /// text, which is why — but a reader who takes `attempts: 1` for *the pane was tried once and
+    /// refused once* is reading this module's control flow as a fact about the world.
+    Unreported {
+        /// How many injections carried the TEXT. Always 1 on this road — see the type's doc.
+        attempts: u32,
+        /// Every byte that reached the pty, the submit's own among them.
+        written: Written,
+        /// The contract that went unsatisfied — always a [`SubmittedWhen::Took`], because this road
+        /// is only taken for a peer that can name what it was asked.
+        wanted: SubmittedWhen,
+    },
     /// THE RUN ENDED part-way, BEFORE ANYTHING WAS SUBMITTED — cancelled, or out of time. Nothing
     /// is claimed about what the pane holds. Which of the two it was is the
     /// [`crate::run::RunContext`]'s to answer.
@@ -744,6 +783,11 @@ impl Delivered {
     /// on the pane at all — a composer had folded the paste away — so a caller reading this to mean
     /// *there is text a person can see* must be told no. It is the reason the two answers are
     /// separate words.
+    ///
+    /// ⚠ **AND FALSE FOR [`Unreported`](Self::Unreported), WHICH IS THAT SAME ROAD'S REFUSAL** —
+    /// register item 762. It is `matches!`, so a new variant is false by default here, and for this
+    /// one the default is the right answer rather than a lucky one: the screen moved WITHOUT the
+    /// text, which is the whole meaning of the answer.
     #[must_use]
     pub const fn is_on_screen(self) -> bool {
         matches!(
@@ -764,6 +808,7 @@ impl Delivered {
             | Self::OnScreenOnly { written, .. }
             | Self::Unconfirmed { written, .. }
             | Self::Unsubmitted { written, .. }
+            | Self::Unreported { written, .. }
             | Self::Stopped { written, .. }
             | Self::Unwitnessed { written, .. } => written,
         }
@@ -853,7 +898,13 @@ impl Witnessed {
             Delivered::Reported { .. } => Some(Self::Account),
             Delivered::Stopped { .. } => Some(Self::Unasked),
             Delivered::Unwitnessed { .. } => Some(Self::Unproven),
-            Delivered::Unconfirmed { .. } | Delivered::Unsubmitted { .. } => None,
+            // ⚠ `Unreported` joins them for the same reason, register item 762: a folded paste the
+            // peer never named is not a delivery, so a walk has no evidence to publish for it. What
+            // its caller must NOT do is read that shared `None` as *these are one fact* — see
+            // `OuterLoop`'s classification, where the two are counted apart.
+            Delivered::Unconfirmed { .. }
+            | Delivered::Unsubmitted { .. }
+            | Delivered::Unreported { .. } => None,
         }
     }
 
@@ -1190,8 +1241,13 @@ pub fn deliver(
                     },
                     // The screen never showed it and the agent never named it, so nothing places
                     // this prompt in that pane — and the keystroke IS out, which is what makes this
-                    // the submit's refusal rather than the text's. See `Delivered::Unsubmitted`.
-                    Seen::No => Delivered::Unsubmitted {
+                    // the submit's refusal rather than the text's.
+                    //
+                    // ⛔⛔⛔⛔⛔ IT WAS `Unsubmitted`, WHICH SAYS THE OPPOSITE — register item 762.
+                    // That answer's sentence is *the prompt is sitting in the pane*, and the whole
+                    // meaning of the arm we are inside is that the screen moved WITHOUT the text.
+                    // See `Delivered::Unreported`, which is this road's own word.
+                    Seen::No => Delivered::Unreported {
                         attempts,
                         written: Written::of(written),
                         wanted: spec.submitted_when,
@@ -2984,6 +3040,41 @@ mod tests {
             "confirmed by the program, and not on the screen: {delivered:?}",
         );
 
+        // ── ⛔⛔⛔⛔⛔ AND THE SAME ROAD WHEN THE ACCOUNT NEVER COMES — register item 762 ──────────
+        //
+        // The arm above is this road's SUCCESS. Its failure — the composer swallowed the paste and
+        // the peer never named the question — used to answer `Unsubmitted`, whose whole sentence is
+        // *the prompt is sitting in the pane*. On this road the screen moved WITHOUT the text, so
+        // that instruction points at a placeholder. `run110` died here twice and the round reading
+        // its record went and looked at a healthy pane.
+        //
+        // ⚠ Same fixture, one knob: the peer reports NOTHING. That is what makes it this road's
+        // refusal rather than the swallow control below — the screen still moved, so the bytes are
+        // accounted for and a retry would land on top of them.
+        let unnamed = folded().reporting(None);
+        let lost = unnamed.deliver_under(SENT, &asking_once());
+        assert!(
+            matches!(lost, Delivered::Unreported { attempts: 1, .. }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: a folded paste the peer never named must be its own answer. \
+             As `Unsubmitted` it reaches a supervisor as *the prompt is sitting in the pane* — and \
+             the pane is showing {FOLDED:?}. Got {lost:?}, log {:?}",
+            unnamed.log(),
+        );
+        assert!(
+            !lost.is_on_screen() && !lost.is_confirmed(),
+            "⛔⛔⛔ REGISTER ITEM 762: this answer is neither on the screen nor confirmed, and both \
+             halves matter — `is_on_screen` is what a caller asks before it decides whether a \
+             person can go and read the prompt: {lost:?}",
+        );
+        assert_eq!(
+            (unnamed.text_injections(), unnamed.submits()),
+            (1, 1),
+            "⚠⚠ ONE COPY AND ONE PRESS on this road too. The `attempts: 1` in the answer above is \
+             this module's control flow and not a measurement of the peer — the fold arm returns \
+             out of the injection loop, so the spare attempts are unreachable. Log: {:?}",
+            unnamed.log(),
+        );
+
         // ⚠⚠⚠ THE CONTROL THAT SAYS WHAT THE NEW ARM KEYS ON: a screen that never MOVED at all. The
         // bytes are unaccounted for — nothing took them, nothing painted them — so this is the
         // swallowed-input window the retry exists for, and it is not pressed over. Same contract,
@@ -3055,6 +3146,57 @@ mod tests {
     /// than no gate**; this one is neither, because the mapping is a total function over a closed
     /// set and can simply be enumerated.
     ///
+    /// ⚠⚠⚠⚠⚠ **THE TWO FOLD-ROAD REFUSALS SEND A READER TO OPPOSITE PLACES** — register item 762,
+    /// and the assertion that keeps them from being merged back.
+    ///
+    /// `PaneError::NeverSubmitted` and `PaneError::NeverReported` carry the same three numbers, so
+    /// nothing about their DATA says they are different facts. What differs is the instruction, and
+    /// an instruction is a string — which is exactly the shape this workspace's rule 10 is about, a
+    /// reason written in prose that nothing measures. It was prose until now, and what it cost is
+    /// on the record: one round read *go and look at that pane* off a run whose prompt was on no
+    /// pane, went and looked, found a healthy agent, and spent itself on the wrong quantity.
+    #[test]
+    fn the_two_fold_road_refusals_do_not_send_a_reader_to_the_same_place() {
+        let wanted = SubmittedWhen::Took {
+            within: Duration::from_millis(1),
+        };
+        let visible = crate::access::PaneError::NeverSubmitted {
+            attempts: 1,
+            written: 2782,
+            wanted,
+        }
+        .to_string();
+        let swallowed = crate::access::PaneError::NeverReported {
+            attempts: 1,
+            written: 2782,
+            wanted,
+        }
+        .to_string();
+
+        assert!(
+            visible.contains("sitting in the pane"),
+            "⚠⚠⚠ THIS GATE'S OWN PREMISE: the visible refusal must still send a reader to the pane, \
+             or the assertions below separate nothing: {visible:?}",
+        );
+        assert!(
+            swallowed.contains("Do NOT go and look at that pane"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: a prompt a composer swallowed is on NO pane, and this \
+             sentence does not say so. It is the one instruction a reader acts on, and the round \
+             that read the old one went to a pane holding `[Pasted text +N lines]` and diagnosed \
+             the run's brief instead: {swallowed:?}",
+        );
+        assert!(
+            !swallowed.contains("sitting in the pane"),
+            "⛔⛔⛔⛔ REGISTER ITEM 762: the swallowed refusal still carries its sibling's clause, so \
+             a reader gets both instructions at once and follows the wrong one: {swallowed:?}",
+        );
+        assert_ne!(
+            visible, swallowed,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the two refusals read identically, so splitting the variant \
+             bought nothing — which is the disease this item is, one type earlier",
+        );
+    }
+
     /// ⚠⚠ **IT IS THE MUTATION THE DRIVER GATES LET THROUGH THAT ARGUES FOR IT.** Narrowing
     /// [`Witnessed::of`] to answer [`None`] for the two stop answers is green against every fixture
     /// that drives a loop — and it would put a run's clock expiring mid-delivery into the SAME

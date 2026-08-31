@@ -430,6 +430,25 @@ pub struct Deliveries {
     /// sitting there**, which is a different instruction to a different person. Counting them as
     /// one number would be counting two remedies as one.
     pub unsubmitted: u32,
+    /// How many prompts this run typed into a composer that **swallowed them**, and which the peer
+    /// then never named — [`crate::deliver::Delivered::Unreported`]. Register item 762.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE FOURTH NUMBER, AND [`unsubmitted`](Self::unsubmitted)'S OWN DOC IS WHY.** That
+    /// field argues, in as many words, that a folded prompt and a visible one *"would be counting
+    /// two remedies as one"* — and then counted this road as its own, because the fold road reaches
+    /// the same `Delivered` answer. So the number that said *go and look at the pane* was being
+    /// raised for prompts that are not on any pane.
+    ///
+    /// ⚠⚠ **IT IS NOT [`folded`](Self::folded) EITHER, and the two are easy to mistake.** `folded`
+    /// counts folds that RECOVERED: the paste was swallowed and the agent named the question
+    /// anyway, so a delivery happened. This counts the ones that did not — no delivery, no
+    /// question, and nothing on the screen. `folded` is a sub-count of [`made`](Self::made) and
+    /// this one is outside it, for `unsubmitted`'s reason exactly.
+    ///
+    /// ⚠ **MEASURED**: `run110` (2026-08-31) ended on this road twice, eighteen hours apart, and
+    /// this workspace had no number for it — the register entry that diagnosed the run said so
+    /// itself (*"안 쟀다 … 이 항목의 수는 「닿았는데 기록 못 된 것」"*).
+    pub unreported: u32,
 }
 
 impl Deliveries {
@@ -444,6 +463,7 @@ impl Deliveries {
         made: 0,
         folded: 0,
         unsubmitted: 0,
+        unreported: 0,
     };
 
     /// Whether EVERY prompt this run delivered was folded away — the reading that says *do not go
