@@ -1032,12 +1032,15 @@ impl McpServer {
         let mut last = String::new();
         while Instant::now() < deadline {
             last = self.call_tool(name, args.clone());
-            if last.matches(needle).count() >= want {
+            if seen_at_least(&last, needle, want) {
                 return last;
             }
             std::thread::sleep(POLL);
         }
-        panic!("{name} never reported {needle:?} {want} time(s); last answer was:\n{last}")
+        panic!(
+            "{name} never reported {needle:?} {want} time(s) (counted across the wrap); last \
+             answer was:\n{last}"
+        )
     }
 
     /// Poll `list_runs` until RUN `id` ITSELF reports `word`, returning the whole listing.
@@ -1104,6 +1107,95 @@ fn fold(text: &str) -> String {
     text.chars()
         .filter(|glyph| !glyph.is_whitespace())
         .collect()
+}
+
+/// Whether `text` shows `needle` at least `want` times, **counting across the wrap** — register
+/// item 788.
+///
+/// # ⛔⛔⛔⛔⛔ [`fold`]'s own doc called this case a nuisance, and it broke CI
+///
+/// That doc says folding is *"the only sound reading of a pane's RENDERED text for a needle that
+/// may be WRAPPED"*, and then dismisses the POSITIVE direction: *"for a positive check that is a
+/// nuisance"*. Every counted wait in this file is a positive check, and none of them folded.
+///
+/// **Measured, `69a0f5c`'s CI, `headless (linux)`**: a wait for `DEAF-READY` twice timed out with
+/// the marker plainly on the screen — because the shell's echo of the command it was typed in had
+/// been broken across a row boundary into `DEA` + `F-READY`, so the count reached 1.
+///
+/// ⚠⚠ **AND IT IS NOT A PLATFORM DIFFERENCE, WHICH IS WHAT THE NAME WOULD SUGGEST.** The pane is
+/// `BOOT_PANE`-sized — **40 columns** — and the runner's prompt was 58 characters, so the marker
+/// began at column 77 of the logical line: `77 % 40 = 37`, and `37 + 10 > 40`, splitting it three
+/// characters in. The arithmetic reproduces the failure exactly, and every term in it but the
+/// prompt is ours. macOS passed because ITS prompt is shorter, which is not a property anybody
+/// should be gating on.
+///
+/// ⚠ **THE RESIDUE, STATED**: folding can join two words the screen showed apart, so a positive
+/// count is now weaker than an exact one — it would count a `…DEAF` ending one row and a `-READY`
+/// starting the next from unrelated text. `fold`'s doc already accepts that trade for the negative
+/// assertions in this file; the alternative here is the false NEGATIVE that stopped a run's CI,
+/// and *widen the pane* is not available because the prompt length belongs to the runner.
+fn seen_at_least(text: &str, needle: &str, want: usize) -> bool {
+    fold(text).matches(&fold(needle)).count() >= want
+}
+
+/// **THE SCREEN `69a0f5c`'s CI PRINTED**, as it printed it — register item 788, and the only place
+/// these rows exist.
+///
+/// Data rather than prose, and the row breaks are the whole content: two of them are the emulator's
+/// (the pane is 40 columns and this is what a 58-character prompt does to a 51-character command),
+/// and the marker straddles the second. A sample rewritten as a paragraph stops showing that, which
+/// is the one thing it is here for.
+#[rustfmt::skip]
+const WRAPPED_BY_A_LONG_PROMPT: &str = "\
+runner@runnervmgx7h7:~/work/sprag/sprag/\n\
+crates/sprag-mcp$ stty -echo; printf DEA\n\
+F-READY; exec cat >/dev/null\n\
+DEAF-READY";
+
+/// **A MARKER A ROW BOUNDARY CUT IN HALF IS STILL A MARKER** — the gate for [`seen_at_least`],
+/// register item 788.
+///
+/// The arms are ordered so each kills something the one before it cannot:
+///
+/// * the recorded screen counts TWICE, which is what the wait that timed out was asking for;
+/// * the same screen counted WITHOUT folding reaches 1 — the control, and the proof that this
+///   fixture stages the hazard rather than agreeing with the repair by coincidence;
+/// * a screen holding the marker once is still one, so folding has not simply made every count
+///   pass — the direction a repair like this fails in;
+/// * every row of the record is 40 characters or shorter, which is this workspace's rule that a
+///   sample's own premise is asserted inside the gate: rows wider than the pane would mean these
+///   are not the rows that pane produced.
+#[test]
+fn a_marker_a_row_boundary_cut_in_half_is_still_a_marker() {
+    assert!(
+        seen_at_least(WRAPPED_BY_A_LONG_PROMPT, "DEAF-READY", 2),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 788: this is the screen a wait for {:?} twice timed out over, with \
+         the marker plainly on it. The echo was cut into `DEA` and `F-READY` by a row boundary the \
+         runner's prompt length decided, and a count that reads rows cannot see across it: {:?}",
+        "DEAF-READY",
+        WRAPPED_BY_A_LONG_PROMPT,
+    );
+    assert_eq!(
+        WRAPPED_BY_A_LONG_PROMPT.matches("DEAF-READY").count(),
+        1,
+        "⚠⚠⚠ THE CONTROL: counted the way the wait used to count, this screen reaches ONE. Without \
+         this arm the assertion above passes on any repair at all, including one that never had to \
+         cross the wrap",
+    );
+    assert!(
+        !seen_at_least("DEAF-READY", "DEAF-READY", 2),
+        "⛔⛔⛔⛔ REGISTER ITEM 788: folding has made the count pass for a screen showing the marker \
+         ONCE. A positive check that cannot fail is the escape hatch, not the repair",
+    );
+    for row in WRAPPED_BY_A_LONG_PROMPT.lines() {
+        assert!(
+            row.chars().count() <= usize::from(BOOT_PANE.0),
+            "⚠⚠ THIS SAMPLE'S OWN PREMISE: a row of {} characters cannot have come off a {}-column \
+             pane, so these are not the rows the failure printed: {row:?}",
+            row.chars().count(),
+            BOOT_PANE.0,
+        );
+    }
 }
 
 fn tool_text(result: &Value) -> String {
