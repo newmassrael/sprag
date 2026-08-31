@@ -2067,9 +2067,11 @@ impl From<PersistedBanked> for sprag_plugin::Banked {
 
 /// [`sprag_plugin::Briefing`] as the run log carries it — register item 719's second direction.
 ///
-/// ⚠⚠ **THE THREE CROSS AS ONE VALUE**, [`PersistedBanked`]'s argument verbatim: the sentence a
+/// ⚠⚠ **THE FOUR CROSS AS ONE VALUE**, [`PersistedBanked`]'s argument verbatim: the sentence a
 /// reader is shown names the LARGEST part, which is a comparison — so a later writer that filled in
-/// two of three would produce a sentence pointing at the wrong one, confidently.
+/// three of four would produce a sentence pointing at the wrong one, confidently. ⛔ That is not a
+/// hypothetical here: for a whole round this struct carried THREE while the prompt composed four,
+/// and the missing one was the loop kind's 1,195-byte rules block (register item 762).
 ///
 /// ⚠ Its own type rather than `sprag_plugin::Briefing` directly, for that neighbour's reason: the
 /// plugin crate is `serde`-free.
@@ -2081,6 +2083,15 @@ pub struct PersistedBriefing {
     pub milestone: usize,
     /// [`sprag_plugin::Briefing::reference`], in bytes.
     pub reference: usize,
+    /// [`sprag_plugin::Briefing::working_rules`], in bytes.
+    ///
+    /// ⚠ `serde(default)` for the same reason every other later field here has one: a run log
+    /// written before register item 762 carries no such key, and refusing to read it would make an
+    /// old record unreadable rather than incomplete. **The caveat that buys**: those rows read `0`,
+    /// which is *this build cannot say what its kind held* rather than *the kind held nothing* —
+    /// and they are exactly the rows whose brief was under-reported when they were written.
+    #[serde(default)]
+    pub working_rules: usize,
 }
 
 impl From<sprag_plugin::Briefing> for PersistedBriefing {
@@ -2089,6 +2100,7 @@ impl From<sprag_plugin::Briefing> for PersistedBriefing {
             north_star: live.north_star,
             milestone: live.milestone,
             reference: live.reference,
+            working_rules: live.working_rules,
         }
     }
 }
@@ -2099,6 +2111,7 @@ impl From<PersistedBriefing> for sprag_plugin::Briefing {
             north_star: stored.north_star,
             milestone: stored.milestone,
             reference: stored.reference,
+            working_rules: stored.working_rules,
         }
     }
 }
@@ -4542,6 +4555,9 @@ mod tests {
             north_star: 41,
             milestone: 1_984,
             reference: 7_000,
+            // ⚠ AND THE PART A CALLER DID NOT WRITE — register item 762. It rides the same
+            // whole-or-nothing road, so a round trip that dropped it would report a smaller run.
+            working_rules: 1_195,
         };
         let mut registry = RunRegistry::default();
         let id = registry.reserve();

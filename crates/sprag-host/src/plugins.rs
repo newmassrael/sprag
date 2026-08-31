@@ -4757,10 +4757,14 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         // process reports what it measured, and the one composer of the prose is
         // `briefing_sentence`, at the row (item 663). Two composers would be two ways to name the
         // largest part.
+        // ⛔⛔⛔ FOUR PARTS SINCE REGISTER ITEM 762: `working_rules` is the loop KIND's text, is
+        // re-typed into every session beside the other three, and was in no number here — 1,195
+        // bytes of this repository's own debt kind, invisible to a reader deciding what to shorten.
         RUN_BRIEFED_KEY: progress.briefed.map(|briefed| json!({
             "north_star": briefed.north_star,
             "milestone": briefed.milestone,
             "reference": briefed.reference,
+            "working_rules": briefed.working_rules,
         })),
         // ⚠⚠⚠⚠⚠ **AND THE WALK ITSELF** — register item 544's default flip is what found this. The
         // row publishes a run's per-step journal beside its state, out of the cell, so a run driven
@@ -4916,6 +4920,11 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             north_star: bytes(briefed.get("north_star"))?,
             milestone: bytes(briefed.get("milestone"))?,
             reference: bytes(briefed.get("reference"))?,
+            // ⚠⚠⚠ WHOLE OR NOTHING REACHES THE FOURTH TOO, this block's own rule — register item
+            // 762. A `0` filled in for a daemon too old to publish it would answer *this run's
+            // kind holds it to nothing* on that daemon's behalf, and the sentence would then name
+            // the wrong part to shorten with the same confidence as a measured one.
+            working_rules: bytes(briefed.get("working_rules"))?,
         })
     })();
     ReportedProgress {
@@ -8623,21 +8632,27 @@ mod tests {
         // level is measured in pieces, and a chain measured in pieces is one that can be broken at
         // a join nobody owns.
         //
-        // ⚠⚠ THE NUMBERS ARE THIS REQUEST'S OWN: the three strings `ai_loop_request` sends, whose
-        // lengths nothing here restates — 33 + 14 + 9. If somebody edits that fixture's prose this
+        // ⚠⚠ THE NUMBERS ARE THIS REQUEST'S OWN: the strings `ai_loop_request` sends, whose lengths
+        // nothing here restates — 33 + 14 + 9 — PLUS the 1,195 bytes of rules this repository's own
+        // debt kind holds every run to. If somebody edits that fixture's prose or those rules this
         // goes red and the arithmetic is the repair, which is the honest coupling.
+        //
+        // ⛔⛔⛔⛔⛔ AND THE TOTAL MOVED FROM 56 TO 1,251 WHEN REGISTER ITEM 762 COUNTED THE FOURTH
+        // PART — the same request, the same prompt, a number that had been short by twenty-two
+        // times its own size. The part named to shorten moved with it: `north_star` (33 bytes) to
+        // `working_rules` (1,195), which is the answer a reader can actually act on and the one
+        // this row could not previously give.
         let briefed = entry
             .get(RUN_BRIEFED_KEY)
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
         assert!(
-            briefed.contains("56 bytes") && briefed.contains("north_star"),
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 719: `orchestrate` took this brief and the row it points its \
-             caller at says nothing about the size — which is the whole of that item's second \
-             direction. A brief is re-typed in full into every session a run opens, and the person \
-             who wrote 9,025 bytes of one had no way to find that out. Said: {briefed:?} in \
-             {entry:?}",
+            briefed.contains("1251 bytes") && briefed.contains("working_rules"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 719 / 762: `orchestrate` took this brief and the row it points \
+             its caller at must say how big the prompt REALLY is. A `56 bytes` here is the \
+             three-part sum — the caller's own strings, with the kind's 1,195-byte rules block \
+             typed into every session and counted nowhere. Said: {briefed:?} in {entry:?}",
         );
         // ⛔⛔⛔ **AND NOT ONLY AS PROSE INSIDE THAT NAME** — register item 540.
         //
@@ -14673,6 +14688,9 @@ mod tests {
                             north_star: 41,
                             milestone: 1_984,
                             reference: 7_000,
+                            // ⚠ The KIND's own rules, which travel on exactly the other three's
+                            // terms — register item 762.
+                            working_rules: 1_195,
                         }),
                         ..sprag_plugin::Progress::default()
                     }),
@@ -14732,7 +14750,10 @@ mod tests {
             .unwrap_or_default()
             .to_owned();
         assert!(
-            briefed.contains("9025") && briefed.contains("reference") && briefed.contains("2,816"),
+            // ⛔ 10,220 AND NOT 9,025 SINCE REGISTER ITEM 762: this fixture's `working_rules` is
+            // 1,195 bytes and is typed into every session beside the three the caller wrote.
+            // `reference` still wins at 7,000, which is what keeps this arm a comparison.
+            briefed.contains("10220") && briefed.contains("reference") && briefed.contains("2,816"),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 663 / 719: what the door ACCEPTED did not reach a reader. \
              `orchestrate` answers a run id and points at this row, so a size that dies here is \
              item 719's second direction unpaid — the caller who wrote 9,025 bytes still has no \
@@ -14779,6 +14800,7 @@ mod tests {
                 north_star: 41,
                 milestone: 1_984,
                 reference: 7_000,
+                working_rules: 1_195,
             }),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 663 / 719: how big the brief was did not survive the daemon \
              that took it — and this level needs the file MORE than the two above, because *what \

@@ -1370,11 +1370,27 @@ impl AiLoopSpec {
 ///
 /// # ⚠⚠ What it measures, stated exactly
 ///
-/// The three parts a CALLER writes and can shorten, in bytes of UTF-8, read back out of the
+/// The parts a CALLER OR A KIND writes and can shorten, in bytes of UTF-8, read back out of the
 /// datamodel rather than off the request — the same read that catches a crossing which mangled the
 /// text (see [`Briefed::NotHeld`], and SCE PR-87). **The prompt typed at the peer is larger than
 /// this**, by whatever the document composes around the parts, and that surplus is fixed for a
-/// given `ai_loop.scxml` where these three are what varies per run.
+/// given `ai_loop.scxml` where these are what varies per run.
+///
+/// # ⛔⛔⛔⛔⛔ It measured THREE parts and the prompt composes FOUR — register item 762
+///
+/// `working_rules` is authored by the loop KIND, assigned at the door beside the other three, and
+/// concatenated into `start_prompt` exactly as they are — and it was in no sum here. **Measured on
+/// this repository's own debt kind: 1,195 bytes.** So `run110`'s record said *briefed with 7,908
+/// bytes … re-typed in full into every session this run opens* about a prompt that also carried
+/// those 1,195 and 147 more of fixed sentences — the number was short by 15%, and
+/// [`largest`](Self::largest), whose whole job is to name **the part to shorten first**, could not
+/// name the part that a caller had not written and could not see.
+///
+/// ⚠⚠ A part the door CANNOT see is still not counted, and that is a different thing said out
+/// loud: `standing` and `carried` are empty when a brief is taken and fill up later, so a number
+/// taken here cannot include them. `a_briefing_counts_every_part_the_door_was_handed` holds the
+/// document's own composition against this struct, so a fifth part added to `start_prompt` arrives
+/// as a red rather than as a quietly smaller number.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Briefing {
     /// Bytes of `north_star` — never rewritten, so this part is the same in every session the run
@@ -1387,6 +1403,17 @@ pub struct Briefing {
     /// Bytes of `reference` — prior art at the door, and what the last session had to work out
     /// after a reflection. Item 719's own 9,025 bytes were mostly here.
     pub reference: usize,
+    /// ⛔⛔⛔⛔⛔ Bytes of `working_rules` — **the part a CALLER did not write and could not see** —
+    /// register item 762.
+    ///
+    /// It is the loop KIND's, not the caller's: what a repository holds every turn of every run to.
+    /// A caller shortening a brief cannot touch it, which is exactly why leaving it out of
+    /// [`largest`](Self::largest) was a defect and not a saving — the answer to *what do I shorten*
+    /// has to be able to say **you cannot; go and read the kind document**.
+    ///
+    /// ⚠ It is re-typed into every session the run opens, on the same road as the three above:
+    /// `priming` composes all four into `start_prompt` and is entered again on `session.ready`.
+    pub working_rules: usize,
 }
 
 /// ⚠ **THERE IS NO CONSTRUCTOR FROM A [`Brief`], DELIBERATELY.** One was written and deleted the
@@ -1401,25 +1428,33 @@ impl Briefing {
     /// reads the run's deliveries, which say what happened to the real thing.
     #[must_use]
     pub const fn bytes(&self) -> usize {
-        self.north_star + self.milestone + self.reference
+        self.north_star + self.milestone + self.reference + self.working_rules
     }
 
     /// **THE PART TO SHORTEN FIRST** — its name and its size.
     ///
     /// ⚠⚠ It is here rather than left to a reader's arithmetic because *shorten your brief* is not
-    /// an instruction anybody can act on: three parts are written by three different hands at three
-    /// different times, and item 719's own case was **one of them** carrying a diagnosis in full
-    /// while the other two were a line each.
+    /// an instruction anybody can act on: the parts are written by different hands at different
+    /// times, and item 719's own case was **one of them** carrying a diagnosis in full while the
+    /// others were a line each.
     ///
     /// ⚠ Ties go to the earlier part in this order, which is deliberate and stated rather than
     /// silently arbitrary: naming the same part twice for one run is better than naming a different
     /// one on each look at equal sizes.
+    ///
+    /// ⛔⛔⛔⛔ **`working_rules` WAS NOT IN THIS LIST AND IS 1,195 BYTES OF THIS REPOSITORY'S OWN
+    /// KIND** — register item 762. A part that cannot win an answer it is bigger than half the
+    /// others put together makes this a wrong answer rather than an incomplete one, and the reader
+    /// acts on it. ⚠ It is listed LAST of the four so a tie still names a part the caller can
+    /// actually edit first — being told *the kind's rules* where a caller's own text is equally
+    /// long is an instruction they cannot follow.
     #[must_use]
     pub fn largest(&self) -> (&'static str, usize) {
         [
             ("reference", self.reference),
             ("milestone", self.milestone),
             ("north_star", self.north_star),
+            (WORKING_RULES, self.working_rules),
         ]
         .into_iter()
         .max_by_key(|(_, bytes)| *bytes)
@@ -5556,11 +5591,19 @@ impl OuterLoop {
         // authority on one quantity: off the request it would miss a crossing that mangled the
         // text (which is what this very read exists to catch — SCE PR-87), and off a later read it
         // would be the reflection's rewrite rather than the caller's brief.
-        let mut sizes = [0_usize; 3];
+        // ⛔⛔⛔⛔ FOUR, NOT THREE — register item 762. `working_rules` crosses the door on exactly
+        // these terms (`brief`'s own `<assign>`, unconditional, the driver echoing the kind's value
+        // for a caller who named none) and is composed into `start_prompt` beside the other three,
+        // so a measurement that stopped at three was reporting the size of a prompt this loop does
+        // not type. ⚠ `unwrap_or_default` matches the door's own line: a caller who sends nothing
+        // has the empty string assigned, so the held value and the sent one agree at zero.
+        let authored = brief.working_rules.clone().unwrap_or_default();
+        let mut sizes = [0_usize; 4];
         for (at, (part, sent)) in [
             ("north_star", &brief.north_star),
             (MILESTONE, &brief.milestone),
             (REFERENCE, &brief.reference),
+            (WORKING_RULES, &authored),
         ]
         .into_iter()
         .enumerate()
@@ -5580,6 +5623,7 @@ impl OuterLoop {
             north_star: sizes[0],
             milestone: sizes[1],
             reference: sizes[2],
+            working_rules: sizes[3],
         };
         // ⚠⚠⚠ THE READ-BACK COVERS THE DECLINE TOO, and it has to: the whole point of item 316 is
         // that a number crossing unverified is a run bounded by something nobody asked for, and a
@@ -13702,6 +13746,12 @@ mod tests {
             north_star: "n".repeat(11),
             milestone: "m".repeat(222),
             reference: "r".repeat(3333),
+            // ⛔⛔⛔ THE FOURTH PART, AND IT IS SIZED TO WIN — register item 762. It was absent
+            // here, which is how a part worth 1,195 bytes of this repository's own kind stayed out
+            // of a number whose sentence says *re-typed in full into every session*. Largest of the
+            // four on purpose: `largest` names *the part to shorten first*, and the arm below is
+            // the only one that can say a caller cannot shorten this one at all.
+            working_rules: Some("w".repeat(4444)),
             ..a_brief()
         };
         assert_eq!(
@@ -13715,6 +13765,7 @@ mod tests {
                 north_star: 11,
                 milestone: 222,
                 reference: 3333,
+                working_rules: 4444,
             }),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 719: the door took this brief and must say how big it is, part \
              by part. A `None` here is `orchestrate` accepting any size in silence, which is the \
@@ -13723,15 +13774,20 @@ mod tests {
         );
         assert_eq!(
             loops.briefed().map(|held| held.bytes()),
-            Some(3566),
-            "⚠⚠ AND THE TOTAL IS THE THREE PARTS, which is what the sentence leads with",
+            Some(8010),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: AND THE TOTAL IS EVERY PART THE DOOR WAS HANDED, which is \
+             what the sentence leads with — and what it CLAIMS is *re-typed in full into every \
+             session this run opens*. `3566` here is the three-part sum, which is that sentence \
+             made false by 4,444 bytes the same `priming` composes into the same prompt",
         );
         assert_eq!(
             loops.briefed().map(|held| held.largest()),
-            Some(("reference", 3333)),
-            "⚠⚠⚠ AND IT NAMES THE PART TO SHORTEN. *Shorten your brief* is not an instruction \
-             anybody can act on: three parts are written by three hands, and item 719's own case \
-             was ONE of them carrying a whole diagnosis",
+            Some((WORKING_RULES, 4444)),
+            "⛔⛔⛔⛔ REGISTER ITEM 762: AND IT NAMES THE PART TO SHORTEN, WHICH MAY BE ONE THE \
+             CALLER CANNOT TOUCH. `working_rules` is the KIND's — a caller shortening their brief \
+             cannot reach it — so an answer that could only ever name the three THEY wrote is a \
+             wrong answer rather than an incomplete one: it sends them to trim 3,333 bytes while \
+             4,444 sit in a document they were not looking at",
         );
 
         // ── AND A BRIEF THE DATAMODEL DOES NOT HOLD PUBLISHES NOTHING ──
@@ -13782,9 +13838,116 @@ mod tests {
     /// measurement refutes (*mine is small, mine is fine*), and the sentence has to carry the fact
     /// that closes it.
     ///
-    /// ⚠⚠ **THE LARGEST PART IS A COMPARISON, WHICH IS WHY IT IS GATED THREE WAYS.** One case is
-    /// satisfied by a renderer that always names the same part; three, each with a different
-    /// winner, are not. **Measured by mutation**: `max_by_key` to `min_by_key` reds all three.
+    /// ⛔⛔⛔⛔⛔ **EVERY AUTHORED PART `priming` TYPES IS EITHER COUNTED OR CLASSIFIED AS ONE THE
+    /// DOOR CANNOT SEE** — register item 762, and the ratchet over two artefacts.
+    ///
+    /// # ⛔⛔⛔⛔ What an uncounted part did, measured
+    ///
+    /// [`Briefing`] summed THREE parts while `start_prompt` concatenated FOUR: `working_rules` is
+    /// authored by the loop KIND, assigned at the door beside the others, and re-typed into every
+    /// session — **1,195 bytes of this repository's own debt kind.** So a run's record said
+    /// *briefed with 7,908 bytes … re-typed in full into every session this run opens* about a
+    /// prompt that was 15% larger, and nothing in the build disagreed: the number was smaller than
+    /// the thing it named and read as a smaller RUN.
+    ///
+    /// # ⚠⚠⚠ Why it reads the DOCUMENT rather than trusting this file
+    ///
+    /// The composition lives in `ai_loop.scxml`, so a fifth part is added THERE — and every gate
+    /// in this crate would stay green, exactly as they did for the fourth. This reads the
+    /// `start_prompt` expression, takes the datamodel names it concatenates, and requires each to
+    /// be one of two things: **measured** by `Briefing`, or **named here as one the door cannot
+    /// see** because it is empty when a brief is taken and fills up later. An unclassified name is
+    /// a RED, which is this workspace's rule 6 — the escape hatch that would otherwise disarm this
+    /// is *a part nobody thought to add to a list*.
+    #[test]
+    fn a_briefing_counts_every_part_the_door_was_handed() {
+        /// The authority on what a session is briefed with.
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+
+        // The `start_prompt` assignment's expression, up to its closing quote.
+        let expr = DOCUMENT
+            .split_once("<assign location=\"start_prompt\"")
+            .and_then(|(_, rest)| rest.split_once("expr=\""))
+            .and_then(|(_, rest)| rest.split_once("\"/>"))
+            .map(|(expr, _)| expr)
+            .expect(
+                "⚠⚠⚠ THE CONTROL: `ai_loop.scxml` must still compose `start_prompt` with an \
+                 `expr`, or this gate is holding a document that briefs its sessions some other \
+                 way — and the answer then is to rewrite it, not to leave it passing",
+            );
+
+        // Every bare identifier in it, minus the string literals it also concatenates.
+        let mut named: Vec<&str> = Vec::new();
+        for (at, chunk) in expr.split('\'').enumerate() {
+            // Odd chunks are inside single quotes: authored prose, not a datamodel name.
+            if at % 2 == 1 {
+                continue;
+            }
+            for word in chunk.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                if !word.is_empty() && !word.chars().next().is_some_and(char::is_numeric) {
+                    named.push(word);
+                }
+            }
+        }
+        named.sort_unstable();
+        named.dedup();
+        assert!(
+            named.len() > 3,
+            "⚠⚠ the control: the expression must name SEVERAL parts, or the extraction above has \
+             silently matched nothing and every assertion below is about an empty list. Found \
+             {named:?}",
+        );
+
+        /// The parts [`Briefing`] measures — the ones a door holds and a caller can be told about.
+        const COUNTED: [&str; 4] = ["north_star", MILESTONE, REFERENCE, WORKING_RULES];
+        /// ⚠⚠⚠ AND THE ONES IT DELIBERATELY DOES NOT, each with its reason — because *not counted*
+        /// has to be a DECISION here rather than an omission somewhere else.
+        ///
+        /// * `milestone_age` — composed from `turns`, empty on the turn a brief is taken.
+        /// * `standing` — empty until a screen rule fires; it ACCUMULATES mid-run.
+        /// * `carried` — written by `reviewing`, so a door has never seen one.
+        /// * `done_instruction` — this document's own constant, the same in every run there is.
+        const CANNOT_SEE: [&str; 4] = ["milestone_age", "standing", "carried", "done_instruction"];
+
+        let unclassified: Vec<&str> = named
+            .iter()
+            .filter(|name| !COUNTED.contains(name) && !CANNOT_SEE.contains(name))
+            .copied()
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: `start_prompt` composes {unclassified:?}, and \
+             `Briefing` neither counts them nor names them as parts the door cannot see. An \
+             unclassified part is not a small omission: the run's own record says *briefed with N \
+             bytes, re-typed in full into every session*, and N would be short by whatever that \
+             part holds — which is how 1,195 bytes of this repository's own kind stayed invisible. \
+             Count it, or say here why the door cannot",
+        );
+
+        // ── AND THE OTHER DIRECTION: NOTHING IS COUNTED THAT IS NOT TYPED ──
+        //
+        // ⚠⚠⚠ A part measured and NOT composed would be the mirror defect and the harder one to
+        // see: the number would be too big, and *shorten this* would name text the peer never
+        // receives.
+        let uncomposed: Vec<&str> = COUNTED
+            .into_iter()
+            .filter(|part| !named.contains(part))
+            .collect();
+        assert!(
+            uncomposed.is_empty(),
+            "⚠⚠⚠⚠ AND `Briefing` counts {uncomposed:?}, which `start_prompt` does not compose. The \
+             number a caller reads would then be larger than the prompt their peer is typed, and \
+             `largest` would send them to shorten text that never leaves this process",
+        );
+    }
+
+    /// ⚠⚠ **THE LARGEST PART IS A COMPARISON, WHICH IS WHY IT IS GATED FOUR WAYS.** One case is
+    /// satisfied by a renderer that always names the same part; four, each with a different winner,
+    /// are not. **Measured by mutation**: `max_by_key` to `min_by_key` reds all of them.
+    ///
+    /// ⛔⛔⛔ THE FOURTH CASE IS REGISTER ITEM 762's: `working_rules` is the KIND's text, so it is
+    /// the one winner a caller cannot act on — and it was not in the list at all, which made this
+    /// gate three-quarters of a comparison.
     #[test]
     fn what_the_door_says_about_a_brief_names_the_part_to_shorten() {
         for (part, briefing) in [
@@ -13794,6 +13957,7 @@ mod tests {
                     north_star: 90,
                     milestone: 5,
                     reference: 7,
+                    working_rules: 3,
                 },
             ),
             (
@@ -13802,6 +13966,7 @@ mod tests {
                     north_star: 5,
                     milestone: 90,
                     reference: 7,
+                    working_rules: 3,
                 },
             ),
             (
@@ -13810,6 +13975,16 @@ mod tests {
                     north_star: 5,
                     milestone: 7,
                     reference: 90,
+                    working_rules: 3,
+                },
+            ),
+            (
+                WORKING_RULES,
+                Briefing {
+                    north_star: 5,
+                    milestone: 7,
+                    reference: 3,
+                    working_rules: 90,
                 },
             ),
         ] {
@@ -13821,7 +13996,7 @@ mod tests {
             );
             let said = briefing.describe();
             assert!(
-                said.contains(part) && said.contains("102 bytes"),
+                said.contains(part) && said.contains("105 bytes"),
                 "⚠⚠ AND THE SENTENCE CARRIES BOTH — the total a caller compares against and the \
                  part they can do something about. Said {said:?}",
             );
