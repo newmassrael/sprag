@@ -1596,6 +1596,32 @@ pub struct AgentObservation {
     pub agent: Option<String>,
     /// Where the answer came from, and so whether it is exact — see [`Authority`].
     pub authority: Authority,
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS PANE'S COMPOSER IS HOLDING AN UNSUBMITTED PROMPT** — register item
+    /// 762, and the fact that decides whether a submit can be judged by something that CONVERGES.
+    ///
+    /// # ⛔⛔⛔⛔ Why it is not readable off [`state`](Self::state), and what that cost
+    ///
+    /// `AgentState::Holding` is a manifest rule reading the composer, and the state is ARBITRATED —
+    /// a hook outranks the screen. So `Holding` is never the state of a pane whose agent reports,
+    /// which is **every pane a supervisor drives**, and
+    /// [`SubmittedWhen::Released`](crate::deliver::SubmittedWhen::Released) — the one submit
+    /// contract that converges instead of expiring — refused on exactly that population. A driver
+    /// whose prompt was folded into a composer placeholder was left with the agent's own account
+    /// and nothing else; register item 669 measured the cost of that single channel (of five live
+    /// runs, four had prompts that were never asked and the run could not tell) and register item
+    /// 762 watched a run die of it at 187 iterations, with the pane it had been driving reading
+    /// `working seq=26 said=12`.
+    ///
+    /// ⚠⚠ **A SECOND FACT IN A SECOND SLOT, and the arbitration is untouched.** What the agent is
+    /// DOING stays the reporter's; what the composer is HOLDING is the screen's. The question
+    /// register item 524 declined to answer — what a pane says when its agent works while a paste
+    /// is queued — is still not asked, because nothing here decides a state.
+    ///
+    /// ⚠ [`None`] is **nothing could say**: no supervisor, a pane no manifest claims, a manifest
+    /// that authors no `Holding` rule, or a daemon too old to send the key. It is never *not
+    /// holding*, and a contract resting on it must refuse rather than read it as a no — which is
+    /// [`crate::readiness::ReadyWhen::Runs`]' rule everywhere in this crate.
+    pub holding: Option<bool>,
     /// How many published CHANGES this pane's state has been through. Never decreases while the
     /// pane lives; compare it across two pulls to learn that something happened between them.
     pub seq: u64,

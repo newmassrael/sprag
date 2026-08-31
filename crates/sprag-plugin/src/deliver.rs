@@ -187,7 +187,6 @@
 
 use std::time::Duration;
 
-use sprag_detect::AgentState;
 use sprag_terminal::{PaneEcho, PaneId};
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, Written};
@@ -343,8 +342,8 @@ pub enum SubmittedWhen {
         within: Duration,
     },
     /// **THE COMPOSER HAS LET GO OF IT** — the pane was holding an unsubmitted prompt when the
-    /// submit went in ([`AgentState::Holding`]) and is not
-    /// holding one now, within `within`.
+    /// submit went in ([`AgentObservation::holding`](crate::access::AgentObservation::holding)) and
+    /// is not holding one now, within `within`.
     ///
     /// # ⚠⚠⚠⚠⚠ The evidence is a PROPERTY, and every other kind here is an EVENT
     ///
@@ -1553,10 +1552,16 @@ impl Submission {
             screen,
             // Only the contract that compares it keeps it, for `asked`'s reason below: a pane that
             // was NOT holding arms nothing, so the contract can never be satisfied and says so.
+            // ⛔⛔⛔⛔⛔ READ OFF THE FACT AND NOT OFF THE STATE — register item 762. It was
+            // `seen.state == AgentState::Holding`, and that state is ARBITRATED: a hook outranks
+            // the screen, so `Holding` is never the state of a pane whose agent reports — which is
+            // every pane a supervisor drives. This contract therefore refused on exactly the
+            // population it was built for. `AgentObservation::holding` is the same screen reading
+            // in a slot the arbitration does not touch.
             holding: matches!(wanted, SubmittedWhen::Released { .. })
                 .then(|| {
                     seen.as_ref()
-                        .filter(|seen| seen.state == AgentState::Holding)
+                        .filter(|seen| seen.holding == Some(true))
                         .and_then(|seen| seen.agent.clone())
                 })
                 .flatten(),
@@ -1612,8 +1617,12 @@ impl Submission {
                             // ⚠ NO `seq` COMPARISON, deliberately — see the kind's own doc. What is
                             // asked is a PROPERTY of the pane now, and requiring a published change
                             // as well would reinstate the event dependency this contract drops.
-                            seen.agent.as_deref() == Some(addressed)
-                                && seen.state != AgentState::Holding
+                            // ⚠⚠ `== Some(false)` AND NOT `!= Some(true)` — register item 762. The
+                            // third answer is *nothing could say*, and reading it as *it let go*
+                            // would satisfy this contract off a daemon that had simply stopped
+                            // answering, which is the inversion every absence in this crate is
+                            // written to avoid.
+                            seen.agent.as_deref() == Some(addressed) && seen.holding == Some(false)
                         }),
                 )
             }
@@ -1676,7 +1685,11 @@ impl Submission {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // ⚠ THE FIXTURES' VOCABULARY, and no longer the module's — register item 762. The delivery path
+    // stopped reading the arbitrated state when the composer reading got a slot of its own, so the
+    // only code left that spells a state is the doubles that stand in for a supervisor.
     use crate::access::{PaneRow, PaneTerminalModes, WorkspacePaneAccess};
+    use sprag_detect::AgentState;
     use sprag_terminal::PaneEndOfInput;
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
@@ -1820,7 +1833,7 @@ mod tests {
     }
 
     /// The same peer, WITH A SUPERVISOR OVER IT — a stand-in for the daemon's detector that
-    /// publishes [`AgentState::Working`] once the peer has printed [`WORKING`].
+    /// publishes [`sprag_detect::AgentState::Working`] once the peer has printed [`WORKING`].
     ///
     /// # ⚠⚠ Its verdict is DERIVED FROM THE PANE, not set by hand
     ///
@@ -1876,6 +1889,7 @@ mod tests {
             }
             Some(crate::access::AgentObservation {
                 state: last.0,
+                holding: None,
                 agent: Some(
                     match (working, publishes) {
                         (true, Publishes::AsSomebodyElse) => "somebody-else",
@@ -2518,6 +2532,7 @@ mod tests {
             let submitted = self.inner.submitted();
             crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
                 state: sprag_detect::AgentState::Working,
+                holding: None,
                 agent: Some("claude".to_owned()),
                 authority: crate::access::Authority::Reported {
                     source: "hook:claude".to_owned(),
@@ -2562,15 +2577,50 @@ mod tests {
     /// the two contracts give OPPOSITE answers over one fixture, which is the only way to show that
     /// this one rests on a property rather than on an event.
     ///
-    /// # ⚠⚠ It is SCRAPED, because a report could not say this
+    /// # ⛔⛔⛔⛔⛔ It was SCRAPED-ONLY, and that was the defect — register item 762
     ///
-    /// [`AgentState::Holding`] is a conclusion a manifest rule reaches by reading the composer.
-    /// `sprag_detect`'s tracker does not run those rules on a pane a hook is reporting, so a
-    /// fixture that published `Holding` under [`Authority::Reported`](crate::access::Authority) —
-    /// which is what the neighbouring `Reporting` double does for the states it models — would be
-    /// staging a shape the product cannot produce.
+    /// This paragraph read: *"[`AgentState::Holding`] is a conclusion a manifest rule reaches by
+    /// reading the composer. `sprag_detect`'s tracker does not run those rules on a pane a hook is
+    /// reporting, so a fixture that published `Holding` under `Authority::Reported` would be staging
+    /// a shape the product cannot produce."* Every word of it was true, and it meant this contract
+    /// **could only ever be exercised on a population a supervisor never drives** — a supervisor's
+    /// agents all report.
+    ///
+    /// The fact now travels in its own slot ([`crate::access::AgentObservation::holding`]) instead
+    /// of in the arbitrated state, so a reported pane answers it and the shape below is one the
+    /// product produces. [`reported`](Self::reported) is what stages it, and
+    /// `a_reported_pane_settles_the_composer_contract` is the gate that would have been
+    /// unwritable.
     struct Composing {
         inner: Recorder,
+        /// Whether this pane's agent is REPORTING — the population a supervisor actually drives.
+        ///
+        /// ⚠⚠ It changes the `state` and the `authority` and NOT the composer reading, which is
+        /// exactly the split register item 762 made: a hook says what the agent is doing, the
+        /// screen says what the composer is holding, and the two no longer share a slot.
+        reported: bool,
+        /// Whether this supervisor CANNOT SAY what the composer is holding — a pane no manifest
+        /// claims, a manifest with no `Holding` rule, or a daemon too old to send the key.
+        ///
+        /// ⚠⚠ The third answer, staged, because it is the one a contract must refuse on rather than
+        /// read as *it let go*: reading an absence as the satisfied side would confirm a submit off
+        /// a daemon that had merely stopped answering.
+        blind: bool,
+        /// ⛔⛔⛔⛔⛔ **CANNOT SAY ONLY AFTER THE SUBMIT** — the supervisor answered at arming and
+        /// stopped answering afterwards, which is a daemon going away, a manifest reload, or a pane
+        /// whose agent changed under the delivery.
+        ///
+        /// # ⚠⚠⚠⚠⚠ Why this is a separate field, and it is a DEAD CONTROL that made it one
+        ///
+        /// [`blind`](Self::blind) cannot exercise the JUDGING half at all: a supervisor blind from
+        /// the start fails to arm the baseline, so the contract refuses before it ever asks the
+        /// second question. Mutating *the absence means it let go* into the judging arm therefore
+        /// left every gate GREEN — measured, on this file, and it is the shape this workspace keeps
+        /// meeting: a control that fires on the road the mutation does not travel.
+        ///
+        /// Armed and THEN blind is the only staging where the absence reaches the comparison, and
+        /// it is where reading it as satisfied would confirm a submit that never landed.
+        blind_after: bool,
         /// Whether the composer is holding an unsubmitted prompt BEFORE the submit goes in — the
         /// baseline this contract arms against.
         holding_before: bool,
@@ -2588,6 +2638,9 @@ mod tests {
         fn releasing(text: &str) -> Self {
             Self {
                 inner: Recorder::showing(text),
+                reported: false,
+                blind: false,
+                blind_after: false,
                 holding_before: true,
                 holding_after: false,
                 looks: Mutex::new(0),
@@ -2646,27 +2699,49 @@ mod tests {
     impl crate::access::PaneSupervision for Composing {
         fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
             *self.looks.lock().expect("the counter") += 1;
-            let holding = if self.inner.submitted() {
+            let submitted = self.inner.submitted();
+            let holding = if submitted {
                 self.holding_after
             } else {
                 self.holding_before
             };
+            // ⚠ *Nothing could say*, either from the start or only once the submit has gone out —
+            // see `blind_after` for why the second staging had to exist.
+            let cannot_say = self.blind || (self.blind_after && submitted);
             crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
-                state: if holding {
+                // ⛔⛔⛔⛔⛔ THE STATE A REPORTED PANE PUBLISHES IS THE HOOK'S, AND IT IS NOT
+                // `Holding` — register item 762, and this arm is the product's shape rather than
+                // the fixture's convenience. `sprag_detect`'s tracker still refuses to let a
+                // manifest rule decide the state of a pane whose agent reports (register item 524's
+                // carve-out is untouched), so a supervisor's pane reads `working` while its
+                // composer holds a prompt nobody submitted.
+                state: if self.reported {
+                    AgentState::Working
+                } else if holding {
                     AgentState::Holding
                 } else {
                     AgentState::Idle
                 },
+                // ⚠⚠ AND THE COMPOSER READING IS THE SAME EITHER WAY, which is the whole of the
+                // repair: the fact lives in a slot the arbitration does not touch, so it survives
+                // a report standing over it.
+                holding: (!cannot_say).then_some(holding),
                 agent: Some("claude".to_owned()),
-                authority: crate::access::Authority::Scraped {
-                    rule: Some(
-                        if holding {
-                            "composer-holds-paste"
-                        } else {
-                            "idle-glyph"
-                        }
-                        .to_owned(),
-                    ),
+                authority: if self.reported {
+                    crate::access::Authority::Reported {
+                        source: "hook:claude".to_owned(),
+                    }
+                } else {
+                    crate::access::Authority::Scraped {
+                        rule: Some(
+                            if holding {
+                                "composer-holds-paste"
+                            } else {
+                                "idle-glyph"
+                            }
+                            .to_owned(),
+                        ),
+                    }
                 },
                 // ⚠ FROZEN — see the type's doc. Nothing here is an event.
                 seq: 0,
@@ -2775,6 +2850,170 @@ mod tests {
             ),
             "⚠ the property is there to be read and the EVENT is not, which is the whole \
              difference between the two contracts: {unseen:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PANE WHOSE AGENT IS REPORTING SETTLES THIS CONTRACT, AND UNTIL NOW COULD NOT**
+    /// — register item 762, and the gate the population this module exists for was missing.
+    ///
+    /// # ⛔⛔⛔⛔ What was wrong, and how far it reached
+    ///
+    /// [`SubmittedWhen::Released`] is the ONE submit contract that CONVERGES: a composer is holding
+    /// or it is not, both readings are stable, so it answers instead of expiring. Every other kind
+    /// waits for an EVENT and, when the event does not come, cannot tell *not yet* from *never* —
+    /// register item 669 measured that as four of five live runs holding prompts that were never
+    /// asked, with the run unable to say so.
+    ///
+    /// It read the composer off `AgentState::Holding`, which is a manifest rule — and
+    /// `sprag_detect`'s tracker does not run manifest rules on a pane a hook is reporting. **A
+    /// supervisor's agents all report.** So the convergent contract refused on the whole population
+    /// it was built for, every delivery there fell back to the agent's own account, and a prompt
+    /// the composer folded away left the driver with one channel and a timeout. Register item 762
+    /// then watched a live run die of exactly that at 187 iterations, with the pane it had been
+    /// driving reading `working seq=26 said=12`.
+    ///
+    /// # ⚠⚠⚠ What is asserted, and why the state assertion is half of it
+    ///
+    /// The pane below publishes `working` — the hook's word, standing exactly as register item 524
+    /// arranged — while its composer holds a prompt nobody submitted. The delivery must still land,
+    /// which is only possible because the two facts stopped sharing a slot. **The arbitration is
+    /// asserted UNCHANGED in the same breath**, because a repair that had simply let the composer
+    /// overrule the report would pass the first half and be the change register item 524 refused.
+    #[test]
+    fn a_reported_pane_settles_the_composer_contract() {
+        let reported = Composing {
+            reported: true,
+            ..Composing::releasing("ORTHOGONAL-762")
+        };
+        let landed = reported.deliver_under("ORTHOGONAL-762", &releasing_once());
+        assert!(
+            matches!(
+                landed,
+                Delivered::Confirmed { .. } | Delivered::OnScreenOnly { .. }
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: this pane's agent is REPORTING and its composer let go of \
+             the prompt, which is the whole of what this contract asks. Until the composer reading \
+             got a slot of its own it was read off the arbitrated state, where a hook outranks the \
+             screen — so `Holding` was never published here, the baseline could not be armed, and \
+             the one convergent submit contract refused on every pane a supervisor drives. Got \
+             {landed:?}",
+        );
+
+        // ── AND THE ARBITRATION IS UNTOUCHED, which is what says this is a second SLOT ──
+        //
+        // ⚠⚠⚠ Without this the arm above would also be green for the repair register item 524
+        // REFUSED — letting a second screen fact overrule a report, which would decide, unmeasured,
+        // what a pane says when its agent is genuinely working and a paste is queued.
+        let watching = Composing {
+            reported: true,
+            ..Composing::releasing("ORTHOGONAL-762")
+        };
+        let seen = crate::access::PaneSupervision::pane_agent_state(&watching, PaneId(1))
+            .seen()
+            .expect("this double always answers");
+        assert_eq!(
+            (seen.state, seen.holding),
+            (AgentState::Working, Some(true)),
+            "⚠⚠⚠⚠⚠ REGISTER ITEM 524, HELD: a reported pane still publishes its REPORTER's word as \
+             its state. The composer answers beside it and never instead of it — that is the split \
+             this item made, and a `Holding` state here would be the change 524 declined",
+        );
+        assert!(
+            matches!(seen.authority, crate::access::Authority::Reported { .. }),
+            "⚠⚠ and the authority says who spoke, or the assertion above is about a scraped pane \
+             wearing the wrong state",
+        );
+
+        // ── AND THE JAM IS STILL A JAM ON THIS POPULATION ──
+        //
+        // ⚠⚠⚠⚠ A contract that answered YES for every reported pane would pass both arms above and
+        // be worse than the refusal it replaced: it would confirm a submit that never landed, on
+        // the one population that matters. This is the same pane with the composer STILL holding
+        // after the Enter, which is what a fold that did not submit looks like.
+        let jammed = Composing {
+            reported: true,
+            holding_after: true,
+            ..Composing::releasing("ORTHOGONAL-762")
+        };
+        let stuck = jammed.deliver_under("ORTHOGONAL-762", &releasing_once());
+        assert!(
+            matches!(
+                stuck,
+                Delivered::Unsubmitted {
+                    wanted: SubmittedWhen::Released { .. },
+                    ..
+                },
+            ),
+            "⛔⛔⛔⛔ REGISTER ITEM 762: the keystroke went out and the composer is STILL holding \
+             the prompt, so nothing was asked and this delivery must say so. A `Confirmed` here \
+             means the contract stopped reading the composer and started answering yes to a \
+             reported pane on sight. Got {stuck:?}",
+        );
+
+        // ── AND THE THIRD ANSWER IS REFUSED, NOT READ AS THE SATISFIED ONE ──
+        //
+        // ⛔⛔⛔⛔⛔ *Nothing could say* is a pane no manifest claims, a manifest with no `Holding`
+        // rule, or a daemon too old to send the key — and on the last of those it is the COMMON
+        // case during a rollout. Reading it as *the composer let go* would confirm a submit off a
+        // supervisor that had merely stopped answering, which is the inversion every absence in
+        // this crate is written against. It must refuse on the arming read alone, like the empty
+        // composer one gate down.
+        let blind = Composing {
+            reported: true,
+            blind: true,
+            ..Composing::releasing("ORTHOGONAL-762")
+        };
+        let unanswerable = blind.deliver_under("ORTHOGONAL-762", &releasing_once());
+        assert!(
+            matches!(
+                unanswerable,
+                Delivered::Unsubmitted {
+                    wanted: SubmittedWhen::Released { .. },
+                    ..
+                },
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: this supervisor cannot say what the composer holds, so \
+             nothing it reports later is evidence about this keystroke. A `Confirmed` here means \
+             the absence is being read as *it let go*. Got {unanswerable:?}",
+        );
+        assert_eq!(
+            blind.looks(),
+            1,
+            "and refused on the ARMING read alone — a contract that cannot be answered must not \
+             spend its window finding that out",
+        );
+
+        // ── AND THE ABSENCE THAT ARRIVES *AFTER* THE KEYSTROKE IS REFUSED TOO ──
+        //
+        // ⛔⛔⛔⛔⛔ THIS ARM EXISTS BECAUSE THE ONE ABOVE WAS A DEAD CONTROL. Mutating the judging
+        // comparison from *the composer says it is empty* to *the composer does not say it is
+        // holding* left every gate in this file GREEN: a supervisor blind from the start never arms
+        // the baseline, so the mutated line is never reached. Armed and THEN blind is the only
+        // staging that travels that road — a daemon that went away mid-delivery, a manifest reload,
+        // a pane whose agent changed under the submit.
+        //
+        // ⚠⚠ And it is exactly where the mutation would be a FALSE CONFIRMATION: the prompt may be
+        // sitting in that composer untouched, and the only thing that changed is that nobody can
+        // look any more.
+        let went_away = Composing {
+            reported: true,
+            blind_after: true,
+            holding_after: true,
+            ..Composing::releasing("ORTHOGONAL-762")
+        };
+        let lost = went_away.deliver_under("ORTHOGONAL-762", &releasing_once());
+        assert!(
+            matches!(
+                lost,
+                Delivered::Unsubmitted {
+                    wanted: SubmittedWhen::Released { .. },
+                    ..
+                },
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: this composer was holding when the Enter went in and the \
+             supervisor stopped answering afterwards, so nothing is known about where that prompt \
+             is. A `Confirmed` here reads *nobody could look* as *it let go* and settles a submit \
+             on the disappearance of the instrument. Got {lost:?}",
         );
     }
 
@@ -4139,6 +4378,7 @@ mod tests {
             Arc::new(move |_id: PaneId| {
                 Some(crate::access::AgentObservation {
                     state: sprag_detect::AgentState::Working,
+                    holding: None,
                     agent: Some("claude".to_owned()),
                     authority: crate::access::Authority::Reported {
                         source: "test".to_owned(),

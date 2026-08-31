@@ -2832,6 +2832,37 @@ pub const AGENT_REPORTS_KEY: &str = "reports";
 /// starts meaning something it never meant and the number is owed.
 pub const AGENT_MUTE_KEY: &str = "mute";
 
+/// The published verdict's key saying **WHETHER THIS PANE'S COMPOSER IS HOLDING AN UNSUBMITTED
+/// PROMPT** — register item 762, and the one fact here that a REPORTED pane could not carry at all
+/// until this key existed.
+///
+/// # ⛔⛔⛔⛔⛔ Why it is not [`AGENT_STATE_KEY`], and what that cost
+///
+/// `sprag_detect::AgentState::Holding` is a rule reading the composer, and the state is ARBITRATED:
+/// a hook outranks the screen, so `Holding` is never the state of a pane whose agent reports —
+/// which is every pane a supervisor drives. `sprag_plugin`'s `SubmittedWhen::Released`, the one
+/// submit contract that CONVERGES instead of expiring on a timeout, therefore refused on exactly
+/// that population, and a driver whose prompt was folded into a composer placeholder was left with
+/// the agent's own account and nothing else. Register item 669 measured that: of five live runs,
+/// four had prompts that were never asked and the run could not tell.
+///
+/// So this is a SECOND FACT IN A SECOND SLOT and the arbitration is untouched — the question
+/// register item 524 declined to answer, what a pane SAYS when its agent works while a paste is
+/// queued, is still not asked.
+///
+/// ⚠ ABSENT is *nothing could say* — no manifest claims this pane, or the one that does authors no
+/// `Holding` rule — and NEVER *not holding*. Unlike [`AGENT_MUTE_KEY`] this key is written only
+/// where there is a reading, because both of its readings are claims and the absence is the third
+/// answer rather than a default. A contract resting on it refuses on the absence.
+///
+/// # ⚠⚠⚠⚠ Why this earned NO [`WIRE_PROTOCOL`] bump, on [`AGENT_MUTE_KEY`]'s standard
+///
+/// * **NEW daemon → OLD client.** An added answer key is absent-not-wrong to a reader that takes
+///   the keys it knows by name.
+/// * **OLD daemon → NEW client.** The key is absent, which is the reading that already made every
+///   contract resting on it refuse — so a driver behaves exactly as it did before the key existed.
+pub const AGENT_HOLDING_KEY: &str = "holding";
+
 /// The published verdict's key saying **WHETHER THIS VERDICT IS STILL WAITING TO CHANGE** — one of
 /// [`AGENT_SETTLING_NOTHING`] and [`AGENT_SETTLING_PENDING`], and register item 640's carriage.
 ///

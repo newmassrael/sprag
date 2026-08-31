@@ -1146,6 +1146,7 @@ mod tests {
         let (access, pane) = sh_access("exec cat", 20, 4);
         let reported: Reported = Arc::new(Mutex::new(AgentObservation {
             state,
+            holding: None,
             agent: Some("claude".to_string()),
             authority: Authority::Reported {
                 source: "test".to_string(),
@@ -1186,6 +1187,7 @@ mod tests {
         let (access, pane) = sh_access("exec cat", 20, 4);
         let reported: Reported = Arc::new(Mutex::new(AgentObservation {
             state,
+            holding: None,
             agent: Some("claude".to_string()),
             authority: Authority::Scraped {
                 rule: Some("idle-glyph".to_string()),
@@ -2482,6 +2484,7 @@ mod tests {
         let seen: Arc<Mutex<Option<AgentObservation>>> =
             Arc::new(Mutex::new(Some(AgentObservation {
                 state: AgentState::Working,
+                holding: None,
                 agent: Some("claude".to_string()),
                 authority: Authority::Reported {
                     source: "test".to_string(),
@@ -2573,6 +2576,7 @@ mod tests {
         // here judges one turn and its next prompt is refused at `PaneAccess::inject`.
         *seen.lock().expect("the reported mutex") = Some(AgentObservation {
             state: AgentState::Idle,
+            holding: None,
             agent: Some("claude".to_string()),
             authority: Authority::Reported {
                 source: "test".to_string(),

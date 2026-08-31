@@ -1289,6 +1289,7 @@ mod tests {
                 };
                 Some(crate::access::AgentObservation {
                     state,
+                    holding: None,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {
                         source: "test".to_string(),

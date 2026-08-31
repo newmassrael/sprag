@@ -119,6 +119,20 @@ pub struct AgentFacts {
     /// Which rule fired. D7: a gate that cannot say what it saw cannot be diagnosed, and this is
     /// what `explain` reads — it is the same value the detector produced, not a recomputation.
     pub rule: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS PANE'S COMPOSER IS HOLDING AN UNSUBMITTED PROMPT** — register item
+    /// 762, and the one fact here that a REPORTED pane could not previously carry.
+    ///
+    /// [`state`](Self::state) is arbitrated: a hook outranks the screen, so
+    /// [`sprag_detect::AgentState::Holding`] — which is a rule reading the composer — is never the
+    /// state of a pane whose agent reports, which is every pane a supervisor drives. That left
+    /// `sprag_plugin`'s `SubmittedWhen::Released`, the one submit contract that CONVERGES rather
+    /// than expiring, refusing on exactly that population; a driver whose prompt was folded into a
+    /// composer placeholder had one channel and a timeout.
+    ///
+    /// ⚠⚠ So it is a SECOND FACT IN A SECOND SLOT and nothing about the state changed — see
+    /// [`sprag_detect::Tracker::holding`]. [`None`] is *nothing could say* (no manifest claims this
+    /// pane, or the one that does authors no `Holding` rule), never *not holding*.
+    pub holding: Option<bool>,
     /// Increments on a published CHANGE, so a client tells "still blocked" from "blocked again"
     /// without diffing strings — `notification_seq`'s treatment.
     pub seq: u64,
@@ -395,6 +409,13 @@ pub fn verdict_json(facts: &AgentFacts) -> serde_json::Value {
     if let Some(rule) = &facts.rule {
         value[crate::wire::AGENT_RULE_KEY] = serde_json::json!(rule);
     }
+    // WHETHER THE COMPOSER IS HOLDING AN UNSUBMITTED PROMPT — register item 762. ⚠ Written only
+    // where there is a READING, unlike `AGENT_MUTE_KEY` beside it: both `true` and `false` are
+    // claims here and the ABSENCE is the third answer (*nothing could say*), which is what a
+    // contract resting on this refuses on.
+    if let Some(holding) = facts.holding {
+        value[crate::wire::AGENT_HOLDING_KEY] = serde_json::json!(holding);
+    }
     // WHO said so, for a verdict that was REPORTED rather than inferred — `rule`'s counterpart on
     // the other kind of evidence. A reported verdict carries no rule and a scraped one carries no
     // source, so a reader never has to guess which authority answered.
@@ -585,6 +606,12 @@ pub fn verdict_of(value: &serde_json::Value, sent: Sent) -> Verdict {
             Some(false) => sprag_plugin::ReporterVoice::Speaking,
             None => sprag_plugin::ReporterVoice::Unsaid,
         },
+        // ⚠⚠⚠⚠⚠ AND WHETHER THE COMPOSER IS HOLDING AN UNSUBMITTED PROMPT — register item 762, and
+        // the hop that decides whether an out-of-process driver can use the one submit contract
+        // that converges. `as_bool()` answers `None` for both an absent key and a value that is not
+        // a boolean, and both are *nothing could say* — which is what `SubmittedWhen::Released`
+        // refuses on rather than reading as *not holding*.
+        holding: value[crate::wire::AGENT_HOLDING_KEY].as_bool(),
         // ⚠ A MISSING counter reads as zero, which is this wire's own rule for it: the four are
         // always written, so an absent one is an older daemon — and *nothing has happened yet* is
         // the reading that makes a supervisor wait rather than conclude.
@@ -842,6 +869,10 @@ impl AgentRegistry {
             asking,
             agent,
             rule,
+            // ⚠ FROM THE TRACKER, like the reported clauses below and unlike `rule`: the composer
+            // reading is taken on every look including a reported pane's, and it is kept beside the
+            // verdict rather than inside it so reading it never moves `seq`. Register item 762.
+            holding: tracker.holding(),
             seq: tracker.seq(),
             asked_seq: tracker.asked_seq(),
             said_seq: tracker.said_seq(),

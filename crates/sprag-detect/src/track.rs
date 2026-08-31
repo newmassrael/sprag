@@ -264,6 +264,37 @@ pub struct Tracker {
     /// `None` is a pane whose state is inferred, which is every pane before anything reports and
     /// every pane whose reporter has been [`released`](Tracker::release_report).
     reported: Option<Reported>,
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS PANE'S COMPOSER IS HOLDING AN UNSUBMITTED PROMPT** — register item
+    /// 762, and a fact this tracker keeps BESIDE the verdict rather than inside it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why beside, and not a fourth field on [`Verdict`]
+    ///
+    /// [`consider`](Self::consider) decides whether anything happened by comparing whole verdicts
+    /// (`candidate == self.published`), and that comparison drives the settle window and
+    /// [`seq`](Self::seq). A composer filling and emptying is not a change of what the pane MEANS,
+    /// so folding it into that struct would publish changes nobody asked for and restart hysteresis
+    /// on a paste. The arbitration stays byte-identical; this is a second fact in a second slot,
+    /// which is this workspace's item 445 rule.
+    ///
+    /// # ⚠⚠⚠ Why it is read even for a REPORTED pane, where no rule otherwise runs
+    ///
+    /// [`observe`](Self::observe) short-circuits a reported pane past the manifest (register item
+    /// 524 carves out exactly one screen fact, the dialog). The cost of that, measured:
+    /// [`AgentState::Holding`] can never be published for a pane whose agent reports, so
+    /// `sprag_plugin`'s `SubmittedWhen::Released` — the one submit contract that CONVERGES instead
+    /// of expiring — refuses on the whole population a supervisor drives. A driver whose prompt was
+    /// folded into a composer placeholder is then down to one channel, the agent's own account, and
+    /// register item 669 measured what that costs: of five live runs, four had prompts that were
+    /// never asked and the run could not tell.
+    ///
+    /// ⚠⚠ **AND NOTHING IS ARBITRATED HERE.** The state a reported pane publishes is untouched, so
+    /// the question 524 declined to answer — what a pane SAYS when its agent is genuinely working
+    /// AND its composer holds a queued paste — is still not asked. Both facts are simply available.
+    ///
+    /// ⚠ [`None`] is *nothing could say*: no manifest claims this pane, or the one that does
+    /// authors no `Holding` rule. It is an absence of the instrument, never a reading of *not
+    /// holding*, and a contract resting on it must refuse rather than read it as a no.
+    holding: Option<bool>,
     /// Set when the pane's published answer has to be RE-DERIVED from the screen and nothing on the
     /// screen will say so — today, a release or a reporter that has gone mute.
     ///
@@ -524,12 +555,26 @@ impl Tracker {
             seen: None,
             identity: None,
             reported: None,
+            // Nothing has been looked at yet, which is the one reading that is never a claim about
+            // a composer — see the field.
+            holding: None,
             owes_look: false,
             // A pane nobody has reported for has no reporter to be mute, and this is the reading a
             // caller that never takes one leaves standing — so a host with no breadcrumbs anywhere
             // behaves exactly as it did before this input existed.
             reporter_mute: false,
         }
+    }
+
+    /// **WHETHER THIS PANE'S COMPOSER IS HOLDING AN UNSUBMITTED PROMPT**, or [`None`] where nothing
+    /// could say — see the field, and register item 762.
+    ///
+    /// ⚠ It is NOT a state and does not appear in [`verdict`](Self::verdict): a reported pane
+    /// answers this and still publishes its reporter's word, which is the whole shape of the
+    /// repair.
+    #[must_use]
+    pub const fn holding(&self) -> Option<bool> {
+        self.holding
     }
 
     /// The verdict currently published for this pane.
@@ -699,14 +744,45 @@ impl Tracker {
                 // overruled them), which is the whole diagnosis in one line.
                 rule: asking.then(|| DIALOG_OUTRANKS_REPORT.to_owned()),
             };
+            // ⛔⛔⛔⛔⛔ AND THE COMPOSER IS STILL READ HERE — register item 762, and this call is the
+            // whole of what that item changed on this road. Nothing above it moves: the candidate
+            // is composed exactly as it was, no state is decided by the screen, and 524's carve-out
+            // is still the only screen fact that overrules a report. What is different is that the
+            // pane can now ANSWER a question about its composer while a hook is speaking for it —
+            // the population `SubmittedWhen::Released` used to refuse on, which is every pane a
+            // supervisor drives.
+            self.holding = self.composer(screen, title, rules);
             self.consider(candidate, now);
             return &self.published;
         }
         // A look re-derived the answer, so whatever owed one is served.
         self.owes_look = false;
         let candidate = self.evaluate(screen, title, rules.manifests());
+        // ⚠ AFTER `evaluate`, not before it: that call is what identifies the pane, and a read
+        // taken ahead of it would answer `None` for the first look at every pane there is.
+        self.holding = self.composer(screen, title, rules);
         self.consider(candidate, now);
         &self.published
+    }
+
+    /// **WHAT THIS PANE'S COMPOSER IS HOLDING**, asked of the manifest that claims it — the read
+    /// behind [`holding`](Self::holding), and the only place it is taken.
+    ///
+    /// ⚠⚠ BY THE REMEMBERED IDENTITY rather than by re-identifying, for [`Self::evaluate`]'s reason
+    /// exactly: a second walk of the manifest list is a second identification free to disagree with
+    /// the first, and on the reported road there is no first walk to disagree with — the memory is
+    /// all there is. A pane nobody has ever identified answers [`None`], which is *nothing could
+    /// say* and not *not holding*.
+    fn composer(&self, screen: &Screen, title: &str, rules: &Ruleset) -> Option<bool> {
+        self.identity
+            .as_deref()
+            .and_then(|name| {
+                rules
+                    .manifests()
+                    .iter()
+                    .find(|manifest| manifest.name == name)
+            })
+            .and_then(|manifest| manifest.holding(screen, title))
     }
 
     /// Take a REPORT from a process inside the pane: publish `state` at once and hold the screen off
@@ -2183,27 +2259,41 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠⚠⚠ **AND A COMPOSER HOLDING AN UNSUBMITTED PROMPT DOES NOT** — the exact opposite of
-    /// [`a_dialog_outranks_a_report_older_than_it`] below, pinned because a caller is now resting a
-    /// contract on it.
+    /// ⚠⚠⚠⚠⚠ **AND A COMPOSER HOLDING AN UNSUBMITTED PROMPT DOES NOT — BUT THE PANE ANSWERS ABOUT
+    /// IT ANYWAY** — the exact opposite of [`a_dialog_outranks_a_report_older_than_it`] below on the
+    /// arbitration, and register item 762 on the fact.
     ///
     /// # What this measures, and why it is a gate rather than a comment
     ///
     /// [`Tracker::observe`] does not run the manifest's rules on a pane a hook is reporting: one
     /// screen fact is carved out (register item 524's dialog) and everything else the rules could
     /// see is not consulted. So [`AgentState::Holding`] — register item 669's fourth state, which
-    /// is a rule reading the composer — **can never be published for a reported pane**, and
-    /// `sprag_plugin`'s [`SubmittedWhen::Released`] therefore refuses on exactly the population a
-    /// supervisor drives.
+    /// is a rule reading the composer — **can never be published as the STATE of a reported pane**,
+    /// and nothing here changes that: the assertions below still require the reporter's word to
+    /// stand and no rule to be named.
     ///
-    /// ⚠⚠ **That is a LIMIT, not a defect, and the difference is that somebody chose it.** Lifting
-    /// it means letting a second screen fact overrule a report, which is the change 524 already
-    /// made once — and it would decide, unmeasured, what a pane says when its agent is genuinely
-    /// working AND its composer holds a queued paste. The staging below asserts the same screen IS
-    /// read as `Holding` with no report in force, so what this pins is the ARBITRATION and not a
-    /// manifest that failed to match.
+    /// # ⛔⛔⛔⛔⛔ What that cost, and the change this test was told to expect
+    ///
+    /// This block used to end *"Change this deliberately or not at all"*, because the limit it pins
+    /// had a price: `sprag_plugin`'s `SubmittedWhen::Released` — the ONE submit contract that
+    /// CONVERGES instead of expiring — refuses wherever the composer state cannot be read, which is
+    /// **every pane a supervisor drives**. A driver whose prompt was folded into a composer
+    /// placeholder was left with a single channel, the agent's own account, and register item 669
+    /// measured what that costs: of five live runs, four had prompts that were never asked and the
+    /// run could not tell. Register item 762 then watched a live run die of it — 187 iterations in,
+    /// with the pane it had just been driving reading `working seq=26 said=12`.
+    ///
+    /// **The deliberate change is made, and it is not the one this block warned against.** Lifting
+    /// the limit by letting the composer OVERRULE a report would have decided, unmeasured, what a
+    /// pane says when its agent is genuinely working and a paste is queued. Instead the fact got its
+    /// own slot ([`Tracker::holding`]) and the arbitration was not touched at all — so that question
+    /// is still not asked, and both facts are now available to whoever needs one. This workspace's
+    /// item 445 rule: two facts kept in one slot make one of them invisible.
+    ///
+    /// ⚠ The staging asserts the same screen IS read as `Holding` with no report in force, so what
+    /// the arbitration arms pin is the ARBITRATION and not a manifest that failed to match.
     #[test]
-    fn a_reported_pane_holding_a_paste_is_not_read_as_holding() {
+    fn a_reported_pane_holding_a_paste_answers_about_its_composer_without_being_read_as_holding() {
         let rules = Ruleset::new(vec![claude()]);
         let base = Instant::now();
 
@@ -2217,6 +2307,12 @@ mod tests {
             scraped.verdict().state,
             AgentState::Holding,
             "the staging: unreported, this screen's composer is read for what it is holding",
+        );
+        assert_eq!(
+            scraped.holding(),
+            Some(true),
+            "⚠⚠ and the same look answers the FACT as well as the state — a pane that reads \
+             `Holding` and cannot say why would leave the new slot testing itself",
         );
 
         // ── THE SAME SCREEN, UNDER A REPORT ──
@@ -2245,16 +2341,108 @@ mod tests {
         assert_eq!(
             reported.verdict().state,
             AgentState::Idle,
-            "⚠⚠⚠⚠ THE REPORT STANDS AND THE COMPOSER IS NOT LOOKED AT. This is the bound on \
-             register item 669's second stage: a supervisor's own agents all report, so the \
-             contract that reads this state refuses there rather than answering. Change this \
-             deliberately or not at all",
+            "⚠⚠⚠⚠ THE REPORT STANDS. Register item 524's carve-out admits exactly ONE screen fact \
+             — an unanswered dialog — and a composer is not it: letting this state become \
+             `Holding` would decide, unmeasured, what a pane says when its agent is genuinely \
+             working AND a paste is queued. Register item 762 needed the composer READING and took \
+             it in a slot of its own (asserted below) rather than widening this",
         );
         assert_eq!(
             reported.verdict().rule,
             None,
             "⚠ and NO rule is named, because none ran — unlike the dialog case one door down, \
              which names what overruled the reporter",
+        );
+
+        // ── ⛔⛔⛔⛔⛔ AND THE FACT IS THERE ANYWAY — REGISTER ITEM 762 ──
+        assert_eq!(
+            reported.holding(),
+            Some(true),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: this pane's composer is holding a prompt nobody \
+             submitted, its agent is reporting, and BOTH must be answerable. Until this slot \
+             existed the second fact was unreachable on every pane a supervisor drives, so \
+             `SubmittedWhen::Released` refused there and a driver whose prompt was folded away had \
+             one channel and a timeout. A `None` here is that hole, back",
+        );
+        assert_eq!(
+            reported.verdict().state,
+            AgentState::Idle,
+            "⚠⚠⚠ AND READING IT MUST NOT HAVE MOVED THE STATE. This is the assertion that says the \
+             repair is a second SLOT and not 524's carve-out widened: the composer answers, the \
+             reporter still owns what the pane is DOING, and the question 524 declined — what a \
+             pane says when its agent works while a paste is queued — is still not asked",
+        );
+
+        // ── AND THE OTHER READING IS REACHABLE, or the arm above is green against a constant ──
+        //
+        // ⚠ The same tracker, the same report, a screen whose composer is EMPTY. Without this the
+        // assertions above would pass on a slot hard-wired to `Some(true)`, and the contract that
+        // rests on this needs *it let go* far more than it needs *it is holding*.
+        repaint(&mut em, CLAUDE_FOOTER);
+        reported.observe(
+            em.screen(),
+            Some("✳ Claude Code"),
+            &rules,
+            base + Duration::from_millis(200),
+        );
+        assert_eq!(
+            reported.holding(),
+            Some(false),
+            "⛔⛔⛔ REGISTER ITEM 762: a composer that is NOT holding must say so rather than \
+             answering the last look's word. *It let go* is the reading `SubmittedWhen::Released` \
+             converges on, and a slot that never returns it is a slot that can only ever expire",
+        );
+
+        // ── AND THE THIRD ANSWER, TWICE, BECAUSE THE TWO ABSENCES ARE REACHED DIFFERENTLY ──
+        //
+        // ⛔⛔⛔ Neither is `Some(false)`. *The composer is empty* is a claim about the pane and the
+        // contract resting on this is SATISFIED by it, so collapsing an absence into it would
+        // confirm a submit over a pane nothing can see. This workspace's rule 6, on the side where
+        // the escape hatch is a false YES rather than a false pass.
+        //
+        // ⛔⛔⛔⛔⛔ AND THE SECOND ARM EXISTS BECAUSE THE FIRST IS A DEAD CONTROL FOR HALF OF IT.
+        // A pane nobody claims never reaches `Manifest::holding` at all — `composer` answers `None`
+        // off the missing identity — so mutating that function's *did anybody author a rule*
+        // bookkeeping leaves this green. Measured, on this file. The manifest that CLAIMS a pane
+        // and authors no `Holding` rule is the only staging that travels that road, and `codex` is
+        // it: three rules, none of them about a composer.
+        let mut stranger = Tracker::default();
+        let shell = painted(&["$ ls", "Cargo.toml  src"]);
+        stranger.observe(shell.screen(), None, &rules, base);
+        assert_eq!(
+            stranger.holding(),
+            None,
+            "⛔⛔⛔⛔ REGISTER ITEM 762: no manifest claims this pane, so there is no composer \
+             reading to publish. A `Some(false)` here is *this pane's composer is empty*, which is \
+             a claim nothing took",
+        );
+
+        let without = Ruleset::new(vec![crate::codex()]);
+        let mut unauthored = Tracker::default();
+        let at_rest = painted(CODEX_AT_REST);
+        // ⚠ TWICE, the neighbour `a_modal_that_covers_the_fingerprint…`'s reason: `idle` rests on an
+        // ABSENCE of a working signal, so it is published only once the settle window has passed —
+        // and it is the PUBLISHED verdict that names the agent.
+        unauthored.observe(at_rest.screen(), Some("codexprobe"), &without, base);
+        unauthored.observe(
+            at_rest.screen(),
+            Some("codexprobe"),
+            &without,
+            base + DEFAULT_SETTLE,
+        );
+        assert_eq!(
+            unauthored.verdict().agent.as_deref(),
+            Some("codex"),
+            "the staging: this manifest really does CLAIM the pane, or the assertion below is \
+             about an unidentified pane and is the arm above in a second spelling",
+        );
+        assert_eq!(
+            unauthored.holding(),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: `codex` is claimed and authors no `Holding` rule, so this \
+             build has no instrument for its composer. A `Some(false)` here says *that composer is \
+             empty* on the strength of never having looked — and `SubmittedWhen::Released` reads \
+             exactly that as *the submit landed*",
         );
     }
 

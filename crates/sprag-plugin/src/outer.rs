@@ -12071,6 +12071,7 @@ mod tests {
                     *seq = 1;
                 }
                 Some(crate::access::AgentObservation {
+                    holding: None,
                     state: if submitted {
                         sprag_detect::AgentState::Working
                     } else {
@@ -12235,6 +12236,7 @@ mod tests {
                 }
                 let working = !matches!(peer, Peer::AtRest) || submitted;
                 Some(crate::access::AgentObservation {
+                    holding: None,
                     state: if working {
                         sprag_detect::AgentState::Working
                     } else {
@@ -12727,6 +12729,7 @@ mod tests {
                     *seq = 1;
                 }
                 Some(crate::access::AgentObservation {
+                    holding: None,
                     state: if submitted {
                         sprag_detect::AgentState::Working
                     } else {
@@ -12972,6 +12975,7 @@ mod tests {
                     *seq = 1;
                 }
                 Some(crate::access::AgentObservation {
+                    holding: None,
                     state: if submitted {
                         sprag_detect::AgentState::Working
                     } else {
@@ -13152,6 +13156,7 @@ mod tests {
             let said = stated.map(|path| path.display().to_string());
             let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
                 Some(crate::access::AgentObservation {
+                    holding: None,
                     state: sprag_detect::AgentState::Working,
                     agent: Some("claude".to_owned()),
                     // ⚠ REPORTED, because that is what a transcript path arrives on: the agent's
@@ -13262,6 +13267,7 @@ mod tests {
             let said = stated.map(|path| path.display().to_string());
             let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
                 Some(crate::access::AgentObservation {
+                    holding: None,
                     state: sprag_detect::AgentState::Working,
                     agent: Some("claude".to_owned()),
                     authority: crate::access::Authority::Reported {
@@ -13354,6 +13360,7 @@ mod tests {
         let said = late.display().to_string();
         let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
             Some(crate::access::AgentObservation {
+                holding: None,
                 state: sprag_detect::AgentState::Working,
                 agent: Some("claude".to_owned()),
                 authority: crate::access::Authority::Reported {
@@ -13432,6 +13439,7 @@ mod tests {
         let stated = Arc::clone(&says);
         let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
             Some(crate::access::AgentObservation {
+                holding: None,
                 state: sprag_detect::AgentState::Working,
                 agent: Some("claude".to_owned()),
                 authority: crate::access::Authority::Reported {
@@ -16948,6 +16956,7 @@ mod tests {
     impl crate::access::PaneSupervision for Stating {
         fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
             crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
+                holding: None,
                 state: sprag_detect::AgentState::Idle,
                 agent: Some("claude".to_string()),
                 authority: crate::access::Authority::Reported {
@@ -19627,6 +19636,7 @@ mod tests {
                 let mut seq = published.lock().expect("the published counter");
                 *seq += 1;
                 Some(crate::access::AgentObservation {
+                    holding: None,
                     state: sprag_detect::AgentState::Idle,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {
@@ -23959,6 +23969,7 @@ mod tests {
             let stated = Arc::clone(&stated);
             Arc::new(move |_id: PaneId| {
                 Some(crate::access::AgentObservation {
+                    holding: None,
                     state: sprag_detect::AgentState::Blocked,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {
@@ -25184,6 +25195,7 @@ mod tests {
             let (workspace, pane) = quiet_pane();
             let seen: Arc<Mutex<crate::access::AgentObservation>> =
                 Arc::new(Mutex::new(crate::access::AgentObservation {
+                    holding: None,
                     state: sprag_detect::AgentState::Working,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {
@@ -25363,6 +25375,7 @@ mod tests {
         // ⚠ STARTS UNBLOCKED so the run can begin at all, and is moved BELOW — see the doc.
         let seen: Arc<Mutex<crate::access::AgentObservation>> =
             Arc::new(Mutex::new(crate::access::AgentObservation {
+                holding: None,
                 state: sprag_detect::AgentState::Idle,
                 agent: Some("claude".to_string()),
                 authority: crate::access::Authority::Reported {
@@ -25535,6 +25548,7 @@ mod tests {
             // nothing either way, which is the truth about a `cat`.
             let seen: Arc<Mutex<crate::access::AgentObservation>> =
                 Arc::new(Mutex::new(crate::access::AgentObservation {
+                    holding: None,
                     state: sprag_detect::AgentState::Working,
                     agent: Some("claude".to_string()),
                     // ⚠⚠ REPORTED, because only a reported pane can be silent — a scraped one
@@ -25830,6 +25844,7 @@ mod tests {
             // satisfied — the same fixture the silence gate above uses, and for its reason.
             let seen: Arc<Mutex<crate::access::AgentObservation>> =
                 Arc::new(Mutex::new(crate::access::AgentObservation {
+                    holding: None,
                     state: sprag_detect::AgentState::Working,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {

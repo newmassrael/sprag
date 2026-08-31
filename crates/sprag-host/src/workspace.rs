@@ -5329,6 +5329,15 @@ mod tests {
                 // `false` here because nothing has left word: a report has just landed, which is the
                 // exact negation of the condition this key carries.
                 "mute": false,
+                // ⛔⛔⛔⛔⛔ AND WHAT ITS COMPOSER IS HOLDING — register item 762, and the one key
+                // here that a REPORTED pane could not carry at all until that item. The state is
+                // arbitrated and a hook outranks the screen, so `holding` could never be this
+                // pane's STATE; read off that state, `SubmittedWhen::Released` — the only submit
+                // contract that converges rather than expiring — refused on every pane a supervisor
+                // drives. It is a second fact in a second slot, and the state beside it is
+                // untouched. `false` because this fixture's screen has no composer placeholder on
+                // it, which is a READING and not the absence: an absent key is *nothing could say*.
+                "holding": false,
                 "source": "herdr:claude",
             }),
             "a pane no rule claims is published because a process inside it said so, and the answer \
@@ -5746,6 +5755,13 @@ mod tests {
                 // absent when there is no reporter — would make *nobody reports here* and *this
                 // daemon cannot say* the same wire, which is the collapse the key's own doc refuses.
                 "mute": false,
+                // ⛔⛔⛔⛔⛔ AND WHAT ITS COMPOSER IS HOLDING — register item 762. `false` here is a
+                // READING and not a placeholder: `claude` claims this pane and authors a `Holding`
+                // rule, the rule was run, and this screen is a dialog rather than a held paste. The
+                // third answer — *nothing could say* — is the key's ABSENCE, which is what a pane
+                // no manifest claims and a manifest with no such rule (`codex`) both get, and what
+                // `SubmittedWhen::Released` refuses on rather than reading as *it let go*.
+                "holding": false,
                 // ...and WHAT IT IS ASKING (R367). The whole object is asserted rather than the
                 // keys this round added, which is what makes it a ratchet: a key that appears here
                 // without a decision fails, and so does one that quietly leaves.

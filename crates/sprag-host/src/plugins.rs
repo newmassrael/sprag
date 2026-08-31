@@ -2881,6 +2881,12 @@ pub(crate) fn agent_state_source(
                 None => sprag_plugin::Authority::Scraped { rule: facts.rule },
             };
             Some(sprag_plugin::AgentObservation {
+                // ⛔⛔⛔⛔⛔ WHETHER THE COMPOSER IS HOLDING AN UNSUBMITTED PROMPT — register item
+                // 762, and the fact an IN-PROCESS driver would otherwise be the only one without.
+                // It comes off the same `observe` call as everything else here, which is what the
+                // submit contract that reads it requires: `Submission::arm` takes ONE observation
+                // and pulls both baselines out of it, because two reads could straddle a change.
+                holding: facts.holding,
                 // The REGISTRY's parse, not a second one taken here. It reads the same screen at the
                 // same instant, and having two sites derive it is how the run surface and the pane
                 // surface would come to disagree about what one pane is asking (R367 moved it).

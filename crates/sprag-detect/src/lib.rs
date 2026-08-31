@@ -492,6 +492,46 @@ impl Manifest {
         self.any.iter().any(|fp| fp.holds(screen, title))
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS PANE'S COMPOSER IS HOLDING AN UNSUBMITTED PROMPT**, or [`None`] where
+    /// this manifest authors no rule that could say — register item 762.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is asked apart from [`verdict`](Self::verdict) rather than read off it
+    ///
+    /// It is the SAME rules and a DIFFERENT question, and the difference is the whole repair.
+    /// `verdict` arbitrates: one slot, highest priority wins, and a composer holding a paste
+    /// therefore loses to a hook that says the agent is working — which is correct, and is why
+    /// [`Tracker::observe`] does not run the rules on a reported pane at all (register item 524's
+    /// carve-out). The cost of that, measured: [`AgentState::Holding`] can never be published for a
+    /// pane whose agent reports, so `sprag_plugin`'s `SubmittedWhen::Released` — the ONE submit
+    /// contract that CONVERGES rather than expiring — refuses on exactly the population a
+    /// supervisor drives. A driver whose prompt was folded away is then left with a single channel
+    /// (the agent's own account), and its silence is a timeout dressed as a fact.
+    ///
+    /// ⚠⚠ **SO THE FACT GETS ITS OWN SLOT AND THE ARBITRATION IS NOT TOUCHED** — this workspace's
+    /// item 445 rule, that two facts kept in one slot make one of them invisible. *What the agent
+    /// is doing* stays the reporter's; *what the composer is holding* is the screen's; and the
+    /// question 524 declined to answer — what a pane SAYS when its agent is working and a paste is
+    /// queued — is never asked, because nothing here decides a state.
+    ///
+    /// ⚠ [`None`] is *this manifest authors no `Holding` rule*, which is an absence of the
+    /// instrument and not a reading of the pane. A contract resting on it must refuse there rather
+    /// than read it as *not holding* — which is what `Released`'s baseline already does.
+    #[must_use]
+    fn holding(&self, screen: &Screen, title: &str) -> Option<bool> {
+        let mut authored = false;
+        for rule in self
+            .rules
+            .iter()
+            .filter(|it| it.state == AgentState::Holding)
+        {
+            authored = true;
+            if rule.all.iter().all(|m| m.holds(screen, title)) {
+                return Some(true);
+            }
+        }
+        authored.then_some(false)
+    }
+
     /// The verdict this manifest's rules reach on a pane already taken to be this agent's —
     /// arbitration WITHOUT identification.
     ///

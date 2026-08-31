@@ -1980,6 +1980,7 @@ mod tests {
             Arc::new(move |_id: PaneId| {
                 let (state, agent) = reported.lock().unwrap().clone();
                 Some(crate::access::AgentObservation {
+                    holding: None,
                     state,
                     agent,
                     authority: crate::access::Authority::Reported {
@@ -3025,6 +3026,7 @@ mod tests {
         impl crate::access::PaneSupervision for StillBlockedNothingReadable {
             fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
                 crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
+                    holding: None,
                     state: AgentState::Blocked,
                     agent: Some("claude".to_owned()),
                     // ⚠ The SCREEN-read authority, deliberately: the settle window is a property
@@ -4465,6 +4467,7 @@ mod tests {
         };
         let source = Arc::new(|_id: PaneId| {
             Some(crate::access::AgentObservation {
+                holding: None,
                 state: AgentState::Blocked,
                 agent: Some("claude".to_string()),
                 authority: crate::access::Authority::Reported {
@@ -4543,6 +4546,7 @@ mod tests {
         // agent's own notice reached this observation instead of dying in the hook.
         let source = Arc::new(|_id: PaneId| {
             Some(crate::access::AgentObservation {
+                holding: None,
                 state: AgentState::Blocked,
                 agent: Some("claude".to_string()),
                 authority: crate::access::Authority::Reported {
