@@ -2212,9 +2212,12 @@ pub enum RestartReason {
     /// to a wedged session already exists.
     ///
     /// ⚠⚠ It is bounded by the document (`unasked_seen`): a run whose peer folds a SECOND question
-    /// is a person's, and the run says `failed`. ⚠ Register item 745(B) made that count the run's
-    /// rather than a stretch since anything took — the replacement retypes the brief, so a landing
-    /// used to hand the budget straight back to the recovery that had just spent it.
+    /// **while the session this bought is still on the pane** is a person's, and the run says
+    /// `failed`. ⚠ Register item 745(B) made that count the run's rather than a stretch since
+    /// anything took — the replacement retypes the brief, so a landing used to hand the budget
+    /// straight back to the recovery that had just spent it. ⚠ Register item 762 then gave it back
+    /// on the one replacement that recovery did NOT buy, which is
+    /// [`returns_the_fold_budget`](Self::returns_the_fold_budget).
     /// ⚠ And it is raised only where the pane can REPORT being asked — at a scraped pane *nobody
     /// reported it* is not evidence, and the delivery's old refusal stands.
     Unasked,
@@ -2251,6 +2254,51 @@ impl RestartReason {
     #[must_use]
     pub fn named(word: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|reason| reason.word() == word)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER A REPLACEMENT BOUGHT FOR THIS REASON HANDS THE FOLD BUDGET BACK** —
+    /// register item 762, and the half of 745(B) that was measured missing.
+    ///
+    /// `ai_loop.scxml` gives a run ONE session replacement for a folded question
+    /// ([`Unasked`](Self::Unasked)) and says `failed` on the next fold. Register item 745(B) had
+    /// just removed the clear that lived on `priming`'s `prompt.sent`, and correctly: the prompt
+    /// that lands after a fold recovery is **the brief that recovery itself retyped**, so the
+    /// recovery kept renewing the budget that bounds recoveries. What that repair left behind is
+    /// that the count then outlived the peer it is about, by any number of sessions.
+    ///
+    /// # ⛔⛔⛔⛔ The measurement, and it separates the two groups completely
+    ///
+    /// | run | replacements between the two folds | ended |
+    /// |---|---|---|
+    /// | 110 | **four**, every one [`Capacity`](Self::Capacity) | `failed` at 187 iterations, its pane reading `working seq=26 said=12` |
+    /// | 50 | none but the recovery's own | `failed`, and rightly |
+    /// | 51 | none but the recovery's own | `failed`, and rightly |
+    ///
+    /// Zero against four. The axis is not *how many folds*, nor *how far apart* — a rate would hand
+    /// the answer to the runner's speed and to a denominator somebody has to pick, which register
+    /// items 666 and 786 each spent a round taking back out of a gate. It is **provenance**: a
+    /// session replaced for capacity, for economics or because its own numbers could not be read is
+    /// a peer this budget did not buy, and the earlier refusal is not evidence about it.
+    ///
+    /// ⚠⚠ **EXHAUSTIVE, WITH NO `_` ARM, WHICH IS THE POINT.** A seventh restart reason cannot be
+    /// added without somebody deciding which side of this line it falls on — the compiler asks. And
+    /// `the_fold_budget_is_returned_by_every_replacement_it_did_not_buy` holds the answer against
+    /// the `cond` in the document, because a classification only this file knows is one the machine
+    /// does not act on.
+    #[must_use]
+    pub const fn returns_the_fold_budget(self) -> bool {
+        match self {
+            // ⚠ THE RECOVERY'S OWN. This is the replacement the budget paid for, and a budget that
+            // renewed itself on being spent would bound nothing at all — 745(B) exactly.
+            Self::Unasked => false,
+            // Every other word is a decision `reviewing` reached out of its own numbers, about
+            // context and about cost, with no folded question anywhere in it.
+            Self::Economics
+            | Self::Capacity
+            | Self::NobodyCouldSay
+            | Self::NoCeiling
+            | Self::Unread => true,
+        }
     }
 
     /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
@@ -2303,14 +2351,25 @@ impl RestartReason {
             // document now agree about a SECOND FOLD ANYWHERE IN THE RUN. It still must not be
             // rewritten to name a session: a run that folds once, works for five turns and folds
             // again is stopped, and that is the case 745 was filed for.
+            //
+            // ⛔⛔⛔⛔⛔ AND REGISTER ITEM 762 THEN PUT BACK THE ONE CLEAR 745(B)'s ARGUMENT DOES
+            // NOT COVER, so the last clause names the condition instead of denying it. It read
+            // *"whatever it says and however much work has happened in between"* and that is what
+            // it did to run 110: folded at 14:08, handed over for capacity four times over the
+            // next seventeen hours, folded again at 07:24, ended here at 187 iterations with the
+            // pane it had been driving reading `working seq=26 said=12`. See
+            // [`returns_the_fold_budget`](Self::returns_the_fold_budget) for the arithmetic; runs
+            // 50 and 51 replaced their sessions for nothing but the recovery, so they are stopped
+            // exactly as before.
             Self::Unasked => {
                 "the peer would not take the question: the prompt reached its pane and the submit \
                  after it never became a question the agent reported. Nothing is wrong with the \
                  work or the milestone — what is wedged is the SESSION's own composer, and this is \
                  the run opening a fresh one rather than throwing away what it has already paid \
-                 for. This run gets ONE such replacement: if any later question is folded away \
-                 too, whatever it says and however much work has happened in between, the run \
-                 stops for a person"
+                 for. This run gets ONE such replacement UNTIL SOMETHING ELSE REPLACES THE SESSION \
+                 IT BOUGHT: hand over for capacity or for cost and the next fold buys another one, \
+                 because the peer this bound is about is gone. Fold a second question while that \
+                 same session is still on the pane and the run stops for a person"
             }
         }
     }
@@ -14407,6 +14466,118 @@ mod tests {
              `ai_loop.scxml` assigns is an arm nothing can ever produce — prose, a `describe` \
              nobody renders, and a reader who goes looking for a cause that cannot happen \
              (register item 260). Decide whether the arm should exist, and say so where the type is",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE DOCUMENT RETURNS THE FOLD BUDGET FOR EXACTLY THE REASONS THIS DRIVER SAYS
+    /// IT SHOULD** — register item 762, and the ratchet that keeps
+    /// [`RestartReason::returns_the_fold_budget`] from being a classification nothing acts on.
+    ///
+    /// # ⚠⚠⚠ Two artefacts, and the gate reads BOTH
+    ///
+    /// The machine's half is a `cond` on `restarting`'s `session.replaced`; the driver's half is an
+    /// exhaustive `match` a seventh reason cannot be added past. Either alone rots quietly: a
+    /// `match` arm nobody's `cond` mentions is prose, and a `cond` naming a word the type calls
+    /// budget-returning is the document contradicting its own driver. So this asserts they are the
+    /// SAME SET, which is register item 470's shape — the gate reads the tree and the rule and reds
+    /// where they disagree.
+    ///
+    /// # ⚠⚠ The safe default was chosen, and it is why the assertion is an equality
+    ///
+    /// The `cond` is written `restart_reason != 'unasked'`, so an author who adds a second fold
+    /// recovery word and forgets it gets the LOOSE behaviour — the budget handed back for a
+    /// replacement the recovery bought. That is 745(B)'s defect returning, and it is silent by
+    /// construction: every existing gate stays green, because the walk is identical and only the
+    /// arithmetic differs. What catches it is this equality going red the moment
+    /// `returns_the_fold_budget` says `false` for a word the `cond` does not exclude.
+    #[test]
+    fn the_fold_budget_is_returned_by_every_replacement_it_did_not_buy() {
+        /// The authority. ⚠ Read as TEXT, for its neighbours' reason: the compiled machine cannot
+        /// answer *what does this transition's guard say*.
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        /// The event the replacement lands on, and the only place the budget goes back.
+        const LANDED: &str = "<transition event=\"session.replaced\"";
+        /// The variable the guard reads.
+        const READS: &str = "restart_reason";
+        /// What the guarded arm must do, and the whole of what this item is.
+        const CLEARS: &str = "<assign location=\"unasked_seen\" expr=\"0\"/>";
+
+        let lines: Vec<&str> = DOCUMENT.lines().collect();
+        // Each `session.replaced` edge, as (the line an author would open, its guard, whether its
+        // body hands the budget back).
+        let mut arms: Vec<(usize, Option<String>, bool)> = Vec::new();
+        for (at, line) in lines.iter().enumerate() {
+            if !line.contains(LANDED) {
+                continue;
+            }
+            // ⚠ The guard may sit on this line or on the continuation below it, and the body ends
+            // at the close tag — a self-closing element has none, which is the unguarded arm.
+            let head: String = lines[at..]
+                .iter()
+                .take_while(|part| !part.contains("</transition>"))
+                .take(3)
+                .copied()
+                .collect::<Vec<&str>>()
+                .join(" ");
+            let guard = head
+                .split_once("cond=\"")
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map(|(guard, _)| guard.to_owned());
+            let clears = lines[at..]
+                .iter()
+                .take_while(|part| !part.contains("</transition>"))
+                .any(|part| part.contains(CLEARS));
+            arms.push((at + 1, guard, clears));
+        }
+
+        // ── THE CONTROL: the edge exists, and one of its arms really does hand the budget back ──
+        assert!(
+            arms.iter().any(|(_, _, clears)| *clears),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: no `session.replaced` arm in `ai_loop.scxml` carries \
+             {CLEARS}, so the fold budget is spent for the life of the run again and a run that \
+             hands over for capacity four times between two folds is failed on the second. That is \
+             run 110, which died at 187 iterations with its pane reading `working seq=26 said=12`. \
+             Found {arms:?}",
+        );
+
+        // ── 1. THE GUARD READS THE REASON THE REPLACEMENT WAS BOUGHT FOR ──
+        let guarded: Vec<&str> = arms
+            .iter()
+            .filter(|(_, _, clears)| *clears)
+            .filter_map(|(_, guard, _)| guard.as_deref())
+            .filter(|guard| guard.contains(READS))
+            .collect();
+        assert_eq!(
+            guarded.len(),
+            1,
+            "⚠⚠⚠ REGISTER ITEM 762: exactly ONE `session.replaced` arm may clear `unasked_seen`, \
+             and it must decide on {READS}. An unguarded clear is 745(B)'s defect with a different \
+             spelling — the recovery's own replacement handing its budget straight back — and two \
+             guarded ones are two authorities on one fact. Found {arms:?}",
+        );
+
+        // ── 2. AND IT EXCLUDES EXACTLY THE REASONS THIS DRIVER SAYS BUY NOTHING BACK ──
+        let excluded: std::collections::BTreeSet<&str> = RestartReason::ALL
+            .into_iter()
+            .map(RestartReason::word)
+            .filter(|word| guarded[0].contains(&format!("!= '{word}'")))
+            .collect();
+        let keeps: std::collections::BTreeSet<&str> = RestartReason::ALL
+            .into_iter()
+            .filter(|reason| !reason.returns_the_fold_budget())
+            .map(RestartReason::word)
+            .collect();
+        assert_eq!(
+            excluded, keeps,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the document's guard ({:?}) and \
+             `RestartReason::returns_the_fold_budget` disagree about which replacements hand the \
+             fold budget back. A word this driver classifies as the recovery's OWN, that the guard \
+             does not exclude, renews the budget that bounds the recovery — register item 745(B) \
+             measured that on runs 50 and 51 and it is invisible to every other gate here. A word \
+             the guard excludes that the driver calls somebody else's leaves register item 762's \
+             run dying: 110 folded, handed over for capacity four times, folded again seventeen \
+             hours later and was ended for it",
+            guarded[0],
         );
     }
 

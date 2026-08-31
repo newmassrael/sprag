@@ -1131,14 +1131,23 @@ impl AiLoop {
 /// ⚠ It does not name WHEN the earlier replacement went, because the notice does not carry it. What
 /// it can do is send the reader to the place that does — the run's own journal — instead of to a
 /// pane where there is nothing to find.
+///
+/// # ⭐⭐⭐ AND ONE THING IT CAN NOW SAY THAT IT COULD NOT
+///
+/// Since register item 762's repair, `unasked_seen` is cleared by any `session.replaced` the fold
+/// budget did not buy ([`crate::outer::RestartReason::returns_the_fold_budget`]). So road 3 no
+/// longer means only *a fold happened earlier in this run* — it means **the session bought for that
+/// fold is still the one on the pane**. That is a narrower and much more useful fact for the reader:
+/// the two folds are not eighteen hours and four handovers apart, they are the same session's.
 fn a_second_fold_with_the_budget_gone(written: u64, attempts: u32) -> String {
     format!(
         "it put {written} bytes on the pane and pressed {attempts} time(s), and the question was \
          never asked. This run's ONE session replacement had already been spent on an EARLIER \
-         folded question, so none was attempted for this one — the two need not be related, and on \
-         the run that measured this they were eighteen hours apart. What to look at is the run's \
-         journal, for the earlier replacement and what it was for; the size of this text is not \
-         known to be the cause and a smaller brief has folded the same way"
+         folded question, and the session it bought is STILL THE ONE ON THE PANE — nothing has \
+         handed over since, so the peer holding this unsendable draft is the peer the earlier \
+         replacement produced. What to look at is the run's journal, for that earlier fold and \
+         what was asked; the size of this text is not known to be the cause and a smaller brief \
+         has folded the same way"
     )
 }
 
@@ -11840,6 +11849,193 @@ mod tests {
              the replacement that was measured to work — a fresh session took the identical prompt \
              where the wedged one would not. A run that failed here would have lost the recovery \
              register item 446 built, which is a real one for every cause but this",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A HANDOVER THE FOLD BUDGET DID NOT BUY HANDS IT BACK, AND ONE IT DID BUY DOES
+    /// NOT** — register item 762, driven at the document, and the other half of the gate above.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What this cost, before it existed
+    ///
+    /// Register item 745(B) removed the clear on `priming`'s `prompt.sent`, and correctly: the
+    /// prompt that lands after a fold recovery is the brief that recovery retyped, so the recovery
+    /// renewed the budget that bounds recoveries. What it left behind is that the count then
+    /// outlived the peer it is about. **Run 110 folded at 14:08, handed its session over for
+    /// CAPACITY four times over the next seventeen hours (18:17, 22:22, 02:25, 06:40), folded a
+    /// second question at 07:24, and was failed for it** — 187 iterations and 177,857 bytes in,
+    /// with the pane it had just been driving reading `working seq=26 said=12`. The session that
+    /// folded was four sessions removed from the one the budget bought, and the sentence its reader
+    /// got named *a peer that will not take a question*.
+    ///
+    /// # ⚠⚠⚠ Why the walks below are the measurement and not a preference
+    ///
+    /// The two arms differ **in one step**: whether a `capacity` handover happens between the two
+    /// folds. Runs 50 and 51 had none — their only replacement was the recovery's own — and both
+    /// are still stopped, which is 745(B)'s whole case. Run 110 had four, and is not. Zero against
+    /// four is the separation; there is no threshold here to tune, and deliberately so, because a
+    /// *folds per turn* or *per hour* rule would hand this answer to the runner's speed (register
+    /// items 666 and 786, each of which spent a round removing exactly such a denominator).
+    ///
+    /// ⚠⚠ **DRIVEN AT THE DOCUMENT, EVENT BY EVENT**, its neighbour's argument exactly: what is
+    /// asserted is the machine's own arithmetic, and a pane fixture would put a delivery, a
+    /// supervisor and a peer's timing between the claim and the answer. The handover is reached by
+    /// **the door the product uses** — a judged milestone, an applied reflection, and a `reviewing`
+    /// holding numbers past its ceiling — rather than by writing `unasked_seen` from outside, which
+    /// would be a fixture asserting about itself.
+    #[test]
+    fn a_handover_the_fold_budget_did_not_buy_hands_it_back() {
+        use sce_rust_runtime::ScriptValue;
+
+        /// Walk a fresh machine: brief, turn, fold, replacement — the first half of both arms, and
+        /// the state it ends in is `Priming` with the budget spent.
+        fn folded_once() -> (
+            Engine<AiLoopPolicy>,
+            crate::act::Serving,
+            Arc<dyn IScriptEngine>,
+            String,
+        ) {
+            let (mut engine, host, lua, session) = started();
+            for (event, data) in [
+                (AiLoopEvent::Start, ""),
+                (AiLoopEvent::PromptSent, ""),
+                (AiLoopEvent::TurnDone, TURN),
+                (AiLoopEvent::Judge, "{\"done\": false}"),
+                (AiLoopEvent::PromptUnasked, UNASKED),
+            ] {
+                carried(&mut engine, &host, event, data);
+            }
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Restarting,
+                "the control: the FIRST fold buys the session register item 446 measured",
+            );
+            carried(&mut engine, &host, AiLoopEvent::SessionReplaced, "");
+            carried(&mut engine, &host, AiLoopEvent::SessionReady, "");
+            (engine, host, lua, session)
+        }
+
+        // ── THE CLAIM: a capacity handover in between, and the second fold is recoverable ──
+        let (mut engine, host, lua, session) = folded_once();
+        // ⚠ A turn, a claimed milestone and an applied reflection: the way `reviewing` is reached.
+        for (event, data) in [
+            (AiLoopEvent::PromptSent, ""),
+            (AiLoopEvent::TurnDone, TURN),
+            (AiLoopEvent::Judge, "{\"done\": true}"),
+        ] {
+            carried(&mut engine, &host, event, data);
+        }
+        reflected(&mut engine, &host, AiLoopEvent::ReflectApplied, "");
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Reviewing,
+            "the control: an applied reflection reaches the state that decides where the next \
+             milestone is taken",
+        );
+        // ⚠⚠ WRITTEN HERE RATHER THAN CARRIED ON `judge`, for its neighbour's reason: `judging`'s
+        // `onentry` copies these out of the event, so numbers carried earlier would have been
+        // overwritten by `TURN`'s zeroes before `reviewing` ever read them. Past the ceiling, so
+        // the decision is `capacity` and not the economic one above it.
+        for (name, value) in [("context_ceiling", 100_i64), ("context", 200_i64)] {
+            lua.set_variable(&session, name, ScriptValue::Int(value))
+                .expect("the document's own numbers are writable");
+        }
+        carried(
+            &mut engine,
+            &host,
+            AiLoopEvent::ReviewNone,
+            "{\"carried\": \"\"}",
+        );
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Restarting,
+            "the control: a session past its ceiling is handed over, and THAT is the replacement \
+             this item is about — one the fold budget did not buy",
+        );
+        carried(&mut engine, &host, AiLoopEvent::SessionReplaced, "");
+        carried(&mut engine, &host, AiLoopEvent::SessionReady, "");
+        carried(&mut engine, &host, AiLoopEvent::PromptUnasked, UNASKED);
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Restarting,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: this run folded a question, bought a session for it, and \
+             then replaced THAT session for capacity — so the peer the bound is about is gone, and \
+             a fold now is a session-level condition a replacement fixes, exactly as the first one \
+             was. A `Failed` here is run 110: seventeen hours and four handovers after its first \
+             fold, ended on the second while its pane read `working seq=26 said=12`",
+        );
+
+        // ── THE CONTROL, AND IT IS WHAT MAKES THE ARM ABOVE A MEASUREMENT ──
+        //
+        // ⛔⛔⛔ REGISTER ITEM 745(B), UNDONE IF THIS GOES GREEN THE OTHER WAY. The identical walk
+        // with the handover REMOVED — one turn instead, which is what runs 50 and 51 did between
+        // their folds — must still stop the run. Without this arm the claim above would be green
+        // against a document that had simply stopped counting, which is the defect 745(B) was
+        // filed for and the reason the clear it deleted is still deleted.
+        let (mut same, host, _lua, _session) = folded_once();
+        for (event, data) in [
+            (AiLoopEvent::PromptSent, ""),
+            (AiLoopEvent::TurnDone, TURN),
+            (AiLoopEvent::Judge, "{\"done\": false}"),
+            (AiLoopEvent::PromptUnasked, UNASKED),
+        ] {
+            carried(&mut same, &host, event, data);
+        }
+        assert_eq!(
+            same.get_current_state(),
+            AiLoopState::Failed,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 745(B): a run that folds, buys a session, works a turn in it \
+             and folds again has replaced nothing since — the brief that landed is the one the \
+             recovery itself retyped — so it must still stop for a person. A `Restarting` here is \
+             the churn 745(B) measured on runs 50 and 51, where an unattended run threw a session \
+             away every few turns for as long as it lived and nobody was ever called",
+        );
+
+        // ⚠⚠⚠⚠⚠ AND THE THIRD ARM, WHICH SAYS THE HANDOVER IS WHAT DID IT RATHER THAN THE EXTRA
+        // STEPS. The claim's walk has a judged milestone, a reflection and a `reviewing` in it that
+        // the control does not, so a document that handed the budget back on ANY of those would
+        // pass both arms above. This one takes the identical route to `reviewing` and then hands
+        // `reviewing` numbers it cannot decide a handover from, so the run goes back to work with
+        // its session intact — and the next fold must still be the second one.
+        let (mut kept, host, lua, session) = folded_once();
+        for (event, data) in [
+            (AiLoopEvent::PromptSent, ""),
+            (AiLoopEvent::TurnDone, TURN),
+            (AiLoopEvent::Judge, "{\"done\": true}"),
+        ] {
+            carried(&mut kept, &host, event, data);
+        }
+        reflected(&mut kept, &host, AiLoopEvent::ReflectApplied, "");
+        // Room to spare and nothing worth discarding: `reviewing`'s one edge back to work.
+        for (name, value) in [
+            ("context_ceiling", 100_i64),
+            ("context", 1_i64),
+            ("floor", 0_i64),
+            ("cold", 0_i64),
+        ] {
+            lua.set_variable(&session, name, ScriptValue::Int(value))
+                .expect("the document's own numbers are writable");
+        }
+        carried(
+            &mut kept,
+            &host,
+            AiLoopEvent::ReviewNone,
+            "{\"carried\": \"\"}",
+        );
+        assert_ne!(
+            kept.get_current_state(),
+            AiLoopState::Restarting,
+            "the control: a session with room left and nothing worth discarding is KEPT, or this \
+             arm is a second copy of the claim above",
+        );
+        carried(&mut kept, &host, AiLoopEvent::PromptUnasked, UNASKED);
+        assert_eq!(
+            kept.get_current_state(),
+            AiLoopState::Failed,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: what returns the budget is the session being REPLACED, \
+             not the run reaching a reflection or a review. This walk reviewed and kept its \
+             session, so the peer holding the unsendable draft is the same one, and the run must \
+             stop for a person. A `Restarting` here means the clear is keyed on the wrong event \
+             and 745(B)'s net is open again through a longer door",
         );
     }
 
