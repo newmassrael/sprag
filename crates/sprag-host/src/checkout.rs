@@ -95,6 +95,30 @@ impl IsolatedCheckout {
     /// the two would fight over the same ref the moment either one committed.
     #[must_use]
     pub fn of(repo: &Path, under: &Path) -> Option<Self> {
+        // ⛔⛔⛔⛔⛔ **A TEMPORARY ROOT THAT IS NOT ABSOLUTE IS REFUSED** — register item 794. Unlike
+        // the check discussed immediately below, this one is LOAD-BEARING, and the difference was
+        // measured rather than argued.
+        //
+        // `RemotePaneAccess::cut` hands this `std::env::temp_dir()`, and its own doc one seam out
+        // promises *the temporary root is this machine's, **not a directory of the repository's***
+        // — because a copy inside the tree being copied is litter the checker can wander into and
+        // shows up in the agent's own `git status`, which is register item 705's confusion
+        // re-created by the repair. **That promise rests entirely on the path being absolute**,
+        // and `temp_dir()` answers `""` when `TMPDIR` is set-and-empty, which makes the `join`
+        // below relative.
+        //
+        // ⚠⚠ AND NOTHING DOWNSTREAM REFUSES IT, which is the whole reason a check earns its place
+        // here. Measured 2026-08-31 in a throwaway repository: `git -C <repo> worktree add
+        // --detach -q sprag-check-probe HEAD` **succeeds — rc=0** — and leaves
+        // `?? sprag-check-probe/` INSIDE the repository, because git resolves a relative path
+        // against its own `-C`. So the silent wrong answer this module exists to prevent would be
+        // produced by git doing exactly what it was asked.
+        //
+        // ⚠ An empty path is not absolute, so the case that motivated this is caught by the same
+        // question rather than by a separate emptiness test nobody would keep in step.
+        if !under.is_absolute() {
+            return None;
+        }
         // ⚠⚠⚠⚠⚠ **THERE IS NO «IS THIS A REPOSITORY» CHECK HERE, AND ITS ABSENCE IS MEASURED.**
         // One stood here — a `git rev-parse --git-dir` ahead of everything — and a mutation proved
         // it decoration: with the guard deleted, `a_directory_that_is_no_repository_cannot_be_cut`
@@ -286,8 +310,14 @@ mod tests {
     ///
     /// Answers where it is and what its `git diff HEAD` reads, so a caller can watch that stay
     /// still.
-    fn a_repository_mid_claim(under: &Path) -> PathBuf {
-        let repo = under.join(format!("sprag-705-{}", std::process::id()));
+    /// ⛔⛔⛔⛔ **`tag` SEPARATES TWO CALLERS IN ONE PROCESS, AND ITS ABSENCE WAS MEASURED.** The
+    /// name was `sprag-705-{pid}` alone, which is unique against OTHER processes and identical
+    /// between two tests of the SAME one — and these run in parallel, each tearing its repository
+    /// down at the end. Adding item 794's arm turned that into a red the first time it ran:
+    /// *the fixture needs a working `git`: ["init", "-q", "."]*, because the sibling had removed
+    /// the directory out from under it. A fixture two tests share is a fixture neither owns.
+    fn a_repository_mid_claim(under: &Path, tag: &str) -> PathBuf {
+        let repo = under.join(format!("sprag-705-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&repo).expect("a directory to make a repository in");
         for args in [
             &["init", "-q", "."][..],
@@ -347,7 +377,7 @@ mod tests {
     #[test]
     fn a_check_that_mutates_its_own_copy_leaves_the_shared_tree_alone() {
         let under = std::env::temp_dir();
-        let repo = a_repository_mid_claim(&under);
+        let repo = a_repository_mid_claim(&under, "mutates");
         let before = diff_of(&repo);
         assert!(
             !before.is_empty(),
@@ -439,5 +469,74 @@ mod tests {
              back to the shared tree deliberately rather than pointing a checker at an empty copy",
         );
         let _ = std::fs::remove_dir_all(&plain);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A TEMPORARY ROOT THAT IS NOT ABSOLUTE IS REFUSED, AND NOTHING IS LEFT BEHIND** —
+    /// register item 794, at the seam register item 705's own promise was resting on.
+    ///
+    /// # What was assumed and never measured
+    ///
+    /// [`crate::remote_access`]'s `cut` hands [`IsolatedCheckout::of`] `std::env::temp_dir()`, and
+    /// its doc there promises *the temporary root is this machine's, **not a directory of the
+    /// repository's*** — because a copy inside the tree being copied is litter the checker can
+    /// wander into and it shows up in the agent's own `git status`. **That promise holds only if
+    /// the path is absolute**, and `temp_dir()` answers `""` when `TMPDIR` is set-and-empty.
+    ///
+    /// ⚠⚠⚠ **AND GIT DOES NOT REFUSE THE RESULT**, which is what makes this a check worth having
+    /// where the repository test above turned out to be decoration. Measured 2026-08-31 in a
+    /// throwaway repository: `git -C <repo> worktree add --detach -q sprag-check-probe HEAD` exits
+    /// **0** and leaves `?? sprag-check-probe/` inside the repository, because git resolves a
+    /// relative path against its own `-C`. Item 705's confusion, re-created by the repair for it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ THE FIXTURE IS MADE CLEAN ON PURPOSE, AND THE FIRST DRAFT WAS A DEAD CONTROL
+    ///
+    /// This test was first written against `a_repository_mid_claim` as it stands — **mid-claim, so
+    /// carrying uncommitted work** — and asserted two things. A mutation that deleted the guard
+    /// left it **GREEN**, which is the only signal a dead control ever gives. Both assertions were
+    /// measuring something else:
+    ///
+    ///   * `is_none()` — with work to carry, [`of`](IsolatedCheckout::of) reaches [`applied`],
+    ///     which runs `git -C <path> apply`. A RELATIVE `path` is resolved against the TEST
+    ///     PROCESS's directory, not the repository, so it fails and `of` answers `None` for a
+    ///     reason that has nothing to do with the root being relative.
+    ///   * a `status` comparison — [`Drop`] removes the worktree, so the shared tree looks
+    ///     identical afterwards whether or not one was ever cut. The litter is real WHILE the check
+    ///     runs and gone by the time a test can look, which is exactly why it needed a guard rather
+    ///     than an assertion.
+    ///
+    /// ⇒ The repository is emptied of uncommitted work first, so `carried_by` answers
+    /// [`Carried::Nothing`] and `of` returns `Some` the moment the worktree is cut. **Then `None`
+    /// has one cause left, and it is the guard.** The `status` arm is gone rather than reworded:
+    /// what it claimed to hold is `Drop`'s to keep, and its neighbour above drives that.
+    ///
+    /// ⚠ Both shapes are driven: the EMPTY path that motivated this, and an ordinary relative one,
+    /// because the guard asks a single question of both rather than testing for emptiness.
+    #[test]
+    fn a_temporary_root_that_is_not_absolute_is_refused() {
+        let under = std::env::temp_dir();
+        let repo = a_repository_mid_claim(&under, "not-absolute");
+        // ⚠⚠ THE FIXTURE'S OWN POINT IS UNDONE HERE, DELIBERATELY. `a_repository_mid_claim` leaves
+        // work uncommitted because its other caller is about carrying that across; this arm needs
+        // the opposite, so that the only way back from `of` is the guard.
+        assert!(
+            ran(Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["checkout", "--", "."])),
+            "⚠⚠⚠ THE FIXTURE: the repository must be clean for `carried_by` to answer Nothing, or \
+             `of` can refuse for a second reason and this arm stops measuring the guard",
+        );
+
+        for relative in ["", "sprag-check-relative"] {
+            assert!(
+                IsolatedCheckout::of(&repo, Path::new(relative)).is_none(),
+                "⛔⛔⛔⛔⛔ ITEM 794: a temporary root of {relative:?} is not absolute, so the copy \
+                 would be cut INSIDE the repository being copied — git resolves it against `-C` \
+                 and exits 0, measured. `RemotePaneAccess::cut`'s promise that the root is not a \
+                 directory of the repository's rests on this refusal, and nothing downstream makes \
+                 it: the copy is torn down by `Drop` afterwards, so no later look can find it",
+            );
+        }
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }

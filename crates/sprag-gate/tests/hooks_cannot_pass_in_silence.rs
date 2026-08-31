@@ -184,6 +184,25 @@ fn no_hook_throws_away_what_a_checker_told_it() {
 /// is how the weaker one sets the bar. (And `sprag-gate`'s `Sandbox` pins `core.hooksPath` against
 /// a THIRD thing again: its own commits running the real hooks.)
 ///
+/// ⚠ **THE CONDITION IS ONE THIS REPOSITORY DOES NOT MAKE** — `git grep -n TMPDIR` over the whole
+/// tracked tree finds 22 mentions outside item 794's own files, and every one of them is PROSE:
+/// comments about macOS's `/var/folders` symlink, and reasoning that names the variable while
+/// explaining it. Nothing here assigns it. ⛔ The first draft of this line ran
+/// `grep -rn TMPDIR .github/ .githooks/ scripts/`, and **`scripts/` does not exist in this
+/// repository** — an emptiness that was partly its own missing argument. Said as measured, not as
+/// safety: *this repository does not make the condition* is a smaller claim than *it cannot
+/// happen*, and the difference is the whole reason the next paragraph exists.
+///
+/// ⛔⛔ **AND WHERE IT WOULD LAND, IT IS NOT WEAK.** `sprag_host::checkout::IsolatedCheckout::of`
+/// takes its temporary root from `temp_dir()`, and `remote_access`'s caller doc promises that root
+/// is *not a directory of the repository's* — because a copy inside the tree being copied is
+/// litter a checker wanders into, which is register item 705's confusion re-created by the repair
+/// for it. Measured 2026-08-31 in a throwaway repository: `git -C <repo> worktree add --detach -q
+/// sprag-check-probe HEAD` **exits 0** and leaves `?? sprag-check-probe/` INSIDE the repository,
+/// because git resolves a relative path against its own `-C`. So that site now refuses a
+/// non-absolute root itself, and its own test drives it — which is why the Rust side stays out of
+/// THIS gate rather than being waved through: it is guarded where the harm is, on its own terms.
+///
 /// ⚠ So the population this walk reaches is the SHELL harnesses — and it reaches the whole of it,
 /// which is what makes zero a number this gate can actually arrive at.
 #[test]

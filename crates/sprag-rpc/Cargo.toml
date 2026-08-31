@@ -9,6 +9,11 @@ description = "sprag's RPC transport policy: a fixed-path, always-on Unix-socket
 publish = false
 
 [dependencies]
+# Where a scratch file may go, asked once. `resolve_socket_path`'s last fallback puts the
+# socket under the temporary directory, and `std::env::temp_dir()` answers a RELATIVE path
+# when TMPDIR is set-and-empty — the endpoint would then be created in whatever directory
+# the process was launched from, where no client looks for it (register item 794).
+sprag-scratch = { workspace = true }
 # The winit-free transport seam (RpcIngress) + the reusable Unix-socket
 # adapter (UnixSocketTransport / TransportControl). Both depend only on the
 # seam, so this policy crate stays GPU-free and both frontends reuse it.

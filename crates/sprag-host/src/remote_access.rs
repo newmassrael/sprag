@@ -1709,9 +1709,18 @@ impl PaneHands for RemotePaneAccess {
 /// tree being copied is a copy the checker can wander into, and it would show up in the agent's own
 /// `git status` as untracked litter — which is the confusion item 705 is about, re-created by the
 /// repair.
+///
+/// ⛔⛔⛔⛔ **AND THAT PROMISE RESTED ON AN UNMEASURED ASSUMPTION** — register item 794. It holds
+/// only while the root is ABSOLUTE, and `std::env::temp_dir()` answers `""` when `TMPDIR` is
+/// set-and-empty, which makes the join below relative. Nothing downstream refuses that: measured
+/// 2026-08-31, `git -C <repo> worktree add --detach -q sprag-check-probe HEAD` exits **0** and
+/// leaves `?? sprag-check-probe/` inside the repository, because git resolves a relative path
+/// against its own `-C`. So the root comes from [`sprag_scratch::scratch_root`], which refuses a
+/// root it cannot promise this about; [`crate::checkout::IsolatedCheckout::of`] asks the same
+/// question again for callers that do not come through here.
 impl PaneCheckout for RemotePaneAccess {
     fn cut(&self, dir: &std::path::Path) -> Option<Box<dyn CutCheckout>> {
-        crate::checkout::IsolatedCheckout::of(dir, &std::env::temp_dir())
+        crate::checkout::IsolatedCheckout::of(dir, &sprag_scratch::scratch_root())
             .map(|cut| Box::new(cut) as Box<dyn CutCheckout>)
     }
 }

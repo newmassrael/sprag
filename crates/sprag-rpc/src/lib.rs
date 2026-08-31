@@ -18,7 +18,7 @@
 //! it. GPU-free: the only deps are the seam and the socket adapter.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use pinion_rpc::RpcIngress;
@@ -240,20 +240,44 @@ pub fn socket_path(opts: SocketOpts) -> PathBuf {
 /// agree on the directory.
 #[must_use]
 pub fn runtime_path(file_name: &str) -> PathBuf {
-    resolve_socket_path(None, std::env::var_os("XDG_RUNTIME_DIR"), file_name)
+    // Both impure reads happen HERE, at the seam, and the decision below is a pure function of
+    // what they returned — register item 794. `sprag_scratch::scratch_root` is the one that
+    // refuses a root it cannot promise is outside the caller's own directory.
+    resolve_socket_path(
+        None,
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        &sprag_scratch::scratch_root(),
+        file_name,
+    )
 }
 
 /// Pure path resolution (env values injected so it is testable): an explicit
 /// path override wins as a full path; otherwise the socket sits under
-/// `XDG_RUNTIME_DIR`; with neither, under the temp dir. A fixed,
+/// `XDG_RUNTIME_DIR`; with neither, under `scratch_root`. A fixed,
 /// execution-independent location is the point -- the endpoint is found the
 /// same way regardless of how the process was launched.
+///
+/// ⛔⛔⛔⛔⛔ **`scratch_root` IS A PARAMETER BECAUSE THE SENTENCE ABOVE WAS FALSE FOR EXACTLY ONE
+/// ARM** — register item 794. This doc has said *"env values injected so it is testable"* since it
+/// was written, while the fallback read `std::env::temp_dir()` itself; so the one arm nobody could
+/// drive from a test was the one arm whose root can be a RELATIVE path (`TMPDIR` set-and-empty).
+/// A relative socket path is created in whatever directory the process was launched from: the
+/// endpoint comes up, binds, and no client ever finds it, because every client resolves the same
+/// name against ITS OWN directory. Injecting it makes the claim true and the case drivable —
+/// `tests::a_relative_root_is_carried_through_untouched` shows this function does NOT refuse such
+/// a root, which is what makes the refusal in `sprag_scratch::scratch_root` load-bearing rather
+/// than decorative.
+///
+/// ⚠ Named without an intra-doc link on purpose: it lives in a `#[cfg(test)]` module, which is not
+/// compiled for a doc build, so a link there can never resolve — `rustdoc::broken_intra_doc_links`
+/// said exactly that, and it is only audible because this repository's doc gate runs `-D warnings`.
 ///
 /// `pub(crate)` for [`endpoint`], which layers provenance over this one resolution rather than
 /// spelling a second copy of the runtime-dir rule.
 pub(crate) fn resolve_socket_path(
     explicit: Option<OsString>,
     xdg_runtime: Option<OsString>,
+    scratch_root: &Path,
     socket_name: &str,
 ) -> PathBuf {
     if let Some(explicit) = explicit {
@@ -262,7 +286,7 @@ pub(crate) fn resolve_socket_path(
     if let Some(dir) = xdg_runtime {
         return PathBuf::from(dir).join(socket_name);
     }
-    std::env::temp_dir().join(socket_name)
+    scratch_root.join(socket_name)
 }
 
 /// Whether the endpoint serves connections at boot, from `opts.enable_env`.
@@ -283,11 +307,17 @@ fn parse_boot_enabled(value: Option<&str>) -> bool {
 mod tests {
     use super::*;
 
+    /// A root every arm below is handed, so a test that is not ABOUT the fallback still says which
+    /// root it would have used — the value is deliberately not this machine's temporary directory,
+    /// so a resolution that quietly reached for the environment would be visible.
+    const SCRATCH: &str = "/var/tmp";
+
     #[test]
     fn explicit_override_wins_as_full_path() {
         let path = resolve_socket_path(
             Some(OsString::from("/tmp/custom.sock")),
             Some(OsString::from("/run/user/1000")),
+            Path::new(SCRATCH),
             "sprag-gui.sock",
         );
         assert_eq!(path, PathBuf::from("/tmp/custom.sock"));
@@ -298,15 +328,74 @@ mod tests {
         let path = resolve_socket_path(
             None,
             Some(OsString::from("/run/user/1000")),
+            Path::new(SCRATCH),
             "sprag-host.sock",
         );
         assert_eq!(path, PathBuf::from("/run/user/1000/sprag-host.sock"));
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHAT STOOD HERE WAS A DEAD CONTROL, AND IT WAS MEASURED AS ONE** — register
+    /// item 794.
+    ///
+    /// The assertion read `assert_eq!(path, std::env::temp_dir().join("sprag-gui.sock"))`: the
+    /// expected value was computed by THE SAME CALL the function under test makes. Under `TMPDIR=`
+    /// both sides became the relative path `"sprag-gui.sock"`, so it passed while the socket moved
+    /// out of the temporary directory and into whatever directory the process was launched from.
+    /// Driven directly against the built binary on 2026-08-31, both environments:
+    ///
+    /// ```text
+    /// normal TMPDIR : test result: ok. 1 passed; 0 failed; 39 filtered out
+    /// TMPDIR=       : test result: ok. 1 passed; 0 failed; 39 filtered out
+    /// ```
+    ///
+    /// Two conditions, one verdict — the only signal a dead control ever gives. (`39 filtered out`
+    /// is there because `--exact` with a wrong module path prints `running 0 tests` and exits 0;
+    /// it says this test really ran.)
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND THE FIRST REPAIR WAS ONLY A QUIETER KIND OF NOTHING.** It kept reading the
+    /// environment and weakened the claim to `path.is_absolute()` — an assertion that, on a
+    /// correctly configured machine, CANNOT FAIL, because `sprag_scratch::scratch_root` refuses a
+    /// relative root before this code sees one. A control that cannot fail is the same defect one
+    /// step quieter.
+    ///
+    /// ⇒ The root is now a PARAMETER, beside `xdg_runtime`, and the expected value below is one
+    /// this test chose and the function had no hand in computing. That is also what made
+    /// [`resolve_socket_path`]'s own doc true: it claimed "env values injected so it is testable"
+    /// while this arm still read the environment itself.
     #[test]
-    fn temp_dir_fallback_when_no_xdg_runtime() {
-        let path = resolve_socket_path(None, None, "sprag-gui.sock");
-        assert_eq!(path, std::env::temp_dir().join("sprag-gui.sock"));
+    fn the_fallback_puts_the_socket_under_the_root_it_was_given() {
+        let path = resolve_socket_path(None, None, Path::new(SCRATCH), "sprag-gui.sock");
+        assert_eq!(
+            path,
+            PathBuf::from("/var/tmp/sprag-gui.sock"),
+            "with no override and no XDG_RUNTIME_DIR the socket sits under the scratch root this \
+             function was handed, carrying its own name",
+        );
+    }
+
+    /// ⛔⛔⛔ **A RELATIVE ROOT IS CARRIED STRAIGHT THROUGH — WHICH IS WHY IT IS REFUSED EARLIER**
+    /// — register item 794.
+    ///
+    /// This function joins what it is given; nothing in it inspects the root, and nothing
+    /// downstream does either (`create_dir_all`, `File::create` and even `git worktree add` all
+    /// succeed against a relative path, measured 2026-08-31). Stating that as a test is what makes
+    /// the refusal in `sprag_scratch::scratch_root` LOAD-BEARING rather than decorative: the seam
+    /// that reads the environment is the only place that can refuse, because this one cannot.
+    ///
+    /// ⚠ The empty root is the case the machine actually produces (`TMPDIR` set-and-empty makes
+    /// `std::env::temp_dir()` answer `""`), so it is the one driven here.
+    #[test]
+    fn a_relative_root_is_carried_through_untouched() {
+        let path = resolve_socket_path(None, None, Path::new(""), "sprag-gui.sock");
+        assert_eq!(
+            path,
+            PathBuf::from("sprag-gui.sock"),
+            "⛔ ITEM 794: an empty root joins to a RELATIVE socket path, which is created under \
+             whatever directory the process was launched from — every client resolving the same \
+             name against its own directory then looks somewhere else. `resolve_socket_path` does \
+             not refuse it and must not pretend to; `sprag_scratch::scratch_root` refuses it where \
+             the root is taken",
+        );
     }
 
     #[test]

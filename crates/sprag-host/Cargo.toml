@@ -9,6 +9,12 @@ description = "Headless host: assembles the producer screen into a pinion Scene:
 publish = false
 
 [dependencies]
+# Where a scratch file may go, asked once. `std::env::temp_dir()` answers a RELATIVE path
+# when TMPDIR is set-and-empty, and this crate's product paths — the latency binary's
+# socket, `live_agent`'s per-run directory, and the temporary root `remote_access` hands
+# `IsolatedCheckout` — would then be created under whatever directory the process is
+# standing in, silently (register item 794).
+sprag-scratch = { workspace = true }
 # Producer (PTY session) + projection (screen -> GridBuffer); the host adds
 # the scene assembly + RPC server on top.
 sprag-vt = { workspace = true }

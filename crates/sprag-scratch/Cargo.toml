@@ -1,0 +1,14 @@
+[package]
+name = "sprag-scratch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Where a process may put a scratch file: the one place this workspace asks the operating system, and the one place that refuses an answer it cannot use. std::env::temp_dir() returns a RELATIVE path when TMPDIR is set-and-empty, and every caller downstream then writes into its own working directory instead of a temporary one."
+publish = false
+
+[dependencies]
+# None, on purpose. Every other crate in this workspace depends on this one, so
+# anything pulled in here would be pulled in everywhere. Its whole subject is a
+# single std call and the question nobody was asking about the answer.

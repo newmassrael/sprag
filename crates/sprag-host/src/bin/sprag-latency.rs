@@ -691,7 +691,8 @@ fn socket_host() -> Option<(SocketHost, sprag_rpc::HostConn)> {
         eprintln!("Build it first: cargo build --release -p sprag-host --bins");
         return None;
     }
-    let sock = std::env::temp_dir().join(format!("sprag-latency-{}.sock", std::process::id()));
+    let sock =
+        sprag_scratch::scratch_root().join(format!("sprag-latency-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock);
     let child = std::process::Command::new(&daemon)
         .arg("--size")
@@ -888,8 +889,8 @@ fn mute_reader() -> sprag_host::MuteReader<'static> {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     sprag_host::MuteReader::new(
         DIR.get_or_init(|| {
-            let dir =
-                std::env::temp_dir().join(format!("sprag-latency-mute-{}", std::process::id()));
+            let dir = sprag_scratch::scratch_root()
+                .join(format!("sprag-latency-mute-{}", std::process::id()));
             let _ = std::fs::create_dir_all(&dir);
             dir
         }),
@@ -1022,7 +1023,7 @@ fn chatty_host(
     daemon: &std::path::Path,
     program: &str,
 ) -> Option<(SocketHost, sprag_rpc::HostConn)> {
-    let sock = std::env::temp_dir().join(format!(
+    let sock = sprag_scratch::scratch_root().join(format!(
         "sprag-latency-poll-{}-{}.sock",
         std::process::id(),
         program.len(),
@@ -1493,7 +1494,7 @@ fn main() -> ExitCode {
     //
     // Both operating points, because they are different syscalls and most users are the second: a
     // file that exists and is unchanged, and a config path with no file behind it.
-    let manifest_path = std::env::temp_dir().join("sprag-latency-manifests.toml");
+    let manifest_path = sprag_scratch::scratch_root().join("sprag-latency-manifests.toml");
     std::fs::write(
         &manifest_path,
         "[[agent]]\nname = \"claude\"\ndisable = [\"idle-glyph\"]\n",
@@ -1508,7 +1509,7 @@ fn main() -> ExitCode {
             black_box(present.refresh());
         },
     );
-    let missing_path = std::env::temp_dir().join("sprag-latency-no-such-manifests.toml");
+    let missing_path = sprag_scratch::scratch_root().join("sprag-latency-no-such-manifests.toml");
     let _ = std::fs::remove_file(&missing_path);
     let mut absent = AgentManifests::at(Some(&missing_path));
     let refresh_absent = paired(

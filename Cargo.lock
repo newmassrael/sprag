@@ -3734,6 +3734,7 @@ dependencies = [
  "sprag-peer",
  "sprag-plugin",
  "sprag-rpc",
+ "sprag-scratch",
  "sprag-terminal",
  "sprag-vt",
  "toml",
@@ -3798,9 +3799,14 @@ dependencies = [
  "pinion-rpc-transport",
  "serde_json",
  "signal-hook",
+ "sprag-scratch",
  "sprag-vt",
  "tracing",
 ]
+
+[[package]]
+name = "sprag-scratch"
+version = "0.0.1"
 
 [[package]]
 name = "sprag-terminal"

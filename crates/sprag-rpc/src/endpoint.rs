@@ -81,6 +81,7 @@ impl HostEndpoint {
                 (HOST_SOCKET.path_env, std::env::var_os(HOST_SOCKET.path_env)),
             ],
             std::env::var_os("XDG_RUNTIME_DIR"),
+            &sprag_scratch::scratch_root(),
             HOST_SOCKET_NAME,
         )
     }
@@ -92,6 +93,7 @@ impl HostEndpoint {
         Self::resolve(
             &[(opts.path_env, std::env::var_os(opts.path_env))],
             std::env::var_os("XDG_RUNTIME_DIR"),
+            &sprag_scratch::scratch_root(),
             opts.socket_name,
         )
     }
@@ -145,10 +147,16 @@ impl HostEndpoint {
 
     /// The shared precedence walk (env values injected so it is testable without touching the
     /// process environment): the first candidate with a NON-EMPTY value names the path;
-    /// otherwise the well-known `socket_name` under the runtime dir.
+    /// otherwise the well-known `socket_name` under the runtime dir, and failing that under
+    /// `scratch_root`.
+    ///
+    /// ⚠ `scratch_root` joined the parameter list for the reason register item 794 names: the
+    /// sentence above said every env value was injected while the last arm read
+    /// `std::env::temp_dir()` for itself, and that arm is the one whose answer can be RELATIVE.
     fn resolve(
         candidates: &[(&'static str, Option<OsString>)],
         xdg_runtime: Option<OsString>,
+        scratch_root: &Path,
         socket_name: &str,
     ) -> Self {
         let checked: Vec<&'static str> = candidates.iter().map(|(var, _)| *var).collect();
@@ -162,7 +170,7 @@ impl HostEndpoint {
             }
         }
         Self {
-            path: resolve_socket_path(None, xdg_runtime, socket_name),
+            path: resolve_socket_path(None, xdg_runtime, scratch_root, socket_name),
             origin: EndpointOrigin::Default,
             checked,
         }
@@ -203,10 +211,16 @@ mod tests {
             .collect()
     }
 
+    /// The scratch root these tests hand in — deliberately NOT this machine's temporary directory,
+    /// so a resolution that reached for the environment instead of the parameter would show up as
+    /// a different path rather than as an accidental match (register item 794).
+    const SCRATCH: &str = "/var/tmp";
+
     fn client_like(gui: Option<&str>, host: Option<&str>) -> HostEndpoint {
         HostEndpoint::resolve(
             &env(&[(CLIENT_SOCKET_ENV, gui), (HOST_SOCKET.path_env, host)]),
             Some(OsString::from("/run/user/1000")),
+            Path::new(SCRATCH),
             HOST_SOCKET_NAME,
         )
     }
@@ -274,6 +288,7 @@ mod tests {
         let endpoint = HostEndpoint::resolve(
             &env(&[(HOST_SOCKET.path_env, None)]),
             Some(OsString::from("/run/user/1000")),
+            Path::new(SCRATCH),
             HOST_SOCKET_NAME,
         );
         assert_eq!(
