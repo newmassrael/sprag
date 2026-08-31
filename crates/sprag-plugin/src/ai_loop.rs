@@ -934,6 +934,10 @@ impl AiLoop {
                     // restart reaches. Measured on a live run: the text lands on the pane, the
                     // submit never becomes a question, and Enter, `Ctrl-C` and an interrupt all
                     // leave the draft standing while ordinary typed text in the same pane submits.
+                    // ⛔⛔⛔ AND THAT SENTENCE WAS PUT ON THE WRONG ARM FOR EIGHTEEN HOURS — item
+                    // 762. *"Two sessions refused"* describes the `Again` arm below, which is
+                    // reached with the SAME bytes. The `First` arm cannot mean it: see
+                    // [`a_second_fold_with_the_budget_gone`], which carries the road.
                     // ⛔⛔⛔⛔⛔ AND THE OTHER WAY IN IS THE OPPOSITE FINDING — register item 719.
                     // The arm above says two SESSIONS refused and nobody can say the text is why;
                     // this one says the TEXT is why, because these exact bytes were refused, bought
@@ -942,12 +946,18 @@ impl AiLoop {
                     // brief — so they are two sentences and not one with a clause.
                     //
                     // ⚠ **UNMEASURED, STATED**: no gate drives a run to `failed` and reads either
-                    // of these sentences, and the arm below has never had one. What IS gated is
-                    // the ROUTING that picks between them — the driver's answer
+                    // of these sentences. What IS gated is the ROUTING that picks between them —
+                    // the driver's answer
                     // (`the_text_a_refusal_cost_a_session_outlives_the_session_it_bought`) and the
                     // document's (`a_brief_that_lands_no_longer_hands_back_the_bound_on_a_refused_
                     // prompt`) — because `noticed` is `OuterLoop`'s private slot and a
                     // fixture that could set it would be product surface built for a `format!`.
+                    //
+                    // ⛔⛔⛔⛔⛔ THAT ARGUMENT HELD FOR THE ARM ABOVE AND COST A RUN ON THE ONE BELOW
+                    // — register item 762. The sentence does not need a driven run, it needs the
+                    // two numbers, so the `First` arm is now a free function with a gate on it
+                    // ([`a_second_fold_with_the_budget_gone`]). A fixture would have been product
+                    // surface; a `format!` over two integers is not.
                     Some(Noticed::Unasked {
                         attempts,
                         written,
@@ -966,12 +976,7 @@ impl AiLoop {
                         attempts,
                         written,
                         retyped: crate::outer::Retyped::First,
-                    }) => format!(
-                        "it put {written} bytes on the pane and pressed {attempts} time(s), and \
-                         neither the session it started with nor the one it opened to replace it \
-                         ever reported being asked — a peer that will not take a question is not \
-                         something another restart reaches, so this is a person's to look at"
-                    ),
+                    }) => a_second_fold_with_the_budget_gone(*written, *attempts),
                     Some(Noticed::Asking(unanswered)) => format!(
                         "the session it opened to replace the old one came up asking something \
                          nothing this run holds could answer ({unanswered:?}), so it was never \
@@ -1087,6 +1092,54 @@ impl AiLoop {
              there is no `In('…')` arm for this one"
         ))
     }
+}
+
+/// **A SECOND QUESTION WAS FOLDED AWAY AND THIS RUN'S ONE REPLACEMENT WAS ALREADY GONE** — the
+/// sentence for a `prompt.unasked` that reached `failed` carrying [`crate::outer::Retyped::First`],
+/// register item 762.
+///
+/// # ⛔⛔⛔⛔⛔ WHAT THIS SENTENCE USED TO SAY, AND WHAT IT COST
+///
+/// It said *"neither the session it started with nor the one it opened to replace it ever reported
+/// being asked — **a peer that will not take a question** is not something another restart reaches,
+/// so this is a person's to look at"*. That names the PEER. The actual gate is this run's own
+/// budget, and the two are not near each other:
+///
+/// * on `run110` (2026-08-31) the two folds were **eighteen hours apart** and about **different
+///   questions** — 14:08 and 07:24;
+/// * the run's caller read that sentence, believed the delivery path had broken, and spent a
+///   session measuring BRIEF SIZE. The brief was not the mechanism. A 2,055-byte brief — 26% of the
+///   one blamed — folded on its first prompt thirty minutes later, and that run lived.
+///
+/// # ⚠⚠⚠⚠ THE ROAD, WHICH IS WHY THIS ARM CAN SAY WHAT IT SAYS
+///
+/// `ai_loop.scxml` answers `prompt.unasked` at DOCUMENT level, in this order:
+///
+/// 1. `cond="_event.data.retyped"` → `failed`. [`crate::outer::Retyped::First`] publishes
+///    **`false`** ([`crate::outer::Retyped::wire_str`]), so this arm never takes it — that road
+///    belongs to the `Again`
+///    sentence and its *same bytes twice* remedy.
+/// 2. `cond="unasked_seen == 0"` → `restarting`, spending the budget.
+/// 3. bare → `failed`.
+///
+/// So a `First` refusal reaching `failed` came down road 3, and road 3 is reachable **only** when
+/// `unasked_seen` is already 1. *The budget was spent* is not a guess about this run, it is the
+/// only thing that road means. `a_run_that_folds_twice_has_one_road_to_failed` holds the order
+/// against the document, because a `cond` added to that third transition would make this paragraph
+/// quietly false.
+///
+/// ⚠ It does not name WHEN the earlier replacement went, because the notice does not carry it. What
+/// it can do is send the reader to the place that does — the run's own journal — instead of to a
+/// pane where there is nothing to find.
+fn a_second_fold_with_the_budget_gone(written: u64, attempts: u32) -> String {
+    format!(
+        "it put {written} bytes on the pane and pressed {attempts} time(s), and the question was \
+         never asked. This run's ONE session replacement had already been spent on an EARLIER \
+         folded question, so none was attempted for this one — the two need not be related, and on \
+         the run that measured this they were eighteen hours apart. What to look at is the run's \
+         journal, for the earlier replacement and what it was for; the size of this text is not \
+         known to be the cause and a smaller brief has folded the same way"
+    )
 }
 
 impl Plugin for AiLoop {
@@ -14397,6 +14450,101 @@ mod tests {
              own question. `{needle}` is composed by an entry action this resume deliberately did \
              not run, so it can only have reached this pane by crossing the run log — and it did \
              not. Screen: {after:?}",
+        );
+    }
+
+    /// **THE SENTENCE FOR A SECOND FOLD NAMES THE BUDGET AND NOT THE PEER** — register item 762.
+    ///
+    /// The sentence this replaces sent its only reader to the wrong place: it said *"a peer that
+    /// will not take a question"* about a run whose peer was fine and whose own one-per-run
+    /// replacement had gone eighteen hours earlier, on a different question. A run's failure
+    /// sentence is the whole of what its caller gets, so a wrong cause in it is not a wording
+    /// problem — it is the diagnosis.
+    ///
+    /// ⚠ The arms are ordered so each kills something the one before it cannot: the numbers reach
+    /// the reader, the CAUSE is named, the old cause is gone, and the remedy that belongs to the
+    /// OTHER arm has not leaked into this one.
+    #[test]
+    fn the_sentence_for_a_second_fold_names_the_budget_and_not_the_peer() {
+        // run110's own numbers, 2026-08-31 07:24.
+        let said = super::a_second_fold_with_the_budget_gone(2782, 1);
+
+        assert!(
+            said.contains("2782") && said.contains("1 time(s)"),
+            "⛔⛔⛔ REGISTER ITEM 762: the two numbers a reader can act on are not in the sentence, \
+             and they are the only measurement the notice carries: {said}",
+        );
+        assert!(
+            said.contains("ONE session replacement had already been spent"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the sentence does not say WHY no replacement was made. \
+             This road is reachable only with the budget already gone, and a sentence that leaves \
+             that out is the one that cost run110's caller a whole session looking at brief size: \
+             {said}",
+        );
+        assert!(
+            !said.contains("a peer that will not take a question"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the sentence still blames the PEER. On the run this was \
+             measured from the peer was answering and the pane was healthy — `working seq=26 \
+             said=12` moments after the failure — and the reader was sent to look at it anyway: \
+             {said}",
+        );
+        assert!(
+            !said.contains("Shorten it"),
+            "⛔⛔⛔⛔ REGISTER ITEM 762: the `Again` arm's remedy has leaked into this one. Shorten \
+             the brief is right when the SAME bytes were refused twice; here the bytes are new and \
+             a brief 26% of the size folded the same way half an hour later, so it is a guess \
+             dressed as an instruction: {said}",
+        );
+    }
+
+    /// **A RUN THAT FOLDS TWICE HAS ONE ROAD TO `failed`** — the document half of item 762, and
+    /// what stops [`super::a_second_fold_with_the_budget_gone`]'s reasoning from rotting.
+    ///
+    /// That sentence asserts a CAUSE it cannot observe: the notice carries no budget. It is
+    /// entitled to because of the order of three document-level transitions — `retyped` first,
+    /// `unasked_seen == 0` second, bare third — which together mean a
+    /// [`crate::outer::Retyped::First`] refusal
+    /// reaching `failed` can only have come down the third. Add a `cond` to that third transition,
+    /// or reorder them, and the sentence becomes a confident lie with nothing to say so.
+    ///
+    /// ⚠ Read at TWO-SPACE indent, which is what makes them document-level: `closing` and
+    /// `stopping` each answer `prompt.unasked` for themselves (`converged`, `exhausted`), and those
+    /// are more specific, so they are not on this road at all.
+    #[test]
+    fn a_run_that_folds_twice_has_one_road_to_failed() {
+        let roads: Vec<&str> = crate::outer::DOCUMENT
+            .split("\n  <transition event=\"prompt.unasked\"")
+            .skip(1)
+            .map(|tail| tail.split('>').next().expect("a transition has an end"))
+            .collect();
+
+        assert_eq!(
+            roads.len(),
+            3,
+            "⛔⛔⛔⛔ REGISTER ITEM 762: this document answers `prompt.unasked` at its top level \
+             {} time(s), not three. The sentence for a second fold is derived from the ORDER of \
+             exactly three, so a fourth road — or a missing one — makes it a claim about a \
+             document that is not this one: {roads:?}",
+            roads.len(),
+        );
+        assert!(
+            roads[0].contains("cond=\"_event.data.retyped\"") && roads[0].contains("\"failed\""),
+            "⛔⛔⛔⛔ REGISTER ITEM 762: the SAME-BYTES road is no longer first. It is what keeps \
+             `Retyped::Again` off the budget road, and `Retyped::First` publishes `false` here, so \
+             a reorder sends one arm's refusals to the other arm's sentence: {roads:?}",
+        );
+        assert!(
+            roads[1].contains("cond=\"unasked_seen == 0\"") && roads[1].contains("\"restarting\""),
+            "⛔⛔⛔⛔ REGISTER ITEM 762: the budget road no longer spends `unasked_seen` on the way \
+             to `restarting`. That guard IS the one-per-run bound — item 745(B) measured what \
+             clearing it did — and without it the sentence below has no budget to name: {roads:?}",
+        );
+        assert!(
+            !roads[2].contains("cond=") && roads[2].contains("\"failed\""),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the third road is no longer the BARE fall-through to \
+             `failed`. `a_second_fold_with_the_budget_gone` says *the budget was already spent* as \
+             a fact rather than a guess, and it is only a fact while this transition is reachable \
+             on nothing but the second one's guard being false: {roads:?}",
         );
     }
 }
