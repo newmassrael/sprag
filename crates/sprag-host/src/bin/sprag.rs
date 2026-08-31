@@ -2786,6 +2786,68 @@ fn here_params(session: Option<&str>, path: String) -> Value {
     windowed_params(session, path, here_window(session))
 }
 
+/// **THE WINDOW A READ VERB WAS POINTED AT** — the pane it was handed, resolved to the window
+/// holding it, or [`None`] for *wherever this verb looks by default*. Register item 782.
+///
+/// # ⛔⛔⛔⛔⛔ What was wrong, and the sentence that already forbade it
+///
+/// [`windowed_params`]'s own doc says it is *"the one place a CLI request learns which window to
+/// act in, **so a verb added later cannot forget it and quietly become window-local again**"*.
+/// `layout` and `panes` are exactly the verbs that forgot: both refused every positional argument
+/// (*"only -t SESSION is accepted"*), so neither could be asked about a window the caller is not
+/// standing in. That sentence was prose, and nothing measured it — this workspace's rule 10.
+///
+/// **What it cost, measured 2026-08-31**: item 772's question is the owner's — *which windows are
+/// split which way* — and answering it needs the four windows COMPARED. With no way to name one,
+/// the only route was `select-window` to each in turn, which is the act item 697 paid to forbid
+/// (it takes the owner's view away and they cannot put it back). So a live question was
+/// unanswerable except by breaking a rule.
+///
+/// # ⚠⚠ The daemon could always do this, and the MCP mouth already asks it
+///
+/// `mcp__sprag__pane_layout` takes a `pane` and sends [`windowed_params`]' equivalent — *"name a
+/// pane (by NAME) in ANOTHER window and it draws THAT window instead"*. The repair is therefore one
+/// SURFACE, not a wire or a daemon change, and it is the same size as the one register item 686
+/// made for `agent`, `processes` and `capture-pane`.
+///
+/// ⚠ **AND THE DIRECTION IS NOT THE ONE THE LAST SUCH ITEM HAD.** Item 687 was the MCP mouth
+/// lagging the CLI; this is the CLI lagging the MCP. A reader who remembers the shape and not the
+/// measurement gets it backwards, so which mouth is ahead is re-measured per item.
+///
+/// # ⚠ [`None`] from a resolved pane is not a failure
+///
+/// [`PaneSite::window`] answers [`None`] for a pane of the caller's OWN window, deliberately — see
+/// its doc. A verb reading that keeps its own default, which for `panes` is [`here_params`] (the
+/// caller's window) and for `layout` is the scope's current one; the two differ, and register item
+/// 759 is why `panes` must not quietly become the other.
+fn read_target_window(
+    conn: &mut HostConn,
+    session: Option<&str>,
+    named: Option<&str>,
+    command: &str,
+) -> io::Result<Option<String>> {
+    let Some(raw) = named else {
+        return Ok(None);
+    };
+    Ok(resolve_pane(conn, session, raw, command)?.window)
+}
+
+/// The one PANE a read verb may be handed — refused **before a socket is opened** when there is
+/// more than one. Register item 782.
+///
+/// ⚠⚠ Separate from [`read_target_window`] for exactly that reason, and it is a property an
+/// existing gate had already pinned: *"an argument this verb does not take is refused locally,
+/// naming what it does take."* Resolving a pane needs the daemon; counting the arguments does not,
+/// and folding the two together would have made a typo cost a round trip to learn it was a typo.
+fn one_pane_at_most<'a>(rest: &'a [String], command: &str) -> io::Result<Option<&'a str>> {
+    if let Some(extra) = rest.get(1) {
+        return Err(bad_input(&format!(
+            "{command}: unexpected argument {extra:?} (one PANE and -t SESSION are all it takes)"
+        )));
+    }
+    Ok(rest.first().map(String::as_str))
+}
+
 /// The ids of the panes THE CALLER'S OWN window holds — the one read behind every pane-id check and
 /// the `panes` listing, so a client and the daemon cannot disagree on which panes are addressable.
 ///
@@ -4040,16 +4102,25 @@ fn named_pane(it: &mut impl Iterator<Item = String>, command: &str) -> io::Resul
 /// reads a different slot. Neither verb joins the other's, on purpose: see [`layout`].
 fn panes(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "panes")?;
-    if let Some(other) = rest.first() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("panes: unexpected argument {other:?} (only -t SESSION is accepted)"),
-        ));
-    }
+    // ⛔⛔⛔ A PANE NAMES THE WINDOW — register item 782, the same repair as [`layout`]'s and for
+    // the same reason: this listing could only ever be the caller's own window's.
+    let named = one_pane_at_most(&rest, "panes")?;
     let mut conn = connect_scoped(session.as_deref())?;
+    let elsewhere = read_target_window(&mut conn, session.as_deref(), named, "panes")?;
     let listed: Value = query_slot(
         &mut conn,
-        here_params(session.as_deref(), mux_action_path(PANES_SLOT)),
+        match elsewhere.as_deref() {
+            Some(window) => windowed_params(
+                session.as_deref(),
+                mux_action_path(PANES_SLOT),
+                Some(window),
+            ),
+            // ⛔⛔⛔ THROUGH `here_params` ALL THE SAME — register item 759, unchanged. Reading the
+            // slot directly is about the ROW, never about the window, and sending a different
+            // scope from `pane_ids` would make this listing and every id check answer about two
+            // different windows.
+            None => here_params(session.as_deref(), mux_action_path(PANES_SLOT)),
+        },
     )?;
     // The whole entry, not just the id — this is the one command whose subject is the LIST, so it
     // reads the slot directly rather than through `pane_ids`.
@@ -4211,15 +4282,26 @@ fn pane_row(pane: &Value) -> String {
 /// Scoped like [`panes`] rather than like the window verbs: same subject, same optional `-t`.
 fn layout(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "layout")?;
-    if let Some(other) = rest.first() {
-        return Err(bad_input(&format!(
-            "layout: unexpected argument {other:?} (only -t SESSION is accepted)"
-        )));
-    }
+    // ⛔⛔⛔ A PANE NAMES THE WINDOW — register item 782. This used to refuse every positional and
+    // could only ever draw the window the scope was already on. See [`read_target_window`].
+    // ⚠ The COUNT is checked before the socket, which is the property the existing gate pinned.
+    let named = one_pane_at_most(&rest, "layout")?;
     let mut conn = connect_scoped(session.as_deref())?;
+    let elsewhere = read_target_window(&mut conn, session.as_deref(), named, "layout")?;
     let answer: Value = query_slot(
         &mut conn,
-        scoped_params(session.as_deref(), mux_action_path(LAYOUT_SLOT)),
+        match elsewhere.as_deref() {
+            Some(window) => windowed_params(
+                session.as_deref(),
+                mux_action_path(LAYOUT_SLOT),
+                Some(window),
+            ),
+            // ⚠ UNCHANGED for a caller who named nothing — and for one who named a pane of their
+            // own window, which is what a `None` window means. Not [`here_params`]: this verb's
+            // subject has always been the scope's current window, and register item 759's rule is
+            // that a verb does not quietly become the other one.
+            None => scoped_params(session.as_deref(), mux_action_path(LAYOUT_SLOT)),
+        },
     )?;
     // Through the SSOT type, never by walking the arena JSON by hand: the served shape is a flat
     // arena whose nodes name their children by index (R264), and a second reader of that encoding

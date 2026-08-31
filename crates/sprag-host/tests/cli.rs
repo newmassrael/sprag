@@ -6987,6 +6987,131 @@ fn drawn_layout(sock: &Path) -> String {
     rest.to_owned()
 }
 
+/// **`layout` AND `panes` ANSWER ABOUT A WINDOW THE CALLER IS NOT ON** — register item 782.
+///
+/// # ⛔⛔⛔⛔⛔ What both verbs used to do, and what it cost
+///
+/// Both refused every positional argument — *"only -t SESSION is accepted"* — so neither could be
+/// pointed at a window. `windowed_params`' own doc had already forbidden that state in as many
+/// words (*"so a verb added later cannot forget it and quietly become window-local again"*), and it
+/// was prose: nothing measured it, and two verbs forgot.
+///
+/// **Measured 2026-08-31**: item 772's question is the owner's — which of four windows are split
+/// which way — and answering it requires COMPARING them. With no way to name a window, the only
+/// route left was `select-window` to each in turn, which is the act item 697 paid to forbid: it
+/// takes the owner's view away and they cannot put it back. A live question was unanswerable except
+/// by breaking a rule.
+///
+/// # ⚠⚠ Each arm has a CONTROL, because the repair could be "answer about everything"
+///
+/// A verb that started ignoring its window entirely would satisfy every positive assertion here.
+/// So each is paired with the no-argument reading, which must still be the caller's own window —
+/// that reading is register item 759's, and it is the one this repair must not quietly become.
+/// # ⚠⚠⚠⚠⚠ THE CALLER MUST BE STANDING SOMEWHERE, AND A GREEN MUTATION SAID SO
+///
+/// The first cut of this gate used a plain host and a shell outside the workspace. Swapping
+/// `panes`' unnarrowed read from [`here_params`] to `scoped_params` — register item 759's whole
+/// subject — came back GREEN against it, because a caller standing in NO pane makes the two
+/// requests byte-identical by construction. So the fixture stands the caller in a pane of one
+/// window and leaves the SESSION's current window elsewhere, which is the only arrangement where
+/// *the caller's window* and *the current window* are different answers.
+#[test]
+fn layout_and_panes_answer_about_a_window_the_caller_is_not_on() {
+    let (_guard, sock, caller) = daemon_with_one_pane("reads-a-window-i-am-not-on");
+    let me = caller.to_string();
+    let home = current_window_of(&sock, "work");
+
+    // A second window, which `new-window` SELECTS — so from here on the session's current window
+    // is NOT the caller's, and a pane in each is a different answer.
+    assert!(
+        sprag(&sock, &["new-window", "-t", "work", "spare"]).ok,
+        "the second window is the whole fixture",
+    );
+    let theirs = sprag(&sock, &["split-window", "-t", "work", "--", "cat"]);
+    assert!(theirs.ok, "a pane in the OTHER window: {}", theirs.stderr);
+    let theirs: u64 = theirs.stdout.trim().parse().expect("the new pane's id");
+
+    // ── THE PREMISE, ASSERTED: the two windows really are different ─────────────────────────
+    assert_ne!(
+        current_window_of(&sock, "work"),
+        home,
+        "⚠⚠⚠ THIS GATE'S OWN PREMISE: the session's current window must have moved off the \
+         caller's, or *the window I am on* and *the current window* are one answer and every \
+         control below is vacuous",
+    );
+
+    // ── panes ───────────────────────────────────────────────────────────────────────────────
+    let mine = sprag_env(&sock, &["panes", "-t", "work"], &[("SPRAG_PANE", &me)]);
+    assert!(
+        mine.ok && pane_ids_in(&mine.stdout).contains(&caller),
+        "⚠⚠⚠ THE CONTROL, register item 759: with no pane named, `panes` answers about the window \
+         its CALLER stands in — not the session's current one. A repair that pointed this at the \
+         scope instead would satisfy the assertion below and quietly undo 759: {:?}",
+        mine.stdout,
+    );
+    assert!(
+        !pane_ids_in(&mine.stdout).contains(&theirs),
+        "⚠⚠ THE CONTROL'S OTHER HALF: the far pane must be ABSENT from the unnarrowed listing, or \
+         *narrowed* and *not narrowed* are the same answer here: {:?}",
+        mine.stdout,
+    );
+    let named = sprag_env(
+        &sock,
+        &["panes", &theirs.to_string(), "-t", "work"],
+        &[("SPRAG_PANE", &me)],
+    );
+    assert!(
+        named.ok && pane_ids_in(&named.stdout).contains(&theirs),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 782: `panes` cannot be asked about the window holding pane {theirs}. \
+         The daemon has always been able to answer it — the MCP mouth takes exactly this argument — \
+         and the CLI refused every positional: {:?} / {:?}",
+        named.stdout,
+        named.stderr,
+    );
+
+    // ── layout ──────────────────────────────────────────────────────────────────────────────
+    let drawn_here = sprag_env(&sock, &["layout", "-t", "work"], &[("SPRAG_PANE", &me)]);
+    assert!(
+        drawn_here.ok && !drawn_here.stdout.contains(&format!("pane {caller}")),
+        "⚠⚠⚠ THE CONTROL, layout's half: with no pane named this verb draws the SCOPE's current \
+         window, which is `spare` — not the caller's. The two verbs' defaults differ on purpose \
+         (item 759), and a repair that made them one would pass everything else here: {:?}",
+        drawn_here.stdout,
+    );
+    let drawn_there = sprag_env(
+        &sock,
+        &["layout", &me, "-t", "work"],
+        &[("SPRAG_PANE", &me)],
+    );
+    assert!(
+        drawn_there.ok && drawn_there.stdout.contains(&format!("pane {caller}")),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 782: `layout` cannot draw the window holding pane {caller}, so the \
+         windows of a live session cannot be COMPARED — and comparing them is the question item \
+         772 is, which had no answer but `select-window`, the act item 697 paid to forbid: {:?} / \
+         {:?}",
+        drawn_there.stdout,
+        drawn_there.stderr,
+    );
+
+    // ── AND IT STILL REFUSES WHAT IT CANNOT MEAN ────────────────────────────────────────────
+    //
+    // ⚠ The old refusal is not simply gone: one pane names one window, and a second positional is
+    // a caller asking for something this verb has no answer for. Dropping the check entirely would
+    // make a typo silently read as the first argument.
+    let two = sprag_env(
+        &sock,
+        &["layout", &me, "extra", "-t", "work"],
+        &[("SPRAG_PANE", &me)],
+    );
+    assert!(
+        !two.ok && two.stderr.contains("extra"),
+        "⛔⛔⛔⛔ REGISTER ITEM 782: a second positional is accepted, so a mistyped argument is \
+         silently ignored rather than refused by name: {:?} / {:?}",
+        two.stdout,
+        two.stderr,
+    );
+}
+
 /// `resize-pane -L|-R|-U|-D` over the socket — **the first gesture other than a pointer drag in
 /// `sprag-gui` that has ever moved a split's share**, driven end to end against a real daemon.
 ///
@@ -7342,11 +7467,26 @@ fn the_cli_shows_where_the_placement_verbs_put_a_pane() {
     );
 
     // An argument this verb does not take is refused locally, naming what it does take.
-    let junk = sprag(&sock, &["layout", "0"]);
+    //
+    // ⚠⚠ REGISTER ITEM 782 CHANGED WHICH ARGUMENTS THOSE ARE, and this arm moved rather than being
+    // deleted. One PANE is now taken — it names the window to draw, which is what made comparing a
+    // session's windows possible at all — so the refusal is the SECOND positional. The property is
+    // the one this arm always held: a verb says what it takes instead of ignoring what it does not,
+    // and it says so without opening a socket to find out.
+    let junk = sprag(&sock, &["layout", "0", "and-another"]);
     assert!(
-        !junk.ok && junk.stderr.contains("-t SESSION"),
+        !junk.ok && junk.stderr.contains("PANE"),
         "arg error: {}",
         junk.stderr,
+    );
+    // ...and the argument it DOES now take is accepted, which is the half that would otherwise let
+    // the refusal above be satisfied by a verb that still takes nothing.
+    let pointed = sprag(&sock, &["layout", "0"]);
+    assert!(
+        pointed.ok && pointed.stdout.contains("pane 0"),
+        "⛔⛔⛔ REGISTER ITEM 782: naming a pane must draw the window holding it: {:?} / {:?}",
+        pointed.stdout,
+        pointed.stderr,
     );
 }
 
@@ -11199,8 +11339,14 @@ fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
             // drives against a LIVE pane. What it measures here is the ADDRESSING: that a pane
             // NAME reaches a window over, on the newest verb that takes one.
             "answer-pane" => vec!["--asked", "marker", "--answer", "marker"],
+            // ⚠ `panes` and `layout` joined this sweep at register item 782, when they stopped
+            // refusing every positional. They need nothing else: the pane one window over is all
+            // either of them is about, and both READ — so the pane is left exactly as it was,
+            // which is what this ratchet needs of a verb it drives against a LIVE pane. What it
+            // measures here is the ADDRESSING, which is the whole of what 782 repaired.
             "run" | "break-pane" | "processes" | "resources" | "kill-pane" | "zoom-pane"
-            | "capture-pane" | "agent" | "release-agent" | "events" | "stop-job" => vec![],
+            | "capture-pane" | "agent" | "release-agent" | "events" | "stop-job" | "panes"
+            | "layout" => vec![],
             other => panic!(
                 "the usage says {other:?} takes a PANE and this ratchet has no other arguments for \
                  it. Add them — a skipped verb is a verb this test believes it covered."

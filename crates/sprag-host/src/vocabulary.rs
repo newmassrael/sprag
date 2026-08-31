@@ -868,17 +868,21 @@ impl Verb {
                 Agent::Tools(&["move_pane"]),
             ),
             // ── panes ───────────────────────────────────────────────────────────────────────────
+            // ⚠ `[PANE]` NAMES A WINDOW HERE — register item 782, and the same grammar `processes`
+            // below already has. A pane is how every verb on this surface addresses a window
+            // (register item 686), so these two say it the same way rather than growing a second
+            // vocabulary for it.
             Self::Panes => (
                 "panes",
                 Group::Pane,
-                Shell::Runs("[-t SESSION]"),
+                Shell::Runs("[PANE] [-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Tools(&["list_panes"]),
             ),
             Self::Layout => (
                 "layout",
                 Group::Pane,
-                Shell::Runs("[-t SESSION]"),
+                Shell::Runs("[PANE] [-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Tools(&["pane_layout"]),
             ),
