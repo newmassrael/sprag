@@ -1927,6 +1927,30 @@ impl crate::plugins::PluginWorld for RemotePluginWorld<'_> {
     fn panes_here(&self) -> Vec<PaneId> {
         self.0.pane_ids()
     }
+
+    /// ⚠⚠⚠ **OFF THE SAME LISTING [`panes_here`](crate::plugins::PluginWorld::panes_here) TAKES ITS
+    /// IDS FROM** — register item 772, on the two clauses above's terms exactly: a kind that names
+    /// the dimension its runs keep must mean the same thing to an out-of-process driver as it does
+    /// to the daemon, or [`RUN_DRIVER_PROCESS`](crate::options::RUN_DRIVER_PROCESS)'s promise —
+    /// *the same request means the same thing either way* — is broken at the door that refuses.
+    ///
+    /// ⚠ The slot carries `cols`/`rows` per pane already (it is what `sprag panes` prints), so this
+    /// costs one read that was being made anyway. `None` is *this daemon cannot say*, and the door
+    /// treats it as an absence rather than a claim — a check with no subject does not refuse.
+    fn pane_size(&self, pane: PaneId) -> Option<(u16, u16)> {
+        let dim = |entry: &Value, key: &str| {
+            entry[key]
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .filter(|n| *n > 0)
+        };
+        let panes = self.0.read(&mux_action_path(crate::wire::PANES_SLOT))?;
+        panes.as_array()?.iter().find_map(|entry| {
+            (entry[crate::wire::PANE_SUMMARY_ID_KEY].as_u64() == Some(pane.0))
+                .then(|| Some((dim(entry, "cols")?, dim(entry, "rows")?)))
+                .flatten()
+        })
+    }
 }
 
 #[cfg(test)]

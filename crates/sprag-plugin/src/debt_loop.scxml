@@ -934,6 +934,55 @@
       first half, and the same read `works_in` takes.
     -->
     <data id="stands_in" expr="'tree'"/>
+
+    <!--
+      WHICH DIMENSION A RUN OF THIS KIND MUST KEEP WHOLE — register item 772,
+      and `stands_in`'s sibling one axis in.
+
+      ⛔⛔⛔⛔⛔ THE OWNER ASKED, LOOKING AT THE SCREEN (2026-08-30):
+      *"어떤건 세로로 split 됐고 어떤건 가로로 split 되어있어, 결정론적이여야
+      되는거아니야?"* — and the answer was no. Four windows of one daemon, four
+      loops of this kind, and the direction each was split in was whatever its
+      watcher had typed.
+
+          sprag   left|right   inner 73 rows x 168 cols   ->  765's budget 67 rows
+          pinion  top|bottom   inner 36 rows x 338 cols   ->  765's budget 30 rows
+          wz      left|right   inner 73 rows x 169 cols   ->  765's budget 67 rows
+          sce     left|right   inner 73 rows x 169 cols   ->  765's budget 67 rows
+
+      ⇒ ONE OF THE FOUR HAD HALF THE BUDGET, and nobody had decided that. The
+      two directions bite opposite things: `left|right` halves the WIDTH (the
+      delivery-confirmation axis, where a composer folding a paste is item 788's
+      subject) and `top|bottom` halves the HEIGHT — which is item 765's axis,
+      because a reply's FIRST row is its label and the first thing scrolling
+      takes. A loop that must read its own answers cannot afford the second.
+
+      ⛔ AND THE ROOT WAS WORSE THAN A HABIT. pinion's launch procedure had
+      `split-window -v` FROZEN INTO IT while the other three carried `-h`; the
+      skill spells `-h` as an EXAMPLE and says nowhere why. So it was not a
+      choice anybody made per run — it was one character carried forward in a
+      brief, with no ground to change it on. Telling a watcher *use `-h`* does
+      not reach a brief that already says `-v`, which is precisely why this is
+      the document's to say (item 738's conclusion, item 754's shape).
+
+      ⚠⚠⚠⚠ AND IT IS A DIMENSION, NOT A DIRECTION, for the reason `stands_in`
+      is a predicate and not a window name: the same document is compiled into
+      every checkout. `-h` is a spelling of one launcher's grammar; *this kind
+      keeps its rows* is the fact behind it, true of a run driven by any surface
+      — and it is the one a door can check against a pane it did not open.
+
+      ⚠⚠ WHAT IT DOES NOT SAY, stated rather than implied. This fixes the axis a
+      watcher CHOOSES. It does not fix the axis a CLIENT moves: register item
+      772 also measured four panes dragged to a new geometry by a GUI resize
+      with nobody touching them (`window-size latest`), and no value here can
+      refuse that — it is not a decision, it is a client reporting its size.
+      That half stays open, and this clause is not to be read as closing it.
+
+      ⚠ `'rows'` is the only word this build knows. An unknown one is a REFUSAL
+      and not a pass, the same as `stands_in`'s — a rule nothing can apply is
+      not a rule a run may be started under.
+    -->
+    <data id="keeps" expr="'rows'"/>
   </datamodel>
 
   <!--

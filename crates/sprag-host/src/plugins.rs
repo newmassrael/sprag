@@ -1037,6 +1037,30 @@ pub trait PluginWorld {
     /// ⚠ An empty list is *this world holds nothing*, which for a remote world is a daemon that was
     /// replaced under the driver — the same latch [`has_pane`](Self::has_pane) reads.
     fn panes_here(&self) -> Vec<PaneId>;
+
+    /// **HOW BIG `pane` ACTUALLY IS**, as `(cols, rows)`, or [`None`] for a pane this world does not
+    /// hold — register item 772.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the door needs it
+    ///
+    /// A loop KIND may name the dimension its runs must keep whole
+    /// ([`LoopKind::keeps`](sprag_plugin::kind::LoopKind::keeps)), because the two ways of dividing
+    /// a window bite opposite things: halving the WIDTH costs the delivery-confirmation axis, and
+    /// halving the HEIGHT costs item 765's — a reply's first row is its label, and the first thing
+    /// scrolling takes. Measured 2026-08-30 across four windows of one daemon: three inner panes at
+    /// **73 rows** × 168 cols and one at **36** × 338, so one run had half the budget of its
+    /// siblings and nobody had decided that.
+    ///
+    /// ⚠⚠ **IT IS A PANE FACT, WHICH IS WHY IT CAN LIVE HERE.** This trait keeps the WINDOW off it
+    /// on purpose ([`panes_here`](Self::panes_here)'s doc) — a list of pane ids crosses and what a
+    /// window IS does not. A pane's own size is the same shape as
+    /// [`pane_start_dir`](Self::pane_start_dir): a fact about one pane, asked of the pool that
+    /// holds it, with no opinion about the arrangement it came from.
+    ///
+    /// ⚠ Beside [`default_size`](Self::default_size) rather than derived from it: that one is what
+    /// this world OPENS a pane at, and this is what a pane HAS. The door compares them, and a
+    /// reader that computed one from the other would be comparing a number with itself.
+    fn pane_size(&self, pane: PaneId) -> Option<(u16, u16)>;
 }
 
 /// **WHERE A RUN'S ASKER IS WHEN IT IS NOT IN THIS POOL** — register item 689.
@@ -1114,6 +1138,19 @@ impl PluginWorld for PluginsExternal {
             .iter()
             .map(sprag_terminal::Pane::id)
             .collect()
+    }
+
+    /// ⚠ The pane's ARBITRATED size — what the daemon gave it after tiling, which is the number a
+    /// run's budget is actually counted in. Not the size anybody asked for.
+    fn pane_size(&self, pane: PaneId) -> Option<(u16, u16)> {
+        // ⚠ Through the same `list()` DTO the `panes` slot publishes, so *how big is that pane* has
+        // one answer in this process — a second read of the pty would be a second thing free to
+        // disagree with the listing an operator is looking at.
+        lock(&self.workspace)
+            .list()
+            .into_iter()
+            .find(|info| info.id == pane.0)
+            .map(|info| (info.cols, info.rows))
     }
 }
 
@@ -2047,6 +2084,20 @@ fn plugin_from_request(
                 kind.works_in().as_deref(),
                 stands_in.as_deref(),
                 &neighbours,
+            )?;
+            // ⛔⛔⛔⛔⛔ AND DIVIDED THE WAY ITS KIND IS DIVIDED — register item 772, the third of
+            // this trio and the one the OWNER asked for by looking at the screen. The two above ask
+            // WHERE the pane is; this asks what SHAPE it came out. A run whose window was split the
+            // other way starts with half the budget item 765 counts, and every call that produced
+            // it succeeded.
+            //
+            // ⚠ LAST of the three, on the same ordering argument they already make: *this pane is
+            // in the wrong tree* and *its neighbours are strangers* are better sentences than *it
+            // is the wrong shape*, and a pane that is all three should be told the first.
+            ai_loop_keeps_what_its_kind_keeps(
+                kind.keeps().as_deref(),
+                world.pane_size(pane),
+                world.default_size(),
             )?;
             let label = format!("ai_loop pane={}", pane.0);
             let loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
@@ -3751,6 +3802,84 @@ fn ai_loop_stands_where_it_works(
 /// agree on it and a second spelling is how they would come to disagree silently. A word this
 /// build does not know is a REFUSAL there, never a pass — see that function.
 const STANDS_IN_ITS_TREES_WINDOW: &str = "tree";
+
+/// The word [`ai_loop_keeps_what_its_kind_keeps`] knows: *a run of this kind keeps its ROWS whole*
+/// — register item 772. A constant for [`STANDS_IN_ITS_TREES_WINDOW`]'s reason exactly.
+const KEEPS_ITS_ROWS: &str = "rows";
+
+/// **A RUN DOES NOT START IN A PANE THAT LOST THE DIMENSION ITS KIND KEEPS** — register item 772,
+/// and [`ai_loop_stands_in_its_kinds_window`]'s sibling one axis in.
+///
+/// # ⛔⛔⛔⛔⛔ The measurement this exists for
+///
+/// The owner asked it, reading the screen: *"어떤건 세로로 split 됐고 어떤건 가로로 split 되어
+/// 있어, 결정론적이여야되는거아니야?"* Four windows of one daemon, four loops of one kind, and the
+/// direction each was divided in was whatever its watcher had typed. Three inner panes came out at
+/// **73 rows** × 168 cols and one at **36** × 338 — so one run had **half** item 765's budget, which
+/// is counted in rows because a reply's first line is its label and the first thing scrolling takes.
+///
+/// ⛔ **AND THE ROOT WAS NOT A HABIT TO BE CORRECTED.** That watcher's launch procedure carried
+/// `split-window -v` frozen into it while the other three carried `-h`, and the skill spells `-h`
+/// as an example without saying why. *Tell watchers to use `-h`* does not reach a brief that
+/// already says `-v` — which is why the decision is the document's (item 738's conclusion) and this
+/// is where a bypass is noticed, at the last moment anybody is looking.
+///
+/// # ⚠⚠ What it compares, and why that is the honest pair
+///
+/// The pane's own rows against the rows this world OPENS a pane at. A pane divided along the kept
+/// dimension has about half of them; one divided across it has all of them. Neither number is this
+/// function's to invent — `default_size` is the daemon's arbitration and `pane_size` is what the
+/// pane got — and the slack is generous on purpose: what separates the measured symptom from the
+/// measured control is 36 against 73, not one row of divider.
+///
+/// ⚠ **A KIND THAT SAYS NOTHING IS NOT CHECKED**, and a world that cannot say how big the pane is
+/// is not guessed at — both return `Ok`. What is refused is a kind naming a word this build cannot
+/// apply, because a rule nothing enforces is worse than none: it reads as a defence.
+///
+/// # Errors
+///
+/// [`refused`]'s sentence when the kind names an unknown dimension, or when the pane kept less than
+/// half of it.
+fn ai_loop_keeps_what_its_kind_keeps(
+    keeps: Option<&str>,
+    pane: Option<(u16, u16)>,
+    opens_at: (u16, u16),
+) -> Result<(), InvokeError> {
+    let Some(rule) = keeps else {
+        return Ok(());
+    };
+    // ⛔⛔ A WORD THIS BUILD DOES NOT KNOW IS A REFUSAL AND NOT A PASS — `stands_in`'s rule, and
+    // this workspace's rule 6. An unclassified value falling through to `Ok` would disarm the check
+    // the first time somebody edits the document, and the run would start under a rule nobody
+    // applied.
+    if rule != KEEPS_ITS_ROWS {
+        return Err(refused(format!(
+            "this repository's loop-kind document says its runs keep their {rule:?}, and this build \
+             knows only {KEEPS_ITS_ROWS:?}. A rule nothing can apply is not one a run may be started \
+             under: teach this build the word, or change what the kind document says."
+        )));
+    }
+    // ⚠ A world that cannot size the pane is an ABSENCE of the fact, not a claim about it — the
+    // same reading `pane_start_dir`'s `None` gets one check up.
+    let Some((_, rows)) = pane else {
+        return Ok(());
+    };
+    let (_, opens) = opens_at;
+    // ⚠⚠ HALF, not *equal*. A divider costs a row and a client's arbitration moves both numbers, so
+    // an equality here would refuse healthy panes on arithmetic nobody chose. What it must separate
+    // is the measured pair — 73 kept against 36 lost — and half separates those with room to spare.
+    if u32::from(rows) * 2 < u32::from(opens) {
+        return Err(refused(format!(
+            "this run's pane has {rows} row(s) where this daemon opens a pane at {opens}, so it was \
+             divided ACROSS the dimension its kind keeps. A loop of this kind reads its own answers, \
+             and their first row is the label that says which answer it is — halving the height \
+             halves the budget item 765 counts, which was measured at 36 rows against a sibling's \
+             73. Divide the window the other way (`split-window -h`), or say a different dimension \
+             in the kind document."
+        )));
+    }
+    Ok(())
+}
 
 /// **THE TREE A DIRECTORY BELONGS TO** — the nearest ancestor-or-self carrying `marker`, or [`None`]
 /// for a directory under no tree at all.
@@ -10459,6 +10588,172 @@ mod tests {
                 "the panes this gate opened were there to close",
             );
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN DOES NOT START IN A PANE DIVIDED ACROSS THE DIMENSION ITS KIND KEEPS** —
+    /// register item 772, and the third of the door's placement trio.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The question this answers, asked by the owner off the screen
+    ///
+    /// *"어떤건 세로로 split 됐고 어떤건 가로로 split 되어있어, 결정론적이여야되는거아니야?"* — and
+    /// it was not. Four windows of one daemon, four loops of one kind: three inner panes at **73
+    /// rows** × 168 cols and one at **36** × 338, because one watcher's launch procedure carried
+    /// `split-window -v` frozen into it. Item 765's budget is counted in ROWS, so that run started
+    /// with half of one, and every call that produced it succeeded.
+    ///
+    /// ⛔ **THE FIX IS NOT *tell watchers to use `-h`***. That is a rule held in whoever is on
+    /// shift, and it does not reach a brief that already says `-v`. The kind document decides
+    /// (item 738's conclusion), and this is where a bypass is noticed.
+    ///
+    /// # ⚠⚠ The arms, each killing something the one before it cannot
+    ///
+    /// * the document really AUTHORS the dimension, and it is the word this build knows — without
+    ///   that arm every refusal below is a statement about a clause nobody wrote;
+    /// * a pane that kept the rows is accepted, which is the control: a check that refused
+    ///   everything would satisfy the refusals and mean nothing;
+    /// * a pane that lost them is refused, naming both numbers;
+    /// * a word this build cannot apply is refused rather than waved through (rule 6);
+    /// * a world that cannot size the pane is an ABSENCE, not a refusal;
+    /// * and the DOOR ITSELF refuses, which is item 739's measured hole — every arm above is green
+    ///   with the door's own call to this check deleted.
+    #[test]
+    fn a_run_does_not_start_in_a_pane_divided_across_what_its_kind_keeps() {
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
+            .expect("this repository's kind document opens");
+        let rule = kind.keeps().expect(
+            "⛔⛔⛔ THE PREMISE: this repository's kind document must SAY which dimension its runs \
+             keep, or the door is checking nothing and this gate is green about a clause nobody \
+             wrote. That clause IS the repair item 772 asks for — the decision leaving a watcher's \
+             hand for the document",
+        );
+        assert_eq!(
+            rule, KEEPS_ITS_ROWS,
+            "⚠⚠ and it must be the word this build knows, or the arm below that refuses an unknown \
+             word is the one the SHIPPED document takes",
+        );
+
+        // ── THE CONTROL: a pane that kept the rows ──────────────────────────────────────────
+        //
+        // The measured healthy shape, off the live daemon 2026-08-31: the window is 337x73 and each
+        // pane is 168x73 — a left|right divider costs a COLUMN, so the rows come out exactly equal.
+        ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((168, 73)), (337, 73)).expect(
+            "⚠⚠⚠ THE CONTROL: a pane divided ACROSS the width keeps every row, and refusing it \
+             would make every refusal below meaningless — a check that says no to everything says \
+             nothing",
+        );
+
+        // ── AND THE BOUND'S OWN POSITION, PINNED FROM BOTH SIDES ────────────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ THE ARM ABOVE IS NOT ENOUGH, AND A GREEN MUTATION IS HOW THAT WAS FOUND.
+        // Tightening `rows * 2 < opens` to `rows < opens` left this gate GREEN, because the healthy
+        // case has rows EXACTLY equal and the control could not tell a bound at half from a bound
+        // at all. The slack was a sentence in a doc and nothing measured it — this workspace's rule
+        // 10, in the gate that was supposed to be the answer to it.
+        //
+        // ⚠ So the boundary is asserted from both sides, one row apart. Any move of it is red:
+        // tightening refuses the first, loosening accepts the second.
+        ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((338, 37)), (338, 73)).expect(
+            "⚠⚠⚠ THE BOUND, from above: a pane holding just OVER half its window's rows is not a \
+             halved pane, and refusing it would make this check a demand for exactness that no \
+             arbitration guarantees",
+        );
+        ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((338, 36)), (338, 73)).expect_err(
+            "⛔⛔⛔ THE BOUND, from below: one row less is the measured symptom, and accepting it \
+             would put the bound somewhere no measurement chose",
+        );
+
+        // ── THE SYMPTOM: the pane that was divided the other way ────────────────────────────
+        let refused = ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((338, 36)), (338, 73))
+            .expect_err(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 772: a pane with 36 of its window's 73 rows started a run \
+                 with half the budget item 765 counts, and nothing refused it. This is the pane the \
+                 owner was looking at",
+            );
+        let said = refused
+            .reason()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            said.contains("36") && said.contains("73"),
+            "⚠⚠ and the refusal names BOTH numbers, because *the wrong shape* is not actionable and \
+             *36 rows where this daemon opens at 73* is: {said}",
+        );
+
+        // ── A WORD THIS BUILD CANNOT APPLY IS A REFUSAL, NOT A PASS (rule 6) ────────────────
+        let unknown =
+            ai_loop_keeps_what_its_kind_keeps(Some("whatever fits"), Some((168, 73)), (337, 73))
+                .expect_err("a dimension this build does not know must not be waved through");
+        assert!(
+            unknown
+                .reason()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .contains("whatever fits"),
+            "⚠⚠ and it must name the word it could not honour: {unknown:?}",
+        );
+
+        // ── AND TWO ABSENCES THAT ARE NOT CLAIMS ────────────────────────────────────────────
+        ai_loop_keeps_what_its_kind_keeps(None, Some((338, 36)), (338, 73))
+            .expect("a kind that names no dimension is not checked at all");
+        ai_loop_keeps_what_its_kind_keeps(Some(&rule), None, (338, 73))
+            .expect("a world that cannot size the pane is an absence of the fact, not a claim");
+
+        // ⛔⛔⛔⛔⛔ AND THE DOOR ITSELF — item 739's measured hole. Every arm above is green with
+        // the door's own call to this check deleted, so the last one builds a real request over a
+        // real pool whose pane was divided the wrong way.
+        //
+        // ⚠ The world opens at 80x24 and the pane is then resized to 11 rows, which is what a
+        // `top|bottom` split leaves — the fixture stages the SHAPE rather than asserting about it.
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let tree = a_tree_to_stand_in();
+        let driven = echoing_agent_pane_in(&workspace, &tree);
+        assert!(
+            lock(&workspace).resize(driven, 80, 11, (0, 0)).is_ok(),
+            "⚠⚠⚠ THE PREMISE OF THIS ARM: the pane must really have lost its rows, or the door has \
+             nothing to refuse",
+        );
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            external.pane_size(driven),
+            Some((80, 11)),
+            "⚠⚠ and the WORLD must say so — a door reading a size nobody kept would refuse on a \
+             number this gate invented",
+        );
+        let built = external.build_plugin(
+            ai_loop_request(driven, json!({}))
+                .as_object()
+                .expect("an object"),
+        );
+        let Err(refused_at_the_door) = built else {
+            panic!(
+                "⛔⛔⛔⛔⛔ THE DOOR BUILT A LOOP IN A PANE DIVIDED ACROSS THE DIMENSION ITS KIND \
+                 KEEPS. Every assertion above passes with the door's own call to this check \
+                 deleted — that is item 739's measured hole, and this arm is what closes it"
+            );
+        };
+        assert!(
+            refused_at_the_door
+                .reason()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .contains("11"),
+            "⚠⚠ and the door's refusal must be THIS one rather than some other: \
+             {refused_at_the_door:?}",
+        );
+        assert!(
+            lock(&workspace).close(driven).is_some(),
+            "the pane this gate opened was there to close",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **A LAUNCH NOBODY AND NO DOCUMENT ANSWERED IS REFUSED, NAMING EVERY KEY THAT WOULD

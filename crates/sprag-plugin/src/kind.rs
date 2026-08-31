@@ -479,6 +479,40 @@ impl LoopKind {
             .filter(|said| !said.is_empty())
     }
 
+    /// **WHICH DIMENSION A RUN OF THIS KIND MUST KEEP WHOLE**, or [`None`] for a kind that does not
+    /// care how its pane was divided — register item 772, and [`stands_in`](Self::stands_in)'s
+    /// sibling one axis in.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What it costs when nobody says it
+    ///
+    /// The owner asked it, reading the screen: *"어떤건 세로로 split 됐고 어떤건 가로로 split 되어
+    /// 있어, 결정론적이여야되는거아니야?"* Measured the same night across four windows of one daemon,
+    /// four loops of this kind: three were `left|right` (inner pane **73 rows** × 168 cols) and one
+    /// was `top|bottom` (**36 rows** × 338). Item 765's budget is counted in ROWS — a reply's first
+    /// row is its label, and the first thing scrolling takes — so one of the four had **half the
+    /// budget of the others** and nobody had decided that.
+    ///
+    /// ⛔ **AND THE ROOT WAS NOT A HABIT.** That watcher's launch procedure carried
+    /// `split-window -v` frozen into it while the other three carried `-h`, and the skill spells
+    /// `-h` as an example without ever saying why. Telling a watcher *use `-h`* does not reach a
+    /// brief that already says `-v` — which is exactly why the decision is the document's (item
+    /// 738's conclusion, item 754's shape).
+    ///
+    /// ⚠⚠ **IT IS A DIMENSION AND NOT A DIRECTION**, on `stands_in`'s measured reason: the same
+    /// document is compiled into every checkout, and `-h` is one launcher's grammar. *This kind
+    /// keeps its rows* is the fact behind it — true of a run driven by any surface, and the one a
+    /// door can check against a pane it did not open.
+    ///
+    /// ⚠ [`None`] is the shipped state for a kind that says nothing, and it means **no check at
+    /// all** rather than a check that passes.
+    #[must_use]
+    pub fn keeps(&self) -> Option<String> {
+        self.machine
+            .policy()
+            .keeps()
+            .filter(|said| !said.is_empty())
+    }
+
     /// **HOW MANY TURNS A RUN OF THIS KIND MAY TAKE**, or [`None`] where this kind says nothing and
     /// the template's own number stands.
     ///
