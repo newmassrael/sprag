@@ -121,6 +121,12 @@ fn a_tree_to_stand_in(sock: &Path) -> PathBuf {
 /// ⚠ The daemon's boot pane is born in `$HOME` by the product's own intent (item 417), so a gate
 /// that drives the boot pane is driving the placement item 684 measured costing a live run. This
 /// opens the pane a caller really would, and the caller is expected to take the LAST id.
+///
+/// ⚠⚠ THE DIRECTION IS NOT WHAT THESE GATES ARE ABOUT, and saying so is worth a line because it
+/// was the first guess when both callers went red on CI at `3899e39` with *this run's pane has 6
+/// row(s)*. This daemon is booted `--size 40x6` ([`spawn_host_at`]), so its panes are 6 rows tall
+/// whichever way the window is divided — the number in that refusal came from the OTHER side of the
+/// comparison. See `ai_loop_keeps_what_its_kind_keeps`.
 fn open_a_pane_in_a_tree(sock: &Path) {
     let tree = a_tree_to_stand_in(sock);
     let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect to the daemon");

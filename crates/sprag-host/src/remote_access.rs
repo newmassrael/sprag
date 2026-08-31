@@ -1887,6 +1887,20 @@ impl crate::plugins::PluginWorld for RemotePluginWorld<'_> {
     /// 80×24 a daemon boots with — stated here rather than left to a caller, because a size chosen
     /// by two different processes for one pane is the reflow this address exists to prevent.
     fn default_size(&self) -> (u16, u16) {
+        self.opens_panes_at().unwrap_or((80, 24))
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SAME READ WITH THE FALLBACK TAKEN OFF** — register item 772, and the whole
+    /// of what that item's second round was.
+    ///
+    /// `null` at that slot is *no attached client has said how big this window is*, and the 80×24
+    /// below it in [`PluginWorld::default_size`](crate::plugins::PluginWorld::default_size) is a
+    /// size to SPAWN at, not a measurement. A
+    /// door that refused a run by comparing a pane against it was refusing on a number nobody took:
+    /// a daemon booted `--size 40x6` with no client attached answered 24, and two gates went red on
+    /// both platforms saying *this run's pane has 6 row(s) where this daemon opens a pane at 24*
+    /// about a window that had never been divided.
+    fn opens_panes_at(&self) -> Option<(u16, u16)> {
         let dim = |value: &Value, key: &str| {
             value[key]
                 .as_u64()
@@ -1896,7 +1910,6 @@ impl crate::plugins::PluginWorld for RemotePluginWorld<'_> {
         self.0
             .read(&mux_action_path(crate::wire::WINDOW_SIZE_SLOT))
             .and_then(|size| Some((dim(&size, "cols")?, dim(&size, "rows")?)))
-            .unwrap_or((80, 24))
     }
 
     /// ⚠⚠⚠⚠⚠ **THROUGH THE SURFACE ITEM 722 ALREADY BUILT, AND THAT IS WHY THIS COSTS NOTHING** —

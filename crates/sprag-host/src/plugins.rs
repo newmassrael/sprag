@@ -1000,7 +1000,45 @@ pub trait PluginWorld {
     /// ⚠ A WORLD-LEVEL default rather than a constant: a daemon's is arbitrated from its attached
     /// clients, so two daemons legitimately answer differently and a driver must ask the one it is
     /// driving.
+    ///
+    /// ⚠⚠ **TOTAL, AND THEREFORE PARTLY INVENTED** — which is fine for what it is for and was not
+    /// fine for what register item 772 borrowed it for. It fills in `cols`/`rows` a spawn request
+    /// left out, so an answer is owed on every call and 80×24 is the honest thing to spawn at when
+    /// nobody has said. It is NOT a measurement of this world, and a check that REFUSES on it is
+    /// refusing on a number nobody took — see [`opens_panes_at`](Self::opens_panes_at).
     fn default_size(&self) -> (u16, u16);
+
+    /// ⛔⛔⛔⛔⛔ **THE SIZE THIS WORLD IS KNOWN TO OPEN A PANE AT, or [`None`] where nobody has
+    /// said** — register item 772, and the fact [`default_size`](Self::default_size) was standing in
+    /// for until it refused a run over a number it had invented.
+    ///
+    /// # ⛔⛔⛔⛔ What that cost, measured
+    ///
+    /// `ai_loop_keeps_what_its_kind_keeps` compares a pane's rows against *the rows this world opens
+    /// a pane at*, and read it off `default_size`. On the remote side that method is a
+    /// `WINDOW_SIZE_SLOT` read with `unwrap_or((80, 24))` behind it, so a daemon with **no attached
+    /// client** — every headless one, and every test — answers 24 rows it never measured. Two gates
+    /// in `wire_client.rs` went red on linux and macOS alike at `3899e39` with *this run's pane has
+    /// 6 row(s) where this daemon opens a pane at 24*: the daemon had been booted `--size 40x6`, its
+    /// panes really were 6 rows, and **nothing had been divided at all**.
+    ///
+    /// ⛔⛔ **AND IT SPLIT THE DOOR IN TWO.** In-process, `default_size` is the daemon's boot size
+    /// (6) and the same request is accepted; out-of-process it is the fallback (24) and refused. That
+    /// is exactly the promise [`RUN_DRIVER_PROCESS`](crate::options::RUN_DRIVER_PROCESS) makes —
+    /// *the same request means the same thing either way* — broken by a default nobody read as one.
+    ///
+    /// # ⚠⚠ Why the absence is an absence and not a refusal
+    ///
+    /// This workspace's rule is that an unclassified value must not be waved through, and it holds
+    /// for WORDS: a kind naming a dimension this build cannot apply is refused, because a rule
+    /// nothing enforces reads as a defence. A missing MEASUREMENT is the other case, and this file
+    /// already decides it the other way one line down — a world that cannot size the pane returns
+    /// `Ok`. Refusing instead would stop every unattended run on a daemon no client is watching,
+    /// which is most of them, over a fact nobody has.
+    ///
+    /// ⚠ The residue, stated rather than hidden: on a daemon with no attached client the rule is
+    /// not applied out of process. That is an absence of a claim, not an exemption.
+    fn opens_panes_at(&self) -> Option<(u16, u16)>;
 
     /// **WHERE `pane` WAS OPENED** — its own record of the directory it was pointed at, or [`None`]
     /// for a pane this world does not hold or cannot say.
@@ -1121,6 +1159,14 @@ impl PluginWorld for PluginsExternal {
 
     fn default_size(&self) -> (u16, u16) {
         lock(&self.workspace).default_size()
+    }
+
+    /// ⚠ THE POOL'S OWN NUMBER, WHICH IT ALWAYS HAS. A `Workspace` is constructed with the size its
+    /// dimension-less spawns adopt and it is stored, so in this process the fact is never missing —
+    /// the [`None`] this returns nowhere is the REMOTE world's, where the daemon's clients may not
+    /// have said anything yet.
+    fn opens_panes_at(&self) -> Option<(u16, u16)> {
+        Some(lock(&self.workspace).default_size())
     }
 
     /// ⚠ Through [`PaneOrigin`](sprag_plugin::PaneOrigin), which is the SAME read
@@ -2097,7 +2143,7 @@ fn plugin_from_request(
             ai_loop_keeps_what_its_kind_keeps(
                 kind.keeps().as_deref(),
                 world.pane_size(pane),
-                world.default_size(),
+                world.opens_panes_at(),
             )?;
             let label = format!("ai_loop pane={}", pane.0);
             let loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
@@ -3828,13 +3874,24 @@ const KEEPS_ITS_ROWS: &str = "rows";
 ///
 /// The pane's own rows against the rows this world OPENS a pane at. A pane divided along the kept
 /// dimension has about half of them; one divided across it has all of them. Neither number is this
-/// function's to invent — `default_size` is the daemon's arbitration and `pane_size` is what the
-/// pane got — and the slack is generous on purpose: what separates the measured symptom from the
-/// measured control is 36 against 73, not one row of divider.
+/// function's to invent — and the slack is generous on purpose: what separates the measured symptom
+/// from the measured control is 36 against 73, not one row of divider.
 ///
-/// ⚠ **A KIND THAT SAYS NOTHING IS NOT CHECKED**, and a world that cannot say how big the pane is
-/// is not guessed at — both return `Ok`. What is refused is a kind naming a word this build cannot
-/// apply, because a rule nothing enforces is worse than none: it reads as a defence.
+/// ⛔⛔⛔⛔⛔ **THE SECOND NUMBER WAS INVENTED FOR A WHOLE ROUND, AND CI IS WHAT SAID SO.** This
+/// read `PluginWorld::default_size`, whose remote half is a `WINDOW_SIZE_SLOT` read with
+/// `unwrap_or((80, 24))` behind it — so a daemon with no attached client answered 24 rows nobody had
+/// taken. At `3899e39` two gates in `wire_client.rs` went red on linux and macOS alike with *this
+/// run's pane has 6 row(s) where this daemon opens a pane at 24*: that daemon is booted `--size
+/// 40x6`, its panes really are 6 rows, and **nothing had been divided**. In-process the same request
+/// was accepted, because there `default_size` is the daemon's real boot size — one door, two
+/// answers. It now reads [`PluginWorld::opens_panes_at`], which says [`None`] where nobody has said.
+///
+/// ⚠ **A KIND THAT SAYS NOTHING IS NOT CHECKED**, and neither number is guessed at when the world
+/// cannot give it — all three return `Ok`. What is refused is a kind naming a word this build cannot
+/// apply, because a rule nothing enforces is worse than none: it reads as a defence. ⚠⚠ The two
+/// absences are not the same shape as that word and the difference is the point: an unclassified
+/// WORD is a rule nobody wrote down, and a missing MEASUREMENT is a fact nobody has. Refusing the
+/// second would stop every unattended run on a daemon no client is watching.
 ///
 /// # Errors
 ///
@@ -3843,7 +3900,7 @@ const KEEPS_ITS_ROWS: &str = "rows";
 fn ai_loop_keeps_what_its_kind_keeps(
     keeps: Option<&str>,
     pane: Option<(u16, u16)>,
-    opens_at: (u16, u16),
+    opens_at: Option<(u16, u16)>,
 ) -> Result<(), InvokeError> {
     let Some(rule) = keeps else {
         return Ok(());
@@ -3864,7 +3921,12 @@ fn ai_loop_keeps_what_its_kind_keeps(
     let Some((_, rows)) = pane else {
         return Ok(());
     };
-    let (_, opens) = opens_at;
+    // ⚠⚠ AND A WORLD THAT CANNOT SAY WHAT IT OPENS A PANE AT IS THE SAME ABSENCE, read the same
+    // way — register item 772's second round. It used to arrive here as a total `(u16, u16)` with a
+    // fabricated 80×24 inside it, and this comparison had no way to tell that from a measurement.
+    let Some((_, opens)) = opens_at else {
+        return Ok(());
+    };
     // ⚠⚠ HALF, not *equal*. A divider costs a row and a client's arbitration moves both numbers, so
     // an equality here would refuse healthy panes on arithmetic nobody chose. What it must separate
     // is the measured pair — 73 kept against 36 lost — and half separates those with room to spare.
@@ -10638,7 +10700,7 @@ mod tests {
         //
         // The measured healthy shape, off the live daemon 2026-08-31: the window is 337x73 and each
         // pane is 168x73 — a left|right divider costs a COLUMN, so the rows come out exactly equal.
-        ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((168, 73)), (337, 73)).expect(
+        ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((168, 73)), Some((337, 73))).expect(
             "⚠⚠⚠ THE CONTROL: a pane divided ACROSS the width keeps every row, and refusing it \
              would make every refusal below meaningless — a check that says no to everything says \
              nothing",
@@ -10654,19 +10716,24 @@ mod tests {
         //
         // ⚠ So the boundary is asserted from both sides, one row apart. Any move of it is red:
         // tightening refuses the first, loosening accepts the second.
-        ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((338, 37)), (338, 73)).expect(
+        ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((338, 37)), Some((338, 73))).expect(
             "⚠⚠⚠ THE BOUND, from above: a pane holding just OVER half its window's rows is not a \
              halved pane, and refusing it would make this check a demand for exactness that no \
              arbitration guarantees",
         );
-        ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((338, 36)), (338, 73)).expect_err(
-            "⛔⛔⛔ THE BOUND, from below: one row less is the measured symptom, and accepting it \
-             would put the bound somewhere no measurement chose",
-        );
+        ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((338, 36)), Some((338, 73)))
+            .expect_err(
+                "⛔⛔⛔ THE BOUND, from below: one row less is the measured symptom, and accepting \
+                 it would put the bound somewhere no measurement chose",
+            );
 
         // ── THE SYMPTOM: the pane that was divided the other way ────────────────────────────
-        let refused = ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((338, 36)), (338, 73))
-            .expect_err(
+        let refused = ai_loop_keeps_what_its_kind_keeps(
+            Some(&rule),
+            Some((338, 36)),
+            Some((338, 73)),
+        )
+        .expect_err(
                 "⛔⛔⛔⛔⛔ REGISTER ITEM 772: a pane with 36 of its window's 73 rows started a run \
                  with half the budget item 765 counts, and nothing refused it. This is the pane the \
                  owner was looking at",
@@ -10682,9 +10749,12 @@ mod tests {
         );
 
         // ── A WORD THIS BUILD CANNOT APPLY IS A REFUSAL, NOT A PASS (rule 6) ────────────────
-        let unknown =
-            ai_loop_keeps_what_its_kind_keeps(Some("whatever fits"), Some((168, 73)), (337, 73))
-                .expect_err("a dimension this build does not know must not be waved through");
+        let unknown = ai_loop_keeps_what_its_kind_keeps(
+            Some("whatever fits"),
+            Some((168, 73)),
+            Some((337, 73)),
+        )
+        .expect_err("a dimension this build does not know must not be waved through");
         assert!(
             unknown
                 .reason()
@@ -10694,11 +10764,24 @@ mod tests {
             "⚠⚠ and it must name the word it could not honour: {unknown:?}",
         );
 
-        // ── AND TWO ABSENCES THAT ARE NOT CLAIMS ────────────────────────────────────────────
-        ai_loop_keeps_what_its_kind_keeps(None, Some((338, 36)), (338, 73))
+        // ── AND THREE ABSENCES THAT ARE NOT CLAIMS ──────────────────────────────────────────
+        ai_loop_keeps_what_its_kind_keeps(None, Some((338, 36)), Some((338, 73)))
             .expect("a kind that names no dimension is not checked at all");
-        ai_loop_keeps_what_its_kind_keeps(Some(&rule), None, (338, 73))
+        ai_loop_keeps_what_its_kind_keeps(Some(&rule), None, Some((338, 73)))
             .expect("a world that cannot size the pane is an absence of the fact, not a claim");
+        // ⛔⛔⛔⛔⛔ THE THIRD ONE COST TWO RED CI JOBS ON BOTH PLATFORMS — register item 772's
+        // second round. This argument used to be a TOTAL `(u16, u16)` and the remote world filled
+        // it with `unwrap_or((80, 24))`, so a daemon no client had sized answered 24 rows nobody
+        // had taken and this check refused a 6-row pane in an UNDIVIDED 6-row window. A refusal
+        // built on a fallback is a refusal about nothing; the caller's absence now arrives here as
+        // one. ⚠ The pane is the measured symptom's own shape, so this arm is green ONLY because
+        // the second number is missing — with any `Some` here it is the refusal three arms up.
+        ai_loop_keeps_what_its_kind_keeps(Some(&rule), Some((338, 36)), None).expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 772: a world that has not been told how big it opens a pane \
+             cannot be compared against, and INVENTING the number is what refused two gates on CI \
+             at `3899e39` — `this run's pane has 6 row(s) where this daemon opens a pane at 24`, \
+             about a window booted `--size 40x6` that had never been divided",
+        );
 
         // ⛔⛔⛔⛔⛔ AND THE DOOR ITSELF — item 739's measured hole. Every arm above is green with
         // the door's own call to this check deleted, so the last one builds a real request over a
