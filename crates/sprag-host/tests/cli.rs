@@ -7030,6 +7030,19 @@ fn layout_and_panes_answer_about_a_window_the_caller_is_not_on() {
     let theirs = sprag(&sock, &["split-window", "-t", "work", "--", "cat"]);
     assert!(theirs.ok, "a pane in the OTHER window: {}", theirs.stderr);
     let theirs: u64 = theirs.stdout.trim().parse().expect("the new pane's id");
+    // ⛔⛔⛔⛔⛔ AND IT GETS A NAME, because the two spellings took DIFFERENT ROADS through
+    // `resolve_pane` and only one of them was gated — register item 782. Measured live against the
+    // loop daemon: `panes 501` answered the far window and `panes inner-wz`, the same pane,
+    // answered the CALLER's. The name road dropped the window whenever the pane was in the scope's
+    // CURRENT one, which is exactly this fixture's `spare`.
+    assert!(
+        sprag(
+            &sock,
+            &["rename-pane", &theirs.to_string(), "faraway", "-t", "work"]
+        )
+        .ok,
+        "the far pane gets a name, for the spelling the id road does not exercise",
+    );
 
     // ── THE PREMISE, ASSERTED: the two windows really are different ─────────────────────────
     assert_ne!(
@@ -7055,19 +7068,25 @@ fn layout_and_panes_answer_about_a_window_the_caller_is_not_on() {
          *narrowed* and *not narrowed* are the same answer here: {:?}",
         mine.stdout,
     );
-    let named = sprag_env(
-        &sock,
-        &["panes", &theirs.to_string(), "-t", "work"],
-        &[("SPRAG_PANE", &me)],
-    );
-    assert!(
-        named.ok && pane_ids_in(&named.stdout).contains(&theirs),
-        "⛔⛔⛔⛔⛔ REGISTER ITEM 782: `panes` cannot be asked about the window holding pane {theirs}. \
-         The daemon has always been able to answer it — the MCP mouth takes exactly this argument — \
-         and the CLI refused every positional: {:?} / {:?}",
-        named.stdout,
-        named.stderr,
-    );
+    // ⚠⚠ BOTH SPELLINGS, because they are two roads through `resolve_pane` and gating one leaves
+    // the other free to answer about a different window — which is what it was doing.
+    for spelling in [theirs.to_string(), "faraway".to_owned()] {
+        let named = sprag_env(
+            &sock,
+            &["panes", &spelling, "-t", "work"],
+            &[("SPRAG_PANE", &me)],
+        );
+        assert!(
+            named.ok && pane_ids_in(&named.stdout).contains(&theirs),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 782: `panes {spelling}` does not answer about the window holding \
+             pane {theirs}. The daemon has always been able to — the MCP mouth takes exactly this \
+             argument — and the NAME road dropped the window whenever the pane was in the scope's \
+             CURRENT one, so one pane answered two windows depending on how it was spelled: {:?} / \
+             {:?}",
+            named.stdout,
+            named.stderr,
+        );
+    }
 
     // ── layout ──────────────────────────────────────────────────────────────────────────────
     let drawn_here = sprag_env(&sock, &["layout", "-t", "work"], &[("SPRAG_PANE", &me)]);

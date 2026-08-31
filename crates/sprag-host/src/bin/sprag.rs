@@ -3001,9 +3001,25 @@ fn resolve_pane(
                     ),
                 ));
             }
+            // ⛔⛔⛔⛔⛔ **THE WINDOW IS ALWAYS CARRIED, AND IT USED TO BE DROPPED FOR THE CURRENT
+            // ONE** — register item 782, and the arm register item 759 did not reach.
+            //
+            // This read `(found.0 != current_window(…)).then(…)`, which encodes the meaning
+            // `PaneSite::window`'s doc USED to have — *`None` is the scope's current window*. Item
+            // 759 replaced that meaning (it is now *the CALLER's own window*, because the fast path
+            // above answers from the caller's listing) and fixed the fast path and the doc; the
+            // NAME path kept the old spelling, so the type's own doc and this line disagreed.
+            //
+            // **Measured live, 2026-08-31, against the loop daemon**: standing in window `sprag`
+            // with `wz` current, `sprag panes inner-wz` listed `outer-sprag`/`inner-sprag` — the
+            // CALLER's window — while `sprag panes 501` (the same pane, by id) answered `wz`. One
+            // pane, two spellings, two windows.
+            //
+            // ⚠ Naming a window the request would have defaulted to costs nothing: the daemon
+            // resolves the same window either way. What it buys is that `None` means ONE thing.
             Ok(PaneSite {
                 id: found.1,
-                window: (found.0 != current_window(conn, session)?).then(|| found.0.clone()),
+                window: Some(found.0.clone()),
             })
         }
     }
@@ -3074,19 +3090,17 @@ fn window_names(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<St
         .collect())
 }
 
-/// The scoped session's CURRENT window, which is what a [`PaneSite`] with no window means.
-fn current_window(conn: &mut HostConn, session: Option<&str>) -> io::Result<String> {
-    let listed: Value = query_slot(conn, scoped_params(session, mux_action_path(WINDOWS_SLOT)))?;
-    Ok(listed
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|window| window["current"].as_bool().unwrap_or(false))
-        .and_then(|window| window["name"].as_str())
-        .unwrap_or_default()
-        .to_owned())
-}
-
+// ⛔⛔⛔⛔⛔ `current_window` WAS HERE, AND ITS DOC WAS THE LAST COPY OF A RETIRED MEANING —
+// register item 782. It read *"the scoped session's CURRENT window, which is what a `PaneSite` with
+// no window means"*, and register item 759 had already stopped that being true: a `PaneSite` with no
+// window is the CALLER's. Its one caller was the name road in `resolve_pane`, which used it to drop
+// the window whenever a pane was in the current one — the defect 782 measured live — so removing
+// that use left the function with no callers and clippy said so.
+//
+// ⚠ DELETED rather than kept for a future reader. A helper whose doc states a meaning the codebase
+// has retired is not neutral: the next verb that wants *the current window* would reach for it and
+// inherit the retired sentence with it, which is exactly how the name road came to disagree with
+// its own type. The window a request means is `windowed_params`' to decide, and it is one place.
 /// [`scoped_params`] carrying a WINDOW as well — the one place a CLI request learns which window to
 /// act in, so a verb added later cannot forget it and quietly become window-local again.
 fn windowed_params(session: Option<&str>, path: String, window: Option<&str>) -> Value {
@@ -3157,9 +3171,9 @@ fn windowed_invoke(
 /// serve …`, which reads well until a verb makes two reads — `ls` reads `sessions` and
 /// `session_activity`, `agent` reads the manifests and the panes — and then the verb is the half
 /// the person already typed while the ADDRESS is the half that says which read stopped. Keeping it
-/// would have meant threading a command name through [`pane_ids`], [`window_names`],
-/// [`current_window`] and [`session_panes`], each shared by a dozen verbs, to print a word the
-/// shell line above the error already shows.
+/// would have meant threading a command name through [`pane_ids`], [`window_names`] and
+/// [`session_panes`], each shared by a dozen verbs, to print a word the shell line above the error
+/// already shows.
 fn query_slot(conn: &mut HostConn, params: Value) -> io::Result<Value> {
     // Read BEFORE the call, which consumes the params; the sentence needs the address that failed.
     let path = params["path"].as_str().unwrap_or_default().to_owned();
@@ -4296,10 +4310,14 @@ fn layout(args: Vec<String>) -> io::Result<()> {
                 mux_action_path(LAYOUT_SLOT),
                 Some(window),
             ),
-            // ⚠ UNCHANGED for a caller who named nothing — and for one who named a pane of their
-            // own window, which is what a `None` window means. Not [`here_params`]: this verb's
-            // subject has always been the scope's current window, and register item 759's rule is
-            // that a verb does not quietly become the other one.
+            // ⚠⚠ TWO DIFFERENT `None`s, and they are not the same request — register item 782.
+            // A caller who NAMED nothing gets this verb's own subject, the scope's current window.
+            // A caller who named a pane and got `None` back named one of THEIR OWN
+            // ([`PaneSite::window`]), so the honest answer is their window and not the current one
+            // — the two are the same only for a caller standing in no pane at all.
+            None if named.is_some() => {
+                here_params(session.as_deref(), mux_action_path(LAYOUT_SLOT))
+            }
             None => scoped_params(session.as_deref(), mux_action_path(LAYOUT_SLOT)),
         },
     )?;
