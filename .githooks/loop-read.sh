@@ -164,12 +164,26 @@ loop_read_endings() {
 
 # The events that are ENDINGS, and the ones that are STRANDED runs -- split by the
 # key's own suffix so neither clause has to know how the other is spelt.
+#
+# ⛔⛔⛔⛔⛔ AN EMPTY ANSWER IS NOT A FAILURE — and getting that wrong turned this
+# REPORT into a GATE. `grep` exits 1 when it matches nothing, `set -o pipefail` is
+# on in this file, and `pre-push` runs under `set -euo pipefail`: so the first time
+# a real `--gap` had endings but no strandings, the assignment carrying this
+# function's status killed the hook and **the push was refused**. Measured
+# 2026-09-01, the round after the clause shipped: `git push` printed both
+# instruments' sentences and then *"failed to push some refs"*, with no other
+# diagnosis, and `origin/main` had not moved.
+#
+# ⚠⚠ THE SELFTEST COULD NOT SEE IT, and that is the lesson worth keeping: the arms
+# call these functions WITHOUT `set -e`, so the status was thrown away exactly
+# where the hook would have acted on it. The arm added below calls `loop_read_gap`
+# the way `pre-push` calls it instead of the way a test finds convenient.
 loop_read_ended_only() {
-    printf '%s\n' "$1" | command grep -v '!stranded ' | command sed '/^$/d'
+    printf '%s\n' "$1" | command grep -v '!stranded ' | command sed '/^$/d' || true
 }
 
 loop_read_stranded_only() {
-    printf '%s\n' "$1" | command grep '!stranded ' | command sed '/^$/d'
+    printf '%s\n' "$1" | command grep '!stranded ' | command sed '/^$/d' || true
 }
 
 # The keys (without outcomes) of every ending on disk, or empty when unknown.
@@ -364,6 +378,10 @@ loop_read_gap() {
              "nobody has recorded reading that (${listed% }) --" \
              "${LOOP_READ_STRANDED_COST}"
     fi
+    # ⛔ A REPORT ENDS 0. Said as a statement rather than left to whatever the last
+    # branch happened to be, because `pre-push` runs this under `set -e` and the
+    # difference between those two is whether a push happens.
+    return 0
 }
 
 # ⛔⛔⛔⛔⛔ THE ARMS. Driven against a THROWAWAY state directory, never the real
@@ -661,6 +679,60 @@ OTHER
     else
         echo "  ok    --seen outside a repository records nothing and says so"
         pass=$((pass + 1))
+    fi
+
+    # (10d) ⛔⛔⛔⛔⛔ THE REPORT IS CALLED THE WAY THE HOOK CALLS IT — under
+    # `set -euo pipefail`. This is the arm that would have caught the round where a
+    # `grep` matching nothing made `--gap` exit non-zero and `git push` was REFUSED.
+    #
+    # ⛔⛔ AND THE STATE IT IS DRIVEN IN IS THE WHOLE ARM. The first version of this
+    # arm used a fixture with BOTH kinds of event in it, so every `grep` matched and
+    # a mutation deleting the `|| true` stayed GREEN — a dead control, measured as
+    # one within minutes of being written. What breaks is a list where ONE kind is
+    # missing, so each kind is driven ALONE, and the pair is what makes the arm
+    # real: with only endings the stranded filter matches nothing, and with only
+    # strandings the ending filter does.
+    # ⛔⛔⛔⛔⛔ AND IT IS RUN IN A CHILD PROCESS, NOT `if ( set -e; … )`. That shape
+    # was the SECOND dead control here and it was measured as one: `set -e` is
+    # SUPPRESSED for any command in a condition — `if`, `while`, `&&`, `||`, `!` —
+    # and the suppression reaches INSIDE a subshell written there, so the guard the
+    # arm was trying to observe was switched off by the way the arm asked. A
+    # separate `bash -c` and a status read into a variable is the only shape that
+    # observes it.
+    cat > "$tmp/state/sprag/probe.runs.json" <<'ENDSONLY'
+{"version":1,"runs":[{"id":50,"finished":true,"outcome":"failed"}]}
+ENDSONLY
+    bash -c 'set -euo pipefail; . "$1"; loop_read_gap >/dev/null' _ "$here/loop-read.sh"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  ok    endings with no stranding exit 0 under set -euo pipefail"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  a list of endings alone exits ${rc} under set -euo pipefail," \
+             "which is a REFUSED PUSH rather than a sentence"
+        fail=$((fail + 1))
+    fi
+    cat > "$tmp/state/sprag/probe.runs.json" <<'STRANDSONLY'
+{"version":1,"runs":[{"id":51,"finished":false,"outcome":null,"driving":null}]}
+STRANDSONLY
+    bash -c 'set -euo pipefail; . "$1"; loop_read_gap >/dev/null' _ "$here/loop-read.sh"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  ok    strandings with no ending exit 0 under set -euo pipefail"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  a list of strandings alone exits ${rc} under set -euo pipefail"
+        fail=$((fail + 1))
+    fi
+    loop_read_seen 'probe#51!stranded' >/dev/null
+    bash -c 'set -euo pipefail; . "$1"; loop_read_gap >/dev/null' _ "$here/loop-read.sh"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  ok    and it exits 0 with nothing owed either"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  the empty report exits ${rc} under set -euo pipefail"
+        fail=$((fail + 1))
     fi
 
     # (11) The pre-push hook calls this instrument -- the reach item 798 asks for

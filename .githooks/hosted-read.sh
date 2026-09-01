@@ -1259,6 +1259,30 @@ ASKED
         fail=$((fail + 1))
     fi
 
+    # ⛔⛔⛔⛔⛔ AND IT IS CALLED THE WAY THE HOOK CALLS IT — under `set -euo
+    # pipefail`. This file's whole standing is that it REPORTS and never refuses,
+    # and a non-zero status from it is a REFUSED PUSH rather than a sentence.
+    # Measured 2026-09-01 in `loop-read.sh`: a `grep` that matched nothing made its
+    # report exit 1, `pre-push` died on the assignment, and `git push` failed with
+    # no diagnosis at all. The arm exists in both files now because the property is
+    # the hook's, not one file's, and neither selftest could see it while it called
+    # the function the way a test finds convenient.
+    # ⛔⛔ IN A CHILD PROCESS, NOT `if ( set -e; … )`. `set -e` is SUPPRESSED for any
+    # command in a condition, and the suppression reaches inside a subshell written
+    # there -- so that shape switches off the very guard it means to observe. It was
+    # written that way first and measured as a dead control the same hour.
+    ( cd "$tmp" && bash -c 'set -euo pipefail; . "$1"; hosted_read_gap >/dev/null' \
+        _ "$here/hosted-read.sh" )
+    said=$?
+    if [ "$said" -eq 0 ]; then
+        echo "  ok    the report exits 0 under the hook's own set -euo pipefail"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  the report exits ${said} under set -euo pipefail, which is a" \
+             "REFUSED PUSH rather than a sentence"
+        fail=$((fail + 1))
+    fi
+
     # ⛔⛔⛔⛔⛔ THE RE-RUN ARMS — register item 793. Five of them, because the
     # states are *attempt 1* (silent), *attempt N* (a debt), *unaskable* (a
     # different debt), *retired clean* and *retired red*, and this file's own rule
