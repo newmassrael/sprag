@@ -289,9 +289,12 @@ mod tests {
                 }
             }
         }
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("the crates directory")
+        // ⚠ THROUGH `sprag_gate`'s ONE DOOR — register item 809. This used to walk up from
+        // `env!("CARGO_MANIFEST_DIR")`, which is the tree this test was COMPILED in and stopped
+        // being the tree it runs in; `workspace_root` compares the two and refuses a skew rather
+        // than scanning somebody else's sources and calling the result a fact about this one.
+        let root = sprag_gate::sources::workspace_root()
+            .join("crates")
             .join(crate_name)
             .join("src");
         let mut files = Vec::new();

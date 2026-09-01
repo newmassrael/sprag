@@ -123,24 +123,32 @@ mod tests {
     /// gate that compared the parse against a list written in this file would be comparing the
     /// manifest to something this file believes; comparing it to `crates/` asks whether the
     /// manifest and the tree agree, and disagreement in EITHER direction is a finding.
+    ///
+    /// ⚠⚠ BOTH ARTEFACTS ARE READ AT RUN TIME — register item 809. The manifest used to arrive by
+    /// `include_str!` and the listing by a `concat!` on the manifest directory, so BOTH were facts
+    /// about the tree this crate was COMPILED in. Under the defect that item measured, this gate
+    /// would have compared another workspace's manifest against another workspace's `crates/` and
+    /// reported green about neither of them. Through [`crate::sources::workspace_root`] the two
+    /// artefacts are the running tree's, and a skew is refused instead of read.
     #[test]
     fn the_derivation_finds_every_crate_this_workspace_has() {
-        let manifest = include_str!("../../../Cargo.toml");
-        let mut declared = members(manifest);
+        let root = crate::sources::workspace_root();
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml"))
+            .expect("this workspace's own manifest");
+        let mut declared = members(&manifest);
         declared.sort();
 
-        let mut on_disk: Vec<String> =
-            std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
-                .expect("the crates directory this crate lives in")
-                .filter_map(|entry| {
-                    let entry = entry.ok()?;
-                    entry
-                        .path()
-                        .join("Cargo.toml")
-                        .exists()
-                        .then(|| entry.file_name().to_string_lossy().into_owned())
-                })
-                .collect();
+        let mut on_disk: Vec<String> = std::fs::read_dir(root.join("crates"))
+            .expect("the crates directory this crate lives in")
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                entry
+                    .path()
+                    .join("Cargo.toml")
+                    .exists()
+                    .then(|| entry.file_name().to_string_lossy().into_owned())
+            })
+            .collect();
         on_disk.sort();
 
         assert_eq!(

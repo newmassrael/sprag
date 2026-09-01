@@ -97,8 +97,16 @@ use std::path::{Path, PathBuf};
 /// call in words costs nothing and an exemption for "it was only a message" costs the gate.
 const HARNESS_SITES_REGISTERED: usize = 161;
 
+/// The tree this ratchet counts — through the one door, register item 809.
+///
+/// ⚠⚠ IT MATTERS MOST HERE. This gate's whole verdict is an EQUALITY against
+/// [`HARNESS_SITES_REGISTERED`], so a walk of the wrong tree does not merely mis-report: it is the
+/// one artefact that could answer *which tree was walked* and it would be answering about a tree
+/// nobody asked for. That equality is what proved, after the fact, that the 2026-09-01 rounds had
+/// judged this workspace — the number 161 exists in no other tree — and the proof only works while
+/// the walk goes through the door that checks.
 fn repo_root() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()
+    sprag_gate::sources::workspace_root()
 }
 
 /// Whether a file's lines are compiled into something a user runs.

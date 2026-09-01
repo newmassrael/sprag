@@ -39,8 +39,12 @@ use std::path::PathBuf;
 /// which is what makes an edit to it something two gates notice.
 const DECL: &str = ".claude/remote-build.toml";
 
+/// The tree whose declaration is under test — through the one door, register item 809.
+///
+/// ⚠ A private `env!("CARGO_MANIFEST_DIR")` walk answers about the tree this test was COMPILED in,
+/// which stopped being the tree it runs in. `workspace_root` refuses when the two differ.
 fn workspace_root() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()
+    sprag_gate::sources::workspace_root()
 }
 
 /// The value of `verify` under `[commands]`, as the file spells it.

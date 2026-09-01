@@ -61,10 +61,182 @@ impl Source {
     }
 }
 
+/// WHICH TREE a reader of this crate is about to walk, and whether it is the tree the running
+/// invocation is standing in.
+///
+/// # ⛔⛔⛔⛔⛔ TWO TREES WERE WRITING ONE SENTENCE — register item 809
+///
+/// [`workspace_root`] answered `env!("CARGO_MANIFEST_DIR")/../..` and nothing else. That macro is
+/// expanded when the **rlib is compiled**, so the path it carries is a fact about the build, not
+/// about the run — and on a machine where one crate's build output can reach another tree, *the
+/// tree this gate is judging* and *the tree somebody is running it in* stopped being the same
+/// thing with nothing anywhere saying so.
+///
+/// ⚠⚠ MEASURED 2026-09-01 on this machine, and it is not a hypothetical: eight arms of
+/// `cargo test -p sprag-gate` died at once with
+/// `/tmp/sprag-check-2151720-916922480/crates/sprag-gate/../../crates/sprag-plugin/src/ai_loop.scxml:
+/// No such file or directory`. `sprag-host`'s own checker cuts a `git worktree` under the temporary
+/// directory (`crates/sprag-host/src/checkout.rs`), and a `sprag-gate` compiled THERE had answered
+/// for a run HERE. Recompiling this crate from this tree — nothing else changed — turned all 28
+/// targets green, which is what made the diagnosis a measurement rather than a story.
+///
+/// ⚠⚠⚠ THE LOUD FAILURE IS THE LUCKY HALF. A deleted worktree makes the path unreadable and the
+/// gates shout. A worktree that still EXISTS makes them read a real tree that is somebody else's,
+/// silently, and report green about a workspace nobody asked them to judge.
+///
+/// ⚠ The running tree is found by walking UP from the process's own directory to the nearest
+/// `Cargo.toml` that declares `[workspace]` — a fact about the invocation that no compile can bake
+/// in. Under `cargo test` the process starts in its package's root, which is inside the workspace
+/// being tested; nothing in this repository moves it (measured: zero `set_current_dir` in any
+/// crate).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeUnderTest {
+    /// The tree this crate was COMPILED in is the tree this run is standing in. The only state in
+    /// which a walk of it is a claim about the workspace the runner meant.
+    Agreed(PathBuf),
+    /// They are two different trees. Whatever a walk found is about `compiled_in`, and whoever
+    /// started this run is in `running_in`.
+    Skewed {
+        /// Where `env!("CARGO_MANIFEST_DIR")` says this crate's source is.
+        compiled_in: PathBuf,
+        /// The workspace the running process is actually standing in.
+        running_in: PathBuf,
+    },
+    /// The running tree could not be identified. ⚠ NOT a pass: a root that cannot be checked is
+    /// exactly the state item 809 is about, and answering it quietly is the defect.
+    Unknown {
+        /// Where `env!("CARGO_MANIFEST_DIR")` says this crate's source is.
+        compiled_in: PathBuf,
+        /// What stopped the walk from naming the running workspace.
+        why: String,
+    },
+}
+
+/// The root this crate was compiled against — `crates/sprag-gate/` is two levels down from it.
+///
+/// ⚠ Raw and unchecked ON PURPOSE, and not public: it is one of the two halves
+/// [`tree_under_test`] compares, and a caller that wanted "the root" and got this would be back to
+/// the single silent answer item 809 removed.
+fn compiled_in_root() -> PathBuf {
+    [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()
+}
+
+/// The workspace the RUNNING process is standing in: the nearest ancestor of its own directory
+/// whose `Cargo.toml` declares `[workspace]`.
+///
+/// ⚠ `[workspace]` rather than the mere presence of a `Cargo.toml`, because every crate directory
+/// has one of those and the first hit walking up would be the package, not the workspace. Measured
+/// in this repository: exactly one manifest declares it, and no crate manifest does.
+fn running_in_root() -> Result<PathBuf, String> {
+    let here = std::env::current_dir().map_err(|why| format!("no current directory: {why}"))?;
+    let mut at = here.as_path();
+    loop {
+        let manifest = at.join("Cargo.toml");
+        if let Ok(text) = std::fs::read_to_string(&manifest)
+            && text.lines().any(|line| line.trim_end() == "[workspace]")
+        {
+            return Ok(at.to_path_buf());
+        }
+        at = match at.parent() {
+            Some(up) => up,
+            None => {
+                return Err(format!(
+                    "no ancestor of {} declares [workspace]",
+                    here.display()
+                ));
+            }
+        };
+    }
+}
+
+/// Whether the tree this crate judges is the tree it is being run in — register item 809.
+#[must_use]
+pub fn tree_under_test() -> TreeUnderTest {
+    verdict_of(compiled_in_root(), running_in_root())
+}
+
+/// [`tree_under_test`]'s policy with both answers injected — register item 809.
+///
+/// ⚠⚠ PUBLIC BECAUSE THE SKEW IS NOT A STATE A MACHINE PRODUCES ON DEMAND. A gate can only drive
+/// it by being handed the two answers, which is `sprag_scratch`'s `root_from` split and item 802's
+/// `xdg_home_from` split applied to the question of which TREE is being judged. A policy that can
+/// only be exercised by breaking a build is a policy nobody exercises.
+///
+/// ⚠ Both paths are canonicalised before they are compared: one is built by joining `".."` twice
+/// and the other by walking up, so two spellings of one directory would otherwise read as two
+/// trees. Item 804 paid for the opposite mistake in the same family — a comparison that folded a
+/// symlink's two paths together — so the direction is chosen rather than inherited.
+#[must_use]
+pub fn verdict_of(compiled_in: PathBuf, running_in: Result<PathBuf, String>) -> TreeUnderTest {
+    let running_in = match running_in {
+        Ok(root) => root,
+        Err(why) => return TreeUnderTest::Unknown { compiled_in, why },
+    };
+    let (Ok(built), Ok(run)) = (compiled_in.canonicalize(), running_in.canonicalize()) else {
+        return TreeUnderTest::Unknown {
+            compiled_in,
+            why: format!(
+                "{} cannot be resolved on this filesystem",
+                running_in.display()
+            ),
+        };
+    };
+    if built == run {
+        TreeUnderTest::Agreed(built)
+    } else {
+        TreeUnderTest::Skewed {
+            compiled_in: built,
+            running_in: run,
+        }
+    }
+}
+
+/// The sentence a reader is owed when the two trees are not one — register item 809.
+///
+/// ⚠ It names BOTH, because *your gate read the wrong tree* without saying which two leaves the
+/// reader with nothing to act on; and it names the repair, because the repair is not obvious
+/// (nothing in the source changed, so the ordinary instinct is to look for a source bug).
+#[must_use]
+pub fn tree_skew_sentence(verdict: &TreeUnderTest) -> String {
+    match verdict {
+        TreeUnderTest::Agreed(root) => {
+            format!("the tree under test is {}", root.display())
+        }
+        TreeUnderTest::Skewed {
+            compiled_in,
+            running_in,
+        } => format!(
+            "⛔ REGISTER ITEM 809: this gate would judge {}, but the run is standing in {}. \
+             `sprag-gate` was compiled against another tree, so every walk it does is about that \
+             one. Nothing in the source is wrong. Recompile this crate from here -- \
+             `find crates/sprag-gate/src -name '*.rs' -exec touch {{}} +` then re-run -- and if it \
+             comes back, the build output of two trees is reaching one place.",
+            compiled_in.display(),
+            running_in.display(),
+        ),
+        TreeUnderTest::Unknown { compiled_in, why } => format!(
+            "⛔ REGISTER ITEM 809: this gate would judge {}, and which tree the run is in cannot \
+             be established: {why}. An unidentified root is refused rather than assumed -- a walk \
+             nobody can attribute is not a claim about this workspace.",
+            compiled_in.display(),
+        ),
+    }
+}
+
 /// The workspace root — `crates/sprag-gate/` is two levels down from it.
+///
+/// # Panics
+///
+/// When the tree this crate was compiled against is not the tree the run is standing in, or when
+/// the running tree cannot be named at all — register item 809, and [`tree_under_test`] carries
+/// the whole argument. A gate that answered anyway would be judging somebody else's workspace.
 #[must_use]
 pub fn workspace_root() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()
+    let verdict = tree_under_test();
+    match verdict {
+        TreeUnderTest::Agreed(root) => root,
+        _ => panic!("{}", tree_skew_sentence(&verdict)),
+    }
 }
 
 /// Every `.rs` file under `crates/`, comment lines dropped.

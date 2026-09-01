@@ -24,9 +24,15 @@
 
 use std::path::PathBuf;
 
-/// The workspace root, from this crate's own manifest directory.
+/// The workspace root — through the one door, register item 809.
+///
+/// ⚠ It spelled `env!("CARGO_MANIFEST_DIR")` and two `".."` of its own until 2026-09-01. That
+/// answer is baked when the test is COMPILED, so a build whose output reached this tree from
+/// another one made this gate judge somebody else's workspace without a word. `workspace_root`
+/// compares the compiled-in tree against the one the run is standing in and refuses when they
+/// differ; a private copy is a hole straight past that.
 fn root() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()
+    sprag_gate::sources::workspace_root()
 }
 
 /// ⚠⚠⚠ **THE GUARD IS DRIVEN AS THE PROGRAM A CALLER RUNS**, not as the function under it. Item

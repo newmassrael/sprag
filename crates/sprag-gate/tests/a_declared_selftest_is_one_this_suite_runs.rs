@@ -40,9 +40,12 @@ use sprag_gate::doubles::Doubles;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The tree this gate is part of — `crates/sprag-gate/` is two levels down from it.
+/// The tree this gate is part of — through the one door, register item 809.
+///
+/// ⚠ A private `env!("CARGO_MANIFEST_DIR")` walk answers about the tree this test was COMPILED in,
+/// which stopped being the tree it runs in. `workspace_root` refuses when the two differ.
 fn repo_root() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()
+    sprag_gate::sources::workspace_root()
 }
 
 /// The lines that are CODE: comments carry this repository's reasoning, and that reasoning names
