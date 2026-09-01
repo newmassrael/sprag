@@ -501,7 +501,7 @@ SEEN
 # and this says so out loud rather than keeping a count nobody reads: the whole
 # defect was a red that went unfiled because nothing named it.
 hosted_read_first_attempt() {
-    local sha said kept
+    local sha said kept mark owed skipped
     sha="$(git rev-parse --verify "${1:-}^{commit}" 2>/dev/null)" || {
         echo "hosted-read: '${1:-}' is not a commit in this tree" >&2
         return 1
@@ -517,10 +517,29 @@ hosted_read_first_attempt() {
             return 2 ;;
     esac
     kept="$(hosted_read_rerun_raw | command grep -v " ${sha}\$" || true)"
+    # ⛔⛔⛔⛔⛔ EVERY HALF OF THE OLD FILE IS READ BEFORE ONE BYTE IS WRITTEN — and
+    # this function did not, while its own sibling `hosted_read_seen` carries the
+    # lesson in as many words. A fix to one reader does not reach the other
+    # writers: that is the whole of this defect and the reason it is worth a
+    # comment rather than a quiet edit.
+    #
+    # ⚠⚠ MEASURED 2026-09-02, on this repository's own marker: the round that
+    # read `e2d3229`'s first-attempt RED typed `--first-attempt e2d3229 red` and
+    # the watermark VANISHED — the very next `--gap` said *"NOBODY HAS RECORDED
+    # READING a hosted result in this clone"*, and the marker was one byte long.
+    # The writer truncates when the pipeline starts, so `$(hosted_read_watermark)`
+    # inside the group read an empty file. The two `sed` pipelines below had the
+    # same hole for the same reason.
+    #
+    # ⚠ So an act whose whole subject is *do not lose a verdict* was losing the
+    # record of every verdict ever read. Read first, into variables; write after.
+    mark="$(hosted_read_watermark)"
+    owed="$(hosted_read_owed)"
+    skipped="$(hosted_read_skipped)"
     {
-        printf '%s\n' "$(hosted_read_watermark)"
-        hosted_read_owed | command sed '/^$/d;s/^/owed /'
-        hosted_read_skipped | command sed '/^$/d;s/^/skipped /'
+        printf '%s\n' "$mark"
+        printf '%s\n' "$owed" | command sed '/^$/d;s/^/owed /'
+        printf '%s\n' "$skipped" | command sed '/^$/d;s/^/skipped /'
         printf '%s\n' "$kept" | command sed '/^$/d;s/^/rerun /'
     } | scratch_guard_write "$(hosted_read_marker)" "hosted-read" || return 1
     if [ "$said" = red ]; then
@@ -1537,6 +1556,21 @@ ASKED
             echo "  FAIL  the re-run clause survived being retired: $said"
             fail=$((fail + 1)) ;;
         *)  echo "  ok    a retired re-run leaves the sentence"
+            pass=$((pass + 1)) ;;
+    esac
+    # ⛔⛔⛔⛔⛔ AND THE WATERMARK SURVIVES BEING RETIRED — measured 2026-09-02, when
+    # it did not. `--first-attempt` read the old marker INSIDE the group its writer
+    # had already truncated, so retiring one re-run's debt deleted the record of
+    # every verdict ever read: the next `--gap` said *"NOBODY HAS RECORDED READING
+    # a hosted result in this clone"* and the marker was one byte long. Its own
+    # sibling `hosted_read_seen` carries that lesson in a comment, which is the
+    # point — a fix to one reader does not reach the other writers, and only a
+    # gate does.
+    case "$said" in
+        *"NOBODY HAS RECORDED READING"*)
+            echo "  FAIL  retiring a re-run wiped the watermark: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    retiring a re-run keeps the watermark"
             pass=$((pass + 1)) ;;
     esac
 
