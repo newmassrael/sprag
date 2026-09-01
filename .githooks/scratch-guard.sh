@@ -74,6 +74,70 @@ scratch_guard_check() {
     scratch_guard_refusal "$scratch_git" "$scratch_dir" "$caller_git"
 }
 
+# THE GIT DIR THIS CLONE'S MARKERS BELONG IN, or EMPTY where there is none.
+#
+# ⛔⛔⛔⛔⛔ EMPTY RATHER THAN A FALLBACK — register item 804. `git rev-parse
+# --absolute-git-dir` prints NOTHING outside a repository, and a caller that
+# joined that answer to a file name got `/sprag-loop-read`: the FILESYSTEM ROOT.
+# Measured 2026-09-01 by running `loop-read.sh` from `memory/`, which is not a
+# repository. Handing back an empty string makes the caller SAY SO instead.
+scratch_guard_marker_home() {
+    git rev-parse --absolute-git-dir 2>/dev/null || true
+}
+
+# WRITE stdin to `$1`, and REFUSE rather than claim success when it did not land.
+# `$2` names the instrument, for the sentence.
+#
+# ⛔⛔⛔⛔⛔ THE DEFECT THIS EXISTS FOR — register item 804, and it is the sharpest
+# shape this directory has produced. `loop-read.sh --baseline`, run outside a
+# repository, wrote to `/sprag-loop-read`, got *"Permission denied"* from the
+# shell, PRINTED *"139 ending(s) already on disk are the baseline"* and EXITED 0.
+# A file whose entire subject is WHAT SOMEBODY HAS RECORDED READING cannot report
+# a record it did not make: that is not a cosmetic error, it is the instrument
+# lying about its own state, and every later `--gap` would then be answering from
+# a marker that was never written.
+#
+# ⚠⚠ AND IT IS NOT ABOUT BEING OUTSIDE A REPOSITORY. That is one road to it; a
+# full disk, a read-only mount and a marker somebody chmod-ed are others, and all
+# of them arrive as the same silent zero. The status of the write is the fact,
+# so the status of the write is what is read.
+scratch_guard_write() {
+    local at who
+    at="${1:-}"
+    who="${2:-this instrument}"
+    if [ -z "$at" ]; then
+        echo "${who}: there is no marker path to write to, so nothing was" \
+             "recorded -- this clone has no git dir of its own (item 804)" >&2
+        return 1
+    fi
+    if ! cat > "$at"; then
+        echo "${who}: the marker at '${at}' could not be written, so NOTHING was" \
+             "recorded -- reporting success here would be this instrument lying" \
+             "about its own state (item 804)" >&2
+        return 1
+    fi
+}
+
+# The same, APPENDING. A separate arm because `>>` and `>` fail for the same
+# reasons and succeed differently, and a caller that wanted one and got the other
+# would lose everything already recorded.
+scratch_guard_append() {
+    local at who
+    at="${1:-}"
+    who="${2:-this instrument}"
+    if [ -z "$at" ]; then
+        echo "${who}: there is no marker path to append to, so nothing was" \
+             "recorded -- this clone has no git dir of its own (item 804)" >&2
+        return 1
+    fi
+    if ! cat >> "$at"; then
+        echo "${who}: the marker at '${at}' could not be appended to, so NOTHING" \
+             "was recorded -- reporting success here would be this instrument" \
+             "lying about its own state (item 804)" >&2
+        return 1
+    fi
+}
+
 scratch_guard_selftest() {
     local pass fail said
     pass=0
@@ -151,6 +215,60 @@ scratch_guard_selftest() {
         *)  echo "  FAIL  the live form said: '$said'"
             fail=$((fail + 1)) ;;
     esac
+
+    # ⛔⛔⛔⛔⛔ THE MARKER-HOME AND WRITE ARMS — register item 804. A write whose
+    # status nobody reads is the defect, so these drive the status.
+    said="$(scratch_guard_marker_home)"
+    case "$said" in
+        /*) echo "  ok    inside a repository the marker home is an absolute git dir"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  the marker home here was '$said'"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⚠ `/` is not a repository and has no `.git` above it, so this is the shape a
+    # hook run from anywhere else meets. EMPTY, never a path under the root.
+    said="$(cd / && scratch_guard_marker_home)"
+    if [ -z "$said" ]; then
+        echo "  ok    outside a repository the marker home is EMPTY, not a root path"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  outside a repository the marker home was '$said'"
+        fail=$((fail + 1))
+    fi
+
+    # ⛔ An empty destination is refused rather than joined to a file name.
+    if printf 'x\n' | scratch_guard_write "" "probe" >/dev/null 2>&1; then
+        echo "  FAIL  a write to an empty path reported success"
+        fail=$((fail + 1))
+    else
+        echo "  ok    a write with no marker path is refused"
+        pass=$((pass + 1))
+    fi
+    if printf 'x\n' | scratch_guard_append "" "probe" >/dev/null 2>&1; then
+        echo "  FAIL  an append to an empty path reported success"
+        fail=$((fail + 1))
+    else
+        echo "  ok    an append with no marker path is refused"
+        pass=$((pass + 1))
+    fi
+
+    # ⛔⛔ AND A DESTINATION THAT EXISTS BUT CANNOT BE WRITTEN. This is the case the
+    # defect actually arrived as: the shell refused, and the caller announced
+    # success anyway. A directory has no writable file behind its name.
+    if printf 'x\n' | scratch_guard_write "/" "probe" >/dev/null 2>&1; then
+        echo "  FAIL  a write that could not land reported success"
+        fail=$((fail + 1))
+    else
+        echo "  ok    a write that could not land is refused, not announced"
+        pass=$((pass + 1))
+    fi
+    if printf 'x\n' | scratch_guard_append "/" "probe" >/dev/null 2>&1; then
+        echo "  FAIL  an append that could not land reported success"
+        fail=$((fail + 1))
+    else
+        echo "  ok    an append that could not land is refused, not announced"
+        pass=$((pass + 1))
+    fi
 
     echo "scratch-guard selftest: ${pass}/$((pass + fail)) arm(s) pass"
     [ "$fail" -eq 0 ]

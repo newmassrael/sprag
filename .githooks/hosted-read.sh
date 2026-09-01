@@ -414,12 +414,16 @@ SEEN
                               | command grep -v '^$' || true)" ;;
         esac
     fi
+    # ⛔⛔ THE RECORD IS MADE BEFORE IT IS ANNOUNCED — register item 804. This
+    # redirection reported nothing when it failed, and the sentences below said the
+    # reading had been recorded either way. A full disk or a read-only marker
+    # arrives here as silence, and this file's whole subject is what was recorded.
     {
         printf '%s\n' "$mark"
         printf '%s\n' "$kept" | command sed '/^$/d;s/^/owed /'
         printf '%s\n' "$skipped" | command sed '/^$/d;s/^/skipped /'
         printf '%s\n' "$rerun" | command sed '/^$/d;s/^/rerun /'
-    } > "$marker"
+    } | scratch_guard_write "$marker" "hosted-read" || return 1
     if [ "$verdict" = settled ]; then
         echo "hosted-read: recorded that the hosted result for ${sha:0:7} was read"
     else
@@ -479,7 +483,7 @@ hosted_read_first_attempt() {
         hosted_read_owed | command sed '/^$/d;s/^/owed /'
         hosted_read_skipped | command sed '/^$/d;s/^/skipped /'
         printf '%s\n' "$kept" | command sed '/^$/d;s/^/rerun /'
-    } > "$(hosted_read_marker)"
+    } | scratch_guard_write "$(hosted_read_marker)" "hosted-read" || return 1
     if [ "$said" = red ]; then
         echo "hosted-read: recorded that ${sha:0:7}'s FIRST attempt was RED --" \
              "that red is this round's debt now, and it is the one a re-run's" \

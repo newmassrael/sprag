@@ -87,9 +87,21 @@ loop_read_state_dir() {
     printf '%s\n' "/tmp/sprag"
 }
 
-# The marker: which endings somebody has recorded reading, in THIS clone.
+# The marker: which events somebody has recorded reading, in THIS clone -- or
+# EMPTY where this tree has no git dir of its own.
+#
+# ⛔⛔⛔ EMPTY IS AN ANSWER HERE — register item 804. The first version joined
+# `git rev-parse --absolute-git-dir` to the file name unconditionally, and outside
+# a repository that answer is the empty string: the marker became
+# `/sprag-loop-read`, the FILESYSTEM ROOT. Every caller now has to decide what to
+# say about having no marker, which is the point — the old shape let `--gap`
+# report *"nobody has laid a baseline"* about a marker it had never been able to
+# look at, and those are different facts.
 loop_read_marker() {
-    printf '%s\n' "$(git rev-parse --absolute-git-dir)/sprag-loop-read"
+    local home
+    home="$(scratch_guard_marker_home)"
+    [ -n "$home" ] || return 0
+    printf '%s\n' "${home}/sprag-loop-read"
 }
 
 # EVERY EVENT ON DISK A PERSON HAS TO READ ONCE, as `<key> <word>` per line -- or
@@ -237,8 +249,12 @@ loop_read_baseline() {
              "run in it. ${LOOP_READ_BLIND_COST}" >&2
         return 1
     fi
+    # ⛔⛔ THE RECORD IS MADE BEFORE IT IS ANNOUNCED, and the status of making it
+    # is read -- register item 804. This block used to print its count whatever the
+    # write did.
     marker="$(loop_read_marker)"
-    printf '%s\n' "$keys" | command sed '/^$/d;s/^/baseline /' > "$marker"
+    printf '%s\n' "$keys" | command sed '/^$/d;s/^/baseline /' \
+        | scratch_guard_write "$marker" "loop-read" || return 1
     count="$(printf '%s\n' "$keys" | command grep -c .)"
     echo "loop-read: ${count} ending(s) already on disk are the baseline --" \
          "${LOOP_READ_BASELINE_COST}. Anything that ends from now on is owed" \
@@ -271,7 +287,11 @@ loop_read_seen() {
         echo "loop-read: ${key} was already accounted for here"
         return 0
     fi
-    printf 'read %s\n' "$key" >> "$marker"
+    # ⛔⛔ APPENDED FIRST, ANNOUNCED SECOND — register item 804. Outside a
+    # repository this line wrote to `/sprag-loop-read`, was refused, and the
+    # sentence below still said the reading had been recorded.
+    printf 'read %s\n' "$key" \
+        | scratch_guard_append "$marker" "loop-read" || return 1
     echo "loop-read: recorded that ${key}'s ending was read"
 }
 
@@ -292,6 +312,20 @@ loop_read_gap() {
         echo "loop-read: NO RUN LOG COULD BE READ in $(loop_read_state_dir), so" \
              "whether a run ended unwatched cannot be read here --" \
              "${LOOP_READ_BLIND_COST}"
+        return 0
+    fi
+    # ⛔⛔⛔⛔⛔ *NO MARKER TO LOOK AT* AND *NO BASELINE IN IT* ARE DIFFERENT FACTS —
+    # register item 804, and the fifth time this directory has paid for folding two
+    # states into one sentence. Run from a directory that is not a repository, the
+    # old shape said *"nobody has laid a baseline"* about a marker it had never been
+    # able to open, and the remedy it then offered (`--baseline`) wrote to the
+    # filesystem root and claimed success.
+    if [ -z "$(loop_read_marker)" ]; then
+        count="$(loop_read_keys | command grep -c . || true)"
+        echo "loop-read: THIS TREE HAS NO GIT DIR, so this clone has no marker and" \
+             "which of the ${count} event(s) in $(loop_read_state_dir) went unread" \
+             "cannot be read here -- that is NOT the same as no baseline having" \
+             "been laid, and no baseline can be laid from here either"
         return 0
     fi
     if ! loop_read_has_baseline; then
@@ -600,6 +634,34 @@ OTHER
         *)  echo "  FAIL  a second log said: $said"
             fail=$((fail + 1)) ;;
     esac
+
+    # (10c) ⛔⛔⛔⛔⛔ RUN FROM SOMEWHERE THAT IS NOT A REPOSITORY — register item
+    # 804. `$tmp` itself is not one (only `$tmp/repo` is), so this is the real
+    # shape: the marker cannot be reached, and *that* must not be reported as
+    # *nobody has laid a baseline* — the old sentence sent a reader to run
+    # `--baseline`, which wrote to the FILESYSTEM ROOT and announced success.
+    said="$( cd "$tmp" && loop_read_gap )"
+    case "$said" in
+        *"THIS TREE HAS NO GIT DIR"*"NOT the same as no baseline"*)
+            echo "  ok    with no git dir the gap says so, and says it is not the other thing"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  outside a repository the gap said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    if ( cd "$tmp" && loop_read_baseline >/dev/null 2>&1 ); then
+        echo "  FAIL  --baseline reported success with nowhere to write"
+        fail=$((fail + 1))
+    else
+        echo "  ok    --baseline outside a repository records nothing and says so"
+        pass=$((pass + 1))
+    fi
+    if ( cd "$tmp" && loop_read_seen 'probe#1' >/dev/null 2>&1 ); then
+        echo "  FAIL  --seen reported success with nowhere to write"
+        fail=$((fail + 1))
+    else
+        echo "  ok    --seen outside a repository records nothing and says so"
+        pass=$((pass + 1))
+    fi
 
     # (11) The pre-push hook calls this instrument -- the reach item 798 asks for
     # is a sentence at the push, and a hook that stopped calling it is silence.
