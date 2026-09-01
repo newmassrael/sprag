@@ -2644,12 +2644,12 @@ fn end_everything_on(sock: &Path) {
 /// and that value is unique per test call — so this cannot pick up a sibling test's daemon the way
 /// a `pkill -f sprag-term` would.
 fn daemon_pid(sock: &Path) -> Option<u32> {
-    // ⚠⚠ THE WALK IS [`sprag_term_pids`]'s, and it is CALLED rather than repeated. It was spelled
+    // ⚠⚠ THE WALK IS [`sprag_term_census`]'s, and it is CALLED rather than repeated. It was spelled
     // twice — identically — until register item 802 measured what the second copy was for: this
     // function reduced the set to one pid, and `DaemonGuard` then ended only that one while the
     // rest of the set went on living. Two spellings of *everything on this socket* is how a
     // teardown comes to disagree with a gate about what it left behind.
-    let holding = sprag_term_pids(sock);
+    let holding = sprag_term_census(sock);
     // ⚠⚠⚠⚠⚠ **THE ONE THAT IS NOBODY'S CHILD, AND THAT STOPPED BEING A FORMALITY ON 2026-08-24.**
     // Until `run-driver-process` defaulted to `on`, exactly one process held this socket in its
     // environment and the first match WAS the daemon. A driver is spawned by the daemon with the
@@ -2662,16 +2662,25 @@ fn daemon_pid(sock: &Path) -> Option<u32> {
     // ⚠ Parentage rather than argv, because `procfs` publishes `parent` and no command line — and
     // it answers the question exactly: a driver's parent is the daemon that spawned it, and the
     // daemon's own parent is the init process that adopted it when its intermediate forked away.
+    //
+    // ⚠⚠ ASKED THROUGH [`term_role`] rather than re-derived here — register item 813. *Whose child
+    // is this* is now a decision with a name and five answers, and this function wants exactly one
+    // of them excluded; spelling the test a second time is how the sentence a failure prints and
+    // the pid a teardown kills would come to disagree about the same process. The parents come off
+    // the census above, so the containment test and the parents are read from ONE walk.
     holding
         .iter()
-        .copied()
-        .find(|&pid| {
-            !sprag_terminal::procfs::parent(pid).is_some_and(|parent| holding.contains(&parent))
+        .find(|process| {
+            !matches!(
+                term_role(**process, &holding, std::process::id()),
+                TermRole::SpawnedByPeer { .. },
+            )
         })
         // ⚠ A daemon whose only run's driver outlived it is still the answer nobody's-child gives,
         // so this fallback is for the shape where the walk saw a torn process table, not for a
         // shape the product produces.
-        .or_else(|| holding.first().copied())
+        .or_else(|| holding.first())
+        .map(|process| process.pid)
 }
 
 /// SIGKILL `pid` and wait for it to be gone — the reboot analogue. Deliberately not a graceful
@@ -3046,6 +3055,11 @@ fn daemon_told(state: &Path, options: &[(&str, &str)]) {
 /// ⚠ Matched on the ENVIRONMENT and not the name, [`daemon_pid`]'s rule and for its reason: a box
 /// can be running the developer's own daemon, and a probe that counted every `sprag-term` would
 /// count theirs.
+///
+/// ⛔⛔⛔ **AN ASSERTION ON THIS NUMBER CARRIES [`term_census_here`]** — register item 813. The count
+/// is a summary and the processes are the evidence; a failure that prints only the summary is one
+/// nobody can attribute, which is what `368c989`'s macOS red cost. Every `assert` on this in this
+/// file says which processes it saw and who started them, and a new one is expected to.
 fn sprag_term_processes(sock: &Path) -> usize {
     sprag_term_pids(sock).len()
 }
@@ -3063,16 +3077,62 @@ fn sprag_term_processes(sock: &Path) -> usize {
 /// daemon, the second because it wants the whole of it. It was spelled a second time inside
 /// `daemon_pid` until register item 802 measured the cost of the copy.
 ///
-/// ⚠ THROUGH `sprag_terminal::procfs`, which walks whatever process table this OS has. This used to
-/// read `/proc` directly — the directory, each entry's `comm`, each entry's `environ` — so the
+/// ⚠ A projection of [`sprag_term_census`] rather than a walk of its own, for that same reason:
+/// register item 813 needed each process's PARENT beside its pid, and a second walk to fetch it
+/// would be *what is on this socket* spelled twice again — the copy 802 had just removed.
+fn sprag_term_pids(sock: &Path) -> Vec<u32> {
+    sprag_term_census(sock)
+        .into_iter()
+        .map(|process| process.pid)
+        .collect()
+}
+
+/// ⛔⛔⛔⛔⛔ **ONE `sprag-term` ON A SOCKET, AND THE PROCESS THAT STARTED IT** — register item 813,
+/// and the half every COUNT in this file was throwing away.
+///
+/// # ⚠⚠⚠⚠⚠ Why the number on its own could not be acted on
+///
+/// `368c989`'s macOS job failed a gate below with `left: 2  right: 1` — two `sprag-term` against
+/// one socket where the premise says one — and *two* was the whole of what that assertion could
+/// say. It is true of at least three different worlds, which want three different repairs:
+///
+/// * a run that drifted onto the OUT-OF-PROCESS driver, which is the drift the gate exists to
+///   catch — the second process is then a CHILD OF THE DAEMON;
+/// * a `--daemon` whose fork intermediate had not exited yet, which has nothing to do with drivers
+///   at all and is register item 85's shape (*a run whose clock is part of the assertion must not
+///   also pay for a process startup*) — the second process is then a CHILD OF THIS TEST;
+/// * something else on this socket entirely, which would be a harness bug and not a product one.
+///
+/// ⚠⚠ **PARENTAGE separates them, and it is not a new idea here.** [`daemon_pid`] already decides
+/// *which of these is the daemon* by exactly this, and its own doc states both halves: a driver's
+/// parent is the daemon that spawned it, and the daemon's own parent is the init process that
+/// adopted it when its intermediate forked away. The fact was being computed and then reduced to a
+/// length, which is the shape register item 802 is about at every one of its addresses.
+///
+/// ⚠ The parent is captured BESIDE the pid, in the same walk, rather than asked for afterwards: a
+/// process table is not an instant, and the interesting member of this set is by hypothesis a
+/// process on its way out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TermProcess {
+    pid: u32,
+    /// `None` when the process was already gone when its parent was asked for. An absence and not
+    /// a zero, because it is itself a reading: whatever this was, it was leaving.
+    parent: Option<u32>,
+}
+
+/// The pids behind [`sprag_term_processes`] WITH their parents — the one walk of the process table
+/// this file does, and the only place *what is on this socket* is spelled.
+///
+/// ⚠ Matched on the ENVIRONMENT and not the name, [`daemon_pid`]'s rule and for its reason: a box
+/// can be running the developer's own daemon, and a probe that took the first `sprag-term` it found
+/// would SIGKILL somebody's terminal (R278, and this file's callers kill what they find).
+///
+/// ⚠⚠ THROUGH `sprag_terminal::procfs`, which walks whatever process table this OS has. This used
+/// to read `/proc` directly — the directory, each entry's `comm`, each entry's `environ` — so the
 /// tests that need it were `#[cfg(target_os = "linux")]` and the restore-after-SIGKILL path was
 /// never once exercised off Linux. Nothing about the QUESTION is Linux-shaped: it is *which process
-/// is named sprag-term and was started beside THIS socket*, and both halves are portable now (R343).
-///
-/// ⚠⚠ The socket is matched from the ENVIRONMENT rather than the name, because a box can be running
-/// the developer's own daemon: a probe that took the first `sprag-term` it found would SIGKILL
-/// somebody's terminal (R278, and this file's callers kill what they find).
-fn sprag_term_pids(sock: &Path) -> Vec<u32> {
+/// is named sprag-term and was started beside THIS socket*, and every half is portable now (R343).
+fn sprag_term_census(sock: &Path) -> Vec<TermProcess> {
     let want = format!("SPRAG_HOST_RPC_SOCK={}", sock.display());
     let me = std::process::id();
     sprag_terminal::procfs::pids_named(sprag_rpc::DAEMON_BIN_NAME)
@@ -3085,7 +3145,389 @@ fn sprag_term_pids(sock: &Path) -> Vec<u32> {
                     .any(|value| value == want.as_bytes())
             })
         })
+        .map(|pid| TermProcess {
+            pid,
+            parent: sprag_terminal::procfs::parent(pid),
+        })
         .collect()
+}
+
+/// The process that adopts a `--daemon`'s forked child once the intermediate exits — pid 1 on Linux
+/// and on macOS, where it is `launchd`.
+///
+/// ⚠ Named rather than written as `1` at the comparison: *the parent is 1* and *the parent is the
+/// init process* are the same fact only because somebody says so, and this is where it is said.
+const INIT_PID: u32 = 1;
+
+/// What ONE member of a [`sprag_term_census`] is, decided from parentage alone.
+///
+/// ⚠⚠⚠ **AN UNRECOGNISED PARENT GETS ITS OWN WORD RATHER THAN THE NEAREST ONE.** Folding it into
+/// [`TermRole::AdoptedByInit`] — the shape it most resembles, a member whose parent is not on this
+/// socket — would make the sentence confidently wrong on the one day anybody reads it. This
+/// workspace's rule is that an unclassified case is RED and never a pass; the analogue for a
+/// sentence is that it is SAID and never glossed.
+///
+/// ⚠⚠ Lifted out of the message so it can be DRIVEN. Register item 803 was two refusals planted
+/// where the harness could never produce them, and the lesson it left is the one applied here: a
+/// branch written for *the next occurrence* has to be run NOW, and it can only be run now if the
+/// decision takes its inputs as values instead of reading the live process table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TermRole {
+    /// Parent is [`INIT_PID`]: a `--daemon` forked and its intermediate exited, leaving this one
+    /// adopted. **The daemon.**
+    AdoptedByInit,
+    /// Parent is another member of the same census — the daemon spawned it
+    /// (`sprag_host::driver_spawn`), which is what a run driven in a process of its own looks like
+    /// from outside.
+    SpawnedByPeer { parent: u32 },
+    /// Parent is the TEST PROCESS: the short-lived intermediate a `--daemon` forks from, still in
+    /// the table. Register item 85's shape — a startup that got into a sample.
+    ForkedByThisTest,
+    /// The parent could not be read at all, which is what a process already leaving looks like.
+    ParentUnreadable,
+    /// None of the above, and said as such.
+    Unclassified { parent: u32 },
+}
+
+/// [`TermRole`] for `process`, against the census it came from and the pid of the test asking.
+///
+/// ⚠ `holding` is the census `process` was found in and not a fresh walk: *its parent is one of
+/// these* has to be asked of the SAME instant, or a driver whose daemon has since gone answers
+/// `Unclassified` and the sentence blames the harness for a race it created itself.
+fn term_role(process: TermProcess, holding: &[TermProcess], this_test: u32) -> TermRole {
+    let Some(parent) = process.parent else {
+        return TermRole::ParentUnreadable;
+    };
+    if holding.iter().any(|peer| peer.pid == parent) {
+        TermRole::SpawnedByPeer { parent }
+    } else if parent == this_test {
+        TermRole::ForkedByThisTest
+    } else if parent == INIT_PID {
+        TermRole::AdoptedByInit
+    } else {
+        TermRole::Unclassified { parent }
+    }
+}
+
+/// One [`TermRole`] in words a person reading a failed assertion can act on.
+fn term_role_sentence(role: TermRole) -> String {
+    match role {
+        TermRole::AdoptedByInit => {
+            "adopted by init, which is what a `--daemon` fork leaves behind: THE DAEMON".to_owned()
+        }
+        TermRole::SpawnedByPeer { parent } => format!(
+            "spawned by {parent}, which holds this socket too: a RUN DRIVER, unless {parent} is \
+             itself an intermediate that has not exited"
+        ),
+        TermRole::ForkedByThisTest => {
+            "still a child of the test process: the INTERMEDIATE a `--daemon` forks from, which has \
+             not exited yet, so a startup is in this sample (register item 85)"
+                .to_owned()
+        }
+        TermRole::ParentUnreadable => {
+            "its parent could not be read, so it was already leaving when it was counted".to_owned()
+        }
+        TermRole::Unclassified { parent } => format!(
+            "parent {parent} is not the test process, not init and not on this socket: \
+             UNCLASSIFIED, which is a red and not a pass"
+        ),
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT A COUNT SAW, SAID PROCESS BY PROCESS** — register item 813's whole repair.
+///
+/// `saw` is the census the count was taken from and `now` is the table as it stands when the
+/// sentence is written; `this_test` is the pid of the process asking.
+///
+/// # ⚠⚠⚠⚠⚠ Why there are TWO censuses and not one
+///
+/// The count that failed is a MAXIMUM over a sampling window, so by the time its assertion fires
+/// the extra process may be gone — and a sentence that re-walked the table would then report one
+/// process and contradict the very number it is explaining. `saw` is therefore carried from the
+/// sample that produced the maximum, and `now` is asked separately so the difference between the
+/// two can be STATED: *it was there and it has gone* is the reading that separates register item
+/// 85's startup from a driver the daemon really is running.
+///
+/// ⚠ Both states are said out loud, never one of them by silence. A renderer that printed nothing
+/// for a process still present would be indistinguishable from one that forgot to look.
+fn term_census_sentence(saw: &[TermProcess], now: &[TermProcess], this_test: u32) -> String {
+    if saw.is_empty() {
+        return format!("no `sprag-term` held this socket at all (this test is pid {this_test})");
+    }
+    let each = saw
+        .iter()
+        .map(|process| {
+            let parent = process
+                .parent
+                .map_or_else(|| "?".to_owned(), |parent| parent.to_string());
+            let still = if now.iter().any(|other| other.pid == process.pid) {
+                "still there when this was written"
+            } else {
+                "GONE by the time this was written"
+            };
+            format!(
+                "pid {} (parent {parent}) -- {}, and {still}",
+                process.pid,
+                term_role_sentence(term_role(*process, saw, this_test)),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(
+        "{} `sprag-term` against this socket when the count was taken (this test is pid \
+         {this_test}): {each}",
+        saw.len(),
+    )
+}
+
+/// The WIDER of two censuses — how a sample of a maximum is kept instead of a number.
+///
+/// ⛔⛔⛔ A function rather than the two lines it replaces, because the reason is a claim and this
+/// workspace's rule is that a reason written in prose is one nobody measures. The claim is that an
+/// assertion about *how many were ever here at once* must be able to show WHICH processes those
+/// were; folding the samples into a `max` of their lengths is precisely what made `368c989`'s
+/// macOS red unattributable, and it is a two-character edit away from coming back.
+///
+/// ⚠ Ties keep the EARLIER sample. The first moment the maximum was reached is the one being
+/// explained; a later sample of the same size is a different instant with nothing more to say.
+fn widest_census(most: Vec<TermProcess>, seen: Vec<TermProcess>) -> Vec<TermProcess> {
+    if seen.len() > most.len() { seen } else { most }
+}
+
+/// [`term_census_sentence`] for a count taken RIGHT HERE — one walk, used as both censuses.
+///
+/// ⚠ The form for an assertion that reads the table and judges it in the same breath. The sampled
+/// form, where the two censuses genuinely differ, is spelled at its one call site.
+fn term_census_here(sock: &Path) -> String {
+    let seen = sprag_term_census(sock);
+    term_census_sentence(&seen, &seen, std::process::id())
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERY WAY A `sprag-term` CAN BE ON A SOCKET HAS ITS OWN WORD, AND THE WORD REACHES
+/// THE SENTENCE** — register item 813's diagnosis, DRIVEN, on the day it was written.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a test and not a comment about the next occurrence
+///
+/// Register item 803 planted two refusals in a hook *for the next time*, and neither branch had
+/// ever executed: the harness always fed the real thing, so the states they were written for were
+/// unreachable. The lesson it left is the one applied here — **a branch written for the next
+/// occurrence has to be run now** — and it can only be run now if the decision takes VALUES instead
+/// of walking the live process table. That is why [`term_role`] has a `holding` parameter and a
+/// `this_test` parameter rather than calling `sprag_term_census` and `std::process::id()` itself.
+///
+/// ⚠ The failure this serves happened once, on macOS, on a machine this suite does not run on. A
+/// diagnosis that waits for its own next red to be exercised is a diagnosis nobody has checked.
+#[test]
+fn a_census_names_every_way_a_sprag_term_can_be_on_a_socket() {
+    // Not this process's real pid: the arm is about the DECISION, and a fixture that borrowed the
+    // subject's own identity would be reading the harness back to itself (the mutation trap register
+    // item 809 named — never make the subject the fixture).
+    const TEST: u32 = 4_242;
+
+    // ── ADOPTED BY INIT: what a `--daemon` fork leaves behind, i.e. the daemon.
+    let daemon = TermProcess {
+        pid: 700,
+        parent: Some(INIT_PID),
+    };
+    assert_eq!(
+        term_role(daemon, &[daemon], TEST),
+        TermRole::AdoptedByInit,
+        "a process whose parent is init is the daemon",
+    );
+
+    // ── SPAWNED BY A PEER: the daemon started it, which is a run driver seen from outside.
+    let driver = TermProcess {
+        pid: 701,
+        parent: Some(700),
+    };
+    assert_eq!(
+        term_role(driver, &[daemon, driver], TEST),
+        TermRole::SpawnedByPeer { parent: 700 },
+        "a process whose parent also holds this socket was spawned by it",
+    );
+
+    // ── FORKED BY THIS TEST: the intermediate a `--daemon` forks from, still in the table.
+    let intermediate = TermProcess {
+        pid: 702,
+        parent: Some(TEST),
+    };
+    assert_eq!(
+        term_role(intermediate, &[intermediate], TEST),
+        TermRole::ForkedByThisTest,
+        "a process still parented to the test process is a startup, not a driver",
+    );
+
+    // ── PARENT UNREADABLE: what a process already leaving looks like from here.
+    let leaving = TermProcess {
+        pid: 703,
+        parent: None,
+    };
+    assert_eq!(
+        term_role(leaving, &[leaving], TEST),
+        TermRole::ParentUnreadable,
+        "a parent that could not be read is an absence and not a zero",
+    );
+
+    // ⛔⛔⛔ AND THE ONE THAT IS NONE OF THOSE KEEPS ITS OWN WORD. Folding it into `AdoptedByInit` —
+    // the shape it most resembles, a member whose parent is not on this socket — is the specific
+    // mistake this clause exists to refuse. Unclassified is red here, never a pass.
+    let stranger = TermProcess {
+        pid: 704,
+        parent: Some(9_001),
+    };
+    assert_eq!(
+        term_role(stranger, &[stranger], TEST),
+        TermRole::Unclassified { parent: 9_001 },
+        "a parent that is neither the test, nor init, nor on this socket is UNCLASSIFIED",
+    );
+
+    // ── AND EVERY WORD REACHES THE SENTENCE, because a decision nothing renders is a decision
+    //    nobody reads — which is the whole complaint against the count this replaced.
+    let all = [daemon, driver, intermediate, leaving, stranger];
+    let said = term_census_sentence(&all, &all, TEST);
+    for (pid, parent, word) in [
+        (700, "1", "THE DAEMON"),
+        (701, "700", "RUN DRIVER"),
+        (702, "4242", "INTERMEDIATE"),
+        (703, "?", "already leaving"),
+        (704, "9001", "UNCLASSIFIED"),
+    ] {
+        let clause = said
+            .split("; ")
+            .find(|part| part.contains(&format!("pid {pid} (")))
+            .unwrap_or_else(|| panic!("the sentence says nothing about pid {pid}: {said}"));
+        assert!(
+            clause.contains(&format!("pid {pid} (parent {parent})")),
+            "the clause for {pid} names its parent: {clause}",
+        );
+        assert!(
+            clause.contains(word),
+            "the clause for {pid} says what it is ({word}): {clause}",
+        );
+    }
+    assert!(
+        said.contains("5 `sprag-term`") && said.contains("this test is pid 4242"),
+        "the sentence says how many were counted and who was counting: {said}",
+    );
+
+    // ── AN EMPTY CENSUS IS A SENTENCE TOO, not an empty string a reader would take for a bug in
+    //    the reporter rather than an answer about the socket.
+    let none: [TermProcess; 0] = [];
+    let quiet = term_census_sentence(&none, &none, TEST);
+    assert!(
+        quiet.contains("no `sprag-term`") && quiet.contains("4242"),
+        "nothing on the socket is said out loud: {quiet}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **THE TWO WORLDS THAT BOTH COUNT TWO DO NOT READ THE SAME** — register item 813's own
+/// done-when, and the property the number could never have.
+///
+/// # ⚠⚠⚠⚠ The premise, asserted rather than described
+///
+/// `368c989`'s macOS job printed `left: 2  right: 1`. Two is what a run that drifted onto the
+/// out-of-process driver looks like AND what a `--daemon` whose intermediate is still in the sample
+/// looks like, so the number cannot be acted on and the round that reads it can only guess. This
+/// arm asserts both halves: that the two shapes have the same COUNT (so the old assertion really
+/// was blind) and that they produce different SENTENCES (so the new one is not).
+///
+/// ⚠ And whether the extra process is STILL THERE, which is the reading that separates them when
+/// the parentage does not: a maximum sampled over ninety seconds can outlive what it counted.
+#[test]
+fn a_census_tells_a_run_driver_from_a_startup_and_says_which_of_them_has_gone() {
+    const TEST: u32 = 4_242;
+
+    let daemon = TermProcess {
+        pid: 700,
+        parent: Some(INIT_PID),
+    };
+    let driver = TermProcess {
+        pid: 701,
+        parent: Some(700),
+    };
+    let drift = [daemon, driver];
+
+    let intermediate = TermProcess {
+        pid: 800,
+        parent: Some(TEST),
+    };
+    let forked = TermProcess {
+        pid: 801,
+        parent: Some(800),
+    };
+    let startup = [intermediate, forked];
+
+    assert_eq!(
+        drift.len(),
+        startup.len(),
+        "THE PREMISE: these two worlds have the same count, which is why a count could not name \
+         either of them",
+    );
+
+    let drifted = term_census_sentence(&drift, &drift, TEST);
+    let started = term_census_sentence(&startup, &startup, TEST);
+    assert_ne!(
+        drifted, started,
+        "the two shapes a count cannot separate must not read the same either",
+    );
+    assert!(
+        started.contains("INTERMEDIATE") && started.contains("register item 85"),
+        "the startup world names itself and the item whose rule it is: {started}",
+    );
+    assert!(
+        !drifted.contains("INTERMEDIATE"),
+        "the drift world does not claim a startup it has no evidence of: {drifted}",
+    );
+    assert!(
+        drifted.contains("RUN DRIVER"),
+        "the drift world names what it found: {drifted}",
+    );
+
+    // ── STILL THERE, OR GONE. Both said out loud: a renderer that printed nothing for a process
+    //    still present could not be told from one that forgot to look.
+    let alone = [daemon];
+    let outlived = term_census_sentence(&drift, &alone, TEST);
+    let about = |pid: u32| -> String {
+        outlived
+            .split("; ")
+            .find(|part| part.contains(&format!("pid {pid} (")))
+            .unwrap_or_else(|| panic!("no clause about pid {pid}: {outlived}"))
+            .to_owned()
+    };
+    assert!(
+        about(701).contains("GONE by the time this was written"),
+        "a process in the sample and not in the table now is reported gone: {}",
+        about(701),
+    );
+    assert!(
+        about(700).contains("still there when this was written"),
+        "and one that is still there is reported so, rather than by silence: {}",
+        about(700),
+    );
+
+    // ── AND THE SAMPLE THE ASSERTION EXPLAINS IS THE WIDEST ONE, whichever order it arrived in.
+    //    This is the half that would rot quietly: a `max` of two lengths passes every arm above and
+    //    still leaves a failure with nothing to name.
+    assert_eq!(
+        widest_census(vec![daemon], drift.to_vec()),
+        drift.to_vec(),
+        "a wider sample replaces a narrower one",
+    );
+    assert_eq!(
+        widest_census(drift.to_vec(), vec![daemon]),
+        drift.to_vec(),
+        "and a narrower one arriving later does NOT replace it -- the maximum is what is kept",
+    );
+    assert_eq!(
+        widest_census(drift.to_vec(), startup.to_vec()),
+        drift.to_vec(),
+        "a tie keeps the earlier sample, which is the moment the maximum was first reached",
+    );
+    assert_eq!(
+        widest_census(Vec::new(), Vec::new()),
+        Vec::new(),
+        "and nothing sampled stays nothing, rather than becoming a claim about one process",
+    );
 }
 
 /// The pids of the DRIVER processes against `sock` — every `sprag-term` holding this endpoint
@@ -4010,7 +4452,8 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
         sprag_term_processes(&sock),
         1,
         "⚠⚠ THE PREMISE: before any run there is exactly one `sprag-term` against this socket — \
-         the daemon. If this is not 1 the count below says nothing about drivers.",
+         the daemon. If this is not 1 the count below says nothing about drivers. {}",
+        term_census_here(&sock),
     );
 
     start_a_run_that_cannot_converge(&sock, "work");
@@ -4023,8 +4466,9 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
          crossing the log, its counters, position and walk reaching the daemon, a boot putting it \
          back on a driver — serves the out-of-process path, and a switch that does not reach it is \
          a path nothing can be pointed at. Found {} `sprag-term` process(es) against this socket, \
-         and a driven run makes two.",
+         and a driven run makes two. {}",
         sprag_term_processes(&sock),
+        term_census_here(&sock),
     );
 
     // ── THE CONTROL: a daemon told `off` still drives on a thread ────────────────────────────
@@ -4057,7 +4501,8 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
         !wait_for(Duration::from_secs(5), || sprag_term_processes(&sock) > 1),
         "⚠⚠⚠ THE CONTROL FAILED: a daemon told `run-driver-process = off` started a driver \
          PROCESS anyway. That switch is the way back from the new default, and a switch that does \
-         nothing is worse than no switch — it is a promise nobody is keeping.",
+         nothing is worse than no switch — it is a promise nobody is keeping. {}",
+        term_census_here(&sock),
     );
     drop(off);
     drop(guard);
@@ -4122,7 +4567,8 @@ fn a_daemon_nobody_configured_drives_its_runs_in_processes_of_their_own() {
         sprag_term_processes(&sock),
         1,
         "⚠⚠ THE PREMISE: before any run there is exactly one `sprag-term` against this socket — \
-         the daemon. If this is not 1 the count below says nothing about drivers.",
+         the daemon. If this is not 1 the count below says nothing about drivers. {}",
+        term_census_here(&sock),
     );
 
     start_a_run_that_cannot_converge(&sock, "work");
@@ -4135,8 +4581,9 @@ fn a_daemon_nobody_configured_drives_its_runs_in_processes_of_their_own() {
          somebody's terminals, and a panic in a driver takes the panes down with it. The switch \
          has worked in both directions since 2026-08-24; what this gate holds is that a person who \
          sets nothing gets the unfused one. Found {} `sprag-term` process(es) against this socket, \
-         and a driven run makes two.",
+         and a driven run makes two. {}",
         sprag_term_processes(&sock),
+        term_census_here(&sock),
     );
     drop(guard);
 }
@@ -13627,7 +14074,9 @@ fn a_signalled_daemon_holding_a_live_run_is_gone_promptly() {
         1,
         "⚠⚠ THE PREMISE: a daemon told `run-driver-process = off` drives its runs on threads of \
          its own, so exactly one `sprag-term` holds this socket while the run is live. More than \
-         one means this gate is measuring the out-of-process path its partner exists for.",
+         one means this gate is measuring the out-of-process path its partner exists for -- or \
+         that something else is on this socket, which the census tells apart: {}",
+        term_census_here(&sock),
     );
 
     let pid = daemon_pid(&sock).expect("the daemon this test spawned");
@@ -13751,8 +14200,9 @@ fn a_signalled_daemon_whose_run_is_driven_elsewhere_is_gone_promptly() {
         wait_for(Duration::from_secs(20), || sprag_term_processes(&sock) == 2),
         "⚠⚠ THE PREMISE: this run is driven in a process of its own, so there are two `sprag-term` \
          against this socket. Found {}, and the timing below would then be a measurement of a \
-         daemon holding nothing.",
+         daemon holding nothing. {}",
         sprag_term_processes(&sock),
+        term_census_here(&sock),
     );
 
     let pid = daemon_pid(&sock).expect("the daemon this test spawned");
@@ -14677,9 +15127,18 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
         // ⚠⚠⚠ SAMPLED WHILE THE RUN IS ALIVE, because that is the only window in which *driven on
         // a thread* is observable at all: the pin above is this gate's premise, and a premise
         // nothing reads is a comment. The MAXIMUM over the whole wait, not one reading.
-        let mut most = 0;
+        //
+        // ⛔⛔⛔⛔⛔ **AND THE CENSUS IS KEPT, NOT THE NUMBER** — register item 813. This was
+        // `most.max(sprag_term_processes(sock))`, and when `368c989`'s macOS job read 2 the only
+        // thing the failure could say was *2*. The processes are the evidence and the count is the
+        // summary: keeping the summary threw the evidence away, and the extra process is by
+        // hypothesis a transient one, so re-walking the table at the assertion below would find it
+        // gone and report a number that contradicts the failure. What is carried is the SAMPLE THAT
+        // PRODUCED THE MAXIMUM; `term_census_sentence` is handed a fresh walk beside it so *it was
+        // there and it has gone* can be said rather than guessed.
+        let mut most: Vec<TermProcess> = Vec::new();
         let finished = wait_for(Duration::from_secs(90), || {
-            most = most.max(sprag_term_processes(sock));
+            most = widest_census(std::mem::take(&mut most), sprag_term_census(sock));
             last = conn
                 .call(
                     "scene/query",
@@ -14695,10 +15154,14 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
         });
         assert!(finished, "the run never finished: {last}");
         assert_eq!(
-            most, 1,
+            most.len(),
+            1,
             "⚠⚠ THE PREMISE: a daemon told `run-driver-process = off` drives on threads of its \
-             own, so one `sprag-term` holds this socket for the whole of a run. {most} means this \
-             gate has drifted onto the out-of-process path its partner exists for (item 544).",
+             own, so one `sprag-term` holds this socket for the whole of a run. {} means this gate \
+             has drifted onto the out-of-process path its partner exists for (item 544) -- OR that \
+             something else was in the sample, which is what the census says: {}",
+            most.len(),
+            term_census_sentence(&most, &sprag_term_census(sock), std::process::id()),
         );
         last.as_array()
             .and_then(|runs| runs.last().cloned())
@@ -15008,8 +15471,9 @@ fn a_supervised_run_driven_elsewhere_waits_for_its_person_and_goes_on() {
         wait_for(Duration::from_secs(20), || sprag_term_processes(&sock) == 2),
         "⚠⚠ THE PREMISE: this run is driven in a process of its own, so there are two `sprag-term` \
          against this socket. Found {}, and everything below would then be a measurement of the \
-         in-process driver its neighbour already gates.",
+         in-process driver its neighbour already gates. {}",
         sprag_term_processes(&sock),
+        term_census_here(&sock),
     );
 
     // ⛔⛔⛔⛔⛔ **THE INSTRUMENT, AND WHY IT IS READ AFTER THE RUN HAS ENDED — register item 665.**
