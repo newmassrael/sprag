@@ -502,7 +502,7 @@ fn pool_sentence(pool: crate::procfs::PtyPool) -> String {
     };
     format!(
         "{host}; {}",
-        ours_sentence(OPEN_HERE.live(), OPEN_HERE.opened())
+        ours_sentence(OPEN_HERE.live(), OPEN_HERE.opened(), pool.max)
     )
 }
 
@@ -543,14 +543,53 @@ fn pool_sentence(pool: crate::procfs::PtyPool) -> String {
 /// ⚠ The sentence STATES the two questions rather than answering them: this code cannot see the
 /// host's reuse policy, and a sentence that picked a side would be the completing-from-memory this
 /// whole family of arms exists to stop.
+///
+/// # ⛔⛔⛔⛔⛔ AND IT DOES THE ONE PIECE OF ARITHMETIC A READER OTHERWISE DOES BY HAND
+///
+/// Register item 814's second reading. The two numbers above were said and the reader still had to
+/// compare `opened` against the ceiling in the CLAUSE BEFORE THIS ONE to learn anything — and
+/// **measured 2026-09-01, that is exactly what happened**: `6633099`'s macOS job printed the
+/// balanced sentence at `holding 30 / opened 422 / at most 511`, and settling it took an `strace`
+/// of the whole suite on another machine (**847 opens in one process**, which is 1.66× that
+/// namespace). The sentence had every number it needed and made the reader do the subtraction.
+///
+/// So `ceiling` comes in and there are THREE readings, not one:
+///
+/// | what is true | what it means |
+/// | --- | --- |
+/// | `opened >= ceiling` | this process has taken the whole namespace at least once over, so on a host that does not return a closed pseudoterminal promptly **we are sufficient on our own** |
+/// | `opened < ceiling` | our churn cannot have used it up by itself, whatever the reuse policy — somebody else is in it |
+/// | ceiling unknown | said outright, because *not published* is not *not exceeded* |
+///
+/// ⚠⚠ IT STILL PICKS NO SIDE ABOUT THE HOST'S REUSE POLICY, which is the thing this code cannot
+/// see. What it now says is the CONDITIONAL — *if this host does not recycle, this was enough* —
+/// which is a fact about our own demand and is checkable here.
+///
+/// ⚠ The unknown arm is a THIRD sentence rather than a fall-through to the second, this
+/// workspace's rule that an unclassified case is stated and never glossed: a reader told *our churn
+/// cannot have used it up* about a ceiling nobody published has been told something nobody knows.
 #[must_use]
-fn ours_sentence(live: u64, opened: u64) -> String {
+fn ours_sentence(live: u64, opened: u64, ceiling: Option<u64>) -> String {
+    let reading = match ceiling {
+        Some(ceiling) if opened >= ceiling => format!(
+            " — and {opened} is the whole of this host's {ceiling}-place namespace or more, so if \
+             it does not give a closed pseudoterminal straight back THIS PROCESS ALONE was enough \
+             and no other process need be involved"
+        ),
+        Some(ceiling) => format!(
+            " — and {opened} is under this host's {ceiling}, so our own churn cannot have used the \
+             namespace up whatever its reuse policy: something else was holding it"
+        ),
+        None => " — and this host does not publish how many it allows, so whether that history \
+                 could have used its namespace up cannot be said here"
+            .to_owned(),
+    };
     format!(
         "this process was holding {live} of them itself and had opened {opened} since it started, \
          which cannot rule exhaustion out (another process may hold the rest) but does say how \
          much of any of it was ours — and the two ask different things: the first is what we were \
          using when it refused, the second is what we could have used up if this host does not \
-         give a closed pseudoterminal straight back"
+         give a closed pseudoterminal straight back{reading}"
     )
 }
 
@@ -1288,7 +1327,7 @@ mod tests {
                  Got: {sentence:?}",
             );
         }
-        let ours = ours_sentence(3, 3);
+        let ours = ours_sentence(3, 3, Some(100));
         assert!(
             ours.contains('3') && ours.contains("cannot rule exhaustion out"),
             "⛔⛔⛔⛔ a count without its limit is worse than none: three of a hundred reads as \
@@ -1296,8 +1335,8 @@ mod tests {
              Got: {ours:?}",
         );
         assert_ne!(
-            ours_sentence(0, 0),
-            ours_sentence(120, 120),
+            ours_sentence(0, 0, Some(100)),
+            ours_sentence(120, 120, Some(100)),
             "⚠ and the count must actually be IN the sentence, not a constant beside it",
         );
 
@@ -1308,7 +1347,7 @@ mod tests {
         // host does not give a CLOSED pseudoterminal straight back and what mattered was the
         // hundreds this suite had opened and dropped. They want opposite repairs, and the live
         // count alone reads the same in both.
-        let churned = ours_sentence(46, 800);
+        let churned = ours_sentence(46, 800, Some(511));
         assert!(
             churned.contains("46") && churned.contains("800"),
             "⛔⛔⛔⛔⛔ ITEM 814: a process holding 46 and having opened 800 is the whole finding, \
@@ -1316,11 +1355,61 @@ mod tests {
              roads at random. Got: {churned:?}",
         );
         assert_ne!(
-            ours_sentence(46, 46),
-            ours_sentence(46, 800),
+            ours_sentence(46, 46, Some(511)),
+            ours_sentence(46, 800, Some(511)),
             "⛔⛔⛔ ITEM 814: the same live count with a different history must not read the same. \
              *46 and only ever 46* says the pool was somebody else's; *46 of 800 taken* says this \
              suite's own churn could have used a 511-name space up on its own.",
+        );
+
+        // ── ⛔⛔⛔⛔⛔ AND THE SENTENCE DOES THE SUBTRACTION — register item 814's second reading ──
+        //
+        // ⚠⚠⚠⚠⚠ MEASURED, AND THAT MEASUREMENT IS WHY THIS ARM EXISTS. `6633099`'s macOS job
+        // printed the balanced sentence at **holding 30 / opened 422 / at most 511** and settling
+        // it took an `strace` of the whole suite on another machine: **847 opens in one process**,
+        // 1.66× that namespace. Every number was already in the sentence and the reader still had
+        // to compare two of them by hand.
+        //
+        // ⚠ THREE READINGS DRIVEN AS VALUES (register item 803): over the ceiling, under it, and
+        // no ceiling published — which is the arm macOS's own answer lands on for the IN-USE half
+        // and must not be folded into either of the other two.
+        let over = ours_sentence(30, 847, Some(511));
+        assert!(
+            over.contains("THIS PROCESS ALONE was enough"),
+            "⛔⛔⛔⛔⛔ ITEM 814: this process had taken 847 of a 511-place namespace and the \
+             sentence still reads as though the two worlds were open. They are not: on a host that \
+             does not recycle, our own history is sufficient and no other process need be \
+             involved. Got: {over:?}",
+        );
+        let under = ours_sentence(30, 422, Some(511));
+        assert!(
+            under.contains("something else was holding it")
+                && !under.contains("THIS PROCESS ALONE"),
+            "⚠⚠⚠ THE CONTROL: under the ceiling the opposite reading is the true one, and a \
+             sentence that shouted either way whatever the numbers said would be a constant \
+             wearing a measurement's clothes. Got: {under:?}",
+        );
+        let unknown = ours_sentence(30, 847, None);
+        assert!(
+            unknown.contains("does not publish how many it allows")
+                && !unknown.contains("THIS PROCESS ALONE")
+                && !unknown.contains("something else was holding it"),
+            "⛔⛔ ITEM 814 / rule 6: a host that publishes no ceiling is a THIRD state, and folding \
+             it into either answer tells a reader something nobody knows. Got: {unknown:?}",
+        );
+        // ⚠⚠⚠⚠⚠ AND THE BOUNDARY IS THE CEILING ITSELF — asserted by which ARM each side takes,
+        // never by the two sentences DIFFERING. Measured in this round: an `assert_ne!` here was
+        // satisfied by a mutation that moved the boundary, because the two sentences quote
+        // different numbers and so differ whichever arm they came from. That is register item 775's
+        // dead line, and it went green on the mutation it was written to catch.
+        let exactly = ours_sentence(30, 511, Some(511));
+        let one_short = ours_sentence(30, 510, Some(511));
+        assert!(
+            exactly.contains("THIS PROCESS ALONE was enough")
+                && one_short.contains("something else was holding it"),
+            "⚠⚠ TAKING EXACTLY THE WHOLE NAMESPACE is the first count that is enough on its own — \
+             a boundary one place out reports the run that used every name as though it had used \
+             none of them. exactly={exactly:?} one_short={one_short:?}",
         );
 
         // ── ⛔⛔⛔ AND THE LEDGER ITSELF, which the sentence is only worth what it is ──────────
