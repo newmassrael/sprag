@@ -872,6 +872,56 @@ impl RunStatus {
 
 sprag_vt::wire_words!(RunStatus: wire_str);
 
+/// ⛔⛔⛔⛔⛔ **EVERY CLOSED VOCABULARY A RUN'S ANSWER CARRIES, NAMED BESIDE WHAT IT ANSWERS** —
+/// register item 773, and what `sprag words` prints.
+///
+/// # ⚠⚠⚠⚠⚠ Why a product that cannot say its own words gets copied into a document
+///
+/// Item 773's subject is a skill that had grown three vocabulary TABLES with *"ask the product, not
+/// this table"* written directly above them. The tables were deleted and replaced with three `grep`
+/// commands into this workspace's source — which is better and is still a copy: an address ages the
+/// moment a symbol moves, silently, and **it cannot be run at all from another repository**, which
+/// is where that skill's own last section says the loop is driven from.
+///
+/// A word this build speaks is a fact this build holds. Asked of the binary, it needs no source
+/// tree, no daemon and no cwd, and it cannot go stale — which is the whole of why the answer moved
+/// here rather than into a better-written table somewhere else.
+///
+/// ⚠⚠ **EACH ENTRY IS THE TYPE'S OWN LIST AND NEVER A RETYPED ONE.** A hand-written array here
+/// would be the fourth copy of the thing this exists to retire, and the one a new arm is left out
+/// of. `sprag_gate`'s `every_closed_wire_vocabulary_is_published_or_classified` walks this
+/// workspace for the rest and refuses a set that is neither here nor classified out with a reason.
+///
+/// ⚠ The SENTENCE beside each is this table's own and is not a copy of anything: what a reader
+/// needs is which question the word answers, and no type carries that.
+pub const RUN_VOCABULARIES: &[(&str, &str, &[&str])] = &[
+    // ⚠⚠ THE NAMES ARE THE ONES `wire.rs`'s VALUE-SPACE PIN ALREADY SPELLS (`run_status:running`,
+    // `outcome:converged`, …), not prettier ones. `sprag_gate`'s
+    // `every_vocabulary_a_peer_decodes_can_be_asked_of_this_build` holds the two sets together by
+    // NAME, and a mapping between two spellings of one vocabulary is exactly the copy this table
+    // exists to retire.
+    (
+        "run_status",
+        "whether a run is still going, and how it left if not",
+        &RunStatus::WIRE_WORDS,
+    ),
+    (
+        "outcome",
+        "why a run that stopped stopped",
+        sprag_plugin::OutcomeState::WIRE_WORDS,
+    ),
+    (
+        "verdict",
+        "what one step of a run decided",
+        sprag_plugin::Verdict::WIRE_WORDS,
+    ),
+    (
+        "refusal",
+        "why a run is asking for a person instead of driving",
+        sprag_plugin::Refusal::WIRE_WORDS,
+    ),
+];
+
 sprag_vt::closed_set! {
     /// WHICH BUNDLED PLUGIN a `run` names — the `plugin` discriminator's whole vocabulary.
     ///
@@ -6494,6 +6544,100 @@ mod tests {
     use sprag_plugin::PaneAccess;
     use sprag_terminal::CommandBuilder;
     use std::time::Instant;
+
+    /// ⛔⛔⛔⛔⛔ **WHAT `sprag words` PRINTS IS THE TYPE'S OWN LIST AND NEVER A RETYPED ONE** —
+    /// register item 773, and the property that makes asking the product better than asking a table.
+    ///
+    /// # The disease this is the cure for
+    ///
+    /// Item 773's subject is a skill that printed three vocabulary TABLES with *"ask the product,
+    /// not this table"* written directly above them. **All three aged.** A table here — inside the
+    /// product, in the answer to *what are your words* — would be the same defect with a shorter
+    /// walk to the truth, and the shorter walk is what would make nobody check.
+    ///
+    /// ⚠⚠ SO THE ASSERTION IS IDENTITY WITH THE TYPE, not "contains" or "is non-empty": a list that
+    /// dropped a word would still be a plausible answer, and the reader it is wrong for is the one
+    /// who concludes this build has no such word.
+    ///
+    /// ⚠ The four names are asserted DISTINCT for the reason `words NAME` exists: two entries under
+    /// one name would print twice for a caller who asked for one, and the second would be
+    /// unreachable by any name at all.
+    #[test]
+    fn every_vocabulary_this_build_can_be_asked_for_is_its_types_own_list() {
+        let published: Vec<&str> = RUN_VOCABULARIES.iter().map(|(name, _, _)| *name).collect();
+        let mut distinct = published.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            published.len(),
+            "⚠⚠ two vocabularies share a name, so `sprag words <that name>` prints both and \
+             neither can be asked for on its own: {published:?}",
+        );
+
+        // ⚠⚠⚠ THE PAIRS ARE SPELLED HERE AND THE WORDS ARE NOT. This gate has to name which type
+        // each entry claims to be — that is the claim — and it must never carry the words, which is
+        // the thing under test. A gate holding its own copy of the list would go green on a table
+        // that had drifted, together, from the types.
+        let owned: &[(&str, &[&str])] = &[
+            ("run_status", &RunStatus::WIRE_WORDS),
+            ("outcome", sprag_plugin::OutcomeState::WIRE_WORDS),
+            ("verdict", sprag_plugin::Verdict::WIRE_WORDS),
+            ("refusal", sprag_plugin::Refusal::WIRE_WORDS),
+        ];
+        assert_eq!(
+            owned.len(),
+            RUN_VOCABULARIES.len(),
+            "⛔⛔⛔ ITEM 773: a vocabulary joined `RUN_VOCABULARIES` and this gate has no type to \
+             hold it to, so `sprag words` is publishing a list nothing checks — which is the table \
+             this whole item exists to retire, moved indoors. Published: {published:?}",
+        );
+
+        for (name, words) in owned {
+            let (_, answers, said) = RUN_VOCABULARIES
+                .iter()
+                .find(|(published, _, _)| published == name)
+                .unwrap_or_else(|| panic!("`{name}` is published by `sprag words`"));
+            assert_eq!(
+                said, words,
+                "⛔⛔⛔⛔⛔ ITEM 773: `sprag words {name}` answers a list that is not the type's. A \
+                 person asking the product what its words are gets a copy, and a copy is what the \
+                 skill's three deleted tables were — every one of which aged, which is why this \
+                 verb exists at all.",
+            );
+            assert!(
+                !answers.is_empty(),
+                "⚠⚠ `{name}` is printed with no sentence saying which question it answers, and the \
+                 words alone are what a reader already could not decode — `converged` is an \
+                 outcome AND a verdict, and only the sentence separates them",
+            );
+        }
+    }
+
+    /// ⚠⚠⚠ **AND A NAME THIS BUILD DOES NOT SPEAK IS A REFUSAL THAT SAYS WHAT IT DOES** — register
+    /// item 773, and this workspace's rule 6 at the one door a person types into.
+    ///
+    /// Silence would be read as *this build has no such vocabulary*, which is the same sentence a
+    /// typo produces. The refusal names the four so the next attempt is a correction rather than a
+    /// second guess — and it is asserted to name them ALL, because a message listing some of them
+    /// sends a reader back to the source tree this verb exists to make unnecessary.
+    #[test]
+    fn a_vocabulary_this_build_does_not_speak_is_refused_by_name_and_told_what_there_is() {
+        let known: Vec<&str> = RUN_VOCABULARIES.iter().map(|(name, _, _)| *name).collect();
+        // The message this gate holds is composed by the CLI, so what is checked here is the fact
+        // the CLI composes it FROM — a name nobody published — and the list it must be able to say.
+        assert!(
+            !known.contains(&"outcomes"),
+            "⚠⚠ THE PREMISE: the name this gate offers as unknown must really be unknown, or the \
+             refusal it is about is never reached. Known: {known:?}",
+        );
+        for name in &known {
+            assert!(
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "⚠ a vocabulary a person has to TYPE must be typeable: {name:?}",
+            );
+        }
+    }
 
     /// ⛔⛔⛔⛔⛔ **FOUR WAYS A BOOT CAN FAIL TO PUT A RUN BACK, FOUR SENTENCES, AND THE TWO THAT
     /// SHARE A SHAPE ARE THE ONES A READER MOST NEEDS SPLIT** — register item 771, at

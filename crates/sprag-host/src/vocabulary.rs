@@ -245,6 +245,8 @@ pub enum Verb {
     Help,
     /// `doctor` — what is WRONG with the machine the panes run on.
     Doctor,
+    /// `words` — the closed vocabularies a run's answer speaks, asked of this build.
+    Words,
     /// `show-grammar` — HOW TO CALL the daemon's own verbs, asked of the daemon.
     ShowGrammar,
     /// `detach-client` — give the terminal back, leave the session running.
@@ -576,7 +578,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 69] = [
+    pub const ALL: [Self; 70] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -640,6 +642,7 @@ impl Verb {
         Self::Version,
         Self::Help,
         Self::Doctor,
+        Self::Words,
         Self::ShowGrammar,
         Self::DetachClient,
         Self::SendPrefix,
@@ -1260,6 +1263,21 @@ impl Verb {
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Tools(&["machine_health"]),
             ),
+            // ⛔⛔⛔⛔⛔ **WHAT THIS BUILD'S RUN ROWS SPEAK, ASKED OF THE BUILD** — register item
+            // 773. It needs NO DAEMON, `list-keys`'s reason one axis over: a closed vocabulary is
+            // compiled in, so a person reading a finished run's word can be answered on a machine
+            // whose daemon is down and from a directory that is not this tree.
+            //
+            // ⚠ NOT BOUND TO A KEY and NOT AN AGENT TOOL, for the reason every answering verb here
+            // carries: this client has no view for it, and an agent reading a run gets the words in
+            // the row itself rather than by asking twice.
+            Self::Words => (
+                "words",
+                Group::Tool,
+                Shell::Runs("[NAME]"),
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::NotBuilt,
+            ),
             // THE DOOR ONTO THE WIRE'S OWN GRAMMAR, and the reason it is a verb rather than a
             // document: it ASKS THE DAEMON. herdr's equivalent (`herdr api schema`) prints a JSON
             // Schema a test wrote into its docs and the binary `include_str!`'d — so it describes
@@ -1687,7 +1705,11 @@ mod tests {
             // ⚠ `hold-run` and `resume-run` (register item 9) join the middle column: a supervising
             // agent holding another run while it reads that run's pane is the same legitimate ask
             // `stand-down`'s row records, and the mouth has no tool for it yet.
-            (38, 10, 21),
+            // ⚠ REGISTER ITEM 773: `words` is the ELEVENTH not-built. An agent reading a run gets
+            // the vocabulary in the row it is already holding, so asking twice would be a second
+            // authority on one fact — but *what are your words* is a legitimate ask (a tool could
+            // answer it once and cache), and nobody has built it.
+            (38, 11, 21),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1717,6 +1739,10 @@ mod tests {
                 "list-keys",
                 "show-options",
                 "version",
+                // ⚠ REGISTER ITEM 773: an agent reading a run already holds the words in the row,
+                // so a tool would be a second authority on one fact — but *what does this build
+                // speak* is still a legitimate ask, and nothing answers it on that mouth.
+                "words",
             ],
             "the agent surface's remaining gap, by name",
         );
@@ -1850,7 +1876,10 @@ mod tests {
             // ⚠ `stand-down` is the 59th — the second thing a person can say to a run, and the
             // first that lets it keep the turn it is in the middle of.
             // ⚠ Both of item 9's verbs are a shell's to say and are dispatched, so they land here.
-            (61, 3, 5),
+            // ⚠ REGISTER ITEM 773: `words` is the 62nd, and it is the one shell verb here whose
+            // whole purpose is that a shell can reach it with NO DAEMON and from any directory —
+            // the two ways the answer it replaces (three `grep`s into this tree) could not be had.
+            (62, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1943,7 +1972,10 @@ mod tests {
             // leaving their desk wants the verb that keeps the work, and leaving a desk is exactly
             // when a keystroke is reached for. Nobody has built "stand down every run I started".
             // ⚠ Item 9's two join the middle column for `stand-down`'s reason: a key names no run.
-            (25, 6, 38),
+            // ⚠ REGISTER ITEM 773: `words` is the 39th refusal — it ANSWERS something and this
+            // client has no view for the answer, which is the reason every answering verb here
+            // carries. It becomes bindable the day a surface exists to show a vocabulary in.
+            (25, 6, 39),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );

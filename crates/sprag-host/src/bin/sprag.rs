@@ -100,6 +100,10 @@
 //!                                         manifest claims — a shell prints nothing. Naming a PANE
 //!                                         also prints WHICH RULE decided, and how to correct it
 //!
+//! sprag words [NAME]                       print the closed vocabularies a run's answer speaks —
+//!                                          `status`, `outcome`, `verdict`, `refusal` — from the
+//!                                          types this build compiled. NEEDS NO DAEMON and no
+//!                                          source tree; naming one prints only that one
 //! sprag list-keys                          print the client keymap `config.toml` produces
 //! sprag bind-key [-nr] [-T TABLE] KEY ACTION…  give a key a meaning (tmux bind-key)
 //! sprag unbind-key [-n] [-T TABLE] KEY     take a key's meaning away (tmux unbind-key)
@@ -303,6 +307,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Resources => resources(args.collect()),
         Verb::Grant => grant(args.collect()),
         Verb::Doctor => doctor(args.collect()),
+        Verb::Words => words(args.collect()),
         Verb::ShowGrammar => show_grammar(args.collect()),
         Verb::Orchestrate => orchestrate(args.collect()),
         Verb::Runs => runs(args.collect()),
@@ -477,6 +482,69 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
         "sprag: typed {:?} at pane {pane}; press Enter there to run it",
         action.command_line()
     );
+    Ok(())
+}
+
+/// ⛔⛔⛔⛔⛔ `words [NAME]`: **WHAT THIS BUILD'S RUN ROWS SPEAK, ASKED OF THIS BUILD** — register
+/// item 773, and the answer that replaces three `grep`s into a source tree.
+///
+/// # ⚠⚠⚠⚠⚠ Why a verb, when a document could hold the same four lists
+///
+/// Because it could not. Item 773's subject is the loop skill, which had grown three vocabulary
+/// TABLES with *"ask the product, not this table"* written above them; every one of them aged. The
+/// tables were replaced by `grep -n -A7 'const fn wire_str' crates/…` — better, and still a copy:
+/// an address ages the moment a symbol moves, silently, and **it cannot be run from another
+/// repository**, which is where that skill's own last section says the loop is driven from.
+///
+/// This needs **no daemon** ([`list_keys`]'s reason, one axis over: the words are compiled in, not
+/// served) and **no source tree**, so the two ways the old answer failed are both gone.
+///
+/// # ⚠⚠⚠ An unknown NAME is a REFUSAL that names what there is
+///
+/// This workspace's rule 6: an unclassified case is not a pass. A caller who asked for `outcomes`
+/// and got silence would read it as *this build has none*, so the refusal lists the four rather
+/// than sending anybody back to a source tree to find out.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidInput`] for a name no vocabulary has, and for a second argument.
+fn words(args: Vec<String>) -> io::Result<()> {
+    let known = sprag_host::plugins::RUN_VOCABULARIES;
+    if let Some(extra) = args.get(1) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("words: unexpected argument {extra:?} (it takes [NAME], one at a time)"),
+        ));
+    }
+    // ⚠ THE FILTER IS THE ONLY BRANCH. Printing every vocabulary and printing one are the same act
+    // over a different set, so a `NAME` cannot come to be formatted differently from the whole —
+    // which is what a second printing arm would eventually do.
+    let wanted = args.first();
+    let shown: Vec<_> = known
+        .iter()
+        .filter(|(name, _, _)| wanted.is_none_or(|asked| asked == name))
+        .collect();
+    if shown.is_empty() {
+        let asked = wanted.map_or_else(String::new, Clone::clone);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "words: this build speaks no vocabulary called {asked:?}. It speaks {}.",
+                known
+                    .iter()
+                    .map(|(name, _, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        ));
+    }
+    for (name, answers, said) in shown {
+        // The NAME and what it answers on one line, the words on the next and indented — so a
+        // reader gets the question before the vocabulary, and `sprag words verdict | tail -1` is
+        // the whole list for a script.
+        println!("{name}  — {answers}");
+        println!("  {}", said.join(" "));
+    }
     Ok(())
 }
 
@@ -10851,6 +10919,56 @@ mod tests {
             "⛔⛔ ITEM 815: a run no boot put back is being told a driver failed to speak for it. \
              Nothing was ever going to: that row is `interrupted` and its own clauses say why. \
              This sentence is about a rescue that went quiet: {untouched}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **`sprag words` ANSWERS WITHOUT A DAEMON, AND REFUSES A NAME BY NAMING WHAT IT
+    /// HAS** — register item 773, and the two properties that make it a replacement for a table.
+    ///
+    /// # Why *without a daemon* is asserted rather than assumed
+    ///
+    /// It is the whole reason this is a verb here instead of a `scene/query`. The words are
+    /// compiled in, so the one moment a person most needs them — a run has ended, the daemon is
+    /// down, and a row says `taken_over` — is exactly when a daemon-served answer would be silent.
+    /// This test runs in a process with no socket set and no daemon anywhere, which is the same
+    /// condition, and it is asserted by CALLING the verb rather than by reading its code.
+    ///
+    /// ⚠⚠ AND THE REFUSAL IS HELD TO NAMING EVERY VOCABULARY. A message that named some of them
+    /// sends a reader back to the source tree, which is the thing item 773 measured aging.
+    #[test]
+    fn asking_this_build_for_its_words_needs_no_daemon_and_an_unknown_name_says_what_there_is() {
+        words(Vec::new()).expect(
+            "⛔⛔⛔⛔⛔ ITEM 773: `sprag words` could not answer with no daemon running. A closed \
+             vocabulary is compiled into this binary, and a verb that needed a socket to say so \
+             would be silent at the one moment a person is reading a finished run.",
+        );
+        for (name, _, _) in sprag_host::plugins::RUN_VOCABULARIES {
+            words(vec![(*name).to_owned()])
+                .unwrap_or_else(|why| panic!("`sprag words {name}` answers: {why}"));
+        }
+
+        let refused = words(vec!["outcomes".to_owned()])
+            .expect_err("⚠⚠ THE PREMISE: a name no vocabulary has must be refused, not printed");
+        let said = refused.to_string();
+        assert!(
+            said.contains("outcomes"),
+            "⚠⚠⚠ the refusal must quote what was ASKED, or a person with a typo cannot see it: \
+             {said}",
+        );
+        for (name, _, _) in sprag_host::plugins::RUN_VOCABULARIES {
+            assert!(
+                said.contains(name),
+                "⛔⛔⛔ ITEM 773: this refusal does not name `{name}`, so a caller who mistyped is \
+                 told what they asked for is wrong and left to go and find the list — in the \
+                 source tree this verb exists to stop them needing. Said: {said}",
+            );
+        }
+
+        let extra = words(vec!["verdict".to_owned(), "outcome".to_owned()])
+            .expect_err("⚠⚠ two names at once is refused rather than half-honoured");
+        assert!(
+            extra.to_string().contains("one at a time"),
+            "⚠ and the refusal says what the shape is: {extra}",
         );
     }
 
