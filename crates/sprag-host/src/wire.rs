@@ -9753,10 +9753,11 @@ mod tests {
     /// * `check`, `unmeasured`, `signal_key`, `unraised` answer questions about a PANE (its doctor
     ///   report, its resource sampling, its input) rather than about a RUN, and
     ///   `RUN_VOCABULARIES` is a run's vocabulary table by name and by contract.
-    /// * `ceiling` IS a run's answer — it reaches a peer through `outcome_ceiling` — and is absent
-    ///   for a structural reason the pin states beside its own chain: `Ceiling` deliberately
-    ///   publishes no admissible list, so there is no `WIRE_WORDS` for a `const` table to point at.
-    ///   **That one is a debt, and it is classified as one rather than excused.**
+    /// * `ceiling` IS a run's answer — it reaches a peer through `outcome_ceiling` — and was absent
+    ///   for a structural reason: `Ceiling` had no `WIRE_WORDS` for a `const` table to point at.
+    ///   **This gate filed it as a DEBT rather than excusing it (register item 821), and that is
+    ///   what brought somebody back to it — the type is projected now and the vocabulary is
+    ///   published, so five of the nine are answered here and four are classified out.**
     ///
     /// ⚠ So the classification carries the REASON, and a prefix that is in neither list is RED.
     /// This workspace's rule that an unclassified case is not a pass, applied to a table whose
@@ -9784,12 +9785,6 @@ mod tests {
                 "unraised",
                 "why a byte written into a pane raised no signal, not a run's answer \
                  (sprag_terminal::Unraised)",
-            ),
-            (
-                "ceiling",
-                "⚠ DEBT, not a difference in kind: this IS a run's answer (outcome_ceiling), and it \
-                 is absent because `Ceiling` publishes no admissible list for a const table to \
-                 point at — see the pin's own note beside its `Ceiling::ALL` chain",
             ),
         ];
 

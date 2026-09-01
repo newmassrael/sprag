@@ -929,6 +929,15 @@ pub const RUN_VOCABULARIES: &[(&str, &str, &[&str])] = &[
         "why a run is asking for a person instead of driving",
         sprag_plugin::Refusal::WIRE_WORDS,
     ),
+    // ⚠⚠ THE FIFTH, AND IT WAS A DEBT BEFORE IT WAS AN ENTRY — register item 821. `Ceiling` had no
+    // `WIRE_WORDS` for this `const` table to point at, so the one run answer a person could not ask
+    // this build about was the one that says which knob to raise. Item 816's gate filed it as a
+    // debt rather than excusing it, which is what brought somebody back to it.
+    (
+        "ceiling",
+        "which budget an exhausted run ran out of, and so which knob buys it more room",
+        &sprag_plugin::Ceiling::WIRE_WORDS,
+    ),
 ];
 
 sprag_vt::closed_set! {
@@ -6568,9 +6577,9 @@ mod tests {
     /// dropped a word would still be a plausible answer, and the reader it is wrong for is the one
     /// who concludes this build has no such word.
     ///
-    /// ⚠ The four names are asserted DISTINCT for the reason `words NAME` exists: two entries under
-    /// one name would print twice for a caller who asked for one, and the second would be
-    /// unreachable by any name at all.
+    /// ⚠ The names are asserted DISTINCT for the reason `words NAME` exists: two entries under one
+    /// name would print twice for a caller who asked for one, and the second would be unreachable
+    /// by any name at all.
     #[test]
     fn every_vocabulary_this_build_can_be_asked_for_is_its_types_own_list() {
         let published: Vec<&str> = RUN_VOCABULARIES.iter().map(|(name, _, _)| *name).collect();
@@ -6593,6 +6602,11 @@ mod tests {
             ("outcome", sprag_plugin::OutcomeState::WIRE_WORDS),
             ("verdict", sprag_plugin::Verdict::WIRE_WORDS),
             ("refusal", sprag_plugin::Refusal::WIRE_WORDS),
+            // ⚠⚠ REGISTER ITEM 821, and this gate is what made the addition safe: `ceiling` joined
+            // the table above and THIS assertion went red until its type was named here, which is
+            // exactly the *"a vocabulary joined and nothing holds it to a type"* case its own
+            // message describes. The gate worked on the round that used it.
+            ("ceiling", &sprag_plugin::Ceiling::WIRE_WORDS),
         ];
         assert_eq!(
             owned.len(),

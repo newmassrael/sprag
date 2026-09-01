@@ -307,6 +307,34 @@ impl Ceiling {
     }
 }
 
+// **THE WORDS THIS ANSWER CAN CARRY, PROJECTED FROM `Ceiling::ALL`** — register item 821.
+//
+// ⛔⛔⛔⛔⛔ WHY THIS IS NOT THE "ADMISSIBLE LIST" THE TYPE DECLINES TO PUBLISH.
+//
+// The value-space pin says, beside its own `Ceiling::ALL` chain, that this type *"deliberately
+// publishes no admissible list, because no client picks a ceiling out of one, and a constant
+// nothing enforces is what this project has removed twice."* Both halves of that stay true and
+// neither is what this array is:
+//
+//   * **An admissible list answers *what may I SEND*.** Nothing here changes that — no request
+//     argument takes a `Ceiling`, and `from_wire` still exists only to read a durable log back.
+//     This answers the other question, *what may I be TOLD*, which a caller meets whether or not
+//     it ever names a ceiling: `outcome_ceiling` puts one of these words in front of it.
+//   * **"A constant nothing enforces" is a HAND-WRITTEN list.** This one is projected from `ALL`
+//     by `wire_words!`, so a sixth ceiling joins it in the compile that adds the variant and
+//     cannot be left out of it — the same mechanism the four vocabularies `sprag words` already
+//     publishes are built by.
+//
+// ⚠ What it buys: `sprag_host::plugins::RUN_VOCABULARIES` is a `const` table of `&[&str]`, so a
+// vocabulary with no such array could not be published at all. This was the one run answer a
+// person could not ask this build about, and item 816's gate filed it as a debt rather than as a
+// difference in kind — which is what brought somebody back to it.
+//
+// ⚠⚠ A LINE COMMENT and not a doc comment: `wire_words!` expands to an `impl` block, and rustc
+// refuses to attach documentation to a macro invocation ("unused doc comment"). The words' own
+// documentation is on `Ceiling` and on `wire_str`, where a reader looking for them will be.
+sprag_vt::wire_words!(Ceiling: wire_str);
+
 /// Which terminal statechart state a run reached.
 ///
 /// ⚠ NOT `Copy` since [`Blocked`](Self::Blocked) carries the question — [`Verdict`]'s reason
