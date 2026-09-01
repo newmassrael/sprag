@@ -132,7 +132,21 @@ pub fn save_runs_if_changed(
     runs: &Arc<Mutex<crate::runs::RunRegistry>>,
     last: &mut Option<crate::runs::RunLog>,
 ) -> io::Result<bool> {
-    let log = crate::external::lock(runs).persistable();
+    // ⛔⛔⛔⛔⛔ **THE PREDECESSOR'S LOG IS THE MEMORY, AND IT IS READ ONCE** — register item 801.
+    //
+    // `last` starts empty at every boot (`sprag-term`'s save loop owns it), so without this line
+    // the first tick of every daemon finds no previous record for any run — and the stamps below
+    // would read that as *everything just moved*. An orphan that has not moved in three days would
+    // be dated `now` on each restart, which is worse than having no time at all: a wrong clock is
+    // read, and an absent one is not.
+    //
+    // ⚠ It also makes the function's own name true across a restart: a successor whose runs are
+    // exactly its predecessor's now writes nothing, where before it always wrote once.
+    if last.is_none() {
+        *last = load_runs(path);
+    }
+    let mut log = crate::external::lock(runs).persistable();
+    stamp_run_times(&mut log, last.as_ref(), now_unix_secs());
     if last.as_ref() == Some(&log) {
         return Ok(false);
     }
@@ -141,6 +155,82 @@ pub fn save_runs_if_changed(
     write_atomic_private(path, &body)?;
     *last = Some(log);
     Ok(true)
+}
+
+/// The wall clock, in unix seconds, or [`None`] when it will not answer.
+///
+/// ⚠ [`None`] rather than a zero, for [`crate::runs::PersistedRun::moved_at`]'s reason: a stamp of
+/// `0` is a claim about 1970 and this has none to make. A clock that cannot be read and a run that
+/// has not moved must not arrive at a reader as one value.
+#[must_use]
+pub fn now_unix_secs() -> Option<u64> {
+    unix_secs_of(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH))
+}
+
+/// [`now_unix_secs`]'s policy with the clock's answer injected — register item 801.
+///
+/// ⚠⚠ SPLIT OUT BECAUSE THE FAILING ANSWER IS NOT ONE THIS MACHINE MAKES. `duration_since` fails
+/// only for a clock set before 1970, so a mutation folding that failure into `0` — the exact fold
+/// this function exists to refuse — stayed GREEN against every arm that injected `now` itself
+/// (measured while writing them). A policy whose bad input can only arrive by breaking the host is
+/// a policy nobody drives, which is `xdg_home_from`'s argument (item 802) and `verdict_of`'s
+/// (item 809), one subject over.
+fn unix_secs_of(since: Result<std::time::Duration, std::time::SystemTimeError>) -> Option<u64> {
+    since.ok().map(|since| since.as_secs())
+}
+
+/// Put [`crate::runs::PersistedRun::moved_at`] and `ended_at` on every run in `log`, given the
+/// `previous` log this daemon wrote and the clock's answer — register item 801.
+///
+/// # ⚠⚠⚠ What counts as MOVING, and why it is not a list of fields
+///
+/// A run moved when its record differs from the one before it **in anything but the stamps**. The
+/// comparison is made on copies with the stamps cleared rather than on a named set of columns,
+/// which is deliberate: a column added tomorrow counts as movement without anybody remembering to
+/// extend a list, and a list nobody extends is the escape hatch this repository refuses on
+/// principle.
+///
+/// # ⚠⚠ The three states a stamp can be in
+///
+/// * **Carried** — the record is unchanged, so the previous stamp stands. Re-stamping an unchanged
+///   run would make *last moved* mean *last looked at*, which is the reading item 801 exists to
+///   remove.
+/// * **Stamped now** — the record differs, or this is the first log that carries the run.
+/// * **[`None`]** — the clock would not answer, or the previous log predates the field. Never a
+///   zero: see [`now_unix_secs`].
+///
+/// ⚠ An ending is stamped ONCE. A finished run whose previous record already carried an
+/// `ended_at` keeps it, because an ending is a moment and a value that moved would be a second one.
+pub fn stamp_run_times(
+    log: &mut crate::runs::RunLog,
+    previous: Option<&crate::runs::RunLog>,
+    now: Option<u64>,
+) {
+    for run in &mut log.runs {
+        let before = previous.and_then(|old| old.runs.iter().find(|old| old.id == run.id));
+        let moved = match before {
+            Some(before) => bare(before) != bare(run),
+            None => true,
+        };
+        run.moved_at = if moved {
+            now.or_else(|| before.and_then(|before| before.moved_at))
+        } else {
+            before.and_then(|before| before.moved_at)
+        };
+        run.ended_at = match (run.finished, before.and_then(|before| before.ended_at)) {
+            (_, Some(already)) => Some(already),
+            (true, None) => now,
+            (false, None) => None,
+        };
+    }
+}
+
+/// A run record with its stamps cleared, so two of them can be compared on everything else.
+fn bare(run: &crate::runs::PersistedRun) -> crate::runs::PersistedRun {
+    let mut bare = run.clone();
+    bare.moved_at = None;
+    bare.ended_at = None;
+    bare
 }
 
 /// Read a predecessor's run log, or [`None`] when there is none / it is unreadable.
@@ -651,6 +741,158 @@ fn exact_or_shell(argv: &[String], allowlist: &HashSet<String>) -> (CommandBuild
 mod tests {
     use super::*;
     use sprag_terminal::{LayoutWire, SNAPSHOT_VERSION, SessionSnapshot, WindowSnapshot};
+
+    /// One run record, as a fixture the stamping arms can vary — register item 801.
+    fn a_run(id: u64, iterations: u32, finished: bool) -> crate::runs::PersistedRun {
+        crate::runs::PersistedRun {
+            id,
+            label: format!("ai_loop pane={id}"),
+            iterations,
+            cost: None,
+            unit: None,
+            moved_at: None,
+            ended_at: None,
+            finished,
+            outcome: None,
+            ceiling: None,
+            output: None,
+            done_reason: None,
+            build: None,
+            driver: None,
+            driving: None,
+            opened_by_session: None,
+            request: None,
+            at: None,
+            place: None,
+            document: None,
+            stood_down: None,
+            deliveries: None,
+            banked: None,
+            cancelled_by: None,
+            briefed: None,
+        }
+    }
+
+    /// A log holding `runs`.
+    fn a_log(runs: Vec<crate::runs::PersistedRun>) -> crate::runs::RunLog {
+        crate::runs::RunLog {
+            version: crate::runs::RUN_LOG_VERSION,
+            runs,
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RECORD THAT DID NOT CHANGE IS NOT A RECORD THAT MOVED** — register item 801,
+    /// parts ⑴ and ⑵.
+    ///
+    /// # What the run log could not say, and why a clock alone would not have fixed it
+    ///
+    /// Measured 2026-09-01 over the live loop's 145 records: **no field carried a time** — `at` is
+    /// a state NAME — so *finished* was answerable and *has not moved in three hours* was not.
+    /// Item 798 widened its done-when to cover a run that STOPS and ran out of road here.
+    ///
+    /// ⚠⚠ A stamp taken on every write would say *when this was last looked at*, which reads like
+    /// an answer and is not one: the save loop ticks every five seconds, so every run would be
+    /// "moving" for ever. The stamp therefore follows the DIFFERENCE, and this test's second arm is
+    /// the one that would go green under that mistake.
+    ///
+    /// ⚠⚠⚠ All four states in one test on purpose: the defect is a FOLD, and a property about a
+    /// fold is only visible with the arms beside each other — item 802's rule, one item over.
+    #[test]
+    fn a_run_that_moved_a_run_that_did_not_and_a_clock_that_would_not_answer() {
+        // ── 1. FIRST SIGHTING: nothing to compare against, so it is stamped ───────────────────
+        let mut log = a_log(vec![a_run(1, 3, false)]);
+        stamp_run_times(&mut log, None, Some(1_000));
+        assert_eq!(
+            log.runs[0].moved_at,
+            Some(1_000),
+            "a run this log has never carried before has to be dated, or it is invisible to the \
+             question until it happens to change",
+        );
+        assert_eq!(
+            log.runs[0].ended_at, None,
+            "and a run that has not finished has no ending to date",
+        );
+
+        // ── 2. ⚠⚠ THE ARM THE OBVIOUS MISTAKE FAILS: unchanged means UNCHANGED ────────────────
+        let previous = log.clone();
+        let mut again = a_log(vec![a_run(1, 3, false)]);
+        stamp_run_times(&mut again, Some(&previous), Some(2_000));
+        assert_eq!(
+            again.runs[0].moved_at,
+            Some(1_000),
+            "⛔ ITEM 801: a record identical to the one before it was re-dated, so *last moved* \
+             now means *last written* — and the save loop writes every five seconds, which makes \
+             every run in the file look alive for ever",
+        );
+
+        // ── 3. A DIFFERENCE IS A MOVE, whatever column it is in ───────────────────────────────
+        let mut stepped = a_log(vec![a_run(1, 4, false)]);
+        stamp_run_times(&mut stepped, Some(&previous), Some(3_000));
+        assert_eq!(
+            stepped.runs[0].moved_at,
+            Some(3_000),
+            "a run whose iterations advanced moved",
+        );
+
+        // ── 4. AN ENDING IS STAMPED ONCE ──────────────────────────────────────────────────────
+        let mut ended = a_log(vec![a_run(1, 4, true)]);
+        stamp_run_times(&mut ended, Some(&previous), Some(4_000));
+        assert_eq!(ended.runs[0].ended_at, Some(4_000), "the ending is dated");
+        let settled = ended.clone();
+        let mut still = a_log(vec![a_run(1, 4, true)]);
+        stamp_run_times(&mut still, Some(&settled), Some(5_000));
+        assert_eq!(
+            still.runs[0].ended_at,
+            Some(4_000),
+            "⚠ an ending is a MOMENT — a value that moved would be a second ending, and a reader \
+             asking how long ago a run finished would be told `now` for ever",
+        );
+
+        // ── 5. ⚠⚠⚠ A CLOCK THAT WILL NOT ANSWER LEAVES `None`, NEVER A ZERO ──────────────────
+        let mut blind = a_log(vec![a_run(2, 0, true)]);
+        stamp_run_times(&mut blind, None, None);
+        assert_eq!(
+            (blind.runs[0].moved_at, blind.runs[0].ended_at),
+            (None, None),
+            "⛔ ITEM 801: a clock that could not be read must not arrive as a claim about 1970. \
+             *Nobody recorded it* and *it happened at the epoch* are the fold this register's 776 \
+             family keeps paying for",
+        );
+        // ⚠ AND A BLIND TICK DOES NOT ERASE WHAT AN EARLIER ONE KNEW.
+        let mut kept = a_log(vec![a_run(1, 4, true)]);
+        stamp_run_times(&mut kept, Some(&settled), None);
+        assert_eq!(
+            (kept.runs[0].moved_at, kept.runs[0].ended_at),
+            (settled.runs[0].moved_at, Some(4_000)),
+            "a tick whose clock failed must carry the stamps forward rather than blanking a fact \
+             that was already recorded",
+        );
+
+        // ── 6. ⛔⛔ AND THE CLOCK ITSELF, because arms 1-5 inject its answer ───────────────────
+        //
+        // Those arms prove the POLICY and say nothing about the wiring behind it. Measured while
+        // writing them: a mutation turning `now_unix_secs` into `map_or(0, …)` — the exact fold
+        // arm 5 is about — left every one of them GREEN, and a healthy machine cannot produce the
+        // failing answer either. So the clock's policy is fed the way the rest of this file's are.
+        assert_eq!(
+            unix_secs_of(Ok(std::time::Duration::from_secs(1_700_000_000))),
+            Some(1_700_000_000),
+            "a clock that answered is carried through unchanged",
+        );
+        assert_eq!(
+            unix_secs_of(std::time::UNIX_EPOCH.duration_since(std::time::SystemTime::now())),
+            None,
+            "⛔ ITEM 801: a clock that would not answer must arrive as `None`. Folded into `0` it \
+             becomes a claim about 1970 that a reader cannot tell from a real one, which is the \
+             state arm 5 refuses — and folding it HERE puts it past that arm entirely",
+        );
+        // ⚠ AND THE LIVE ONE IS SANE, so the two halves are known to be connected.
+        assert!(
+            now_unix_secs().is_some_and(|now| now > 1_577_836_800),
+            "the wall clock on this machine answers a date after 2020: {:?}",
+            now_unix_secs(),
+        );
+    }
 
     /// ⛔⛔⛔⛔⛔ **THE THREE STATES ARE THREE ANSWERS** — register item 802.
     ///

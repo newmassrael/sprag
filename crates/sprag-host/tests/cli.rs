@@ -3726,6 +3726,10 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 iterations: 12,
                 cost: None,
                 unit: None,
+                // ⚠ A predecessor's log carrying no times is the ordinary shape of one written
+                // before register item 801, and this fixture is exactly that predecessor.
+                moved_at: None,
+                ended_at: None,
                 finished: false,
                 outcome: None,
                 ceiling: None,

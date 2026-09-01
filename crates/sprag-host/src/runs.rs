@@ -1782,6 +1782,37 @@ pub struct PersistedRun {
     pub cost: Option<u64>,
     /// The unit of [`cost`](Self::cost).
     pub unit: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHEN THIS RECORD LAST DIFFERED** — unix seconds, register item 801, part ⑵.
+    ///
+    /// # Why a run log with no clock cannot say *stopped*
+    ///
+    /// Every other field here says WHAT a run is; none said WHEN. Measured 2026-09-01 over the
+    /// live loop's 145 records: not one field carried a time — `at` is a state NAME
+    /// (`working`, `judging`) — so *finished* was answerable and *has not moved in three hours*
+    /// was not, at any distance. Item 798 widened its own done-when to cover a run that STOPS, and
+    /// this absence is where that widening ran out of road.
+    ///
+    /// ⚠⚠ IT IS STAMPED WHERE THE DIFFERENCE IS ALREADY KNOWN — `crate::durability`'s
+    /// `save_runs_if_changed`, which holds the previous log in order to decide whether to write at
+    /// all. Nothing in this module has to grow a clock, and the answer covers BOTH driver kinds:
+    /// for a run driven in another process the progress cell never moves (item 662), so a stamp
+    /// taken from the cell would be a lie about exactly the runs anybody reads.
+    ///
+    /// ⚠ [`None`] is *this build never recorded it* — a log written before this field, or a clock
+    /// that would not answer — and never *it has not moved*. The two are the fold this register's
+    /// 776 family keeps paying for, and a reader that cannot tell them apart is back where item
+    /// 801 started.
+    #[serde(default)]
+    pub moved_at: Option<u64>,
+    /// **WHEN IT ENDED** — unix seconds, register item 801, part ⑴.
+    ///
+    /// Stamped once, on the first log in which [`finished`](Self::finished) is true, and carried
+    /// unchanged after that: an ending is a moment, so a value that moved would be a second
+    /// ending. ⚠ [`None`] carries [`moved_at`](Self::moved_at)'s meaning exactly — *nobody
+    /// recorded it* — which is why a finished run out of an older log does not read as one that
+    /// ended at the epoch.
+    #[serde(default)]
+    pub ended_at: Option<u64>,
     /// Whether it had already finished. A run still `Running` when the daemon died comes back
     /// [`RunState::Interrupted`]; one that had finished keeps having finished.
     pub finished: bool,
@@ -3124,6 +3155,14 @@ impl RunRegistry {
                         iterations: reported.iterations.unwrap_or(run.progress.iterations),
                         cost: cost.map(sprag_plugin::Cost::amount),
                         unit: cost.map(|c| sprag_plugin::Cost::unit(c).to_owned()),
+                        // ⚠⚠ THE TIMES ARE NOT THIS MODULE'S TO KNOW — register item 801. Nothing
+                        // here holds a clock, and the fact wanted is *when did this record last
+                        // DIFFER*, which needs the previous record: `crate::durability`'s
+                        // `stamp_run_times` has it and stamps both before the log is written. A
+                        // guess taken here would be *when was this asked for*, which is the
+                        // reading item 801 exists to remove.
+                        moved_at: None,
+                        ended_at: None,
                         finished,
                         outcome,
                         ceiling,
@@ -4782,6 +4821,8 @@ mod tests {
                 iterations: 2,
                 cost: None,
                 unit: None,
+                moved_at: None,
+                ended_at: None,
                 finished: false,
                 outcome: None,
                 ceiling: None,
@@ -5023,6 +5064,8 @@ mod tests {
             iterations: 12,
             cost: None,
             unit: None,
+            moved_at: None,
+            ended_at: None,
             finished: false,
             outcome: None,
             ceiling: None,
@@ -5129,6 +5172,8 @@ mod tests {
             iterations: 12,
             cost: None,
             unit: None,
+            moved_at: None,
+            ended_at: None,
             finished: false,
             outcome: None,
             ceiling: None,
@@ -5225,6 +5270,8 @@ mod tests {
             iterations: 12,
             cost: None,
             unit: None,
+            moved_at: None,
+            ended_at: None,
             finished,
             outcome: None,
             ceiling: None,
@@ -5646,6 +5693,8 @@ mod tests {
                 iterations: 3,
                 cost: None,
                 unit: None,
+                moved_at: None,
+                ended_at: None,
                 finished: false,
                 outcome: None,
                 ceiling: None,
