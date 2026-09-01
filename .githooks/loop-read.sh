@@ -56,6 +56,17 @@ person had to re-launch every one"
 LOOP_READ_BASELINE_COST="the endings already on disk when this instrument \
 arrived were never read by anybody -- they are declared, not discharged"
 
+# ⛔⛔⛔⛔ WHAT A RUN NOBODY IS DRIVING COSTS -- register item 801, arm 3.
+#
+# It is not a tidiness complaint. A run whose daemon died stays `finished: false`
+# for ever, so every count of *how many runs are going* includes it: measured
+# 2026-09-01, fourteen runs answered that question and the true answer was THREE.
+# A watcher reading fourteen has no reason to look, which is the same silence item
+# 798 is about arriving by a different road.
+LOOP_READ_STRANDED_COST="a run whose daemon is gone stays open for ever, so every \
+count of how many are going includes it -- fourteen said running on 2026-09-01 \
+and three were"
+
 # WHERE THE DAEMON'S RUN LOGS ARE, derived the way the PRODUCT derives it.
 #
 # ⛔⛔ THE SAME THREE STEPS AS `durability::sprag_state_dir`, in the same order,
@@ -81,8 +92,31 @@ loop_read_marker() {
     printf '%s\n' "$(git rev-parse --absolute-git-dir)/sprag-loop-read"
 }
 
-# EVERY ENDING ON DISK, as `<log-stem>#<id> <outcome>` per line -- or the single
-# word `unknown` where the question could not be put.
+# EVERY EVENT ON DISK A PERSON HAS TO READ ONCE, as `<key> <word>` per line -- or
+# the single word `unknown` where the question could not be put.
+#
+# Two kinds, and they carry DIFFERENT KEYS so reading one never discharges the
+# other:
+#
+# * `<log-stem>#<id> <outcome>` -- the run ENDED (register item 798);
+# * `<log-stem>#<id>!stranded no-driver` -- the run is still open and NOTHING IS
+#   DRIVING IT (register item 801, arm 3).
+#
+# ⛔⛔⛔⛔⛔ WHY THE SECOND IS HERE AT ALL, AND WHY THE REGISTER WAS WRONG ABOUT IT.
+# Item 801 records that telling a stranded run from a running one *"is a product
+# change and needs a daemon promotion -- a hook cannot pay it"*. Re-measured
+# 2026-09-01: the run log ALREADY carries `driving`, so the distinction is a
+# question about a file this hook already reads. The product half of 801 is real
+# and stays open — `query("runs")` renders both as `running`, and
+# `Unordered::NoDriver` proves the daemon KNOWS the difference and only says it
+# when somebody tries to steer such a run — but the READING half needed no
+# promotion at all.
+#
+# ⚠⚠ AND IT IS THE ONE HALF OF *"no progress"* THAT NEEDS NO CLOCK. Item 801's
+# first two arms want timestamps the record simply does not have. A run whose
+# driver is gone is a different fact and it is on disk today: eleven of them were,
+# against three that were actually going, and every count of *how many are
+# running* answered fourteen.
 #
 # ⚠ A DIRECTORY WALK, NOT A NAMED FILE. The log is keyed by the daemon's socket,
 # so naming one file decides in advance which daemon counts -- and the one it
@@ -91,7 +125,7 @@ loop_read_marker() {
 # so CONTENT excludes them rather than a filter anybody has to maintain.
 #
 # ⚠⚠ THREE ANSWERS AND NONE OF THEM A DEFAULT: the lines that were found; empty
-# where logs were read and held no ending; `unknown` where there was no readable
+# where logs were read and held no event; `unknown` where there was no readable
 # log at all, or no `jq` to read one with.
 loop_read_endings() {
     local dir log stem found any
@@ -105,12 +139,25 @@ loop_read_endings() {
         any=1
         stem="$(basename "$log" .runs.json)"
         found="$found$(jq -r --arg stem "$stem" \
-            '.runs[]? | select(.finished == true)
-             | "\($stem)#\(.id) \(.outcome // "none")"' "$log" 2>/dev/null)
+            '.runs[]? | if .finished == true
+                        then "\($stem)#\(.id) \(.outcome // "none")"
+                        elif .driving == null
+                        then "\($stem)#\(.id)!stranded no-driver"
+                        else empty end' "$log" 2>/dev/null)
 "
     done
     [ "$any" -eq 1 ] || { printf 'unknown\n'; return 0; }
     printf '%s' "$found" | command sed '/^$/d'
+}
+
+# The events that are ENDINGS, and the ones that are STRANDED runs -- split by the
+# key's own suffix so neither clause has to know how the other is spelt.
+loop_read_ended_only() {
+    printf '%s\n' "$1" | command grep -v '!stranded ' | command sed '/^$/d'
+}
+
+loop_read_stranded_only() {
+    printf '%s\n' "$1" | command grep '!stranded ' | command sed '/^$/d'
 }
 
 # The keys (without outcomes) of every ending on disk, or empty when unknown.
@@ -239,7 +286,7 @@ loop_read_seen() {
 # argued this and it holds here for the same reason: a line that reads the same
 # whether or not anything is owed becomes one more notification nobody looks at.
 loop_read_gap() {
-    local said owed count listed
+    local said owed count listed ended stranded
     said="$(loop_read_endings)"
     if [ "$said" = unknown ]; then
         echo "loop-read: NO RUN LOG COULD BE READ in $(loop_read_state_dir), so" \
@@ -257,14 +304,32 @@ loop_read_gap() {
     fi
     owed="$(loop_read_owed)"
     if [ -z "$owed" ]; then
-        echo "loop-read: every run that has ended since the baseline was read" \
-             "(baseline: $(loop_read_baseline_count) ending(s) declared unread)"
+        echo "loop-read: every run that has ended or lost its driver since the" \
+             "baseline was read (baseline: $(loop_read_baseline_count) event(s)" \
+             "declared unread)"
         return 0
     fi
-    count="$(printf '%s\n' "$owed" | command grep -c .)"
-    listed="$(printf '%s\n' "$owed" | command tr '\n' ' ')"
-    echo "loop-read: ${count} run(s) ENDED AND NOBODY HAS RECORDED READING THEM" \
-         "(${listed% }) -- ${LOOP_READ_UNREAD_COST}"
+    # ⛔⛔ TWO CLAUSES, NEVER ONE WITH A BIGGER NUMBER IN IT. *It ended* and *its
+    # driver is gone* are different facts with different remedies, and this file's
+    # whole family (items 776, 779, 781, 790, 793) is about what folding two
+    # states into one sentence costs. Each clause is silent when its own list is
+    # empty, so neither turns into a line that reads the same either way.
+    ended="$(loop_read_ended_only "$owed")"
+    if [ -n "$ended" ]; then
+        count="$(printf '%s\n' "$ended" | command grep -c .)"
+        listed="$(printf '%s\n' "$ended" | command tr '\n' ' ')"
+        echo "loop-read: ${count} run(s) ENDED AND NOBODY HAS RECORDED READING" \
+             "THEM (${listed% }) -- ${LOOP_READ_UNREAD_COST}"
+    fi
+    stranded="$(loop_read_stranded_only "$owed")"
+    if [ -n "$stranded" ]; then
+        count="$(printf '%s\n' "$stranded" | command grep -c .)"
+        listed="$(printf '%s\n' "$stranded" | command sed 's/!stranded no-driver//' \
+                  | command tr '\n' ' ')"
+        echo "loop-read: ${count} run(s) ARE OPEN WITH NOTHING DRIVING THEM and" \
+             "nobody has recorded reading that (${listed% }) --" \
+             "${LOOP_READ_STRANDED_COST}"
+    fi
 }
 
 # ⛔⛔⛔⛔⛔ THE ARMS. Driven against a THROWAWAY state directory, never the real
@@ -365,9 +430,12 @@ loop_read_selftest() {
             fail=$((fail + 1)) ;;
     esac
 
-    # (3) A log with no finished run is a real zero, and is NOT unknown.
+    # (3) A log whose only run is GOING is a real zero, and is NOT unknown.
+    # ⚠ `driving` is what makes it going rather than stranded — an open run with no
+    # driver is its own event now (register item 801, arm 3), so the fixture has to
+    # say which kind it is instead of leaving the key out.
     cat > "$tmp/state/sprag/probe.runs.json" <<'EMPTY'
-{"version":1,"runs":[{"id":1,"finished":false,"outcome":null}]}
+{"version":1,"runs":[{"id":1,"finished":false,"outcome":null,"driving":5}]}
 EMPTY
     said="$(loop_read_gap)"
     case "$said" in
@@ -375,7 +443,7 @@ EMPTY
             echo "  FAIL  a readable log with no ending was called unreadable: $said"
             fail=$((fail + 1)) ;;
         *"NOBODY HAS LAID A BASELINE"*)
-            echo "  ok    a log whose runs are all still going is not an unread ending"
+            echo "  ok    a log whose runs are all still going is not an unread event"
             pass=$((pass + 1)) ;;
         *)  echo "  FAIL  a log with no ending said: $said"
             fail=$((fail + 1)) ;;
@@ -384,7 +452,7 @@ EMPTY
     # (4) An ending with no baseline is named as unbaselined, not as owed.
     cat > "$tmp/state/sprag/probe.runs.json" <<'ENDED'
 {"version":1,"runs":[{"id":1,"finished":true,"outcome":"failed"},
-                     {"id":2,"finished":false,"outcome":null}]}
+                     {"id":2,"finished":false,"outcome":null,"driving":5}]}
 ENDED
     said="$(loop_read_gap)"
     case "$said" in
@@ -464,6 +532,60 @@ MORE
         echo "  ok    --seen refuses a look that names nothing"
         pass=$((pass + 1))
     fi
+
+    # (10a) ⛔⛔⛔⛔⛔ A RUN NOBODY IS DRIVING IS ITS OWN EVENT — register item 801,
+    # arm 3, and the arm that proves the register's *"a hook cannot pay it"* wrong
+    # for this half. `driving` is on disk already; no promotion was needed.
+    cat > "$tmp/state/sprag/probe.runs.json" <<'STRANDED'
+{"version":1,"runs":[{"id":1,"finished":true,"outcome":"failed"},
+                     {"id":2,"finished":true,"outcome":"converged"},
+                     {"id":3,"finished":false,"outcome":null,"driving":9},
+                     {"id":4,"finished":false,"outcome":null,"driving":null}]}
+STRANDED
+    said="$(loop_read_gap)"
+    case "$said" in
+        *"ARE OPEN WITH NOTHING DRIVING THEM"*"probe#4"*)
+            echo "  ok    an open run with no driver is named as stranded"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a stranded run said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    case "$said" in
+        *"probe#3"*)
+            echo "  FAIL  a run that IS being driven was called stranded: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    a run with a driver is not called stranded"
+            pass=$((pass + 1)) ;;
+    esac
+
+    # (10b) ⛔⛔ THE TWO EVENTS CARRY DIFFERENT KEYS, so reading one never
+    # discharges the other. `probe#2`'s ending was recorded at arm (8); if the keys
+    # collided, `probe#4`'s stranding would already look accounted for.
+    loop_read_seen 'probe#4!stranded' >/dev/null
+    said="$(loop_read_gap)"
+    case "$said" in
+        *"ARE OPEN WITH NOTHING DRIVING THEM"*)
+            echo "  FAIL  a read stranding stayed owed: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    reading a stranding clears it, and only it"
+            pass=$((pass + 1)) ;;
+    esac
+    # ⚠ And the ending of that same run is STILL its own unread event.
+    cat > "$tmp/state/sprag/probe.runs.json" <<'CLOSED'
+{"version":1,"runs":[{"id":1,"finished":true,"outcome":"failed"},
+                     {"id":2,"finished":true,"outcome":"converged"},
+                     {"id":3,"finished":false,"outcome":null,"driving":9},
+                     {"id":4,"finished":true,"outcome":"failed"}]}
+CLOSED
+    said="$(loop_read_gap)"
+    case "$said" in
+        *"ENDED AND NOBODY HAS RECORDED READING"*"probe#4 failed"*)
+            echo "  ok    a stranded run that later ends is a SECOND unread event"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  the ending of a read-as-stranded run said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    loop_read_seen 'probe#4' >/dev/null
 
     # (10) ⚠ THE WALK REACHES A SECOND LOG. A named file would have decided in
     # advance which daemon counts.
