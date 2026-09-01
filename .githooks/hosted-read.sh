@@ -284,6 +284,7 @@ hosted_read_attempt_for() {
 # `hosted_read_gap` keeps naming it until that commit is marked `settled`.
 hosted_read_seen() {
     local sha verdict marker kept mark was passed skipped one acc gone listed
+    local runs advance
     local rerun attempt
     sha="$(git rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null)" || {
         echo "hosted-read: '${1:-HEAD}' is not a commit in this tree" >&2
@@ -324,7 +325,32 @@ hosted_read_seen() {
     # the mark leaves it alone — the read still counts, and `kept` below still clears what it owed;
     # anything else is forward and moves it.
     passed=""
-    if [ "$verdict" = settled ]; then
+    # ⛔⛔⛔⛔⛔ WHETHER THIS COMMIT HAS A RUN AT ALL, ASKED ONCE — register item 806,
+    # and the half item 790 left. That item taught the SKIPPED list to drop a
+    # commit with no run of its own, out loud, *"the only place the list can reach
+    # zero"*. It never taught `--seen` itself: a commit handed straight to this
+    # function was believed. Measured 2026-09-01 on `b7b9944`, which was published
+    # underneath `0c94bda` and so got no run — `--seen b7b9944 settled` answered
+    # *"the hosted result for b7b9944 was read"* when there had been nothing to
+    # read, and `--seen b7b9944 unsettled` would have parked it in `owed` FOR EVER,
+    # because `hosted_read_owed` prunes by ancestry and by nothing else.
+    #
+    # ⇒ Both words are wrong for that commit, which is exactly what
+    # `HOSTED_READ_NORUN_COST` already says: *neither word can retire it*. So the
+    # state is READ rather than assumed, and it decides three things below — the
+    # mark advances, the commit is not owed, and the sentence says which case it is.
+    #
+    # ⚠ `unknown` is NOT this case and takes none of it: *not asked* is not *asked
+    # and found none*, and an unclassified case is RED here rather than a pass.
+    runs="$(hosted_read_runs_for "$sha")"
+    # ⚠⚠ THE MARK MOVES FOR A COMMIT WITH NO RUN WHATEVER WORD WAS GIVEN. There is
+    # nothing to come back for, so leaving the watermark behind it would make an
+    # honest reader look again at a commit that can never answer — item 779's own
+    # complaint from the other side.
+    advance=no
+    [ "$verdict" = settled ] && advance=yes
+    [ "$runs" = 0 ] && advance=yes
+    if [ "$advance" = yes ]; then
         if [ -z "$mark" ] \
            || ! git merge-base --is-ancestor "$mark" HEAD 2>/dev/null \
            || ! git merge-base --is-ancestor "$sha" "$mark" 2>/dev/null; then
@@ -350,7 +376,10 @@ hosted_read_seen() {
     # Every commit still owed, MINUS the one being recorded now — whichever word
     # it got, this look is the current word about that commit.
     kept="$(hosted_read_owed | command grep -v "^${sha}$" || true)"
-    if [ "$verdict" = unsettled ]; then
+    # ⚠ AND A COMMIT WITH NO RUN IS NEVER OWED — item 806. `hosted_read_owed`
+    # prunes by ancestry alone, so parking this sha there would be a debt with no
+    # path to zero (rule 5): no verdict can ever arrive for it.
+    if [ "$verdict" = unsettled ] && [ "$runs" != 0 ]; then
         kept="$(printf '%s\n%s\n' "$kept" "$sha" | command grep -v '^$' || true)"
     fi
     # Every commit still stepped over, plus the ones this move just stepped over.
@@ -404,7 +433,9 @@ SEEN
     # ⚠ Only for `settled`: an `unsettled` look read no verdict at all, so there
     # is no attempt behind it to have been the wrong one.
     rerun="$(hosted_read_rerun_raw | command grep -v " ${sha}\$" || true)"
-    if [ "$verdict" = settled ]; then
+    # ⚠ And not for a commit with no run: there is no attempt behind a verdict
+    # that does not exist, so asking would file a debt about nothing (item 806).
+    if [ "$verdict" = settled ] && [ "$runs" != 0 ]; then
         attempt="$(hosted_read_attempt_for "$sha")"
         case "$attempt" in
             1)       ;;
@@ -424,7 +455,15 @@ SEEN
         printf '%s\n' "$skipped" | command sed '/^$/d;s/^/skipped /'
         printf '%s\n' "$rerun" | command sed '/^$/d;s/^/rerun /'
     } | scratch_guard_write "$marker" "hosted-read" || return 1
-    if [ "$verdict" = settled ]; then
+    # ⛔⛔⛔ THREE SENTENCES, NOT TWO — register item 806. *A verdict was read*, *a
+    # run has not spoken yet* and *there was no run to read* are three different
+    # facts about a commit, and the third had been wearing whichever of the first
+    # two the caller happened to type.
+    if [ "$runs" = 0 ]; then
+        echo "hosted-read: ${sha:0:7} HAS NO RUN OF ITS OWN, so there was no" \
+             "verdict to read -- the mark moved past it and it is not owed," \
+             "whichever word was given. ${HOSTED_READ_NORUN_COST}"
+    elif [ "$verdict" = settled ]; then
         echo "hosted-read: recorded that the hosted result for ${sha:0:7} was read"
     else
         echo "hosted-read: recorded that ${sha:0:7} was looked at and its run had" \
@@ -1155,6 +1194,56 @@ ASKED
         *)  echo "  ok    and it is gone, so this list can reach zero"
             pass=$((pass + 1)) ;;
     esac
+
+    # ⛔⛔⛔⛔⛔ THE SAME COMMIT HANDED STRAIGHT TO `--seen` — register item 806, the
+    # half item 790 left. Above, the commit reached the list by being STEPPED OVER;
+    # here a person names it, and until this arm existed both words were believed.
+    ( cd "$tmp" && printf '%s\n' "$base" > "$(hosted_read_marker)" )
+    FAKE_GH_TOTAL=0
+    said="$( cd "$tmp" && hosted_read_seen "$tip" settled )"
+    case "$said" in
+        *"HAS NO RUN OF ITS OWN"*)
+            echo "  ok    --seen settled on a runless commit says there was nothing to read"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  --seen settled on a runless commit said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⚠ And it is NOT the sentence for a verdict that was read.
+    case "$said" in
+        *"was read"*)
+            echo "  FAIL  a commit with no run was reported as one whose result was read: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    and it is not called a verdict that was read"
+            pass=$((pass + 1)) ;;
+    esac
+    # ⛔⛔ AND `unsettled` MUST NOT PARK IT IN `owed`, which prunes by ancestry
+    # alone: no verdict can ever arrive, so that debt could not reach zero.
+    #
+    # ⚠⚠ THE LIST IS ASKED DIRECTLY, not looked for in the sentence. The first
+    # draft of this arm searched the whole `--gap` line for the sha and failed on
+    # its own subject: the mark had (correctly) advanced onto that commit, so
+    # `last read at <sha>` matched and the arm called it *owed*. A sha appearing
+    # SOMEWHERE is not the same claim as a sha appearing in a particular clause.
+    ( cd "$tmp" && printf '%s\n' "$base" > "$(hosted_read_marker)" )
+    ( cd "$tmp" && hosted_read_seen "$tip" unsettled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_owed )"
+    case "$said" in
+        *"$tip"*)
+            echo "  FAIL  a runless commit called unsettled is owed for ever: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    a runless commit is not owed whichever word it got"
+            pass=$((pass + 1)) ;;
+    esac
+    # ⚠ And the mark DID move past it — there is nothing to come back for.
+    said="$( cd "$tmp" && hosted_read_watermark )"
+    if [ "$said" = "$tip" ]; then
+        echo "  ok    and the mark moved past it rather than waiting on nothing"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  the mark stayed behind a commit that can never answer: $said"
+        fail=$((fail + 1))
+    fi
+    FAKE_GH_TOTAL=1
 
     # ⚠⚠⚠⚠ AND *NOBODY COULD ASK* IS A THIRD STATE, not a quiet pass. An absent
     # `gh`, a refused call or a reply that is not a count answers nothing, and
