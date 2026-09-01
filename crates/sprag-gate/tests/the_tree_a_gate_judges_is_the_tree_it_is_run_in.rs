@@ -157,7 +157,79 @@ fn a_tree_that_agrees_one_that_is_skewed_and_one_that_cannot_be_named_are_three_
     );
 }
 
-/// ── 3. THE RATCHET: NOBODY SPELLS THE COMPILE-TIME ROOT OUTSIDE THE DOOR ─────────────────────
+/// ── 3. THE DETECTOR FIRES END TO END, NOT ONLY IN ITS CLASSIFIER ─────────────────────────────
+///
+/// # ⛔⛔⛔⛔⛔ Why a classifier arm is not enough — register item 810
+///
+/// Arm 2 drives the policy with both answers injected, which proves the POLICY. It cannot prove
+/// that the policy is wired to the real derivations, that `workspace_root` consults it, or that a
+/// caller gets a refusal rather than a path. Item 809 measured a live skew and the repair was
+/// verified by hand — running this suite's own binary from another tree and reading the sentence —
+/// and a check that only a person can perform is one nobody performs twice.
+///
+/// ⚠⚠ THE SHAPE IS A CHILD PROCESS, and it has to be: the running root is read from the process's
+/// own directory, which is process-global, and this file's tests are THREADS of one binary — the
+/// same reason item 802's environment splits are driven through a seam instead of `set_var`.
+///
+/// ⚠ It stands the child in `/` rather than in a manufactured second workspace. That drives the
+/// `Unknown` refusal instead of `Skewed`, and it is the honest trade: a fabricated tree would need
+/// a scratch root of its own — a harness site this crate would then owe the item-795 ratchet — to
+/// drive an arm the injected seam above already covers. What only a child can show is that the
+/// wiring exists at all, and `/` shows it while leaving nothing behind.
+///
+/// ⚠⚠⚠ ONE NAMED SIBLING, never the whole binary: a child that ran every test would run THIS one,
+/// and a test that spawns itself does not terminate.
+///
+/// # ⛔⛔⛔⛔⛔ WHICH sibling is the whole arm, and the first choice was a DEAD CONTROL
+///
+/// Measured 2026-09-01, in this file: the child was first
+/// `the_tree_this_suite_judges_holds_this_gates_own_source`, and a mutation that made
+/// `workspace_root` ANSWER instead of refusing left this arm **GREEN** — because that sibling
+/// panics on its own `let … else` before ever calling the door. It proved *a test refuses*, which
+/// nobody doubted, and said nothing about the wiring it exists for.
+///
+/// ⚠⚠ THE CHILD IS THEREFORE THE ONE WHOSE ONLY ROUTE TO A REFUSAL IS THE DOOR.
+/// `no_source_walks_up_out_of_its_crate_without_going_through_the_door` reaches
+/// `sprag_gate::sources::rust_sources`, which reaches `workspace_root` and nothing else that can
+/// refuse — so a door that answered would let the child PASS, and this arm's `!success` is what
+/// catches it. Two ways to produce one red is the collapse this file is about, one level up.
+#[test]
+fn a_run_that_cannot_name_its_tree_is_refused_by_the_binary_and_not_only_by_the_policy() {
+    let me = std::env::current_exe().expect("this test binary's own path");
+    let out = std::process::Command::new(&me)
+        .args([
+            "--exact",
+            "no_source_walks_up_out_of_its_crate_without_going_through_the_door",
+        ])
+        .current_dir("/")
+        .output()
+        .expect(
+            "re-run one of this binary's own tests from a directory with no workspace above it",
+        );
+
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        !out.status.success(),
+        "⛔ ITEM 810: standing in `/`, nothing above declares `[workspace]`, so this binary cannot \
+         say which tree it is judging — and it ANSWERED ANYWAY. A root that cannot be established \
+         is the state item 809 is about, and a walk nobody can attribute is not a claim: {said}",
+    );
+    assert!(
+        said.contains("REGISTER ITEM 809"),
+        "⚠ it failed for some other reason, which proves nothing about the wiring: {said}",
+    );
+    assert!(
+        said.contains("cannot \nbe established") || said.contains("cannot be established"),
+        "⚠⚠ AND IT IS THE UNNAMEABLE-ROOT REFUSAL, not the skew one. Two refusals that a caller \
+         cannot tell apart are the collapse this whole file is about: {said}",
+    );
+}
+
+/// ── 4. THE RATCHET: NOBODY SPELLS THE COMPILE-TIME ROOT OUTSIDE THE DOOR ─────────────────────
 ///
 /// ⚠ The needle is the two-level walk specifically, and not the macro alone. A crate finding its
 /// OWN fixtures with `env!("CARGO_MANIFEST_DIR")` is asking a different question and is correct —
