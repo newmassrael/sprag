@@ -81,7 +81,21 @@ use std::path::{Path, PathBuf};
 /// [`the_harness_half_cannot_grow_without_being_read`] printed when the ceiling was set to zero on
 /// purpose: a ceiling with slack in it is an exemption that can grow silently, which is the one
 /// thing this constant exists to prevent.
-const HARNESS_SITES_REGISTERED: usize = 163;
+///
+/// # 163 → 161, 2026-09-01, register item 802 paying down item 795
+///
+/// `sprag-tui`'s PTY gate took both of its roots from the operating system, and one of them became
+/// the `XDG_STATE_HOME` handed to every daemon, client and CLI run that file spawns. Under
+/// `TMPDIR=` that home is relative — which the daemon must IGNORE — so the file's isolation was
+/// undone silently and 67 daemons persisted into the tester's own state home. Converted to
+/// `sprag_scratch::scratch_root()`, which refuses the root where it is taken.
+///
+/// ⚠ AND THE NUMBER MOVED BY ONE LESS THAN THE CONVERSION, WHICH IS WORTH THE SENTENCE: a new
+/// assertion message in `sprag-host` spelled the call inside a `\`-continued string literal, and
+/// [`outside_strings`] keeps a line that ENDS inside a string as code — deliberately, in the
+/// direction of a red to read. The prose was rephrased rather than the filter widened; naming the
+/// call in words costs nothing and an exemption for "it was only a message" costs the gate.
+const HARNESS_SITES_REGISTERED: usize = 161;
 
 fn repo_root() -> PathBuf {
     [env!("CARGO_MANIFEST_DIR"), "..", ".."].iter().collect()

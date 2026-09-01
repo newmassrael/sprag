@@ -13,6 +13,7 @@
 //! identity so two daemons on two sockets (tmux's per-socket-server model) keep two snapshots.
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 #[cfg(unix)]
@@ -167,12 +168,119 @@ pub fn state_dir() -> PathBuf {
 /// `~/.local/state/sprag` then `/tmp/sprag`. The one derivation, shared by every durable artifact
 /// (the snapshot and the per-pane history files) so they cannot land in two different places.
 pub(crate) fn sprag_state_dir() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("sprag")
+    match xdg_home(STATE_HOME_VAR) {
+        XdgHome::Named(dir) => dir,
+        XdgHome::Refused(_) | XdgHome::Silent => std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(".local/state"))
+            .unwrap_or_else(|| PathBuf::from("/tmp")),
+    }
+    .join("sprag")
+}
+
+/// The variable that says where sprag's durable artifacts go.
+pub const STATE_HOME_VAR: &str = "XDG_STATE_HOME";
+
+/// The variable that says where the user's `config.toml` is read from.
+pub const CONFIG_HOME_VAR: &str = "XDG_CONFIG_HOME";
+
+/// What an `$XDG_<X>_HOME` turned out to say — the classification both this module's
+/// `sprag_state_dir` and [`crate::config::config_dir`] resolve through.
+///
+/// ⚠ `sprag_state_dir` is named rather than linked: it is `pub(crate)`, and a public item linking
+/// to a private one only resolves under `--document-private-items` — which is how the doc gate runs
+/// and is not how a reader of the published docs would.
+///
+/// # ⛔⛔⛔⛔⛔ THREE STATES WERE WRITING ONE SENTENCE — register item 802
+///
+/// The derivation above used to be one `filter(is_absolute)` in a chain, which made *nobody told
+/// me where to write* and *somebody told me, and I threw the answer away* *the same silent
+/// outcome*: `$HOME/.local/state/sprag`. Both are correct behaviour — the XDG spec calls a
+/// relative value invalid and says to ignore it — and neither was ever said out loud.
+///
+/// ⚠⚠ **MEASURED 2026-09-01, on this machine, as the cost of that silence.** A test harness that
+/// sets `XDG_STATE_HOME` to a directory of its own, from `std::env::temp_dir()`, gets a RELATIVE
+/// path whenever `TMPDIR` is set-and-empty (register item 794's measurement). Fourteen daemons
+/// spawned by `sprag-host`'s own `cli.rs` were told exactly that on 2026-08-31 and wrote
+/// `~/.local/state/sprag` instead — `sprag-cli-it-800850-{8,13,17,18,28,31,…}.{runs,snapshot}.json`
+/// plus their history directories, still there fifteen hours later, and none of them removable by
+/// the guard that was carefully written to remove the directory the harness NAMED. The harness's
+/// isolation had been undone by the product, silently, and there was no sentence anywhere in the
+/// system that said so.
+///
+/// ⚠ The fallback itself is NOT the defect and is not changed here: a user whose environment is
+/// wrong must still get a working terminal. What changes is that being ignored is now a fact
+/// something can read — see [`refused_homes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum XdgHome {
+    /// Set to an absolute directory. Writing goes exactly where the caller said.
+    Named(PathBuf),
+    /// SET AND UNUSABLE: not absolute, so the spec makes it invalid and it is ignored. Writing
+    /// goes to the home default — somewhere the caller did NOT name. Carries what was given, so
+    /// whoever reports this can quote the value back.
+    Refused(PathBuf),
+    /// Nobody set it. The home default is the answer nobody asked otherwise about.
+    Silent,
+}
+
+/// [`XdgHome`] for `var` in this process's environment.
+#[must_use]
+pub fn xdg_home(var: &str) -> XdgHome {
+    xdg_home_from(std::env::var_os(var))
+}
+
+/// [`xdg_home`]'s policy with the environment's answer injected, so the case a machine will not
+/// produce on demand is drivable — `sprag_scratch`'s `root_from` split, applied to the variable
+/// that decides where a daemon writes.
+fn xdg_home_from(raw: Option<OsString>) -> XdgHome {
+    match raw.map(PathBuf::from) {
+        None => XdgHome::Silent,
+        Some(given) if given.is_absolute() => XdgHome::Named(given),
+        Some(given) => XdgHome::Refused(given),
+    }
+}
+
+/// The sentence a process owes when it was TOLD where to write and could not use the answer.
+///
+/// `writing` is where the writing actually goes; `None` is for a home that resolves to nothing at
+/// all (which is [`crate::config::config_dir`]'s answer when there is no `HOME` either), because
+/// *ignored, and I am using your home instead* and *ignored, and I have nowhere* are two facts and
+/// this file's whole subject is not letting two facts share a sentence.
+#[must_use]
+pub fn refused_home_sentence(var: &str, given: &Path, writing: Option<&Path>) -> String {
+    let instead = match writing {
+        Some(dir) => format!("writing goes to {} instead", dir.display()),
+        None => "so there is nowhere for it to go at all".to_owned(),
+    };
+    format!(
+        "{var} is set to {given:?}, which is NOT an absolute path -- the XDG specification makes \
+         such a value invalid, so it is IGNORED and {instead}. Whatever set it meant to choose a \
+         directory and did not get one (register item 802). Unset it or give it an absolute path.",
+    )
+}
+
+/// Every ambient home this process was told about and REFUSED, already spelled as the sentence
+/// [`refused_home_sentence`] composes.
+///
+/// Empty on a correctly configured machine, which is the only state in which saying nothing is
+/// honest. A daemon says these at boot; nothing else in this crate reads the environment twice.
+#[must_use]
+pub fn refused_homes() -> Vec<String> {
+    let mut said = Vec::new();
+    if let XdgHome::Refused(given) = xdg_home(STATE_HOME_VAR) {
+        said.push(refused_home_sentence(
+            STATE_HOME_VAR,
+            &given,
+            Some(&sprag_state_dir()),
+        ));
+    }
+    if let XdgHome::Refused(given) = xdg_home(CONFIG_HOME_VAR) {
+        said.push(refused_home_sentence(
+            CONFIG_HOME_VAR,
+            &given,
+            crate::config::config_dir().as_deref(),
+        ));
+    }
+    said
 }
 
 /// Point `XDG_STATE_HOME` at `home` for the duration of `body`, then restore the environment.
@@ -543,6 +651,117 @@ fn exact_or_shell(argv: &[String], allowlist: &HashSet<String>) -> (CommandBuild
 mod tests {
     use super::*;
     use sprag_terminal::{LayoutWire, SNAPSHOT_VERSION, SessionSnapshot, WindowSnapshot};
+
+    /// ⛔⛔⛔⛔⛔ **THE THREE STATES ARE THREE ANSWERS** — register item 802.
+    ///
+    /// Driven through the injected seam rather than the environment, for [`with_state_home`]'s
+    /// reason: `set_var` is process-global and these tests are threads of one binary. The seam is
+    /// what makes *somebody named a relative directory* drivable at all.
+    ///
+    /// ⚠ All three in one test on purpose: the defect was that two of them COLLAPSED, and a
+    /// property about a collapse is only visible when the arms sit beside each other.
+    #[test]
+    fn a_home_nobody_named_and_one_that_was_refused_are_not_the_same_answer() {
+        assert_eq!(
+            xdg_home_from(Some(OsString::from("/state"))),
+            XdgHome::Named(PathBuf::from("/state")),
+            "an absolute value must be honoured unchanged, or every caller is reading a path this \
+             module invented",
+        );
+        assert_eq!(
+            xdg_home_from(None),
+            XdgHome::Silent,
+            "an unset variable is nobody having asked, which is the one state where falling back \
+             silently is honest",
+        );
+        assert_eq!(
+            xdg_home_from(Some(OsString::from("some/relative/dir"))),
+            XdgHome::Refused(PathBuf::from("some/relative/dir")),
+            "⚠ A RELATIVE VALUE IS A CALLER WHO NAMED A DIRECTORY AND WAS IGNORED. Folding it \
+             into `Silent` is exactly the defect item 802 measured: fourteen daemons wrote a \
+             developer's real ~/.local/state while their harness believed it had isolated them.",
+        );
+        assert_eq!(
+            xdg_home_from(Some(OsString::new())),
+            XdgHome::Refused(PathBuf::new()),
+            "⚠ AND THE EMPTY VALUE IS THE ONE THAT WAS ACTUALLY MEASURED — `TMPDIR=` makes the \
+             standard temporary-directory call answer an empty path, so a harness joining onto it \
+             hands this module an empty string. A guard that only asked `is_empty` would pass the \
+             line above and a guard that only asked the line above would pass this one; \
+             `is_absolute` is the one question that covers both. (The call is named in prose here \
+             rather than spelled: item 794's ratchet counts a needle that survives its string.)",
+        );
+    }
+
+    /// The sentence a refused home owes names the variable, quotes what it was given, and says
+    /// where the writing went instead — register item 802.
+    ///
+    /// ⚠⚠ The THIRD fact is the one that keeps being dropped. *Your value was ignored* leaves a
+    /// reader hunting; *and your state is in `/home/somebody/.local/state/sprag`* is what makes
+    /// the stray files findable, which is the only reason this sentence exists.
+    #[test]
+    fn a_refusal_names_the_variable_the_value_and_where_the_writing_went() {
+        let said = refused_home_sentence(
+            STATE_HOME_VAR,
+            Path::new("cli-it-3.state"),
+            Some(Path::new("/home/somebody/.local/state/sprag")),
+        );
+        assert!(
+            said.contains(STATE_HOME_VAR),
+            "a refusal that does not name the variable cannot be acted on: {said}",
+        );
+        assert!(
+            said.contains("cli-it-3.state"),
+            "a refusal that does not quote the value leaves the reader guessing which of their \
+             settings it means: {said}",
+        );
+        assert!(
+            said.contains("/home/somebody/.local/state/sprag"),
+            "⚠ the whole point is the reader learning WHERE their state actually is: {said}",
+        );
+
+        // ⚠ AND THE OTHER ARM IS A DIFFERENT FACT, not the same one with a blank in it: a config
+        // home can resolve to nothing at all (no `HOME` either), and *I used your home instead*
+        // would then be a lie. One sentence per state is this item's whole subject.
+        let nowhere = refused_home_sentence(CONFIG_HOME_VAR, Path::new("cfg"), None);
+        assert!(
+            nowhere.contains("nowhere"),
+            "a home that resolves to nothing must not borrow the sentence about a fallback that \
+             does exist: {nowhere}",
+        );
+        assert!(
+            !nowhere.contains("instead"),
+            "the two arms must not read alike, or a reader cannot tell whether anything is being \
+             written at all: {nowhere}",
+        );
+    }
+
+    /// Nothing is owed on a correctly configured machine, and the state dir still resolves for a
+    /// refused home — the fallback is not what item 802 changes.
+    #[test]
+    fn a_usable_home_owes_no_sentence_and_a_refused_one_still_resolves() {
+        with_state_home("/state", || {
+            assert!(
+                refused_homes().is_empty(),
+                "an absolute state home must owe nothing, or every daemon on every correctly \
+                 configured machine starts by warning about itself",
+            );
+        });
+        with_state_home("relative/state", || {
+            let said = refused_homes();
+            assert_eq!(
+                said.len(),
+                1,
+                "exactly the refused variable is reported: {said:?}",
+            );
+            assert!(
+                sprag_state_dir().is_absolute(),
+                "⚠ THE FALLBACK IS NOT WHAT THIS ITEM CHANGES: a daemon told an unusable home must \
+                 still have somewhere to write, or a person's misconfigured environment costs them \
+                 their multiplexer. What changed is that the fallback is now SAID.",
+            );
+        });
+    }
 
     /// The window a person sized comes back, and a size nobody could paint in does not — register
     /// item 589. Both halves in one test because they share the one env var this can set.

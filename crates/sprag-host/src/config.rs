@@ -75,16 +75,27 @@ pub const CONFIG_FILE: &str = "config.toml";
 /// IGNORED rather than honoured, the same rule the state dir applies: the spec requires absolute, and
 /// a relative one would resolve against whatever directory the daemon happened to start in.
 ///
+/// ⚠⚠ THAT SENTENCE WAS PROSE UNTIL REGISTER ITEM 802. It described the behaviour correctly and
+/// nothing said it at run time, so a caller who named a directory and was ignored got the user's
+/// own `~/.config/sprag` — which is a test measuring the developer's options instead of the
+/// shipped defaults, and it happened. The rule is now one classification
+/// ([`crate::durability::xdg_home`]) rather than two chains that agree by hand, and being ignored
+/// is reportable ([`crate::durability::refused_homes`]).
+///
 /// Unlike the state dir there is no `/tmp` fallback. A state dir must always resolve, because sprag
 /// has something to write; a config dir that cannot be located simply means the user has no config,
 /// which [`load`] reports as `None` — the same answer as not having written one.
 #[must_use]
 pub fn config_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .map(|dir| dir.join("sprag"))
+    match crate::durability::xdg_home(crate::durability::CONFIG_HOME_VAR) {
+        crate::durability::XdgHome::Named(dir) => Some(dir),
+        crate::durability::XdgHome::Refused(_) | crate::durability::XdgHome::Silent => {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".config"))
+        }
+    }
+    .map(|dir| dir.join("sprag"))
 }
 
 /// The user config file's full path, or `None` when neither `XDG_CONFIG_HOME` nor `HOME` is set.

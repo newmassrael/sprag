@@ -76,3 +76,9 @@ sprag-peer = { workspace = true }
 # sprag-mcp's: `cargo test -p sprag-tui` builds the sprag-host LIB and never its BINS, and an
 # absence check cannot see a binary that is THERE and older than the edit (R241, R284, R367).
 sprag-gate = { workspace = true }
+# Where the PTY gate puts its sockets, its config homes and the state home it gives every
+# process it spawns. `std::env::temp_dir()` answers a RELATIVE path when TMPDIR is set-and-empty
+# (register item 794), and a relative XDG_STATE_HOME is one the daemon must IGNORE — so the
+# isolation this file believes it has would silently become the tester's own ~/.local/state
+# (register item 802, measured: 67 daemons of this file's own left running against it).
+sprag-scratch = { workspace = true }

@@ -239,6 +239,26 @@ fn main() -> io::Result<()> {
     // `SPRAG_LOG` (RUST_LOG syntax). Stderr, never stdout — stdout carries the stdin/stdout wire.
     init_tracing();
 
+    // ⛔⛔⛔⛔⛔ **A HOME THIS PROCESS WAS TOLD AND COULD NOT USE IS SAID OUT LOUD** — register item
+    // 802, and this is the FIRST thing said because everything below writes through those two
+    // directories.
+    //
+    // The XDG specification makes a non-absolute `XDG_STATE_HOME` / `XDG_CONFIG_HOME` invalid, so
+    // sprag ignores it and falls back to the user's home — correct, and until now completely
+    // silent. Whoever set the variable meant to choose a directory; they got somebody else's, and
+    // nothing anywhere said the choice had been dropped. Measured cost on this machine: a test
+    // harness whose `TMPDIR` was set-and-empty derived a relative state home from
+    // `std::env::temp_dir()` (item 794's shape), and fourteen daemons wrote the developer's real
+    // `~/.local/state/sprag` while the harness's cleanup removed a relative directory that was
+    // never the one being written.
+    //
+    // ⚠ A WARNING RATHER THAN A REFUSAL, deliberately: a person whose environment is wrong must
+    // still get a working multiplexer, and the fallback is what the spec asks for. What was
+    // missing was not the behaviour but the sentence.
+    for said in sprag_host::refused_homes() {
+        tracing::warn!(target: "sprag_host::durability", "{said}");
+    }
+
     // Take the cgroup subtree a pane's share is enforced in, BEFORE any pane is born (R336).
     //
     // Two things change on the machine and neither is undone by dropping the handle: this process

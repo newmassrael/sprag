@@ -116,9 +116,10 @@ pub use attach::{
 };
 pub use config::{CONFIG_FILE, ConfigError, UserConfig};
 pub use durability::{
-    gui_window_path, load_gui_window, load_runs, load_snapshot, reconnect_command,
-    restore_allowlist, restore_command, runs_path, save_gui_window_if_changed, save_if_changed,
-    save_runs_if_changed, save_snapshot, snapshot_path,
+    CONFIG_HOME_VAR, STATE_HOME_VAR, XdgHome, gui_window_path, load_gui_window, load_runs,
+    load_snapshot, reconnect_command, refused_home_sentence, refused_homes, restore_allowlist,
+    restore_command, runs_path, save_gui_window_if_changed, save_if_changed, save_runs_if_changed,
+    save_snapshot, snapshot_path, xdg_home,
 };
 pub use events::{Batch, Event, EventLog, Record};
 pub use history::{

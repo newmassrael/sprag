@@ -120,13 +120,87 @@ const BOOT_PANE: (u16, u16) = (40, 6);
 /// A near-copy of `sprag-host`'s own `HostChild`, and deliberately not shared with it: they are
 /// different packages, and exporting a test harness from a library — or adding a third crate to
 /// hold twenty lines — would cost more than the copy does.
-struct Daemon(Child, PathBuf);
+struct Daemon {
+    child: Child,
+    /// The rest of what this daemon left on the machine, ended after the child — fields drop after
+    /// the body below, in declaration order. Held only for that `Drop`, which is why it is named
+    /// with a leading underscore rather than read.
+    _site: Site,
+}
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-        let _ = std::fs::remove_file(&self.1);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        // ⚠ [`Site`] runs next — fields drop after this body, in declaration order — and it is what
+        // ends whatever ELSE came to serve this socket. Split out precisely because that half must
+        // happen for a socket this file never spawned a `Child` on.
+    }
+}
+
+/// Everything a test in this file owns ON THE MACHINE, keyed on the one address it keeps: the
+/// socket. Ended together on scope exit, including a test panic.
+///
+/// # ⛔⛔⛔⛔⛔ WHAT WAS SURVIVING EVERY RUN OF THIS FILE — register item 802
+///
+/// [`Tui::start`] has always said that a client whose connect fails "would spawn a daemon of its
+/// own", and pinned WHICH BINARY that would be. Nothing ended it. `sprag_client`'s `reach_daemon`
+/// connects with a **ZERO** timeout and spawns `sprag-term --daemon` when that fails — a loaded
+/// machine reaches it with nothing broken — and such a daemon is detached by design: it reparents
+/// to init and outlives every process this file holds a handle to.
+///
+/// ⚠⚠ MEASURED 2026-09-01: **67 `sprag-term --daemon` processes** from ONE run of this file on
+/// 2026-08-31 were still alive fifteen hours later, one per socket
+/// (`sprag-tui-pty-910212-*.sock`), each persisting a snapshot and a run log into the tester's real
+/// `~/.local/share/sprag-loop/state/sprag/` every five seconds. Item 802 was registered against the
+/// FILES; the files are the symptom, and a cleanup of them alone would have been undone within one
+/// tick because the writer was still running.
+///
+/// ⚠ Ended through the shipped `kill-server` rather than a pid hunt: this harness never learns that
+/// daemon's pid, and the socket is the only address it has. A socket nothing is serving makes this
+/// a no-op, which is the ordinary case.
+struct Site {
+    sock: PathBuf,
+    /// The `sprag` binary this guard will end the daemon with, RESOLVED AT CONSTRUCTION.
+    ///
+    /// ⚠⚠ [`sprag_cli_bin`] panics on a missing or stale binary — correctly — and a panic raised
+    /// inside a `Drop` that is already unwinding a failed test ABORTS the process, taking the
+    /// failure message with it. Resolving here moves that panic to a place where it is a legible
+    /// test failure.
+    cli: PathBuf,
+}
+
+impl Site {
+    fn new(sock: PathBuf) -> Self {
+        Self {
+            cli: sprag_cli_bin(),
+            sock,
+        }
+    }
+}
+
+impl Drop for Site {
+    fn drop(&mut self) {
+        let _ = Command::new(&self.cli)
+            .arg("kill-server")
+            .env("SPRAG_HOST_RPC_SOCK", &self.sock)
+            .env("XDG_STATE_HOME", isolated_state_home(&self.sock))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::fs::remove_file(&self.sock);
+        // ⚠ And the state home this socket's processes were given — removed on the socket's terms,
+        // so a guard cannot end up cleaning one and leaking the other.
+        let _ = std::fs::remove_dir_all(isolated_state_home(&self.sock));
+        // ⚠⚠ AND THE TWO SIBLINGS A `--daemon` MAKES BESIDE ITS SOCKET, which only a
+        // client-spawned daemon ever creates here: `<sock>.log` (its redirected stdio) and
+        // `<sock>.lock` (its single-instance flock). Found by measurement, not by reading: the
+        // gate below went green while `/tmp/sprag-tui-pty-*.{lock,log}` accumulated one pair per
+        // run. Derived the same way `sprag-term` derives them, from the socket this guard holds.
+        for sibling in ["log", "lock"] {
+            let _ = std::fs::remove_file(self.sock.with_extension(sibling));
+        }
     }
 }
 
@@ -167,10 +241,77 @@ fn sibling_bin(name: &str) -> PathBuf {
 /// The counter is load-bearing: `cargo test` runs this file's tests as parallel threads of one
 /// binary, so a path keyed only on the pid would be the same string in every test, and each test
 /// unlinks its path before spawning — i.e. removes the socket a sibling is serving on.
+/// ⚠⚠ THE ROOT IS ASKED FOR RATHER THAN TAKEN — register item 794, and item 802 is what it cost
+/// here. `std::env::temp_dir()` answers a RELATIVE path when `TMPDIR` is set-and-empty, and every
+/// path this file derives hangs off it: the socket, the config homes, and (through
+/// [`isolated_state_home`]) the state home handed to every process spawned below. A relative state
+/// home is one the daemon is REQUIRED to ignore, so the isolation would have been silently undone
+/// rather than loudly broken.
 fn socket_path() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!("sprag-tui-pty-{}-{n}.sock", std::process::id()))
+    sprag_scratch::scratch_root().join(format!("sprag-tui-pty-{}-{n}.sock", std::process::id()))
+}
+
+/// The state home every process this file spawns is given, derived from the socket it is about.
+///
+/// # ⛔⛔⛔⛔⛔ Why this file needed one at all — register item 802
+///
+/// It had none. The daemon, the `sprag-tui` clients and the `sprag` CLI runs all inherited the
+/// tester's ambient `XDG_STATE_HOME`, so anything any of them wrote — a snapshot, a run log, a
+/// pane history, a `hook-mute` breadcrumb — landed in a real person's `~/.local/state/sprag` and
+/// stayed there. `sprag-host`'s own `cli.rs` has had this seam since 2026-08-19; this file is the
+/// sibling that never grew one, and the measurement that found it is in [`Daemon::drop`].
+///
+/// ⚠ Keyed on the SOCKET, which [`socket_path`] already mints unique per call, so parallel threads
+/// of this one binary cannot share a state home any more than they can share a socket — and
+/// [`Daemon::drop`] can find it again from the only address it keeps.
+fn isolated_state_home(sock: &Path) -> PathBuf {
+    sock.with_extension("state")
+}
+
+/// [`daemon_on`] given a bounded moment to become `None`.
+///
+/// ⚠ `kill-server` returns when the daemon has been TOLD, not when it has gone: the daemon ends
+/// through its own shutdown edge, which cancels in-flight runs and joins its threads first. A
+/// teardown assertion that read the table in the same instant would be measuring that gap.
+fn wait_gone(sock: &Path) -> Option<u32> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let pid = daemon_on(sock);
+        if pid.is_none() || Instant::now() >= deadline {
+            return pid;
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Whether any `sprag-term` process is alive that was started beside `sock`.
+///
+/// # ⛔⛔⛔⛔⛔ THE SOCKET FILE IS NOT THE DAEMON, AND ASKING THE SOCKET IS A DEAD CONTROL
+///
+/// Measured 2026-09-01 while proving this file's item-802 gate: the teardown assertion first read
+/// *`HostConn::connect` fails*, and the mutation that removed the `kill-server` from [`Site`]
+/// stayed **GREEN**. The guard unlinks the socket either way, so a connect to a path with no file
+/// at it fails exactly as a connect to a dead daemon does — *the socket is gone* and *the daemon is
+/// gone* were two states sharing one sentence, which is the very shape item 802 is about.
+///
+/// ⚠ Matched on the ENVIRONMENT rather than the binary name, for `cli.rs`'s reason: a box can be
+/// running the tester's own daemon, and a probe that took the first `sprag-term` it found would be
+/// answering about somebody's terminal. `SPRAG_HOST_RPC_SOCK` is unique per call here.
+fn daemon_on(sock: &Path) -> Option<u32> {
+    let want = format!("SPRAG_HOST_RPC_SOCK={}", sock.display());
+    let me = std::process::id();
+    sprag_terminal::procfs::pids_named(sprag_rpc::DAEMON_BIN_NAME)
+        .into_iter()
+        .find(|&pid| {
+            pid != me
+                && sprag_terminal::procfs::environ(pid).is_some_and(|environ| {
+                    environ
+                        .split(|byte| *byte == 0)
+                        .any(|value| value == want.as_bytes())
+                })
+        })
 }
 
 /// Spawn a daemon whose boot pane runs `program`.
@@ -197,11 +338,27 @@ fn spawn_daemon_with_config(program: &[&str], config: Option<&str>) -> (Daemon, 
         .args(program)
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
+        // ⚠⚠⚠ WHERE THIS DAEMON MAY WRITE — see [`isolated_state_home`]. Without it a daemon
+        // spawned here persists into the tester's own `~/.local/state/sprag` (item 802).
+        .env("XDG_STATE_HOME", isolated_state_home(&sock))
+        // ⚠⚠ AND WHICH OPTIONS IT READS. A daemon reads `$XDG_CONFIG_HOME/sprag/config.toml`, so
+        // without a default here every daemon in this file inherits the tester's own settings —
+        // and the moment a test's subject IS an option, the gate measures whatever is set on the
+        // box it happens to run on rather than the shipped default. `cli.rs` made this decision on
+        // 2026-08-25; this file is its sibling and never did. Placed BEFORE the caller's own, so a
+        // test that names a config home still wins.
+        .env("XDG_CONFIG_HOME", isolated_state_home(&sock).join("config"))
         .envs(config.map(|home| ("XDG_CONFIG_HOME", home)))
         .stdin(Stdio::null())
         .spawn()
         .expect("spawn the sprag-term daemon");
-    (Daemon(child, sock.clone()), sock)
+    (
+        Daemon {
+            child,
+            _site: Site::new(sock.clone()),
+        },
+        sock,
+    )
 }
 
 // ----- the wire, as an observer -----
@@ -1086,6 +1243,11 @@ impl Tui {
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_sprag-tui"));
         command.env("SPRAG_GUI_HOST_SOCK", sock);
         command.env("SPRAG_GUI_SESSION", session);
+        // ⚠⚠ WHICH OPTIONS THIS CLIENT READS, and which the daemon it may spawn would read —
+        // register item 802. Without it both inherit the tester's own `config.toml`, so a gate
+        // about a default measures whatever is set on the box it runs on. BEFORE the caller's
+        // list, so the keymap and window-size tests that name their own still win.
+        command.env("XDG_CONFIG_HOME", isolated_state_home(sock).join("config"));
         for (key, value) in envs {
             command.env(key, value);
         }
@@ -1104,6 +1266,9 @@ impl Tui {
         command.args(["attach", session, "--tui"]);
         command.env("SPRAG_HOST_RPC_SOCK", sock);
         command.env("SPRAG_TUI_BIN", env!("CARGO_BIN_EXE_sprag-tui"));
+        // ⚠ As in [`Tui::attach_with_env`] — the CLI and the client it launches read options, and
+        // the tester's must not be the ones they read (item 802).
+        command.env("XDG_CONFIG_HOME", isolated_state_home(sock).join("config"));
         Self::start(command, sock, session)
     }
 
@@ -1118,6 +1283,20 @@ impl Tui {
         // Hermetic: if the connect ever failed, the client would spawn a daemon of its own, and it
         // must be THIS build's rather than whatever is on the tester's PATH.
         command.env("SPRAG_GUI_HOST_BIN", sprag_term_bin());
+        // ⛔⛔⛔⛔⛔ **AND WHERE THAT DAEMON MAY WRITE** — register item 802, and the half the line
+        // above had been carrying alone for months.
+        //
+        // The comment above states the mechanism exactly and pinned only the BINARY. A client that
+        // cannot connect really does spawn `sprag-term --daemon` (`sprag_client`'s `reach_daemon`,
+        // over a ZERO-timeout connect, so a loaded machine reaches it without anything being
+        // broken), and that daemon inherits this process's environment. With no `XDG_STATE_HOME`
+        // it inherited the TESTER's, and persisted there every five seconds for as long as it
+        // lived — which, with nothing killing it, was until the machine was rebooted.
+        //
+        // ⚠ Set at `start` rather than in the two constructors above, because this is the one seam
+        // every client in this file passes through: `attach`, `attach_with_env` and
+        // `attach_via_cli` all end here, and a fourth added tomorrow does too.
+        command.env("XDG_STATE_HOME", isolated_state_home(sock));
         // The client loads terminfo from `TERM`; naming one keeps the sequences it writes
         // independent of the terminal the test suite happens to be running in.
         command.env("TERM", "xterm-256color");
@@ -1836,6 +2015,114 @@ fn a_blocked_agent_pane_reaches_the_terminals_window_title() {
 /// text this test finds on the screen cannot have come from anywhere but `cat`, on the other side
 /// of the daemon. That is the whole claim of the front, observed from outside every process that
 /// implements it.
+/// ⛔⛔⛔⛔⛔ **A DAEMON NO TEST SPAWNED WRITES WHERE THE TEST SAID, AND ENDS WITH IT** — register
+/// item 802, driven rather than argued.
+///
+/// # What this stages, and why it is the shape that leaked
+///
+/// Every other test in this file starts the daemon itself. This one starts NONE: it points a
+/// client at a socket nothing is serving, and the client brings a daemon into being on its own
+/// (`sprag_client`'s `reach_daemon` → `sprag-term --daemon`). That daemon is detached by design —
+/// no handle in this process refers to it — and it is the one that was surviving every run: 67 of
+/// them from a single 2026-08-31 run were still alive fifteen hours later, writing a snapshot and a
+/// run log into the tester's real state home every five seconds.
+///
+/// ⚠⚠ THE PREMISE IS ASSERTED, not assumed. *No files landed anywhere* is also what a run with no
+/// daemon at all looks like, and that fixture would satisfy the claim while measuring nothing — so
+/// arm 1 proves a daemon really is serving a socket this test never bound.
+///
+/// ⚠ The wait for arm 2 is long because the daemon's durability saver is on a five-second tick
+/// (`sprag-term`'s `SNAPSHOT_INTERVAL`); the first tick always writes, since it has nothing to
+/// compare against.
+#[test]
+fn a_daemon_a_client_brought_into_being_writes_where_this_test_said_and_ends_with_it() {
+    let sock = socket_path();
+    let state = isolated_state_home(&sock);
+    let _ = std::fs::remove_file(&sock);
+    let _ = std::fs::remove_dir_all(&state);
+    let stem = sock
+        .file_stem()
+        .expect("the socket path has a stem")
+        .to_string_lossy()
+        .into_owned();
+
+    {
+        // ⛔⛔⛔⛔⛔ **DECLARED BEFORE THE CLIENT, SO IT DROPS AFTER IT.** Measured 2026-09-01: an
+        // earlier draft ended the site explicitly while the client was still alive, and the client
+        // did exactly what it is built to do — found no daemon and spawned another. `kill-server`
+        // is not a fence a live client stays behind, so the CLIENT has to go first. Rust drops
+        // locals in reverse declaration order, which is what puts them in that order here.
+        let _site = Site::new(sock.clone());
+        let _tui = Tui::attach(&sock, "item-802");
+
+        // ── 1. THE PREMISE: something came to serve a socket this test never bound ────────────
+        wait_for("the client to bring a daemon into being", || {
+            let serving = HostConn::connect(&sock, Duration::from_millis(200)).is_ok();
+            if serving && daemon_on(&sock).is_some() {
+                return Ok(());
+            }
+            Err(format!(
+                "⚠⚠ THE PREMISE FAILED: no `sprag-term` this file did not spawn is alive beside \
+                 {} (serving={serving}), so *nothing was written* below would be true of a run \
+                 with no daemon in it and would measure nothing",
+                sock.display(),
+            ))
+        });
+
+        // ── 2. AND IT PERSISTS WHERE THIS TEST SAID, NOT WHERE THE TESTER LIVES ───────────────
+        let written = state.join("sprag").join(format!("{stem}.snapshot.json"));
+        wait_for(
+            "the daemon the client spawned to persist under this test's own state home",
+            || {
+                if written.exists() {
+                    return Ok(());
+                }
+                Err(format!(
+                    "⛔ ITEM 802: {} does not exist. A daemon this file never spawned is \
+                     persisting somewhere else — which, with no `XDG_STATE_HOME` on the client \
+                     that spawned it, is whoever ran this suite.",
+                    written.display(),
+                ))
+            },
+        );
+        assert!(
+            state.is_absolute(),
+            "⚠ a relative state home is one the daemon is REQUIRED to ignore, so this test would \
+             be asserting about a directory nothing writes: {}",
+            state.display(),
+        );
+    }
+
+    // ── 3. AND IT GOES WITH THE TEST — item 802's own done-when ───────────────────────────────
+    // ⚠⚠ ASKED OF THE PROCESS TABLE, NOT OF THE SOCKET — see [`daemon_on`]. The first draft of
+    // this line read `HostConn::connect(...).is_err()` and the mutation that deleted the
+    // `kill-server` was GREEN against it, because the guard unlinks the socket either way.
+    let survivor = wait_gone(&sock);
+    assert!(
+        survivor.is_none(),
+        "⛔ ITEM 802: `sprag-term` {survivor:?} is still alive beside {} after the test that \
+         caused it ended. This is the process that keeps re-creating the files; removing them \
+         without ending it buys exactly one five-second tick.",
+        sock.display(),
+    );
+    assert!(
+        !state.exists(),
+        "⛔ ITEM 802's done-when: {} outlived the test that made it",
+        state.display(),
+    );
+    // ⚠ AND THE SIBLINGS THAT DAEMON MADE BESIDE ITS SOCKET. Only a client-spawned `--daemon`
+    // creates these here, so nothing in this file was ever cleaning them: measured accumulating
+    // one pair per run of this very gate while it was green.
+    for sibling in ["log", "lock"] {
+        let left = sock.with_extension(sibling);
+        assert!(
+            !left.exists(),
+            "⛔ ITEM 802: {} outlived the test that made it",
+            left.display(),
+        );
+    }
+}
+
 #[test]
 fn typing_reaches_the_child_and_comes_back_painted() {
     let (_daemon, _sock, _conn, _session, mut tui) = attached_client();
@@ -3951,7 +4238,9 @@ impl ConfigHome {
     fn new(text: &str) -> Self {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("sprag-tui-cfg-{}-{n}", std::process::id()));
+        // ⚠ Asked for rather than taken — see [`socket_path`] (register items 794 and 802).
+        let dir =
+            sprag_scratch::scratch_root().join(format!("sprag-tui-cfg-{}-{n}", std::process::id()));
         std::fs::create_dir_all(dir.join("sprag")).expect("temp config dir");
         std::fs::write(dir.join("sprag").join("config.toml"), text).expect("write config");
         Self(dir)
@@ -3959,6 +4248,12 @@ impl ConfigHome {
 
     fn as_str(&self) -> &str {
         self.0.to_str().expect("a utf-8 temp path")
+    }
+
+    /// The same directory as a path, for a caller deriving a sibling of it (the state home a
+    /// socketless CLI run is given — item 802).
+    fn as_path(&self) -> &Path {
+        &self.0
     }
 
     /// Replace the config a live client is reading — the edit a person makes in their editor while
@@ -4036,6 +4331,10 @@ impl ConfigHome {
 fn sprag_config(config: &ConfigHome, args: &[&str]) -> std::process::Output {
     let out = Command::new(sprag_cli_bin())
         .args(args)
+        // ⚠ THE CLI WRITES STATE TOO — `sprag mute-hook` files `$XDG_STATE_HOME/sprag/hook-mute.N`
+        // — so a run with no socket to derive a state home from still gets one of its own, beside
+        // this config home rather than in the tester's (item 802).
+        .env("XDG_STATE_HOME", config.as_path().join("state"))
         .env("XDG_CONFIG_HOME", config.as_str())
         .output()
         .expect("run the sprag CLI");
@@ -4054,6 +4353,10 @@ fn sprag_on(sock: &Path, config: &ConfigHome, args: &[&str]) -> std::process::Ou
     let out = Command::new(sprag_cli_bin())
         .args(args)
         .env("SPRAG_HOST_RPC_SOCK", sock)
+        // ⚠ The SAME state home the daemon on this socket was given, for `cli.rs`'s reason: these
+        // two processes are meant to share one machine's state, and a CLI that wrote somewhere the
+        // daemon does not read would be a gate proving nothing (item 802).
+        .env("XDG_STATE_HOME", isolated_state_home(sock))
         .env("XDG_CONFIG_HOME", config.as_str())
         .output()
         .expect("run the sprag CLI");
@@ -4447,6 +4750,8 @@ fn two_clients_on_two_windows_of_one_session_size_them_separately() {
     let listed = Command::new(sprag_cli_bin())
         .args(["list-clients"])
         .env("SPRAG_HOST_RPC_SOCK", &sock)
+        // ⚠ The state home this socket's daemon was given — see [`isolated_state_home`] (item 802).
+        .env("XDG_STATE_HOME", isolated_state_home(&sock))
         .output()
         .expect("run sprag list-clients");
     let listed = String::from_utf8_lossy(&listed.stdout);
@@ -5265,6 +5570,8 @@ fn an_unresolvable_resize_window_is_refused_and_leaves_the_pin_alone() {
     let refused = Command::new(sprag_cli_bin())
         .args(["resize-window", "-t", &session, "-a"])
         .env("SPRAG_HOST_RPC_SOCK", &sock)
+        // ⚠ The state home this socket's daemon was given — see [`isolated_state_home`] (item 802).
+        .env("XDG_STATE_HOME", isolated_state_home(&sock))
         .env("XDG_CONFIG_HOME", config.as_str())
         .output()
         .expect("run the sprag CLI");

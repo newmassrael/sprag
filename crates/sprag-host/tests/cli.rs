@@ -60,6 +60,43 @@ fn isolated_state_home(sock: &Path) -> PathBuf {
     sock.with_extension("state")
 }
 
+/// Remove `sock` and the two files a `--daemon` makes BESIDE it: `<sock>.log` (its redirected
+/// stdio) and `<sock>.lock` (its single-instance flock).
+///
+/// ⚠⚠ ONE SPELLING, and register item 802 is the item about there being two. [`DaemonGuard`] and
+/// [`SocketSite`] both owe this tidying, and a copy in each is exactly how one of them comes to
+/// know about a file the other has never heard of — which is how the siblings went uncleaned by
+/// anything at all until 2026-09-01 (43 pairs in `/tmp` from a single run).
+fn remove_socket_litter(sock: &Path) {
+    let _ = std::fs::remove_file(sock);
+    for sibling in ["log", "lock"] {
+        let _ = std::fs::remove_file(sock.with_extension(sibling));
+    }
+}
+
+/// Everything named after a socket this file minted, removed when the test ends — for a gate that
+/// mints one and puts NO daemon on it.
+///
+/// # ⛔⛔⛔⛔⛔ A socket with nothing serving it still gets written to — register item 802
+///
+/// [`DaemonGuard`] owns this for every gate that starts a daemon, so the shape nobody was covering
+/// is the gate that deliberately does not: `sprag hook` files
+/// `$XDG_STATE_HOME/sprag/hook-mute.<pane>` precisely WHEN it could not deliver its report, and
+/// [`sprag_stdin`] hands every CLI run the state home derived from its socket. So a socket with no
+/// daemon on it is not the case where nothing is written — it is the case where the write is
+/// GUARANTEED, and it was the one case with no owner.
+///
+/// ⚠ Measured 2026-09-01, per run of the suite: one `<sock>.state/sprag/hook-mute.0` left in
+/// `/tmp`, from `a_wedged_daemon_cannot_stall_the_agents_hook`.
+struct SocketSite(PathBuf);
+
+impl Drop for SocketSite {
+    fn drop(&mut self) {
+        remove_socket_litter(&self.0);
+        let _ = std::fs::remove_dir_all(isolated_state_home(&self.0));
+    }
+}
+
 /// **A DIRECTORY THAT IS A TREE**, for the daemon this harness boots — register item 738, layer 4.
 ///
 /// ⚠⚠⚠⚠⚠ The daemon's boot pane is born in the daemon's own working directory, and under `cargo`
@@ -74,7 +111,13 @@ fn isolated_state_home(sock: &Path) -> PathBuf {
 ///
 /// ⚠ ONE PER PROCESS rather than per socket, and that is deliberate: a tree is a PLACE, not a
 /// resource a test owns, so panes from different daemons standing in the same one measure exactly
-/// what panes in one repository measure. It is left behind, like the state homes beside it.
+/// what panes in one repository measure.
+///
+/// ⚠⚠ IT IS LEFT BEHIND, AND AS OF REGISTER ITEM 802 IT IS THE ONLY THING THIS FILE LEAVES. The
+/// sentence here used to read *"like the state homes beside it"*, and that stopped being true the
+/// day the guards started taking them: a tree keyed on the PROCESS has no scope to be dropped at,
+/// which is the honest reason and not the same reason as the one it used to borrow. One directory
+/// per run of this binary, in the temporary directory, and nothing writes to it after the run.
 fn a_tree_to_stand_in() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("sprag-cli-tree-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a tree for the daemon's panes to stand in");
@@ -2522,8 +2565,26 @@ fn the_cli_waits_for_output_a_pane_has_not_printed_yet() {
 // their scrollback.
 // ---------------------------------------------------------------------------
 
-/// Kills whatever daemon is serving `sock` and removes the socket and the state directory —
-/// including on a panicked assertion, so a failed run leaks neither a process nor a temp tree.
+/// Ends everything this file put on `sock` and removes everything it wrote there — including on a
+/// panicked assertion, so a failed run leaks neither a process nor a temp tree.
+///
+/// # ⛔⛔⛔⛔⛔ IT USED TO END ONE PROCESS OF SEVERAL — register item 802, second address
+///
+/// This guard killed [`daemon_pid`] and stopped. A run's driver is a process of its own
+/// (`run-driver-process` defaults to `on`), spawned by the daemon and holding the same endpoint in
+/// its environment — so SIGKILLing its parent does not end it, it ORPHANS it: the driver is adopted
+/// by init, keeps its socket in `environ`, and never exits.
+///
+/// ⚠⚠ MEASURED 2026-09-01, as a delta across one `cargo test -p sprag-host -p sprag-tui`: twelve
+/// processes survived the run, and **every one of them was a driver** (`--drive N -t … -w 0`) —
+/// not one was a daemon, because the daemons were being ended correctly the whole time. Cumulative
+/// on this machine: **165 leaked test processes holding 1006 MB of RSS** while the box was 15 GB
+/// into swap, i.e. this suite was making its own build machine slower every time it ran.
+///
+/// ⭐ The walk that answers *everything on this socket* was ALREADY HERE — [`sprag_term_pids`],
+/// written for a different gate — and `daemon_pid` computed it, took one pid and dropped the rest.
+/// The fact existed and the teardown had no sentence that asked for it, which is the shape item 802
+/// is about at every one of its addresses.
 struct DaemonGuard {
     sock: PathBuf,
     state: PathBuf,
@@ -2531,11 +2592,41 @@ struct DaemonGuard {
 
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
-        if let Some(pid) = daemon_pid(&self.sock) {
+        end_everything_on(&self.sock);
+        // ⚠ THE SOCKET AND THE TWO FILES A `--daemon` MAKES BESIDE IT — [`remove_socket_litter`],
+        // which is where that list is spelled, once. `sprag-tui`'s PTY gate learned the same thing
+        // in the same round; the two harnesses spawn the same binary and owe the same tidying.
+        remove_socket_litter(&self.sock);
+        // ⚠ The state home is NOT socket-derived at every call site here (some gates pass a
+        // [`scratch_state_home`], and one passes a home two daemon generations share), so it is
+        // carried rather than computed — the one thing [`SocketSite`] cannot do for this guard.
+        let _ = std::fs::remove_dir_all(&self.state);
+    }
+}
+
+/// SIGKILL every `sprag-term` holding `sock`, until nothing does — [`DaemonGuard`]'s half that is
+/// about PROCESSES.
+///
+/// ⚠⚠ THE DAEMON FIRST, ON EVERY PASS, because it is the only process here that can make another
+/// one: killing a driver while its daemon still has the run in flight is a race against a respawn.
+/// Then whatever is left, then look again — a driver the daemon spawned between the walk and the
+/// kill is exactly the state this loop exists for.
+///
+/// ⚠ Bounded, because a teardown that could hang would turn a failed assertion into a suite that
+/// never reports. A pid that outlives the deadline is left, and the gate below is what says so.
+fn end_everything_on(sock: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(pid) = daemon_pid(sock) {
             kill_daemon(pid);
         }
-        let _ = std::fs::remove_file(&self.sock);
-        let _ = std::fs::remove_dir_all(&self.state);
+        let holding = sprag_term_pids(sock);
+        if holding.is_empty() || Instant::now() >= deadline {
+            return;
+        }
+        for pid in holding {
+            kill_daemon(pid);
+        }
     }
 }
 
@@ -2547,29 +2638,12 @@ impl Drop for DaemonGuard {
 /// and that value is unique per test call — so this cannot pick up a sibling test's daemon the way
 /// a `pkill -f sprag-term` would.
 fn daemon_pid(sock: &Path) -> Option<u32> {
-    let want = format!("SPRAG_HOST_RPC_SOCK={}", sock.display());
-    let me = std::process::id();
-    // ⚠ THROUGH `sprag_terminal::procfs`, which walks whatever process table this OS has. This used
-    // to read `/proc` directly — the directory, each entry's `comm`, each entry's `environ` — so the
-    // three tests that need it were `#[cfg(target_os = "linux")]` and the restore-after-SIGKILL path
-    // was never once exercised off Linux. Nothing about the QUESTION is Linux-shaped: it is "which
-    // process is named sprag-term and was started beside THIS socket", and both halves are portable
-    // now (R343).
-    //
-    // The socket is matched from the ENVIRONMENT rather than the name, because a box can be running
-    // the developer's own daemon: a probe that took the first `sprag-term` it found would SIGKILL
-    // somebody's terminal (R278, and this test kills what it finds).
-    let holding: Vec<u32> = sprag_terminal::procfs::pids_named(sprag_rpc::DAEMON_BIN_NAME)
-        .into_iter()
-        .filter(|&pid| {
-            pid != me
-                && sprag_terminal::procfs::environ(pid).is_some_and(|environ| {
-                    environ
-                        .split(|byte| *byte == 0)
-                        .any(|value| value == want.as_bytes())
-                })
-        })
-        .collect();
+    // ⚠⚠ THE WALK IS [`sprag_term_pids`]'s, and it is CALLED rather than repeated. It was spelled
+    // twice — identically — until register item 802 measured what the second copy was for: this
+    // function reduced the set to one pid, and `DaemonGuard` then ended only that one while the
+    // rest of the set went on living. Two spellings of *everything on this socket* is how a
+    // teardown comes to disagree with a gate about what it left behind.
+    let holding = sprag_term_pids(sock);
     // ⚠⚠⚠⚠⚠ **THE ONE THAT IS NOBODY'S CHILD, AND THAT STOPPED BEING A FORMALITY ON 2026-08-24.**
     // Until `run-driver-process` defaulted to `on`, exactly one process held this socket in its
     // environment and the first match WAS the daemon. A driver is spawned by the daemon with the
@@ -2643,6 +2717,286 @@ fn spawn_daemon_from(bin: &Path, sock: &Path, state: &Path) {
     assert!(status.success(), "the daemon's parent forked cleanly");
 }
 
+/// ⛔⛔⛔⛔⛔ **A DAEMON TOLD A STATE HOME IT CANNOT USE SAYS SO, AND SAYS WHERE IT WROTE INSTEAD**
+/// — register item 802.
+///
+/// # The two states that were writing one sentence
+///
+/// `$XDG_STATE_HOME` unset and `$XDG_STATE_HOME` set to something the XDG specification makes
+/// invalid — a relative path — produced the SAME silent outcome: `$HOME/.local/state/sprag`.
+/// Ignoring the invalid value is correct and is not changed here. Saying nothing about it is what
+/// this pays off.
+///
+/// ⚠⚠ IT IS NOT A HYPOTHETICAL SPELLING. `std::env::temp_dir()` answers a RELATIVE path when
+/// `TMPDIR` is set-and-empty (item 794), so a harness deriving its isolation from it hands the
+/// daemon exactly this. Measured 2026-08-31 on this machine: fourteen daemons spawned by THIS FILE
+/// were told a relative state home, wrote the developer's real `~/.local/state/sprag`, and were
+/// still there fifteen hours later — while this file's own guard dutifully removed a relative
+/// directory nothing had ever written to.
+///
+/// # ⚠⚠⚠ Three arms, because the sentence alone is not the claim
+///
+/// A daemon that printed the warning and wrote somewhere else again would satisfy arm 1 and be
+/// useless. So arm 2 asks the FILESYSTEM where it actually wrote, and arm 3 asks the premise: that
+/// it did NOT create the relative directory it was told — which, being relative, would land inside
+/// this crate's own source tree (item 795's harm, staged here on purpose and refused).
+///
+/// ⚠ `HOME` is a scratch of this test's own, so the fallback this gate drives lands there instead
+/// of in whoever is running the suite — a gate about not writing somebody's home must not write it.
+#[test]
+fn a_daemon_told_a_state_home_it_refuses_says_so_and_says_where_it_wrote_instead() {
+    let sock = socket_path();
+    let home = scratch_state_home();
+    std::fs::create_dir_all(&home).expect("a scratch HOME for the fallback to land in");
+    let _guard = DaemonGuard {
+        sock: sock.clone(),
+        state: home.clone(),
+    };
+
+    // The exact shape `TMPDIR=` produces: a name with no directory in front of it.
+    let told = "sprag-cli-it-802-relative.state";
+    let status = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
+        .arg("--daemon")
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .env("SPRAG_HOST_RPC", "1")
+        .env("XDG_STATE_HOME", told)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("HOME", &home)
+        .stdin(Stdio::null())
+        .status()
+        .expect("spawn the sprag-term daemon");
+    assert!(status.success(), "the daemon's parent forked cleanly");
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+
+    // ── 1. IT SAYS IT, in the one mouth a detached daemon has ────────────────────────────────
+    let log = sock.with_extension("log");
+    let fell_back = home.join(".local").join("state").join("sprag");
+    let mut said = String::new();
+    let spoke = wait_for(Duration::from_secs(10), || {
+        said = std::fs::read_to_string(&log).unwrap_or_default();
+        said.contains(sprag_host::STATE_HOME_VAR)
+    });
+    assert!(
+        spoke,
+        "⛔ ITEM 802: this daemon was told {told:?} for {}, could not use it, and its log says \
+         nothing about that. Nothing anywhere in the system distinguishes *nobody told me* from \
+         *you told me and I threw it away*. Log: {said:?}",
+        sprag_host::STATE_HOME_VAR,
+    );
+    assert!(
+        said.contains(told),
+        "⚠ a refusal that does not quote the value cannot be acted on: {said:?}",
+    );
+    assert!(
+        said.contains(&fell_back.display().to_string()),
+        "⚠⚠ AND THE THIRD FACT IS THE ONE THAT MATTERS: without WHERE it wrote instead, a reader \
+         learns their setting was dropped and still cannot find their state. Wanted {}, log \
+         {said:?}",
+        fell_back.display(),
+    );
+
+    // ── 2. AND IT REALLY WROTE THERE, so the sentence is a report and not a claim ─────────────
+    let stem = sock
+        .file_stem()
+        .expect("the socket has a stem")
+        .to_string_lossy()
+        .into_owned();
+    let landed = fell_back.join(format!("{stem}.snapshot.json"));
+    assert!(
+        wait_for(Duration::from_secs(30), || landed.exists()),
+        "⚠⚠ THE PREMISE FAILED: nothing was written to {}, so the sentence above is unverified \
+         and this gate would pass against a daemon that says one thing and does another",
+        landed.display(),
+    );
+
+    // ── 3. AND NOT WHERE IT WAS TOLD — item 795's harm, staged and refused ────────────────────
+    assert!(
+        !Path::new(told).exists(),
+        "⚠⚠⚠ THE RELATIVE DIRECTORY WAS HONOURED. It resolves against the daemon's working \
+         directory, which under `cargo test` is this crate's own source tree, so honouring it puts \
+         a daemon's durable state inside the repository (register item 795): {told}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A PROCESS THE DAEMON SPAWNED ENDS WITH THE TEST THAT CAUSED IT** — register item
+/// 802, second address, driven rather than argued.
+///
+/// # What leaked, and why killing the daemon was not enough
+///
+/// A run's driver is a process of its own and the daemon is its parent. [`DaemonGuard`] SIGKILLed
+/// the daemon — correctly, that is the reboot analogue this file is built on — and a SIGKILLed
+/// parent reaps nothing: the driver was adopted by init, kept the endpoint in its environment, and
+/// stayed. Measured as a delta across one full run on 2026-09-01: twelve survivors, **all of them
+/// drivers**, 165 such processes standing on this machine holding 1006 MB while it was 15 GB into
+/// swap.
+///
+/// # ⚠⚠⚠ The premise is asserted, because *nothing survived* is also what nothing-happened says
+///
+/// A fixture whose run never reached the point of spawning a driver would satisfy every assertion
+/// below while measuring nothing at all — the dead control this file keeps meeting. So arm 1 waits
+/// for [`driver_pids`] to be non-empty and names the daemon it belongs to, and only then is the
+/// guard allowed to drop.
+///
+/// ⚠ The run is [`start_a_run_that_cannot_converge`]'s, for that fixture's own reason: a run that
+/// converged would take its driver down by itself, and this gate would be measuring the run's
+/// ending rather than the teardown's reach.
+#[test]
+fn a_driver_the_daemon_spawned_ends_with_the_test_that_caused_it() {
+    let sock = socket_path();
+    let state = scratch_state_home();
+    let mut drivers = Vec::new();
+
+    {
+        let _guard = DaemonGuard {
+            sock: sock.clone(),
+            state: state.clone(),
+        };
+        spawn_daemon(&sock, &state);
+        assert!(
+            wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+            "the daemon never started serving -- {}",
+            why_not_serving(&sock),
+        );
+        start_a_run_that_cannot_converge(&sock, "work");
+
+        // ── 1. THE PREMISE: the daemon really did spawn a process of its own ──────────────────
+        assert!(
+            wait_for(Duration::from_secs(30), || {
+                drivers = driver_pids(&sock);
+                !drivers.is_empty()
+            }),
+            "⚠⚠ THE PREMISE FAILED: no driver process appeared beside {}, so everything below \
+             would be true of a run that never started and this gate would measure nothing. The \
+             daemon is {:?} and the processes on that endpoint are {:?}",
+            sock.display(),
+            daemon_pid(&sock),
+            sprag_term_pids(&sock),
+        );
+
+        // ── 1b. AND IT HAS ACTUALLY WRITTEN UNDER THIS TEST'S STATE HOME ──────────────────────
+        // ⛔⛔⛔⛔⛔ **THE DEAD CONTROL, MEASURED 2026-09-01 AND FIXED HERE.** Arm 4 below was green
+        // against a guard with its `remove_dir_all` DELETED — because the run finished in three
+        // seconds, the daemon's durability tick is five (`SNAPSHOT_INTERVAL`), and the directory
+        // whose disappearance was being celebrated had never been created. *Removed* and *never
+        // written* were one sentence, which is item 802's own subject turned on its own gate.
+        let written = state.join("sprag");
+        assert!(
+            wait_for(Duration::from_secs(30), || written.exists()),
+            "⚠⚠ THE PREMISE FAILED: the daemon never persisted anything under {}, so arm 4 would \
+             be asserting that a directory nobody made is not there",
+            written.display(),
+        );
+    }
+
+    // ── 2. AND THE TEARDOWN REACHED IT ────────────────────────────────────────────────────────
+    // ⚠ Asked of the PROCESS TABLE, not of the socket: the guard unlinks the socket either way, so
+    // a probe that connected would answer *gone* for a driver that is very much alive. It is the
+    // same dead control `sprag-tui`'s half of this item measured and had to replace.
+    let survivors: Vec<u32> = drivers
+        .into_iter()
+        .filter(|&pid| still_running(pid))
+        .collect();
+    assert!(
+        survivors.is_empty(),
+        "⛔ ITEM 802: driver(s) {survivors:?} outlived the test that caused them. A SIGKILLed \
+         daemon reaps nothing — its drivers are adopted by init and never exit, and one full suite \
+         run leaves a dozen of them holding ~19 MB each on the machine that has to build it next.",
+    );
+    assert!(
+        sprag_term_pids(&sock).is_empty(),
+        "⛔ ITEM 802: something is still holding {} after the test that put it there: {:?}",
+        sock.display(),
+        sprag_term_pids(&sock),
+    );
+
+    // ── 3. AND THE FILES A `--daemon` MAKES BESIDE ITS SOCKET WENT WITH IT ─────────────────────
+    // Never cleaned by anything until this item: 43 `.log`/`.lock` pairs in `/tmp` from one run.
+    for sibling in ["log", "lock"] {
+        let left = sock.with_extension(sibling);
+        assert!(
+            !left.exists(),
+            "⛔ ITEM 802: {} outlived the test that made it",
+            left.display(),
+        );
+    }
+    assert!(
+        !state.exists(),
+        "⛔ ITEM 802's done-when: {} outlived the test that made it",
+        state.display(),
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A SOCKET NOTHING SERVES STILL TAKES ITS STATE HOME WITH IT** — register item 802,
+/// third address.
+///
+/// # Why the case with no daemon is the case that is CERTAIN to be written
+///
+/// Every gate in this file that starts a daemon hands the cleanup to [`DaemonGuard`]. The one that
+/// deliberately does not start one had nobody — and it is not the quiet case: [`sprag_stdin`] gives
+/// every CLI run the state home derived from its socket, and `sprag hook` files
+/// `hook-mute.<pane>` there precisely BECAUSE the report could not be delivered. An unreachable
+/// daemon is the condition for the write, not an absence of one.
+///
+/// ⚠⚠ THE PREMISE IS ASSERTED. *Nothing was left behind* is also what *nothing was ever written*
+/// says, and this gate's whole subject is a directory that only exists if the CLI made it — so the
+/// breadcrumb is read INSIDE the scope, before anything is allowed to tidy it away.
+#[test]
+fn a_socket_nothing_serves_still_takes_the_state_home_it_was_written_to_with_it() {
+    let sock = socket_path();
+    let state = isolated_state_home(&sock);
+    let breadcrumb = state.join("sprag").join("hook-mute.0");
+
+    {
+        let _site = SocketSite(sock.clone());
+        // ⛔⛔⛔⛔⛔ **THE SOCKET FILE IS MADE, AND THAT IS THE SECOND DEAD CONTROL THIS ITEM
+        // MEASURED IN ITS OWN GATES.** Without this line the tail assertion about the socket was
+        // GREEN against a [`SocketSite`] with its [`remove_socket_litter`] deleted — because a
+        // `hook` against a path with no file at it creates none, so *the guard removed it* and *it
+        // was never there* were one sentence. Bound and dropped immediately: dropping a
+        // `UnixListener` does NOT unlink its path, so what is left is a socket file with nothing
+        // behind it — a connect fails at once and the breadcrumb below is still written.
+        drop(std::os::unix::net::UnixListener::bind(&sock).expect("a socket file to leave behind"));
+        assert!(
+            sock.exists(),
+            "⚠ the fixture must actually make the file the tail assertion is about: {}",
+            sock.display(),
+        );
+        let run = sprag_stdin(
+            &sock,
+            &["hook", "claude"],
+            &[("SPRAG_PANE", "0")],
+            r#"{"hook_event_name":"UserPromptSubmit"}"#,
+        );
+        assert!(
+            run.ok,
+            "an undeliverable hook still exits 0 -- it must not fail the agent that ran it: {}",
+            run.stderr,
+        );
+        assert!(
+            breadcrumb.exists(),
+            "⚠⚠ THE PREMISE FAILED: {} was never written, so the claim below would hold of a run \
+             in which nothing happened at all and this gate would measure nothing",
+            breadcrumb.display(),
+        );
+    }
+
+    assert!(
+        !state.exists(),
+        "⛔ ITEM 802: {} outlived the test that wrote it. Nothing in this file owned it, because \
+         the only owner was the guard for a daemon this gate never starts.",
+        state.display(),
+    );
+    assert!(
+        !sock.exists(),
+        "⛔ ITEM 802: {} outlived the test that minted it",
+        sock.display(),
+    );
+}
+
 /// Set one option for the daemon [`spawn_daemon`] will start under `state`, by writing the config
 /// file that daemon reads.
 ///
@@ -2696,6 +3050,22 @@ fn sprag_term_processes(sock: &Path) -> usize {
 /// Register item 526 needs the difference: a daemon replaced under a live loop must leave that
 /// loop's driver ALIVE — the same process, not a fresh one with the same tally — and a boot that
 /// put the run back on a second driver would keep the count right while driving one pane twice.
+///
+/// # The one place this file asks *what is on this socket*
+///
+/// [`daemon_pid`] and [`end_everything_on`] both come here — the first to reduce the set to the
+/// daemon, the second because it wants the whole of it. It was spelled a second time inside
+/// `daemon_pid` until register item 802 measured the cost of the copy.
+///
+/// ⚠ THROUGH `sprag_terminal::procfs`, which walks whatever process table this OS has. This used to
+/// read `/proc` directly — the directory, each entry's `comm`, each entry's `environ` — so the
+/// tests that need it were `#[cfg(target_os = "linux")]` and the restore-after-SIGKILL path was
+/// never once exercised off Linux. Nothing about the QUESTION is Linux-shaped: it is *which process
+/// is named sprag-term and was started beside THIS socket*, and both halves are portable now (R343).
+///
+/// ⚠⚠ The socket is matched from the ENVIRONMENT rather than the name, because a box can be running
+/// the developer's own daemon: a probe that took the first `sprag-term` it found would SIGKILL
+/// somebody's terminal (R278, and this file's callers kill what they find).
 fn sprag_term_pids(sock: &Path) -> Vec<u32> {
     let want = format!("SPRAG_HOST_RPC_SOCK={}", sock.display());
     let me = std::process::id();
@@ -10724,6 +11094,11 @@ fn a_wedged_daemon_cannot_stall_a_request_verb() {
 #[test]
 fn a_wedged_daemon_cannot_stall_the_agents_hook() {
     let sock = socket_path();
+    // ⚠ Register item 802: this gate mints a socket and puts no daemon on it, so nothing else in
+    // this file owns what gets written under the state home [`sprag_stdin`] derives from it — and
+    // the hook below writes there BY CONSTRUCTION, because it is the delivery failure that files
+    // the breadcrumb. Measured leaking one `hook-mute.0` per run until this line.
+    let _site = SocketSite(sock.clone());
     let listener = std::os::unix::net::UnixListener::bind(&sock).expect("a stand-in daemon");
     std::thread::spawn(move || {
         // HELD, not dropped: closing the stream would give the client an EOF, which is an answer of
@@ -10740,7 +11115,6 @@ fn a_wedged_daemon_cannot_stall_the_agents_hook() {
         r#"{"hook_event_name":"UserPromptSubmit"}"#,
     );
     let waited = start.elapsed();
-    let _ = std::fs::remove_file(&sock);
 
     assert!(run.ok, "it still exits 0: {}", run.stderr);
     assert!(
