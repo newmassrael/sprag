@@ -234,8 +234,8 @@ pub use outer::{
 };
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{
-    Accounting, Banked, Checks, Cost, Deliveries, Edge, Plugin, Resumption, StandingOrder, Step,
-    Verdict,
+    Accounting, Banked, Checks, Cost, Deliveries, Edge, Plugin, Resumed, Resumption, StandingOrder,
+    Step, Verdict,
 };
 pub use readiness::{
     Attended, Attention, DEFAULT_READY_TIMEOUT, Handback, Handover, Interruption, Reached,

@@ -868,7 +868,11 @@ fn put_back_inherited_runs(
                 ..sprag_host::DaemonShared::none()
             },
         );
-        match plugins.put_back(&run) {
+        // ⛔⛔⛔⛔⛔ `Boot` — register item 774, and it is a statement of fact about THIS function's
+        // own caller: `host.restore` ran a hundred lines up and re-spawned every pane in the
+        // snapshot, so whatever each of these runs was watching is gone with the process that was
+        // doing it. A run put back at `working` without this waits for a turn nobody started.
+        match plugins.put_back(&run, sprag_plugin::Resumed::Boot) {
             Ok(()) => tracing::info!(
                 target: "sprag_host::runs",
                 run = run.id.0,

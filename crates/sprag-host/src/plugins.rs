@@ -520,6 +520,24 @@ pub const RUN_WAITING_KEY: &str = "waiting";
 /// are different objects (a run request, a progress report) so nothing can confuse them, and the
 /// asymmetry of trust is the whole design: **a client may not say it and a driver may.**
 pub const RUN_PLACE_KEY: &str = "place";
+/// ⛔⛔⛔⛔⛔ **THAT THE PLACE BESIDE THIS ONE WAS READ BY A BOOT, WHICH RESTARTED THE PANE TOO** —
+/// register item 774, and [`RUN_PLACE_KEY`]'s companion in every respect.
+///
+/// # ⚠⚠⚠⚠⚠ Why a place is not enough on its own
+///
+/// A run is put back for two reasons and they say opposite things about the peer — see
+/// [`sprag_plugin::Resumed`], which holds the whole argument and the measurement. What travels here
+/// is the half a driver in ANOTHER PROCESS cannot work out: `put_back` knows which of its two
+/// callers it is serving, and the child that rebuilds the plugin does not.
+///
+/// ⚠⚠ **A CLIENT MAY NOT SAY IT**, for [`RUN_PLACE_KEY`]'s reason exactly and stripped at the same
+/// door: *this run came back from a boot* would otherwise be a verb a caller could type, and the
+/// document answers it by priming the peer — so a client could make any run re-brief its agent.
+///
+/// ⚠ PRESENT ONLY WHEN TRUE, and absent means [`sprag_plugin::Resumed::Driver`]. A `false` on this
+/// wire would be indistinguishable from an older daemon that never wrote it, and the two readings
+/// are the same one here — nothing was restarted — so the absence is honest rather than a default.
+pub const RUN_REBOOTED_KEY: &str = "rebooted";
 /// **WHAT A DRIVER REPORTS FOR THE FACTS A ROW PUBLISHES BESIDE ITS STATE** — one key holding one
 /// object, register item 663.
 ///
@@ -1808,7 +1826,7 @@ pub fn drive_request(
     // pane. A resume that silently became a restart would spend the peer's tokens saying what was
     // already said — the exact failure item 543 exists to end — and nothing downstream could tell.
     if let Some(place) = opt_place(request)? {
-        match plugin.as_plugin().resume_at(&place) {
+        match plugin.as_plugin().resume_at(&place, opt_rebooted(request)?) {
             sprag_plugin::Resumption::Placed => {}
             // ⚠ THE DAEMON'S MISTAKE, NOT THE CALLER'S: a place is only ever offered to a run whose
             // log carried one, and only `ai_loop` writes one. Reaching this means the request and
@@ -2418,9 +2436,15 @@ impl PluginsExternal {
         // and 662. So the pair is real rather than hypothetical: a CLIENT's place is dropped here,
         // and the daemon's own reaches the child. Both halves are held by one gate, because a
         // strip nobody measures is a strip that gets deleted as dead code.
+        // ⛔⛔⛔ **AND ITS COMPANION** — register item 774. `RUN_REBOOTED_KEY` is answered by the
+        // document with *prime the peer again*, so a client entitled to write it could make any
+        // run re-brief its agent — the same unpublished verb the line above refuses, one fact over.
+        // Removed unconditionally and for the same reason: the only party entitled to say a boot
+        // restarted a pane is the boot that restarted it.
         let handed = {
             let mut handed = request.clone();
             handed.remove(RUN_PLACE_KEY);
+            handed.remove(RUN_REBOOTED_KEY);
             handed
         };
 
@@ -2563,7 +2587,17 @@ impl PluginsExternal {
     /// no longer spells, a malformed guardrail), whatever the machine refuses about the place, and
     /// a row that stopped being resumable between [`crate::runs::RunRegistry::inheritance`] and
     /// here.
-    pub fn put_back(&self, inherited: &crate::runs::InheritedRun) -> Result<(), InvokeError> {
+    ///
+    /// ⛔⛔⛔⛔⛔ **`by` SAYS WHAT WAS REPLACED UNDERNEATH** — [`sprag_plugin::Resumed`], register
+    /// item 774. This function serves both doors — a daemon BOOT and a driver that died under a
+    /// live pane — and they say opposite things about the peer. It is a parameter rather than a
+    /// thing this function works out, because neither caller's fact is visible from in here: the
+    /// boot knows it restored the panes, and `put_back_a_lost_driver` knows it did not.
+    pub fn put_back(
+        &self,
+        inherited: &crate::runs::InheritedRun,
+        by: sprag_plugin::Resumed,
+    ) -> Result<(), InvokeError> {
         // ⛔⛔⛔⛔⛔ **THE REQUEST WITH THE RUN'S CURRENT PANE IN IT** — register item 771, and read
         // ONCE so every line below is about one pane. `plugin_from_request` takes the pane out of
         // this map and validates it exists; the boot resolved a pool from
@@ -2576,7 +2610,7 @@ impl PluginsExternal {
         // ⚠⚠⚠⚠ THE SAME FOUR ANSWERS `drive_request` READS, and they are worth spelling separately
         // here rather than collapsing to *it did not work*: the person who meets one of these is
         // holding a run log and a daemon that has just decided not to bring their run back.
-        match plugin.as_plugin().resume_at(&inherited.place) {
+        match plugin.as_plugin().resume_at(&inherited.place, by) {
             sprag_plugin::Resumption::Placed => {}
             sprag_plugin::Resumption::NoMachine => {
                 return Err(refused(format!(
@@ -2639,6 +2673,24 @@ impl PluginsExternal {
                             .collect(),
                     ),
                 );
+                // ⛔⛔⛔⛔⛔ **AND WHAT WAS REPLACED UNDERNEATH** — register item 774, beside the
+                // place because it is the half of a resume the place cannot carry. Written ONLY
+                // when a boot is what came back, on [`RUN_REBOOTED_KEY`]'s presence-is-the-claim
+                // rule: absent already means *nothing was restarted*, and a `false` on the wire
+                // would be a second spelling of it.
+                //
+                // ⚠⚠ THE COPY THIS DAEMON JUST PLACED IS THROWN AWAY on this arm — the child
+                // builds the plugin again from this very map — so the fact must travel as a key or
+                // the out-of-process run is resumed knowing less than the in-process one. That
+                // divergence is exactly what `crate::options::RUN_DRIVER_PROCESS` promises cannot
+                // happen.
+                // ⚠ NO `_` ARM: a third way a run comes back must fail to compile here.
+                match by {
+                    sprag_plugin::Resumed::Boot => {
+                        handed.insert(RUN_REBOOTED_KEY.to_owned(), Value::Bool(true));
+                    }
+                    sprag_plugin::Resumed::Driver => {}
+                }
                 self.drive_in_a_process(spawn, inherited.id, &handed, honoured)?
             }
             // ⚠ THE RESTORED RUN LEARNS ITS TREE THE SAME WAY A NEW ONE DOES — from the request it
@@ -2704,7 +2756,10 @@ impl PluginsExternal {
                 return;
             }
         };
-        match self.put_back(&inherited) {
+        // ⚠⚠⚠ `Driver` AND NOT `Boot` — register item 774, and the whole reason that argument
+        // exists. Nothing here touched the pane: the run's peer is exactly where it was, and may be
+        // mid-turn with an answer still coming. A `Boot` said here would prime a working agent.
+        match self.put_back(&inherited, sprag_plugin::Resumed::Driver) {
             Ok(()) => tracing::warn!(
                 target: "sprag_host::runs",
                 run = id.0,
@@ -4505,6 +4560,26 @@ fn opt_place(map: &Map<String, Value>) -> Result<Option<Vec<String>>, InvokeErro
         return Err(InvokeError::TypeMismatch);
     }
     Ok(Some(words))
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT WAS REPLACED UNDER THE RUN THIS REQUEST PUTS BACK** — [`RUN_REBOOTED_KEY`]'s
+/// only reader, register item 774.
+///
+/// Absent, `null` and `false` are all [`sprag_plugin::Resumed::Driver`]: nothing was restarted, and
+/// an older daemon that never wrote the key means exactly that.
+///
+/// # Errors
+///
+/// A value that is not a boolean is a MALFORMED request, refused here rather than coerced —
+/// [`opt_place`]'s rule for its own key, and the more important of the two: this one is answered by
+/// PRIMING THE PEER, so a truthy string read as *yes* would re-brief an agent on a typo.
+fn opt_rebooted(map: &Map<String, Value>) -> Result<sprag_plugin::Resumed, InvokeError> {
+    match map.get(RUN_REBOOTED_KEY) {
+        None | Some(Value::Null) => Ok(sprag_plugin::Resumed::Driver),
+        Some(Value::Bool(true)) => Ok(sprag_plugin::Resumed::Boot),
+        Some(Value::Bool(false)) => Ok(sprag_plugin::Resumed::Driver),
+        Some(_) => Err(InvokeError::TypeMismatch),
+    }
 }
 
 fn require_string_array(map: &Map<String, Value>, key: &str) -> Result<Vec<String>, InvokeError> {
@@ -14289,7 +14364,7 @@ mod tests {
              it and the refusal below must come from the door rather than from the offering.",
         );
         let mut external = over(&unreadable);
-        let refused = external.put_back(&offered[0]);
+        let refused = external.put_back(&offered[0], sprag_plugin::Resumed::Boot);
         assert!(
             refused.is_err(),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 543: a place this build cannot read was SWALLOWED and the run \
@@ -14333,7 +14408,7 @@ mod tests {
         let offered = lock(&elsewhere).inheritance().resumed;
         let mut out_of_process = over(&elsewhere).driving_out_of_process(Arc::new(spawning));
         out_of_process
-            .put_back(&offered[0])
+            .put_back(&offered[0], sprag_plugin::Resumed::Boot)
             .expect("a daemon whose drivers are processes can put an inherited run back too");
         assert_ne!(
             row_of(&mut out_of_process, 7)["state"]["status"],
@@ -14446,7 +14521,7 @@ mod tests {
              fact about the log being read: {before:?}",
         );
         external
-            .put_back(&offered[0])
+            .put_back(&offered[0], sprag_plugin::Resumed::Boot)
             .expect("a run whose place and request both survived is one this daemon can put back");
         let row = row_of(&mut external, 7);
         assert_ne!(

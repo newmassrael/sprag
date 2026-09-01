@@ -824,6 +824,43 @@ pub enum Resumption {
     Placed,
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT WAS REPLACED UNDER A RUN THAT IS BEING PUT BACK** — [`Plugin::resume_at`]'s
+/// second argument, register item 774.
+///
+/// # ⚠⚠⚠⚠⚠ Why a resume cannot be one word
+///
+/// A run is put back for two different reasons and they say opposite things about the PEER:
+///
+/// | who resumed it | what happened to the pane | what the peer is doing |
+/// | --- | --- | --- |
+/// | [`Driver`](Self::Driver) | nothing — it was never touched | still mid-turn, and the answer is coming |
+/// | [`Boot`](Self::Boot) | the same boot re-spawned its program | nothing; no turn was ever started |
+///
+/// Told apart nowhere, a machine put back at *the inner agent is running* waits for a turn that
+/// cannot end. **Measured 2026-08-30**: three loops came back from one promotion and made zero
+/// deliveries between them in two hours while four runs started in the same window made one each,
+/// and every one of the seven rows read `running`. Re-measured in a fixture on 2026-09-01 with the
+/// competing explanation eliminated — the rescued run's pane came back RUNNING ITS PROGRAM and
+/// showing the marker the run waits for, and the driver still typed nothing.
+///
+/// ⚠⚠ **IT IS A PARAMETER AND NOT A METHOD SOMEBODY MAY FORGET TO CALL.** Both facts are known for
+/// certain by the caller — the two call sites are different functions in the daemon — and putting
+/// the answer in the resume's own signature is what makes *nobody said* impossible rather than
+/// merely unlikely. A plugin with no machine ignores it, as it ignores the place.
+///
+/// ⚠ NO `_` ARM anywhere that reads this: a third way a run comes back must fail to compile rather
+/// than inherit whichever of these two happens to be written first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resumed {
+    /// **A DRIVER PROCESS WAS REPLACED UNDER A LIVE PANE** — register item 671's door. The pane and
+    /// whatever is running in it are the ones this run left, so a peer that was mid-turn still is.
+    Driver,
+    /// **A DAEMON BOOT PUT THIS RUN BACK, AND THE SAME BOOT RE-SPAWNED ITS PANE'S PROGRAM** —
+    /// register item 543's door. Whatever the peer was doing is gone with the process that was
+    /// doing it, however faithfully the pane itself came back.
+    Boot,
+}
+
 /// A control plugin driven over the [`PaneAccess`] extension API.
 pub trait Plugin {
     /// Perceive the panes, act on them, and judge — one step.
@@ -968,8 +1005,12 @@ pub trait Plugin {
     ///
     /// ⚠ The default is [`NoMachine`](Resumption::NoMachine) — the answer of every plugin that
     /// relays bytes, and a `place` handed to one is dropped rather than half-honoured.
-    fn resume_at(&mut self, place: &[String]) -> Resumption {
-        let _ = place;
+    ///
+    /// ⛔⛔⛔ **`by` SAYS WHAT WAS REPLACED UNDERNEATH** — [`Resumed`], register item 774. A place
+    /// alone cannot say whether the peer this run was watching is still there, and a machine put
+    /// back at *the inner agent is running* after a BOOT waits for a turn nobody started.
+    fn resume_at(&mut self, place: &[String], by: Resumed) -> Resumption {
+        let _ = (place, by);
         Resumption::NoMachine
     }
 

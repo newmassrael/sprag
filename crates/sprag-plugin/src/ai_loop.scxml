@@ -3823,6 +3823,26 @@
       `probe::tests::a_cross_region_guard_can_be_negated_and_can_name_a_compound_ancestor`.
     -->
     <transition event="unattended" cond="!In('held')" target="blocked"/>
+    <!--
+      ⛔⛔⛔⛔⛔ **A RESCUED RUN THAT WAS WAITING FOR A PERSON GOES ON WAITING** —
+      register item 774, declining the region's rule the way `closing` and
+      `stopping` decline `prompt.unasked`.
+
+      ⚠⚠⚠ THE REGION'S RULE PRIMES THE PEER AGAIN, and every door into this
+      state means *stop driving*: a person typing in the pane, a peer that fell
+      silent, a dialog nothing could read, or a person who said `hold`. Waving
+      those on because a DAEMON came back is the driver deciding something a
+      person had taken away from it — `let_go`'s own comment one file over is
+      the same argument, and it is why `resume` is raised only to undo a hold
+      this driver itself gave.
+
+      ⚠⚠ TARGETLESS ON PURPOSE. A self-transition to this state would RE-ENTER
+      it, and re-entry restarts the patience clock `unattended` measures — so a
+      daemon restarted every few minutes would keep a run waiting for somebody
+      who never gets called. Consuming the event and moving nothing is the whole
+      of what this edge is for.
+    -->
+    <transition event="peer.restarted"/>
     <transition event="cancel" target="cancelled"/>
     <transition event="fail" target="failed"/>
     <!--
@@ -5371,6 +5391,16 @@
       one, and a child with an answer wins by depth).
     -->
     <transition event="prompt.unasked" target="converged"/>
+    <!--
+      ⚠⚠⚠⚠ AND A BOOT THAT RESTARTED THE PEER ENDS THIS TURN THE SAME WAY —
+      register item 774, declined here for the line above's reason exactly. The
+      account is a courtesy on top of a verdict already reached, and the agent
+      that did the work is the only party who can write one; a peer a boot
+      restarted cannot, whether or not it came back holding the conversation.
+      Priming it again would ask a session for a report and then go on driving a
+      run that had already converged.
+    -->
+    <transition event="peer.restarted" target="converged"/>
     <transition event="fail" target="failed"/>
     <!--
       ⚠⚠ AND THE CLOSING REPORT IS NOT WORTH A WEDGE. An agent that has left
@@ -5478,6 +5508,14 @@
       did. So the run ends as it was always going to, with no account.
     -->
     <transition event="prompt.unasked" target="exhausted"/>
+    <!--
+      ⚠⚠⚠⚠ AND A BOOT THAT RESTARTED THE PEER IS A FIFTH WAY THIS TURN CAN END,
+      answered here for the line above's reason — register item 774. The verdict
+      was reached by the guard that got here; a peer a boot restarted cannot
+      account for work it never did, and the region's rule would prime it and
+      put a spent run back to work.
+    -->
+    <transition event="peer.restarted" target="exhausted"/>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
     <!--
@@ -5615,6 +5653,62 @@
     <assign location="unasked_seen" expr="1"/>
   </transition>
   <transition event="prompt.unasked" target="failed"/>
+
+  <!--
+    ⛔⛔⛔⛔⛔ **A BOOT PUT THIS RUN BACK, AND IT RESTARTED THE PEER TOO** —
+    register item 774, and the region's rule for the same reason
+    `prompt.unasked` above is one.
+
+    ⚠⚠⚠⚠⚠ WHAT WAS MEASURED. One promotion, 2026-08-30: three loops came back
+    and made ZERO deliveries between them in two hours, while four runs started
+    in the same window made one each. Every one of the seven rows read
+    `running`. Re-measured in a fixture on 2026-09-01, with a control, and the
+    fixture's own candidate explanation eliminated: the rescued run's pane came
+    back RUNNING ITS PROGRAM and showing the marker the run waits for, and the
+    driver still typed nothing for three minutes.
+
+    ⚠⚠⚠⚠ WHY: a boot restores a run's PLACE, and `working` is the place that
+    says *the inner agent is running and the driver is watching its pane*. That
+    sentence is FALSE after a boot — the same boot re-spawned the pane's
+    program, so the turn the loop is waiting for was never started and no
+    `turn.done` is ever coming. The run then waits out `quiet_within_ms` and
+    calls a person (`peer.silent`), which for an unattended loop is the end of
+    it. Nothing was broken; the machine was put back somewhere that had stopped
+    being true.
+
+    ⚠⚠⚠ SO THE HOST SAYS WHAT HAPPENED AND THE DOCUMENT DECIDES WHAT IT IS
+    WORTH, which is this file's rule everywhere: the driver raises this once,
+    on the first pass after a resume it was told was a BOOT's, and never on a
+    resume that only replaced a dead DRIVER — there the pane was not touched
+    and the peer really is mid-turn.
+
+    ⚠⚠ TO `resuming`, WHICH IS ALREADY *a new program is coming up in that pane
+    and nothing may be typed at it yet* — the state a replacement waits in. NOT
+    to `restarting`: the pane came back, and where the peer is an agent the
+    allowlist re-runs it came back RESUMING ITS OWN CONVERSATION
+    (`durability::restore_command` appends the resume argument), so buying a
+    fresh session would throw that away.
+
+    ⛔⛔⛔⛔⛔ **AND NOT TO `priming`, WHICH WAS MEASURED AND IS THE WHOLE REASON
+    THIS EDGE NAMES A WAITING STATE.** `priming` DELIVERS on its way in — the
+    `<onentry>` above sends `prompt.say` — and the pass table gives it
+    `does='sent'`, which only reports that the sentence went. Nothing on that
+    road consults the readiness barrier; the ONLY state that does is `idle`
+    (`does='ready'`) and this one (`does='resume'`). Aimed at `priming`, this
+    edge typed a 1,545-byte brief straight into a pane that had come back a
+    PLAIN SHELL — measured 2026-09-01, the whole brief echoed back by `bash`
+    with every line of it a command that shell had been handed. Aimed here, the
+    same case waits, never clears the barrier, and the run ends saying the pane
+    never showed what it was told to wait for.
+
+    ⚠⚠⚠⚠ `resuming` THEN GREETS THROUGH `priming` — its own `session.ready`
+    edge, which writes register item 800's word. A rescued peer MAY hold the
+    whole conversation and may hold nothing at all, and this document cannot
+    tell those apart; the greeting is item 800's stated safe direction, and it
+    is the same answer a replacement gets for the same reason. WHICH door this
+    was is in the walk, which names `PeerRestarted`, rather than in that word.
+  -->
+  <transition event="peer.restarted" target="resuming"/>
 
   <!--
     ⚠⚠⚠⚠⚠ THIS DOCUMENT'S OWN CONTENT FAILED, AND THE RUN STOPS SAYING SO —

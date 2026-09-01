@@ -1224,11 +1224,19 @@ impl Plugin for AiLoop {
     /// ⚠ Nothing is stepped and nothing is entered: `OuterLoop::resume_at` is `enter_at`, whose
     /// whole contract is that `<onentry>` does not re-fire. A resume that re-typed its prompts
     /// would be a second run wearing the first one's id.
-    fn resume_at(&mut self, place: &[String]) -> crate::plugin::Resumption {
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND `by` IS CARRIED IN, NOT DROPPED** — register item 774. The place says where
+    /// the machine was; this says whether the world it describes is still there, and `working`'s
+    /// sentence — *the inner agent is running* — is false after a boot.
+    fn resume_at(
+        &mut self,
+        place: &[String],
+        by: crate::plugin::Resumed,
+    ) -> crate::plugin::Resumption {
         let Some(place) = crate::outer::LoopPlace::from_words(place) else {
             return crate::plugin::Resumption::NotThisDocument;
         };
-        match self.inner.resume_at(&place) {
+        match self.inner.resume_at(&place, by) {
             Ok(()) => crate::plugin::Resumption::Placed,
             Err(why) => crate::plugin::Resumption::Refused(why.in_words()),
         }
@@ -1717,7 +1725,7 @@ mod tests {
     use crate::outer::{
         AiLoopSpec, Brief, Checked, Evidence, INNER_SESSION_ENDS, Noticed, Unstated,
     };
-    use crate::plugin::{Accounting, Cost, Plugin, Resumption, Verdict};
+    use crate::plugin::{Accounting, Cost, Plugin, Resumed, Resumption, Verdict};
     use crate::readiness::ReadyWhen;
     use crate::run::RunContext;
     use crate::sm::ai_loop::{AiLoopEvent, AiLoopPolicy, AiLoopState};
@@ -14398,7 +14406,7 @@ mod tests {
         let mut resumed = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a loop builds from the same document");
         assert_eq!(
-            resumed.resume_at(&saved),
+            resumed.resume_at(&saved, Resumed::Driver),
             Resumption::Placed,
             "⛔⛔⛔⛔ REGISTER ITEM 543: the words a run log carries were refused by the very build \
              that wrote them. Everything downstream of this — a daemon that restarts without \
@@ -14425,7 +14433,7 @@ mod tests {
         let mut untouched = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a loop builds from the same document");
         assert_eq!(
-            untouched.resume_at(&renamed),
+            untouched.resume_at(&renamed, Resumed::Driver),
             Resumption::NotThisDocument,
             "⚠⚠⚠ THE CONTROL: a word this build cannot spell must be refused, never defaulted. A \
              run silently resumed at a state nobody chose spends a peer's tokens doing the wrong \
@@ -14449,7 +14457,7 @@ mod tests {
             attended: crate::readiness::Attended::NoOne,
         });
         assert_eq!(
-            relay.resume_at(&saved),
+            relay.resume_at(&saved, Resumed::Driver),
             Resumption::NoMachine,
             "⚠⚠⚠ THE SECOND CONTROL: a plugin that relays bytes has no place to be put back in, \
              and must say which of the four answers that is. A boot reading `Placed` off a `pipe` \
@@ -14476,7 +14484,7 @@ mod tests {
         let dropped = broken.remove(dropped);
         let mut unclosed = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a loop builds from the same document");
-        match unclosed.resume_at(&broken) {
+        match unclosed.resume_at(&broken, Resumed::Driver) {
             Resumption::Refused(why) => {
                 assert!(
                     !why.contains('{'),
@@ -14586,7 +14594,7 @@ mod tests {
         let mut resumed = AiLoop::new(engine(), resumed_pane, &brief_for(40), &standin_spec())
             .expect("a loop builds from the same document");
         assert_eq!(
-            resumed.resume_at(&saved),
+            resumed.resume_at(&saved, Resumed::Driver),
             Resumption::Placed,
             "⚠⚠ the place saved above must be one this build accepts, or the pass below is a \
              fresh loop's and the claim is measuring the control twice",
@@ -14679,7 +14687,7 @@ mod tests {
         let mut resumed = AiLoop::new(engine(), resumed_pane, &brief_for(40), &standin_spec())
             .expect("a loop builds from the same document");
         assert_eq!(
-            resumed.resume_at(&saved),
+            resumed.resume_at(&saved, Resumed::Driver),
             Resumption::Placed,
             "⚠⚠ the place saved above must be one this build accepts, or what follows is a fresh \
              loop's opening and says nothing about resuming",

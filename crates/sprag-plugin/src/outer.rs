@@ -4605,6 +4605,20 @@ pub struct OuterLoop {
     /// in step. ⚠⚠ It is set at the TOP of the pass, where the order is read, so the moment
     /// recorded is the first pass that saw the hold rather than the first that waited it out.
     holding: Option<Instant>,
+    /// ⛔⛔⛔⛔⛔ **A BOOT PUT THIS RUN BACK AND THE DOCUMENT HAS NOT BEEN TOLD YET** — register
+    /// item 774, written by [`resume_at`](Self::resume_at) and cleared by the first pass that
+    /// raises it.
+    ///
+    /// ⚠⚠ A FLAG AND NOT A RAISE AT THE RESUME, which is the same arrangement `holding` above has
+    /// for the same reason: a fact that arrives outside a pass is carried in at the top of one. A
+    /// resume happens before this loop has a driver at all, so raising there would move a machine
+    /// nobody is stepping — and the transition would be missing from `walked`, which is the only
+    /// place a person reading the run can see that it happened.
+    ///
+    /// ⚠ ONE-SHOT, unlike `hold`: the fact is *a boot happened*, which is true once. Repeating it
+    /// on every pass would prime the peer again each time the run came back to a state the
+    /// region's rule answers.
+    rescued: bool,
     /// **WHEN THIS RUN STARTED WAITING OUT ITS PEER'S SERVICE**, or [`None`] when it is not.
     ///
     /// ⚠⚠ Held on [`awaiting`](Self::awaiting)'s terms and for its reason:
@@ -5039,6 +5053,9 @@ impl OuterLoop {
             noticed: None,
             // Nobody has said anything to a run that has not started — see the field.
             holding: None,
+            // ⚠ A run being CONSTRUCTED is not one being put back: `resume_at` is the only writer,
+            // and a loop that starts from the top has a peer nothing has restarted under it.
+            rescued: false,
             // ⚠⚠⚠ THE CALLER'S CONSENTS AND THEIR ATTENDANT REACH THE BARRIER, and that reverses a
             // decision this constructor used to argue: *"answering a dialog is `screening`'s job,
             // and a consent given to the barrier would answer dialogs one level below the machine
@@ -6051,7 +6068,19 @@ impl OuterLoop {
     /// is where the log said and the datamodel is part way between two runs. Its caller's answer is
     /// the one `crate::plugin::Plugin::resume_at`'s refusal already produces — the run does not
     /// start.
-    pub fn resume_at(&mut self, place: &LoopPlace) -> Result<(), NotResumed> {
+    ///
+    /// # ⛔⛔⛔⛔⛔ And it REMEMBERS what was replaced underneath — register item 774
+    ///
+    /// `by` is [`crate::plugin::Resumed::Boot`] when the same boot that read this place re-spawned
+    /// the pane's program. The event that says so is not raised here: it is raised on the first
+    /// pass, beside the person's orders, because that is where this driver carries a fact INTO the
+    /// document and because a raise before the caller has finished building the run would move a
+    /// machine its own driver has not started yet.
+    pub fn resume_at(
+        &mut self,
+        place: &LoopPlace,
+        by: crate::plugin::Resumed,
+    ) -> Result<(), NotResumed> {
         self.machine
             .enter_at(&place.configuration, place.current)
             .map_err(NotResumed::Place)?;
@@ -6063,6 +6092,14 @@ impl OuterLoop {
                     said: format!("{why:?}"),
                 })?;
         }
+        // ⚠⚠ SET LAST, so a place the engine refused leaves nothing owed: a half-placed loop must
+        // not be driven at all, and one that is never driven must not be carrying an event for a
+        // pass that will not happen.
+        // ⚠ NO `_` ARM — a third way a run comes back must fail to compile here.
+        self.rescued = match by {
+            crate::plugin::Resumed::Boot => true,
+            crate::plugin::Resumed::Driver => false,
+        };
         Ok(())
     }
 
@@ -6438,6 +6475,20 @@ impl OuterLoop {
     /// was doing when the person stepped in is theirs now, and the run starts its next turn cleanly.
     pub fn let_go(&mut self) {
         self.walk(AiLoopEvent::Resume);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE PEER THIS RUN WAS WATCHING WAS RESTARTED WITH IT** — register item 774, and
+    /// the one fact a resumed machine cannot work out for itself.
+    ///
+    /// The document's answer is at the foot of the `work` region: prime the peer again, with the
+    /// greeting, because a pane a boot re-ran may hold the whole conversation and may hold nothing.
+    /// `awaiting_human` declines it (a person is still owed) and the two ending states end as they
+    /// were going to — each says so on itself and wins by depth.
+    ///
+    /// ⚠ Public for the same reason [`stand_down`](Self::stand_down) is: a gate drives it directly,
+    /// and a fact that can only be reached through a resume is one no test can stage cheaply.
+    pub fn peer_restarted(&mut self) {
+        self.walk(AiLoopEvent::PeerRestarted);
     }
 
     pub fn took_answer(&mut self) -> Option<crate::consent::Answered> {
@@ -7026,6 +7077,22 @@ impl OuterLoop {
             self.hold();
         } else if self.holding.take().is_some() {
             self.let_go();
+        }
+        // ⛔⛔⛔⛔⛔ **AND WHETHER A BOOT RESTARTED THE PEER UNDERNEATH THIS RUN** — register item
+        // 774, carried in here for the two orders' reason exactly: the fact arrived outside a pass
+        // (at `resume_at`, before this loop had a driver), and the top of a pass is the one place a
+        // driver may put a fact into the document without racing a decision.
+        //
+        // ⚠⚠⚠ **AFTER THE ORDERS AND NOT BEFORE THEM, WHICH IS THE ORDERING AND NOT THE TIDYING.**
+        // `hold` is a transition of `working` and this one is the region's, so a run somebody had
+        // paused must reach `awaiting_human` FIRST — that state declines this event, and a person's
+        // order therefore survives a daemon restart. Raised first, the region's rule would prime the
+        // peer and the hold would land on a run that had just been typed at.
+        //
+        // ⚠⚠ ONE-SHOT, unlike `hold`: `take` rather than a read, so the event is raised on the
+        // first pass after a resume and never again. See [`Self::rescued`].
+        if std::mem::take(&mut self.rescued) {
+            self.peer_restarted();
         }
         // ⚠⚠⚠⚠ **THE DELIVERY EVIDENCE IS EMPTIED HERE AND NOWHERE ELSE** — register item 434.
         // Cleared at the TOP of the pass rather than taken at the funnel, because a pass has six
@@ -26593,7 +26660,7 @@ mod tests {
         let read_back = LoopPlace::from_words(&said)
             .expect("words this document produced are words it can read back");
         resumed
-            .resume_at(&read_back)
+            .resume_at(&read_back, crate::plugin::Resumed::Driver)
             .expect("a place read back from words is one this loop accepts");
         for (id, was) in place.held() {
             assert_eq!(
@@ -26697,7 +26764,7 @@ mod tests {
         let mut resumed = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
             .expect("a third loop builds from the same document");
         resumed
-            .resume_at(&read)
+            .resume_at(&read, crate::plugin::Resumed::Driver)
             .expect("a place read back from words is one the engine accepts");
         assert_eq!(
             resumed.state(),
@@ -26768,7 +26835,7 @@ mod tests {
         let mut resumed = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
             .expect("a second loop builds from the same document");
         resumed
-            .resume_at(&saved)
+            .resume_at(&saved, crate::plugin::Resumed::Driver)
             .expect("a configuration this document produced is one it accepts");
         assert_eq!(
             resumed.state(),

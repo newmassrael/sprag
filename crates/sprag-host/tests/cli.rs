@@ -2713,7 +2713,39 @@ fn spawn_daemon(sock: &Path, state: &Path) {
 /// ⚠ The copy is the LOOP DAEMON'S OWN SHAPE, not a contrivance: `$LOOP/bin/sprag-term` is a `cp`
 /// of `target/debug/sprag-term`, and the repayment skill calls that copy *the promotion*.
 fn spawn_daemon_from(bin: &Path, sock: &Path, state: &Path) {
-    let status = Command::new(bin)
+    spawn_daemon_into(bin, sock, state, &[]);
+}
+
+/// [`spawn_daemon`] with EXTRA ENVIRONMENT of the case's own — register item 774, done-when ⑶.
+///
+/// # ⚠⚠⚠⚠⚠ Why a gate would ever want this, and why it is env and not an option
+///
+/// The two knobs a RESTORE actually turns are environment variables and nothing else:
+/// `SPRAG_RESTORE_PROGRAMS` is what [`sprag_host::restore_allowlist`] reads, and
+/// `SPRAG_RESTORE_HISTORY` is what [`sprag_host::history_limits`] reads. Both are read INSIDE the
+/// daemon — `sprag-term` reads them once at boot and injects them — so a case that wants to stage a
+/// pane that really comes back has to hand them to the process it spawns. There is no config key to
+/// set instead: the durability module states outright that the allowlist is *an operator trust
+/// boundary*, which is a thing an operator sets on the daemon and not something a repository or a
+/// client can ask for.
+///
+/// ⚠ It is [`spawn_host_env`]'s shape one layer over, deliberately: that helper already exists for
+/// exactly this reason on the NON-daemon side (a stand-in `ssh` on the daemon's `PATH`), and two
+/// spellings of *spawn one of these with something extra* would drift.
+fn spawn_daemon_env(sock: &Path, state: &Path, envs: &[(&str, &str)]) {
+    spawn_daemon_into(
+        Path::new(env!("CARGO_BIN_EXE_sprag-term")),
+        sock,
+        state,
+        envs,
+    );
+}
+
+/// The one launch [`spawn_daemon`], [`spawn_daemon_from`] and [`spawn_daemon_env`] all go through —
+/// hoisted so the state home, the config home and the reason each is pinned are written ONCE.
+fn spawn_daemon_into(bin: &Path, sock: &Path, state: &Path, envs: &[(&str, &str)]) {
+    let mut launch = Command::new(bin);
+    launch
         .arg("--daemon")
         .env("SPRAG_HOST_RPC_SOCK", sock)
         .env("SPRAG_HOST_RPC", "1")
@@ -2726,9 +2758,13 @@ fn spawn_daemon_from(bin: &Path, sock: &Path, state: &Path) {
         // the test's own state root, which is empty unless a test writes one, so what is measured
         // is the DEFAULT.
         .env("XDG_CONFIG_HOME", state.join("config"))
-        .stdin(Stdio::null())
-        .status()
-        .expect("spawn the sprag-term daemon");
+        .stdin(Stdio::null());
+    // ⚠ AFTER the pins above, so a case cannot quietly move the state home out from under
+    // [`DaemonGuard`] — what this seam is for is the knobs a daemon reads that no pin here names.
+    for (name, value) in envs {
+        launch.env(name, value);
+    }
+    let status = launch.status().expect("spawn the sprag-term daemon");
     assert!(status.success(), "the daemon's parent forked cleanly");
 }
 
@@ -3626,14 +3662,48 @@ fn start_a_run_that_cannot_converge(sock: &Path, session: &str) {
 /// 671): two spellings of *what a loop's pane is* would let the two gates measure different things
 /// while both stayed green, which is [`start_a_run_that_cannot_converge`]'s own argument.
 fn loop_session(conn: &mut HostConn, name: &str) -> u64 {
+    loop_session_running(
+        conn,
+        name,
+        &["sh".to_owned(), "-c".to_owned(), standin(None)],
+    )
+}
+
+/// **THE STAND-IN AGENT ITSELF**, as the shell words that run it: announce the marker
+/// [`start_loop`] waits on, then echo every line back for ever.
+///
+/// `records` names a file the stand-in ALSO appends each line to, and [`None`] is the plain echo
+/// every other loop gate in this file opens.
+///
+/// # ⛔⛔⛔⛔⛔ Why a FILE, when the run already publishes a delivery count — register item 774
+///
+/// Because the count cannot answer *did THIS driver type anything*. `InheritedRun::progress` hands
+/// the restored row's cell to the new driver on purpose, so a run a boot just put back goes on
+/// publishing the PREDECESSOR's `delivered` until the new driver's first step — which is precisely
+/// the window this item is about. A gate reading `delivered >= 1` after a reboot would be green on
+/// a number typed by a process that is dead.
+///
+/// A file the case DELETES while no daemon is running has no such ambiguity: whatever is in it
+/// afterwards was typed at that pane by the driver this boot started.
+fn standin(records: Option<&Path>) -> String {
+    let keep = records.map_or_else(String::new, |path| {
+        format!(" printf '%s\\n' \"$l\" >> '{}';", path.display())
+    });
+    format!(
+        "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\";{keep} done"
+    )
+}
+
+/// [`loop_session`] over an argv the CASE chooses — register item 774, done-when ⑶, which needs two
+/// panes that differ in exactly one thing: whether a restore re-runs them.
+fn loop_session_running(conn: &mut HostConn, name: &str, cmd: &[String]) -> u64 {
     conn.call(
         "scene/invoke",
         json!({
             "path": mux_action_path(NEW_SESSION_ACTION),
             "args": {
                 "name": name,
-                "cmd": ["sh", "-c",
-                        "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done"],
+                "cmd": cmd,
                 // ⚠⚠ POINTED AT A TREE — see `a_tree_to_stand_in`, register item 738 layer 4. A
                 // pane opened with no directory is born in `$HOME`, and a debt loop is not built
                 // over one: its agent would be asked whether it trusts the folder (item 684), and
@@ -6341,6 +6411,323 @@ fn a_promotion_follows_a_loop_that_replaced_its_session_and_says_when_it_cannot(
         "⚠⚠⚠ a run that WAS put back carries the sentence that says nothing will pick it up. Row: \
          {kept:?}",
     );
+    drop(guard);
+}
+
+/// ⛔⛔⛔⛔⛔ **A RUN A BOOT PUT BACK TYPES ITS FIRST PROMPT, AND ONE WHOSE PANE CAME BACK A BARE
+/// SHELL IS SEEN NOT TO** — register item 774, done-when ⑶, and the apparatus its done-when ⑵ asked
+/// for.
+///
+/// # The measurement this stages
+///
+/// One promotion, 2026-08-30: three loops came back and made **zero deliveries between them in two
+/// hours**, while four runs started in the same window made one each. Done-when ⑴ gave the ROW a
+/// sentence for that state (`resumed_clause`, driven as four values in `sprag.rs`). What no gate
+/// could say was the other half — that a rescued run **ever types again at all** — because nothing
+/// in this suite had ever put a run back onto a pane that came back RUNNING SOMETHING.
+///
+/// # ⛔⛔⛔⛔⛔ Why the observable is a FILE and not the delivery count
+///
+/// `InheritedRun::progress` hands the restored row's cell to the new driver on purpose, so a run a
+/// boot has just put back goes on publishing the PREDECESSOR's `delivered` until that driver's
+/// first step. A gate that read `delivered >= 1` after a reboot would therefore be green on a
+/// number a dead process typed — the exact shape register item 775 calls a dead line. The stand-in
+/// records every line it is handed ([`standin`]), the case DELETES both records while no daemon is
+/// running, and what is in them afterwards was typed by the driver THIS boot started.
+///
+/// # ⚠⚠⚠⚠⚠ The two arms differ in ONE thing: whether a restore re-runs the pane's program
+///
+/// * **restored** — its pane is `env sh -c '<stand-in>'`. `env` is not a shell, and this daemon's
+///   `SPRAG_RESTORE_PROGRAMS` admits it, so `durability::restore_command` re-runs the exact argv and
+///   the stand-in announces itself again. ⚠ That wrapper is not a contrivance: `durability::SHELLS`
+///   names `env` in its own doc as precisely what the shell backstop does NOT defend against, and
+///   the allowlist is documented as an operator trust boundary — so this is the shape an operator
+///   configures, staged.
+/// * **shelled** — its pane is `sh -c '<stand-in>'`. `durability::SHELLS` refuses to re-run a
+///   `<shell> -c` however the allowlist is set, so it comes back a plain shell in its cwd and the
+///   stand-in is gone. This is what EVERY other loop gate in this file restores into, and it is why
+///   the observation register item 774 filed could not be reproduced from a fixture: the first
+///   candidate explanation was never the product at all.
+///
+/// # ⚠⚠⚠⚠ And history is turned OFF, which removes the one confound that would fake the claim
+///
+/// A restored pane replays its saved scrollback, and `ReadyWhen::Shows` is a predicate over the
+/// screen. With history on, the shelled arm's bare shell would come back with the word
+/// `AGENT-READY` painted on it by the REPLAY — a marker about a program that is not running — and
+/// the barrier would clear on a pane with nothing behind it. `SPRAG_RESTORE_HISTORY=0` makes the
+/// marker mean what this gate needs it to mean: a program printed it, just now.
+#[test]
+fn a_rescued_run_types_its_first_prompt_and_a_pane_that_came_back_a_shell_types_nothing() {
+    let sock = socket_path();
+    let state = scratch_state_home();
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    // WHERE EACH STAND-IN RECORDS WHAT IT IS HANDED. Under the state home so `DaemonGuard` takes
+    // them away with everything else this case wrote.
+    let ledger = state.join("typed");
+    std::fs::create_dir_all(&ledger).expect("a directory for the stand-ins to record into");
+    let restored_typed = ledger.join("restored.txt");
+    let shelled_typed = ledger.join("shelled.txt");
+    let typed_at =
+        |path: &Path| std::fs::read_to_string(path).is_ok_and(|said| !said.trim().is_empty());
+
+    // THE OPERATOR'S TWO KNOBS, and the daemon reads both of them itself — see `spawn_daemon_env`.
+    let knobs = [
+        ("SPRAG_RESTORE_PROGRAMS", "env"),
+        ("SPRAG_RESTORE_HISTORY", "0"),
+    ];
+    spawn_daemon_env(&sock, &state, &knobs);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    let restored = loop_session_running(
+        &mut conn,
+        "restored",
+        &[
+            "env".to_owned(),
+            "sh".to_owned(),
+            "-c".to_owned(),
+            standin(Some(&restored_typed)),
+        ],
+    );
+    start_loop(
+        &mut conn,
+        "restored",
+        restored,
+        "the loop whose pane a restore really re-runs",
+    );
+    let shelled = loop_session_running(
+        &mut conn,
+        "shelled",
+        &[
+            "sh".to_owned(),
+            "-c".to_owned(),
+            standin(Some(&shelled_typed)),
+        ],
+    );
+    start_loop(
+        &mut conn,
+        "shelled",
+        shelled,
+        "the loop whose pane comes back a plain shell, as every other gate here restores",
+    );
+
+    // ── THE PREMISE: BOTH stand-ins are typed at BEFORE anything is restarted ────────────────
+    //
+    // ⚠⚠ Without it, *the shelled one typed nothing after the reboot* would also be what a
+    // stand-in that never worked looks like, and the control would agree with the claim for the
+    // wrong reason.
+    assert!(
+        wait_for(Duration::from_secs(120), || typed_at(&restored_typed)
+            && typed_at(&shelled_typed)),
+        "⚠⚠ THE PREMISE FAILED: one of the two loops never typed at its pane even before a \
+         restart, so this fixture is measuring a stand-in that does not work rather than a \
+         restore. restored={:?} shelled={:?}",
+        std::fs::read_to_string(&restored_typed),
+        std::fs::read_to_string(&shelled_typed),
+    );
+    assert!(
+        wait_for(Duration::from_secs(120), || resumable_runs(&state, 2)),
+        "⚠⚠ THE PREMISE FAILED: the daemon never persisted TWO live loops each carrying a place \
+         and a request, so there is nothing for a boot to put back.",
+    );
+    let runs_dir = state.join("sprag");
+    let snapshot_at = || {
+        std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(".snapshot.json"))
+            })
+    };
+    assert!(
+        wait_for(Duration::from_secs(60), || snapshot_at().is_some()),
+        "⚠⚠ THE PREMISE FAILED: the daemon never wrote a workspace snapshot, so its successor \
+         would boot with no panes at all and NEITHER arm could come back.",
+    );
+    // ⚠⚠⚠⚠⚠ **AND THE SNAPSHOT REALLY RECORDS THE TWO ARGVS THIS GATE'S SPLIT IS MADE OF.** The
+    // whole claim is a difference `durability::exact_or_shell` makes on `argv[0]`; if the daemon
+    // recorded something else for either pane, both arms would go down the same branch and this
+    // gate would be two assertions about one behaviour.
+    let snapshot = sprag_host::load_snapshot(&snapshot_at().expect("a snapshot to read"))
+        .expect("the snapshot decodes");
+    let program_of = |pane: u64| -> String {
+        snapshot
+            .sessions
+            .iter()
+            .flat_map(|session| session.windows.iter())
+            .flat_map(|window| window.panes.iter())
+            .find(|recorded| recorded.id == sprag_terminal::PaneId(pane))
+            .unwrap_or_else(|| panic!("pane {pane} is in the snapshot"))
+            .argv
+            .first()
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        program_of(restored),
+        "env",
+        "⚠⚠⚠ THE FIXTURE'S OWN PREMISE: the arm that is supposed to come back RUNNING was not \
+         persisted under the wrapper that makes that possible, so a restore would fall back to a \
+         shell for it too and the claim below would be about nothing.",
+    );
+    assert_eq!(
+        program_of(shelled),
+        "sh",
+        "⚠⚠⚠ THE FIXTURE'S OWN PREMISE: the control arm was not persisted as a shell, so \
+         `durability::SHELLS` may not refuse it and the control could type after the reboot for a \
+         reason that is not the one it is here to measure.",
+    );
+    drop(conn);
+
+    // THE REBOOT: outright, so nothing writes a tidy terminal state on the way out.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+
+    // ⛔⛔⛔⛔⛔ **AND THE RECORDS GO WHILE NOTHING IS RUNNING** — this is what makes everything
+    // below a statement about the driver THIS boot starts. Deleted after the daemon is confirmed
+    // gone, so no pane can be mid-write and no line can survive by luck.
+    for record in [&restored_typed, &shelled_typed] {
+        std::fs::remove_file(record).expect("the predecessor's record is taken away");
+    }
+
+    spawn_daemon_env(&sock, &state, &knobs);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the replacement daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+
+    // ── THE PREMISE THE CLAIM AND THE CONTROL SHARE: the boot put BOTH runs back ─────────────
+    //
+    // ⚠⚠ Read off `RUN_RESUMED_KEY` — the fact only the registry can answer (`put_back` writes it
+    // and nothing clears it) — rather than inferred from a status word, because `running` is also
+    // what a run this daemon started fresh says.
+    let mut back = HostConn::connect(&sock, Duration::from_secs(10)).expect("reconnect");
+    // ⚠⚠ BY THE RUN'S OWN LABEL AND NEVER BY POSITION: the runs slot answers with EVERY run this
+    // daemon holds whichever session is asked, so a reader that took the first row would read one
+    // arm twice and call the other one green. The label is composed once at the run's birth from
+    // the pane it was opened over, which is the pane each arm of this fixture owns.
+    let row_of = |conn: &mut HostConn, session: &str, pane: u64| -> Value {
+        let heading = format!("ai_loop pane={pane}");
+        conn.call(
+            "scene/query",
+            json!({
+                "session": session,
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+            }),
+        )
+        .expect("the runs slot answers")
+        .as_array()
+        .expect("a list of runs")
+        .iter()
+        .find(|run| run["label"].as_str() == Some(&heading))
+        .unwrap_or_else(|| panic!("no row for the loop on pane {pane}"))
+        .clone()
+    };
+    for (session, pane) in [("restored", restored), ("shelled", shelled)] {
+        let resumed = wait_for(Duration::from_secs(60), || {
+            row_of(&mut back, session, pane)[sprag_host::plugins::RUN_RESUMED_KEY].as_bool()
+                == Some(true)
+        });
+        assert!(
+            resumed,
+            "⚠⚠⚠ THE PREMISE FAILED: the boot did not put the `{session}` run back, so what \
+             follows would be about a run nobody rescued. Row: {:?}",
+            row_of(&mut back, session, pane),
+        );
+    }
+
+    // ── THE CLAIM: the rescued run whose pane really came back TYPES ITS FIRST PROMPT ────────
+    let typed_again = wait_for(Duration::from_secs(180), || typed_at(&restored_typed));
+    assert!(
+        typed_again,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 774: this run was put back by a boot onto a pane whose stand-in \
+         re-ran and announced itself, and the driver that boot started has typed NOTHING at it. \
+         That is the state three loops sat in for two hours on 2026-08-30 while every row read \
+         `running` — measured here as an empty file rather than as a delivery count, because a \
+         rescued run publishes its PREDECESSOR's count until its own first step. Row: {:?}",
+        row_of(&mut back, "restored", restored),
+    );
+
+    // ── THE CONTROL, AND IT IS THE HALF THAT SEPARATES THE PRODUCT FROM THE FIXTURE ──────────
+    //
+    // ⛔⛔ It can fail, which register item 775 says is the only kind of control worth writing: a
+    // `durability::exact_or_shell` that dropped its `SHELLS` backstop would re-run this pane's
+    // recorded `sh -c '<stand-in>'`, the stand-in would announce itself, and this record would
+    // fill. What it holds is therefore a statement about the product and not about the arm.
+    assert!(
+        !typed_at(&shelled_typed),
+        "⛔⛔⛔ REGISTER ITEM 774 / `durability::SHELLS`: a pane recorded as `sh -c '<command>'` \
+         was re-run with that command after a reboot. The backstop exists so a recorded shell \
+         command is NEVER re-executed on a boot, and this gate's whole split — a pane that comes \
+         back running against one that comes back a bare shell — collapses if it is. Recorded: {:?}",
+        std::fs::read_to_string(&shelled_typed),
+    );
+
+    // ── AND THE PERSON'S ROW SAYS BOTH THINGS, which is where item 774 was filed ─────────────
+    //
+    // ⚠⚠ The claim above is about a file; this is about the mouth a person actually opens. Done-when
+    // ⑴ built the clause and drove it as VALUES; until this gate nothing had ever produced one from
+    // a live boot, so *the row a rescued run really gets* was still an argument rather than a
+    // reading.
+    let restored_row = sprag(&sock, &["runs", "-t", "restored"]).stdout;
+    assert!(
+        restored_row.contains("prompt(s) delivered"),
+        "⛔⛔⛔⛔ REGISTER ITEM 774: the stand-in was typed at and the row does not say so, which \
+         means the delivery reached the pane and died before the one mouth a person reads. Row: \
+         {restored_row:?}",
+    );
+    assert!(
+        restored_row.contains("Resuming") && restored_row.contains("Priming"),
+        "⛔⛔⛔ REGISTER ITEM 774: the run typed, and its walk does not show it going through the \
+         state that WAITS for a restarted peer on its way to the one that greets it. That road is \
+         the whole repair — a rescue that reached the greeting directly would type into whatever \
+         came back, which is what this document's own `peer.restarted` comment records being \
+         measured. Row: {restored_row:?}",
+    );
+    assert!(
+        !restored_row.contains("put back by a boot"),
+        "⚠⚠⚠ REGISTER ITEM 774, done-when ⑴'s control from the live side: this run came back AND \
+         went back to work, and the clause that means *it has typed nothing since* is still on its \
+         row. Left there, it appears on every rescued row for ever and stops meaning anything. \
+         Row: {restored_row:?}",
+    );
+    // ⛔⛔⛔⛔⛔ AND THE CONTROL'S ROW NAMES WHY IT TYPED NOTHING, rather than being the silent
+    // `running` that item 774 was filed over. This arm is the fixture-side explanation the item's
+    // done-when ⑵ had to eliminate, and a run that meets it must say so: the pane came back a bare
+    // shell, so the marker never appeared and nothing was injected.
+    //
+    // ⚠⚠⚠⚠⚠ **AND THE CONTROL IS STILL WAITING, WHICH IS THE ANSWER AND NOT A TIMEOUT.** Its pane
+    // came back a bare shell, so the barrier it is held at will never clear and the run ends
+    // `ready_timeout_ms` — three minutes, this document's own number — after the boot, saying the
+    // pane never showed what it was told to wait for. This gate does not sit through that bound: it
+    // asserts the state that produces it, which is that NO STEP HAS REPORTED A PANE. That reading
+    // is register item 709's clause, and it is what fails the moment a rescue starts typing into
+    // whatever came back — the shape measured on 2026-09-01, when this edge briefly aimed at the
+    // greeting state and put 1,545 bytes of brief into `bash`.
+    assert!(
+        row_of(&mut back, "shelled", shelled)
+            .get(sprag_host::plugins::RUN_DRIVING_KEY)
+            .is_none(),
+        "⛔⛔⛔⛔ REGISTER ITEM 774: a run whose pane came back a PLAIN SHELL has reported driving \
+         one, which means a step ran and the rescue did not wait for the peer to come up. Nothing \
+         came up: `durability::SHELLS` refuses to re-run a recorded `<shell> -c`, so whatever this \
+         step typed went to a shell that will execute it as commands.",
+    );
+    drop(back);
     drop(guard);
 }
 
