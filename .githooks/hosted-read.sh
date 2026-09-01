@@ -148,6 +148,46 @@ report sent readers to look at its run"
 HOSTED_READ_UNASKED_COST="a commit nobody could ask about is not a commit that \
 had no run -- folding the two together is the covering this file exists to stop"
 
+# ⛔⛔⛔⛔⛔ WHAT A RE-RUN'S GREEN COSTS — register item 793, and the FIFTH way the
+# unit has been wrong in this file.
+#
+# 776 counted READS against ROUNDS; 779 separated a COMMIT from its RUNS; 781
+# separated a LINE from the SET beneath it; 790 found a commit that maps to NO
+# run at all. Here the commit maps to a run and the run maps to SEVERAL VERDICTS:
+# `gh run list` shows the LATEST attempt's, and a re-run's green renders exactly
+# like a first attempt's.
+#
+# ⚠⚠⚠⚠⚠ IT IS NOT A HYPOTHETICAL, AND IT ALREADY ERASED A SAMPLE THIS
+# REPOSITORY WAS LOOKING FOR. Measured 2026-08-31: `c2dc7df` reads
+# `completed/success` in `gh run list`, and `run_attempt` is **2** — attempt 1
+# was `failure`, one test, `plugins::tests::every_declared_guardrail_is_one_the_\
+# parser_actually_reads`, killed by pty exhaustion. That is a FOURTH sample of
+# register item 776 (3)(d), and a checker looking at the re-run's green wrote
+# *"so no fourth 776 (3)(d) sample"* in as many words. The sample was in attempt
+# 1 and nobody could see it.
+#
+# ⚠⚠ WHY THIS REPOSITORY SPECIFICALLY. Its standing rule is that *flake* is the
+# name for having stopped diagnosing, and that not one is acceptable (items 700,
+# 701). A re-run's green deletes exactly that one.
+#
+# ⛔ AND THE REMEDY IS NOT "DO NOT RE-RUN". A re-run can be entirely right — an
+# infrastructure outage, a runner that never started. What cannot happen is that
+# the two are INDISTINGUISHABLE at the place the verdict is read.
+HOSTED_READ_RERUN_COST="a re-run's green renders exactly like a first attempt's \
+-- c2dc7df read success at run_attempt 2 while attempt 1's red held the fourth \
+776 (3)(d) sample, and a checker wrote that there was no such sample"
+
+# ⛔⛔⛔ WHAT AN UNANSWERABLE ATTEMPT COSTS — register item 793, and the arm that
+# keeps this repair from becoming its own escape hatch.
+#
+# ⚠ *It was attempt 1* and *nobody could ask which attempt it was* are different
+# facts, and this workspace's rule is that an unclassified case is RED rather
+# than a pass. Folding `unknown` into `1` would make every clone with no `gh`, no
+# network or no token report first-attempt greens it never saw — which is the
+# same covering in a new place.
+HOSTED_READ_UNATTEMPTED_COST="a verdict nobody could ask the attempt of is not a \
+first attempt -- assuming 1 would hand every clone without gh a green it never read"
+
 # WHETHER `$1` EVER HAD A HOSTED RUN AT ALL: a count, or `unknown` where the
 # question could not be put — register item 790.
 #
@@ -171,6 +211,44 @@ hosted_read_runs_for() {
     case "$count" in
         '' | *[!0-9]*) printf 'unknown\n' ;;
         *)             printf '%s\n' "$count" ;;
+    esac
+}
+
+# WHICH ATTEMPT the verdict on `$1` belongs to: a number, or `unknown` where the
+# question could not be put — register item 793.
+#
+# ⛔⛔ IT ASKS RATHER THAN RESTING ON A HABIT. Reading `run_attempt` first is a
+# rule this repository's own handoffs keep repeating, which is precisely the
+# shape rule 10 rules out: a reason written in prose is a reason nobody re-runs.
+# Which attempt a verdict came from is GitHub's fact, so this asks GitHub.
+#
+# ⚠⚠ THE MAXIMUM ACROSS THE COMMIT'S RUNS, because that is the attempt whose
+# verdict `gh run list` renders — the thing a reader actually sees. A commit with
+# several workflows is re-run material if ANY of them was re-run, and answering
+# with the minimum would report the reassuring half of a split answer.
+#
+# ⚠ THREE SHAPES OF ANSWER AND NONE OF THEM A DEFAULT: a number is what was
+# found; an empty reply (no run at all — item 790's case) answers `1`, because a
+# commit with no run has no hidden attempt and item 790 already owns that debt;
+# anything else is `unknown` and keeps its own word.
+hosted_read_attempt_for() {
+    local sha attempt asked
+    sha="$1"
+    command -v gh >/dev/null 2>&1 || { printf 'unknown\n'; return 0; }
+    # ⛔⛔⛔⛔⛔ THE STATUS IS READ SEPARATELY FROM THE OUTPUT, and the first draft
+    # of this function did not do that — measured by this file's own selftest on
+    # the arm below. A refused call and a commit with no runs BOTH leave the
+    # output empty, so folding them collapsed *nobody could ask* into *attempt 1*
+    # — the exact covering `HOSTED_READ_UNATTEMPTED_COST` is written against, in
+    # the function that constant was written for.
+    attempt="$(gh api "repos/{owner}/{repo}/actions/runs?head_sha=${sha}" \
+                   --jq '[.workflow_runs[].run_attempt] | max' 2>/dev/null)"
+    asked=$?
+    [ "$asked" -eq 0 ] || { printf 'unknown\n'; return 0; }
+    case "$attempt" in
+        null | '') printf '1\n' ;;
+        *[!0-9]*)  printf 'unknown\n' ;;
+        *)         printf '%s\n' "$attempt" ;;
     esac
 }
 
@@ -199,6 +277,7 @@ hosted_read_runs_for() {
 # `hosted_read_gap` keeps naming it until that commit is marked `settled`.
 hosted_read_seen() {
     local sha verdict marker kept mark was passed skipped one acc gone listed
+    local rerun attempt
     sha="$(git rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null)" || {
         echo "hosted-read: '${1:-HEAD}' is not a commit in this tree" >&2
         return 1
@@ -305,10 +384,34 @@ $skipped
 $passed
 SEEN
     skipped="$acc"
+    # ⛔⛔⛔⛔⛔ WHICH ATTEMPT THIS READER SAW — register item 793. `settled` says a
+    # verdict was there and was read; it has never said WHOSE. A re-run's green
+    # and a first attempt's are the same word in this file and the same row in
+    # `gh run list`, and the difference is a red nobody will ever look at again.
+    #
+    # ⚠⚠ THE MARK STILL ADVANCES. The reader did read a verdict, and refusing
+    # `settled` here would make an honest read stop counting — item 779's own
+    # mistake in a new place. What is recorded is a SEPARATE debt against this
+    # commit: its first attempt's verdict is still unread.
+    #
+    # ⚠ Only for `settled`: an `unsettled` look read no verdict at all, so there
+    # is no attempt behind it to have been the wrong one.
+    rerun="$(hosted_read_rerun_raw | command grep -v " ${sha}\$" || true)"
+    if [ "$verdict" = settled ]; then
+        attempt="$(hosted_read_attempt_for "$sha")"
+        case "$attempt" in
+            1)       ;;
+            unknown) rerun="$(printf '%s\nunattempted %s\n' "$rerun" "$sha" \
+                              | command grep -v '^$' || true)" ;;
+            *)       rerun="$(printf '%s\n%s %s\n' "$rerun" "$attempt" "$sha" \
+                              | command grep -v '^$' || true)" ;;
+        esac
+    fi
     {
         printf '%s\n' "$mark"
         printf '%s\n' "$kept" | command sed '/^$/d;s/^/owed /'
         printf '%s\n' "$skipped" | command sed '/^$/d;s/^/skipped /'
+        printf '%s\n' "$rerun" | command sed '/^$/d;s/^/rerun /'
     } > "$marker"
     if [ "$verdict" = settled ]; then
         echo "hosted-read: recorded that the hosted result for ${sha:0:7} was read"
@@ -326,6 +429,57 @@ SEEN
              "the mark stepped over never had a hosted run of their own" \
              "(${listed% }), so there is nothing to read and they are dropped --" \
              "${HOSTED_READ_NORUN_COST}"
+    fi
+}
+
+# RETIRE the re-run debt on `$1` by saying what its FIRST attempt actually said:
+# `$2` is `clean` (attempt 1 was green too, so the re-run hid nothing) or `red`
+# (it was not, and that red is now this round's) — register item 793.
+#
+# ⛔⛔⛔⛔⛔ THIS IS THE ONLY WAY THE LIST REACHES ZERO, and it takes a WORD for the
+# reason `--seen` does (item 779): the classification is a fact only the reader
+# has, and neither answer may be the default. `clean` would let a reader retire a
+# hidden red by typing; `red` would file a debt against a run that never had one.
+# An unclassified call is REFUSED.
+#
+# ⚠⚠ `--seen <sha> settled` CANNOT retire it, and that is deliberate. Looking
+# again finds the same re-run and re-files the same debt, because the thing that
+# discharges this is reading a DIFFERENT verdict — attempt 1's — which no amount
+# of looking at the latest one can do.
+#
+# ⚠ A `red` does not stay in this file. What it costs is a debt in the register,
+# and this says so out loud rather than keeping a count nobody reads: the whole
+# defect was a red that went unfiled because nothing named it.
+hosted_read_first_attempt() {
+    local sha said kept
+    sha="$(git rev-parse --verify "${1:-}^{commit}" 2>/dev/null)" || {
+        echo "hosted-read: '${1:-}' is not a commit in this tree" >&2
+        return 1
+    }
+    said="${2:-}"
+    case "$said" in
+        clean|red) ;;
+        *)  echo "hosted-read: say WHAT the first attempt said --" \
+                 "'--first-attempt ${1:-} clean' if it was green too, so the" \
+                 "re-run hid nothing, or '--first-attempt ${1:-} red' if it was" \
+                 "not. A re-run's green is retired by reading the verdict it" \
+                 "covered, never by looking at it again (register item 793)." >&2
+            return 2 ;;
+    esac
+    kept="$(hosted_read_rerun_raw | command grep -v " ${sha}\$" || true)"
+    {
+        printf '%s\n' "$(hosted_read_watermark)"
+        hosted_read_owed | command sed '/^$/d;s/^/owed /'
+        hosted_read_skipped | command sed '/^$/d;s/^/skipped /'
+        printf '%s\n' "$kept" | command sed '/^$/d;s/^/rerun /'
+    } > "$(hosted_read_marker)"
+    if [ "$said" = red ]; then
+        echo "hosted-read: recorded that ${sha:0:7}'s FIRST attempt was RED --" \
+             "that red is this round's debt now, and it is the one a re-run's" \
+             "green would have deleted. File it before the next push."
+    else
+        echo "hosted-read: recorded that ${sha:0:7}'s first attempt was green" \
+             "too, so the re-run covered nothing"
     fi
 }
 
@@ -370,6 +524,66 @@ hosted_read_skipped() {
     done
 }
 
+# Every commit whose verdict was read FROM A RE-RUN, as `<word> <sha>` per line
+# where `<word>` is the attempt number or `unattempted` — register item 793, and
+# the raw form, without the ancestry prune the reported one gets.
+#
+# ⚠ Raw because `hosted_read_seen` rewrites the marker and must carry forward
+# what it did not just decide, including entries for commits a rebase dropped —
+# the prune is a REPORTING rule, and applying it while writing would silently
+# discard a debt the moment somebody looked from a detached HEAD.
+hosted_read_rerun_raw() {
+    local marker
+    marker="$(hosted_read_marker)"
+    [ -r "$marker" ] || return 0
+    command sed -n 's/^rerun //p' "$marker"
+}
+
+# The same list, pruned to what HEAD still contains — register item 793, with the
+# prune `hosted_read_owed` and `hosted_read_skipped` get and for the same reason:
+# a commit this branch dropped is not a debt, and a count that cannot reach zero
+# stops being acted on.
+hosted_read_rerun() {
+    local word sha
+    hosted_read_rerun_raw | while read -r word sha; do
+        [ -n "$sha" ] || continue
+        git merge-base --is-ancestor "$sha" HEAD 2>/dev/null \
+            && printf '%s %s\n' "$word" "$sha"
+    done
+}
+
+# The clause naming what was read FROM A RE-RUN — empty when nothing was, which
+# is what keeps a receipt a receipt (register item 776, arm 5).
+#
+# ⚠⚠ A FIFTH CLAUSE AND NOT A NUMBER ADDED TO ONE OF THE FOUR. The states are
+# *nobody looked*, *the run had not spoken*, *the mark went past it*, *there was
+# no run to read*, and now *what was read was a re-run's verdict*. Each has its
+# own remedy, and a reader handed one sentence for two of them comes away
+# thinking one act discharges both — which is the covering item 779 was about.
+#
+# ⚠ TWO ARMS, because *it was attempt N* and *nobody could ask* are different
+# facts and an unclassified case is RED here rather than a pass.
+hosted_read_rerun_clause() {
+    local listed count seen list
+    seen="$(hosted_read_rerun)"
+    [ -n "$seen" ] || return 0
+    list="$(printf '%s\n' "$seen" | command sed -n 's/^unattempted //p')"
+    if [ -n "$list" ]; then
+        count="$(printf '%s\n' "$list" | command grep -c .)"
+        listed="$(printf '%s\n' "$list" | command cut -c1-7 | command tr '\n' ' ')"
+        printf '%s' "; and ${count} commit(s) were read without anyone being able \
+to ask which attempt spoke (${listed% }) -- ${HOSTED_READ_UNATTEMPTED_COST}"
+    fi
+    list="$(printf '%s\n' "$seen" | command grep -v '^unattempted ' \
+            | command sed 's/^[0-9]* //')"
+    if [ -n "$list" ]; then
+        count="$(printf '%s\n' "$list" | command grep -c .)"
+        listed="$(printf '%s\n' "$list" | command cut -c1-7 | command tr '\n' ' ')"
+        printf '%s' "; and ${count} commit(s) were read from a RE-RUN's verdict, \
+so their first attempt's is still unread (${listed% }) -- ${HOSTED_READ_RERUN_COST}"
+    fi
+}
+
 # THE SENTENCE. Four states, and none of them may be silent about which it is.
 #
 # ⛔ The unreadable and the unknown-commit states are NOT folded into "0", which
@@ -397,7 +611,7 @@ hosted_read_gap() {
         # the unrecorded state, plus what is owed.
         echo "hosted-read: NOBODY HAS RECORDED READING a hosted result in this" \
              "clone, so how long this has gone unread cannot be read here" \
-             "--$(hosted_read_owed_clause)$(hosted_read_skipped_clause)"
+             "--$(hosted_read_owed_clause)$(hosted_read_skipped_clause)$(hosted_read_rerun_clause)"
         return 0
     fi
     if ! git rev-parse --verify --quiet "${recorded}^{commit}" >/dev/null 2>&1; then
@@ -412,7 +626,7 @@ hosted_read_gap() {
         # somebody looked. Those two were one sentence, and that is how a run
         # that never answered got buried by the next `--seen`.
         echo "hosted-read: the hosted result was read at HEAD (${head:0:7}) --" \
-             "0 round(s) unread$(hosted_read_owed_clause)$(hosted_read_skipped_clause)"
+             "0 round(s) unread$(hosted_read_owed_clause)$(hosted_read_skipped_clause)$(hosted_read_rerun_clause)"
         return 0
     fi
     count="$(git rev-list --count "${recorded}..HEAD" 2>/dev/null || echo "")"
@@ -422,7 +636,7 @@ hosted_read_gap() {
         return 0
     fi
     echo "hosted-read: ${count} round(s) published since a hosted result was" \
-         "read (last read at ${recorded:0:7}) -- ${HOSTED_READ_COST}$(hosted_read_owed_clause)$(hosted_read_skipped_clause)"
+         "read (last read at ${recorded:0:7}) -- ${HOSTED_READ_COST}$(hosted_read_owed_clause)$(hosted_read_skipped_clause)$(hosted_read_rerun_clause)"
 }
 
 # The clause naming what was LOOKED AT and had not spoken — empty when nothing
@@ -510,6 +724,7 @@ hosted_read_selftest() {
     # repository instead of the throwaway one. The arms went green-ish against
     # the wrong subject, which is the shape this whole file is about.
     local here tmp pass fail said base tip saved_path FAKE_GH_TOTAL FAKE_GH_FAIL
+    local FAKE_GH_ATTEMPT rerun_sha
     saved_path="$PATH"
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # ⚠⚠ CHECKED HERE **AND** BELOW, and the pair is not redundant — register item
@@ -562,14 +777,24 @@ hosted_read_selftest() {
     cat > "$tmp/bin/gh" <<'ASKED'
 #!/usr/bin/env bash
 # The double `hosted-read.sh --selftest` asks instead of GitHub (item 790).
+#
+# ⚠ TWO QUESTIONS NOW, told apart by the `--jq` the caller wrote (item 793):
+# `hosted_read_runs_for` asks for a count, `hosted_read_attempt_for` asks for the
+# attempt. Branching on the ARGUMENTS rather than on an environment variable of
+# the double's own keeps the two answers independent, so an arm can drive a
+# re-run on a commit whose run count is anything.
 [ "${FAKE_GH_FAIL:-0}" = 1 ] && exit 1
-printf '%s\n' "${FAKE_GH_TOTAL:-1}"
+case "$*" in
+    *run_attempt*) printf '%s\n' "${FAKE_GH_ATTEMPT:-1}" ;;
+    *)             printf '%s\n' "${FAKE_GH_TOTAL:-1}" ;;
+esac
 ASKED
     chmod +x "$tmp/bin/gh"
     PATH="$tmp/bin:$PATH"
     FAKE_GH_TOTAL=1
     FAKE_GH_FAIL=0
-    export PATH FAKE_GH_TOTAL FAKE_GH_FAIL
+    FAKE_GH_ATTEMPT=1
+    export PATH FAKE_GH_TOTAL FAKE_GH_FAIL FAKE_GH_ATTEMPT
 
     git -C "$tmp" init -q -b main
     git -C "$tmp" config user.email "probe@example.com"
@@ -987,6 +1212,90 @@ ASKED
         fail=$((fail + 1))
     fi
 
+    # ⛔⛔⛔⛔⛔ THE RE-RUN ARMS — register item 793. Five of them, because the
+    # states are *attempt 1* (silent), *attempt N* (a debt), *unaskable* (a
+    # different debt), *retired clean* and *retired red*, and this file's own rule
+    # is that a state which cannot be told from another one is the defect.
+    ( cd "$tmp" && : > r && git add r && git commit -qm rerun )
+    rerun_sha="$(git -C "$tmp" rev-parse HEAD)"
+
+    # A first attempt says nothing, so the receipt stays a receipt.
+    FAKE_GH_ATTEMPT=1
+    ( cd "$tmp" && hosted_read_seen HEAD settled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"RE-RUN"*)
+            echo "  FAIL  a first-attempt read claimed a re-run: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    a verdict read at attempt 1 adds no clause"
+            pass=$((pass + 1)) ;;
+    esac
+
+    # ⛔ The one this item exists for: the same word, the same green, a different
+    # attempt — and the sentence must not read the same.
+    FAKE_GH_ATTEMPT=2
+    ( cd "$tmp" && hosted_read_seen HEAD settled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"read from a RE-RUN's verdict"*"${rerun_sha:0:7}"*)
+            echo "  ok    a verdict read at attempt 2 is named as a re-run's"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a re-run read said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+
+    # ⚠ Looking AGAIN cannot retire it: the same look finds the same re-run.
+    ( cd "$tmp" && hosted_read_seen HEAD settled >/dev/null )
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"read from a RE-RUN's verdict"*)
+            echo "  ok    looking again does not retire a re-run's verdict"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a second look retired the re-run: $said"
+            fail=$((fail + 1)) ;;
+    esac
+
+    # ⛔ And an unclassified retirement is REFUSED rather than defaulted.
+    if ( cd "$tmp" && hosted_read_first_attempt "$rerun_sha" >/dev/null 2>&1 ); then
+        echo "  FAIL  --first-attempt accepted no word"
+        fail=$((fail + 1))
+    else
+        echo "  ok    --first-attempt refuses a look that says nothing"
+        pass=$((pass + 1))
+    fi
+
+    # Reading the covered verdict is what reaches zero.
+    said="$( cd "$tmp" && hosted_read_first_attempt "$rerun_sha" red )"
+    case "$said" in
+        *"FIRST attempt was RED"*)
+            echo "  ok    a red first attempt is reported as this round's debt"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  retiring a red said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"RE-RUN"*)
+            echo "  FAIL  the re-run clause survived being retired: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    a retired re-run leaves the sentence"
+            pass=$((pass + 1)) ;;
+    esac
+
+    # ⚠ `unknown` is NOT folded into attempt 1 — its own clause, its own words.
+    FAKE_GH_FAIL=1
+    ( cd "$tmp" && hosted_read_seen HEAD settled >/dev/null )
+    FAKE_GH_FAIL=0
+    said="$( cd "$tmp" && hosted_read_gap )"
+    case "$said" in
+        *"able to ask which attempt spoke"*)
+            echo "  ok    an unaskable attempt keeps its own clause"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  an unaskable attempt said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    ( cd "$tmp" && hosted_read_first_attempt "$rerun_sha" clean >/dev/null )
+
     rm -rf "$tmp"
     # ⚠ The double goes with it: the directory it lived in is gone, and PATH goes
     # back to what the caller had so nothing downstream is asking a fake.
@@ -1000,8 +1309,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     case "${1:-}" in
         --selftest) hosted_read_selftest ;;
         --seen) shift; hosted_read_seen "${1:-HEAD}" "${2:-}" ;;
+        --first-attempt) shift; hosted_read_first_attempt "${1:-}" "${2:-}" ;;
         --gap|"") hosted_read_gap ;;
-        *) echo "usage: hosted-read.sh [--gap|--seen SHA <settled|unsettled>|--selftest]" >&2
+        *) echo "usage: hosted-read.sh [--gap|--seen SHA <settled|unsettled>" \
+                "|--first-attempt SHA <clean|red>|--selftest]" >&2
            exit 2 ;;
     esac
 fi
