@@ -100,7 +100,26 @@ impl Stat {
             .nth(2)?
             .parse::<i32>()
             .ok()
-            .and_then(|tpgid| u32::try_from(tpgid).ok());
+            .and_then(|tpgid| u32::try_from(tpgid).ok())
+            // ⛔⛔⛔⛔⛔ **AND `0` IS AN ABSENCE TOO, WHICH THIS ARM ALONE DID NOT SAY** — register
+            // item 820. Linux's documented sentinel is `-1`, which `u32::try_from` already refuses,
+            // and this stopped there. The macOS arm below has ALWAYS carried a second guard —
+            // `e_tpgid != 0`, with *"group 0 is not a job anybody can name"* written beside it — so
+            // one file held two different answers to *what counts as no foreground group*, and the
+            // platform where the suite dies of a group-directed signal was the loose one.
+            //
+            // ⚠⚠ WHAT IT COSTS DOWNSTREAM, which is why a value nobody can name must not travel:
+            // every reader of this field ends at `kill`'s NEGATION, and there `-0` is not a group
+            // at all — it is the command *my own process group*. `sprag_host`'s
+            // `process_group_exists` guards its own call (`pgid < 2`) and says so in a comment;
+            // `crate::stop::stop_foreground_job` does not, and it sends a REAL signal. A zero
+            // arriving there is a `SIGINT` at the daemon's own group — or at a test harness's,
+            // taking the whole `cargo test` with it.
+            //
+            // ⚠ Whether that is the intermittent exit-130 this item was filed on is NOT settled
+            // here and is not claimed: this closes a value that cannot mean what its readers take
+            // it to mean, which is worth doing whether or not it is that bug.
+            .filter(|&tpgid| tpgid != 0);
         Some(Self {
             comm,
             ppid,
@@ -749,6 +768,47 @@ mod tests {
         assert_eq!(stat.ppid, 42, "field 4, counted from the last ')'");
         assert_eq!(stat.pgrp, 77, "field 5");
         assert_eq!(stat.tpgid, Some(99), "field 8, two past pgrp");
+    }
+
+    /// **BOTH SPELLINGS OF *NO FOREGROUND GROUP* ARE AN ABSENCE** — register item 820.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why `0` has to be one, and why the answer must not be a number
+    ///
+    /// Every reader of this field ends at `kill`'s NEGATION, and `-0` is not a group there: it is
+    /// the command *my own process group*. `crate::stop::stop_foreground_job` sends a REAL signal
+    /// through that negation, so a zero arriving from here is a `SIGINT` at the daemon's own group
+    /// — or at a test harness's, which takes the whole `cargo test` down with the suite.
+    ///
+    /// ⚠⚠ Linux's documented sentinel is `-1` and this parser stopped there, while the macOS arm
+    /// of the same function has always guarded `!= 0` as well, with the reason written beside it.
+    /// **One file, two answers to one question, and the loose one on the platform that dies.**
+    ///
+    /// ⚠ `-1` is asserted in the same test rather than a separate one: they are the same question
+    /// asked twice, and a reader who saw only one of them would take the other for an oversight.
+    #[test]
+    fn a_foreground_group_nobody_can_name_is_no_group() {
+        let none = Stat::parse(b"7 (bash) S 1 7 7 34817 0 4194304 0 0").expect("a parseable line");
+        assert_eq!(
+            none.tpgid, None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 820: `0` came back as a group. Every reader of this negates it \
+             for `kill`, where `-0` means THIS PROCESS'S OWN GROUP — so a zero here is how a \
+             pane's stop request becomes a signal at the daemon that sent it",
+        );
+
+        let absent =
+            Stat::parse(b"7 (bash) S 1 7 7 34817 -1 4194304 0 0").expect("a parseable line");
+        assert_eq!(
+            absent.tpgid, None,
+            "and the sentinel Linux documents is an absence too — the arm this parser already had",
+        );
+
+        let real = Stat::parse(b"7 (bash) S 1 7 7 34817 2 4194304 0 0").expect("a parseable line");
+        assert_eq!(
+            real.tpgid,
+            Some(2),
+            "⚠ and the smallest number that IS a group still comes through, or the guard would be \
+             refusing the thing it exists to pass",
+        );
     }
 
     /// The ordinary line, so the field offsets are pinned by something without the hazard too.
