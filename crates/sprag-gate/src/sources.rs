@@ -797,6 +797,56 @@ fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
     }
 }
 
+/// A code line with the contents of its double-quoted strings blanked out.
+///
+/// # ⛔⛔ Because the needle appears in the HUNTING file's own code, inside quotes
+///
+/// A gate that forbids a spelling has to name that spelling — in the filter that looks for it and
+/// in the message that explains it — so every such gate matches itself unless something separates
+/// *a call* from *a quoted mention of one*. Stripping by FILE NAME would be an exemption list;
+/// stripping by the property that actually distinguishes them costs nothing and cannot go stale
+/// when a file is renamed.
+///
+/// ⚠⚠ **It lives here rather than in either gate that needs it** — register item 818. It was
+/// written for item 794's scratch-root ratchet and a second gate needed it four hours after the
+/// first, which is the moment a copy would have been made and the two would have started drifting.
+///
+/// ⚠ Conservative where it cannot be sure: a line that ENDS inside a string (a multi-line literal,
+/// or a raw string this does not model) keeps its tail as code, so the direction of any error is a
+/// red to read rather than a pass.
+#[must_use]
+pub fn outside_strings(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(open) = rest.find('"') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        // An escaped quote does not close the literal; walk to the first unescaped one.
+        let mut escaped = false;
+        let mut close = None;
+        for (offset, byte) in after.bytes().enumerate() {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                close = Some(offset);
+                break;
+            }
+        }
+        match close {
+            Some(offset) => rest = &after[offset + 1..],
+            // Unterminated on this line: keep the remainder as code rather than assume.
+            None => {
+                out.push_str(after);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

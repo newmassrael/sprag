@@ -67,6 +67,8 @@
 
 use std::path::{Path, PathBuf};
 
+use sprag_gate::sources::outside_strings;
+
 /// ⛔ **The harness half, as it stood when item 794's product half reached zero.**
 ///
 /// ⛔⛔ **HELD EXACTLY, NOT AS A CEILING.** A ceiling rots: pay ten sites down and the slack it
@@ -189,48 +191,10 @@ fn code_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
         })
 }
 
-/// A code line with the contents of its double-quoted strings blanked out.
-///
-/// ⛔⛔ **BECAUSE THE NEEDLE APPEARS IN THIS FILE'S OWN CODE, INSIDE QUOTES.** The filter below
-/// reads `line.contains("std::env::temp_dir()")` and the failure message quotes the call while
-/// explaining it — four code lines here, plus the message text in `sprag-scratch`. Stripping by
-/// FILE NAME would be an exemption list; stripping by the property that actually distinguishes them
-/// — the match is data, not a call — costs nothing and cannot go stale when a file is renamed.
-///
-/// ⚠ Conservative where it cannot be sure: a line that ENDS inside a string (a multi-line literal,
-/// or a raw string this does not model) keeps its tail as code, so the direction of any error is a
-/// red to read rather than a pass.
-fn outside_strings(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut rest = line;
-    while let Some(open) = rest.find('"') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        // An escaped quote does not close the literal; walk to the first unescaped one.
-        let mut escaped = false;
-        let mut close = None;
-        for (offset, byte) in after.bytes().enumerate() {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                close = Some(offset);
-                break;
-            }
-        }
-        match close {
-            Some(offset) => rest = &after[offset + 1..],
-            // Unterminated on this line: keep the remainder as code rather than assume.
-            None => {
-                out.push_str(after);
-                return out;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
+// ⚠⚠ `outside_strings` — *a code line with its double-quoted strings blanked out* — was written
+// here and now lives in [`sprag_gate::sources`], imported above. It moved the day a SECOND gate
+// needed it (register item 818, the append-in-one-call scan), which is the moment a copy would have
+// been made and the two would have begun to drift. Its own reason is on it, there.
 
 /// Where a file's `#[cfg(test)]` module begins, if it has one.
 ///
