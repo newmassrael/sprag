@@ -33,12 +33,22 @@
 //!
 //! # ⚠⚠ What was measured before any of it was written
 //!
-//! * **A cold `target/` is affordable.** A worktree inherits no build cache — this repository's
-//!   `target` is an untracked symlink to a shared cache, so a fresh checkout genuinely starts cold
-//!   — and a cold whole-workspace compile measured **73 s** against
+//! * **A cold `target/` is affordable.** A worktree gets a `target/` of its own — this
+//!   repository's is an untracked symlink to a shared cache, and a fresh checkout carries no such
+//!   link — and a cold whole-workspace compile measured **73 s** against
 //!   [`CHECK_WITHIN`](crate::plugins)'s 600 s budget, one crate at 46 s. **No persistent
 //!   checker-owned build directory is needed**, which is a whole mechanism this module does not
 //!   have to carry.
+//!
+//!   ⚠⚠⚠ **THIS BULLET SAID "A WORKTREE INHERITS NO BUILD CACHE" AND THAT IS FALSE ON THIS
+//!   MACHINE — register item 809.** `~/.cargo/config.toml` sets `rustc-wrapper = "sccache"`, and
+//!   its own comment states the purpose: *"Share compiled crates across every `target/` directory
+//!   on this box."* Measured 2026-09-01: **5341 Rust cache hits**. A separate `target/` is not a
+//!   separate BUILD, and the claim above was about the directory while reading as a claim about
+//!   isolation. What the timing measurement supports is only that the checkout is affordable; the
+//!   isolation half is not this module's to promise, and `sprag_gate::sources::tree_under_test`
+//!   now refuses the state where a build from one tree answers for another rather than trusting
+//!   this sentence.
 //! * **The uncommitted work has to travel**, and it can. A checkout of `HEAD` alone would hand the
 //!   checker a DIFFERENT tree from the one the claim is about and it would never know — a silent
 //!   wrong answer, which is worse than the defect being repaired. [`IsolatedCheckout::of`] carries
