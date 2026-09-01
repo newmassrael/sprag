@@ -654,11 +654,19 @@ OTHER
     esac
 
     # (10c) ⛔⛔⛔⛔⛔ RUN FROM SOMEWHERE THAT IS NOT A REPOSITORY — register item
-    # 804. `$tmp` itself is not one (only `$tmp/repo` is), so this is the real
-    # shape: the marker cannot be reached, and *that* must not be reported as
+    # 804. The marker cannot be reached there, and *that* must not be reported as
     # *nobody has laid a baseline* — the old sentence sent a reader to run
     # `--baseline`, which wrote to the FILESYSTEM ROOT and announced success.
-    said="$( cd "$tmp" && loop_read_gap )"
+    #
+    # ⛔⛔⛔ AND THE PLACE IS `/`, NOT `$tmp`. The first version used `$tmp` and
+    # passed on the author's machine and FAILED IN CI, because whether `$tmp` is
+    # inside a repository is a fact about the BOX: here `target/` is a symlink to
+    # `~/.buildcache/sprag` (outside), on the runner it is a real directory under
+    # the checkout (inside), and `CARGO_TARGET_TMPDIR` puts the symlinked-TMPDIR
+    # environment under it. An arm whose premise is an accident of the filesystem
+    # measures the filesystem. `/` is the one place that is guaranteed not to be
+    # this clone, and `scratch-guard.sh`'s own arm already uses it.
+    said="$( cd / && loop_read_gap )"
     case "$said" in
         *"THIS TREE HAS NO GIT DIR"*"NOT the same as no baseline"*)
             echo "  ok    with no git dir the gap says so, and says it is not the other thing"
@@ -666,14 +674,14 @@ OTHER
         *)  echo "  FAIL  outside a repository the gap said: $said"
             fail=$((fail + 1)) ;;
     esac
-    if ( cd "$tmp" && loop_read_baseline >/dev/null 2>&1 ); then
+    if ( cd / && loop_read_baseline >/dev/null 2>&1 ); then
         echo "  FAIL  --baseline reported success with nowhere to write"
         fail=$((fail + 1))
     else
         echo "  ok    --baseline outside a repository records nothing and says so"
         pass=$((pass + 1))
     fi
-    if ( cd "$tmp" && loop_read_seen 'probe#1' >/dev/null 2>&1 ); then
+    if ( cd / && loop_read_seen 'probe#1' >/dev/null 2>&1 ); then
         echo "  FAIL  --seen reported success with nowhere to write"
         fail=$((fail + 1))
     else
