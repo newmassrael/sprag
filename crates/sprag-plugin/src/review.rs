@@ -747,9 +747,40 @@ impl ContextReview {
         else {
             return;
         };
-        use std::io::Write as _;
-        let _ = writeln!(file, "{}", review.ledger_line());
+        let _ = append_line(&mut file, &review.ledger_line());
     }
+}
+
+/// **ONE LINE, ONE `write`** — register item 818.
+///
+/// # ⛔⛔⛔⛔⛔ Why the spelling is the whole of this function
+///
+/// This was `writeln!(file, "{}", review.ledger_line())`, and **`writeln!` is not one write**:
+/// `Write::write_fmt` calls `write_all` once per FORMAT PIECE and a `File` buffers nothing, so that
+/// spelling left through two syscalls — the line, then the newline. `O_APPEND` makes ONE write
+/// atomic against other writers and makes nothing else atomic, so another run's line can land
+/// between them: two lines run together, and a blank one turns up where the newline caught up.
+///
+/// # ⚠⚠⚠ And two runs really do write this one file at the same moment
+///
+/// Not argued — read off the three places that decide it, none of which is in this module:
+///
+///   * `sprag_host`'s plugin surface sets [`crate::AiLoopSpec::review_ledger`] to
+///     `durability::state_dir()`, which is **one directory for the daemon**, not one per run;
+///   * `context_review.scxml` authors `ledger_into` as one bare name (`context-review.jsonl`), so
+///     every run resolves to the same path;
+///   * that same surface drives each run on **its own thread** (`thread::spawn`).
+///
+/// So two runs whose reviews end together are two threads appending to one file. ⚠ Measured on the
+/// sibling that had this defect (`sprag_terminal::pty`, register item 817): 32 threads, **188 of
+/// 827 lines shredded**, one wreck parsing as a plausible number. This site is narrower — two
+/// pieces rather than five — which changes the SHAPE of the damage, not whether there is any.
+///
+/// # Errors
+///
+/// The write's own, unchanged.
+fn append_line(into: &mut impl std::io::Write, line: &str) -> std::io::Result<()> {
+    into.write_all(format!("{line}\n").as_bytes())
 }
 
 #[cfg(test)]
@@ -758,7 +789,49 @@ mod ledger_tests {
 
     use sce_rust_runtime::{IScriptEngine, ScriptValue};
 
-    use super::{ContextReview, Ending, NobodyAsked, ledger_path};
+    use super::{ContextReview, Ending, NobodyAsked, append_line, ledger_path};
+
+    /// **ONE LINE LEAVES THROUGH EXACTLY ONE `write`** — register item 818, and the predicate
+    /// [`super::append_line`]'s whole argument rests on.
+    ///
+    /// # ⚠⚠⚠ A counting writer and not a thread race, deliberately
+    ///
+    /// The race is the SYMPTOM and the write count is the CAUSE. A race has to be provoked, is
+    /// probabilistic, and can go green on a machine that happened to schedule kindly; this counts
+    /// two under `writeln!` every time, on every platform, with no threads at all. The symptom is
+    /// already driven by the sibling this defect was found through
+    /// (`sprag_terminal::pty`'s `recordings_made_at_the_same_moment_do_not_shred_each_other`,
+    /// register item 817), against a real file.
+    ///
+    /// ⚠ The assertion is over the WHOLE list rather than its length, so it fails the same way for
+    /// a spelling that writes once and writes the wrong thing.
+    #[test]
+    fn a_ledger_line_leaves_through_exactly_one_write() {
+        #[derive(Default)]
+        struct Counting(Vec<Vec<u8>>);
+
+        impl std::io::Write for Counting {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut counted = Counting::default();
+        append_line(&mut counted, r#"{"sessions":2}"#).expect("a counting writer never refuses");
+        assert_eq!(
+            counted.0,
+            [b"{\"sessions\":2}\n".to_vec()],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 818: this line did not leave through one write. `O_APPEND` \
+             makes ONE write atomic against other writers and makes nothing else atomic, and every \
+             ai_loop run in a daemon appends to THIS file from its own thread — so a second write \
+             is a window another run's line can land in",
+        );
+    }
 
     /// ⚠⚠⚠ **A REVIEW THAT FOUND NOTHING STILL LEAVES ITS COUNTS BEHIND** — the one property that
     /// makes *did this get better?* a question with an answer.
