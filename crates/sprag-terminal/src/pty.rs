@@ -2093,8 +2093,13 @@ mod tests {
         );
     }
 
-    /// **A PANE'S CHILD NEVER NAMES THIS PROCESS'S OWN GROUP AS ITS FOREGROUND JOB** — register
-    /// item 820, and the one question about that item a test can actually settle.
+    /// **A PANE'S CHILD CAN REACH THIS PROCESS THROUGH NEITHER ITS GROUP NOR ITS SESSION** —
+    /// register item 820, and the two questions about that item a test can actually settle.
+    ///
+    /// There are exactly two ways a pane could deliver a signal here without anybody asking for
+    /// one, and this drives both: the number `stop_foreground_job` hands to `kill`'s negation
+    /// (the GROUP), and the session whose foreground group a terminal raises `SIGINT` at (the
+    /// SESSION). Each has its own arm and its own refusal-to-be-vacuous below.
     ///
     /// # ⛔⛔⛔⛔⛔ What the number is FOR, which is why this is a gate and not a curiosity
     ///
@@ -2126,10 +2131,11 @@ mod tests {
     /// terminal — the fork/exec window this was built to catch was not observable from here at all,
     /// and the hypothesis that item 820's signal comes through it is that much weaker.
     #[test]
-    fn a_pane_childs_foreground_group_is_never_this_process_group() {
+    fn a_pane_child_is_outside_this_process_group_and_session() {
         // SAFETY: `getpgrp` takes no arguments, touches no memory and cannot fail.
         let mine = u32::try_from(unsafe { libc::getpgrp() }).expect("a process group id");
         let mut seen: Vec<Option<u32>> = Vec::new();
+        let mut sessions: Vec<(libc::pid_t, libc::pid_t)> = Vec::new();
 
         for _ in 0..3 {
             let mut attached = Pty::open(80, 24)
@@ -2150,6 +2156,19 @@ mod tests {
             for _ in 0..200 {
                 seen.push(crate::pane_pty::foreground_pgid_of(child.id()));
             }
+            // ⛔⛔⛔⛔⛔ AND THE SESSION, which is the OTHER way this process could be reached —
+            // register item 820. A terminal's line discipline raises `SIGINT` at the foreground
+            // group of ITS OWN session, so a pane whose child shares this process's session is a
+            // pane whose `Ctrl-C` can arrive here. `setsid` in the child's `pre_exec` is what is
+            // supposed to make that impossible, and nothing had ever checked it.
+            //
+            // SAFETY: `getsid` takes a pid and returns one; it touches no memory. `0` is this
+            // process. A pid that has exited answers `-1`, which is recorded rather than trusted.
+            let ours_sid = unsafe { libc::getsid(0) };
+            let childs_sid =
+                unsafe { libc::getsid(libc::pid_t::try_from(child.id()).expect("a pid")) };
+            sessions.push((ours_sid, childs_sid));
+
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -2181,6 +2200,34 @@ mod tests {
              `kill`'s negation by `stop_foreground_job`, so a stop aimed at that pane is a signal \
              at this process and everything sharing its group. Readings taken: {seen:?}",
             seen.len(),
+        );
+
+        // ⛔⛔⛔⛔⛔ THE SESSION ARM — register item 820, and the half a group comparison cannot
+        // cover. `kill`'s negation is one way to reach this process; a TERMINAL is the other, and
+        // it needs no caller at all: the line discipline raises `SIGINT` at the foreground group of
+        // its own session when it sees the interrupt character. A pane's child that shared this
+        // session would put this process inside that blast radius, and the suite writes `0x03`
+        // into panes on purpose.
+        //
+        // ⚠ Read for its OWN value first, so a run where `getsid` refused cannot pass by reporting
+        // a pair of `-1`s that happen to differ from nothing.
+        assert!(
+            sessions.iter().all(|(_, childs)| *childs > 0),
+            "⛔⛔⛔ REGISTER ITEM 820: `getsid` did not answer for a pane's child, so this arm \
+             compared nothing: {sessions:?}",
+        );
+        let shared: Vec<(libc::pid_t, libc::pid_t)> = sessions
+            .iter()
+            .copied()
+            .filter(|(ours, childs)| ours == childs)
+            .collect();
+        assert!(
+            shared.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 820: a pane's child is in THIS process's session {shared:?}. \
+             `setsid` in the child's `pre_exec` is what separates them, and without it the pane's \
+             own terminal can raise `SIGINT` here — no `kill` call involved, which is why the \
+             group comparison above would never have seen it. All pairs (ours, child's): \
+             {sessions:?}",
         );
     }
 
