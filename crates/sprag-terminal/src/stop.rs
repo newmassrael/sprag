@@ -434,9 +434,31 @@ pub fn stop_foreground_job(
     // and a report that names nothing for the one request that always works would be worst where
     // it matters most.
     let leader = crate::processes::foreground_leader_of(pane_child);
-    let group: libc::pid_t = pgid.try_into().map_err(|_| Unstopped::Unseen)?;
+    // SAFETY: `getpgrp` takes no arguments, touches no memory and cannot fail.
+    let ours = unsafe { libc::getpgrp() };
+    let Some(group) = a_group_we_may_signal(pgid, ours) else {
+        // ⛔⛔⛔⛔⛔ AND SAY SO WHEN THE NUMBER WAS OURS — register item 820. Every other way this
+        // returns is an ordinary answer about somebody's pane; THIS one means the process table
+        // handed back a group that is this daemon's own, and a signal sent to it would have gone
+        // to the daemon and everything sharing its group. That has never been observed and it is
+        // exactly what nobody would notice: the refusal alone reads as `Unseen`, which is a
+        // sentence about the PANE.
+        if pgid == u32::try_from(ours).unwrap_or(0) {
+            SIGNALLED_OURSELVES.call_once(|| {
+                eprintln!(
+                    "sprag: the process table named THIS PROCESS'S OWN GROUP ({ours}) as the job \
+                     owning pane child {pane_child}'s terminal, so no {} was sent — sending it \
+                     would have signalled this daemon and everything sharing its group. This is a \
+                     defect, not a pane state (register item 820)",
+                    stop.wire_str(),
+                );
+            });
+        }
+        return Err(Unstopped::Unseen);
+    };
     // SAFETY: `kill` is async-signal-safe and takes no pointers. `-group` names a process GROUP —
-    // the one that owns this pane's terminal, read above — and the signal number comes from
+    // the one that owns this pane's terminal, read above, and checked by `a_group_we_may_signal`
+    // to be neither of `kill`'s wildcards nor our own — and the signal number comes from
     // `Stop::signal`, which is exhaustive over the closed set.
     if unsafe { libc::kill(-group, stop.signal()) } == 0 {
         return Ok(StoppedJob { stop, pgid, leader });
@@ -446,9 +468,95 @@ pub fn stop_foreground_job(
     ))
 }
 
+/// Said once if the process table ever names our own group — see [`stop_foreground_job`].
+static SIGNALLED_OURSELVES: std::sync::Once = std::sync::Once::new();
+
+/// The group `kill` may be handed for THIS pane's job, or [`None`] for a number that would reach
+/// somewhere else entirely — register item 820, and the guard `sprag_host`'s
+/// `process_group_exists` has always had while the function that sends a REAL signal did not.
+///
+/// # ⛔⛔⛔⛔⛔ Three numbers that are not a pane's job
+///
+/// This value is about to be NEGATED, and `kill`'s negative arguments are not all targets:
+///
+/// | `pgid` | what `kill(-pgid, sig)` does |
+/// | --- | --- |
+/// | `0` | signals THIS PROCESS'S OWN GROUP — `-0` is `0` |
+/// | `1` | signals EVERY PROCESS this user may signal — `-1` is the wildcard |
+/// | `ours` | signals this daemon and everything sharing its group |
+/// | above `i32::MAX` | reinterprets as a negative number, i.e. one of the above by accident |
+///
+/// The first two are what `process_group_exists` refuses with `pgid < 2`, in a comment that names
+/// both. The third is this function's own, and it is the one no other caller could have: only the
+/// code that SENDS knows which group it is sending from.
+///
+/// ⚠⚠ `ours` is a PARAMETER rather than a `getpgrp()` inside, so the whole decision is a pure
+/// function of two numbers and the gate beside it can drive every arm — including the one this
+/// process cannot be made to produce on demand.
+fn a_group_we_may_signal(pgid: u32, ours: libc::pid_t) -> Option<libc::pid_t> {
+    let group = libc::pid_t::try_from(pgid).ok()?;
+    (group >= 2 && group != ours).then_some(group)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **EVERY NUMBER THAT IS NOT A PANE'S JOB IS REFUSED ONE** — register item 820, at
+    /// [`a_group_we_may_signal`].
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why each arm is here and not just the one this machine can produce
+    ///
+    /// The value is about to be negated into `kill`, where three of these are commands rather than
+    /// targets: `0` is our own group, `1` is every process this user may signal, and `ours` is this
+    /// daemon plus everything sharing its group. The fourth is the cast that manufactures one of
+    /// the others out of a large `u32` — the same reinterpretation `crate::pty::one_process` closes
+    /// one address over.
+    ///
+    /// ⚠ None of them can be produced on demand from a live process table, which is exactly why
+    /// the decision is a pure function of two numbers: an arm nothing can drive is an arm nothing
+    /// checks, and this workspace has paid for that four times.
+    #[test]
+    fn a_number_that_is_not_a_panes_job_is_never_signalled() {
+        let ours: libc::pid_t = 4242;
+
+        assert_eq!(
+            a_group_we_may_signal(0, ours),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 820: `kill(-0, sig)` is `kill(0, sig)`, which signals THIS \
+             PROCESS'S OWN GROUP",
+        );
+        assert_eq!(
+            a_group_we_may_signal(1, ours),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 820: `kill(-1, sig)` signals EVERY PROCESS this user may \
+             signal — the widest thing a stop request could possibly become",
+        );
+        assert_eq!(
+            a_group_we_may_signal(u32::try_from(ours).expect("a pgid"), ours),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 820: the process table named our OWN group, and signalling it \
+             would take this daemon down with the job it was aimed at",
+        );
+        assert_eq!(
+            a_group_we_may_signal(u32::MAX, ours),
+            None,
+            "⛔⛔⛔ REGISTER ITEM 820: `u32::MAX` does not fit a `pid_t`, and a cast would have \
+             made it `-1` — the wildcard, by accident",
+        );
+
+        assert_eq!(
+            a_group_we_may_signal(2, ours),
+            Some(2),
+            "⚠ and the smallest group that IS one still passes, or this guard refuses the thing it \
+             exists to let through",
+        );
+        assert_eq!(
+            a_group_we_may_signal(9, ours),
+            Some(9),
+            "⚠ as does an ordinary one",
+        );
+    }
 
     /// Every request has a DISTINCT wire word, and every word round-trips back to its request.
     ///
