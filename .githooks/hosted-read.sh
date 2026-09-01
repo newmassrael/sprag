@@ -32,6 +32,13 @@
 #
 # Self-tested: `bash .githooks/hosted-read.sh --selftest`.
 
+# ⛔ THE SCRATCH-SAFETY DECISION IS NOT WRITTEN TWICE. `scratch-guard.sh` holds
+# it, drives the cases no harness here can produce, and is sourced so this file
+# still runs standalone. See register item 792 for what it costs to get wrong and
+# `scratch-guard.sh`'s own header for the macOS fold that cost a platform.
+# shellcheck source-path=SCRIPTDIR
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scratch-guard.sh"
+
 # WHERE THE RECORD LIVES, and why it is not tracked.
 #
 # It is a fact about THIS CLONE's operator -- what they have looked at -- not
@@ -724,6 +731,7 @@ hosted_read_selftest() {
     # repository instead of the throwaway one. The arms went green-ish against
     # the wrong subject, which is the shape this whole file is about.
     local here tmp pass fail said base tip saved_path FAKE_GH_TOTAL FAKE_GH_FAIL
+    local scratch_refusal
     local FAKE_GH_ATTEMPT rerun_sha
     saved_path="$PATH"
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -821,14 +829,27 @@ ASKED
     # arm writes — and a failure STOPS rather than scoring, because a run that is
     # not testing what it thinks it is has no verdict to give.
     #
-    # ⚠ The comparison is the git dir the scratch repository itself reports, so
-    # a `$tmp` that is a symlink or was never initialised both fail it.
-    if [ -z "$tmp" ] || [ ! -d "$tmp" ] \
-       || [ "$( cd "$tmp" && git rev-parse --absolute-git-dir 2>/dev/null )" \
-            != "$( cd "$tmp" && pwd )/.git" ]; then
-        echo "hosted-read selftest: REFUSING to run -- the scratch repository" \
-             "'${tmp:-<empty>}' is not this process's git dir, so every arm" \
-             "would read and WRITE $(git rev-parse --absolute-git-dir \
+    # ⛔⛔⛔⛔⛔ TWO CLAIMS, AND THE FIRST DRAFT MADE THEM ONE — measured on macOS
+    # 2026-09-01, by the gate register item 799 had just built. This selftest had
+    # never run anywhere but a person's Linux box, and on macOS it REFUSED every
+    # time: `mktemp -d` there always answers under `/var`, which is a symlink to
+    # `/private/var`, so `pwd` (logical) and git's answer (physical) disagree and
+    # a check written as one comparison read that as *somebody else's repository*.
+    #
+    # ⚠⚠ The two claims are **I am standing inside my own scratch** and **it is
+    # not the caller's**, and folding them cost a platform. They are separated
+    # here: the first compares PHYSICAL paths on both sides so a symlinked TMPDIR
+    # is not a finding; the second says outright that the scratch git dir differs
+    # from the caller's, which is the sentence that actually keeps the operator's
+    # marker safe and is true whatever the path went through to get here.
+    #
+    # ⚠ Reproduced on Linux before it was touched, by injection rather than by
+    # belief: `TMPDIR=<a symlink> hosted-read.sh --selftest` refused identically.
+    scratch_refusal="$(scratch_guard_check "$tmp")"
+    if [ -z "$tmp" ] || [ ! -d "$tmp" ] || [ -n "$scratch_refusal" ]; then
+        echo "hosted-read selftest: REFUSING to run -- ${scratch_refusal:-the" \
+             "scratch path is not a directory}, so every arm would read and" \
+             "WRITE $(git rev-parse --absolute-git-dir \
              2>/dev/null || echo "some other repository")'s marker instead" >&2
         PATH="$saved_path"
         export PATH
@@ -1203,12 +1224,23 @@ ASKED
     # That is this scan's stated limit, the same one
     # `hooks_cannot_pass_in_silence` writes down -- it is why the gate that
     # DRIVES the hook is the one that decides, and this arm is a wiring check.
-    if command sed 's/#.*//' "$here/pre-push" \
-       | command grep -q 'hosted_read_gap'; then
+    #
+    # ⛔⛔ *UNREADABLE* AND *NOT WIRED* ARE SEPARATE FINDINGS, and folding them
+    # cost a diagnosis: on 2026-09-01 this arm failed once inside the parallel
+    # `sprag-gate` suite and passed on the next run, with the one sentence it had
+    # to offer naming the wrong cause -- `pre-push never calls the gap arm` while
+    # the hook plainly did. Which of the two it was could not be recovered
+    # afterwards, so the next occurrence says it (register item 803).
+    if [ ! -r "$here/pre-push" ]; then
+        echo "  FAIL  pre-push is not readable at $here -- the wiring cannot be" \
+             "judged, and this is NOT the same finding as it not calling the arm"
+        fail=$((fail + 1))
+    elif command sed 's/#.*//' "$here/pre-push" \
+         | command grep -q 'hosted_read_gap'; then
         echo "  ok    the pre-push hook calls the gap arm"
         pass=$((pass + 1))
     else
-        echo "  FAIL  pre-push never calls the gap arm"
+        echo "  FAIL  pre-push is readable and never calls the gap arm"
         fail=$((fail + 1))
     fi
 

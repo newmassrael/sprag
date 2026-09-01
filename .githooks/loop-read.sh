@@ -25,6 +25,11 @@
 # (register item 799) -- this file is the first script that walk picked up.
 set -uo pipefail
 
+# ⛔ THE SCRATCH-SAFETY DECISION IS NOT WRITTEN TWICE -- `scratch-guard.sh` holds
+# it and drives the cases this harness cannot produce (register items 792, 799).
+# shellcheck source-path=SCRIPTDIR
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scratch-guard.sh"
+
 # ⛔⛔⛔⛔⛔ WHAT AN UNREADABLE LOG COSTS -- and why it is not reported as zero.
 #
 # Item 790 paid this exact lesson for CI: *a commit with no run* and *a run that
@@ -259,6 +264,7 @@ loop_read_gap() {
 # written into this one before it has had the chance.
 loop_read_selftest() {
     local here tmp pass fail said saved_state saved_home rc
+    local scratch_refusal
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # ⛔⛔⛔⛔⛔ CHECKED IN THE SAME STATEMENT IT IS TAKEN -- register item 792, and
     # this file did NOT do it in its first draft: the check was one line below, and
@@ -289,6 +295,30 @@ loop_read_selftest() {
     mkdir -p "$tmp/state/sprag" "$tmp/repo"
     git -C "$tmp/repo" init -q -b main
     export XDG_STATE_HOME="$tmp/state"
+
+    # ⛔⛔⛔⛔⛔ THE SUBJECT IS THE SCRATCH REPOSITORY OR THIS DOES NOT RUN AT ALL —
+    # `hosted-read.sh`'s guard, here because register item 792's lesson belongs to
+    # every harness in this directory and not to the one file that paid for it.
+    # The marker is reached through `loop_read_marker`, which answers WHATEVER
+    # repository the process is standing in, so the one thing making these arms
+    # safe is that the process is standing in `$tmp/repo`. It is checked, not
+    # assumed, and a failure STOPS rather than scoring an arm.
+    #
+    # ⚠⚠ TWO CLAIMS, KEPT APART — and their folding is not hypothetical: the same
+    # check written as one comparison refused on macOS every time, because
+    # `mktemp -d` there answers under `/var`, a symlink to `/private/var`, so
+    # `pwd` and git's answer disagreed. PHYSICAL paths on both sides for *am I
+    # inside my own scratch*, and a separate equality for *it is not the
+    # caller's* — the second is what actually keeps somebody else's marker safe.
+    scratch_refusal="$(scratch_guard_check "$tmp/repo")"
+    if [ -n "$scratch_refusal" ]; then
+        echo "loop-read selftest: REFUSING to run -- ${scratch_refusal}, so" \
+             "every arm would read and WRITE" \
+             "$(git rev-parse --absolute-git-dir 2>/dev/null \
+                || echo "some other repository")'s marker instead" >&2
+        rm -rf "$tmp"
+        return 1
+    fi
 
     # ⚠ The marker lives in a git dir, so the arms run inside the throwaway repo.
     cd "$tmp/repo" || return 1
@@ -442,11 +472,18 @@ OTHER
 
     # (11) The pre-push hook calls this instrument -- the reach item 798 asks for
     # is a sentence at the push, and a hook that stopped calling it is silence.
-    if command grep -q 'loop_read_gap' "$here/pre-push"; then
+    # ⛔⛔ *UNREADABLE* AND *NOT WIRED* ARE SEPARATE FINDINGS — see the same arm in
+    # `hosted-read.sh` and register item 803: its folded version named the wrong
+    # cause on the one occasion it ever fired.
+    if [ ! -r "$here/pre-push" ]; then
+        echo "  FAIL  pre-push is not readable at $here -- the wiring cannot be" \
+             "judged, and this is NOT the same finding as it not calling the arm"
+        fail=$((fail + 1))
+    elif command grep -q 'loop_read_gap' "$here/pre-push"; then
         echo "  ok    the pre-push hook calls the gap arm"
         pass=$((pass + 1))
     else
-        echo "  FAIL  pre-push does not call loop_read_gap"
+        echo "  FAIL  pre-push is readable and never calls loop_read_gap"
         fail=$((fail + 1))
     fi
 
