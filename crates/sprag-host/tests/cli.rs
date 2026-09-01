@@ -2886,10 +2886,11 @@ fn a_driver_the_daemon_spawned_ends_with_the_test_that_caused_it() {
             }),
             "⚠⚠ THE PREMISE FAILED: no driver process appeared beside {}, so everything below \
              would be true of a run that never started and this gate would measure nothing. The \
-             daemon is {:?} and the processes on that endpoint are {:?}",
+             daemon is {:?} and the processes on that endpoint are {:?}. {}",
             sock.display(),
             daemon_pid(&sock),
             sprag_term_pids(&sock),
+            term_census_here(&sock),
         );
 
         // ── 1b. AND IT HAS ACTUALLY WRITTEN UNDER THIS TEST'S STATE HOME ──────────────────────
@@ -2923,9 +2924,10 @@ fn a_driver_the_daemon_spawned_ends_with_the_test_that_caused_it() {
     );
     assert!(
         sprag_term_pids(&sock).is_empty(),
-        "⛔ ITEM 802: something is still holding {} after the test that put it there: {:?}",
+        "⛔ ITEM 802: something is still holding {} after the test that put it there: {:?}. {}",
         sock.display(),
         sprag_term_pids(&sock),
+        term_census_here(&sock),
     );
 
     // ── 3. AND THE FILES A `--daemon` MAKES BESIDE ITS SOCKET WENT WITH IT ─────────────────────
@@ -3058,8 +3060,14 @@ fn daemon_told(state: &Path, options: &[(&str, &str)]) {
 ///
 /// ⛔⛔⛔ **AN ASSERTION ON THIS NUMBER CARRIES [`term_census_here`]** — register item 813. The count
 /// is a summary and the processes are the evidence; a failure that prints only the summary is one
-/// nobody can attribute, which is what `368c989`'s macOS red cost. Every `assert` on this in this
-/// file says which processes it saw and who started them, and a new one is expected to.
+/// nobody can attribute, which is what `368c989`'s macOS red cost.
+///
+/// ⚠⚠ THAT RULE IS HELD BY A GATE AND NOT BY THIS SENTENCE — `sprag-gate`'s
+/// `every_assertion_about_this_socket_names_the_parents`. The first draft of this doc said instead
+/// that every assertion in the file already carried the census, which was **prose, and false**:
+/// measured one round later, twenty assertions here read this socket and **eleven of them printed
+/// a bare pid list**, `driver_pids` sites among them. A claim about coverage that nothing re-reads
+/// is this workspace's rule 10 in its usual clothes.
 fn sprag_term_processes(sock: &Path) -> usize {
     sprag_term_pids(sock).len()
 }
@@ -4924,8 +4932,9 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
     assert!(
         wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 2),
         "⚠⚠ THE PREMISE FAILED: this daemon ships `run-driver-process` on (register item 544), so \
-         the two loops above should be two processes of their own. Found {:?}.",
+         the two loops above should be two processes of their own. Found {:?}. {}",
         driver_pids(&sock),
+        term_census_here(&sock),
     );
     let loops = driver_pids(&sock);
 
@@ -5577,8 +5586,9 @@ fn a_promotion_that_changes_the_documents_ends_the_drivers_it_is_not_bringing_ba
     assert!(
         wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 2),
         "⚠⚠ THE PREMISE FAILED: this daemon ships `run-driver-process` on (register item 544), so \
-         the two loops above should be two processes of their own. Found {:?}.",
+         the two loops above should be two processes of their own. Found {:?}. {}",
         driver_pids(&sock),
+        term_census_here(&sock),
     );
     drop(conn);
 
@@ -6450,8 +6460,9 @@ fn a_daemon_whose_binary_was_replaced_under_it_can_still_start_a_driver() {
         wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 2),
         "⚠⚠ THE PREMISE FAILED: this daemon ships `run-driver-process` on (register item 544), so \
          the two loops should be two processes of their own and there is nothing here to kill. \
-         Found {:?}.",
+         Found {:?}. {}",
         driver_pids(&sock),
+        term_census_here(&sock),
     );
     // ⚠⚠⚠ THE PREMISE THE REVIVALS REST ON: a run with no place cannot be put back at all
     // (register item 671's own refusal arm), so without this the gate could read *nothing was
@@ -6482,8 +6493,9 @@ fn a_daemon_whose_binary_was_replaced_under_it_can_still_start_a_driver() {
         wait_for(Duration::from_secs(30), || replaced_control().is_some()),
         "⚠⚠⚠ THE CONTROL FAILED: this daemon did not replace a dead driver even with its binary \
          untouched, so *the copy broke it* cannot be what the claim below is measuring. This is \
-         register item 671's own behaviour and it has to be working here first. Drivers: {:?}.",
+         register item 671's own behaviour and it has to be working here first. Drivers: {:?}. {}",
         driver_pids(&sock),
+        term_census_here(&sock),
     );
 
     // ── THE PROMOTION: `cp -f` over the image of a daemon that is STILL RUNNING ──────────────
@@ -6594,9 +6606,10 @@ fn a_daemon_whose_binary_was_replaced_under_it_can_still_start_a_driver() {
          `/proc/<pid>/exe` still starts it, so nothing about this run was impossible; the daemon \
          was simply asking for its driver by a name that had stopped meaning anything. Every run \
          this daemon holds is now un-revivable and each will be reported as if IT had broken. \
-         Drivers: {:?}. Rows: {rows:?}",
+         Drivers: {:?}. Rows: {rows:?}. {}",
         own_name.display(),
         driver_pids(&sock),
+        term_census_here(&sock),
     );
     drop(conn);
     drop(guard);
@@ -6687,8 +6700,9 @@ fn a_run_whose_driver_process_dies_is_put_back_on_a_new_one() {
         wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 1),
         "⚠⚠ THE PREMISE FAILED: this daemon ships `run-driver-process` on (register item 544), so \
          the loop above should be driven by a process of its own and there is nothing here to \
-         kill. Found {:?}.",
+         kill. Found {:?}. {}",
         driver_pids(&sock),
+        term_census_here(&sock),
     );
     let subject = driver_pids(&sock)[0];
 
@@ -6697,8 +6711,9 @@ fn a_run_whose_driver_process_dies_is_put_back_on_a_new_one() {
     assert!(
         wait_for(Duration::from_secs(30), || driver_pids(&sock).len() == 2),
         "⚠⚠ THE PREMISE FAILED: the second run got no driver of its own, so there is nothing to \
-         kill for the refusal arm. Found {:?}.",
+         kill for the refusal arm. Found {:?}. {}",
         driver_pids(&sock),
+        term_census_here(&sock),
     );
     let nowhere = driver_pids(&sock)
         .into_iter()
@@ -6770,8 +6785,9 @@ fn a_run_whose_driver_process_dies_is_put_back_on_a_new_one() {
          ONE. The daemon is alive and answering, the loop has a place and a request in its own run \
          log, and a BOOT would have put this exact run back (register item 543) — so the same run \
          gets two different fates depending on whether the daemon happened to restart. Drivers \
-         now: {:?}, killed {subject}.",
+         now: {:?}, killed {subject}. {}",
         driver_pids(&sock),
+        term_census_here(&sock),
     );
     let replacement = replacement().expect("the replacement driver");
     let rows = rows_of(&mut conn);
@@ -6816,7 +6832,8 @@ fn a_run_whose_driver_process_dies_is_put_back_on_a_new_one() {
         "⛔⛔⛔⛔⛔ REGISTER ITEM 671: this daemon started a driver for a run it had just told the \
          person it would not put back. A run with no place has nowhere to be put back to, so \
          whatever that process is doing, it is not resuming anything — and it will die and be \
-         replaced forever. Killed {nowhere}, expected only the subject's replacement.",
+         replaced forever. Killed {nowhere}, expected only the subject's replacement. {}",
+        term_census_here(&sock),
     );
     drop(conn);
     drop(guard);

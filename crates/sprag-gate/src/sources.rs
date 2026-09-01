@@ -59,6 +59,147 @@ impl Source {
             .flat_map(|(_, line)| line.chars().filter(|char| !char.is_whitespace()))
             .collect()
     }
+
+    /// Every `assert!` / `assert_eq!` / `assert_ne!` invocation in this file, WHOLE.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the unit is the invocation and not a window of lines
+    ///
+    /// Register item 812's gate asks whether a diagnosis appears within three lines of a message,
+    /// because its sites are three lines long. Item 813's are not: an assertion here opens with a
+    /// predicate, carries a message of five wrapped lines and ends with the arguments that fill it
+    /// in, and the fact being checked — *does this assertion render what it counted* — is a fact
+    /// about the WHOLE of it. A window wide enough to cover one such site is wide enough to let one
+    /// site's rendering vouch for its neighbour's, which is an accounting error, not a stricter
+    /// gate.
+    ///
+    /// ⚠⚠ THE DEPTH IS COUNTED THROUGH `Strings`, this file's own line reader, which is what makes
+    /// this a reader of code rather than of text. Every message in this workspace is prose, and
+    /// prose has `process(es)` and `(register item 544)` in it; a bare `)` count would close an
+    /// invocation in the middle of its own explanation and hand the caller half a site.
+    ///
+    /// # Panics
+    ///
+    /// When an invocation is still open at the end of the file. That is this reader having lost the
+    /// structure — the state item 809's rule is about, where a walk that has stopped understanding
+    /// the tree answers as if it had understood it.
+    #[must_use]
+    pub fn assertions(&self) -> Vec<Assertion> {
+        let mut strings = Strings::default();
+        let mut found = Vec::new();
+        let mut open: Option<Open> = None;
+
+        for (at, line) in &self.code {
+            let structural: Vec<char> = strings.code_of(line).chars().collect();
+            let mut cursor = 0usize;
+            loop {
+                let Some(state) = open.as_mut() else {
+                    match opens_an_assertion(&structural, cursor) {
+                        // `cursor` lands ON the paren, so the scan below opens the depth itself.
+                        Some(paren) => {
+                            cursor = paren;
+                            open = Some(Open {
+                                at: *at,
+                                depth: 0,
+                                lines: Vec::new(),
+                            });
+                        }
+                        None => break,
+                    }
+                    continue;
+                };
+                if state.lines.last().map(|(line, _)| *line) != Some(*at) {
+                    state.lines.push((*at, line.clone()));
+                }
+                let mut closed = false;
+                while cursor < structural.len() {
+                    match structural[cursor] {
+                        '(' => state.depth += 1,
+                        ')' => {
+                            state.depth = state.depth.saturating_sub(1);
+                            if state.depth == 0 {
+                                cursor += 1;
+                                closed = true;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    cursor += 1;
+                }
+                if !closed {
+                    break;
+                }
+                let done = open.take().unwrap_or_else(|| unreachable!("just borrowed"));
+                found.push(Assertion {
+                    at: done.at,
+                    end: *at,
+                    text: done
+                        .lines
+                        .iter()
+                        .map(|(_, text)| text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                });
+            }
+        }
+
+        assert!(
+            open.is_none(),
+            "⚠⚠ THE READER LOST THE STRUCTURE of {}: an assertion opened at line {} is still open \
+             at the end of the file. Every verdict taken from this walk is about a shape this \
+             reader no longer understands, which is worse than no verdict at all.",
+            self.file,
+            open.map_or(0, |state| state.at),
+        );
+        found
+    }
+}
+
+/// One `assert!` / `assert_eq!` / `assert_ne!` invocation, as [`Source::assertions`] found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assertion {
+    /// One-indexed line the invocation opens on.
+    pub at: usize,
+    /// One-indexed line its closing paren is on — the same as [`Assertion::at`] for a one-liner.
+    pub end: usize,
+    /// The invocation's lines AS WRITTEN, newline-joined.
+    ///
+    /// ⚠ As written rather than as `Strings` left them: a gate hunting a spelling wants the
+    /// spelling, and the de-stringed form exists only to find where the invocation ends.
+    pub text: String,
+}
+
+/// An assertion [`Source::assertions`] is still reading.
+struct Open {
+    at: usize,
+    depth: usize,
+    lines: Vec<(usize, String)>,
+}
+
+/// The index of the `(` that opens an assertion macro at or after `from`, if one does.
+///
+/// ⚠ The character before the name is checked, so `debug_assert!` — a different macro with a
+/// different meaning about what ships — is not read as this one by accident of ending in the same
+/// letters.
+/// ⚠⚠ It works in CHARACTERS and never in bytes. The caller indexes a `&[char]`, and this
+/// workspace's code carries `—` and `⚠` in it; a byte offset handed back as a character index is
+/// the kind of skew that reads as a parser bug on exactly the files that matter most.
+fn opens_an_assertion(structural: &[char], from: usize) -> Option<usize> {
+    const OPENERS: [&str; 3] = ["assert!(", "assert_eq!(", "assert_ne!("];
+    let openers: Vec<Vec<char>> = OPENERS.iter().map(|name| name.chars().collect()).collect();
+    (from..structural.len()).find_map(|at| {
+        let follows_a_name = at
+            .checked_sub(1)
+            .and_then(|before| structural.get(before))
+            .is_some_and(|char| char.is_alphanumeric() || *char == '_');
+        if follows_a_name {
+            return None;
+        }
+        openers
+            .iter()
+            .find(|opener| structural[at..].starts_with(opener))
+            .map(|opener| at + opener.len() - 1)
+    })
 }
 
 /// WHICH TREE a reader of this crate is about to walk, and whether it is the tree the running
@@ -239,6 +380,20 @@ pub fn workspace_root() -> PathBuf {
     }
 }
 
+/// What [`Source::code`] is, spelled ONCE.
+///
+/// ⚠ A function rather than the four lines it replaces, because a test that builds a source by hand
+/// must build the same thing the walk builds. Two spellings of *what a gate reads* is how a case
+/// passes against a shape the real walk would never hand it — this crate's own subject, one level
+/// down.
+fn code_lines(text: &str) -> Vec<(usize, String)> {
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| (index + 1, line.trim().to_owned()))
+        .filter(|(_, line)| !line.starts_with("//") && !line.starts_with('#'))
+        .collect()
+}
+
 /// Every `.rs` file under `crates/`, comment lines dropped.
 ///
 /// # Panics
@@ -268,12 +423,7 @@ pub fn rust_sources() -> Vec<Source> {
                 .to_string();
             let text = std::fs::read_to_string(&path)
                 .unwrap_or_else(|why| panic!("{file} is a source of this workspace: {why}"));
-            let code: Vec<_> = text
-                .lines()
-                .enumerate()
-                .map(|(index, line)| (index + 1, line.trim().to_owned()))
-                .filter(|(_, line)| !line.starts_with("//") && !line.starts_with('#'))
-                .collect();
+            let code = code_lines(&text);
             let proving = proving_lines(&text)
                 .unwrap_or_else(|why| panic!("{file} is a source of this workspace: {why}"));
             let product = code
@@ -823,5 +973,109 @@ mod tests {
              kept code that PROVES and every ratchet built on this is now counting its own gates",
             driver.product.last().map(|(line, _)| *line),
         );
+    }
+
+    /// A source built the way the walk builds one, so a case is fed the shape a gate really reads.
+    fn source_of(text: &str) -> Source {
+        Source {
+            file: "crates/made-up/src/case.rs".to_owned(),
+            code: code_lines(text),
+            product: Vec::new(),
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY SHAPE AN ASSERTION IN THIS WORKSPACE REALLY HAS** — register item 813, and
+    /// the reader its gate stands on.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the cases are prose-shaped rather than minimal
+    ///
+    /// The invocations this reader has to survive are not `assert!(a, "b")`. They are five-line
+    /// refusals with `process(es)` and `(register item 544)` inside them, wrapped with a trailing
+    /// backslash, ending in arguments that are themselves calls. Every one of those is a way a
+    /// naive `)` count closes an invocation in the middle of its own explanation — and a reader
+    /// that ends a site early hands its gate a shorter text, which reads as *the diagnosis is
+    /// missing* on a site that has it. A false RED is a gate nobody keeps.
+    ///
+    /// ⚠⚠ AND THE DECLINED ROWS ARE THE OTHER HALF. `debug_assert!` is a different promise about
+    /// what ships, and a reader that swallowed it would have this gate judging code that is not
+    /// there in a release build.
+    #[test]
+    fn the_assertion_reader_sees_every_shape_this_workspace_writes_and_declines_the_rest() {
+        let table: &[(&str, &[(usize, usize)])] = &[
+            // One line, opened and closed where it started.
+            ("assert!(ok, \"up\");\n", &[(1, 1)]),
+            // ⚠ THE SHAPE THAT BREAKS A BARE PAREN COUNT: prose with parens in it, over lines.
+            (
+                "assert!(\n    ok,\n    \"found {:?} process(es) (register item 544).\",\n    \
+                 pids(),\n);\n",
+                &[(1, 5)],
+            ),
+            // A continued literal — the backslash form every long refusal here is written in.
+            (
+                "assert_eq!(\n    seen,\n    1,\n    \"a message that runs on \\\n     and closes \
+                 later)\",\n);\n",
+                &[(1, 6)],
+            ),
+            // A raw string holding both a quote and a paren, which is line 2987 of the file this
+            // gate was built for.
+            (
+                "assert!(\n    ok,\n    r#\"{\"event\":\"a)b\"}\"#,\n);\n",
+                &[(1, 4)],
+            ),
+            // Arguments that are themselves calls, closures included.
+            (
+                "assert!(\n    wait_for(Duration::from_secs(30), || pids(&sock).len() == 2),\n    \
+                 \"nope\",\n);\n",
+                &[(1, 4)],
+            ),
+            // Two on one line: the second must not be swallowed by the first.
+            ("assert!(a); assert_eq!(b, c);\n", &[(1, 1), (1, 1)]),
+            // A lifetime is not a char literal, and a char literal is not a string.
+            (
+                "assert!(holds::<'_>(&x), \"a paren in a char: {}\", '(');\n",
+                &[(1, 1)],
+            ),
+            // ⚠⚠ DECLINED. A different macro with a different meaning about what ships.
+            ("debug_assert!(ok, \"not this one\");\n", &[]),
+            // ⚠⚠ DECLINED. A comment SAYING the shape is not the shape — the walk drops it.
+            ("// assert!(ok, \"a comment\");\nlet x = 1;\n", &[]),
+            // ⚠⚠ DECLINED. The word inside a literal is text, not code.
+            ("let said = \"assert!(ok);\";\n", &[]),
+        ];
+
+        let mut wrong = Vec::new();
+        for (text, owed) in table {
+            let read: Vec<(usize, usize)> = source_of(text)
+                .assertions()
+                .iter()
+                .map(|found| (found.at, found.end))
+                .collect();
+            if read != *owed {
+                wrong.push(format!("owed {owed:?}, read {read:?} for {text:?}"));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "the reader every item 813 verdict is taken from must see each shape whole and decline \
+             the rest: {wrong:#?}",
+        );
+
+        // ⚠ AND THE TEXT IT HANDS BACK IS THE SOURCE, not the de-stringed form the depth was
+        // counted on: a gate hunting a spelling would find nothing in the latter.
+        let found = source_of("assert!(\n    ok,\n    \"carried {}\",\n    census(&sock),\n);\n")
+            .assertions();
+        let text = &found.first().expect("one assertion").text;
+        assert!(
+            text.contains("census(&sock)") && text.contains("carried {}"),
+            "the site's own words reach the gate: {text}",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ An invocation that never closes is a reader that has LOST ITS PLACE, and every verdict
+    /// after it is about a shape it no longer understands. It says so instead of answering.
+    #[test]
+    #[should_panic(expected = "LOST THE STRUCTURE")]
+    fn an_unclosed_assertion_is_refused_rather_than_swallowing_the_file() {
+        let _ = source_of("assert!(\n    ok,\n    \"never closed\",\n").assertions();
     }
 }
