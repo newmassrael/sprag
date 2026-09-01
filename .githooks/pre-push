@@ -46,6 +46,8 @@ cd "$repo_root"
 . "$repo_root/.githooks/ident-gate.sh"
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/hosted-read.sh"
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/loop-read.sh"
 
 # ── HOW LONG THIS CLONE HAS GONE WITHOUT READING A HOSTED RESULT ─────────────
 #
@@ -64,6 +66,27 @@ cd "$repo_root"
 # ⚠ Its arithmetic is gated where arithmetic can be: `hosted-read.sh
 # --selftest`, and `sprag-gate` drives this hook and reads for this line.
 hosted_read_gap
+
+# ── WHETHER A RUN OF THIS REPOSITORY'S OWN LOOP ENDED WITH NOBODY WATCHING ────
+#
+# ⛔⛔⛔⛔⛔ REGISTER ITEM 798, and the same shape as the line above rather than a
+# second kind of thing: a REPORT, not a gate. The line above asks GitHub about a
+# commit; this one reads the daemon's own run log off disk.
+#
+# What it is for, in this repository's own number: five runs ended on 2026-09-01
+# and a person had to re-launch every one, and the last of them was `failed` for
+# over an hour before the watcher knew -- because the ending is on a screen and a
+# screen only reaches somebody looking at it. The north star is a loop that runs
+# WITHOUT a watcher, so the ending has to leave the screen. It leaves it here.
+#
+# ⛔ IT DOES NOT RE-LAUNCH AND DOES NOT SAY WHICH FAILURES ARE RETRYABLE. Item
+# 798 is explicit that telling those apart comes first and that what it asks for
+# is REACH. Wiring this to an exit status, or to a restart, would be answering a
+# question nobody has asked yet.
+#
+# ⚠ Its arithmetic is gated where arithmetic can be: `loop-read.sh --selftest`,
+# which `crates/sprag-gate/` runs without anybody adding it to a list (item 799).
+loop_read_gap
 
 # ⚠⚠⚠⚠ THE REFS ARE READ ONCE, HERE, BEFORE ANYTHING ELSE RUNS.
 #
