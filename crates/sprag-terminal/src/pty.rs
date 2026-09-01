@@ -1382,14 +1382,41 @@ pub fn exit_facts(status: std::process::ExitStatus) -> (u32, Option<String>) {
 /// after the child is reaped — is the same one the previous backend's cloned killer had, and it is
 /// closed the same way: the caller stops signalling once it has seen the child exit.
 pub fn signal_child(pid: u32, signal: libc::c_int) {
-    if pid == 0 {
+    let Some(pid) = one_process(pid) else {
         return;
-    }
+    };
     // SAFETY: `kill` on a pid that may be gone is defined; it answers `ESRCH`, which is ignored
-    // here because a child that has already exited needs no signal.
+    // here because a child that has already exited needs no signal. `one_process` has already
+    // established that the target is a single positive pid rather than one of `kill`'s commands.
     unsafe {
-        libc::kill(pid as libc::pid_t, signal);
+        libc::kill(pid, signal);
     }
+}
+
+/// The pid `kill` may be handed for ONE process, or [`None`] for a number that would mean
+/// something else entirely — register item 820.
+///
+/// # ⛔⛔⛔⛔⛔ `pid as libc::pid_t` is not a conversion, it is a reinterpretation
+///
+/// `pid_t` is `i32`, so the cast this replaced turned every `u32` above `i32::MAX` into a NEGATIVE
+/// number — and `kill`'s negative arguments are not targets, they are commands:
+///
+/// | what arrives | what `kill` does with it |
+/// | --- | --- |
+/// | `0` | signal THIS PROCESS'S OWN GROUP |
+/// | `-1` (which `u32::MAX` casts to) | signal EVERY PROCESS this user may signal |
+/// | any other negative | signal that process GROUP |
+///
+/// The old body guarded `0` and nothing else. ⚠ `sprag_host`'s `process_group_exists` has always
+/// guarded its own call and its comment names both wildcards; this is the third place in this
+/// workspace where one caller of `kill` knew and its sibling did not (`crate::procfs`'s Linux
+/// `tpgid` was the second).
+///
+/// ⚠⚠ **NOT claimed as the intermittent exit-130.** The only caller of [`signal_child`] sends
+/// `SIGHUP`, which ends a process with 129 rather than 130, so this cannot be that bug. It is a
+/// number that cannot mean what its reader takes it to mean, closed for that reason alone.
+fn one_process(pid: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 0)
 }
 
 #[cfg(test)]
@@ -2090,6 +2117,40 @@ mod tests {
             "the character the child DID bind still raises it — so the answer discriminates \
              rather than refusing everything, which would have passed the assertion above while \
              being useless",
+        );
+    }
+
+    /// **EVERY NUMBER `kill` WOULD READ AS A COMMAND IS REFUSED A TARGET** — register item 820, at
+    /// [`one_process`].
+    ///
+    /// # ⛔⛔⛔⛔⛔ The two that are not targets at all
+    ///
+    /// `kill(0, sig)` signals THIS PROCESS'S OWN GROUP and `kill(-1, sig)` signals EVERY PROCESS
+    /// this user may signal. The body this gate was written for reached the second through a cast:
+    /// `pid as libc::pid_t` on a `u32` above `i32::MAX` is a negative number, and `u32::MAX` is
+    /// exactly `-1`.
+    ///
+    /// ⚠ The smallest real pid is asserted in the same test, because a guard that refused
+    /// everything would pass the two assertions above while breaking the function.
+    #[test]
+    fn a_number_kill_would_read_as_a_command_is_never_given_a_target() {
+        assert_eq!(
+            one_process(0),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 820: `kill(0, sig)` is not a target, it is THIS PROCESS'S OWN \
+             GROUP — the shape that takes a whole test binary down with the pane it was aimed at",
+        );
+        assert_eq!(
+            one_process(u32::MAX),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 820: `u32::MAX as libc::pid_t` is `-1`, and `kill(-1, sig)` is \
+             EVERY PROCESS this user may signal. A cast is not a conversion",
+        );
+        assert_eq!(
+            one_process(1),
+            Some(1),
+            "⚠ and the smallest pid there is still passes, or this guard refuses the thing it \
+             exists to let through",
         );
     }
 
