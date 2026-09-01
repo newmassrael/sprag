@@ -755,7 +755,8 @@ fn the_pane_listing_says_a_child_is_gone_and_how_it_went() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // ⚠⚠⚠⚠ A LIVE PANE IS CREATED FIRST, AND IT IS LOAD-BEARING RATHER THAN TIDY. A session does
@@ -882,7 +883,8 @@ fn a_caller_can_say_where_a_pane_starts_and_silence_means_home() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // Where this test's daemon actually is — the third directory, and the reason the pair separates.
@@ -1817,6 +1819,84 @@ fn wait_for(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(50));
     }
     predicate()
+}
+
+/// WHY the daemon at `sock` is not answering, gathered after a wait ran out — register item 805.
+///
+/// # ⛔⛔⛔⛔⛔ What the sentence it replaces could not say
+///
+/// Thirty-five gates in this file wait ten seconds for a freshly spawned daemon and then assert
+/// `"the … daemon never started serving"` — and that is the whole of what a failure left behind.
+/// Measured 2026-09-01 on `514924b`'s macOS job: the successor gate failed exactly that way, on a
+/// platform this suite cannot be run on locally, and the log carried no fact to reason from. The
+/// two linux jobs were green and the same test had passed on the previous three macOS runs that
+/// reached it, so it is intermittent — roughly one in eleven judged runs — which is precisely the
+/// case where the ONE observation has to be worth something.
+///
+/// # ⚠⚠ TWO STATES, AND THEY ARE NOT THE SAME FAILURE
+///
+/// *No socket file at all* means the daemon never got as far as binding: it died in or just after
+/// the fork, and the thing to look at is the daemon's own start-up. *A socket that is there and
+/// will not answer* means it bound and then did not serve, and the thing to look at is what it was
+/// doing instead — for this gate, restoring a planted run log. Folding them into one sentence is
+/// the covering this repository has now paid for five times (items 776, 779, 781, 790, 793).
+///
+/// ⚠ It runs the CLI ONE more time on purpose. The predicate that timed out threw its output away,
+/// and the refusal a person needs is in that output; one extra call against a socket that is
+/// already not answering costs nothing a failing test cannot afford.
+fn why_not_serving(sock: &Path) -> String {
+    let last = sprag(sock, &["ls"]);
+    let socket = if sock.exists() {
+        "the socket file IS there, so it bound and then did not serve"
+    } else {
+        "there is NO socket file, so it never got as far as binding"
+    };
+    format!(
+        "{socket}; a final `sprag ls` exited ok={}, stdout {:?}, stderr {:?}",
+        last.ok,
+        last.stdout.trim(),
+        last.stderr.trim(),
+    )
+}
+
+/// ⛔⛔ **THE TWO STATES [`why_not_serving`] EXISTS TO SEPARATE, DRIVEN DIRECTLY** — register item
+/// 805.
+///
+/// The thirty-five gates that call it can only reach it when a daemon has ALREADY failed to come
+/// up, which on this machine is roughly one run in eleven and on the platform it was measured on is
+/// not reachable at all. A requirement whose population cannot produce it is a dead control, and
+/// this repository has paid for that twice in a week (items 794, 799): so the decision takes a path
+/// and the cases are handed to it.
+///
+/// ⚠ It also pins the direction that matters. Reporting *no socket* when there IS one would send a
+/// reader to look at the fork; reporting *a socket* when there is none would send them to look at
+/// what the daemon was doing instead. The sentence is the whole value of the arm.
+#[test]
+fn the_diagnosis_tells_a_missing_socket_from_a_silent_one() {
+    // ⚠ This file's own guard, so a panicked assertion leaves nothing behind, and its own scratch
+    // derivation rather than a bare `std::env::temp_dir()` — register item 794's ratchet counts
+    // those and this file is inside its population.
+    let bare = TempDir(scratch_state_home());
+    std::fs::create_dir_all(&bare.0).expect("a scratch directory");
+    let absent = bare.0.join("no-such.sock");
+    let said = why_not_serving(&absent);
+    assert!(
+        said.contains("NO socket file"),
+        "a path with nothing at it must say the daemon never bound, not that it is silent: {said}",
+    );
+    let present = bare.0.join("there.sock");
+    std::fs::write(&present, b"not really a socket").expect("plant a file at the socket path");
+    let said = why_not_serving(&present);
+    assert!(
+        said.contains("socket file IS there"),
+        "a path that EXISTS must say it bound and did not serve, which is a different thing to \
+         look at: {said}",
+    );
+    assert!(
+        said.contains("`sprag ls` exited ok=false"),
+        "the refusal the timed-out predicate threw away is the other half of the diagnosis, and \
+         without it the reader has a state and no reason: {said}",
+    );
 }
 
 /// `sprag find` end to end: the CLI sweeps the session's panes through the host's `find.<needle>`
@@ -2934,7 +3014,8 @@ fn a_killed_daemon_gives_its_panes_back_with_their_scrollback() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
     conn.call(
@@ -2967,7 +3048,8 @@ fn a_killed_daemon_gives_its_panes_back_with_their_scrollback() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the second daemon never started serving",
+        "the second daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // The payoff: the restored pane is searchable over output its predecessor produced.
@@ -3044,7 +3126,8 @@ fn kill_server_leaves_every_session_in_the_saved_workspace() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // Two named sessions, each holding a pane that stays put.
@@ -3094,7 +3177,8 @@ fn kill_server_leaves_every_session_in_the_saved_workspace() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the second daemon never started serving",
+        "the second daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let listed = sprag(&sock, &["ls"]);
     for name in ["first", "second"] {
@@ -3188,7 +3272,8 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("the test's connection");
     // ⚠ A `--daemon` boots with no session of its own, so the surface is given one to read — the
@@ -3294,7 +3379,8 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the successor daemon never started serving",
+        "the successor daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // ── THE PREMISE, READ ON THE TEST'S OWN CONNECTION ─────────────────────────────────────────
@@ -3374,7 +3460,8 @@ fn a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
     conn.call(
@@ -3450,7 +3537,8 @@ fn a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the second daemon never started serving",
+        "the second daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // ⚠⚠ THE PAYOFF: the successor says the run was INTERRUPTED, where before it said nothing at
@@ -3535,7 +3623,8 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     assert_eq!(
         sprag_term_processes(&sock),
@@ -3578,7 +3667,8 @@ fn a_daemon_told_to_drive_runs_in_processes_of_their_own_does_and_one_told_not_t
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the configured daemon never started serving",
+        "the configured daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     start_a_run_that_cannot_converge(&sock, "work");
     // ⚠ Given TIME to be wrong: the claim above waits up to twenty seconds for a second process, so
@@ -3645,7 +3735,8 @@ fn a_daemon_nobody_configured_drives_its_runs_in_processes_of_their_own() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     assert_eq!(
         sprag_term_processes(&sock),
@@ -3718,7 +3809,8 @@ fn a_daemon_restarted_under_a_live_loop_brings_that_loop_back_running() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
     let pane_of = |conn: &mut HostConn, session: &str| {
@@ -3855,7 +3947,8 @@ fn a_daemon_restarted_under_a_live_loop_brings_that_loop_back_running() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the second daemon never started serving",
+        "the second daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
@@ -3976,7 +4069,8 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
 
@@ -4085,7 +4179,8 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the replacement daemon never started serving",
+        "the replacement daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // ── THE CLAIM, PART ONE: every loop is driven again, and by EXACTLY ONE process each ─────
@@ -4298,7 +4393,8 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
 
@@ -4425,7 +4521,8 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the replacement daemon never started serving",
+        "the replacement daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // ── THE CLAIM: the row a person opens says it is not coming back, and names both builds ──
@@ -4607,7 +4704,8 @@ fn a_promotion_that_changes_the_documents_ends_the_drivers_it_is_not_bringing_ba
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
 
@@ -4756,7 +4854,8 @@ fn a_promotion_that_changes_the_documents_ends_the_drivers_it_is_not_bringing_ba
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the replacement daemon never started serving",
+        "the replacement daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // ── THE CLAIM, PART ONE: nothing is left driving anything ────────────────────────────────
@@ -4977,7 +5076,8 @@ fn a_promotion_follows_a_loop_that_replaced_its_session_and_says_when_it_cannot(
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
 
@@ -5144,7 +5244,8 @@ fn a_promotion_follows_a_loop_that_replaced_its_session_and_says_when_it_cannot(
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the replacement daemon never started serving",
+        "the replacement daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // ⚠⚠⚠ **AND THE PANES NAMED IN THOSE REQUESTS REALLY ARE HELD BY NOBODY.** Without this the
@@ -5497,7 +5598,8 @@ fn a_daemon_whose_binary_was_replaced_under_it_can_still_start_a_driver() {
     spawn_daemon_from(&bin, &sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let daemon = daemon_pid(&sock).expect("the daemon is running");
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
@@ -5740,7 +5842,8 @@ fn a_run_whose_driver_process_dies_is_put_back_on_a_new_one() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let daemon = daemon_pid(&sock).expect("the daemon is running");
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
@@ -5939,7 +6042,8 @@ fn a_pane_that_survived_a_reboot_can_still_ask_for_a_person() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
     conn.call(
@@ -5970,7 +6074,8 @@ fn a_pane_that_survived_a_reboot_can_still_ask_for_a_person() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the second daemon never started serving",
+        "the second daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     assert!(
         wait_for(Duration::from_secs(15), || sprag(&sock, &["ls"])
@@ -6099,7 +6204,8 @@ fn a_killed_daemon_gives_its_panes_back_with_their_inline_images() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the first daemon never started serving",
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
     conn.call(
@@ -6143,7 +6249,8 @@ fn a_killed_daemon_gives_its_panes_back_with_their_inline_images() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the second daemon never started serving",
+        "the second daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("reconnect");
@@ -12868,7 +12975,8 @@ fn daemon_with_one_pane_told(label: &str, options: &[(&str, &str)]) -> (DaemonGu
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
     conn.call(
@@ -13214,7 +13322,8 @@ fn a_signalled_daemon_whose_run_is_driven_elsewhere_is_gone_promptly() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
@@ -14098,7 +14207,8 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
 
@@ -14450,7 +14560,8 @@ fn a_supervised_run_driven_elsewhere_waits_for_its_person_and_goes_on() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
 
@@ -14717,7 +14828,8 @@ fn a_pane_born_with_its_session_wakes_a_wait_parked_on_that_session() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
     let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
 
@@ -15973,7 +16085,8 @@ fn a_run_drives_its_pane_while_the_session_is_looking_at_another_window() {
     spawn_daemon(&sock, &state);
     assert!(
         wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
-        "the daemon never started serving",
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
     );
 
     // The loop's peer: a stand-in agent that announces itself and echoes, so the run gets PAST its
