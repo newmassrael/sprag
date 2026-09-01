@@ -61,13 +61,30 @@ fn main() -> std::process::ExitCode {
         demands.len(),
         peak.opened,
     );
-    // Every process, largest first: the SHAPE is what item 817 is about — one arm taking hundreds
-    // is a different repair from a thousand tests taking one each.
-    for process in &demands {
+    // The head of the list, largest first: the SHAPE is what item 817 is about — one arm taking
+    // hundreds is a different repair from a thousand tests taking one each, and the first dozen
+    // rows show which of those a run was.
+    //
+    // ⛔⛔⛔ A HEAD AND NOT THE WHOLE LIST, measured rather than chosen for taste. A `cargo test
+    // --workspace` run is FOUR HUNDRED AND SIXTY processes, nearly all of them one-pane tests
+    // taking a handful, and printing them all buried the three rows that carry the finding under
+    // four hundred that carry none. It also broke: piping that output into `head` made `println!`
+    // panic on `EPIPE` and the program exited 101 while having done its job perfectly.
+    for process in demands.iter().take(SHOWN) {
         println!(
             "  pid {}: took {} over {} recorded line(s)",
             process.pid, process.opened, process.takes,
         );
     }
+    if let Some(rest) = demands.len().checked_sub(SHOWN).filter(|rest| *rest > 0) {
+        // ⚠ SAID, rather than the list simply stopping. A reader who cannot tell a short run from
+        // a truncated one has to go looking for the difference, and the tail is where a process
+        // nobody expected to take any would show up.
+        println!("  … and {rest} more process(es), each smaller than the last row above");
+    }
     std::process::ExitCode::SUCCESS
 }
+
+/// How many rows the report prints before summarising the tail — see the loop's own note for the
+/// 460-process run that made this necessary.
+const SHOWN: usize = 12;
