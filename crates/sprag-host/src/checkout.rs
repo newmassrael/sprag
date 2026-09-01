@@ -460,6 +460,75 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
+    /// ⛔⛔⛔⛔⛔ **A COPY DOES NOT CARRY THE SHARED TREE'S BUILD DIRECTORY** — register item 811.
+    ///
+    /// # Why the arm above is not already this one
+    ///
+    /// [`a_check_that_mutates_its_own_copy_leaves_the_shared_tree_alone`] proves that an untracked
+    /// FILE does not travel. A build directory is a THIRD SHAPE: in this repository `target` is an
+    /// untracked **symlink** into a cache every checkout on this machine shares. Register item 794
+    /// measured that shapes are exactly what a check about litter gets wrong — `git status` cannot
+    /// see three of them — so a gate that proved it about a regular file has not proved it here.
+    ///
+    /// # ⚠⚠ What it would cost, which is why the arm exists
+    ///
+    /// If the symlink travelled, a build inside the copy would write THROUGH it into the shared
+    /// cache, and the objects it left would carry the COPY's paths. That is precisely the state
+    /// register item 809 measured and now detects: a gate compiled against one tree answering for
+    /// another. Item 811 tried to attribute a real occurrence of it and could not — the copy was
+    /// gone and nothing records which tree a build wrote from — so this gate is the half that can
+    /// be kept: the mechanism is pinned even though the event was not.
+    ///
+    /// ⚠⚠⚠ MEASURED 2026-09-01 before this was written, and the gate is what holds the answer: a
+    /// `git worktree` cut from this repository and built with plain `cargo`, and again through the
+    /// build wrapper, wrote only into its OWN `target/` — this workspace's cache did not move
+    /// either time. Four candidate paths were refuted that way (the compiler cache, plain cargo,
+    /// the wrapper, an environment override) and none of them is what happened.
+    ///
+    /// ⚠ The scratch root is ASKED FOR rather than taken — register items 794 and 795. The two
+    /// tests beside this one predate that rule and still take it; this one does not add a site.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_does_not_carry_the_shared_trees_build_directory() {
+        let under = sprag_scratch::scratch_root();
+        let repo = a_repository_mid_claim(&under, "no-build-dir");
+        let cache = under.join("sprag-811-shared-cache");
+        std::fs::create_dir_all(&cache).expect("a cache standing in for the shared one");
+        std::os::unix::fs::symlink(&cache, repo.join("target"))
+            .expect("the shape this repository's own build directory has");
+
+        // ── ⚠⚠ THE PREMISE, ASSERTED: the fixture really carries the shape under test ─────────
+        let planted = std::fs::symlink_metadata(repo.join("target"))
+            .expect("the shared tree has a build directory");
+        assert!(
+            planted.file_type().is_symlink(),
+            "⚠⚠ THE FIXTURE MUST BE A SYMLINK, not a directory. A plain directory is the shape the \
+             arm above already covers, and a gate that planted one would be asserting about the \
+             wrong kind of litter (register item 794)",
+        );
+        assert!(
+            repo.join("target").is_dir(),
+            "⚠ and it must RESOLVE, or `git` would be refusing a broken link rather than \
+             declining to carry a live one",
+        );
+
+        let cut = IsolatedCheckout::of(&repo, &under).expect("a repository can be cut");
+
+        assert!(
+            std::fs::symlink_metadata(cut.path().join("target")).is_err(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 811: the copy carries the shared tree's build directory. It \
+             is a symlink into a cache every checkout on this machine shares, so a build inside \
+             the copy writes THROUGH it — and the objects it leaves carry the COPY's paths, which \
+             is the skew register item 809 detects. The copy is cut with `git worktree add` plus \
+             `git apply` precisely so that only TRACKED work travels; whatever now carries \
+             untracked entries has to stop.",
+        );
+
+        drop(cut);
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
     /// ⚠⚠⚠⚠ **A DIRECTORY THAT IS NOT A REPOSITORY IS ANSWERED, NOT GUESSED AT** — the absence
     /// arm, and the one that keeps the caller's fallback honest.
     ///
