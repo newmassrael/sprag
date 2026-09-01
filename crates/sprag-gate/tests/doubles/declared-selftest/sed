@@ -1,0 +1,14 @@
+#!/bin/sh
+# A `sed` THAT REFUSES THE GNU EXTENSIONS -- the double that lets a Linux runner
+# measure what BSD `sed` does, for register items 798 and 799.
+#
+# ⛔ WHY IT IS TRACKED RATHER THAN WRITTEN. Register item 467: a file a process
+# holds open for writing cannot be executed, and this workspace's harness forks
+# from threads. A suite that manufactures its own program meets ETXTBSY sooner or
+# later and the failure reads as a flake. So this is a file the repository
+# carries, reached through `sprag_gate::doubles`.
+#
+# ⚠ The real `sed` arrives by name in the environment rather than being searched
+# for: this double sits AT THE FRONT of `PATH`, so `command -v sed` here would
+# find this script and exec itself forever.
+exec "${SPRAG_REAL_SED:?the real sed must be named in SPRAG_REAL_SED}" --posix "$@"

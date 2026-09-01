@@ -36,6 +36,7 @@
 //! watching. A `.githooks/` script that grows a selftest tomorrow is driven here without anybody
 //! remembering to add it.
 
+use sprag_gate::doubles::Doubles;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -164,7 +165,129 @@ fn refusal_for(name: &str, exited: Option<i32>, ok: bool, said: &str) -> Option<
     }
 }
 
-/// ⛔ **THE GATE.** Every declared selftest runs here, and every one of them passes.
+/// One environment a selftest is driven under: a name for the refusal message, and the variables
+/// that make it.
+type Environment = (String, Vec<(String, String)>);
+
+/// A scratch directory of this suite's own, under the one cargo already hands every integration
+/// test.
+///
+/// ⛔⛔⛔ NOT `std::env::temp_dir()`, and not `sprag_scratch::scratch_root()` either. The first is
+/// what register item 794's ratchet counts — this file added two call sites and the ratchet said so
+/// by name, 165 against 163 recorded. The second is the fix everywhere else and is unavailable
+/// HERE: `sprag-gate` declares no dependencies on purpose, because a gate that stands outside the
+/// suite must not be able to fail when the product fails to compile.
+///
+/// ⇒ `CARGO_TARGET_TMPDIR` satisfies both. Cargo guarantees it for integration tests, it lives
+/// under `target/` rather than in the tree or in the user's state, and it is a compile-time
+/// constant rather than a call the ratchet is counting.
+fn scratch_under(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name)
+}
+
+/// Whether THIS machine's `sed` reads `\|` inside a basic regular expression as alternation.
+///
+/// ⛔⛔ It is the GNU extension that voided a marker on macOS: BSD `sed` reads the `\|` as a
+/// literal, `loop_read_accounted` matched nothing, and every baseline and every `--seen` became
+/// invisible while the file still exited 0 on Linux. The question is asked of the machine rather
+/// than assumed from the platform name, because what matters is the behaviour.
+fn sed_takes_gnu_alternation() -> bool {
+    Command::new("sh")
+        .arg("-c")
+        .arg(r"printf 'baseline x\n' | sed -n 's/^\(baseline\|read\) //p'")
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim() == "x")
+        .unwrap_or(false)
+}
+
+/// The absolute path of the real `sed`, so a shim can call it without calling itself.
+fn real_sed() -> Option<String> {
+    Command::new("sh")
+        .arg("-c")
+        .arg("command -v sed")
+        .output()
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        .filter(|found| !found.is_empty())
+}
+
+/// Why the POSIX-sed environment is, or is not, in the list on this machine -- a sentence, always,
+/// because a measurement that quietly did not happen is the shape this whole file is about.
+fn posix_sed_note(sed_is_gnu: bool, shim_built: bool) -> String {
+    match (sed_is_gnu, shim_built) {
+        (true, true) => "this machine's sed takes the GNU alternation, so a strict one was \
+                         injected and both readings are covered"
+            .to_owned(),
+        (true, false) => "this machine's sed takes the GNU alternation and NO strict one could be \
+                          built, so the BSD reading went unmeasured here"
+            .to_owned(),
+        (false, _) => {
+            "this machine's sed already refuses the GNU alternation, so the plain run IS \
+                       that measurement"
+                .to_owned()
+        }
+    }
+}
+
+/// The environments every declared selftest is driven under, and the sentence about the last one.
+///
+/// ⛔⛔⛔⛔⛔ **TWO OF THESE REDDENED CI, AND NEITHER IS THE PLATFORM'S NAME.** Both macOS failures
+/// this gate found were behaviours a Linux runner can be made to have:
+///
+/// * `mktemp -d` answers under `/var`, a symlink to `/private/var`, so a guard comparing a logical
+///   path to git's physical one refused every run;
+/// * `sed` is BSD, so `\|` in a BRE is a literal and a marker silently matched nothing.
+///
+/// ⇒ Injected rather than waited for. A repository whose macOS job runs once per push cannot
+/// afford to learn these one round at a time, and the injection makes the LINUX job catch them.
+///
+/// ⚠ It does not claim to cover BSD. It covers the two differences that have actually cost this
+/// repository a red, and it says which it covered.
+fn environments(scratch: &Path) -> (Vec<Environment>, String) {
+    let mut envs: Vec<Environment> = vec![("as configured".to_owned(), Vec::new())];
+
+    let real = scratch.join("tmp-real");
+    std::fs::create_dir_all(&real).expect("the scratch TMPDIR target must be creatable");
+    let link = scratch.join("tmp-link");
+    std::os::unix::fs::symlink(&real, &link).expect("a symlink must be creatable in the scratch");
+    envs.push((
+        "a symlinked TMPDIR".to_owned(),
+        vec![("TMPDIR".to_owned(), link.display().to_string())],
+    ));
+
+    let sed_is_gnu = sed_takes_gnu_alternation();
+    // ⚠ The subject is only looked up when there is something to make strict — a machine whose own
+    // `sed` already refuses the extension needs no double, and asking for one would read as though
+    // the environment were missing rather than unnecessary.
+    let strict_subject = if sed_is_gnu { real_sed() } else { None };
+    let mut shim_built = false;
+    if let Some(sed) = strict_subject {
+        // ⛔ THE STRICT `sed` IS A TRACKED DOUBLE, NOT A FILE THIS SUITE WRITES — register item
+        // 467, whose gate refused the first draft of this block by name: a program a process holds
+        // open for writing cannot be executed, and this harness forks from threads. `program` also
+        // checks the execute bit survived the checkout, so a staging failure reads as one instead
+        // of as the hook refusing.
+        let doubles = Doubles::of(env!("CARGO_MANIFEST_DIR")).set("declared-selftest");
+        let _ = doubles.program("sed");
+        envs.push((
+            "a POSIX sed".to_owned(),
+            vec![
+                (
+                    "PATH".to_owned(),
+                    doubles.ahead_of_inherited().to_string_lossy().into_owned(),
+                ),
+                // ⚠ The double sits at the FRONT of that PATH, so it cannot look its own subject up
+                // by name — it would exec itself. It is named instead.
+                ("SPRAG_REAL_SED".to_owned(), sed),
+            ],
+        ));
+        shim_built = true;
+    }
+    (envs, posix_sed_note(sed_is_gnu, shim_built))
+}
+
+/// ⛔ **THE GATE.** Every declared selftest runs here, under every environment, and every one of
+/// them passes.
 ///
 /// Two things are required and the second is why this is not merely a runner: the status must be
 /// zero, AND the run must say how many arms it drove. A harness that exits 0 having driven nothing
@@ -173,29 +296,85 @@ fn refusal_for(name: &str, exited: Option<i32>, ok: bool, said: &str) -> Option<
 #[test]
 fn every_declared_selftest_runs_and_passes_here() {
     let declared = declared_selftests();
+    let scratch = scratch_under(&format!("selftest-envs-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).expect("the scratch root must be creatable");
+    let (envs, note) = environments(&scratch);
     let mut refused: Vec<String> = Vec::new();
-    for (name, path) in &declared {
-        let run = Command::new("bash")
-            .arg(path)
-            .arg("--selftest")
-            .current_dir(repo_root())
-            .output()
-            .unwrap_or_else(|why| panic!("{name} --selftest must be runnable: {why}"));
-        let said = format!(
-            "{}{}",
-            String::from_utf8_lossy(&run.stdout),
-            String::from_utf8_lossy(&run.stderr),
-        );
-        if let Some(why) = refusal_for(name, run.status.code(), run.status.success(), &said) {
-            refused.push(why);
+    for (env_name, vars) in &envs {
+        for (name, path) in &declared {
+            let mut run = Command::new("bash");
+            run.arg(path).arg("--selftest").current_dir(repo_root());
+            for (key, value) in vars {
+                run.env(key, value);
+            }
+            let run = run
+                .output()
+                .unwrap_or_else(|why| panic!("{name} --selftest must be runnable: {why}"));
+            let said = format!(
+                "{}{}",
+                String::from_utf8_lossy(&run.stdout),
+                String::from_utf8_lossy(&run.stderr),
+            );
+            let under = format!("{name} [under {env_name}]");
+            if let Some(why) = refusal_for(&under, run.status.code(), run.status.success(), &said) {
+                refused.push(why);
+            }
         }
     }
+    // ⚠ REMOVED BEFORE THE ASSERT, so a red does not also leave litter behind — register item 802
+    // is open about a harness that grows a user's state directory without ever tidying it.
+    let _ = std::fs::remove_dir_all(&scratch);
     assert!(
         refused.is_empty(),
         "⛔ ITEM 799: a `.githooks/` script declares a `--selftest` and it does not pass when this \
          suite runs it. Until this gate existed nothing executed either of them — 52 arms that ran \
-         only when a person typed the command:\n{}",
+         only when a person typed the command. Environments driven: {}; {note}:\n{}",
+        envs.iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
         refused.join("\n"),
+    );
+}
+
+/// ⚠⚠⚠ **THE ENVIRONMENTS ARE NOT AN EMPTY LIST, AND THE ONE THAT CANNOT BE BUILT IS SAID.**
+///
+/// The gate above passes by finding nothing wrong, which a list of ZERO environments would also
+/// do — and the symlinked TMPDIR is the one that caught a red, so its presence is asserted rather
+/// than hoped for. The POSIX-sed one is conditional by construction: on a machine whose `sed` is
+/// already strict, the plain run IS that measurement, and `posix_sed_note` has to say which case
+/// this machine is rather than leaving the reader to guess.
+#[test]
+fn the_driven_environments_include_the_one_that_reddened_ci() {
+    let scratch = scratch_under(&format!("env-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).expect("the scratch root must be creatable");
+    let (envs, note) = environments(&scratch);
+    let names: Vec<&str> = envs.iter().map(|(name, _)| name.as_str()).collect();
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        names.contains(&"as configured") && names.contains(&"a symlinked TMPDIR"),
+        "the symlinked TMPDIR is the environment that caught a macOS red, and a gate driving \
+         only the plain one would go back to learning it a round at a time. Found: {names:?}",
+    );
+    assert!(
+        !note.is_empty(),
+        "the POSIX-sed environment is conditional, so the reason it is or is not present must be \
+         a sentence rather than a silence",
+    );
+    // ⛔ The note's three cases cannot all be reached on one machine, so they are driven directly —
+    // the lesson `refusal_for` above had to learn twice.
+    assert!(
+        posix_sed_note(true, true).contains("both readings are covered"),
+        "a machine with GNU sed and a shim covers both readings and must say so",
+    );
+    assert!(
+        posix_sed_note(true, false).contains("went unmeasured"),
+        "⛔ a machine with GNU sed and NO shim left the BSD reading UNMEASURED, and that is not \
+         the same as covering it — an unclassified case is red here, not a pass",
+    );
+    assert!(
+        posix_sed_note(false, false).contains("plain run IS that measurement"),
+        "a machine whose sed is already strict needs no shim, and the note must say why",
     );
 }
 

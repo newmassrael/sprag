@@ -122,11 +122,20 @@ loop_read_keys() {
 }
 
 # The keys this clone has already accounted for -- baseline and read alike.
+#
+# ⛔⛔⛔⛔⛔ TWO EXPRESSIONS, NOT ONE ALTERNATION. `\|` inside a BRE is a GNU
+# EXTENSION: BSD `sed` reads it as a literal `|`, matches nothing, and this
+# function then answers "nothing has been accounted for" -- which silently voids
+# every baseline and every `--seen`. Measured on macOS 2026-09-01, by the gate
+# register item 799 built: `loop-read.sh --selftest` failed there on its first
+# CI exposure with *"a baselined ending was still owed"*, while the same file
+# passed on every Linux job. Reproduced here with `sed --posix`, which turns the
+# extension off in GNU sed and prints nothing for exactly this expression.
 loop_read_accounted() {
     local marker
     marker="$(loop_read_marker)"
     [ -r "$marker" ] || return 0
-    command sed -n 's/^\(baseline\|read\) //p' "$marker"
+    command sed -n -e 's/^baseline //p' -e 's/^read //p' "$marker"
 }
 
 # Whether a baseline has been laid down here.

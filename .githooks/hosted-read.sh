@@ -731,7 +731,7 @@ hosted_read_selftest() {
     # repository instead of the throwaway one. The arms went green-ish against
     # the wrong subject, which is the shape this whole file is about.
     local here tmp pass fail said base tip saved_path FAKE_GH_TOTAL FAKE_GH_FAIL
-    local scratch_refusal
+    local scratch_refusal wiring
     local FAKE_GH_ATTEMPT rerun_sha
     saved_path="$PATH"
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1231,16 +1231,27 @@ ASKED
     # to offer naming the wrong cause -- `pre-push never calls the gap arm` while
     # the hook plainly did. Which of the two it was could not be recovered
     # afterwards, so the next occurrence says it (register item 803).
+    #
+    # ⛔⛔⛔ THE READ HAPPENS ONCE AND THE FAILURE REPORTS WHAT IT READ — register
+    # item 803. This arm has now failed twice inside the parallel `sprag-gate`
+    # suite while `pre-push` plainly called the arm, and each time the sentence
+    # named a cause that was not true. A verdict about a file that does not carry
+    # what the file said leaves nothing to diagnose from, so the bytes go into a
+    # variable, the decision reads THAT variable, and a failure prints its size
+    # and what `sed` wrote — including on stderr, which is where a double that was
+    # handed no subject would complain.
+    wiring="$(command sed 's/#.*//' "$here/pre-push" 2>&1)"
     if [ ! -r "$here/pre-push" ]; then
         echo "  FAIL  pre-push is not readable at $here -- the wiring cannot be" \
              "judged, and this is NOT the same finding as it not calling the arm"
         fail=$((fail + 1))
-    elif command sed 's/#.*//' "$here/pre-push" \
-         | command grep -q 'hosted_read_gap'; then
+    elif printf '%s\n' "$wiring" | command grep -q 'hosted_read_gap'; then
         echo "  ok    the pre-push hook calls the gap arm"
         pass=$((pass + 1))
     else
-        echo "  FAIL  pre-push is readable and never calls the gap arm"
+        echo "  FAIL  pre-push is readable and the ${#wiring} byte(s) read from it" \
+             "never call the gap arm -- what the reader got began:" \
+             "$(printf '%s' "$wiring" | command head -c 200)"
         fail=$((fail + 1))
     fi
 
