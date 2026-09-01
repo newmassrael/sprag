@@ -45,17 +45,60 @@ use sprag_rpc::{
 use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
 
 /// Kills + reaps the spawned host on scope exit (including a test panic), so a failed
-/// assertion never leaks a `sprag-term` — and unlinks its socket, so it leaks no file either.
+/// assertion never leaks a `sprag-term` — and removes everything named after its socket, so it
+/// leaks no file either.
 ///
 /// Owning the PATH (not just the `Child`) is the point: [`socket_path`] mints a fresh name per
 /// call, so without this every run would strew one dead socket per test under the temp dir,
 /// forever. The kill must come first — the host holds the socket open until it exits.
+///
+/// # ⛔⛔⛔⛔⛔ THE SENTENCE ABOVE WAS TRUE AND THE SET IT NAMED WAS NOT — register item 807
+///
+/// It said *the PATH*, singular, and it was written when the socket was the only thing derived
+/// from a socket. Item 738 layer 4 later added [`a_tree_to_stand_in`], keyed on that same socket
+/// and created on EVERY spawn; `sprag_cli_output` later added a state home the same way. Neither
+/// joined this guard, and nothing else owned them.
+///
+/// ⚠⚠ MEASURED 2026-09-01, as a delta across one run of this target: **119 entries left in the
+/// temporary directory — 113 `.tree`, 4 `.state`, 2 config homes** — while `/tmp` already held
+/// **1788** `sprag-wire-it-*` entries from previous runs. Processes leak zero (this is a foreground
+/// child, killed and reaped above); the whole of item 807 is files.
+///
+/// ⚠ Which is rule 10's shape and not an oversight to shrug at: **the rationale was written down,
+/// stayed correct about what it described, and nobody re-measured it when a second derivative was
+/// added.** The repair is a list this file spells ONCE — [`remove_socket_litter`].
 struct HostChild(Child, PathBuf);
 impl Drop for HostChild {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
-        let _ = std::fs::remove_file(&self.1);
+        remove_socket_litter(&self.1);
+    }
+}
+
+/// Remove `sock` and every path this file DERIVES from it — register item 807.
+///
+/// ⚠⚠ ONE SPELLING, because the defect was that there were two owners and one of them had never
+/// heard of half the set. A derivative added tomorrow belongs in this list and nowhere else: the
+/// question *what does a socket of this file's leave behind* has exactly one place to be answered.
+///
+/// ⚠ `remove_dir_all` on a path that is not there is an error this deliberately drops, so the list
+/// may name a derivative only some callers make — [`a_tree_to_stand_in`] runs on every spawn,
+/// `sprag_cli_output`'s state home only where a CLI was driven.
+fn remove_socket_litter(sock: &Path) {
+    let _ = std::fs::remove_file(sock);
+    remove_derived_from_socket(sock);
+}
+
+/// The paths this FILE derives from a socket, without the socket itself.
+///
+/// ⚠⚠ SPLIT OUT BECAUSE ONE SOCKET HERE IS NOT THIS FILE'S TO UNLINK — see [`SkewedDaemon`]. A
+/// relay peer comes from `sprag-peer` and removes its own socket; what it cannot remove is a
+/// directory named after that socket by a helper in this file it has never heard of. Ownership is
+/// split along who MADE each path, which is the only split that stays true when either side grows.
+fn remove_derived_from_socket(sock: &Path) {
+    for derived in ["tree", "state"] {
+        let _ = std::fs::remove_dir_all(sock.with_extension(derived));
     }
 }
 
@@ -163,6 +206,88 @@ fn socket_path() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!("sprag-wire-it-{}-{n}.sock", std::process::id()))
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERYTHING THIS FILE MAKES UNDER THE TEMP DIR GOES WITH THE TEST THAT MADE IT** —
+/// register item 807, driven rather than argued.
+///
+/// # The three shapes, and why they are one gate
+///
+/// They are one claim — *a harness owns what it made* — measured at the three places this file
+/// makes something: the socket, the two paths DERIVED from it ([`a_tree_to_stand_in`] and
+/// `sprag_cli_output`'s state home), and the one that is derived from nothing ([`config_home`]).
+/// The first had an owner from the beginning; the other three had none, and a gate that watched
+/// only the socket is exactly the gate that was already here and stayed green through 1788
+/// accumulated entries.
+///
+/// # ⚠⚠⚠ Every arm asserts its premise INSIDE the scope
+///
+/// *It is not there afterwards* is also what *it was never made* says, and register item 802 met
+/// that dead control twice in one round — once because a directory's writer had not ticked yet,
+/// once because a socket file had never been bound. So each path is read while the guard is still
+/// alive, and only then is it allowed to drop.
+#[test]
+fn everything_this_file_makes_under_the_temp_dir_goes_with_the_test_that_made_it() {
+    let sock;
+    let tree;
+    let state;
+    let config;
+    let relayed;
+
+    {
+        let cfg = config_home("[options]\n");
+        config = PathBuf::from(cfg.to_str().expect("a utf-8 config home"));
+        let (_host, mine) = spawn_host();
+        sock = mine;
+        tree = sock.with_extension("tree");
+        state = sock.with_extension("state");
+
+        // ⚠ The state home is only made where a CLI is DRIVEN, so it has to be driven here — an
+        // arm about a directory nothing asked for would measure nothing at all.
+        let (ok, _said) = sprag_cli_output(&sock, &["ls"], &[], "");
+        assert!(ok, "the CLI reaches the host this test spawned");
+
+        // ⚠⚠ AND THE RELAY'S SOCKET, WHICH IS THE ADDRESS THE FIRST REPAIR COULD NOT REACH. A
+        // `sprag-peer` daemon owns its own socket and cannot own a directory this file names after
+        // it — see [`SkewedDaemon`]. Its verdict is not this arm's subject, only the directory
+        // `sprag_cli_output` makes before it spawns anything at all.
+        // ⚠ The build string is spelled here rather than borrowed from the gates whose subject IS
+        // the skew: what this arm needs is a relay on a socket of its own, and a shared constant
+        // would tie a litter claim to a build-identity one that can change for its own reasons.
+        let skewed = skewed_daemon(&sock, "0000deadbeef");
+        relayed = skewed.sock().with_extension("state");
+        let _ = sprag_cli_output(skewed.sock(), &["ls"], &[], "");
+
+        for (what, path) in [
+            ("the socket", &sock),
+            ("the tree its boot pane stands in", &tree),
+            ("the state home the CLI was given", &state),
+            ("the config home", &config),
+            ("the state home beside the relay's socket", &relayed),
+        ] {
+            assert!(
+                path.exists(),
+                "⚠⚠ THE PREMISE FAILED for {what}: {} was never made, so the claim below would \
+                 hold of a run in which nothing happened and this gate would measure nothing",
+                path.display(),
+            );
+        }
+    }
+
+    for (what, path) in [
+        ("the socket", &sock),
+        ("the tree", &tree),
+        ("the state home", &state),
+        ("the config home", &config),
+        ("the relay's state home", &relayed),
+    ] {
+        assert!(
+            !path.exists(),
+            "⛔ ITEM 807: {what} outlived the test that made it — {}. One run of this target left \
+             119 such entries and `/tmp` had 1788 of them.",
+            path.display(),
+        );
+    }
 }
 
 #[test]
@@ -4396,12 +4521,40 @@ fn the_hook_states_which_build_reported_on_the_same_terms_a_person_does() {
 /// meanings of *"older"*. A fifth relay living in one test file would have been the same mistake,
 /// and it is what item 474 needed to borrow — the agent-facing mouth is gated in another package
 /// and cannot reach a fixture private to this one.
-fn skewed_daemon(real: &std::path::Path, build: &str) -> sprag_peer::OldDaemon {
-    sprag_peer::OldDaemon::proxying(
+fn skewed_daemon(real: &std::path::Path, build: &str) -> SkewedDaemon {
+    SkewedDaemon(sprag_peer::OldDaemon::proxying(
         &socket_path(),
         real,
         sprag_peer::Missing::answering(&[(sprag_rpc::BUILD_FIELD, json!(build))]),
-    )
+    ))
+}
+
+/// [`sprag_peer::OldDaemon`] **plus the paths THIS FILE derives from its socket** — register
+/// item 807.
+///
+/// ⚠⚠ THE TWO OWNERS ARE SPLIT ALONG WHO MADE WHAT, which is the only split that survives either
+/// side growing. `sprag-peer`'s own `Drop` unlinks the peer's socket — it made it. It cannot
+/// remove `<sock>.state`, because that name is invented by [`sprag_cli_output`] in this file and a
+/// fixture in another crate has never heard of it.
+///
+/// ⚠ MEASURED 2026-09-01: with the rest of item 807 paid, a full run of this target still left
+/// exactly ONE entry behind, and this was it — an empty `.state` beside the relay's socket. A
+/// leftover of one is not a smaller version of a leftover of 119; it is the address the first
+/// repair could not reach, and it had to be found by re-measuring rather than by re-reading.
+struct SkewedDaemon(sprag_peer::OldDaemon);
+
+impl SkewedDaemon {
+    /// The relay's address, for a client that should talk to it instead of the real daemon.
+    fn sock(&self) -> &Path {
+        self.0.sock()
+    }
+}
+
+impl Drop for SkewedDaemon {
+    fn drop(&mut self) {
+        // ⚠ The DERIVED paths only — the socket is the peer's own and its `Drop` runs next.
+        remove_derived_from_socket(self.0.sock());
+    }
 }
 
 /// ⚠⚠⚠⚠⚠ **A PERSON IS TOLD WHETHER THE REPORTER THAT ANSWERED IS THIS DAEMON'S IMAGE** — register
@@ -13249,11 +13402,39 @@ fn the_daemon_drives_a_run_in_a_process_of_its_own() {
     );
 }
 
-/// A config directory holding `text` as this daemon's `config.toml`, unique to this CALL.
+/// A config directory holding `text` as this daemon's `config.toml`, unique to this CALL and
+/// **removed when the test that asked for it ends**.
 ///
 /// ⚠ Unique per call for [`socket_path`]'s reason: these tests are parallel threads of one binary,
 /// and a shared directory would have them reading each other's options.
-fn config_home(text: &str) -> PathBuf {
+///
+/// ⚠⚠ IT RETURNS A GUARD RATHER THAN A PATH — register item 807, and it is the half [`HostChild`]
+/// cannot cover: this directory is NOT derived from a socket, so no socket's owner can find it. It
+/// returned a bare `PathBuf` until 2026-09-01 and left one directory per call in the temporary
+/// directory, for ever.
+///
+/// ⚠ DROP ORDER IS LOAD-BEARING AND COSTS NOTHING TO GET RIGHT: both callers bind this BEFORE the
+/// host that reads it, and Rust drops locals in reverse declaration order — so the daemon is dead
+/// before its config home is taken away, rather than reading a directory being deleted underneath.
+struct ConfigHome(PathBuf);
+
+impl ConfigHome {
+    /// The directory, for a caller handing it to a child as `XDG_CONFIG_HOME`.
+    ///
+    /// Named `to_str` so the two call sites read exactly as they did when this was a `PathBuf`:
+    /// what changed is who owns the directory, not what a caller says about it.
+    fn to_str(&self) -> Option<&str> {
+        self.0.to_str()
+    }
+}
+
+impl Drop for ConfigHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn config_home(text: &str) -> ConfigHome {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("sprag-wire-cfg-{}-{n}", std::process::id()));
@@ -13263,7 +13444,7 @@ fn config_home(text: &str) -> PathBuf {
         text,
     )
     .expect("write the config");
-    dir
+    ConfigHome(dir)
 }
 
 /// One run's row over the wire, or `Null` where the daemon does not hold it.
