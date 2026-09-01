@@ -2385,6 +2385,19 @@ mod tests {
     }
 
     /// Block (bounded) until pane 0's child has closed its PTY.
+    ///
+    /// # ⚠⚠⚠⚠⚠ EOF IS NOT «THE PANE HAS STOPPED CHANGING» — register item 822
+    ///
+    /// The reader thread publishes this flag DELIBERATELY EARLY, and says so:
+    /// *"Publish EOF BEFORE either callback, never after"*, because both callbacks run a liveness
+    /// check off it. So at the instant this returns there are still **two wakes coming** — the
+    /// exit wake immediately after the store, and the exit-STATUS wake once `child.wait()`
+    /// returns, which is a separate moment because EOF does not prove the child has terminated.
+    /// Anything reading the scene revision right after this therefore reads a number that is still
+    /// moving. Wait for what you are about to COMPARE, not for the child's descriptor.
+    ///
+    /// ⚠ It panics rather than returning on timeout: a bound that expires quietly turns "the child
+    /// never died" into a green run of assertions written about a dead one.
     fn wait_for_pane0_eof(state: &HostState) {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
@@ -2392,10 +2405,14 @@ mod tests {
                 .pane(PaneId(0))
                 .is_none_or(|p| p.pty().is_eof());
             if eof {
-                break;
+                return;
             }
             sleep(Duration::from_millis(20));
         }
+        panic!(
+            "pane 0's child never closed its PTY within 5s, so every assertion below would be \
+             about a pane that is still running rather than about the finished one it describes",
+        );
     }
 
     /// Block (bounded) until pane `id` in `host`'s default workspace has reached EOF.
@@ -5936,6 +5953,51 @@ mod tests {
         )
     }
 
+    /// Block (bounded) until the boot session's revision has moved past `mark`, panicking with
+    /// `because` if it never does.
+    ///
+    /// ⚠⚠ The counter is what is WAITED ON, rather than some event expected to imply it. A pane's
+    /// bump lands after the screen it describes (*"THE COUNTER MOVES FIRST, so a host woken by the
+    /// hook below already sees the revision that wake is announcing"*), so a barrier that waits for
+    /// the SCREEN and then reads the number is one instruction early — a window narrow enough to
+    /// green a thousand runs and a fresh instance of exactly what register item 822 was.
+    fn wait_until_revision_moves_past(state: &HostState, mark: u64, because: &str) {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if state.revision(BOOT).current() > mark {
+                return;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        panic!("the revision never moved past {mark}: {because}");
+    }
+
+    /// Block (bounded) until a `find` for `needle` sees it on pane 0 — the barrier for a fixture
+    /// whose child STAYS ALIVE, where waiting on a descriptor would wait forever.
+    ///
+    /// ⚠⚠ It settles the assertion's OWN question, which is the whole point of preferring it to
+    /// [`wait_for_pane0_eof`]: the thing a caller then measures is a search over a screen this has
+    /// already seen the needle on, rather than a screen some other event is expected to have
+    /// finished painting. Register item 822 is what a neighbouring barrier cost.
+    fn wait_until_pane0_find_matches(state: &HostState, needle: &str) {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            let answer = query_pane0(state, &crate::wire::find_slot_for(needle));
+            assert!(answer.get("error").is_none(), "find error: {answer}");
+            if answer["result"]["matches"]
+                .as_array()
+                .is_some_and(|found| !found.is_empty())
+            {
+                return;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        panic!(
+            "pane 0 never showed {needle:?} within 5s, so nothing below would be searching the \
+             screen it describes",
+        );
+    }
+
     /// The pane's frame at scrollback `offset`, over the full dispatch path — the
     /// `cells.<offset>` QUERY, the ONE address of the concept since PINION-PR61 (`offset ==
     /// 0` is the live view the poll loop reads each wake). A `MethodOcc::Read` at every
@@ -6158,15 +6220,58 @@ mod tests {
         );
     }
 
+    /// **A PANE AT EOF STILL HAS WAKES COMING, SO EOF IS NOT A BASELINE** — register item 822.
+    ///
+    /// This is the premise [`wait_for_pane0_eof`]'s own doc states, made into a predicate, because
+    /// the sibling below was written on the prose version and went red once in sixty runs. The
+    /// reader thread stores EOF *before* the wake for the child's exit and again before the wake
+    /// carrying its exit STATUS — and those are two different moments, since a closed descriptor
+    /// does not prove a terminated child.
+    ///
+    /// The fixture widens what is otherwise a race into something a clock can see: the child closes
+    /// all three descriptors and only THEN sleeps, so the master reaches EOF at once while
+    /// `child.wait()` stays parked for a whole second. A reading taken at EOF is therefore taken
+    /// with a bump still owed, which is exactly the state that made a search look like a writer.
+    ///
+    /// ⚠ Asserted as *"it rises again"* rather than *"it rose by two"*: the count is the reader
+    /// thread's business and a third wake added there is not this test's failure. That the number
+    /// is still MOVING is the whole of what a baseline-taker needs to know.
+    #[test]
+    fn a_pane_at_eof_still_has_a_wake_owed_to_it() {
+        let state = host_with("printf hit; exec 0<&- 1>&- 2>&-; sleep 1", 20, 4);
+        wait_for_pane0_eof(&state);
+        let at_eof = state.revision(BOOT).current();
+
+        wait_until_revision_moves_past(
+            &state,
+            at_eof,
+            "either the reader stopped waking on a child's exit — which strands every parked \
+             `scene/waitFor` over a dead pane — or the fixture no longer holds its descriptors \
+             open past the close, in which case this test no longer measures the window it names",
+        );
+    }
+
     /// Searching a pane is a READ: it must not move the scene revision.
     ///
     /// This is the PR-61 livelock lesson applied BEFORE it can bite. A find bar re-queries on every
     /// keystroke; if that bumped, one client's typing would wake every other attached client's
     /// parked `waitFor` into a full re-fetch — the exact defect that made `cells` a query.
+    ///
+    /// # ⚠⚠⚠⚠ THE PANE IS KEPT ALIVE ON PURPOSE — register item 822
+    ///
+    /// This read `printf hit` and waited for EOF, and went red **once in sixty runs** with the
+    /// search blameless: a dying child is itself a source of bumps, and EOF is published before
+    /// the last of them lands (see [`a_pane_at_eof_still_has_a_wake_owed_to_it`]). So the fixture
+    /// held the only other writer this assertion could not tell apart from its subject.
+    ///
+    /// The child now stays parked in `cat`, which produces no bytes and never exits, leaving the
+    /// search as the ONLY thing in the test that could move the number. And the barrier is the
+    /// question the assertion asks — *does a find see `hit` yet* — rather than a neighbouring one
+    /// about a descriptor, so what it settles is what is measured.
     #[test]
     fn a_find_query_does_not_bump_the_revision() {
-        let state = host_with("printf hit", 20, 4);
-        wait_for_pane0_eof(&state);
+        let state = host_with("printf hit; exec cat", 20, 4);
+        wait_until_pane0_find_matches(&state, "hit");
         let before = state.revision(BOOT).current();
         for _ in 0..5 {
             let answer = query_pane0(&state, &crate::wire::find_slot_for("hit"));
@@ -6176,6 +6281,31 @@ mod tests {
             state.revision(BOOT).current(),
             before,
             "a search changes nothing about the pane, so it wakes no waiter",
+        );
+
+        // ⚠⚠⚠ THE CONTROL, and the reason keeping the child alive did not quietly retire this
+        // gate: a pane whose OUTPUT cannot move the revision would satisfy the equality above
+        // forever, and nothing in the test would say so. One keystroke, echoed back by `cat`, must
+        // still move the number — so what was measured is a search failing to move a live counter
+        // rather than a dead one holding still.
+        //
+        // ⚠⚠ THE BASELINE IS TAKEN AFTER THE KEYSTROKE, and that is the whole of what makes this a
+        // control over the PANE. Measured: with `on_dirty` removed — a pane whose output moves
+        // nothing at all — a control anchored at `before` stayed GREEN, because a `scene/invoke` is
+        // a mutation and bumps on its own. It was answering about the dispatch path while claiming
+        // to be about the child.
+        let key = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{{"path":"{}","args":{{"key":"z"}}}}}}"#,
+            crate::wire::pane_input_path(0, crate::wire::KEY_ACTION),
+        );
+        let typed = serve_one(&state, &key);
+        assert!(typed.get("error").is_none(), "keystroke error: {typed}");
+        let after_key = state.revision(BOOT).current();
+        wait_until_revision_moves_past(
+            &state,
+            after_key,
+            "the pane's own output no longer wakes anybody, so the equality above is a dead \
+             counter holding still rather than a search declining to move a live one",
         );
     }
 
