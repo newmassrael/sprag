@@ -440,7 +440,14 @@ const DECLARED_ACTS: usize = 15;
 ///
 /// ⚠⚠ Refused from BOTH sides, for [`DRIVER_ARMS`]'s reason exactly: below is behaviour coming back
 /// out of the document, above is the debt being paid and the pin owes the same commit.
-const SERVED_ACTS: usize = 42;
+///
+/// ⭐ **42 → 43 on 2026-09-01, and the act is a SECOND `prompt.say` on one state entry** — register
+/// item 800's second half. `priming` now sends a greeting or a handover depending on which edge got
+/// there, and the choice is made IN the document (`<if cond="entered_by == 'review'">`) rather than
+/// by a driver reading the datamodel and picking. ⚠ No [`DRIVER_ARMS`] row fell with it, which is
+/// the ordinary case this file's header describes: the decision was never in the driver to begin
+/// with, because until this item there was nothing to decide.
+const SERVED_ACTS: usize = 43;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

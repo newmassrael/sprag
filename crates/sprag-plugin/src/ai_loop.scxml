@@ -645,6 +645,50 @@
     <!-- Sent on every turn after the first. -->
     <data id="turn_prompt" expr="''"/>
     <!--
+      ⛔⛔⛔⛔⛔ **SENT WHEN A LIVE SESSION IS HANDED A NEW MILESTONE** — register item 800's second
+      half, and the one this repository's own loop meets on every turn.
+
+      # ⚠⚠⚠⚠⚠ Why `start_prompt` was the wrong thing to send here
+
+      `priming` GREETS: its prompt is the north star, the milestone, the reference, the working
+      rules and the standing instructions, written — in `start_prompt`'s own words — for *"every
+      session of a run, the first and every replacement `restarting` opens"*. A session arriving
+      from `reflecting` is neither. It is the SAME agent, still holding everything it was greeted
+      with, and exactly one thing about it has changed: the checkpoint it is working toward.
+
+      A loop that reflects on every turn therefore had the whole greeting retyped on every turn,
+      which is what the owner asked about in as many words.
+
+      ⚠⚠ WHAT IT DROPS AND WHY EACH IS SAFE TO DROP, rather than a shorter prompt by taste:
+      `north_star` is the run's, fixed for its life, and the session was told it; `working_rules`
+      says of itself that it would *"retype them at an agent whose session already holds them"*;
+      `carried` says of itself that it goes into `start_prompt` ONLY, because the party a review has
+      something to tell is *"the session that does not exist yet"*.
+
+      ⚠ WHAT IT KEEPS: the milestone and the reference, which are what MOVED; `standing`, which
+      this document retypes on purpose and states its reason for; and the report and marker
+      instructions, which are how a turn is ended.
+
+      ⚠⚠ NAMED FOR WHAT IT CARRIES AND NOT FOR THE DOOR — *changed*, not *resumed*. This document
+      already has a STATE called `resuming`, which is where a run waits for a REPLACEMENT session to
+      come up; a prompt named after it would read as that state's, which is the opposite party.
+    -->
+    <data id="changed_prompt" expr="''"/>
+    <!--
+      ⛔⛔⛔ **WHICH DOOR REACHED `priming`** — register item 800, and the fact SCXML does not give a
+      state about itself.
+
+      Three kinds of arrival land there and only two of them are a NEW session (`start` and the
+      `session.ready` that follows a `restarting`). The third is a live session that has just
+      adopted a new milestone. A state cannot ask how it was entered, so the EDGE says.
+
+      ⚠⚠ THE EMPTY STRING IS NOT A FOURTH KIND — it is an edge that forgot, and it reads as a
+      greeting, which is the safe direction and the wrong answer. What stops it is a gate rather
+      than this comment: `sprag-gate`'s `a_live_session_is_not_told_the_milestone_it_already_has`
+      requires every transition into `priming` to set this, so an edge added without it is RED.
+    -->
+    <data id="entered_by" expr="''"/>
+    <!--
       ⚠⚠⚠ SENT WHEN THE LOOP STOPS TO IMPROVE ITSELF, AND IT IS A TURN LIKE ANY
       OTHER — the agent is asked, and what it answers is what the NEXT session
       is briefed with.
@@ -2932,7 +2976,10 @@
       <assign location="end_prompt"
               expr="'Summarise what changed, what was verified, and what is left open.' + closing_rules"/>
     </transition>
-    <transition event="start" target="priming"/>
+    <!-- ⚠ The first session of a run holds nothing, so it is GREETED — item 800. -->
+    <transition event="start" target="priming">
+      <assign location="entered_by" expr="'start'"/>
+    </transition>
     <!--
       ⚠⚠ A LOOP CAN BE UNSTARTABLE BEFORE IT EVER PROMPTS, and until this edge
       existed `idle` was the one non-final state with no way out but forward.
@@ -3103,6 +3150,24 @@
                     'Do the next smallest thing that is verifiable, then report.' + '\n' +
                     done_instruction"/>
       <!--
+        ⛔⛔⛔⛔⛔ **AND THE ONE FOR A SESSION THAT IS ALREADY HERE** — register item 800's
+        second half. See `changed_prompt`'s own declaration for what it drops and
+        why each of the three is safe to drop; the short of it is that a live
+        session holds the north star, the working rules and the review's note
+        already, and the only thing that moved is where it is going.
+
+        ⚠⚠ IT OPENS BY SAYING THE MILESTONE MOVED, because a bare `Milestone:`
+        line reads as the greeting's and an agent that has been working for
+        twenty turns would have no way to tell a NEW checkpoint from the one it
+        was already carrying. What changed has to be said, not merely sent.
+      -->
+      <assign location="changed_prompt"
+              expr="'The milestone has moved. Milestone: ' + milestone + milestone_age + '\n' +
+                    'What to carry: ' + reference + '\n' +
+                    standing +
+                    'Report what you did and what is left.' + '\n' +
+                    done_instruction"/>
+      <!--
         ⚠⚠⚠ THE REFLECTION'S OWN PROMPT, composed here for the reason the other
         three are: it names `north_star`, `milestone` and `standing`, and a
         reflection that asked about a milestone the run had already moved past
@@ -3192,10 +3257,38 @@
         what goes out is the `start_prompt` the assigns above just composed and
         never the template it was composed from.
       -->
-      <send type="x-sprag-host" event="prompt.say">
-        <param name="text" expr="start_prompt"/>
-        <param name="asks" expr="'work'"/>
-      </send>
+      <!--
+        ⛔⛔⛔⛔⛔ **A GREETING OR A HANDOVER, DECIDED BY THE EDGE THAT GOT HERE** —
+        register item 800's second half.
+
+        ⚠⚠⚠ THE BRANCH IS HERE AND NOT IN A SECOND STATE, which was the other
+        design and is the wrong one for this document: `priming` is *a session
+        exists and has not been prompted*, and that is true of all three
+        arrivals. What differs is only WHAT the session already holds, and this
+        file's own habit for that is a word the edge writes down and the state
+        reads — `restart_reason`, `reflect_reason` and `stop_reason` are all
+        that shape. A second state would also add a variant to the generated
+        state type and a row to every exhaustive match keyed on it, for a
+        difference that is not a difference in what the machine is DOING.
+
+        ⚠⚠ `review` IS THE NARROW CASE AND IT IS THE ONE NAMED. An edge that
+        forgot to write the word gets the greeting, which is the safe direction —
+        a session told again what it holds loses tokens, one never told loses the
+        run. What stops that from being a silent default is the gate named in
+        `entered_by`'s own comment, which requires every edge into this state to
+        write one.
+      -->
+      <if cond="entered_by == 'review'">
+        <send type="x-sprag-host" event="prompt.say">
+          <param name="text" expr="changed_prompt"/>
+          <param name="asks" expr="'work'"/>
+        </send>
+      <else/>
+        <send type="x-sprag-host" event="prompt.say">
+          <param name="text" expr="start_prompt"/>
+          <param name="asks" expr="'work'"/>
+        </send>
+      </if>
     </onentry>
     <!--
       ⛔⛔⛔⛔⛔ THIS TRANSITION USED TO CLEAR `unasked_seen`, AND REGISTER ITEM
@@ -4949,6 +5042,14 @@
                 target="priming">
       <assign location="carried" expr="_event.data.carried"/>
       <assign location="turns_since_reflect" expr="0"/>
+      <!--
+        ⚠⚠ THE SESSION IS KEPT, so `priming` hands it what CHANGED rather than
+        greeting it again — register item 800. The `carried` line above is
+        assigned anyway and deliberately: it is what a REPLACEMENT would be told
+        if the capacity door were taken instead, and clearing it here would make
+        the two doors disagree about what the last review found.
+      -->
+      <assign location="entered_by" expr="'review'"/>
     </transition>
     <!--
       ⚠⚠⚠ THE CAPACITY DOOR IS WRITTEN OUT rather than left to the fall-back it
@@ -5046,6 +5147,8 @@
                 target="priming">
       <assign location="carried" expr="''"/>
       <assign location="turns_since_reflect" expr="0"/>
+      <!-- ⚠⚠ Its twin's reason, unchanged: the session is kept — register item 800. -->
+      <assign location="entered_by" expr="'review'"/>
     </transition>
     <transition event="review.none"
                 cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &gt;= context_ceiling"
@@ -5173,7 +5276,10 @@
     This is that same barrier, on the pane that replaced the old one.
   -->
   <state id="resuming">
-    <transition event="session.ready" target="priming"/>
+    <!-- ⚠ A REPLACEMENT session holds nothing either, so it is GREETED — item 800. -->
+    <transition event="session.ready" target="priming">
+      <assign location="entered_by" expr="'restart'"/>
+    </transition>
     <transition event="fail" target="failed"/>
     <transition event="cancel" target="cancelled"/>
     <transition event="peer.gone" target="peer_gone"/>

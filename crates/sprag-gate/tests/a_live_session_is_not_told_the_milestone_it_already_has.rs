@@ -25,7 +25,7 @@
 //! found, and a prompt this gate has no ruling for is RED rather than a pass — because the next
 //! prompt somebody composes is exactly the one that would quietly name the milestone again.
 
-use sprag_gate::loop_shape::{Composed, DOCUMENT, composed_prompts};
+use sprag_gate::loop_shape::{Composed, DOCUMENT, composed_prompts, transitions};
 use sprag_gate::sources::workspace_root;
 
 /// The prompts that MAY name the milestone, and the reason each is allowed to.
@@ -42,7 +42,11 @@ use sprag_gate::sources::workspace_root;
 /// ⚠ A THIRD ENTRY IS A DECISION SOMEBODY HAS TO MAKE, which is why this is a list of two rather
 /// than a rule about names. Adding one here without the reason beside it is how the default comes
 /// back.
-const MAY_NAME_IT: [&str; 2] = ["start_prompt", "reflect_prompt"];
+/// * `changed_prompt` HANDS OVER, and naming the milestone is the whole of what it is for: it is
+///   sent to a live session precisely because that one thing moved. Register item 800's second
+///   half — see [`EVERY_DOOR_SAYS_WHICH`], which is what keeps it from being sent to a session that
+///   was not there for the change.
+const MAY_NAME_IT: [&str; 3] = ["start_prompt", "reflect_prompt", "changed_prompt"];
 
 /// The prompts that MUST NOT, and what each is for instead.
 ///
@@ -68,9 +72,9 @@ const MUST_NOT: [&str; 5] = [
 /// and the walk finds nothing, and "no forbidden prompt names the milestone" is trivially true of
 /// no prompts at all — the vacuous green register item 799 measured.
 ///
-/// **7, measured 2026-09-01**: `end_prompt`, `start_prompt`, `turn_prompt`, `reflect_prompt`,
-/// `dispute_prompt`, `unverified_prompt`, `stop_prompt`.
-const COMPOSED_PROMPTS: usize = 7;
+/// **8, measured 2026-09-01**: `end_prompt`, `start_prompt`, `turn_prompt`, `changed_prompt`,
+/// `reflect_prompt`, `dispute_prompt`, `unverified_prompt`, `stop_prompt`.
+const COMPOSED_PROMPTS: usize = 8;
 
 /// The datamodel id this gate is about.
 ///
@@ -124,12 +128,29 @@ fn reads_the_milestone(expr: &str) -> bool {
     false
 }
 
+/// The state whose prompt depends on WHO IS READING, and the datamodel word its edges must write.
+///
+/// # ⛔⛔⛔⛔⛔ Why the rule is on the EDGE and not on the state
+///
+/// `priming` sends the greeting or the handover, and SCXML gives a state no way to ask how it was
+/// entered. Three kinds of arrival reach it and only two are a new session, so the edge is the only
+/// party that knows. An edge that writes nothing gets the greeting — the safe direction, and the
+/// wrong answer for a live session, which is register item 800 exactly.
+const GREETING_STATE: &str = "priming";
+/// The word an edge into [`GREETING_STATE`] must write. ⚠ Matched as the assign's LOCATION, so a
+/// comment that merely mentions it is not an edge that sets it.
+const EVERY_DOOR_SAYS_WHICH: &str = "location=\"entered_by\"";
+
+/// The document's text, read from the tree this run is standing in.
+fn document_text() -> String {
+    let path = workspace_root().join(DOCUMENT);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|why| panic!("{DOCUMENT} is this workspace's loop: {why}"))
+}
+
 /// The document, read from the tree this run is standing in.
 fn document() -> Vec<Composed> {
-    let path = workspace_root().join(DOCUMENT);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|why| panic!("{DOCUMENT} is this workspace's loop: {why}"));
-    composed_prompts(&text)
+    composed_prompts(&document_text())
 }
 
 #[test]
@@ -229,5 +250,53 @@ fn the_needle_reads_an_identifier_and_not_the_word_in_a_sentence() {
     assert!(
         !reads_the_milestone("'it said: \\'milestone\\' plainly'"),
         "and the same escape the other way round — the word is still inside the prose",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERY DOOR INTO THE GREETING STATE SAYS WHICH DOOR IT IS** — register item 800's
+/// second half, and the escape hatch the rule above cannot see.
+///
+/// # ⚠⚠⚠⚠ Why this is a separate arm and not another clause
+///
+/// The rule above asks WHICH PROMPTS may name the milestone. `changed_prompt` may — that is what it
+/// is for. So the whole weight of item 800's second half rests on it reaching only the reader it
+/// was written for, and that is decided one level down: by whether the edge that entered `priming`
+/// wrote which kind of arrival it was. An edge that writes nothing gets the greeting, silently, and
+/// this workspace's rule is that an unclassified case is RED rather than a pass.
+///
+/// ⚠ A SELF-CLOSING EDGE IS THE SHAPE THIS CATCHES. Both doors that were wrong before this item
+/// were `<transition event="…" target="priming"/>` with no body at all — the form somebody writes
+/// without thinking about it, which is the point.
+#[test]
+fn every_transition_into_the_greeting_state_says_which_kind_of_arrival_it_is() {
+    let edges = transitions(&document_text());
+    let doors: Vec<&sprag_gate::loop_shape::Transition> = edges
+        .iter()
+        .filter(|edge| edge.target == GREETING_STATE)
+        .collect();
+
+    // ⚠⚠ THE POSITIVE CONTROL: a walk that found no doors would hold this claim of nothing, which
+    // is the green a renamed state or a broken reader would produce.
+    assert!(
+        doors.len() >= 3,
+        "⚠⚠ THE SCAN IS BLIND: `{GREETING_STATE}` is reached by a `start`, by a review that kept \
+         the session and by the `session.ready` of a replacement, so at least three edges must be \
+         found. Found {}: {doors:?}",
+        doors.len(),
+    );
+
+    let silent: Vec<&sprag_gate::loop_shape::Transition> = doors
+        .iter()
+        .copied()
+        .filter(|door| !door.body.contains(EVERY_DOOR_SAYS_WHICH))
+        .collect();
+    assert!(
+        silent.is_empty(),
+        "⛔⛔⛔ ITEM 800: {} edge(s) into `{GREETING_STATE}` do not say which kind of arrival they \
+         are, so the session they bring gets the GREETING by default — the north star, the working \
+         rules and the reference, retyped at an agent that may already be holding all of it. Write \
+         `{EVERY_DOOR_SAYS_WHICH}` on each: `'start'` and `'restart'` open a session that holds \
+         nothing, `'review'` is a live one that has only just moved. Silent: {silent:?}",
+        silent.len(),
     );
 }

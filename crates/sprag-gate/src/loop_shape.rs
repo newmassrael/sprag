@@ -406,6 +406,60 @@ pub fn composed_prompts(scxml: &str) -> Vec<Composed> {
     found
 }
 
+/// One `<transition>` the document declares, with whatever executable content it carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transition {
+    /// The `target` state, or an empty string for a targetless (internal) transition.
+    pub target: String,
+    /// What the edge DOES, as written — empty for a self-closing `<transition …/>`.
+    ///
+    /// ⚠ Empty is the interesting value, not a missing one: an edge that does nothing is exactly
+    /// the edge that forgot to say something a gate requires of it.
+    pub body: String,
+}
+
+/// Every transition in the document, in document order — register item 800.
+///
+/// ⚠⚠ A SELF-CLOSING EDGE IS RETURNED WITH AN EMPTY BODY rather than skipped. A walk that only
+/// found the edges with bodies would be blind to precisely the ones a rule about *what every edge
+/// must assign* exists to catch.
+///
+/// # Panics
+///
+/// When a `<transition` tag never closes, or when one that is not self-closing has no
+/// `</transition>` after it. That is the reader having lost the document.
+#[must_use]
+pub fn transitions(scxml: &str) -> Vec<Transition> {
+    let text = uncommented(scxml);
+    let mut found = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("<transition") {
+        let after = &rest[at + "<transition".len()..];
+        let end = tag_end(after)
+            .unwrap_or_else(|| panic!("a `<transition` at byte {at} of the document never closes"));
+        let tag = &after[..end];
+        let target = attribute(after, "target").unwrap_or_default();
+        if tag.trim_end().ends_with('/') {
+            rest = &after[end..];
+            found.push(Transition {
+                target,
+                body: String::new(),
+            });
+            continue;
+        }
+        let inside = &after[end + 1..];
+        let close = inside
+            .find("</transition>")
+            .unwrap_or_else(|| panic!("a `<transition target=\"{target}\"> never closes"));
+        found.push(Transition {
+            target,
+            body: inside[..close].to_owned(),
+        });
+        rest = &inside[close..];
+    }
+    found
+}
+
 /// Where an opening tag ends, counting only a `>` that is OUTSIDE an attribute value.
 ///
 /// ⚠⚠ XML lets an attribute value hold a bare `>`, and this document's own expressions compare
@@ -885,6 +939,32 @@ mod tests {
                 && composed.iter().any(|one| one.prompt == "turn_prompt"),
             "the two prompts item 800 is about must both be found, or the reader is pointed \
              somewhere else: {composed:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN EDGE THAT DOES NOTHING IS RETURNED, NOT SKIPPED** — register item 800.
+    ///
+    /// The rule that gate holds is *every transition into `priming` says which door it is*, and the
+    /// edge that breaks it is by construction the one with no executable content at all. A reader
+    /// that only found edges with bodies would be blind to exactly the population it is walked for
+    /// — the vacuous green register item 799 measured, in a new place.
+    #[test]
+    fn the_transition_reader_returns_the_edge_that_does_nothing() {
+        let read = transitions(
+            "<transition event=\"a\" target=\"priming\"/>\
+             <transition event=\"b\" target=\"priming\">\
+             <assign location=\"entered_by\" expr=\"'review'\"/>\
+             </transition>\
+             <!-- <transition event=\"c\" target=\"priming\"/> -->\
+             <transition event=\"d\"/>",
+        );
+        assert_eq!(
+            read.iter()
+                .map(|edge| (edge.target.as_str(), edge.body.contains("entered_by")))
+                .collect::<Vec<_>>(),
+            [("priming", false), ("priming", true), ("", false)],
+            "a self-closing edge is an edge with an EMPTY body, a commented one is not an edge at \
+             all, and a targetless one keeps its place: {read:?}",
         );
     }
 }

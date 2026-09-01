@@ -351,6 +351,21 @@ pub struct Authored {
     /// and which class a run will meet is not knowable in advance. What is shipped is the opening,
     /// which is true of every silence this document can deliver.
     pub unverified: String,
+    /// **WHAT A LIVE SESSION IS TOLD WHEN ITS MILESTONE MOVES** — `priming`'s second sentence, and
+    /// register item 800's remaining half.
+    ///
+    /// # ⚠⚠⚠ Why a caller can read it separately from [`start`](Self::start)
+    ///
+    /// `priming` sends one of two things and the difference is WHO IS READING. A session that has
+    /// just been opened holds nothing, so it gets the greeting; a session that has been working for
+    /// twenty turns and has just adopted a new checkpoint holds all of it but that, so it gets what
+    /// changed. A preview that showed only the greeting would tell a caller their agent is asked
+    /// the north star and the working rules on every reflection, which stopped being true.
+    ///
+    /// ⚠⚠ **BEFORE A REFLECTION MOVES ANYTHING THIS IS COMPOSED FROM THE CALLER'S OWN MILESTONE**,
+    /// which is the honest preview and not a placeholder: it is the sentence the run really would
+    /// send if its first reflection kept the checkpoint it was given.
+    pub changed: String,
     /// What the agent says when it has reached the milestone.
     pub done_marker: String,
 }
@@ -397,6 +412,9 @@ impl Authored {
             // ⚠ READABLE FROM THE MOMENT THE ENGINE IS BUILT, `dispute`'s reason exactly: the
             // `<datamodel>` seeds it with the opening, which is the part no silence changes.
             unverified: text(Owed::Unverified.variable())?,
+            // ⚠ NOT readable until `priming` has run, exactly like `start` and `turn`: it is
+            // composed on that state's entry out of the milestone the run is holding.
+            changed: text(Owed::Changed.variable())?,
             done_marker: text(DONE_MARKER)?,
         })
     }
@@ -1624,6 +1642,23 @@ pub(crate) enum Owed {
     /// is: `unverified`'s entry composes `turn_prompt` in, so what arrives is the ordinary turn,
     /// opened by the fact that nothing outside the session verified the claim.
     Unverified,
+    /// ⛔⛔⛔⛔⛔ The `changed_prompt` — **what a LIVE session is told when its milestone moves**,
+    /// owed by the two `reviewing` edges that keep the session. Register item 800's second half.
+    ///
+    /// # ⚠⚠⚠ It is not a second greeting, which is the whole of why it exists
+    ///
+    /// `priming` is reached three ways and only two of them are a new session. The third is the
+    /// same agent, still holding the north star, the working rules and everything else it was
+    /// greeted with, and one thing about it has changed. Sending the greeting there retyped all of
+    /// it on every reflection — on a loop that reflects every turn, on every turn — which is what
+    /// the owner asked about: *"why is it normal to keep typing the same prompt that means
+    /// nothing?"*
+    ///
+    /// ⚠⚠ **A HANDOVER, NOT A TURN.** [`Dispute`](Self::Dispute) and [`Unverified`](Self::Unverified)
+    /// compose `turn_prompt` IN because what they add is a reason to go on working. This replaces
+    /// the greeting rather than opening it, because what it adds — the checkpoint moved — is the
+    /// only thing the reader does not already hold.
+    Changed,
 }
 
 impl Owed {
@@ -1641,7 +1676,7 @@ impl Owed {
     /// ⚠⚠ **IT IS THE DOOR'S OWN WALK AND NOT A LIST KEPT FOR TESTS**: [`Authored::read`] iterates
     /// it before it fills a single field, so what the door checks is this array rather than
     /// whichever variants a struct literal happens to mention.
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Start,
         Self::Turn,
         Self::End,
@@ -1649,6 +1684,7 @@ impl Owed {
         Self::Reflect,
         Self::Dispute,
         Self::Unverified,
+        Self::Changed,
     ];
 
     /// The datamodel variable this prompt is read out of.
@@ -1687,6 +1723,7 @@ impl Owed {
             Self::Reflect => "reflect_prompt",
             Self::Dispute => DISPUTE_PROMPT,
             Self::Unverified => UNVERIFIED_PROMPT,
+            Self::Changed => "changed_prompt",
         }
     }
 
@@ -21006,6 +21043,31 @@ mod tests {
             "⚠⚠⚠ AND IT MUST NOT STILL CARRY THE OLD ONE. {carried:?} names both checkpoints, so \
              a fix that APPENDS the new milestone rather than composing from the current parts \
              would pass the assertion above while handing the agent two goals.",
+        );
+
+        // ── ⛔⛔⛔⛔⛔ AND IT IS A HANDOVER, NOT A SECOND GREETING — register item 800 ──────────
+        //
+        // The two assertions above held before this item and would hold again if `priming` went
+        // back to greeting a live session: the greeting names the new milestone too. What tells
+        // them apart is that this session is not new — it is the same agent, still holding the
+        // north star and the working rules it was greeted with once, and the ONLY thing that
+        // changed is where it is going. On a loop that reflects every turn, greeting it again is
+        // the whole of what the owner asked about.
+        assert!(
+            carried.contains("The milestone has moved"),
+            "⛔⛔⛔⛔⛔ ITEM 800: this run KEPT its session and `priming` greeted it as if it were \
+             new. What reached the pane is {carried:?} — the milestone is in it, which is why the \
+             assertions above pass either way, and the sentence that says what CHANGED is not.",
+        );
+        assert!(
+            !screen
+                .lines()
+                .rev()
+                .take_while(|line| !line.contains("The milestone has moved"))
+                .any(|line| line.contains("North star: ")),
+            "⛔⛔⛔ ITEM 800: the handover was followed by the north star, so the greeting is still \
+             being typed at a session that holds it. Screen tail: {:?}",
+            screen.lines().rev().take(12).collect::<Vec<_>>(),
         );
     }
 
