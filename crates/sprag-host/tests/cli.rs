@@ -1868,8 +1868,14 @@ fn wait_for(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
 ///
 /// # ⛔⛔⛔⛔⛔ What the sentence it replaces could not say
 ///
-/// Thirty-five gates in this file wait ten seconds for a freshly spawned daemon and then assert
+/// Gates in this file wait for a freshly spawned daemon and then assert
 /// `"the … daemon never started serving"` — and that is the whole of what a failure left behind.
+///
+/// ⚠⚠ THE COUNT AND THE BUDGET USED TO BE WRITTEN HERE — *"thirty-five gates … wait ten seconds"*
+/// — and one round later both were false: **37** sites, and the budgets are 10 s at forty call
+/// sites, 20 s at five, 15 s at one and 5 s at two. A number in prose is one nobody re-reads, so it
+/// is a predicate now: `sprag-gate`'s `every_wait_for_a_daemon_says_why_it_gave_up` counts the
+/// sites as an EQUALITY and refuses one that lacks this diagnosis (register item 812).
 /// Measured 2026-09-01 on `514924b`'s macOS job: the successor gate failed exactly that way, on a
 /// platform this suite cannot be run on locally, and the log carried no fact to reason from. The
 /// two linux jobs were green and the same test had passed on the previous three macOS runs that
