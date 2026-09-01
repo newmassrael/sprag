@@ -558,16 +558,32 @@ fn pool_sentence(pool: crate::procfs::PtyPool) -> String {
 /// | what is true | what it means |
 /// | --- | --- |
 /// | `opened >= ceiling` | this process has taken the whole namespace at least once over, so on a host that does not return a closed pseudoterminal promptly **we are sufficient on our own** |
-/// | `opened < ceiling` | our churn cannot have used it up by itself, whatever the reuse policy — somebody else is in it |
+/// | `opened < ceiling` | **settles nothing** — said as a comparison, with both reasons it settles nothing |
 /// | ceiling unknown | said outright, because *not published* is not *not exceeded* |
 ///
 /// ⚠⚠ IT STILL PICKS NO SIDE ABOUT THE HOST'S REUSE POLICY, which is the thing this code cannot
-/// see. What it now says is the CONDITIONAL — *if this host does not recycle, this was enough* —
-/// which is a fact about our own demand and is checkable here.
+/// see. What it says is the CONDITIONAL — *if this host does not recycle, this was enough* — which
+/// is a fact about our own demand and is checkable here.
 ///
-/// ⚠ The unknown arm is a THIRD sentence rather than a fall-through to the second, this
-/// workspace's rule that an unclassified case is stated and never glossed: a reader told *our churn
-/// cannot have used it up* about a ceiling nobody published has been told something nobody knows.
+/// # ⛔⛔⛔⛔⛔ AND THE UNDER-THE-CEILING ARM MAY NOT CONCLUDE, WHICH IS THIS FAMILY'S WHOLE RULE
+///
+/// The first version of this arm read *"our own churn cannot have used the namespace up whatever
+/// its reuse policy: something else was holding it"* — and that is
+/// [`crate::procfs::PtyPool`]'s own recorded defect wearing the opposite sign. That doc says it in
+/// as many words: an `ENXIO` on macOS was filed as *"the runner's pty pool was exhausted"* and
+/// **that was an inference, not a reading**. Concluding *somebody else held it* from
+/// `opened < kern.tty.ptmx_max` is the same move: the published ceiling has never been shown to be
+/// the limit that produced the refusal.
+///
+/// ⚠⚠⚠⚠ **AND IT WAS WRONG ON THE ONE TRIPLE THIS ITEM WAS FILED OVER.** `6633099`'s macOS job
+/// refused at `holding 30 / opened 422 / at most 511`, and 422 < 511 — so that sentence would have
+/// printed *something else was holding it* over the exact failure whose cause the same round
+/// measured as this suite's own churn (**847 opens in one process**, of which 422 is barely half:
+/// the count is a RUNNING TOTAL and the process had not finished). A reading that denies the
+/// finding at the data point that produced it is worse than no reading.
+///
+/// ⚠ The unknown arm is a THIRD sentence rather than a fall-through, this workspace's rule that an
+/// unclassified case is stated and never glossed.
 #[must_use]
 fn ours_sentence(live: u64, opened: u64, ceiling: Option<u64>) -> String {
     let reading = match ceiling {
@@ -577,8 +593,10 @@ fn ours_sentence(live: u64, opened: u64, ceiling: Option<u64>) -> String {
              and no other process need be involved"
         ),
         Some(ceiling) => format!(
-            " — and {opened} is under this host's {ceiling}, so our own churn cannot have used the \
-             namespace up whatever its reuse policy: something else was holding it"
+            " — and {opened} is under the {ceiling} this host PUBLISHES, which settles nothing \
+             either way: that number is a ceiling the kernel advertises rather than the limit this \
+             refusal came from, and the count beside it is a running total of a process that has \
+             not finished"
         ),
         None => " — and this host does not publish how many it allows, so whether that history \
                  could have used its namespace up cannot be said here"
@@ -1381,19 +1399,31 @@ mod tests {
              does not recycle, our own history is sufficient and no other process need be \
              involved. Got: {over:?}",
         );
+        // ⛔⛔⛔⛔⛔ **AND THE UNDER-THE-CEILING ARM MAY NOT CONCLUDE** — this is the exact triple
+        // `6633099`'s macOS job refused at, and the first version of this arm printed *something
+        // else was holding it* over it: the opposite of what the same round measured (847 opens in
+        // one process, of which this 422 is barely half). `procfs::PtyPool`'s own doc records that
+        // family of defect — an `ENXIO` filed as *the pool was exhausted*, an inference and not a
+        // reading — and inferring the other way from a PUBLISHED ceiling is the same move.
         let under = ours_sentence(30, 422, Some(511));
         assert!(
-            under.contains("something else was holding it")
-                && !under.contains("THIS PROCESS ALONE"),
-            "⚠⚠⚠ THE CONTROL: under the ceiling the opposite reading is the true one, and a \
-             sentence that shouted either way whatever the numbers said would be a constant \
-             wearing a measurement's clothes. Got: {under:?}",
+            under.contains("settles nothing"),
+            "⛔⛔⛔⛔⛔ ITEM 814: this is the refusal this item was filed over, and the sentence \
+             draws a conclusion from `422 < 511`. It may not: that ceiling is what the kernel \
+             ADVERTISES rather than the limit that refused, and 422 is a running total of a \
+             process that went on to open 847. Got: {under:?}",
+        );
+        assert!(
+            !under.contains("THIS PROCESS ALONE") && !under.contains("something else was holding"),
+            "⚠⚠⚠ AND IT MAY NOT CONCLUDE IN EITHER DIRECTION. A reader handed a verdict here goes \
+             looking for another process, or stops looking at ours, on arithmetic over a number \
+             nobody has shown to be the binding one. Got: {under:?}",
         );
         let unknown = ours_sentence(30, 847, None);
         assert!(
             unknown.contains("does not publish how many it allows")
                 && !unknown.contains("THIS PROCESS ALONE")
-                && !unknown.contains("something else was holding it"),
+                && !unknown.contains("settles nothing"),
             "⛔⛔ ITEM 814 / rule 6: a host that publishes no ceiling is a THIRD state, and folding \
              it into either answer tells a reader something nobody knows. Got: {unknown:?}",
         );
@@ -1406,10 +1436,10 @@ mod tests {
         let one_short = ours_sentence(30, 510, Some(511));
         assert!(
             exactly.contains("THIS PROCESS ALONE was enough")
-                && one_short.contains("something else was holding it"),
+                && one_short.contains("settles nothing"),
             "⚠⚠ TAKING EXACTLY THE WHOLE NAMESPACE is the first count that is enough on its own — \
-             a boundary one place out reports the run that used every name as though it had used \
-             none of them. exactly={exactly:?} one_short={one_short:?}",
+             a boundary one place out reports the run that used every name as though the question \
+             were still open. exactly={exactly:?} one_short={one_short:?}",
         );
 
         // ── ⛔⛔⛔ AND THE LEDGER ITSELF, which the sentence is only worth what it is ──────────
