@@ -889,17 +889,26 @@ sprag_vt::wire_words!(RunStatus: wire_str);
 ///
 /// ⚠⚠ **EACH ENTRY IS THE TYPE'S OWN LIST AND NEVER A RETYPED ONE.** A hand-written array here
 /// would be the fourth copy of the thing this exists to retire, and the one a new arm is left out
-/// of. `sprag_gate`'s `every_closed_wire_vocabulary_is_published_or_classified` walks this
-/// workspace for the rest and refuses a set that is neither here nor classified out with a reason.
+/// of. [`crate::wire`]'s `every_closed_wire_vocabulary_is_published_or_classified` reads the
+/// value-space pin's own prefixes and refuses a vocabulary that is neither here nor classified out
+/// with a reason.
+///
+/// ⚠⚠⚠ **THAT SENTENCE NAMED A GATE THAT DID NOT EXIST** — register item 816. It said `sprag_gate`
+/// held it, and a comment inside the table below named a second one holding the two sets together;
+/// measured 2026-09-02, both names appeared exactly once in this workspace — in those two comments.
+/// The gate is real now and lives beside the pin it reads, because `sprag-gate` takes no
+/// dependencies by charter and so cannot see a type's `WIRE_WORDS` at all. Rule 10, paid: a reason
+/// in prose is a reason nobody measures.
 ///
 /// ⚠ The SENTENCE beside each is this table's own and is not a copy of anything: what a reader
 /// needs is which question the word answers, and no type carries that.
 pub const RUN_VOCABULARIES: &[(&str, &str, &[&str])] = &[
     // ⚠⚠ THE NAMES ARE THE ONES `wire.rs`'s VALUE-SPACE PIN ALREADY SPELLS (`run_status:running`,
-    // `outcome:converged`, …), not prettier ones. `sprag_gate`'s
-    // `every_vocabulary_a_peer_decodes_can_be_asked_of_this_build` holds the two sets together by
-    // NAME, and a mapping between two spellings of one vocabulary is exactly the copy this table
-    // exists to retire.
+    // `outcome:converged`, …), not prettier ones — and that is now ENFORCED rather than asked for:
+    // `every_closed_wire_vocabulary_is_published_or_classified` compares these names against the
+    // pin's prefixes in both directions, so a mapping between two spellings of one vocabulary
+    // cannot appear without one side going red. (This comment used to name a second gate,
+    // `every_vocabulary_a_peer_decodes_can_be_asked_of_this_build`, which never existed — item 816.)
     (
         "run_status",
         "whether a run is still going, and how it left if not",

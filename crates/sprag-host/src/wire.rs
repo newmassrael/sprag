@@ -9365,367 +9365,518 @@ mod tests {
     /// routes register item 545 named and the only one `Ceiling`'s own doc leaves open. Its words
     /// had been outside every pin since the type existed, and the pin had twice written that fact
     /// into itself in a comment rather than closing it.
+    /// ⚠⚠ **AT MODULE SCOPE, so a SIBLING GATE can read it** — register item 816. It lived inside
+    /// [`an_answers_value_space_cannot_widen_under_the_protocol_number`] and was therefore
+    /// unreadable from any other test, which is why *what this pin walks that `sprag words` does
+    /// NOT publish* had nothing checking it. A pure move: the pin below still stamps it, so a typo
+    /// in the relocation is caught by the same assertion that always guarded these words.
+    const PINNED_VALUES: (u32, &[&str]) = (
+        // R344: the number moved for a MEANING under an unchanged name (`PaneMatch::line`),
+        // not for a widened value space — every word below is the word it was at 18.
+        // R353: and again, for a published FORM's SHAPE (`action_grammar`'s `{form, args}`).
+        // Neither of the two enums a peer decodes whole gained or lost a word, which is exactly
+        // what this re-stamp says.
+        // ⚠⚠ R357 IS THE FIRST RE-STAMP THIS PIN EARNED ITSELF: `run_status` joined the list
+        // (a fourth word, `interrupted`) AND joined this pin at all. Its four words lived as
+        // string literals inside `run_to_json` until then, so the vocabulary had no `ALL` to
+        // walk and this gate — the one written for exactly this break — was blind to it.
+        // R359b: re-stamped for a REQUEST value that changed shape (`ready_when`); neither
+        // enum a peer decodes whole moved, which is what this says.
+        // R364: re-stamped for an ADDED REQUEST ARGUMENT (`shows_prompt`, which buys a
+        // guarantee whose absence is indistinguishable from it holding). No ANSWER word moved
+        // — what an unconfirmed delivery says reaches a caller as a step's NOTE, which is free
+        // text by design and so has no value space to widen.
+        // ⚠⚠ R365 IS THE SECOND RE-STAMP THIS PIN EARNED ITSELF, and it is R357's shape
+        // exactly: `signal_key` and `unraised` JOIN the list at all, because a pane input
+        // action's answer now carries closed vocabularies where it carried nothing. They are
+        // the deliberate opposite of R364's free-text note — *which* key was swallowed and
+        // *why* are two things a caller BRANCHES on (retry, reconfigure, or reach for
+        // `stop_job`), and a sentence cannot be branched on.
+        // R365 again: re-stamped for an ADDED REQUEST ARGUMENT (`done_when`). No ANSWER word
+        // moved — a completion contract is something a caller SAYS, not something it is told.
+        // ⚠⚠⚠ R365 A THIRD TIME, AND THIS PIN HAD A BLIND SPOT IT DID NOT SEE: a run's
+        // OUTCOME word (`converged` | `exhausted` | `failed` | `cancelled`) is an answer a peer
+        // decodes whole, and it lived outside this list exactly as `run_status` did before
+        // R357. `blocked` is the fifth, and it JOINS the pin in the same edit that adds it.
+        // ⚠⚠⚠ R366 AND THE SAME BLIND SPOT ONE LEVEL DOWN: a STEP's `verdict` is the other
+        // closed set a run's answer carries whole, and it was outside this list for the same
+        // reason the outcome word was — four literals inside `Verdict::wire_str` with nothing
+        // walking them. `answered` is the fifth verdict and it JOINS the pin in the edit that
+        // adds it, exactly as `blocked` did one round ago. So does `refusal`, which is new in
+        // both senses: a fresh vocabulary on a fresh key (`asking.why`), published so a caller
+        // can BRANCH on why a run stopped rather than read a sentence — R365's argument for
+        // `signal_key` and `unraised`, and the reason those are not free-text notes either.
+        // R367: re-stamped for an ADDED ANSWER KEY (`asking` on a pane's `agent` object) whose
+        // ABSENCE a reader takes as a claim. NEITHER enum a peer decodes whole moved, which is
+        // what this re-stamp says: the question's own members are lines, numbers, labels and a
+        // flag — a caller reads them, it does not decode a closed set out of them. The one word
+        // near it that IS closed (`state`) is unchanged; `blocked` has been there since 26.
+        // ⚠⚠ R370 IS THE FOURTH RE-STAMP THIS PIN EARNED ITSELF: `refusal` gained a SEVENTH
+        // word (`contradicted`), and it is the one failure a LIST of consents can have that a
+        // single clause could not — two clauses about one question naming different options.
+        // A caller branches on it exactly as on the other six (narrow one of your own rules,
+        // rather than re-read the dialog), which is why it is a word and not a sentence.
+        // ⚠⚠ R371 IS THE FIFTH, and the same shape one contract further out: `refusal` gained
+        // an EIGHTH word (`unattended`), the failure that only a run which may WAIT can have —
+        // a person was promised, the patience ran out, and the dialog is still up. It is the
+        // one arm in this vocabulary about a HUMAN rather than about a clause, and its remedy
+        // differs from all seven others (be there, or wait longer), which is exactly the test
+        // for a word rather than a sentence. ⚠ The clause-level reason it would otherwise have
+        // reported is NOT lost and does NOT widen anything: it rides in the free-text detail,
+        // R364's shape.
+        // ⚠⚠⚠ R372 IS THE SIXTH, AND THE FIRST TO MOVE **TWO** OF THESE VOCABULARIES AT ONCE:
+        // a run's OUTCOME gains a sixth word and a step's VERDICT a fifth, both `taken_over`.
+        // They move together because they are one fact reported at two altitudes — the step
+        // that stopped, and the run that ended because of it — which is the shape `blocked`
+        // has had since R365/R366.
+        // ⚠⚠ WHAT IS NEW IS NOT A WIDER SPACE BUT A FACT THE PRODUCT COULD NOT SEE: a PERSON
+        // typing into a pane a run is driving. `send_key` is one encoder shared by a display
+        // client's keyboard and this wire — deliberately, so the two encode identically — and
+        // nothing recorded WHICH had written, so a run typed over its supervisor and reported
+        // `exhausted`. The hand is recorded at the write now (`sprag_terminal::Hand`).
+        // ⚠ It is a WORD and not a sentence by this pin's own test: the remedy differs from
+        // every other outcome's. `blocked` says answer the question, `failed` says fix
+        // something, `exhausted` says raise a budget — and this one says do NOTHING, because
+        // the pane already belongs to somebody who is using it.
+        // ⚠⚠⚠ R372: RE-STAMPED WITH NOT ONE ARM MOVED, AND THAT IS THE ROUND'S FINDING. Eleven
+        // parametric families turned a `null` ANSWER into a `-32602 QueryTypeMismatch` REFUSAL,
+        // which is as wire-visible a change as this workspace has shipped — and this pin cannot
+        // see it, because `QueryTypeMismatch` is PINION's word rather than one of sprag's own
+        // closed vocabularies. **A value that becomes a refusal is a fourth bump cause, and no
+        // pin here covers it.** Recorded rather than papered over: the honest fix would be a
+        // pin over what each declared address ANSWERS WITH (a value / which fault), and this
+        // round did not build one.
+        // ⚠ R373: re-stamped with not one ARM moved, and this time that is the DESIGN rather
+        // than a gap. A pane coming back from a person is `continue` with a journal note, on
+        // R369's ruling about the sixth outcome word: a run that spelt a human's act with a
+        // word of its own would let a reader count it among the decisions the RUN took.
+        // `taken_over` still means what it meant — the person still has it.
+        // ⚠ R375: re-stamped with not one ARM moved, and again by design. A run that waits for
+        // its peer's turn to END rather than for a 500 ms clock reaches the SAME endings by a
+        // better route: it converges on the sentinel it was always looking for, and it
+        // exhausts, blocks and is taken over exactly as before. Nothing a peer decodes whole
+        // learnt a word, because nothing about the ANSWER changed — only how long the run was
+        // willing to wait before speaking again.
+        // ⚠⚠⚠ R384: THREE WORDS JOIN AT ONCE — a SEVENTH verdict (`screened`) and a NINTH and
+        // TENTH refusal (`no_rule`, `not_dismissed`) — and none of them costs the number, on
+        // R381's specific fact rather than on a general rule.
+        //
+        // All three are produced by ONE state of ONE plugin, `ai_loop.scxml`'s `screening`, and
+        // that plugin is selected by a `plugin` value no client older than this build knows. An
+        // old client never sends `ai_loop`, so it never receives a journal or an `asking.why`
+        // that can carry any of them; a new client that sends `ai_loop` to an old daemon meets
+        // an ordinary vocabulary refusal at the door, because the `plugins` slot publishes the
+        // word and it can ask first. **Neither half of a skewed pair can misread anything.**
+        //
+        // ⚠⚠ AND `screen_rules` IS AN ADDED ARGUMENT ON THAT SAME FORM, which is normally this
+        // wire's second-commonest bump cause because the surface SWALLOWS an undeclared key and
+        // the run succeeds. It is free here for the identical reason and NOT for a general one.
+        // ⚠⚠⚠ THE RESIDUE, WHICH IS THE SAME ONE R382 LEFT AND IS NOW LARGER: the day `ai_loop`
+        // ships, the next argument added to it — and the next word `screening` learns — earns
+        // the number by the ordinary rule.
+        //
+        // ⚠ `screen_permissions` was NEVER on this wire, so its removal from the loop document
+        // moves nothing here. It is recorded because a reader looking for it should find out
+        // that a measurement removed the need for it rather than that somebody forgot it.
+        // ⚠⚠⚠ R394 IS THE SEVENTH RE-STAMP THIS PIN EARNED ITSELF, and the first since R384
+        // whose word DOES cost the number: an ELEVENTH refusal, `unwitnessed`. R384's escape
+        // does not reach it — `no_rule` and `not_dismissed` are free because only `ai_loop`
+        // produces them, and this word is produced by the ANSWERING act, which every injecting
+        // form has carried since version 27. An old client's run that meets its own
+        // `max_duration_ms` inside an answer's wait receives it today.
+        // ⚠⚠⚠⚠ THE EIGHTH RE-STAMP THIS PIN EARNED ITSELF, AND THE WORD COSTS THE NUMBER FOR
+        // R394's REASON RATHER THAN R384's: an EIGHTH verdict, `peer_gone`. R384's escape is
+        // *"only `ai_loop` produces it, and no old client can select that plugin"* — and this
+        // word is produced by `orchestrator` too, which every version of this wire can send.
+        // That plugin is the one the 43-hour wedge's preserved stack showed, so the word is not
+        // merely reachable by an old client, it is the one an old client is likeliest to meet.
+        // ⚠ 37: re-stamped with every ANSWER vocabulary unchanged. `report_agent` gained two
+        // ARGUMENTS (`asked`, `transcript`) and still answers `{accepted, changed}` — what a
+        // caller may SAY grew, and what it is told did not.
+        // ⚠⚠⚠⚠ AND RE-STAMPED AGAIN AT 37 WITH A NINTH VERDICT IN THE LIST — `abandoned`
+        // (register item 534) — which is the FIRST time this pin has taken a new word without
+        // the number. It is R384's escape and not R394's: only `ai_loop` can produce it,
+        // because reading `RunContext::held` is what makes a hold a fact about a run and that
+        // driver is the workspace's only reader. ⚠⚠⚠ The escape's premise has a gate under it
+        // (`the_only_plugin_that_can_be_held_is_the_one_that_reads_a_hold`), so the day a second
+        // plugin honours a hold this word becomes `peer_gone`'s case and the number falls due —
+        // said by a red rather than by nobody.
+        // ⚠⚠ A SECOND ANSWER VALUE WIDENED AND THIS PIN COULD NOT SEE IT: `ceiling` gained
+        // `hold`. It rode R384's escape (no plugin but `ai_loop` reports it), and the widening
+        // was outside this pin because `Ceiling` publishes no `WIRE_WORDS`.
+        // ⚠⚠⚠⚠⚠ **REGISTER ITEM 545 CLOSED THAT, AND THE NOTE IS KEPT BECAUSE IT IS THE
+        // EVIDENCE.** The pin knew it was blind, wrote the blindness into itself HERE and again
+        // beside `verdict:exhausted`, and went on not walking the words for two more re-stamps.
+        // A residue recorded in a comment is one nothing schedules — item 543's whole lesson,
+        // and this is where it was spent. `ceiling` joins below on `Ceiling::ALL`.
+        // ⚠ 38: re-stamped with every ANSWER value space unchanged. Register item 567 WITHDREW
+        // an address and added a parametric one; what `recent_input_has.<needle>` answers is a
+        // bool, which is not an enum and has no arm to widen. The surface pin is the subject.
+        // ⚠ 39: re-stamped with every ANSWER value space unchanged. Register item 631 added a
+        // slot answering an INTEGER and a method answering `{pane, revision}`. Neither is an
+        // enum, so neither has an arm to widen; the surface pin is the subject again.
+        // ⚠⚠ 40: re-stamped with every ANSWER value space unchanged, and this one is worth a
+        // sentence because it LOOKS like a vocabulary. Register item 653's `hands` answers an
+        // object whose KEYS are `Hand`'s two published words — but those words were already
+        // published, as the WRITE argument `hand`, and this pin walks the vocabularies a
+        // caller may SAY. Nothing was added to that set; a set already in it is being read
+        // back under. ⚠ The day a third hand exists it moves HERE and at the write door
+        // together, because `Hand::WIRE_WORDS` is sized from `ALL`.
+        // ⚠ 41: re-stamped with every ANSWER value space unchanged. Register item 654's `reach`
+        // is a REQUEST word — the vocabulary pin is the subject — and `stop_job`'s answer keys
+        // (`stop`, `pgid`, `job`) are untouched. The `Unstopped` sentence a refusal carries is
+        // prose rather than an enum on this wire, and it did not gain an arm a daemon can send:
+        // `Unreachable` is what a CLIENT concludes when nothing answered it.
+        // ⚠ 42: re-stamped with every ANSWER value space unchanged. Register item 656's
+        // `raw_output` answers an object of two keys, and neither is a word from a set — one
+        // is BASE64 (an encoding, not a vocabulary: every byte string has a spelling) and the
+        // other is a bool. A caller decoding it whole cannot meet an arm it does not know.
+        // ⚠⚠ 42 AGAIN — and this note is here because the vocabulary that moved LOOKS like one
+        // of these and is not. Register item 669 gave `AgentState` a fourth word (`holding`),
+        // which a pane's `agent.state` carries OUTWARD, so a reader would expect this pin. It
+        // is deliberately absent: this pin holds the sets a peer decodes WHOLE, where an
+        // unknown arm fails the whole document, and `agent.state` is read as a STRING —
+        // `sprag_client::agent_phrase` passes a token it does not know through verbatim, on
+        // the stated grounds that the daemon may be newer than the client reading it. So a
+        // widening here costs an older reader a slightly odd phrase and nothing else.
+        // ⚠ The word is still pinned, on the OTHER side: a reporter SAYS it at `report_agent`,
+        // and `a_published_value_space_cannot_widen_under_the_protocol_number` went red for it.
+        // That is not luck — `AgentState::is_reported` is derived from `wire_str`, so every
+        // state with a wire spelling is one a reporter may name, and the request pin therefore
+        // sees every word this one would. A future state that could be PUBLISHED without being
+        // REPORTABLE would break that, and would owe an entry here.
+        // ⚠⚠⚠ 43 — REGISTER ITEM 680, AND THIS PIN IS THE ONE THAT SAW IT. A tenth `Verdict`
+        // word (`verdict:failed`) is what a run's journal carries when a pass returned an ERROR
+        // instead of a verdict. A reader decodes this set WHOLE, so an added arm breaks an
+        // older reader of the ANSWER — which is this pin's own rule, and the same one
+        // `verdict:peer_gone` earned a number for.
+        // ⚠ It is the first word here NO PLUGIN can produce: the driver composes it, which is
+        // why the request-side pins above stayed green while this one went red.
+        43,
+        &[
+            "check:pane-isolation",
+            "check:pane-admission",
+            "check:controller-delegation",
+            "check:competing-weight",
+            "check:cpu-stall",
+            "check:io-stall",
+            "check:memory-stall",
+            "check:swapping",
+            "check:build-saturation",
+            "check:ccache-on-path",
+            "check:ccache-sizing",
+            "check:fast-linker",
+            "unmeasured:nothing_enforced",
+            "unmeasured:not_placed",
+            "unmeasured:refused",
+            // ⚠ R357: the run status, and the fourth word is the one that cost the number.
+            "run_status:running",
+            "run_status:done",
+            "run_status:panicked",
+            "run_status:interrupted",
+            "unmeasured:gone",
+            // ⚠ R365: the two an injection's caveat is built from.
+            "signal_key:interrupt",
+            "signal_key:quit",
+            "signal_key:suspend",
+            "unraised:raw",
+            "unraised:unbound",
+            // ⚠⚠ R365: a RUN'S OUTCOME, which this pin could not see until now.
+            "outcome:converged",
+            "outcome:exhausted",
+            "outcome:failed",
+            "outcome:cancelled",
+            "outcome:blocked",
+            // ⚠⚠ R372: the sixth outcome — a person took the pane.
+            "outcome:taken_over",
+            // ⚠⚠ R366: a STEP's verdict, which this pin could not see until now — the fifth
+            // word is the one that cost the number.
+            "verdict:continue",
+            "verdict:converged",
+            "verdict:blocked",
+            "verdict:answered",
+            // ⚠⚠ R372: the fifth verdict — the step that stopped because a person took over.
+            "verdict:taken_over",
+            // ⚠⚠⚠ R381: THE SIXTH VERDICT — a plugin whose OWN document carries a budget saying
+            // that budget is spent. `ai_loop.scxml`'s `max_turns` counts the inner agent's
+            // turns and one of those is many steps of the loop driving it, so no guardrail can
+            // see it; without this word the run had to report `exhausted — iterations` about a
+            // ceiling it never met.
+            //
+            // ⚠⚠⚠ **AND IT DID NOT COST THE NUMBER, which is a judgement and not an
+            // oversight.** This pin's standing sentence says an added answer word breaks older
+            // readers and the protocol number must rise. It cannot here, and the reason is
+            // specific rather than general: this word is produced by exactly one plugin, and
+            // that plugin is selected by a `plugin` value no client older than this build
+            // knows. An old client never sends `ai_loop`, so it never receives a journal that
+            // can carry this word; a new client that sends `ai_loop` to an old daemon meets an
+            // ordinary vocabulary refusal at the door, because the `plugins` slot publishes
+            // the word and it can ask first. **Neither half of a skewed pair can misread
+            // anything**, which is the one escape the argument-shape pin beside this offers.
+            // ⚠ The same argument covers `ceiling: "turns"` — which this pin did not walk when
+            // that was written, and does walk now (register item 545, the `ceiling:` block at
+            // the end of this list). The escape is unchanged; what changed is that the pin can
+            // see the word it was reasoning about.
+            "verdict:exhausted",
+            // ⚠⚠⚠ R384: THE SEVENTH VERDICT — a step that REFUSED its peer's tool call on the
+            // loop author's standing instruction and told it what to do instead. Not folded
+            // into `answered` because the two are opposite decisions: one takes an option the
+            // peer offered, and a reader asking *what did my run let its agent DO* must not be
+            // handed a count that also includes what it stopped.
+            "verdict:screened",
+            // ⚠⚠⚠⚠ THE EIGHTH VERDICT — a step that would have typed into a pane whose program
+            // has EXITED, and did not. It is not `failed` at this altitude because nothing
+            // about the run is broken, not `blocked` because nobody asked anything, and not
+            // `exhausted` because no budget ran out; what its reader has to do is find out why
+            // the agent left. ⚠⚠⚠ It costs the number where the two words above it did not,
+            // and the difference is WHICH PLUGIN: `orchestrator` produces this one, and every
+            // version of this wire can select that form. It is also the plugin the 43-hour
+            // wedge's preserved stack showed, so an old client is not merely able to receive
+            // the word — it is the likeliest client to.
+            "verdict:peer_gone",
+            // ⚠⚠⚠⚠ THE NINTH VERDICT — somebody held the run and did not come back inside the
+            // loop document's `hold_within_ms` (register item 534). Not `blocked`, which says a
+            // question went unanswered and sends its reader hunting for a dialog there is none
+            // of; not `exhausted — iterations`, which is what a held run actually reported
+            // before this word and which told its reader to raise a step budget that would have
+            // bought it nothing.
+            //
+            // ⚠⚠⚠⚠⚠ **IT COSTS NO NUMBER, ON R384's ESCAPE RATHER THAN R394's, AND THE
+            // DIFFERENCE IS CHECKED RATHER THAN ASSERTED.** `peer_gone` above earned the bump
+            // because `orchestrator` produces it and every version of this wire can select that
+            // form. **No plugin but `ai_loop` can produce this one, and the reason is
+            // structural: a hold is only a fact about a run if something READS
+            // `RunContext::held`, and the outer loop's driver is the only reader in this
+            // workspace.** The other plugins do not ignore the order by policy — they have no
+            // code that can see it.
+            //
+            // ⚠⚠⚠ THAT PREMISE IS A CLAIM WITH A GATE UNDER IT, not a sentence in a comment:
+            // `the_only_plugin_that_can_be_held_is_the_one_that_reads_a_hold` in `sprag-gate`
+            // walks the sources for readers of `held()`. The day a second plugin honours a
+            // hold, this word becomes reachable through a form every version can send — which
+            // is exactly `peer_gone`'s situation — and the number falls due. Without the gate
+            // that would be a silent break, since nothing else here can see it.
+            //
+            // ⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN: R384's escape says *"a plugin no older
+            // client can select"*, and a client built between `ai_loop`'s arrival and today can
+            // select it while lacking this word. That is the same residue `screened` carries and
+            // it is accepted on the same terms — this repository has published no release and
+            // carries no tag, so the population of such clients is the daemons on this
+            // workstation, which are rebuilt from this tree.
+            "verdict:abandoned",
+            // ⚠⚠⚠ 43 (register item 680): the journal word for a pass that returned an ERROR
+            // instead of a verdict. It is the only one of the ten NO PLUGIN produces — the
+            // driver composes it — and it is here for the reason every other one is: a reader
+            // decodes this set WHOLE, so a word it has never heard of fails the document
+            // rather than the field.
+            "verdict:failed",
+            // ⚠⚠ R366: WHY a blocked run did not answer. A caller branches on these — fix a
+            // needle, write a consent, or fetch a person — so they are words and not prose.
+            "refusal:unreadable",
+            "refusal:not_taken",
+            "refusal:no_consent",
+            "refusal:other_question",
+            "refusal:not_offered",
+            "refusal:ambiguous",
+            // ⚠⚠ R370: the arm a LIST of consents made possible — the caller's own clauses
+            // disagreeing about the question on screen.
+            "refusal:contradicted",
+            // ⚠⚠⚠ R371: the arm `await_person_ms` made possible, and the ONLY one in this
+            // vocabulary about a HUMAN rather than about a clause — a run that waited for the
+            // person it was promised and gave up. Its remedy is its own (be there, or raise the
+            // patience), which is why it is a word and not the clause-level reason it carries
+            // underneath in free text.
+            "refusal:unattended",
+            // ⚠⚠⚠ R384: the two `screening` made possible, and each has a remedy no arm above
+            // it has. `no_rule` is about the loop DOCUMENT — no standing instruction quotes the
+            // dialog, so edit the rules — where every arm above is answered by changing the
+            // call or fetching somebody. `not_dismissed` is about the AGENT: a rule fired, the
+            // key that refuses a call went in, and the dialog stayed, so **nothing was typed**.
+            "refusal:no_rule",
+            "refusal:not_dismissed",
+            // ⚠⚠⚠ R394: the eleventh, and the only one in this vocabulary about THIS RUN rather
+            // than about the caller's clauses, the loop's rules, the peer or a person. The two
+            // arms that TYPE were being said about a run that never looked: `not_taken` and
+            // `not_dismissed` are earned by a bounded wait that watched the screen not move,
+            // and a run cancelled inside that wait earned neither. Measured — the fixture peer
+            // had committed the authorised option (`TOOK 2 VIA 10`) while the run reported
+            // `not_taken`. Its remedy is its own, which is this pin's test for a word rather
+            // than a sentence: read the pane, or give the run longer.
+            "refusal:unwitnessed",
+            // ⚠⚠⚠⚠⚠ REGISTER ITEM 545: **WHICH CEILING ENDED AN EXHAUSTED RUN**, and the
+            // fourth vocabulary to join this pin *at all* rather than to widen inside it —
+            // `run_status` (R357), a run's `outcome` (R365) and a step's `verdict` (R366) are
+            // the other three, and every one of them joined only after a word had already got
+            // through. This one joins with nothing having got through, which is the difference
+            // worth recording: the pin had written its own blindness into itself twice above.
+            //
+            // ⚠⚠⚠ **AND IT COSTS NO NUMBER, which is a judgement rather than an oversight.**
+            // The three joins above each moved `WIRE_PROTOCOL`, and each carried a NEW word in
+            // the same edit — `interrupted`, `blocked`, `answered`. Not one word below is new:
+            // all five have been on this wire since the run they describe could end, and the
+            // last of them (`hold`) arrived at 37 under the escape recorded above. **What
+            // widened is the pin's eyes, not the value space**, and a number moved for that
+            // would say something false to every reader who takes a bump as a break.
+            //
+            // ⚠⚠ The next ceiling is the one this buys: it cannot be added to the type without
+            // reddening here, so whoever adds it makes the escape argument out loud or pays
+            // the number. Measured by mutation, not asserted — see the item.
+            "ceiling:iterations",
+            "ceiling:cost",
+            "ceiling:duration",
+            "ceiling:turns",
+            "ceiling:hold",
+        ],
+    );
+
+    /// **EVERY VOCABULARY A PEER DECODES IS PUBLISHED BY THIS BUILD OR CLASSIFIED OUT WITH A
+    /// REASON** — register item 816, and the gate two doc comments already claimed existed.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The claim that was written before the gate was
+    ///
+    /// `crate::plugins::RUN_VOCABULARIES`' own doc says *"`sprag_gate`'s
+    /// `every_closed_wire_vocabulary_is_published_or_classified` walks this workspace for the rest
+    /// and refuses a set that is neither here nor classified out with a reason"*, and a comment
+    /// inside the table names a second gate holding the two sets together. **Neither existed.**
+    /// Measured 2026-09-02: both names appear exactly once in this workspace, in those comments.
+    ///
+    /// That is this workspace's rule 10 — a reason written in prose is a reason nobody measures —
+    /// and it is register item 545's shape exactly: the value-space pin wrote its own blind spot
+    /// into a comment and went two more rounds before anything closed it.
+    ///
+    /// # ⚠⚠⚠ What the two sets are, and why *published* cannot be the whole answer
+    ///
+    /// [`PINNED_VALUES`] holds every word a peer decodes, prefixed by its vocabulary — **nine**
+    /// prefixes, 57 words. `sprag words` publishes **four**. The five that are left are not
+    /// oversights and not all the same:
+    ///
+    /// * `check`, `unmeasured`, `signal_key`, `unraised` answer questions about a PANE (its doctor
+    ///   report, its resource sampling, its input) rather than about a RUN, and
+    ///   `RUN_VOCABULARIES` is a run's vocabulary table by name and by contract.
+    /// * `ceiling` IS a run's answer — it reaches a peer through `outcome_ceiling` — and is absent
+    ///   for a structural reason the pin states beside its own chain: `Ceiling` deliberately
+    ///   publishes no admissible list, so there is no `WIRE_WORDS` for a `const` table to point at.
+    ///   **That one is a debt, and it is classified as one rather than excused.**
+    ///
+    /// ⚠ So the classification carries the REASON, and a prefix that is in neither list is RED.
+    /// This workspace's rule that an unclassified case is not a pass, applied to a table whose
+    /// whole hazard is quiet omission.
     #[test]
-    fn an_answers_value_space_cannot_widen_under_the_protocol_number() {
-        const PINNED_VALUES: (u32, &[&str]) = (
-            // R344: the number moved for a MEANING under an unchanged name (`PaneMatch::line`),
-            // not for a widened value space — every word below is the word it was at 18.
-            // R353: and again, for a published FORM's SHAPE (`action_grammar`'s `{form, args}`).
-            // Neither of the two enums a peer decodes whole gained or lost a word, which is exactly
-            // what this re-stamp says.
-            // ⚠⚠ R357 IS THE FIRST RE-STAMP THIS PIN EARNED ITSELF: `run_status` joined the list
-            // (a fourth word, `interrupted`) AND joined this pin at all. Its four words lived as
-            // string literals inside `run_to_json` until then, so the vocabulary had no `ALL` to
-            // walk and this gate — the one written for exactly this break — was blind to it.
-            // R359b: re-stamped for a REQUEST value that changed shape (`ready_when`); neither
-            // enum a peer decodes whole moved, which is what this says.
-            // R364: re-stamped for an ADDED REQUEST ARGUMENT (`shows_prompt`, which buys a
-            // guarantee whose absence is indistinguishable from it holding). No ANSWER word moved
-            // — what an unconfirmed delivery says reaches a caller as a step's NOTE, which is free
-            // text by design and so has no value space to widen.
-            // ⚠⚠ R365 IS THE SECOND RE-STAMP THIS PIN EARNED ITSELF, and it is R357's shape
-            // exactly: `signal_key` and `unraised` JOIN the list at all, because a pane input
-            // action's answer now carries closed vocabularies where it carried nothing. They are
-            // the deliberate opposite of R364's free-text note — *which* key was swallowed and
-            // *why* are two things a caller BRANCHES on (retry, reconfigure, or reach for
-            // `stop_job`), and a sentence cannot be branched on.
-            // R365 again: re-stamped for an ADDED REQUEST ARGUMENT (`done_when`). No ANSWER word
-            // moved — a completion contract is something a caller SAYS, not something it is told.
-            // ⚠⚠⚠ R365 A THIRD TIME, AND THIS PIN HAD A BLIND SPOT IT DID NOT SEE: a run's
-            // OUTCOME word (`converged` | `exhausted` | `failed` | `cancelled`) is an answer a peer
-            // decodes whole, and it lived outside this list exactly as `run_status` did before
-            // R357. `blocked` is the fifth, and it JOINS the pin in the same edit that adds it.
-            // ⚠⚠⚠ R366 AND THE SAME BLIND SPOT ONE LEVEL DOWN: a STEP's `verdict` is the other
-            // closed set a run's answer carries whole, and it was outside this list for the same
-            // reason the outcome word was — four literals inside `Verdict::wire_str` with nothing
-            // walking them. `answered` is the fifth verdict and it JOINS the pin in the edit that
-            // adds it, exactly as `blocked` did one round ago. So does `refusal`, which is new in
-            // both senses: a fresh vocabulary on a fresh key (`asking.why`), published so a caller
-            // can BRANCH on why a run stopped rather than read a sentence — R365's argument for
-            // `signal_key` and `unraised`, and the reason those are not free-text notes either.
-            // R367: re-stamped for an ADDED ANSWER KEY (`asking` on a pane's `agent` object) whose
-            // ABSENCE a reader takes as a claim. NEITHER enum a peer decodes whole moved, which is
-            // what this re-stamp says: the question's own members are lines, numbers, labels and a
-            // flag — a caller reads them, it does not decode a closed set out of them. The one word
-            // near it that IS closed (`state`) is unchanged; `blocked` has been there since 26.
-            // ⚠⚠ R370 IS THE FOURTH RE-STAMP THIS PIN EARNED ITSELF: `refusal` gained a SEVENTH
-            // word (`contradicted`), and it is the one failure a LIST of consents can have that a
-            // single clause could not — two clauses about one question naming different options.
-            // A caller branches on it exactly as on the other six (narrow one of your own rules,
-            // rather than re-read the dialog), which is why it is a word and not a sentence.
-            // ⚠⚠ R371 IS THE FIFTH, and the same shape one contract further out: `refusal` gained
-            // an EIGHTH word (`unattended`), the failure that only a run which may WAIT can have —
-            // a person was promised, the patience ran out, and the dialog is still up. It is the
-            // one arm in this vocabulary about a HUMAN rather than about a clause, and its remedy
-            // differs from all seven others (be there, or wait longer), which is exactly the test
-            // for a word rather than a sentence. ⚠ The clause-level reason it would otherwise have
-            // reported is NOT lost and does NOT widen anything: it rides in the free-text detail,
-            // R364's shape.
-            // ⚠⚠⚠ R372 IS THE SIXTH, AND THE FIRST TO MOVE **TWO** OF THESE VOCABULARIES AT ONCE:
-            // a run's OUTCOME gains a sixth word and a step's VERDICT a fifth, both `taken_over`.
-            // They move together because they are one fact reported at two altitudes — the step
-            // that stopped, and the run that ended because of it — which is the shape `blocked`
-            // has had since R365/R366.
-            // ⚠⚠ WHAT IS NEW IS NOT A WIDER SPACE BUT A FACT THE PRODUCT COULD NOT SEE: a PERSON
-            // typing into a pane a run is driving. `send_key` is one encoder shared by a display
-            // client's keyboard and this wire — deliberately, so the two encode identically — and
-            // nothing recorded WHICH had written, so a run typed over its supervisor and reported
-            // `exhausted`. The hand is recorded at the write now (`sprag_terminal::Hand`).
-            // ⚠ It is a WORD and not a sentence by this pin's own test: the remedy differs from
-            // every other outcome's. `blocked` says answer the question, `failed` says fix
-            // something, `exhausted` says raise a budget — and this one says do NOTHING, because
-            // the pane already belongs to somebody who is using it.
-            // ⚠⚠⚠ R372: RE-STAMPED WITH NOT ONE ARM MOVED, AND THAT IS THE ROUND'S FINDING. Eleven
-            // parametric families turned a `null` ANSWER into a `-32602 QueryTypeMismatch` REFUSAL,
-            // which is as wire-visible a change as this workspace has shipped — and this pin cannot
-            // see it, because `QueryTypeMismatch` is PINION's word rather than one of sprag's own
-            // closed vocabularies. **A value that becomes a refusal is a fourth bump cause, and no
-            // pin here covers it.** Recorded rather than papered over: the honest fix would be a
-            // pin over what each declared address ANSWERS WITH (a value / which fault), and this
-            // round did not build one.
-            // ⚠ R373: re-stamped with not one ARM moved, and this time that is the DESIGN rather
-            // than a gap. A pane coming back from a person is `continue` with a journal note, on
-            // R369's ruling about the sixth outcome word: a run that spelt a human's act with a
-            // word of its own would let a reader count it among the decisions the RUN took.
-            // `taken_over` still means what it meant — the person still has it.
-            // ⚠ R375: re-stamped with not one ARM moved, and again by design. A run that waits for
-            // its peer's turn to END rather than for a 500 ms clock reaches the SAME endings by a
-            // better route: it converges on the sentinel it was always looking for, and it
-            // exhausts, blocks and is taken over exactly as before. Nothing a peer decodes whole
-            // learnt a word, because nothing about the ANSWER changed — only how long the run was
-            // willing to wait before speaking again.
-            // ⚠⚠⚠ R384: THREE WORDS JOIN AT ONCE — a SEVENTH verdict (`screened`) and a NINTH and
-            // TENTH refusal (`no_rule`, `not_dismissed`) — and none of them costs the number, on
-            // R381's specific fact rather than on a general rule.
-            //
-            // All three are produced by ONE state of ONE plugin, `ai_loop.scxml`'s `screening`, and
-            // that plugin is selected by a `plugin` value no client older than this build knows. An
-            // old client never sends `ai_loop`, so it never receives a journal or an `asking.why`
-            // that can carry any of them; a new client that sends `ai_loop` to an old daemon meets
-            // an ordinary vocabulary refusal at the door, because the `plugins` slot publishes the
-            // word and it can ask first. **Neither half of a skewed pair can misread anything.**
-            //
-            // ⚠⚠ AND `screen_rules` IS AN ADDED ARGUMENT ON THAT SAME FORM, which is normally this
-            // wire's second-commonest bump cause because the surface SWALLOWS an undeclared key and
-            // the run succeeds. It is free here for the identical reason and NOT for a general one.
-            // ⚠⚠⚠ THE RESIDUE, WHICH IS THE SAME ONE R382 LEFT AND IS NOW LARGER: the day `ai_loop`
-            // ships, the next argument added to it — and the next word `screening` learns — earns
-            // the number by the ordinary rule.
-            //
-            // ⚠ `screen_permissions` was NEVER on this wire, so its removal from the loop document
-            // moves nothing here. It is recorded because a reader looking for it should find out
-            // that a measurement removed the need for it rather than that somebody forgot it.
-            // ⚠⚠⚠ R394 IS THE SEVENTH RE-STAMP THIS PIN EARNED ITSELF, and the first since R384
-            // whose word DOES cost the number: an ELEVENTH refusal, `unwitnessed`. R384's escape
-            // does not reach it — `no_rule` and `not_dismissed` are free because only `ai_loop`
-            // produces them, and this word is produced by the ANSWERING act, which every injecting
-            // form has carried since version 27. An old client's run that meets its own
-            // `max_duration_ms` inside an answer's wait receives it today.
-            // ⚠⚠⚠⚠ THE EIGHTH RE-STAMP THIS PIN EARNED ITSELF, AND THE WORD COSTS THE NUMBER FOR
-            // R394's REASON RATHER THAN R384's: an EIGHTH verdict, `peer_gone`. R384's escape is
-            // *"only `ai_loop` produces it, and no old client can select that plugin"* — and this
-            // word is produced by `orchestrator` too, which every version of this wire can send.
-            // That plugin is the one the 43-hour wedge's preserved stack showed, so the word is not
-            // merely reachable by an old client, it is the one an old client is likeliest to meet.
-            // ⚠ 37: re-stamped with every ANSWER vocabulary unchanged. `report_agent` gained two
-            // ARGUMENTS (`asked`, `transcript`) and still answers `{accepted, changed}` — what a
-            // caller may SAY grew, and what it is told did not.
-            // ⚠⚠⚠⚠ AND RE-STAMPED AGAIN AT 37 WITH A NINTH VERDICT IN THE LIST — `abandoned`
-            // (register item 534) — which is the FIRST time this pin has taken a new word without
-            // the number. It is R384's escape and not R394's: only `ai_loop` can produce it,
-            // because reading `RunContext::held` is what makes a hold a fact about a run and that
-            // driver is the workspace's only reader. ⚠⚠⚠ The escape's premise has a gate under it
-            // (`the_only_plugin_that_can_be_held_is_the_one_that_reads_a_hold`), so the day a second
-            // plugin honours a hold this word becomes `peer_gone`'s case and the number falls due —
-            // said by a red rather than by nobody.
-            // ⚠⚠ A SECOND ANSWER VALUE WIDENED AND THIS PIN COULD NOT SEE IT: `ceiling` gained
-            // `hold`. It rode R384's escape (no plugin but `ai_loop` reports it), and the widening
-            // was outside this pin because `Ceiling` publishes no `WIRE_WORDS`.
-            // ⚠⚠⚠⚠⚠ **REGISTER ITEM 545 CLOSED THAT, AND THE NOTE IS KEPT BECAUSE IT IS THE
-            // EVIDENCE.** The pin knew it was blind, wrote the blindness into itself HERE and again
-            // beside `verdict:exhausted`, and went on not walking the words for two more re-stamps.
-            // A residue recorded in a comment is one nothing schedules — item 543's whole lesson,
-            // and this is where it was spent. `ceiling` joins below on `Ceiling::ALL`.
-            // ⚠ 38: re-stamped with every ANSWER value space unchanged. Register item 567 WITHDREW
-            // an address and added a parametric one; what `recent_input_has.<needle>` answers is a
-            // bool, which is not an enum and has no arm to widen. The surface pin is the subject.
-            // ⚠ 39: re-stamped with every ANSWER value space unchanged. Register item 631 added a
-            // slot answering an INTEGER and a method answering `{pane, revision}`. Neither is an
-            // enum, so neither has an arm to widen; the surface pin is the subject again.
-            // ⚠⚠ 40: re-stamped with every ANSWER value space unchanged, and this one is worth a
-            // sentence because it LOOKS like a vocabulary. Register item 653's `hands` answers an
-            // object whose KEYS are `Hand`'s two published words — but those words were already
-            // published, as the WRITE argument `hand`, and this pin walks the vocabularies a
-            // caller may SAY. Nothing was added to that set; a set already in it is being read
-            // back under. ⚠ The day a third hand exists it moves HERE and at the write door
-            // together, because `Hand::WIRE_WORDS` is sized from `ALL`.
-            // ⚠ 41: re-stamped with every ANSWER value space unchanged. Register item 654's `reach`
-            // is a REQUEST word — the vocabulary pin is the subject — and `stop_job`'s answer keys
-            // (`stop`, `pgid`, `job`) are untouched. The `Unstopped` sentence a refusal carries is
-            // prose rather than an enum on this wire, and it did not gain an arm a daemon can send:
-            // `Unreachable` is what a CLIENT concludes when nothing answered it.
-            // ⚠ 42: re-stamped with every ANSWER value space unchanged. Register item 656's
-            // `raw_output` answers an object of two keys, and neither is a word from a set — one
-            // is BASE64 (an encoding, not a vocabulary: every byte string has a spelling) and the
-            // other is a bool. A caller decoding it whole cannot meet an arm it does not know.
-            // ⚠⚠ 42 AGAIN — and this note is here because the vocabulary that moved LOOKS like one
-            // of these and is not. Register item 669 gave `AgentState` a fourth word (`holding`),
-            // which a pane's `agent.state` carries OUTWARD, so a reader would expect this pin. It
-            // is deliberately absent: this pin holds the sets a peer decodes WHOLE, where an
-            // unknown arm fails the whole document, and `agent.state` is read as a STRING —
-            // `sprag_client::agent_phrase` passes a token it does not know through verbatim, on
-            // the stated grounds that the daemon may be newer than the client reading it. So a
-            // widening here costs an older reader a slightly odd phrase and nothing else.
-            // ⚠ The word is still pinned, on the OTHER side: a reporter SAYS it at `report_agent`,
-            // and `a_published_value_space_cannot_widen_under_the_protocol_number` went red for it.
-            // That is not luck — `AgentState::is_reported` is derived from `wire_str`, so every
-            // state with a wire spelling is one a reporter may name, and the request pin therefore
-            // sees every word this one would. A future state that could be PUBLISHED without being
-            // REPORTABLE would break that, and would owe an entry here.
-            // ⚠⚠⚠ 43 — REGISTER ITEM 680, AND THIS PIN IS THE ONE THAT SAW IT. A tenth `Verdict`
-            // word (`verdict:failed`) is what a run's journal carries when a pass returned an ERROR
-            // instead of a verdict. A reader decodes this set WHOLE, so an added arm breaks an
-            // older reader of the ANSWER — which is this pin's own rule, and the same one
-            // `verdict:peer_gone` earned a number for.
-            // ⚠ It is the first word here NO PLUGIN can produce: the driver composes it, which is
-            // why the request-side pins above stayed green while this one went red.
-            43,
-            &[
-                "check:pane-isolation",
-                "check:pane-admission",
-                "check:controller-delegation",
-                "check:competing-weight",
-                "check:cpu-stall",
-                "check:io-stall",
-                "check:memory-stall",
-                "check:swapping",
-                "check:build-saturation",
-                "check:ccache-on-path",
-                "check:ccache-sizing",
-                "check:fast-linker",
-                "unmeasured:nothing_enforced",
-                "unmeasured:not_placed",
-                "unmeasured:refused",
-                // ⚠ R357: the run status, and the fourth word is the one that cost the number.
-                "run_status:running",
-                "run_status:done",
-                "run_status:panicked",
-                "run_status:interrupted",
-                "unmeasured:gone",
-                // ⚠ R365: the two an injection's caveat is built from.
-                "signal_key:interrupt",
-                "signal_key:quit",
-                "signal_key:suspend",
-                "unraised:raw",
-                "unraised:unbound",
-                // ⚠⚠ R365: a RUN'S OUTCOME, which this pin could not see until now.
-                "outcome:converged",
-                "outcome:exhausted",
-                "outcome:failed",
-                "outcome:cancelled",
-                "outcome:blocked",
-                // ⚠⚠ R372: the sixth outcome — a person took the pane.
-                "outcome:taken_over",
-                // ⚠⚠ R366: a STEP's verdict, which this pin could not see until now — the fifth
-                // word is the one that cost the number.
-                "verdict:continue",
-                "verdict:converged",
-                "verdict:blocked",
-                "verdict:answered",
-                // ⚠⚠ R372: the fifth verdict — the step that stopped because a person took over.
-                "verdict:taken_over",
-                // ⚠⚠⚠ R381: THE SIXTH VERDICT — a plugin whose OWN document carries a budget saying
-                // that budget is spent. `ai_loop.scxml`'s `max_turns` counts the inner agent's
-                // turns and one of those is many steps of the loop driving it, so no guardrail can
-                // see it; without this word the run had to report `exhausted — iterations` about a
-                // ceiling it never met.
-                //
-                // ⚠⚠⚠ **AND IT DID NOT COST THE NUMBER, which is a judgement and not an
-                // oversight.** This pin's standing sentence says an added answer word breaks older
-                // readers and the protocol number must rise. It cannot here, and the reason is
-                // specific rather than general: this word is produced by exactly one plugin, and
-                // that plugin is selected by a `plugin` value no client older than this build
-                // knows. An old client never sends `ai_loop`, so it never receives a journal that
-                // can carry this word; a new client that sends `ai_loop` to an old daemon meets an
-                // ordinary vocabulary refusal at the door, because the `plugins` slot publishes
-                // the word and it can ask first. **Neither half of a skewed pair can misread
-                // anything**, which is the one escape the argument-shape pin beside this offers.
-                // ⚠ The same argument covers `ceiling: "turns"` — which this pin did not walk when
-                // that was written, and does walk now (register item 545, the `ceiling:` block at
-                // the end of this list). The escape is unchanged; what changed is that the pin can
-                // see the word it was reasoning about.
-                "verdict:exhausted",
-                // ⚠⚠⚠ R384: THE SEVENTH VERDICT — a step that REFUSED its peer's tool call on the
-                // loop author's standing instruction and told it what to do instead. Not folded
-                // into `answered` because the two are opposite decisions: one takes an option the
-                // peer offered, and a reader asking *what did my run let its agent DO* must not be
-                // handed a count that also includes what it stopped.
-                "verdict:screened",
-                // ⚠⚠⚠⚠ THE EIGHTH VERDICT — a step that would have typed into a pane whose program
-                // has EXITED, and did not. It is not `failed` at this altitude because nothing
-                // about the run is broken, not `blocked` because nobody asked anything, and not
-                // `exhausted` because no budget ran out; what its reader has to do is find out why
-                // the agent left. ⚠⚠⚠ It costs the number where the two words above it did not,
-                // and the difference is WHICH PLUGIN: `orchestrator` produces this one, and every
-                // version of this wire can select that form. It is also the plugin the 43-hour
-                // wedge's preserved stack showed, so an old client is not merely able to receive
-                // the word — it is the likeliest client to.
-                "verdict:peer_gone",
-                // ⚠⚠⚠⚠ THE NINTH VERDICT — somebody held the run and did not come back inside the
-                // loop document's `hold_within_ms` (register item 534). Not `blocked`, which says a
-                // question went unanswered and sends its reader hunting for a dialog there is none
-                // of; not `exhausted — iterations`, which is what a held run actually reported
-                // before this word and which told its reader to raise a step budget that would have
-                // bought it nothing.
-                //
-                // ⚠⚠⚠⚠⚠ **IT COSTS NO NUMBER, ON R384's ESCAPE RATHER THAN R394's, AND THE
-                // DIFFERENCE IS CHECKED RATHER THAN ASSERTED.** `peer_gone` above earned the bump
-                // because `orchestrator` produces it and every version of this wire can select that
-                // form. **No plugin but `ai_loop` can produce this one, and the reason is
-                // structural: a hold is only a fact about a run if something READS
-                // `RunContext::held`, and the outer loop's driver is the only reader in this
-                // workspace.** The other plugins do not ignore the order by policy — they have no
-                // code that can see it.
-                //
-                // ⚠⚠⚠ THAT PREMISE IS A CLAIM WITH A GATE UNDER IT, not a sentence in a comment:
-                // `the_only_plugin_that_can_be_held_is_the_one_that_reads_a_hold` in `sprag-gate`
-                // walks the sources for readers of `held()`. The day a second plugin honours a
-                // hold, this word becomes reachable through a form every version can send — which
-                // is exactly `peer_gone`'s situation — and the number falls due. Without the gate
-                // that would be a silent break, since nothing else here can see it.
-                //
-                // ⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN: R384's escape says *"a plugin no older
-                // client can select"*, and a client built between `ai_loop`'s arrival and today can
-                // select it while lacking this word. That is the same residue `screened` carries and
-                // it is accepted on the same terms — this repository has published no release and
-                // carries no tag, so the population of such clients is the daemons on this
-                // workstation, which are rebuilt from this tree.
-                "verdict:abandoned",
-                // ⚠⚠⚠ 43 (register item 680): the journal word for a pass that returned an ERROR
-                // instead of a verdict. It is the only one of the ten NO PLUGIN produces — the
-                // driver composes it — and it is here for the reason every other one is: a reader
-                // decodes this set WHOLE, so a word it has never heard of fails the document
-                // rather than the field.
-                "verdict:failed",
-                // ⚠⚠ R366: WHY a blocked run did not answer. A caller branches on these — fix a
-                // needle, write a consent, or fetch a person — so they are words and not prose.
-                "refusal:unreadable",
-                "refusal:not_taken",
-                "refusal:no_consent",
-                "refusal:other_question",
-                "refusal:not_offered",
-                "refusal:ambiguous",
-                // ⚠⚠ R370: the arm a LIST of consents made possible — the caller's own clauses
-                // disagreeing about the question on screen.
-                "refusal:contradicted",
-                // ⚠⚠⚠ R371: the arm `await_person_ms` made possible, and the ONLY one in this
-                // vocabulary about a HUMAN rather than about a clause — a run that waited for the
-                // person it was promised and gave up. Its remedy is its own (be there, or raise the
-                // patience), which is why it is a word and not the clause-level reason it carries
-                // underneath in free text.
-                "refusal:unattended",
-                // ⚠⚠⚠ R384: the two `screening` made possible, and each has a remedy no arm above
-                // it has. `no_rule` is about the loop DOCUMENT — no standing instruction quotes the
-                // dialog, so edit the rules — where every arm above is answered by changing the
-                // call or fetching somebody. `not_dismissed` is about the AGENT: a rule fired, the
-                // key that refuses a call went in, and the dialog stayed, so **nothing was typed**.
-                "refusal:no_rule",
-                "refusal:not_dismissed",
-                // ⚠⚠⚠ R394: the eleventh, and the only one in this vocabulary about THIS RUN rather
-                // than about the caller's clauses, the loop's rules, the peer or a person. The two
-                // arms that TYPE were being said about a run that never looked: `not_taken` and
-                // `not_dismissed` are earned by a bounded wait that watched the screen not move,
-                // and a run cancelled inside that wait earned neither. Measured — the fixture peer
-                // had committed the authorised option (`TOOK 2 VIA 10`) while the run reported
-                // `not_taken`. Its remedy is its own, which is this pin's test for a word rather
-                // than a sentence: read the pane, or give the run longer.
-                "refusal:unwitnessed",
-                // ⚠⚠⚠⚠⚠ REGISTER ITEM 545: **WHICH CEILING ENDED AN EXHAUSTED RUN**, and the
-                // fourth vocabulary to join this pin *at all* rather than to widen inside it —
-                // `run_status` (R357), a run's `outcome` (R365) and a step's `verdict` (R366) are
-                // the other three, and every one of them joined only after a word had already got
-                // through. This one joins with nothing having got through, which is the difference
-                // worth recording: the pin had written its own blindness into itself twice above.
-                //
-                // ⚠⚠⚠ **AND IT COSTS NO NUMBER, which is a judgement rather than an oversight.**
-                // The three joins above each moved `WIRE_PROTOCOL`, and each carried a NEW word in
-                // the same edit — `interrupted`, `blocked`, `answered`. Not one word below is new:
-                // all five have been on this wire since the run they describe could end, and the
-                // last of them (`hold`) arrived at 37 under the escape recorded above. **What
-                // widened is the pin's eyes, not the value space**, and a number moved for that
-                // would say something false to every reader who takes a bump as a break.
-                //
-                // ⚠⚠ The next ceiling is the one this buys: it cannot be added to the type without
-                // reddening here, so whoever adds it makes the escape argument out loud or pays
-                // the number. Measured by mutation, not asserted — see the item.
-                "ceiling:iterations",
-                "ceiling:cost",
-                "ceiling:duration",
-                "ceiling:turns",
-                "ceiling:hold",
-            ],
+    fn every_closed_wire_vocabulary_is_published_or_classified() {
+        /// Why a vocabulary a peer decodes is NOT in `sprag words`. ⚠ A reason, never a bare
+        /// exemption: an escape hatch that takes no argument is one nobody has to think about.
+        const CLASSIFIED_OUT: &[(&str, &str)] = &[
+            (
+                "check",
+                "a doctor report's finding about a PANE, not a run's answer (sprag_terminal::Check)",
+            ),
+            (
+                "unmeasured",
+                "why a pane's resources could not be sampled, not a run's answer \
+                 (sprag_terminal::Unmeasured)",
+            ),
+            (
+                "signal_key",
+                "which key a pane's terminal turns into a signal, not a run's answer \
+                 (sprag_terminal::SignalKey)",
+            ),
+            (
+                "unraised",
+                "why a byte written into a pane raised no signal, not a run's answer \
+                 (sprag_terminal::Unraised)",
+            ),
+            (
+                "ceiling",
+                "⚠ DEBT, not a difference in kind: this IS a run's answer (outcome_ceiling), and it \
+                 is absent because `Ceiling` publishes no admissible list for a const table to \
+                 point at — see the pin's own note beside its `Ceiling::ALL` chain",
+            ),
+        ];
+
+        let mut walked: Vec<&str> = PINNED_VALUES
+            .1
+            .iter()
+            .filter_map(|word| word.split_once(':'))
+            .map(|(prefix, _)| prefix)
+            .collect();
+        walked.sort_unstable();
+        walked.dedup();
+        assert!(
+            walked.len() >= 9,
+            "the pin walks {} vocabular(ies) and this build has at least nine — a scan that found \
+             fewer is reading a shape it does not understand, and a probe pointed at nothing must \
+             never read as clean: {walked:?}",
+            walked.len(),
         );
 
+        let published: Vec<&str> = crate::plugins::RUN_VOCABULARIES
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect();
+        let classified: Vec<&str> = CLASSIFIED_OUT.iter().map(|(name, _)| *name).collect();
+
+        let unaccounted: Vec<&str> = walked
+            .iter()
+            .copied()
+            .filter(|prefix| !published.contains(prefix) && !classified.contains(prefix))
+            .collect();
+        assert!(
+            unaccounted.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 816: {unaccounted:?} is a vocabulary a peer decodes whole that \
+             this build neither publishes through `sprag words` nor classifies out with a reason. \
+             Either add it to `RUN_VOCABULARIES` (with the sentence a reader needs) or say in \
+             `CLASSIFIED_OUT` why a run's vocabulary table is not where it belongs. \
+             'Not applicable' is not one of the two.\n  published: {published:?}\n  classified: \
+             {classified:?}",
+        );
+
+        // ⚠⚠ AND THE OTHER DIRECTION, which is what keeps the classification from rotting: a name
+        // in either list that the pin no longer walks is a sentence about a vocabulary that has
+        // moved or gone, and it would sit here forever reading as deliberate.
+        let stale: Vec<&str> = published
+            .iter()
+            .chain(classified.iter())
+            .copied()
+            .filter(|name| !walked.contains(name))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "⛔⛔⛔ REGISTER ITEM 816: {stale:?} is named here and the value-space pin does not walk \
+             it. Either the vocabulary moved and this list did not, or it is gone and this list \
+             still explains it — both read as a considered decision and neither is one",
+        );
+
+        // ⛔⛔⛔⛔⛔ AND THE WORDS THEMSELVES, not only the names — item 816's done-when (3).
+        //
+        // ⚠⚠ Both sides read the same type's `WIRE_WORDS` today, so this holds by construction and
+        // it is worth saying why it is asserted anyway: the pin walks SOME of its vocabularies a
+        // different way (`Ceiling` through `ALL` + `wire_str`, and `run_status` did too before it
+        // had a type), so *both read the same list* is a property of the current spelling rather
+        // than of the design. A published vocabulary that starts being built by hand — the exact
+        // move that hid `interrupted` from the pin until R357 — is what this catches.
+        for (name, _, words) in crate::plugins::RUN_VOCABULARIES {
+            let mut published: Vec<&str> = words.to_vec();
+            let mut pinned: Vec<&str> = PINNED_VALUES
+                .1
+                .iter()
+                .filter_map(|word| word.split_once(':'))
+                .filter(|(prefix, _)| prefix == name)
+                .map(|(_, word)| word)
+                .collect();
+            published.sort_unstable();
+            pinned.sort_unstable();
+            assert_eq!(
+                published, pinned,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 816: `sprag words {name}` and the value-space pin disagree \
+                 about which words this vocabulary has. One of them is a list a client will build \
+                 its calls from and the other is what the wire actually serves — and a caller that \
+                 enumerated the first cannot decode the second",
+            );
+        }
+    }
+
+    #[test]
+    fn an_answers_value_space_cannot_widen_under_the_protocol_number() {
         // The serialised WORD of each arm. A unit variant renders as its string; a carrying one
         // renders as a one-key object, and the key is the word an older decoder would reject.
         fn word(value: &serde_json::Value) -> String {
