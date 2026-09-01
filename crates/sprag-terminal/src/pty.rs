@@ -500,7 +500,10 @@ fn pool_sentence(pool: crate::procfs::PtyPool) -> String {
              was in use, so the host's own total cannot be read here"
             .to_owned(),
     };
-    format!("{host}; {}", ours_sentence(OPEN_HERE.live()))
+    format!(
+        "{host}; {}",
+        ours_sentence(OPEN_HERE.live(), OPEN_HERE.opened())
+    )
 }
 
 /// **HOW MANY PSEUDOTERMINALS THIS PROCESS ITSELF WAS HOLDING** — register item 776, arm (d), and
@@ -526,16 +529,36 @@ fn pool_sentence(pool: crate::procfs::PtyPool) -> String {
 /// exhaustion — somebody else may hold the rest. The sentence states the count and that limit
 /// rather than letting a reader complete it from memory, which is exactly the failure this arm was
 /// filed for.
+/// # ⛔⛔⛔⛔⛔ AND HOLDING IS NOT THE SAME QUESTION AS HAVING OPENED — register item 814
+///
+/// Measured on `30cb15d`'s macOS job: the refusal said **46 of at most 511**, and 46 is far too few
+/// to have used the pool up. That reads as *somebody else held the rest* — and it is only one of
+/// two worlds. The other is that this host does not hand a CLOSED pseudoterminal straight back, in
+/// which case what matters is not how many we were holding but how many we had ever taken, and a
+/// suite that opens and closes hundreds would exhaust a 511-name space while holding 46.
+///
+/// The live count alone cannot tell those apart, and they want opposite repairs — one is somebody
+/// else's process, the other is this suite's own churn. So both numbers are said.
+///
+/// ⚠ The sentence STATES the two questions rather than answering them: this code cannot see the
+/// host's reuse policy, and a sentence that picked a side would be the completing-from-memory this
+/// whole family of arms exists to stop.
 #[must_use]
-fn ours_sentence(ours: u64) -> String {
+fn ours_sentence(live: u64, opened: u64) -> String {
     format!(
-        "this process was holding {ours} of them itself, which cannot rule exhaustion out (another \
-         process may hold the rest) but does say how much of any of it was ours"
+        "this process was holding {live} of them itself and had opened {opened} since it started, \
+         which cannot rule exhaustion out (another process may hold the rest) but does say how \
+         much of any of it was ours — and the two ask different things: the first is what we were \
+         using when it refused, the second is what we could have used up if this host does not \
+         give a closed pseudoterminal straight back"
     )
 }
 
 /// This process's live pseudoterminal count — see [`ours_sentence`].
-static OPEN_HERE: OpenHere = OpenHere(std::sync::atomic::AtomicU64::new(0));
+static OPEN_HERE: OpenHere = OpenHere {
+    live: std::sync::atomic::AtomicU64::new(0),
+    opened: std::sync::atomic::AtomicU64::new(0),
+};
 
 /// The ledger behind [`OPEN_HERE`], kept as a type so the only way to add to it is to take a
 /// [`Place`] that gives the count back when it drops.
@@ -545,18 +568,35 @@ static OPEN_HERE: OpenHere = OpenHere(std::sync::atomic::AtomicU64::new(0));
 /// `the_only_plugin_that_can_be_held_is_the_one_that_reads_a_hold` went red on it. That gate was
 /// right: *held* is that wire word's, and a second meaning for it in another crate is how one
 /// sentence starts covering two facts.
+/// ⚠⚠ TWO COUNTERS AND NOT ONE — register item 814. `live` goes back down when a pair is dropped;
+/// `opened` never does. They answer the two worlds a refusal at 46-of-511 leaves open, and a reader
+/// handed only the first cannot tell somebody else's process from this suite's own churn.
 #[derive(Debug)]
-struct OpenHere(std::sync::atomic::AtomicU64);
+struct OpenHere {
+    /// How many pairs this process is holding right now.
+    live: std::sync::atomic::AtomicU64,
+    /// How many it has taken since it started. ⚠ MONOTONIC by construction — [`Place`] does not
+    /// touch it, which is the whole difference between the two questions.
+    opened: std::sync::atomic::AtomicU64,
+}
 
 impl OpenHere {
     /// How many are live right now.
     fn live(&'static self) -> u64 {
-        self.0.load(std::sync::atomic::Ordering::Relaxed)
+        self.live.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Count one more, until the returned guard drops.
+    /// How many have EVER been taken here — see the type's own note for why both are reported.
+    fn opened(&'static self) -> u64 {
+        self.opened.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Count one more, until the returned guard drops — and one more for good, which no guard
+    /// gives back.
     fn take(&'static self) -> Place {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.live.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.opened
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Place(self)
     }
 }
@@ -570,8 +610,12 @@ impl OpenHere {
 struct Place(&'static OpenHere);
 
 impl Drop for Place {
+    /// ⚠ `live` ONLY. `opened` is what this process has ever taken, so giving it back here would
+    /// collapse the two questions register item 814 exists to keep apart.
     fn drop(&mut self) {
-        self.0.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.0
+            .live
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -1244,7 +1288,7 @@ mod tests {
                  Got: {sentence:?}",
             );
         }
-        let ours = ours_sentence(3);
+        let ours = ours_sentence(3, 3);
         assert!(
             ours.contains('3') && ours.contains("cannot rule exhaustion out"),
             "⛔⛔⛔⛔ a count without its limit is worse than none: three of a hundred reads as \
@@ -1252,9 +1296,31 @@ mod tests {
              Got: {ours:?}",
         );
         assert_ne!(
-            ours_sentence(0),
-            ours_sentence(120),
+            ours_sentence(0, 0),
+            ours_sentence(120, 120),
             "⚠ and the count must actually be IN the sentence, not a constant beside it",
+        );
+
+        // ── ⛔⛔⛔⛔⛔ AND THE TWO NUMBERS MUST BE TOLD APART — register item 814 ─────────────
+        //
+        // `30cb15d`'s macOS job refused at **46 of at most 511**, which is far too few to have
+        // used the pool up. Two worlds fit that: somebody else's process held the rest, or this
+        // host does not give a CLOSED pseudoterminal straight back and what mattered was the
+        // hundreds this suite had opened and dropped. They want opposite repairs, and the live
+        // count alone reads the same in both.
+        let churned = ours_sentence(46, 800);
+        assert!(
+            churned.contains("46") && churned.contains("800"),
+            "⛔⛔⛔⛔⛔ ITEM 814: a process holding 46 and having opened 800 is the whole finding, \
+             and a sentence that quotes only one of them sends the next reader down one of two \
+             roads at random. Got: {churned:?}",
+        );
+        assert_ne!(
+            ours_sentence(46, 46),
+            ours_sentence(46, 800),
+            "⛔⛔⛔ ITEM 814: the same live count with a different history must not read the same. \
+             *46 and only ever 46* says the pool was somebody else's; *46 of 800 taken* says this \
+             suite's own churn could have used a 511-name space up on its own.",
         );
 
         // ── ⛔⛔⛔ AND THE LEDGER ITSELF, which the sentence is only worth what it is ──────────
@@ -1263,12 +1329,22 @@ mod tests {
         // suite opens pseudoterminals on many threads at once: a reading of the shared counter is
         // not a fact about this test. Leaked so it is `'static`, which costs one `u64` for the
         // life of a test binary.
-        let ledger: &'static OpenHere =
-            Box::leak(Box::new(OpenHere(std::sync::atomic::AtomicU64::new(0))));
-        assert_eq!(ledger.live(), 0, "a fresh ledger counts nothing");
+        let ledger: &'static OpenHere = Box::leak(Box::new(OpenHere {
+            live: std::sync::atomic::AtomicU64::new(0),
+            opened: std::sync::atomic::AtomicU64::new(0),
+        }));
+        assert_eq!(
+            (ledger.live(), ledger.opened()),
+            (0, 0),
+            "a fresh ledger counts nothing, on either question",
+        );
         let first = ledger.take();
         let second = ledger.take();
-        assert_eq!(ledger.live(), 2, "two places taken must read as two");
+        assert_eq!(
+            (ledger.live(), ledger.opened()),
+            (2, 2),
+            "two places taken must read as two, and as two ever taken",
+        );
         drop(first);
         assert_eq!(
             ledger.live(),
@@ -1279,6 +1355,17 @@ mod tests {
         );
         drop(second);
         assert_eq!(ledger.live(), 0, "and the last one too");
+        // ⛔⛔⛔⛔⛔ AND THE HISTORY DOES NOT COME BACK WITH THEM — register item 814. This is the
+        // whole of what the second counter is: a `Drop` that touched it would make *held 46* and
+        // *took 800* the same number again, and the two worlds that refusal leaves open would
+        // collapse back into one.
+        assert_eq!(
+            ledger.opened(),
+            2,
+            "⛔⛔⛔⛔⛔ ITEM 814: the ledger gave back a pseudoterminal this process HAD opened, so \
+             the churn half of every later refusal is understated — in the direction that says \
+             *this suite cannot have used the pool up*, which is the reassuring one",
+        );
 
         // ── ⚠ AND THE DOOR IS WIRED TO IT: a live pseudoterminal cannot read as none of ours ──
         let open_now = Pty::open(20, 5).expect("open a pseudoterminal");
