@@ -1311,6 +1311,24 @@ struct RunRecord {
     /// cannot be acted on, and the remedies differ — a pane that did not come back wants a new run,
     /// and a request naming no pane at all is a predecessor that wrote an incomplete record.
     not_resumed: Option<NotResumed>,
+    /// ⛔⛔⛔⛔⛔ **THAT A BOOT PUT THIS RUN BACK** — register item 774, and the fact every reader of
+    /// a resumed row was missing.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why `interrupted` → `running` was not enough to see it
+    ///
+    /// [`not_resumed`](Self::not_resumed) says why a run did NOT come back. Nothing said that one
+    /// DID — a rescued run's row goes back to `running` and is byte-identical to a run somebody
+    /// started a second ago. **Measured 2026-08-30 across one promotion**: three loops came back
+    /// and, two hours later, had made **zero deliveries** between them while four runs started
+    /// fresh in the same window had made one each. The rows said `running` for all seven.
+    ///
+    /// ⚠⚠ IT IS THE PREMISE OF A SENTENCE AND NOT THE SENTENCE. *Came back* on its own is not worth
+    /// a line; what a reader needs is *came back AND has not typed anything yet*, and the second
+    /// half is the driver's own counters. This is the half only the registry knows.
+    ///
+    /// ⚠ [`false`] for a run this daemon started and for one that is still `interrupted` — a row
+    /// that nothing has rescued must not claim it was.
+    resumed: bool,
 }
 
 /// **WHAT A DAEMON SHOULD DO ABOUT A RUN WHOSE DRIVER PROCESS DIED WITHOUT AN OUTCOME** — register
@@ -1450,6 +1468,15 @@ pub struct RunSummary {
     /// while reading the log, the other while acting on it — and item 737 could only ever see the
     /// first.
     pub not_resumed: Option<NotResumed>,
+    /// ⛔⛔⛔⛔⛔ **THAT A BOOT PUT THIS RUN BACK** — register item 774, and
+    /// [`not_resumed`](Self::not_resumed)'s twin: that field says why one stayed behind, this says
+    /// one came back.
+    ///
+    /// ⚠⚠ **IT IS A PREMISE AND NOT A SENTENCE.** *Came back* alone is not worth a reader's line;
+    /// what item 774 is about is *came back and has not typed anything since*, and the second half
+    /// lives in the driver's own counters. This is the half only the registry can answer, and
+    /// without it a rescued row and a row started a second ago are byte-identical.
+    pub resumed: bool,
 }
 
 /// EVERYTHING A RUN BRINGS WITH IT — the argument list of [`RunRegistry::submit`], as a struct.
@@ -2496,6 +2523,9 @@ impl RunRegistry {
             // ⚠ AND NOTHING FAILED TO PUT BACK A RUN NOBODY INHERITED — register item 771, on
             // `withheld` above's argument.
             not_resumed: None,
+            // ⚠ AND NOBODY PUT THIS ONE BACK — register item 774. This daemon is starting it, so a
+            // row claiming it was rescued would point a reader at a restart that never happened.
+            resumed: false,
         });
         id
     }
@@ -2725,6 +2755,14 @@ impl RunRegistry {
         // image is what drove the work being reported; from here the work is THIS image's, and
         // register item 438 is exactly the confusion of dating one daemon's work to another.
         record.build = Some(crate::wire::BUILD.to_owned());
+        // ⛔⛔⛔ AND THE ROW CAN NOW SAY THIS RUN WAS RESCUED — register item 774. Without it a
+        // resumed row is byte-identical to one somebody started a second ago, and *came back and
+        // has not typed anything in two hours* had no way to be said at all.
+        //
+        // ⚠ SET HERE AND NEVER CLEARED. It is a fact about this run's history, not a state: a run
+        // that came back and then worked for a day was still put back by a boot, and a reader
+        // asking *why has this one been quiet* wants that in either case.
+        record.resumed = true;
         true
     }
 
@@ -3583,6 +3621,10 @@ impl RunRegistry {
                 // whether a driver could be stood up, and a record that arrived here already
                 // claiming a reason would be the file answering a question only a boot can ask.
                 not_resumed: None,
+                // ⚠ AND IT HAS NOT BEEN PUT BACK EITHER — register item 774, the line above's
+                // argument exactly: this record is a LOG being read, and `put_back` is the only
+                // act that can answer it.
+                resumed: false,
             });
         }
     }
@@ -3626,6 +3668,9 @@ impl RunRegistry {
                 // ⚠ AND SO IS THIS — item 771, on the line above's argument: a boot decides it once,
                 // writes it once, and nothing later takes it away.
                 not_resumed: record.not_resumed.clone(),
+                // ⚠ ITS TWIN, item 774: `not_resumed` says why a run stayed behind, this says one
+                // came back. A boot writes it once and nothing takes it away — see the field.
+                resumed: record.resumed,
             })
             .collect()
     }

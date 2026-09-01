@@ -5834,6 +5834,47 @@ fn render_journal(run: &Value) -> String {
         .collect()
 }
 
+/// ⛔⛔⛔⛔⛔ **WHETHER A RUN A BOOT RESCUED EVER WENT BACK TO WORK** — register item 774, as a
+/// status-line clause; empty for a run nobody put back and for one that is plainly working.
+///
+/// # ⚠⚠⚠⚠⚠ The absence of a delivery count IS the reading, and that is not a shortcut
+///
+/// `RUN_DELIVERED_KEY` and its two neighbours are published **only when at least one of them is
+/// non-zero** — `plugins::run_to_json` says why: a plugin that composes nothing (`pipe`,
+/// `orchestrator` relay words they did not write) would otherwise publish three zeroes that read
+/// as *it typed nothing*. So a run that has delivered nothing carries **no delivery key at all**,
+/// and this is the mechanical reason item 774's row was silent: there was no number to be silent
+/// ABOUT. The key's absence is therefore exactly *nothing has been typed*, read structurally.
+///
+/// ⚠⚠ **AND THE ONE THING THAT ABSENCE CANNOT TELL APART IS SAID OUT LOUD**, rather than left for
+/// a reader to complete: a plugin that composes no prompts looks identical here. The clause names
+/// both readings, which is this workspace's rule that an unclassified case is stated and never
+/// glossed.
+///
+/// ⚠ THREE ANSWERS AND NOT TWO. A rescued run that has not taken a step yet has typed nothing for
+/// a reason nobody should act on — the boot has just handed it over — and folding it in with a run
+/// that has stepped and stayed silent would send somebody to a pane at the one moment there is
+/// nothing to see.
+fn resumed_clause(run: &Value, state: &Value) -> String {
+    if run[sprag_host::plugins::RUN_RESUMED_KEY].as_bool() != Some(true) {
+        return String::new();
+    }
+    if run[sprag_host::plugins::RUN_DELIVERED_KEY]
+        .as_u64()
+        .is_some()
+    {
+        return String::new();
+    }
+    match state["iterations"].as_u64().unwrap_or_default() {
+        0 => " · this run was put back by a boot and has not taken a step yet".to_owned(),
+        steps => format!(
+            " · ⚠ this run was put back by a boot and has taken {steps} step(s) with no delivery on \
+             this row — either it has typed nothing at its pane since, or its plugin composes no \
+             prompts at all"
+        ),
+    }
+}
+
 /// HOW MANY OF ITS PEER'S QUESTIONS a run answered on the caller's consent, as a clause — empty
 /// when it answered none.
 ///
@@ -6151,12 +6192,22 @@ fn render_run(run: &Value) -> String {
     let waiting = state[sprag_host::plugins::RUN_WAITING_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!(" · {said}"));
+    // ⛔⛔⛔⛔⛔ **AND WHETHER A RESCUED RUN EVER WENT BACK TO WORK** — register item 774, and
+    // `waiting`'s neighbour on the status line for `waiting`'s own reason: this repository's
+    // outer-loop watcher reads the line after the heading and nothing else, and *the run came back
+    // and has been silent for two hours* is exactly the thing that watcher exists to notice.
+    //
+    // ⚠⚠⚠⚠⚠ **MEASURED, and the numbers are why this is a line rather than a nicety.** One
+    // promotion, 2026-08-30: three loops came back and made **zero deliveries between them in two
+    // hours**, while four runs started in the same window made one each. Every one of the seven
+    // rows said `running`.
+    let resumed = resumed_clause(run, state);
     let head = format!("run {id}  {label}{opener}{}\n", render_build(run));
     match state["status"].as_str() {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{waiting}{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -10572,6 +10623,107 @@ mod tests {
             "⚠⚠ a finished run that never reported a pane is history rather than a question, and a \
              clause on every such row would train a reader to skip the line that matters — the \
              argument `render_answered`'s own gate makes one clause over: {finished}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN A BOOT PUT BACK SAYS WHETHER IT WENT BACK TO WORK** — register item 774,
+    /// done-when ⑴.
+    ///
+    /// # The measurement this exists for
+    ///
+    /// One promotion, 2026-08-30: three loops came back and, two hours later, had made **zero
+    /// deliveries between them**; four runs started in the same window had made one each. All seven
+    /// rows read `running`, and the way anybody found out was comparing log records by hand.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the reading is an ABSENT key rather than a zero
+    ///
+    /// `run_to_json` publishes the delivery triple **only when one of them is non-zero**, and its
+    /// own comment says why: a plugin that composes nothing would otherwise publish three zeroes
+    /// that read as *it typed nothing*. So the run this item is about carries no delivery key at
+    /// all — there was no number for the row to be silent about, which is the mechanical half the
+    /// register could not see. ⚠ And the one thing that absence cannot separate — a plugin that
+    /// composes no prompts — is named in the clause rather than left for a reader.
+    ///
+    /// ⚠⚠ FOUR READINGS, DRIVEN AS VALUES, because a clause written for *the next promotion* is a
+    /// clause nobody has run (register item 803): a rescued run mid-work, one that has stepped and
+    /// typed nothing, one that has not stepped at all, and a run nobody rescued.
+    #[test]
+    fn a_rescued_run_says_whether_it_went_back_to_work_and_a_fresh_one_says_nothing() {
+        /// A row as the wire really carries one. `resumed` and `delivered` are the two facts under
+        /// test; `steps` is what separates *has not started yet* from *started and stayed silent*.
+        fn row(resumed: bool, delivered: Option<u64>, steps: u64) -> Value {
+            let mut run = serde_json::json!({
+                "id": 102,
+                "label": "ai_loop pane=369",
+                "state": {
+                    "status": "running",
+                    "iterations": steps,
+                    "cost": 0,
+                    "unit": "steps",
+                },
+            });
+            if resumed {
+                run[sprag_host::plugins::RUN_RESUMED_KEY] = serde_json::json!(true);
+            }
+            if let Some(made) = delivered {
+                run[sprag_host::plugins::RUN_DELIVERED_KEY] = serde_json::json!(made);
+            }
+            run
+        }
+
+        // ── THE HEADLINE: rescued, stepping, and nothing typed ──
+        let silent = render_run(&row(true, None, 5));
+        assert!(
+            silent.contains("put back by a boot") && silent.contains("5 step(s)"),
+            "⛔⛔⛔⛔⛔ ITEM 774: this run came back, took five steps and delivered nothing, and its \
+             row says `running` exactly as a run started a second ago does. That is the state three \
+             loops sat in for two hours while a person compared log records by hand. Got: {silent}",
+        );
+        assert!(
+            silent.contains("composes no prompts"),
+            "⚠⚠⚠ AND THE READING IT CANNOT MAKE IS SAID: an absent delivery key is *nothing was \
+             typed* OR *this plugin composes nothing*, and a clause that claimed the first alone \
+             would send somebody to a pane about a `pipe` run: {silent}",
+        );
+
+        // ⚠⚠ ON THE STATUS LINE, which is `waiting`'s placement and for its measured reason: this
+        // repository's outer-loop watcher reads the line after the heading and nothing else, so a
+        // detail line would be invisible to the one reader that was actually watching.
+        let lines: Vec<&str> = silent.lines().collect();
+        assert!(
+            lines[1].contains("put back by a boot"),
+            "⚠⚠⚠ the clause must land on the status line — a watcher that reads `$0 ~ r {{getline; \
+             print}}` sees that line and no other: {silent}",
+        );
+
+        // ── ⚠ A RESCUED RUN THAT HAS NOT STEPPED YET IS A DIFFERENT ANSWER, not the same warning.
+        //    The boot has just handed it over; sending somebody to a pane now finds nothing.
+        let just_back = render_run(&row(true, None, 0));
+        assert!(
+            just_back.contains("has not taken a step yet") && !just_back.contains("step(s)"),
+            "⚠⚠ a run handed back a moment ago has typed nothing for a reason nobody should act \
+             on, and folding it in with the silent one would train a reader to ignore both: \
+             {just_back}",
+        );
+
+        // ── ⚠⚠ THE CONTROL, AND IT IS THE HALF THAT KEEPS THIS CLAUSE FROM BEING NOISE: a rescued
+        //    run that IS delivering says nothing at all.
+        let working = render_run(&row(true, Some(3), 9));
+        assert!(
+            !working.contains("put back by a boot"),
+            "⚠⚠⚠⚠ a rescued run that is plainly working must be silent here, or the clause appears \
+             on every resumed row for ever and stops meaning anything — which is the failure mode \
+             `render_answered` and `walk_to` are each shaped around: {working}",
+        );
+
+        // ── ⚠⚠⚠ AND THE SECOND CONTROL: a run NOBODY rescued must never claim it was. The whole
+        //    clause rests on a fact only the registry can answer, and a renderer that inferred it
+        //    from *no deliveries yet* would print it over every run's first seconds.
+        let fresh = render_run(&row(false, None, 5));
+        assert!(
+            !fresh.contains("put back by a boot"),
+            "⛔⛔⛔ a run this daemon started is not a run a boot rescued, and a row that said so \
+             would point a reader at a restart that never happened: {fresh}",
         );
     }
 

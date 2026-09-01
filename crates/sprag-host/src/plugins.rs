@@ -298,6 +298,25 @@ pub const RUN_LEFTOVER_KEY: &str = "leftover";
 /// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_STOOD_DOWN_KEY`]'s argument unchanged: an added
 /// answer key withdraws no address and widens no value space a peer decodes whole.
 pub const RUN_NOT_RESUMED_KEY: &str = "not_resumed";
+/// ⛔⛔⛔⛔⛔ **THAT A BOOT PUT THIS RUN BACK** — register item 774, and [`RUN_NOT_RESUMED_KEY`]'s
+/// twin: that key says why a run stayed behind, this says one came back.
+///
+/// # ⚠⚠⚠⚠ It is a PREMISE, and the sentence a reader gets is composed from it and the counters
+///
+/// *Came back* on its own is not worth a line — a rescued row goes back to `running` and a reader
+/// has no use for the history by itself. What item 774 measured is the pair: **three loops came
+/// back and, two hours later, had made zero deliveries between them**, while four runs started in
+/// the same window had made one each, and every one of the seven rows said `running`. So the row's
+/// clause weighs this against what the driver reports having typed, and neither half can say it
+/// alone.
+///
+/// ⚠⚠ PRESENT ONLY WHEN TRUE, which is this surface's rule for every added key: absence goes on
+/// meaning *this daemon did not say*, so a client reading an older daemon is not told a run was
+/// started fresh when nobody answered the question at all.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_NOT_RESUMED_KEY`]'s argument unchanged: an
+/// added answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_RESUMED_KEY: &str = "resumed";
 /// ⛔⛔⛔⛔⛔ **THE SENTENCE A DRIVER STOPPED ON, WRITTEN INTO ITS OWN ENDING** — register item 764.
 ///
 /// A driver whose progress report is refused with [`crate::runs::Unreported`]'s clause has been
@@ -5304,6 +5323,21 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
     if let (Some(why), RunState::Interrupted) = (&run.not_resumed, &run.state) {
         entry[RUN_NOT_RESUMED_KEY] = json!(not_resumed_sentence(why));
     }
+    // ⛔⛔⛔⛔⛔ AND THAT A BOOT DID PUT IT BACK — register item 774, the clause above's twin.
+    //
+    // ⚠⚠⚠ NO STATE GUARD, which is the opposite of its twin and is the point. `not_resumed`
+    // asserts that nothing will pick a run up, so it belongs to a row that is still `interrupted`.
+    // This is a fact about the run's HISTORY: it came back, and it is still true once it is
+    // `running`, once it converges and once it fails. A guard here would take the fact away at
+    // exactly the moment a reader can act on it — a resumed run that has been quiet for two hours
+    // is `running`, and that is the row item 774 was filed over.
+    //
+    // ⚠ PRESENT ONLY WHEN TRUE, this surface's rule for an added key: a `false` on the wire would
+    // be indistinguishable from an older daemon that never answered, and *nobody said* and *this
+    // run was started fresh* are different things.
+    if run.resumed {
+        entry[RUN_RESUMED_KEY] = json!(true);
+    }
     // ⚠⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register item 540, present only once a step has said so,
     // which is `RUN_CEILING_KEY`'s presence-is-the-claim rule. ⚠ The NUMBER and not the label's
     // prose: a reader that had to parse `ai_loop pane=3` would be deriving a fact from a name.
@@ -8247,6 +8281,7 @@ mod tests {
                     withheld: None,
                     ended_driver: None,
                     not_resumed: None,
+                    resumed: false,
                 },
                 None,
                 // ⚠ NO LIVE LOOK HERE. This gate is about the PLUGIN's sentence reaching the row;
@@ -8325,6 +8360,7 @@ mod tests {
                 withheld: None,
                 ended_driver: None,
                 not_resumed: None,
+                resumed: false,
             },
             None,
             None,
@@ -12031,6 +12067,7 @@ mod tests {
             withheld: None,
             ended_driver: None,
             not_resumed: None,
+            resumed: false,
         };
         assert_eq!(
             run.progress.waiting, None,
@@ -14398,6 +14435,16 @@ mod tests {
             "⚠⚠ and the words offered are the ones the log held, not a re-derivation of them",
         );
         let mut external = over(&runs);
+        // ⚠⚠ THE CONTROL IS READ BEFORE THE ACT — register item 774. A row that claimed *a boot put
+        // this back* while the run was still `interrupted` would be the key answering about the
+        // reading rather than about the run, and taken after the fact there is nothing left to
+        // compare against.
+        let before = row_of(&mut external, 7);
+        assert!(
+            before[RUN_RESUMED_KEY].is_null(),
+            "⚠⚠⚠ ITEM 774: nothing has put this run back yet, and a row that says otherwise is a \
+             fact about the log being read: {before:?}",
+        );
         external
             .put_back(&offered[0])
             .expect("a run whose place and request both survived is one this daemon can put back");
@@ -14408,6 +14455,16 @@ mod tests {
             "⛔⛔⛔⛔⛔ REGISTER ITEM 543: the daemon read a place, read a request, built the plugin, \
              placed the machine — and the run is still `interrupted`. A restart that can resume and \
              does not is the same dead run with more code behind it. Row: {row:?}",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE ROW SAYS A BOOT DID IT — register item 774, the fact that separates a
+        // rescued run from one somebody started a second ago. Without it, *came back and has been
+        // silent for two hours* cannot be said at all: three loops sat in exactly that state on
+        // 2026-08-30 and every row read `running`.
+        assert_eq!(
+            row[RUN_RESUMED_KEY],
+            json!(true),
+            "⛔⛔⛔ ITEM 774: this run was put back by this boot and its row does not say so, so the \
+             clause that weighs it against the deliveries has nothing to stand on. Row: {row:?}",
         );
     }
 
