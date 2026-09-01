@@ -2093,6 +2093,97 @@ mod tests {
         );
     }
 
+    /// **A PANE'S CHILD NEVER NAMES THIS PROCESS'S OWN GROUP AS ITS FOREGROUND JOB** — register
+    /// item 820, and the one question about that item a test can actually settle.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the number is FOR, which is why this is a gate and not a curiosity
+    ///
+    /// `crate::pane_pty::foreground_pgid_of` is read by [`crate::stop::stop_foreground_job`] and
+    /// handed straight to `kill`'s NEGATION. A value that happens to be THIS process's own group
+    /// therefore turns a stop aimed at one pane into a signal at the daemon that sent it — or, in
+    /// a test binary, at the whole `cargo test` that spawned it, which is the shape of the
+    /// intermittent exit-130 this item was filed on: `--no-fail-fast` in place and nine crates that
+    /// never ran.
+    ///
+    /// # ⚠⚠⚠ Why it watches the WINDOW rather than asserting once
+    ///
+    /// The hypothesis is about a moment, not a steady state: between `fork` and the child's own
+    /// `setsid`/`TIOCSCTTY`, the child still carries whatever controlling terminal this process
+    /// had, so its `tpgid` is that terminal's foreground group — ours. The window is microseconds
+    /// wide, so this reads it as fast as it can, as soon as it can, on several children.
+    ///
+    /// ⚠⚠ **A GREEN RUN DOES NOT PROVE THE WINDOW IS SHUT.** It proves this sampling never caught
+    /// it, which is a weaker claim and is stated here rather than left for a later round to
+    /// over-read — the same honesty `output_no_one_has_collected_is_lost_when_the_device_drops_it`
+    /// states about which platform judges it. What it DOES do is fail loudly the first time the
+    /// value appears, with every reading it took, which is more than anything else in this
+    /// repository can say about that number.
+    ///
+    /// ⚠⚠⚠ **AND WHAT IT MEASURED THE DAY IT WAS WRITTEN, which is most of an answer.** Driving it
+    /// with the comparison pointed at the FIRST reading instead of at our own group turns it red
+    /// and prints the indices: **all two hundred readings of the first child matched, and the value
+    /// was the child's own group.** So `spawn` had already returned with the child owning its
+    /// terminal — the fork/exec window this was built to catch was not observable from here at all,
+    /// and the hypothesis that item 820's signal comes through it is that much weaker.
+    #[test]
+    fn a_pane_childs_foreground_group_is_never_this_process_group() {
+        // SAFETY: `getpgrp` takes no arguments, touches no memory and cannot fail.
+        let mine = u32::try_from(unsafe { libc::getpgrp() }).expect("a process group id");
+        let mut seen: Vec<Option<u32>> = Vec::new();
+
+        for _ in 0..3 {
+            let mut attached = Pty::open(80, 24)
+                .expect("open a pty")
+                .attach_reader("foreground-gate", |mut terminal| {
+                    let mut buf = [0u8; 256];
+                    while terminal.read(&mut buf).is_ok_and(|n| n > 0) {}
+                })
+                .expect("a fresh pty takes a reader");
+
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("sleep 0.2");
+            let (mut child, _joined) = attached.spawn(&command, None).expect("spawn onto the pty");
+
+            // Straight into the window: the first reading happens before anything waits on the
+            // child, and the rest follow as fast as the kernel will answer.
+            for _ in 0..200 {
+                seen.push(crate::pane_pty::foreground_pgid_of(child.id()));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        // ⛔⛔⛔⛔⛔ A PROBE THAT SAW NOTHING MUST NEVER READ AS CLEAN, and here it is the whole
+        // hazard: `foreground_pgid_of` answers `None` for a child with no controlling terminal, so
+        // a run in which every reading was `None` would pass this gate having observed nothing at
+        // all. That is the vacuous green this workspace has paid for repeatedly, and the assertion
+        // below is what stops this one being it.
+        let named: Vec<u32> = seen.iter().filter_map(|pgid| *pgid).collect();
+        assert!(
+            !named.is_empty(),
+            "⛔⛔⛔ REGISTER ITEM 820: not one of {} readings named a group, so this gate watched \
+             the window and saw nothing — it cannot say the value is never ours, only that it \
+             never asked. A pane's child is supposed to own its terminal",
+            seen.len(),
+        );
+
+        let ours: Vec<usize> = seen
+            .iter()
+            .enumerate()
+            .filter(|(_, pgid)| **pgid == Some(mine))
+            .map(|(at, _)| at)
+            .collect();
+        assert!(
+            ours.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 820: a pane's child named THIS process's own group ({mine}) as \
+             the job owning its terminal, at reading(s) {ours:?} of {}. That number is handed to \
+             `kill`'s negation by `stop_foreground_job`, so a stop aimed at that pane is a signal \
+             at this process and everything sharing its group. Readings taken: {seen:?}",
+            seen.len(),
+        );
+    }
+
     /// **THE TWO COUNTERS, ON A LEDGER NOTHING ELSE IS TOUCHING** — register item 817.
     ///
     /// ⚠⚠ On the process-wide [`OPEN_HERE`] this assertion could not be written: the suite around
