@@ -767,6 +767,51 @@ hosted_read_skipped_arm() {
 # ⚠⚠⚠⚠⚠ EVERY ARM, against throwaway repositories -- because a report reachable
 # only from a hook cannot otherwise be told apart from one that always says the
 # same thing, which is the defect this whole item is about.
+# **WHAT A HOOK FILE SAYS ABOUT ITS WIRING**, as ONE WORD a caller can branch on
+# — register item 803.
+#
+# ⛔⛔⛔⛔⛔ THREE STATES, AND FOLDING TWO OF THEM COST THE DIAGNOSIS TWICE
+#
+# `unreadable` — nothing could be read at that path. `silent <bytes> <head>` — it
+# WAS read and the bytes do not call the arm; the length and the first of them
+# are carried because *the file really says something else* and *the reader got a
+# truncated stream* are two findings this item could not tell apart afterwards.
+# `wired` — it calls the arm.
+#
+# ⚠⚠ On 2026-09-01 this arm failed once inside the parallel `sprag-gate` suite
+# and once on a clean CI runner, both times printing `never calls the gap arm`
+# while `pre-push` plainly called it. Before that day the read was
+# `sed … | grep -q` — a pipeline whose producer, dying mid-stream under load,
+# hands the consumer a truncated file and a verdict that names the wrong cause.
+# The read is one command into one variable now, `2>&1` so a failing `sed` says
+# so in the sentence rather than vanishing.
+#
+# ⚠ SPLIT OUT SO IT CAN BE FED. The arm reads the real `pre-push`, which always
+# answers `wired`, so the two failing sentences were unreachable from the suite
+# that ships them — planted for an occurrence and never once produced. A caller
+# that can hand this a path is a caller that can drive all three.
+hosted_read_wiring_of() {
+    local path="$1" wiring
+    if [ ! -r "$path" ]; then
+        printf 'unreadable -- %s is not readable, so the wiring cannot be judged; this is NOT the same finding as it not calling the arm\n' \
+               "$path"
+        return 0
+    fi
+    wiring="$(command sed 's/#.*//' "$path" 2>&1)"
+    if printf '%s\n' "$wiring" | command grep -q 'hosted_read_gap'; then
+        printf 'wired\n'
+        return 0
+    fi
+    # ⚠⚠ THE BLANK LINES ARE DROPPED FROM THE QUOTE, and that is not tidiness.
+    # `sed 's/#.*//'` turns this repository's hook preambles into hundreds of
+    # empty lines, so the first 200 characters of what was read are 200 blanks —
+    # measured while driving this arm — and a sentence whose evidence is
+    # whitespace says exactly as little as the sentence it replaced.
+    printf 'silent -- %s is readable and the %s byte(s) read from it never call the gap arm; what the reader got began: %s\n' \
+           "$path" "${#wiring}" \
+           "$(printf '%s\n' "$wiring" | command sed '/^[[:space:]]*$/d' | command head -c 200)"
+}
+
 hosted_read_selftest() {
     # ⛔⛔⛔ `PATH` IS SAVED AND RESTORED, NEVER `local` — measured on the first
     # run of the double below: `local PATH` starts the variable EMPTY, so `here`
@@ -1333,18 +1378,71 @@ ASKED
     # variable, the decision reads THAT variable, and a failure prints its size
     # and what `sed` wrote — including on stderr, which is where a double that was
     # handed no subject would complain.
-    wiring="$(command sed 's/#.*//' "$here/pre-push" 2>&1)"
-    if [ ! -r "$here/pre-push" ]; then
-        echo "  FAIL  pre-push is not readable at $here -- the wiring cannot be" \
-             "judged, and this is NOT the same finding as it not calling the arm"
-        fail=$((fail + 1))
-    elif printf '%s\n' "$wiring" | command grep -q 'hosted_read_gap'; then
-        echo "  ok    the pre-push hook calls the gap arm"
+    wiring="$(hosted_read_wiring_of "$here/pre-push")"
+    case "$wiring" in
+        wired*)
+            echo "  ok    the pre-push hook calls the gap arm"
+            pass=$((pass + 1))
+            ;;
+        *)
+            echo "  FAIL  $wiring"
+            fail=$((fail + 1))
+            ;;
+    esac
+
+    # ⛔⛔⛔⛔⛔ AND THE DIAGNOSIS ITSELF IS DRIVEN — register item 803.
+    #
+    # The two failing branches above were UNREACHABLE from this suite: the arm
+    # always reads the real `pre-push`, which always says the right thing, so the
+    # sentences planted for "the next occurrence" had never once been produced.
+    # Register item 805 met the same problem the same day and answered it —
+    # `the_diagnosis_tells_a_missing_socket_from_a_silent_one` feeds its two
+    # states directly — and this item did not. An instrument nobody has seen
+    # speak is not an instrument.
+    #
+    # ⚠⚠ THE THREE STATES ARE FED, not waited for. `unreadable` and `silent` are
+    # what a loaded parallel suite produced once each and neither could be
+    # recovered afterwards; a machine will not make them on demand, so they are
+    # handed in the way `xdg_home_from` and `verdict_of` are handed theirs.
+    printf 'call hosted_read_gap here\n' > "$tmp/wired-hook"
+    printf 'this hook calls nothing of the kind\n' > "$tmp/silent-hook"
+    if [ "$(hosted_read_wiring_of "$tmp/wired-hook")" = wired ]; then
+        echo "  ok    a hook that calls the arm reads as wired"
         pass=$((pass + 1))
     else
-        echo "  FAIL  pre-push is readable and the ${#wiring} byte(s) read from it" \
-             "never call the gap arm -- what the reader got began:" \
-             "$(printf '%s' "$wiring" | command head -c 200)"
+        echo "  FAIL  a hook that calls the arm did not read as wired"
+        fail=$((fail + 1))
+    fi
+    said="$(hosted_read_wiring_of "$tmp/no-such-hook")"
+    case "$said" in
+        unreadable*not\ readable*)
+            echo "  ok    a hook that cannot be read says so and does not guess"
+            pass=$((pass + 1))
+            ;;
+        *)  echo "  FAIL  an unreadable hook was not told apart: $said"
+            fail=$((fail + 1))
+            ;;
+    esac
+    # ⚠ The bytes are IN the sentence, because *the file said something else* and
+    # *the reader got a truncated stream* are the two shapes this item cannot
+    # tell apart afterwards, and a length plus the head is what separates them.
+    said="$(hosted_read_wiring_of "$tmp/silent-hook")"
+    case "$said" in
+        silent*byte\(s\)*this\ hook\ calls\ nothing*)
+            echo "  ok    a hook that is read and says nothing quotes what was read"
+            pass=$((pass + 1))
+            ;;
+        *)  echo "  FAIL  a silent hook did not quote the bytes it was judged on: $said"
+            fail=$((fail + 1))
+            ;;
+    esac
+    if [ "$(hosted_read_wiring_of "$tmp/no-such-hook")" \
+            != "$(hosted_read_wiring_of "$tmp/silent-hook")" ]; then
+        echo "  ok    the two refusals do not read alike"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  unreadable and silent produced one sentence, which is the" \
+             "fold that cost this item its diagnosis twice"
         fail=$((fail + 1))
     fi
 
