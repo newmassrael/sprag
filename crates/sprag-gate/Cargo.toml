@@ -21,3 +21,9 @@ path = "src/bin/ambient-home-guard.rs"
 [[bin]]
 name = "sweep-coverage"
 path = "src/bin/sweep-coverage.rs"
+
+# Register item 817: how much of a pseudoterminal namespace one process asked for — a total the
+# process cannot report about itself, and until this existed a number only a refusal printed.
+[[bin]]
+name = "pty-demand"
+path = "src/bin/pty-demand.rs"

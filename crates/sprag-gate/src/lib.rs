@@ -105,6 +105,15 @@ pub mod owners;
 /// than holding a number.
 pub mod sweep;
 
+/// How much of a pseudoterminal namespace ONE process asked for — register item 817.
+///
+/// Beside [`sweep`] and for its reason, on a different quantity: the number is a process total, so
+/// inside the process it is whatever the threads beside the assertion have reached and it is not
+/// final until that process has exited. What made it debt is that it used to be readable only out
+/// of a REFUSAL — the one moment it is too late to act on, and on macOS the only one, since there
+/// is no `strace` there to take it any other way.
+pub mod pty_demand;
+
 /// Whether every pseudoterminal comes from the one door that explains a refusal — register item
 /// 776, arm (d).
 ///

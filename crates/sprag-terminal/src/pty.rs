@@ -39,9 +39,9 @@ use std::io::{Read as _, Write as _};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{LazyLock, mpsc};
 
 use crate::command::CommandBuilder;
 
@@ -617,6 +617,119 @@ static OPEN_HERE: OpenHere = OpenHere {
     opened: std::sync::atomic::AtomicU64::new(0),
 };
 
+/// **WHAT THIS PROCESS HAS ASKED THE HOST FOR, READABLE WITHOUT WAITING FOR A REFUSAL** — register
+/// item 817, done-when (1).
+///
+/// # ⛔⛔⛔⛔⛔ Why a number only a refusal prints is not an instrument
+///
+/// A pty refusal's own sentence reports both of these counts, and reports them at exactly one
+/// moment: after `openpty` has already failed. That is when the number is too late to act on — on the
+/// platform where the failure happens it is the ONLY moment, because macOS has no `strace` to fall
+/// back to. The whole-suite count that settled register item 814 was taken on Linux, on another
+/// machine, by tracing every `openat` a test binary made: a measurement this repository cannot
+/// repeat, no gate can read, and nobody can take on the host that does the refusing.
+///
+/// ⚠ These are the SAME two counters the refusal quotes rather than a second set kept for readers.
+/// Two ledgers over one process is how two true sentences come to disagree about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PtyDemand {
+    /// How many pseudoterminals this process was holding at the moment it was asked.
+    pub live: u64,
+    /// How many it has taken since it started. MONOTONIC, and the one that answers *could our own
+    /// history have used a namespace up* — the two are kept apart because a process holding 30 of
+    /// 511 while having taken 851 is a different world from one holding 30 and having taken 30.
+    pub opened: u64,
+}
+
+/// This process's own pseudoterminal ledger, on demand — see [`PtyDemand`].
+#[must_use]
+pub fn pty_demand() -> PtyDemand {
+    PtyDemand {
+        live: OPEN_HERE.live(),
+        opened: OPEN_HERE.opened(),
+    }
+}
+
+/// **WHERE A PROCESS WRITES ITS DEMAND DOWN SO SOMETHING OUTSIDE IT CAN READ IT** — register item
+/// 817, done-when (1), and the half [`pty_demand`] cannot cover: a caller that wants this number
+/// has to be INSIDE the process, and the process whose demand matters is a test binary nobody is
+/// holding a handle to.
+///
+/// `SPRAG_PTY_DEMAND=<dir>` makes every pseudoterminal this process takes append one
+/// `opened=<n> live=<n>` line to `<dir>/<pid>`. Unset — every run that is not measuring itself —
+/// costs one already-resolved [`LazyLock`] read per open and touches no filesystem.
+///
+/// # ⚠⚠⚠ A LINE PER OPEN, NOT ONE LINE AT EXIT
+///
+/// The process this exists to explain is one that DIES OF THIS: a suite that exhausts a namespace
+/// gets killed, aborts on a thread, or is `_exit`ed by its harness. An `atexit` hook answers for
+/// none of those, so the count would go missing at precisely the failure it was built to explain.
+/// A line already on disk survives every one of them, and the last line in the file is the
+/// furthest that process got.
+///
+/// ⚠⚠ `O_APPEND` rather than truncate-and-rewrite, and **ONE `write` per line** — which is a
+/// SECOND requirement the first version of this satisfied in prose and not in code. A small
+/// `O_APPEND` write is not interleaved; `writeln!` is not one write. See [`record_demand`] for the
+/// 188 shredded lines that measured the difference.
+///
+/// ⚠⚠ **A READER TAKES THE LARGEST `opened` IN THE FILE, NOT THE LAST LINE.** `opened` is the
+/// SEQUENCE NUMBER of the open that wrote the line (the `fetch_add` return, not a re-read), so the
+/// largest one is what that process reached — but two threads that take at the same moment can
+/// write in the other order, and a ledger a test made for itself (see
+/// `a_place_is_given_back_and_a_taking_never_is`) numbers from 1 in the same file. Both are
+/// harmless to a maximum and would fool a reader who trusted the tail.
+///
+/// # ⚠⚠ ONE FILE PER PID, because the question is about ONE process
+///
+/// A `cargo test` run is many processes. Item 817's own rule-5 note refuses the SUM as the unit: a
+/// namespace is exhausted by a single process's demand, and one shared file could only ever answer
+/// the total. The pid in the name is what lets a reader take the maximum instead — and it is also
+/// how a reader learns whether a suite's opens came from one process or from twenty, which an
+/// `strace` of a thread-per-pane binary does not say.
+static DEMAND_LOG: LazyLock<Option<PathBuf>> =
+    LazyLock::new(|| std::env::var_os("SPRAG_PTY_DEMAND").map(PathBuf::from));
+
+/// Said ONCE if the recording cannot be made, and SAID rather than swallowed.
+///
+/// A reader who set `SPRAG_PTY_DEMAND` and finds no file must not read that as *this process
+/// wanted no pseudoterminal* — this workspace's rule that an unclassified case is RED and not a
+/// pass. Opening a pane cannot be failed over a measurement (`PaneHomes::open` never fails a birth,
+/// and this is a far weaker thing than the cgroup join that rule was written for), so the error
+/// leaves through the run's own stderr instead.
+static DEMAND_LOG_REFUSED: std::sync::Once = std::sync::Once::new();
+
+/// Append one process's demand to `<dir>/<pid>` — the body behind [`DEMAND_LOG`], taking its
+/// directory and pid as arguments so a test can drive it without touching this process's
+/// environment (which is global, and which the suite around it is reading in parallel).
+///
+/// # Errors
+///
+/// The filesystem's own, unchanged: the directory could not be made, or the file could not be
+/// opened or appended to.
+fn record_demand(dir: &Path, pid: u32, demand: PtyDemand) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(dir.join(pid.to_string()))?;
+    // ⛔⛔⛔⛔⛔ ONE `write`, AND THIS IS MEASURED RATHER THAN ARGUED — register item 817.
+    //
+    // The first version of this was `writeln!(file, "opened={} live={}", ..)`, on the reasoning
+    // that an `O_APPEND` write is not interleaved. That reasoning is right and the code did not do
+    // it: `write_fmt` calls `write_all` once PER FORMAT PIECE, and a `File` buffers nothing, so
+    // one line left through five syscalls. Measured on `sprag-host --lib`, 32 threads: of 827
+    // recorded lines **188 were shredded** —
+    //
+    // ```text
+    // opened=opened=78 live= live=34
+    // opened=opened=3432 live=opened= live=193317
+    // ```
+    //
+    // — and the second of those parses as a plausible number. A gate reading that file would have
+    // been handed 193317 as a process's demand.
+    file.write_all(format!("opened={} live={}\n", demand.opened, demand.live).as_bytes())
+}
+
 /// The ledger behind [`OPEN_HERE`], kept as a type so the only way to add to it is to take a
 /// [`Place`] that gives the count back when it drops.
 ///
@@ -639,22 +752,47 @@ struct OpenHere {
 
 impl OpenHere {
     /// How many are live right now.
-    fn live(&'static self) -> u64 {
+    ///
+    /// ⚠ `&self` and not `&'static self` — register item 817. The static lifetime was doing no
+    /// work here and it made this ledger UNTESTABLE except through the one process-wide instance,
+    /// where a suite running in parallel moves both counters underneath any assertion. A gate that
+    /// can only observe a shared counter is a gate that goes green when the mutation it exists to
+    /// catch is applied, which this workspace has now filed four times.
+    fn live(&self) -> u64 {
         self.live.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// How many have EVER been taken here — see the type's own note for why both are reported.
-    fn opened(&'static self) -> u64 {
+    fn opened(&self) -> u64 {
         self.opened.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Count one more, until the returned guard drops — and one more for good, which no guard
-    /// gives back.
-    fn take(&'static self) -> Place {
-        self.live.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.opened
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Place(self)
+    /// gives back. Records the new demand if this process was asked to ([`DEMAND_LOG`]).
+    fn take(&self) -> Place<'_> {
+        let live = self.live.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        // ⚠ THE RETURN VALUE, not a re-read: this is the SEQUENCE NUMBER of this open, so the file
+        // `record_demand` writes has one line per take and its last line says how many there were.
+        // A re-read would report whatever a parallel thread had reached by then, and the line count
+        // would stop being a check on the recording.
+        let opened = self
+            .opened
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let place = Place(self);
+        if let Some(dir) = DEMAND_LOG.as_deref()
+            && let Err(why) = record_demand(dir, std::process::id(), PtyDemand { live, opened })
+        {
+            DEMAND_LOG_REFUSED.call_once(|| {
+                eprintln!(
+                    "sprag: SPRAG_PTY_DEMAND names {} and this process cannot write there ({why}) \
+                     — nothing about its pseudoterminal demand is being recorded, so a missing \
+                     file there does NOT mean a process that asked for none",
+                    dir.display(),
+                );
+            });
+        }
+        place
     }
 }
 
@@ -664,9 +802,9 @@ impl OpenHere {
 /// happen on EVERY path a `Pty` leaves by — including a panic between opening and spawning, which
 /// is precisely when a leaked count would make the next refusal's sentence lie.
 #[derive(Debug)]
-struct Place(&'static OpenHere);
+struct Place<'a>(&'a OpenHere);
 
-impl Drop for Place {
+impl Drop for Place<'_> {
     /// ⚠ `live` ONLY. `opened` is what this process has ever taken, so giving it back here would
     /// collapse the two questions register item 814 exists to keep apart.
     fn drop(&mut self) {
@@ -689,7 +827,7 @@ pub struct Pty {
     slave: Option<OwnedFd>,
     /// This pair's place in this process's own ledger — see [`ours_sentence`]. Kept for exactly as
     /// long as the pair is, so the count a refusal reports is the count that was live.
-    _place: Place,
+    _place: Place<'static>,
 }
 
 impl Pty {
@@ -1953,5 +2091,261 @@ mod tests {
              rather than refusing everything, which would have passed the assertion above while \
              being useless",
         );
+    }
+
+    /// **THE TWO COUNTERS, ON A LEDGER NOTHING ELSE IS TOUCHING** — register item 817.
+    ///
+    /// ⚠⚠ On the process-wide [`OPEN_HERE`] this assertion could not be written: the suite around
+    /// it opens pseudoterminals on other threads, so both counters move under any absolute
+    /// comparison and the only survivable spelling would be `>=` — which stays GREEN when `take`
+    /// stops counting altogether. That is the dead-line shape this workspace has now filed four
+    /// times, and [`OpenHere`]'s methods taking `&self` is what removes it here.
+    #[test]
+    fn a_place_is_given_back_and_a_taking_never_is() {
+        let ledger = OpenHere {
+            live: std::sync::atomic::AtomicU64::new(0),
+            opened: std::sync::atomic::AtomicU64::new(0),
+        };
+        {
+            let _first = ledger.take();
+            let _second = ledger.take();
+            assert_eq!(
+                (ledger.live(), ledger.opened()),
+                (2, 2),
+                "two pairs held, two ever taken",
+            );
+        }
+        assert_eq!(
+            (ledger.live(), ledger.opened()),
+            (0, 2),
+            "⛔⛔⛔ REGISTER ITEM 814: a guard gives back what is HELD and nothing gives back what \
+             was TAKEN — a process that opened and closed a whole namespace still has to say so, \
+             because that is the world these two counts exist to tell apart",
+        );
+    }
+
+    /// **A RECORDING NAMES ITS PROCESS AND LOSES NO LINE** — register item 817, done-when (1).
+    ///
+    /// Driven with its arguments rather than through `SPRAG_PTY_DEMAND`, which is process-wide
+    /// state a parallel suite is reading: the environment half is what
+    /// [`a_process_says_what_it_took_without_being_refused`] drives, in a process of its own.
+    #[test]
+    fn a_recorded_demand_names_its_process_and_keeps_every_line() {
+        let dir = scratch_dir("recorded-demand");
+        record_demand(&dir, 4242, PtyDemand { live: 1, opened: 1 }).expect("record the first");
+        record_demand(&dir, 4242, PtyDemand { live: 2, opened: 2 }).expect("record the second");
+        record_demand(&dir, 99, PtyDemand { live: 1, opened: 1 }).expect("record another process");
+
+        let ours = std::fs::read_to_string(dir.join("4242")).expect("this pid's own file");
+        assert_eq!(
+            ours.lines().collect::<Vec<_>>(),
+            ["opened=1 live=1", "opened=2 live=2"],
+            "⛔⛔⛔ REGISTER ITEM 817: the second open OVERWROTE the first. A process that is \
+             killed at its peak has to leave every line it had already written, which is the whole \
+             reason this is an append and not a rewrite",
+        );
+        assert!(
+            dir.join("99").exists(),
+            "⛔⛔ another process's demand goes in another file — item 817's unit is ONE process, \
+             and a shared file could only answer the sum",
+        );
+        std::fs::remove_dir_all(&dir).expect("clean up the scratch directory");
+    }
+
+    /// **THREADS RECORDING AT ONCE DO NOT SHRED EACH OTHER'S LINES** — register item 817, and the
+    /// defect this instrument shipped with for the length of one measurement.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The doc said `O_APPEND` is atomic and the code was not one write
+    ///
+    /// MEASURED on `sprag-host --lib`, 32 threads, before this test existed: **188 of 827 lines
+    /// were shredded**, because `writeln!` calls `write_all` once per format piece and a `File`
+    /// buffers nothing. Two of the wrecks parsed as plausible numbers — one of them `193317`,
+    /// which a gate would have reported as a process's demand.
+    ///
+    /// ⚠ Eight threads and two hundred lines each, with the numbers growing through three digit
+    /// widths: the interleaving is what has to be forced, and a single-digit run barely shows it.
+    #[test]
+    fn recordings_made_at_the_same_moment_do_not_shred_each_other() {
+        let dir = scratch_dir("concurrent-demand");
+        std::thread::scope(|threads| {
+            for live in 0..8 {
+                let dir = &dir;
+                threads.spawn(move || {
+                    for opened in 1..=200 {
+                        record_demand(dir, 4242, PtyDemand { live, opened })
+                            .expect("record a demand");
+                    }
+                });
+            }
+        });
+
+        let body = std::fs::read_to_string(dir.join("4242")).expect("what the threads wrote");
+        let whole = body
+            .lines()
+            .filter(|line| {
+                line.split_once(' ').is_some_and(|(opened, live)| {
+                    opened.strip_prefix("opened=").is_some_and(is_a_number)
+                        && live.strip_prefix("live=").is_some_and(is_a_number)
+                })
+            })
+            .count();
+        assert_eq!(
+            (body.lines().count(), whole),
+            (1600, 1600),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 817: lines written at the same moment ran into each other. \
+             The recording has to leave through ONE write — `O_APPEND` makes that atomic and makes \
+             nothing else atomic. Wrecks: {:?}",
+            body.lines()
+                .filter(|line| !line.starts_with("opened=") || line.matches("live=").count() != 1)
+                .take(3)
+                .collect::<Vec<_>>(),
+        );
+        std::fs::remove_dir_all(&dir).expect("clean up the scratch directory");
+    }
+
+    /// Whether every character of `text` is a digit and there is at least one — the shape a
+    /// recorded count has, and the check that separates a whole line from a shredded one.
+    fn is_a_number(text: &str) -> bool {
+        !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+    }
+
+    /// **A PROCESS SAYS WHAT IT TOOK, WITHOUT BEING REFUSED AND WITHOUT AN `strace`** — register
+    /// item 817, done-when (1), end to end.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this drives a CHILD instead of asserting here
+    ///
+    /// The number item 817 is about is a PROCESS TOTAL, and in this process it is whatever a
+    /// parallel suite has reached — untestable by construction. A child running one test is a
+    /// process whose whole demand is known, so every assertion below is an EQUALITY: `opened == 1`
+    /// is red under any mutation to the counting, where `>= 1` would be green under most of them.
+    ///
+    /// ⚠ It is also the only shape that exercises the environment variable, the pid in the file
+    /// name and the append, all three of which are what a gate outside the process will read.
+    #[test]
+    fn a_process_says_what_it_took_without_being_refused() {
+        let dir = scratch_dir("demand-child");
+        let child = Command::new(std::env::current_exe().expect("this test binary"))
+            .args([
+                "--ignored",
+                "--exact",
+                "--test-threads=1",
+                "--nocapture",
+                "pty::tests::one_pseudoterminal_and_what_the_kernel_says_about_it",
+            ])
+            .env("SPRAG_PTY_DEMAND", &dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run this binary again for one test");
+        let pid = child.id();
+        let done = child.wait_with_output().expect("wait for the child");
+        assert!(
+            done.status.success(),
+            "the child's own assertions failed — it is the one that compares this ledger against \
+             the kernel:\n{}\n{}",
+            String::from_utf8_lossy(&done.stdout),
+            String::from_utf8_lossy(&done.stderr),
+        );
+
+        let file = dir.join(pid.to_string());
+        let body = std::fs::read_to_string(&file).unwrap_or_else(|why| {
+            panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 817: {} does not exist ({why}). A process that took a \
+                 pseudoterminal and was NOT refused left nothing behind, which is the exact defect \
+                 this item was filed over — the count was readable only out of a failure",
+                file.display(),
+            )
+        });
+        let peak = body
+            .lines()
+            .filter_map(|line| line.strip_prefix("opened="))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .filter_map(|n| n.parse::<u64>().ok())
+            .max();
+        assert_eq!(
+            peak,
+            Some(1),
+            "⛔⛔⛔ REGISTER ITEM 817: the child took exactly one pseudoterminal and the file it \
+             wrote does not say one. Got: {body:?}",
+        );
+        std::fs::remove_dir_all(&dir).expect("clean up the scratch directory");
+    }
+
+    /// The child of [`a_process_says_what_it_took_without_being_refused`] — one process, one
+    /// pseudoterminal, and the ledger compared against what the KERNEL says this process holds.
+    ///
+    /// ⚠⚠ `#[ignore]` so it runs only when that test starts it: in the ordinary suite it would be
+    /// one more thread taking a pseudoterminal, and its own `opened == 1` would be false the moment
+    /// anything else in this binary opened one first.
+    ///
+    /// # ⛔⛔⛔ The kernel is the control, and it is the half no in-process counter can be trusted
+    /// # without
+    ///
+    /// A ledger that counts its own calls proves that the calls happened, not that they reached
+    /// `openpty` — and item 814's whole finding was reached by counting `openat("/dev/ptmx")` from
+    /// OUTSIDE. `/proc/self/fd` is that same reading taken from inside, so this ledger is checked
+    /// against the operating system rather than against itself. Linux only, because `/proc` is;
+    /// stated rather than silently skipped, which is this workspace's rule for a path no assertion
+    /// covers.
+    #[test]
+    #[ignore = "started by a_process_says_what_it_took_without_being_refused, in a process of its own"]
+    fn one_pseudoterminal_and_what_the_kernel_says_about_it() {
+        let before = ptmx_fds_now();
+        let pty = Pty::open(80, 24).expect("open a pty");
+        assert_eq!(
+            pty_demand(),
+            PtyDemand { live: 1, opened: 1 },
+            "one open in a process that has done nothing else is one held and one taken",
+        );
+        if let (Some(before), Some(after)) = (before, ptmx_fds_now()) {
+            assert_eq!(
+                after - before,
+                1,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 817: this process's own ledger says it took one \
+                 pseudoterminal and the KERNEL disagrees about how many `/dev/ptmx` descriptors it \
+                 holds. A counter that counts its own calls rather than the device is the thing \
+                 item 814 had to leave the process to check",
+            );
+        }
+
+        drop(pty);
+        assert_eq!(
+            pty_demand(),
+            PtyDemand { live: 0, opened: 1 },
+            "⛔⛔ closing it gives back the PLACE and not the TAKING — the second count is what \
+             says a process could have used a namespace up while holding almost none of it",
+        );
+    }
+
+    /// How many `/dev/ptmx` descriptors this process holds, according to the operating system —
+    /// `None` where that cannot be asked (anything without `/proc`, which is every platform this
+    /// crate supports except Linux).
+    fn ptmx_fds_now() -> Option<u64> {
+        let mut held = 0;
+        for entry in std::fs::read_dir("/proc/self/fd").ok()? {
+            let Ok(entry) = entry else { continue };
+            // ⚠ A descriptor can close between the listing and the `read_link`, and on this path
+            // that is ordinary rather than exceptional — the reader threads of any pane opened
+            // earlier are still running. A vanished entry is skipped, never counted.
+            if std::fs::read_link(entry.path()).is_ok_and(|to| to.as_os_str() == "/dev/ptmx") {
+                held += 1;
+            }
+        }
+        Some(held)
+    }
+
+    /// A directory of this test's own, named for the test and this process, under the system's
+    /// scratch space — removed by the caller once its assertions have read it.
+    ///
+    /// ⚠ [`sprag_scratch::scratch_root`] and not `std::env::temp_dir()` — register item 794. The
+    /// bare call answers a RELATIVE path when `TMPDIR` is set-and-empty, and `cargo test` stands
+    /// every binary in its own crate directory, so these files would land inside the repository
+    /// and `git status` cannot see the shape they land in.
+    fn scratch_dir(what: &str) -> PathBuf {
+        let dir =
+            sprag_scratch::scratch_root().join(format!("sprag-{what}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
     }
 }

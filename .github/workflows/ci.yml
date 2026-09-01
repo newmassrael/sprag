@@ -139,6 +139,18 @@ jobs:
       # where it can be, and the variable is set on every runner including macOS. The two spellings
       # are one letter apart in habit and a whole failure mode apart in effect (R343).
       - name: Test
+        # ⛔⛔⛔⛔⛔ WHERE THIS RUN RECORDS WHAT IT ASKED A PTY NAMESPACE FOR — register item 817.
+        #
+        # `sprag-terminal` has counted its own pseudoterminals since item 814 and could only ever
+        # say the number in a REFUSAL. That is the one moment it is too late to act on, and on
+        # macOS it is the only one — there is no `strace` there, so the count that diagnosed 814
+        # had to be taken on a Linux box nobody's CI runs on. Named here, every process in this
+        # sweep leaves its own file and the step below reads the largest.
+        #
+        # ⚠ `${{ runner.temp }}` and not `$RUNNER_TEMP`: this is `env:`, which is not a shell.
+        # `run:` a few lines down is, and uses the other spelling for that reason (R343).
+        env:
+          SPRAG_PTY_DEMAND: ${{ runner.temp }}/pty-demand
         run: |
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
           set -o pipefail
@@ -180,6 +192,32 @@ jobs:
       - name: The suite must not write the home of whoever ran it
         if: always()
         run: cargo run -q -p sprag-gate --bin ambient-home-guard
+
+      # ⛔⛔⛔⛔⛔ HOW MUCH OF A PTY NAMESPACE ONE PROCESS ASKED FOR — register item 817.
+      #
+      # Measured on this repository, 2026-09-02, by `strace`: ONE `sprag-host --lib` process opened
+      # `/dev/ptmx` 840 times. macOS PUBLISHES 511 in `kern.tty.ptmx_max`.
+      #
+      # ⚠⚠ What that pair does and does not say is `sprag_terminal::pty::ours_sentence`'s own rule,
+      # and b624a9b was the round that had to learn it: the published ceiling has never been shown
+      # to be the limit a refusal came from, so this is a CONDITIONAL — if a host does not hand a
+      # closed pseudoterminal straight back, this suite's own history is larger than that number.
+      # It is a fact about OUR demand. It picks no side about what refused.
+      #
+      # `if: always()` is the whole point rather than a habit: the run this number explains is the
+      # one that DIED of it, and a step that only ran after a green sweep would be silent at every
+      # failure it was built for.
+      #
+      # ⚠ It reports and does not yet refuse a size. Item 817's (2) and (3) — getting the demand
+      # under the smallest namespace this product runs on, and refusing growth — need a threshold,
+      # and one picked before the first honest macOS measurement is a number somebody keeps. What
+      # it DOES refuse is a reading that was not made: no directory, no file, or one it cannot
+      # parse. See `sprag_gate::pty_demand` for why none of those is a demand of zero.
+      - name: How much of a pty namespace one process asked for
+        if: always()
+        run: >
+          cargo run -q -p sprag-gate --bin pty-demand --
+          "$RUNNER_TEMP/pty-demand"
 
   pixel-linux:
     name: pixel (linux)
@@ -327,6 +365,18 @@ jobs:
       # where it can be, and the variable is set on every runner including macOS. The two spellings
       # are one letter apart in habit and a whole failure mode apart in effect (R343).
       - name: Test
+        # ⛔⛔⛔⛔⛔ WHERE THIS RUN RECORDS WHAT IT ASKED A PTY NAMESPACE FOR — register item 817.
+        #
+        # `sprag-terminal` has counted its own pseudoterminals since item 814 and could only ever
+        # say the number in a REFUSAL. That is the one moment it is too late to act on, and on
+        # macOS it is the only one — there is no `strace` there, so the count that diagnosed 814
+        # had to be taken on a Linux box nobody's CI runs on. Named here, every process in this
+        # sweep leaves its own file and the step below reads the largest.
+        #
+        # ⚠ `${{ runner.temp }}` and not `$RUNNER_TEMP`: this is `env:`, which is not a shell.
+        # `run:` a few lines down is, and uses the other spelling for that reason (R343).
+        env:
+          SPRAG_PTY_DEMAND: ${{ runner.temp }}/pty-demand
         run: |
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
           set -o pipefail
@@ -355,3 +405,29 @@ jobs:
       - name: The suite must not write the home of whoever ran it
         if: always()
         run: cargo run -q -p sprag-gate --bin ambient-home-guard
+
+      # ⛔⛔⛔⛔⛔ HOW MUCH OF A PTY NAMESPACE ONE PROCESS ASKED FOR — register item 817.
+      #
+      # Measured on this repository, 2026-09-02, by `strace`: ONE `sprag-host --lib` process opened
+      # `/dev/ptmx` 840 times. macOS PUBLISHES 511 in `kern.tty.ptmx_max`.
+      #
+      # ⚠⚠ What that pair does and does not say is `sprag_terminal::pty::ours_sentence`'s own rule,
+      # and b624a9b was the round that had to learn it: the published ceiling has never been shown
+      # to be the limit a refusal came from, so this is a CONDITIONAL — if a host does not hand a
+      # closed pseudoterminal straight back, this suite's own history is larger than that number.
+      # It is a fact about OUR demand. It picks no side about what refused.
+      #
+      # `if: always()` is the whole point rather than a habit: the run this number explains is the
+      # one that DIED of it, and a step that only ran after a green sweep would be silent at every
+      # failure it was built for.
+      #
+      # ⚠ It reports and does not yet refuse a size. Item 817's (2) and (3) — getting the demand
+      # under the smallest namespace this product runs on, and refusing growth — need a threshold,
+      # and one picked before the first honest macOS measurement is a number somebody keeps. What
+      # it DOES refuse is a reading that was not made: no directory, no file, or one it cannot
+      # parse. See `sprag_gate::pty_demand` for why none of those is a demand of zero.
+      - name: How much of a pty namespace one process asked for
+        if: always()
+        run: >
+          cargo run -q -p sprag-gate --bin pty-demand --
+          "$RUNNER_TEMP/pty-demand"

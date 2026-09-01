@@ -75,7 +75,9 @@ pub use processes::{
     foreground_leader_of,
 };
 #[cfg(unix)]
-pub use pty::{PaneEcho, PaneEndOfInput, PaneSignalKeys, SignalKey, Unraised};
+pub use pty::{
+    PaneEcho, PaneEndOfInput, PaneSignalKeys, PtyDemand, SignalKey, Unraised, pty_demand,
+};
 pub use registry::{
     Ended, KillOutcome, Located, LocatedWindow, OrderStep, PaneKillOutcome, PaneMoveError,
     PlaceHow, Session, SessionError, SessionId, SessionInfo, SessionRegistry, TreePane,

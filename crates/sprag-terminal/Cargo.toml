@@ -33,3 +33,7 @@ serde_json = { workspace = true }
 # not check -- `doubles::exec_of_a_held_writer` is where that is said. DEV-ONLY, and it takes no
 # dependencies of its own.
 sprag-gate = { workspace = true }
+# Where a test may put a scratch file (register item 794). `std::env::temp_dir()` answers a
+# RELATIVE path under `TMPDIR=`, and a unit test has no `CARGO_TARGET_TMPDIR` to reach for the way
+# an integration test does — so the one crate that asks this question is asked here too.
+sprag-scratch = { workspace = true }
