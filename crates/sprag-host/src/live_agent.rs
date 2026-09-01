@@ -5465,9 +5465,11 @@ fn a_reply_read_off_a_pane_the_previous_turn_filled_is_still_there() {
 ///
 /// # What this stages, and why it is the ordinary case
 ///
-/// An outer loop's `turn_prompt` is a FIXED sentence — `'Continue toward: ' + milestone + …` — and
-/// the confirmation needle is its leading run of columns. So from the second turn on, **the needle
-/// is a string the agent's own transcript is still showing**, and *"is the needle on the screen?"*
+/// An outer loop's `turn_prompt` is a FIXED sentence — since register item 800 it is fixed for the
+/// whole of a run rather than merely for its opening columns, because it no longer names the
+/// milestone — and the confirmation needle is its leading run of columns. So from the second turn
+/// on, **the needle is a string the agent's own transcript is still showing**, and *"is the needle
+/// on the screen?"*
 /// is answered YES by the previous turn before a byte of this one has been read. The submit then
 /// goes in on top of unread text, which the pty hands the program as one read of `…prompt…\r`
 /// rather than as a prompt and then a keystroke.
@@ -5533,7 +5535,8 @@ fn a_prompt_whose_confirmation_was_already_on_the_screen_still_starts_a_turn() {
     ///
     /// ⚠ The two prompts of a pair are identical for their first 40 columns and differ after it,
     /// which is what makes the second delivery meet the first one's echo. That is not contrived:
-    /// `turn_prompt` is `'Continue toward: ' + milestone`, fixed for the life of a run.
+    /// `turn_prompt` is fixed for the life of a run, and since register item 800 it is fixed
+    /// ENTIRELY — it stopped naming the milestone, so consecutive turns send the very same bytes.
     ///
     /// ⚠⚠ The multi-line pair is the document's own `start_prompt` composition — `North star:` /
     /// `Milestone:` / `What to carry:` / a report clause / a marker clause, joined with `\n` and

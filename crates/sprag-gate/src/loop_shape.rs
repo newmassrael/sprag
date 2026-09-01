@@ -116,8 +116,11 @@ pub fn document_states(scxml: &str) -> Vec<String> {
 }
 
 /// The value of `name="…"` in `tag`, up to the tag's own `>`.
+///
+/// ⚠ The tag's own `>` is the one OUTSIDE its attribute values — see [`tag_end`]. XML lets a value
+/// hold a bare `>`, and this document compares numbers inside expressions.
 fn attribute(tag: &str, name: &str) -> Option<String> {
-    let end = tag.find('>')?;
+    let end = tag_end(tag)?;
     let needle = format!("{name}=\"");
     let at = tag[..end].find(&needle)? + needle.len();
     let value = &tag[at..];
@@ -320,7 +323,12 @@ pub fn declared_acts(scxml: &str) -> usize {
 ///
 /// ⚠ An unterminated comment swallows the rest of the file, which is what a parser would do with
 /// it; a document that shipped one would not open at all.
-fn uncommented(scxml: &str) -> String {
+///
+/// ⚠⚠ PUBLIC since register item 800, whose gate reads the document from a test rather than from
+/// this module. A second copy of *what a comment is* is where two readers of the same file come to
+/// disagree — and this file's own subject is a needle that matched what a comment quoted.
+#[must_use]
+pub fn uncommented(scxml: &str) -> String {
     let mut kept = String::with_capacity(scxml.len());
     let mut rest = scxml;
     while let Some(open) = rest.find("<!--") {
@@ -333,6 +341,87 @@ fn uncommented(scxml: &str) -> String {
     }
     kept.push_str(rest);
     kept
+}
+
+/// One prompt the document COMPOSES — an `<assign>` whose `location` names a prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Composed {
+    /// The `location`, which is the prompt's name in the datamodel.
+    pub prompt: String,
+    /// The expression it is composed from, whitespace squeezed to single spaces.
+    ///
+    /// ⚠ Squeezed because rustfmt has no say here and the document wraps an expression wherever
+    /// the line ran out: a needle looking for `+ milestone +` would miss it across a wrap.
+    pub expr: String,
+}
+
+/// Every prompt the document composes, in document order — register item 800.
+///
+/// # ⚠⚠⚠ Why the parse is of the ASSIGN and not of the datamodel declaration
+///
+/// `<data id="turn_prompt" expr="''"/>` declares an empty string; the text an agent actually reads
+/// is put together later, in `priming`, out of parts. A reader that looked at the declarations
+/// would find no prompt naming anything and report a clean document — the vacuous green register
+/// item 799 measured.
+///
+/// ⚠⚠ A prompt is a `location` ENDING in `prompt`, which is this document's whole naming
+/// convention for them (`start_prompt`, `turn_prompt`, `reflect_prompt`, `end_prompt`,
+/// `stop_prompt`, `dispute_prompt`, `unverified_prompt`). A caller that wants a fixed list gets a
+/// list that goes stale; what this returns is whatever the document has, so a NEW prompt shows up
+/// unclassified rather than unnoticed.
+///
+/// # Panics
+///
+/// When an `<assign>` tag or one of its quoted attributes does not close. That is the reader having
+/// lost the document, and a walk that has stopped understanding its subject must not answer as if
+/// it had understood it.
+#[must_use]
+pub fn composed_prompts(scxml: &str) -> Vec<Composed> {
+    let text = uncommented(scxml);
+    let mut found = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("<assign") {
+        let after = &rest[at + "<assign".len()..];
+        let end = tag_end(after)
+            .unwrap_or_else(|| panic!("an `<assign` at byte {at} of the document never closes"));
+        rest = &after[end..];
+        let Some(prompt) = attribute(after, "location") else {
+            continue;
+        };
+        if !prompt.ends_with("prompt") {
+            continue;
+        }
+        // ⛔ A PROMPT WHOSE TEXT THIS READER CANNOT SEE IS RED, NOT ABSENT. SCXML also lets an
+        // `<assign>` carry its value as a child element; a prompt written that way would be
+        // composed out of something no caller here can judge, and answering *nothing to see* about
+        // it is how a gate goes green over the one prompt it was built for.
+        let expr = attribute(after, "expr").unwrap_or_else(|| {
+            panic!("`{prompt}` is assigned without an `expr` this reader can read")
+        });
+        found.push(Composed {
+            prompt,
+            expr: expr.split_whitespace().collect::<Vec<_>>().join(" "),
+        });
+    }
+    found
+}
+
+/// Where an opening tag ends, counting only a `>` that is OUTSIDE an attribute value.
+///
+/// ⚠⚠ XML lets an attribute value hold a bare `>`, and this document's own expressions compare
+/// numbers. It happens to write `&gt;` today, which is a HABIT and not a guarantee — and a parser
+/// that ends the tag on the first `>` would silently return an expression cut in half, which reads
+/// exactly like a prompt that stopped naming something.
+fn tag_end(after: &str) -> Option<usize> {
+    let mut quoted = false;
+    for (at, char) in after.char_indices() {
+        match char {
+            '"' => quoted = !quoted,
+            '>' if !quoted => return Some(at),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The Event I/O Processor type this crate's host serves — `crate`'s side of W3C SCXML 6.2.5.
@@ -726,6 +815,76 @@ mod tests {
             "⚠ an unterminated comment swallows the rest, which is what a parser would do with it: \
              a document that shipped one would not open at all, so counting its tail as acts would \
              be counting a file nothing can run.",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY SHAPE A COMPOSED PROMPT REALLY HAS** — register item 800, and the reader
+    /// its gate stands on.
+    ///
+    /// # ⚠⚠⚠⚠ Why the cases are the awkward ones rather than the tidy one
+    ///
+    /// The assigns in this document wrap wherever the line ran out, sit beside assigns that are not
+    /// prompts at all, and are QUOTED in the commentary — this file's house style is to show the
+    /// send a state used to carry. Each of those is a way a reader answers confidently about
+    /// something that is not there, and register item 803's lesson is that a branch written for
+    /// *the next document* has to be driven now.
+    #[test]
+    fn the_prompt_reader_sees_a_wrapped_assign_and_declines_what_is_not_one() {
+        let wrapped = "<assign location=\"turn_prompt\"\n        expr=\"'go on' +\n              \
+                       standing\"/>";
+        assert_eq!(
+            composed_prompts(wrapped),
+            [Composed {
+                prompt: "turn_prompt".to_owned(),
+                expr: "'go on' + standing".to_owned(),
+            }],
+            "an expression the document wrapped is one expression, or a needle misses it across \
+             the wrap",
+        );
+
+        // ⚠ DECLINED, three ways, and each is a way of answering about nothing.
+        assert!(
+            composed_prompts("<!-- <assign location=\"turn_prompt\" expr=\"'quoted'\"/> -->")
+                .is_empty(),
+            "a prompt this file's commentary QUOTES is not a prompt the document composes",
+        );
+        assert!(
+            composed_prompts("<data id=\"turn_prompt\" expr=\"''\"/>").is_empty(),
+            "the datamodel declares an EMPTY prompt; what an agent reads is composed later, and a \
+             reader that looked here would find no prompt naming anything and call that clean",
+        );
+        assert!(
+            composed_prompts("<assign location=\"turns\" expr=\"turns + 1\"/>").is_empty(),
+            "an assign that is not a prompt is not one",
+        );
+
+        // ⛔⛔⛔⛔⛔ A BARE `>` INSIDE AN ATTRIBUTE, WITH THE ATTRIBUTES IN THE OTHER ORDER. The
+        //   document writes `&gt;` and puts `location` first — both HABITS, neither a guarantee.
+        //
+        // ⚠⚠ THE ORDER IS THE WHOLE CASE, and the first draft of it was a DEAD CONTROL: written
+        //   with `location` first, a reader that ended the tag at the first `>` still answered
+        //   correctly, because the name it needed had already gone by. The mutation that removes
+        //   the quote-awareness was GREEN against it. Only when the `>` comes BEFORE the name does
+        //   ending early lose the prompt — and losing a prompt is this gate reporting a clean
+        //   document about one it never read.
+        assert_eq!(
+            composed_prompts("<assign expr=\"turns > 0 ? a : b\" location=\"end_prompt\"/>"),
+            [Composed {
+                prompt: "end_prompt".to_owned(),
+                expr: "turns > 0 ? a : b".to_owned(),
+            }],
+            "the tag ends at the `>` that is outside the quotes, not at the first one",
+        );
+
+        // ⚠ And the real document is the population the gate above measures.
+        let document = std::fs::read_to_string(crate::sources::workspace_root().join(DOCUMENT))
+            .expect("the loop's document is part of this workspace");
+        let composed = composed_prompts(&document);
+        assert!(
+            composed.iter().any(|one| one.prompt == "start_prompt")
+                && composed.iter().any(|one| one.prompt == "turn_prompt"),
+            "the two prompts item 800 is about must both be found, or the reader is pointed \
+             somewhere else: {composed:?}",
         );
     }
 }

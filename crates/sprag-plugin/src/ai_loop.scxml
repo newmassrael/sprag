@@ -3058,8 +3058,47 @@
                     carried +
                     'Report what you did and what is left.' + '\n' +
                     done_instruction"/>
+      <!--
+        ⛔⛔⛔⛔⛔ **THE MILESTONE IS NOT RETYPED HERE** — register item 800, and the
+        owner asked for it in as many words: *"why is it normal to keep typing the
+        same prompt that means nothing?"*
+
+        ⚠⚠⚠⚠⚠ THE ARGUMENT IS NOT NEW. It is the one THIS FILE already makes three
+        times, about three other parts of the same two prompts:
+
+        * `carried` goes into `start_prompt` ONLY, because *"in `turn_prompt` the
+          same line would be re-sent on every turn of a session that has already
+          read it"*;
+        * `working_rules` likewise, because it *"would retype them at an agent
+          whose session already holds them"*;
+        * `standing` is the one part that IS retyped, and the comment on it says
+          why: it is a ruling that overrides the milestone wherever the two
+          conflict, so an agent has to be holding it on the turn it applies.
+
+        The milestone had none of those sentences. It was the default nobody
+        re-read, and it is the largest of the four: measured on this repository's
+        own loop, 1,224 bytes on every turn of runs whose turn counts reach 254.
+
+        ⚠⚠ WHAT MAKES THE PREMISE TRUE, asked of the four edges that send this
+        rather than assumed: `resume`, both `judge` edges and `reflect.none` all
+        carry the SAME session on to another turn, and every session that reaches
+        them was greeted by `start_prompt` — which does name the milestone. A
+        session that has lost its context does not arrive here at all; it goes
+        through `restarting`, which opens a NEW one and greets it.
+
+        ⚠ WHAT IS LEFT, said rather than implied: a live session that is handed a
+        NEW milestone is still re-briefed in full, because `reviewing` returns
+        through `priming` and `priming` greets it as if it were new. That is the
+        same defect wearing the other prompt, it is what this repository's own
+        loop meets on every turn, and it is register item 800's remaining half.
+
+        ⛔ The rule is held by `sprag-gate`'s
+        `a_live_session_is_not_told_the_milestone_it_already_has`, not by this
+        comment: a claim about which prompts may name the milestone is prose
+        until something re-reads it.
+      -->
       <assign location="turn_prompt"
-              expr="'Continue toward: ' + milestone + '\n' +
+              expr="'Continue toward the milestone this session was given.' + '\n' +
                     standing +
                     'Do the next smallest thing that is verifiable, then report.' + '\n' +
                     done_instruction"/>
@@ -4341,10 +4380,16 @@
       <!--
         ⚠⚠⚠ THE ORDINARY TURN PROMPT IS COMPOSED IN RATHER THAN REPLACED, and
         that is the difference between telling an agent it was refused and
-        telling it to stop. `turn_prompt` carries the milestone, the standing
-        instructions and the marker instruction — everything the agent needs to
-        go on working — so a refusal that replaced it would answer the check by
-        taking the work away.
+        telling it to stop. `turn_prompt` carries the standing instructions, the
+        marker instruction and the order to go on working — everything the turn
+        this refusal bought needs — so a refusal that replaced it would answer
+        the check by taking the work away.
+
+        ⚠⚠ IT NO LONGER CARRIES THE MILESTONE, and nothing here needs it to:
+        register item 800 took that out of `turn_prompt` because the session
+        reading this refusal is the same one `start_prompt` greeted. What this
+        edge adds is the reason the turn was bought, which is exactly what the
+        session does NOT already hold.
 
         ⚠ Composed on ENTRY for `stopping`'s reason: the parts cannot have
         changed since, and the check's words do not exist until the edge that got
@@ -4460,9 +4505,12 @@
       </if>
       <!--
         ⚠⚠⚠ THE ORDINARY TURN PROMPT IS COMPOSED IN RATHER THAN REPLACED,
-        `disputing`'s argument unchanged: `turn_prompt` carries the milestone and
-        the standing instructions, so a prompt that replaced it would answer a
-        broken checker by taking the work away.
+        `disputing`'s argument unchanged: `turn_prompt` carries the standing
+        instructions and the order to go on working, so a prompt that replaced it
+        would answer a broken checker by taking the work away.
+
+        ⚠⚠ AND NOT THE MILESTONE, since register item 800: the session reading
+        this was greeted by `start_prompt` and is still holding it.
       -->
       <assign location="unverified_prompt"
               expr="unverified_opening + ' ' + unverified_said + '\n' + turn_prompt"/>
@@ -4858,13 +4906,30 @@
       item 523, and the reason this door no longer goes straight to `working`.
 
       `reviewing` is reached by ONE edge, `reflect.applied`, so every run
-      standing here has just adopted a new milestone. The text a working turn
-      actually carries, `turn_prompt`, is composed in `priming` and NOWHERE
-      ELSE. A door that kept the session by going straight back to work left the
-      run driving toward its ORIGINAL milestone while being judged against the
-      new one, for ever. Measured on run 20: the walk read
+      standing here has just adopted a new milestone. A door that kept the
+      session by going straight back to work left the run driving toward its
+      ORIGINAL milestone while being judged against the new one, for ever.
+      Measured on run 20: the walk read
       `Reflecting, ReflectApplied, Reviewing, ReviewNone, Working` while the
       pane's prompt still named the milestone the run had moved past.
+
+      ⚠⚠⚠⚠ WHAT THAT USED TO REST ON, AND WHAT IT RESTS ON NOW — register item
+      800. The sentence here used to be *`turn_prompt` is composed in `priming`
+      and NOWHERE ELSE*, so re-entering `priming` was how a new milestone reached
+      a working turn at all. `turn_prompt` no longer names the milestone, so this
+      door's job is no longer recomposition: it is that **the only prompt which
+      states the milestone is the one `priming` sends**, and a run that adopted a
+      new one has to be told it once.
+
+      ⛔⛔⛔ AND THAT IS WHERE ITEM 800's REMAINING HALF LIVES. `priming` GREETS —
+      `start_prompt` is the north star, the milestone, the reference, the working
+      rules and the standing instructions, written for *"every session of a run,
+      the first and every replacement `restarting` opens"*. A run arriving from
+      `reviewing` is NOT a new session; it is a live one that needs the new
+      milestone and nothing else. On this repository's own loop, which reflects
+      every turn, that means the whole greeting is retyped on every turn — the
+      exact shape the owner asked about, wearing the other prompt. The repair is
+      a door that tells a live session what CHANGED, and it is not this round's.
 
       ⚠⚠⚠ `priming` IS NOT A SESSION REPLACEMENT, and the difference is what
       keeps this door cheap. `restarting` is what replaces a session, and it

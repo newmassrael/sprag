@@ -20836,9 +20836,20 @@ mod tests {
         const ROOMY: i64 = 800_000;
         /// What the run is briefed with, and what it must STOP being told once it has moved on.
         const FIRST: &str = "reach the first checkpoint";
-        /// The label `turn_prompt` opens with — what a person reads off the pane to see which
-        /// milestone the loop is actually driving toward.
-        const CARRIES: &str = "Continue toward:";
+        /// The label the prompt that NAMES a milestone opens that line with — what a person reads
+        /// off the pane to see which one the loop is actually driving toward.
+        ///
+        /// ⚠⚠⚠⚠ THIS USED TO BE `Continue toward:`, `turn_prompt`'s opening — register item 800.
+        /// That prompt no longer names the milestone at all: a live session is not handed again
+        /// what `start_prompt` already gave it. So the label to read off the pane is the greeting's,
+        /// and this gate's claim is unchanged — *the milestone the pane was last told is the one
+        /// the run adopted* — while the prompt carrying it is now the one `priming` sends.
+        ///
+        /// ⛔⛔⛔ AND THAT IS ITEM 800's REMAINING HALF, VISIBLE FROM HERE. This run KEPT its
+        /// session (the control below asserts it), and it is still greeted in full — north star,
+        /// milestone, reference, working rules — because `reviewing` returns through `priming` and
+        /// `priming` greets. What a live session actually needed was the one thing that CHANGED.
+        const CARRIES: &str = "Milestone: ";
 
         let borrowed =
             crate::testing::MEASURED_HERE.reading(crate::testing::A_PLAIN_AGENT_SESSION.context);
@@ -20984,10 +20995,11 @@ mod tests {
             carried.contains(NEXT),
             "⛔⛔⛔ THE REFLECTION MOVED AND THE PROMPT DID NOT. The last `{CARRIES}` this pane \
              received is {carried:?}, and the milestone this run adopted is {NEXT:?}. The \
-             datamodel moved — `reflect.applied` assigns it — but `turn_prompt` is composed in \
-             `priming` alone, and the door this run took back to `working` keeps the session and \
-             never enters it. That is the livelock run 20 died in: judged against the new \
-             milestone, briefed on the old one, for ever. Walked {walked:?}",
+             datamodel moved — `reflect.applied` assigns it — but the only prompt that STATES a \
+             milestone is the one `priming` sends, so a door back to `working` that never enters \
+             `priming` leaves the agent working toward the old one. That is the livelock run 20 \
+             died in: judged against the new milestone, briefed on the old one, for ever. \
+             Walked {walked:?}",
         );
         assert!(
             !carried.contains(FIRST),

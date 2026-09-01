@@ -6294,10 +6294,30 @@ mod tests {
              Before `reflecting` existed these were ONE and SIX. The instruction is asked-for {asked} \
              times and said {said} times. Walked {walk:?}",
         );
+        // ⚠⚠⚠⚠⚠ **THE SHARPER HALF, AND WHICH PROMPT NOW CARRIES IT** — register item 800.
+        //
+        // The relation above is a history; what makes it the loop's STANDING behaviour is that the
+        // text it will send next still carries the instruction. That used to be asserted of
+        // `turn_prompt`, which named the milestone and so had to carry what overrides it. It no
+        // longer names the milestone — a live session is not handed again what `start_prompt` gave
+        // it — so item 148's rule *no prompt may ask for the milestone without carrying what
+        // overrides it* now binds the GREETING.
+        //
+        // ⚠⚠ AND THE TURN PROMPT STILL CARRIES THE INSTRUCTION, which is asserted rather than
+        // dropped: `standing` is the one part this document retypes on purpose, and its own comment
+        // says why — a ruling that overrides the milestone has to be in the agent's hands on the
+        // turn it applies, not left behind in a greeting several turns back.
         assert!(
-            authored.turn.contains(AIM) && authored.turn.contains(INSTEAD),
-            "⚠⚠⚠ AND THE SHARPER HALF: what the loop will say NEXT carries both, so the relation \
-             above is not a history — it is the loop's standing behaviour: {:?}",
+            authored.start.contains(AIM) && authored.start.contains(INSTEAD),
+            "⚠⚠⚠ AND THE SHARPER HALF: the prompt that ASKS for the milestone must carry what \
+             overrides it, or the relation above is a history rather than the loop's standing \
+             behaviour: {:?}",
+            authored.start,
+        );
+        assert!(
+            !authored.turn.contains(AIM) && authored.turn.contains(INSTEAD),
+            "⚠⚠ ITEM 800: a working turn carries the standing instruction and does NOT re-type the \
+             milestone the session was already given: {:?}",
             authored.turn,
         );
         assert!(
@@ -6870,10 +6890,17 @@ mod tests {
              hand a fresh agent two checkpoints and no way to tell which is current: {:?}",
             authored.start,
         );
+        // ⚠⚠⚠⚠ **AND THE LATER TURNS DO NOT SAY IT AGAIN** — register item 800, which turned this
+        // assertion around. It used to read `authored.turn.contains(PROPOSED)`: every later turn of
+        // the replacement session named the new milestone, which was true and was the defect. The
+        // greeting above is where a fresh agent is told; a session that has been told holds it, and
+        // retyping the largest thing the loop was given on every turn is what the owner asked
+        // about. ⚠ The claim it replaces is not lost — it is the assertion two blocks up, on
+        // `authored.start`, which is the prompt that greets.
         assert!(
-            authored.turn.contains(PROPOSED),
-            "⚠⚠ every later turn of the replacement session works toward the same new milestone: \
-             {:?}",
+            !authored.turn.contains(PROPOSED),
+            "⚠⚠ ITEM 800: the replacement session was greeted with the new milestone and must not \
+             be handed it again on every turn: {:?}",
             authored.turn,
         );
 
@@ -14600,11 +14627,23 @@ mod tests {
     /// the run then judges as though it were about the work. **A blank prompt is worse than a
     /// re-typed one**, and worse than the honest `interrupted` a restart reports today.
     ///
-    /// So this asks for the bytes AND for the words. `turn_prompt` is `<assign>`ed as
-    /// `'Continue toward: ' + milestone + …` by an entry action, which makes the brief's own
-    /// milestone a needle that can only reach that pane through the run log: the resuming loop was
-    /// built from the same document and briefed with the same brief, and it still could not
-    /// compose that sentence, because composing it is the writing `enter_at` skips.
+    /// So this asks for the bytes AND for the words. `turn_prompt` is `<assign>`ed by an entry
+    /// action, so the sentence below can only reach that pane if the entry action ran: the resuming
+    /// loop was built from the same document and briefed with the same brief, and it still could
+    /// not compose that sentence, because composing it is the writing `enter_at` skips.
+    ///
+    /// ⚠⚠⚠⚠ **WHAT THIS NEEDLE USED TO BE, AND WHAT WAS TRADED FOR IT** — register item 800. It
+    /// was `'Continue toward: ' + milestone`, which made the BRIEF'S OWN milestone the needle and
+    /// so proved a second thing for free: that a value carried in the brief had reached the pane
+    /// through the run log. Item 800 took the milestone out of `turn_prompt` — a live session is
+    /// not told again what `start_prompt` already gave it — and that prompt now holds **no value
+    /// from the brief at all**, so the second claim cannot be made here any more. It is stated as a
+    /// LOSS rather than quietly dropped: what this arm proves today is that the entry action ran
+    /// and the prompt was not empty, which is what its name says and no more.
+    ///
+    /// ⚠ The sentence is the document's, not one spelled twice: `sprag-gate`'s
+    /// `a_live_session_is_not_told_the_milestone_it_already_has` quotes it and goes red if it is
+    /// reworded, so this needle cannot rot into one that matches nothing.
     ///
     /// ⚠⚠ **THE CONTROL IS THAT IT DELIVERED AT ALL.** A run that put nothing to its peer would
     /// satisfy *the prompt was not empty* vacuously, which is exactly what a resume that refused to
@@ -14631,9 +14670,9 @@ mod tests {
         let saved = ran.place().expect("a loop says where its machine is");
         working.lifecycle().expect("lifecycle").close(worked);
 
-        // ⚠ THE DOCUMENT'S OWN COMPOSITION, not a sentence spelled here: whatever a turn prompt is
-        // reworded to say, it opens by naming the milestone it is continuing toward.
-        let needle = format!("Continue toward: {}", brief_for(40).milestone);
+        // ⚠ THE DOCUMENT'S OWN COMPOSITION. `turn_prompt` opens with this and an unprimed machine
+        // cannot produce it, which is the whole subject; the gate named above holds the wording.
+        let needle = "Continue toward the milestone this session was given.".to_owned();
 
         let (resumed_in, resumed_pane) = standin_agent(2);
         let resuming = supervised(&resumed_in);
