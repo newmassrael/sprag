@@ -170,3 +170,17 @@ workflow_gate() {
     rm -rf "$mirror"
     return "$status"
 }
+
+# ⛔⛔⛔⛔⛔ RUN DIRECTLY, THIS FILE SAYS WHAT IT IS — register item 819, and `doc-gate.sh` carries
+# the measurement that made this a debt: running a SOURCED library exits 0 having done nothing, and
+# a person checking their work by hand reads that as a pass.
+#
+# ⚠ There is no arm that can be offered here: every function in this file takes a label, a revision
+# and a list of paths that only a hook knows. So the answer is the refusal `scratch-guard.sh` has
+# always given — a usage line and a non-zero status — and the usage names the functions rather than
+# a command, because a command is the thing this file does not have.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    echo "content-gate.sh is a LIBRARY, not a command: it is sourced by pre-commit and pre-push." >&2
+    echo "It offers fmt_gate / workflow_gate, each taking <label> <rev> <path>... from a hook." >&2
+    exit 2
+fi

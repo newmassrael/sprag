@@ -274,7 +274,19 @@ ident_gate_selftest() {
     [ "$fail" -eq 0 ]
 }
 
-if [ "${1:-}" = "--selftest" ]; then
-    ident_gate_selftest
-    exit $?
+# ⛔⛔⛔⛔⛔ AND EVERY OTHER DIRECT RUN IS REFUSED — register item 819, and the file the register
+# named as NOT having this defect. It has it: `--selftest` was the only arm, so `bash
+# .githooks/ident-gate.sh` exited 0 with no output, exactly like the two the item was filed for.
+# Re-measuring the register's own sentence is what found it (this workspace's rule 4).
+#
+# ⚠ `hosted-read.sh` and `loop-read.sh` really are different, and the difference is what this arm
+# restores: they ANSWER a bare invocation (a gap report, an owed list). A file with nothing to say
+# says so with a status, which is `scratch-guard.sh`'s shape.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    case "${1:-}" in
+        --selftest) ident_gate_selftest; exit $? ;;
+        *) echo "ident-gate.sh is a LIBRARY, not a command: it is sourced by pre-commit." >&2
+           echo "usage: ident-gate.sh --selftest   (the gate itself needs a hook's arguments)" >&2
+           exit 2 ;;
+    esac
 fi

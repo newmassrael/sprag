@@ -48,3 +48,21 @@ doc_gate() {
     RUSTDOCFLAGS="-D warnings" CARGO_TARGET_DIR=target/doc-gate \
         cargo doc --workspace --no-deps --document-private-items
 }
+
+# ⛔⛔⛔⛔⛔ RUN DIRECTLY, THIS FILE SAYS WHAT IT IS — register item 819, the FIFTH shape in which a
+# hook passes in silence.
+#
+# ⚠⚠ MEASURED, and by this gate's own author walking into it: a round ran `bash .githooks/doc-gate.sh`
+# to check its work before committing, got **exit 0 and no output**, read that as a pass, and was
+# refused by the real gate inside the commit hook one minute later (two rustdoc
+# `private_intra_doc_links`). Nothing was wrong with the file — it defines a function and is
+# SOURCED, so running it does exactly nothing, successfully.
+#
+# ⚠ That is worse than a hook that fails to check something: it defeats the attempt to check by
+# hand. `scratch-guard.sh` has always had this dispatch and says `usage` with a non-zero status;
+# this is the same answer, and the usage line names the one way to invoke it.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    echo "doc-gate.sh is a LIBRARY, not a command: it is sourced by pre-commit and pre-push." >&2
+    echo "To run the gate by hand: bash -c '. .githooks/doc-gate.sh && doc_gate'" >&2
+    exit 2
+fi
