@@ -1968,6 +1968,46 @@ mod tests {
         );
     }
 
+    /// **A SESSION THAT IS STILL COMING UP IS CLAIMED BY NOBODY, AND A BARRIER TWO CRATES UP RESTS
+    /// ON THAT** — register item 822.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this belongs here rather than beside the barrier it protects
+    ///
+    /// `sprag_plugin::readiness::ReadyWhen::Settles` clears when the supervisor reports THAT AGENT
+    /// at rest, and a fresh agent CLI paints a banner seconds before it raises its first dialog. If
+    /// a manifest claimed the pane during that window the verdict would be `claude`, `Idle` — true
+    /// of the instant and false of the session — and the loop would type its prompt into the pane
+    /// the trust dialog was about to appear on. That is the one thing that module exists to prevent,
+    /// and item 822 is a CI run that looked exactly like it.
+    ///
+    /// It does NOT happen, and this test is why: every fingerprint in [`claude`] needs the title
+    /// glyph, the spinner, a footer, or the name AND a choice list — **and a banner has none of
+    /// them.** So the window is closed one crate BELOW the barrier, by nobody being named.
+    ///
+    /// ⚠⚠ **THAT WAS PROSE UNTIL THIS TEST, AND PROSE IS NOT A GATE.** The safety is a property of
+    /// this manifest's fingerprints, so a fifth one written later — *claim any pane whose title
+    /// mentions the agent*, say — would reopen it silently, two crates from anything that would
+    /// notice. Asserting it here is what makes the barrier's assumption fail LOUDLY at the layer
+    /// that owns it.
+    ///
+    /// ⚠ The lines are the stand-in's own second life
+    /// (`sprag_plugin::testing::standin_agent_refusing`), so the two fixtures model one moment.
+    #[test]
+    fn a_session_still_painting_its_banner_is_claimed_by_nobody() {
+        let coming_up = &["starting up", "starting up", "starting up"];
+        let v = verdict(coming_up, None);
+        assert_eq!(
+            v.agent, None,
+            "no glyph, no spinner, no footer and no dialog — so no fingerprint holds and the \
+             barrier upstairs cannot read a session that has not come up as one at rest",
+        );
+        assert_eq!(
+            v.state,
+            AgentState::Unknown,
+            "and an unclaimed pane says it knows nothing, rather than guessing at rest",
+        );
+    }
+
     #[test]
     fn a_dialog_further_up_than_the_window_does_not_match() {
         let mut lines: Vec<&str> = TRUST_DIALOG.to_vec();

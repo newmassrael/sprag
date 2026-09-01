@@ -1088,7 +1088,7 @@ const SEQ_MARKER: &str = "SEQ";
 /// ⚠ The monotone latch is KEPT anyway, and not as decoration: the refusing peer CLEARS the screen
 /// between turns, so there is an instant with no counter on it at all.
 ///
-/// See also [`has_painted`], which is the other half of what a supervisor must not over-claim.
+/// See also [`names_an_agent`], which is the other half of what a supervisor must not over-claim.
 ///
 /// ⚠⚠⚠ **AND THE LATCH IS PER PANE, which a session REPLACEMENT is what measured.** One `AgentStateSource`
 /// answers about every pane it is asked about, and it held ONE high-water mark — so when a loop's
@@ -1131,8 +1131,55 @@ fn peer_seq(rows: &[String]) -> u64 {
 /// R350 recorded this from the other side: *"the stand-in agent paints no title, no spinner, no
 /// footer, so the pane has NO agent key before its first event"* — the property that made an
 /// end-to-end proof possible there, over-claimed here.
-fn has_painted(rows: &[String]) -> bool {
-    rows.iter().any(|row| !row.trim().is_empty())
+///
+/// # ⚠⚠⚠⚠⚠ AND *"HAS IT PAINTED ANYTHING"* WAS STILL THE WRONG LINE — register item 822
+///
+/// That guard closed the window between the SPAWN and the first byte, and left open the window
+/// between the first BYTE and the agent being recognisable — which is the wider of the two and the
+/// one a session replacement lands in. A fresh CLI paints a banner seconds before its first dialog,
+/// so a supervisor keyed on *any text at all* answered `claude`, `Idle` about a session that had not
+/// come up, the barrier cleared, and the loop typed its prompt at the pane the dialog was about to
+/// appear on. Measured: `94827b6`'s `headless (linux)` (exit 101), reproduced locally every run by
+/// giving the stand-in's second life the pause a real CLI takes between the two.
+///
+/// ⚠⚠ **THE SHIPPING DETECTOR DOES NOT DO THIS, AND THAT IS WHAT MAKES IT A FIXTURE DEFECT RATHER
+/// THAN A PRODUCT ONE.** Every fingerprint in `sprag_detect::claude` needs the title glyph, the
+/// spinner, a footer, or the agent's name AND a choice list — a banner has none of them, so a real
+/// manifest claims nothing there and the barrier upstairs cannot come down. That is asserted where
+/// it lives, by `a_session_still_painting_its_banner_is_claimed_by_nobody`; this function is the
+/// stand-in's side of the same line.
+///
+/// # ⚠⚠ What stands in for a fingerprint here, and why it LATCHES
+///
+/// These peers paint no agent UI at all, so the honest translation of *the manifest recognises it*
+/// is the peer's own announcement ([`AGENT_READY`]) — or a dialog on the screen, which is exactly
+/// the pair the shipping onboarding fingerprint requires.
+///
+/// ⚠ The latch is [`SeqHighWater`]'s, for a reason one line over: the refusing peer CLEARS its
+/// screen between turns, so the announcement scrolls away while the agent is still there. A real
+/// `Tracker` remembers an identity once it is established for the same reason. **Per PANE**, so a
+/// replacement — a different pane — starts unrecognised, which is the whole point.
+type AgentSeen = Arc<Mutex<std::collections::HashSet<PaneId>>>;
+
+/// The announcement every stand-in peer prints once it will take input.
+///
+/// ⚠ Spelled once because TWO readers compare it: [`started`], which is how a fixture waits for its
+/// peer, and [`names_an_agent`], which is how a RUN comes to see one. The peers' own scripts print
+/// the same bytes; a mismatch there is loud rather than silent, since `started` then waits out its
+/// whole bound and the gate fails at the fixture instead of at the subject.
+pub(crate) const AGENT_READY: &str = "AGENT-READY";
+
+/// Whether this pane has yet shown anything a manifest would have claimed it by — see [`AgentSeen`].
+fn names_an_agent(seen: &AgentSeen, pane: PaneId, rows: &[String], asking: bool) -> bool {
+    let mut known = seen.lock().expect("the identity mutex");
+    if known.contains(&pane) {
+        return true;
+    }
+    if asking || rows.iter().any(|row| row.contains(AGENT_READY)) {
+        known.insert(pane);
+        return true;
+    }
+    false
 }
 
 /// The monotone latch [`peer_seq`] is read through — **one high-water mark PER PANE**.
@@ -1243,7 +1290,7 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
     started(
         &WorkspacePaneAccess::new(Arc::clone(&workspace)),
         pane,
-        "AGENT-READY",
+        AGENT_READY,
     );
     (workspace, pane)
 }
@@ -1336,7 +1383,7 @@ pub(crate) fn standin_agent_that_leaves() -> (Arc<Mutex<Workspace>>, PaneId) {
     started(
         &WorkspacePaneAccess::new(Arc::clone(&workspace)),
         pane,
-        "AGENT-READY",
+        AGENT_READY,
     );
     (workspace, pane)
 }
@@ -1409,7 +1456,7 @@ done"
     started(
         &WorkspacePaneAccess::new(Arc::clone(&workspace)),
         pane,
-        "AGENT-READY",
+        AGENT_READY,
     );
     (workspace, pane)
 }
@@ -1483,7 +1530,7 @@ pub(crate) fn standin_agent_finishing(prompts_before_done: u32) -> (Arc<Mutex<Wo
     started(
         &WorkspacePaneAccess::new(Arc::clone(&workspace)),
         pane,
-        "AGENT-READY",
+        AGENT_READY,
     );
     (workspace, pane)
 }
@@ -1579,7 +1626,7 @@ pub(crate) fn standin_agent_whose_service_fails(
     started(
         &WorkspacePaneAccess::new(Arc::clone(&workspace)),
         pane,
-        "AGENT-READY",
+        AGENT_READY,
     );
     (workspace, pane)
 }
@@ -1700,7 +1747,7 @@ done"
     started(
         &WorkspacePaneAccess::new(Arc::clone(&workspace)),
         pane,
-        "AGENT-READY",
+        AGENT_READY,
     );
     (workspace, pane)
 }
@@ -2212,7 +2259,7 @@ done"
     started(
         &WorkspacePaneAccess::new(Arc::clone(&workspace)),
         pane,
-        "AGENT-READY",
+        AGENT_READY,
     );
     (workspace, pane)
 }
@@ -2313,6 +2360,7 @@ LIVES='ONCE_MARKER'; \
 if [ -n \"$LIVES\" ] && [ -e \"$LIVES\" ]; then \
   stty -echo; \
   i=0; while [ $i -lt 6 ]; do printf 'starting up\\n'; i=$((i+1)); done; \
+  sleep 0.4; \
   printf 'Choose an approach\\n'; \
   printf 'Which way should I build this?\\n'; \
   printf '\\342\\235\\257 1. The quick one\\n'; \
@@ -2386,7 +2434,7 @@ done"
     started(
         &WorkspacePaneAccess::new(Arc::clone(&workspace)),
         pane,
-        "AGENT-READY",
+        AGENT_READY,
     );
     (workspace, pane)
 }
@@ -2417,6 +2465,7 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
     let source = {
         let workspace = Arc::clone(workspace);
         let high: SeqHighWater = Arc::default();
+        let identified: AgentSeen = Arc::default();
         let last_menu: Mutex<Option<std::time::Instant>> = Mutex::new(None);
         Arc::new(move |id: PaneId| {
             let rows = WorkspacePaneAccess::new(Arc::clone(&workspace))
@@ -2440,9 +2489,11 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
                     } else {
                         AgentState::Idle
                     },
-                    // ⚠⚠⚠ ONLY ONCE THE PANE HAS PAINTED — see [`has_painted`]. A blank pane naming
-                    // an agent is a barrier that comes down before the program exists.
-                    agent: has_painted(&rows).then(|| "claude".to_string()),
+                    // ⚠⚠⚠ ONLY ONCE THIS PANE HAS SHOWN SOMETHING A MANIFEST WOULD CLAIM IT BY — see
+                    // [`names_an_agent`]. A pane still painting its banner naming an agent is a
+                    // barrier that comes down before the session has come up.
+                    agent: names_an_agent(&identified, id, &rows, asking.is_some())
+                        .then(|| "claude".to_string()),
                     authority: Authority::Scraped {
                         rule: Some("dialog-choice-list".to_string()),
                     },
@@ -2505,6 +2556,7 @@ impl DialogBetweenTheReads {
             let workspace = Arc::clone(workspace);
             let raised = Arc::clone(&raised);
             let grace = Arc::clone(&grace);
+            let identified: AgentSeen = Arc::default();
             Arc::new(move |id: PaneId| {
                 let rows = WorkspacePaneAccess::new(Arc::clone(&workspace))
                     .pane_full_lines(id)
@@ -2521,7 +2573,8 @@ impl DialogBetweenTheReads {
                     } else {
                         AgentState::Idle
                     },
-                    agent: has_painted(&rows).then(|| "claude".to_string()),
+                    agent: names_an_agent(&identified, id, &rows, blocked)
+                        .then(|| "claude".to_string()),
                     authority: Authority::Scraped {
                         rule: Some("dialog-choice-list".to_string()),
                     },
@@ -2614,17 +2667,21 @@ pub(crate) fn supervised_calling(
     let source = {
         let workspace = Arc::clone(workspace);
         let high: SeqHighWater = Arc::default();
+        let identified: AgentSeen = Arc::default();
         Arc::new(move |id: PaneId| {
             let rows = WorkspacePaneAccess::new(Arc::clone(&workspace))
                 .pane_full_lines(id)
                 .unwrap_or_default();
             let seq = latched(&high, id, &rows);
+            let showing = *state.lock().expect("the state this gate is holding");
             Some(crate::access::AgentObservation {
                 holding: None,
-                state: *state.lock().expect("the state this gate is holding"),
-                // ⚠⚠ ONLY ONCE THE PANE HAS PAINTED — see [`has_painted`], and the same reason as its
-                // sibling above: `Settles` names an agent, and a blank pane must not.
-                agent: has_painted(&rows).then(|| "claude".to_string()),
+                state: showing,
+                // ⚠⚠ ONLY ONCE THIS PANE HAS SHOWN SOMETHING A MANIFEST WOULD CLAIM IT BY — see
+                // [`names_an_agent`], and the same reason as its sibling above: `Settles` names an
+                // agent, and a session still coming up must not be one.
+                agent: names_an_agent(&identified, id, &rows, showing == AgentState::Blocked)
+                    .then(|| "claude".to_string()),
                 authority: crate::access::Authority::Reported {
                     source: "test".to_string(),
                 },
@@ -2661,6 +2718,7 @@ pub(crate) fn supervised_writing(
     let source = {
         let workspace = Arc::clone(workspace);
         let high: SeqHighWater = Arc::default();
+        let identified: AgentSeen = Arc::default();
         Arc::new(move |id: PaneId| {
             let rows = WorkspacePaneAccess::new(Arc::clone(&workspace))
                 .pane_full_lines(id)
@@ -2669,7 +2727,9 @@ pub(crate) fn supervised_writing(
             Some(crate::access::AgentObservation {
                 holding: None,
                 state: AgentState::Idle,
-                agent: has_painted(&rows).then(|| "claude".to_string()),
+                // ⚠ This one raises no dialog at all, so its whole evidence is the announcement —
+                // see [`names_an_agent`].
+                agent: names_an_agent(&identified, id, &rows, false).then(|| "claude".to_string()),
                 // ⚠ REPORTED, because a transcript path only ever arrives on a hook. A scraped
                 // observation could not carry one, and the loop's readers key on this authority.
                 authority: crate::access::Authority::Reported {
