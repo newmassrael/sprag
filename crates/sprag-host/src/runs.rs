@@ -3576,6 +3576,19 @@ impl RunRegistry {
                     // `PersistedRun::at` keeps the record; `resumable_here` is where the two are
                     // compared, once, by something that can see both.
                     at: None,
+                    // ⛔⛔⛔⛔⛔ **AND EVERY NUMBER ABOVE IS A DEAD DAEMON'S, WHICH IS NOW SAID** —
+                    // register item 815, and the ONE site that sets this.
+                    //
+                    // ⚠⚠ Restoring `iterations` and `deliveries` is right (items 606 and 616: a run
+                    // is read after it ends, and a row of zeros would claim it typed nothing). What
+                    // was missing is the word for WHOSE they are, and the missing word has a cost
+                    // the moment a boot puts the run back: item 774's clause reads an absent
+                    // delivery count as *nothing has been typed since*, so a restored count
+                    // silences it on exactly the run that item was filed over.
+                    //
+                    // ⚠ It is cleared by the first step any driver takes — `sprag_plugin::Driver`
+                    // republishes this cell whole — so nothing here has to remember to unset it.
+                    inherited: true,
                 })),
                 // ⚠⚠ NOTHING REPORTED, and here that is the CORRECT answer rather than a lossy
                 // one — `driving: None`'s argument two comments up. A restored run's driver died

@@ -317,6 +317,34 @@ pub const RUN_NOT_RESUMED_KEY: &str = "not_resumed";
 /// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_NOT_RESUMED_KEY`]'s argument unchanged: an
 /// added answer key withdraws no address and widens no value space a peer decodes whole.
 pub const RUN_RESUMED_KEY: &str = "resumed";
+/// ⛔⛔⛔⛔⛔ **THE COUNTERS ON THIS ROW ARE A PREDECESSOR'S, AND NOTHING HERE HAS SPOKEN SINCE** —
+/// register item 815, and [`RUN_RESUMED_KEY`]'s missing half.
+///
+/// # ⚠⚠⚠⚠⚠ What it costs to leave the numbers unattributed
+///
+/// A daemon reading a predecessor's run log fills the row's counters FROM THE FILE, deliberately
+/// (register items 606 and 616: a run is read after it ends, and zeros would claim it typed
+/// nothing). A boot may then put that run back on a driver of its own — and until that driver's
+/// first step every number on the row belongs to a process that is dead.
+///
+/// **Measured 2026-09-01**: a rescued run whose pane came back a plain shell published `running —
+/// 2 iterations` and `1 prompt(s) delivered` while its new driver had taken no step and typed
+/// nothing. Item 774's clause reads an ABSENT delivery count as *nothing has been typed since*, so
+/// the stale count silenced it on exactly the run that item was filed over.
+///
+/// ⚠⚠ **IT IS A CONJUNCTION AND NOT A FIELD COPIED THROUGH.** Two things have to be true: the cell
+/// still holds what `RunRegistry::restore` put there (`sprag_plugin::Progress::inherited`, which a
+/// driver's first step clears by construction), AND no driver in another process has reported
+/// (`RunSummary::reported`). Either half alone is wrong for one kind of driver, and
+/// [`crate::options::RUN_DRIVER_PROCESS`] promises the two kinds cannot diverge.
+///
+/// ⚠⚠ PRESENT ONLY WHEN TRUE, this surface's rule for an added key: a `false` would be
+/// indistinguishable from an older daemon that never answered, and *nobody said* and *these numbers
+/// are this driver's* are different things.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_NOT_RESUMED_KEY`]'s argument unchanged: an
+/// added answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_INHERITED_KEY: &str = "inherited";
 /// ⛔⛔⛔⛔⛔ **THE SENTENCE A DRIVER STOPPED ON, WRITTEN INTO ITS OWN ENDING** — register item 764.
 ///
 /// A driver whose progress report is refused with [`crate::runs::Unreported`]'s clause has been
@@ -5412,6 +5440,23 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
     // run was started fresh* are different things.
     if run.resumed {
         entry[RUN_RESUMED_KEY] = json!(true);
+    }
+    // ⛔⛔⛔⛔⛔ AND WHETHER THE NUMBERS BESIDE IT ARE A PREDECESSOR'S — register item 815, the
+    // clause above's missing half. `resumed` says a boot brought the run back; this says nothing
+    // that boot started has yet said a word, so every counter on this row was read out of a file.
+    //
+    // ⚠⚠⚠ THE CONJUNCTION IS MADE HERE BECAUSE THIS IS THE ONE PLACE HOLDING BOTH HALVES, and each
+    // half alone is wrong for one kind of driver. A run driven on a thread shares the cell, so its
+    // first step clears `Progress::inherited` and `reported` is `None` for ever; a run driven in
+    // another process never touches that cell, so the flag stays set and what moves is `reported`.
+    // Reading either alone would publish this key for ever on one of the two — the invisible
+    // divergence [`crate::options::RUN_DRIVER_PROCESS`] promises cannot happen.
+    //
+    // ⚠⚠ NO STATE GUARD, `RUN_RESUMED_KEY`'s reason exactly: it is true of an `interrupted` row a
+    // boot read and did not put back, and it stays true of a `running` one until its driver speaks.
+    // ⚠ PRESENT ONLY WHEN TRUE — see the key.
+    if run.progress.inherited && run.reported.is_none() {
+        entry[RUN_INHERITED_KEY] = json!(true);
     }
     // ⚠⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register item 540, present only once a step has said so,
     // which is `RUN_CEILING_KEY`'s presence-is-the-claim rule. ⚠ The NUMBER and not the label's

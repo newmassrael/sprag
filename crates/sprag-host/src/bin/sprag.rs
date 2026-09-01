@@ -5855,9 +5855,37 @@ fn render_journal(run: &Value) -> String {
 /// a reason nobody should act on — the boot has just handed it over — and folding it in with a run
 /// that has stepped and stayed silent would send somebody to a pane at the one moment there is
 /// nothing to see.
+///
+/// # ⛔⛔⛔⛔⛔ FOUR, and the one added is the window this clause could not see — register item 815
+///
+/// The reading above rests on the delivery count being THIS driver's. For the first stretch of a
+/// rescued run's life it is not: `RunRegistry::restore` fills the row's counters out of the
+/// predecessor's log on purpose (items 606 and 616), and nothing overwrites them until a driver of
+/// this daemon takes a step. **Measured 2026-09-01**: a rescued run whose pane came back a plain
+/// shell published `running — 2 iterations` and `1 prompt(s) delivered` while its new driver had
+/// taken no step and typed nothing — so the stale count silenced this clause on exactly the run
+/// item 774 was filed over.
+///
+/// So `RUN_INHERITED_KEY` is read FIRST and short-circuits the rest: when the numbers are a dead
+/// daemon's, neither the delivery count nor the step count is evidence about anything, and the only
+/// honest sentence is the one that says so.
+///
+/// ⚠⚠ **IT SPEAKS FOR THE WHOLE ROW, WHICH IS WHY THE DELIVERY LINE BELOW IS LEFT ALONE.** That
+/// line is what the run typed BEFORE the boot and item 606 restored it deliberately; qualifying it
+/// as well would put the same fact in two mouths. The residue, stated rather than hidden: a reader
+/// who skips the status line still meets *N prompt(s) delivered, all of them on that pane* with
+/// nothing beside it — which is why this clause names the counts rather than only the silence.
 fn resumed_clause(run: &Value, state: &Value) -> String {
     if run[sprag_host::plugins::RUN_RESUMED_KEY].as_bool() != Some(true) {
         return String::new();
+    }
+    // ⛔⛔⛔⛔⛔ FIRST, AND THE ORDER IS THE REPAIR — register item 815. Every test below reads a
+    // counter, and none of these counters is this driver's until it has spoken.
+    if run[sprag_host::plugins::RUN_INHERITED_KEY].as_bool() == Some(true) {
+        return " · ⚠ this run was put back by a boot and nothing has driven it since — every \
+                count on this row is the predecessor's, so neither the steps nor the deliveries \
+                say whether it has typed anything at its pane"
+            .to_owned();
     }
     if run[sprag_host::plugins::RUN_DELIVERED_KEY]
         .as_u64()
@@ -10724,6 +10752,105 @@ mod tests {
             !fresh.contains("put back by a boot"),
             "⛔⛔⛔ a run this daemon started is not a run a boot rescued, and a row that said so \
              would point a reader at a restart that never happened: {fresh}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RESCUED RUN WHOSE NUMBERS ARE STILL A DEAD DAEMON'S SAYS SO** — register item
+    /// 815, and the window the gate above structurally could not see.
+    ///
+    /// # The measurement
+    ///
+    /// 2026-09-01, on the live fixture item 774's own gate stages: a run a boot had put back onto a
+    /// pane that came back a plain shell published `running — 2 iterations` and `1 prompt(s)
+    /// delivered, all of them on that pane` — while its new driver had taken **no step** and typed
+    /// **nothing**. Both numbers were read out of the predecessor's log by `RunRegistry::restore`,
+    /// which is deliberate (items 606 and 616); what was missing is the word for whose they are.
+    ///
+    /// ⚠⚠⚠⚠ **AND THE COST IS ITEM 774's CLAUSE GOING SILENT ON ITS OWN CASE.** That clause reads
+    /// an ABSENT delivery count as *nothing has been typed since*, so a restored count is not a
+    /// stale number beside a working warning — it is the thing that switches the warning off.
+    ///
+    /// ⚠⚠ FOUR READINGS DRIVEN AS VALUES (register item 803): inherited with a count, inherited
+    /// without one, a rescued run whose driver HAS spoken, and a restored run nobody put back.
+    #[test]
+    fn a_rescued_run_whose_counters_are_its_predecessors_says_so_before_it_reads_them() {
+        /// A row as the wire carries one. `inherited` is the fact under test; `delivered` is what
+        /// used to silence the clause.
+        fn row(resumed: bool, inherited: bool, delivered: Option<u64>, steps: u64) -> Value {
+            let mut run = serde_json::json!({
+                "id": 104,
+                "label": "ai_loop pane=1",
+                "state": {
+                    "status": "running",
+                    "iterations": steps,
+                    "cost": 0,
+                    "unit": "steps",
+                },
+            });
+            if resumed {
+                run[sprag_host::plugins::RUN_RESUMED_KEY] = serde_json::json!(true);
+            }
+            if inherited {
+                run[sprag_host::plugins::RUN_INHERITED_KEY] = serde_json::json!(true);
+            }
+            if let Some(made) = delivered {
+                run[sprag_host::plugins::RUN_DELIVERED_KEY] = serde_json::json!(made);
+            }
+            run
+        }
+
+        // ── THE HEADLINE: rescued, nothing has driven it since, and a stale count on the row ──
+        let stale = render_run(&row(true, true, Some(1), 2));
+        assert!(
+            stale.contains("nothing has driven it since") && stale.contains("the predecessor's"),
+            "⛔⛔⛔⛔⛔ ITEM 815: this run was put back by a boot, no driver of this daemon has \
+             said a word, and the row publishes a delivery count and a step count that a dead \
+             process earned. A person reads `running` and `1 prompt(s) delivered` and concludes \
+             the loop is working — which is exactly the state item 774 was filed over, wearing \
+             that item's own repair as a disguise. Got: {stale}",
+        );
+        // ⚠⚠ AND IT IS ON THE STATUS LINE, `waiting`'s and item 774's placement, for their measured
+        // reason: this repository's outer-loop watcher reads the line after the heading and no
+        // other, and a clause it cannot see repairs nothing for the reader that was watching.
+        let lines: Vec<&str> = stale.lines().collect();
+        assert!(
+            lines[1].contains("nothing has driven it since"),
+            "⚠⚠⚠ the clause must land on the status line — a watcher that reads `$0 ~ r {{getline; \
+             print}}` sees that line and no other: {stale}",
+        );
+
+        // ── ⚠ THE SAME ROW WITHOUT A COUNT IS THE SAME ANSWER, not item 774's step sentence: a
+        //    step count that is also the predecessor's cannot say *it has stepped and stayed
+        //    silent*, which is what that sentence claims.
+        let countless = render_run(&row(true, true, None, 2));
+        assert!(
+            countless.contains("nothing has driven it since")
+                && !countless.contains("step(s) with no delivery"),
+            "⚠⚠⚠ ITEM 815: a rescued row whose numbers are its predecessor's was given item 774's \
+             reading, which asserts this driver has taken steps. It has taken none — the count is \
+             the dead daemon's — and a reader told otherwise goes to a pane looking for work that \
+             was never started here: {countless}",
+        );
+
+        // ── ⚠⚠ THE CONTROL THAT KEEPS THIS FROM BEING NOISE: a rescued run whose driver HAS
+        //    spoken says none of it, and item 774's own readings take over again.
+        let spoken = render_run(&row(true, false, Some(3), 9));
+        assert!(
+            !spoken.contains("nothing has driven it since"),
+            "⚠⚠⚠⚠ a rescued run whose own driver reported must not be told its numbers are \
+             somebody else's, or the clause appears on every resumed row for ever and stops \
+             meaning anything: {spoken}",
+        );
+
+        // ── ⚠⚠⚠ AND THE SECOND CONTROL: a restored row NOBODY put back says nothing here. The
+        //    numbers are a predecessor's for that row too, and the sentence is about a run a boot
+        //    handed to a driver — `interrupted` rows are item 771's and item 737's to explain.
+        let untouched = render_run(&row(false, true, Some(1), 2));
+        assert!(
+            !untouched.contains("nothing has driven it since"),
+            "⛔⛔ ITEM 815: a run no boot put back is being told a driver failed to speak for it. \
+             Nothing was ever going to: that row is `interrupted` and its own clauses say why. \
+             This sentence is about a rescue that went quiet: {untouched}",
         );
     }
 

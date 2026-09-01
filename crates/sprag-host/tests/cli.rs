@@ -6683,7 +6683,26 @@ fn a_rescued_run_types_its_first_prompt_and_a_pane_that_came_back_a_shell_types_
     // ⑴ built the clause and drove it as VALUES; until this gate nothing had ever produced one from
     // a live boot, so *the row a rescued run really gets* was still an argument rather than a
     // reading.
-    let restored_row = sprag(&sock, &["runs", "-t", "restored"]).stdout;
+    //
+    // ⛔⛔⛔ **ONE RUN'S BLOCK AND NOT THE WHOLE LISTING** — `sprag runs -t` prints EVERY run this
+    // daemon holds, whichever session is named. Read whole, the negative assertions below are made
+    // of the OTHER arm's text: measured 2026-09-01, when register item 815 gave the shelled arm a
+    // clause containing *put back by a boot* and the restored arm's control failed over a sentence
+    // that was never on its row.
+    let block_for = |listed: &str, pane: u64| -> String {
+        let heading = format!("ai_loop pane={pane}");
+        listed
+            .split("\nrun ")
+            .map(|chunk| chunk.trim_end().to_owned())
+            .find(|chunk| {
+                chunk
+                    .lines()
+                    .next()
+                    .is_some_and(|head| head.trim_end().ends_with(&heading))
+            })
+            .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
+    };
+    let restored_row = block_for(&sprag(&sock, &["runs", "-t", "restored"]).stdout, restored);
     assert!(
         restored_row.contains("prompt(s) delivered"),
         "⛔⛔⛔⛔ REGISTER ITEM 774: the stand-in was typed at and the row does not say so, which \
@@ -6726,6 +6745,270 @@ fn a_rescued_run_types_its_first_prompt_and_a_pane_that_came_back_a_shell_types_
          one, which means a step ran and the rescue did not wait for the peer to come up. Nothing \
          came up: `durability::SHELLS` refuses to re-run a recorded `<shell> -c`, so whatever this \
          step typed went to a shell that will execute it as commands.",
+    );
+    drop(back);
+    drop(guard);
+}
+
+/// ⛔⛔⛔⛔⛔ **THE ROW A BOOT HANDS A READER SAYS WHOSE NUMBERS ARE ON IT** — register item 815,
+/// and the window item 774's clause could not see.
+///
+/// # The measurement, taken on item 774's own fixture
+///
+/// 2026-09-01: a run a boot had put back onto a pane that came back a plain shell published
+/// `running — 2 iterations` and `1 prompt(s) delivered, all of them on that pane` — while its new
+/// driver had taken **no step** and typed **nothing**. Both numbers came out of the predecessor's
+/// log: `RunRegistry::restore` fills the cell from the file on purpose (register items 606 and
+/// 616), and nothing overwrites it until a driver of this daemon speaks.
+///
+/// ⚠⚠⚠⚠⚠ **AND THE COST IS ITEM 774's REPAIR SWITCHING ITSELF OFF.** That clause reads an ABSENT
+/// delivery count as *nothing has been typed since*, so the restored count does not sit harmlessly
+/// beside a working warning — it is what silences it, on exactly the run that item was filed over.
+///
+/// # ⚠⚠⚠ Why the pane must NOT come back, and why history is off
+///
+/// The window this gate reads closes the moment the rescued run's driver takes a step, and with
+/// item 774's repair a pane that really comes back is delivering within seconds. So the fixture
+/// stages the arm that stays open: a `<shell> -c` pane, which `durability::SHELLS` refuses to
+/// re-run however the allowlist is set, leaving the rescued driver held at its readiness barrier
+/// for `ready_timeout_ms`. `SPRAG_RESTORE_HISTORY=0` is what keeps that true — a replayed
+/// scrollback would paint the marker the barrier waits for and the run would step after all.
+///
+/// # ⚠⚠ Two controls, because the clause has two ways of being noise
+///
+/// * **BEFORE THE BOOT** — the same row while its own driver is live and delivering. A renderer
+///   that printed this clause unconditionally would be green without it.
+/// * **A SECOND LOOP THAT REALLY COMES BACK** — `env sh -c '<stand-in>'` under
+///   `SPRAG_RESTORE_PROGRAMS=env`, so the restore re-runs it, the rescued driver steps, and the
+///   clause must GO. That arm is what holds the half of the answer the flag alone cannot give: a
+///   run driven in another process never touches the restored cell, so the flag stays set for ever
+///   and what actually moves is `RunSummary::reported`. Without this arm, publishing the key off
+///   the flag alone is green.
+#[test]
+fn a_rescued_runs_row_says_its_counters_are_a_predecessors_until_a_driver_here_speaks() {
+    /// The sentence register item 815 put on the status line.
+    const SAYS_WHOSE: &str = "nothing has driven it since";
+
+    let sock = socket_path();
+    let state = scratch_state_home();
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    // ⚠ See the header: history off is what keeps the QUIET arm's driver from stepping, and the
+    // allowlist is what lets the LIVELY one's pane really come back.
+    let knobs = [
+        ("SPRAG_RESTORE_PROGRAMS", "env"),
+        ("SPRAG_RESTORE_HISTORY", "0"),
+    ];
+    let typed = state.join("typed");
+    std::fs::create_dir_all(&typed).expect("a directory for the stand-in to record into");
+    spawn_daemon_env(&sock, &state, &knobs);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let quiet = loop_session(&mut conn, "quiet");
+    start_loop(
+        &mut conn,
+        "quiet",
+        quiet,
+        "the loop whose numbers a boot inherits and whose driver then says nothing",
+    );
+    let lively = loop_session_running(
+        &mut conn,
+        "lively",
+        &[
+            "env".to_owned(),
+            "sh".to_owned(),
+            "-c".to_owned(),
+            standin(Some(&typed.join("lively.txt"))),
+        ],
+    );
+    start_loop(
+        &mut conn,
+        "lively",
+        lively,
+        "the loop whose pane a restore re-runs, so its rescued driver speaks and the clause goes",
+    );
+
+    // ── THE PREMISE: it really typed, so the counters a boot inherits are non-zero ───────────
+    //
+    // ⚠⚠ Without it every claim below would hold of a log full of zeros, where `delivered` is
+    // absent and item 774's clause speaks for a different reason entirely.
+    let delivered = wait_for(Duration::from_secs(120), || {
+        sprag(&sock, &["runs", "-t", "quiet"])
+            .stdout
+            .contains("prompt(s) delivered")
+    });
+    assert!(
+        delivered,
+        "⚠⚠ THE PREMISE FAILED: this loop never delivered a prompt before the reboot, so the \
+         predecessor's log carries no count for a successor to inherit and this gate would be \
+         about an empty row. Row: {:?}",
+        sprag(&sock, &["runs", "-t", "quiet"]).stdout,
+    );
+
+    // ── THE CONTROL, TAKEN WHILE ITS OWN DRIVER IS LIVE ─────────────────────────────────────
+    let live_row = sprag(&sock, &["runs", "-t", "quiet"]).stdout;
+    assert!(
+        !live_row.contains(SAYS_WHOSE),
+        "⛔⛔⛔ REGISTER ITEM 815: a run this daemon started and is driving right now is being told \
+         its numbers belong to somebody else. Left there, the clause appears on every row for ever \
+         and stops meaning anything — which is the failure `render_answered` and `walk_to` are \
+         each shaped around. Row: {live_row:?}",
+    );
+
+    assert!(
+        wait_for(Duration::from_secs(120), || resumable_runs(&state, 2)),
+        "⚠⚠ THE PREMISE FAILED: the daemon never persisted TWO live loops each carrying a place \
+         and a request, so there is nothing for a boot to put back.",
+    );
+    let runs_dir = state.join("sprag");
+    assert!(
+        wait_for(Duration::from_secs(60), || std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".snapshot.json"))),
+        "⚠⚠ THE PREMISE FAILED: the daemon never wrote a workspace snapshot, so its successor \
+         would boot with no pane and the run could not be put back at all.",
+    );
+    drop(conn);
+
+    // THE REBOOT: outright, so nothing writes a tidy terminal state on the way out.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+
+    spawn_daemon_env(&sock, &state, &knobs);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the replacement daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+
+    // ── THE PREMISE THE CLAIM RESTS ON: the boot really put it back ──────────────────────────
+    let mut back = HostConn::connect(&sock, Duration::from_secs(10)).expect("reconnect");
+    // ⚠⚠ BY THE RUN'S OWN LABEL AND NEVER BY POSITION: the runs slot answers with every run this
+    // daemon holds whichever session is asked, so a reader that took the first row would read one
+    // arm twice and call the other one green.
+    let wire_row = |conn: &mut HostConn, session: &str, pane: u64| -> Value {
+        let heading = format!("ai_loop pane={pane}");
+        conn.call(
+            "scene/query",
+            json!({
+                "session": session,
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+            }),
+        )
+        .expect("the runs slot answers")
+        .as_array()
+        .expect("a list of runs")
+        .iter()
+        .find(|run| run["label"].as_str() == Some(&heading))
+        .unwrap_or_else(|| panic!("no row for the loop on pane {pane}"))
+        .clone()
+    };
+    for (session, pane) in [("quiet", quiet), ("lively", lively)] {
+        let resumed = wait_for(Duration::from_secs(60), || {
+            wire_row(&mut back, session, pane)[sprag_host::plugins::RUN_RESUMED_KEY].as_bool()
+                == Some(true)
+        });
+        assert!(
+            resumed,
+            "⚠⚠⚠ THE PREMISE FAILED: the boot did not put the `{session}` run back, so what \
+             follows would be about a run nobody rescued. Row: {:?}",
+            wire_row(&mut back, session, pane),
+        );
+    }
+
+    // ── AND THE SECOND PREMISE: the stale count really is on the row ─────────────────────────
+    //
+    // ⚠⚠⚠ THIS IS WHAT MAKES THE CLAIM A CLAIM. Item 774's clause is silenced by a delivery count,
+    // so a row that carried none would be warned about by that item alone and this gate would be
+    // measuring nothing. The number here was earned by a process that is dead.
+    //
+    // ⚠⚠ ONE RUN'S BLOCK AND NOT THE WHOLE LISTING: `sprag runs -t` prints every run this daemon
+    // holds, so a reader that took the text whole would find the other arm's sentences in it.
+    let block_for = |listed: &str, pane: u64| -> String {
+        let heading = format!("ai_loop pane={pane}");
+        listed
+            .split("\nrun ")
+            .map(|chunk| chunk.trim_end().to_owned())
+            .find(|chunk| {
+                chunk
+                    .lines()
+                    .next()
+                    .is_some_and(|head| head.trim_end().ends_with(&heading))
+            })
+            .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
+    };
+    let rescued_row = block_for(&sprag(&sock, &["runs", "-t", "quiet"]).stdout, quiet);
+    assert!(
+        rescued_row.contains("prompt(s) delivered"),
+        "⚠⚠ THE PREMISE FAILED: the rescued row carries no delivery count, so the window item 815 \
+         is about is not staged — item 774's own clause would cover this row. Row: {rescued_row:?}",
+    );
+
+    // ── THE CLAIM: the row says whose those numbers are ──────────────────────────────────────
+    assert!(
+        rescued_row.contains(SAYS_WHOSE) && rescued_row.contains("the predecessor's"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 815: this run was put back by a boot, no driver of this daemon \
+         has said a word, and the row publishes a step count and a delivery count that a dead \
+         process earned — with nothing saying so. A person reads `running` and `prompt(s) \
+         delivered` and concludes the loop is working, which is the state item 774 was filed over \
+         wearing that item's own repair as a disguise. Row: {rescued_row:?}",
+    );
+    // ⚠⚠ AND IT IS NOT GIVEN ITEM 774's READING, which asserts this driver has taken steps. It has
+    // taken none — the count is the dead daemon's — and a reader told otherwise goes looking for
+    // work that was never started here.
+    assert!(
+        !rescued_row.contains("step(s) with no delivery"),
+        "⛔⛔⛔ REGISTER ITEM 815: the row hands a reader item 774's sentence over a step count \
+         that is not this driver's. Row: {rescued_row:?}",
+    );
+    // ⚠ AND THE MACHINE FORM SAYS IT TOO, so a client that branches is not left to parse prose.
+    assert_eq!(
+        wire_row(&mut back, "quiet", quiet)[sprag_host::plugins::RUN_INHERITED_KEY],
+        json!(true),
+        "⛔⛔⛔ REGISTER ITEM 815: the person's row says the counters are a predecessor's and the \
+         wire does not, so every other mouth reading this run — the agent-facing list included — \
+         is still being handed a dead daemon's numbers as though they were current.",
+    );
+
+    // ── THE SECOND CONTROL: the rescued run whose driver DID speak loses the clause ──────────
+    //
+    // ⛔⛔⛔⛔⛔ **AND IT IS THE ARM THAT HOLDS THE HALF THE FLAG ALONE CANNOT.** A run driven in
+    // another process never touches the cell `RunRegistry::restore` filled, so
+    // `sprag_plugin::Progress::inherited` stays `true` on it for ever; what moves is
+    // `RunSummary::reported`. A `run_to_json` that published this key off the flag alone would be
+    // green on every other assertion in this gate and would stamp *these numbers are a dead
+    // daemon's* onto a run that had been working for hours.
+    let spoke = wait_for(Duration::from_secs(120), || {
+        wire_row(&mut back, "lively", lively)
+            .get(sprag_host::plugins::RUN_INHERITED_KEY)
+            .is_none()
+    });
+    let lively_row = block_for(&sprag(&sock, &["runs", "-t", "lively"]).stdout, lively);
+    assert!(
+        spoke,
+        "⛔⛔⛔⛔ REGISTER ITEM 815: this run came back onto a pane that really re-ran, its own \
+         driver has reported since, and the row still says its numbers are a predecessor's. A \
+         clause that never clears is a clause a reader learns to skip — which is the failure item \
+         774's own clause is shaped around, one item over. Row: {lively_row:?}",
+    );
+    assert!(
+        !lively_row.contains(SAYS_WHOSE),
+        "⛔⛔⛔ REGISTER ITEM 815: the wire cleared and the person's row did not, so the two mouths \
+         disagree about whose numbers these are. Row: {lively_row:?}",
     );
     drop(back);
     drop(guard);

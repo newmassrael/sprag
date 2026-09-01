@@ -851,6 +851,31 @@ pub struct Progress {
     /// exists for the same reason, and says so in its own words: a supervisor who arrives mid-run
     /// can only read a level.
     pub briefed: Option<crate::Briefing>,
+    /// ⛔⛔⛔⛔⛔ **THESE COUNTERS ARE A PREDECESSOR'S AND NO DRIVER HAS WRITTEN THEM SINCE** —
+    /// register item 815, and the only field here that is about the CELL rather than about a run.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the counters need a word for whose they are
+    ///
+    /// A daemon that reads a predecessor's run log fills this cell from the FILE — deliberately, so
+    /// a person meets what the run managed rather than a row of zeros (register items 606 and 616).
+    /// A boot may then put that run back on a driver of its own, and until that driver's first step
+    /// **every number here is the dead daemon's**, with nothing saying so.
+    ///
+    /// **Measured 2026-09-01**: a rescued run whose pane came back a plain shell published
+    /// `running — 2 iterations` and `1 prompt(s) delivered, all of them on that pane` while its new
+    /// driver had taken no step and typed nothing. Item 774's clause — *this run came back and has
+    /// typed nothing since* — reads the ABSENCE of a delivery count as its evidence, so a stale
+    /// count silences it on exactly the run it was built for.
+    ///
+    /// ⚠⚠ **IT CLEARS ITSELF, WHICH IS THE WHOLE REASON IT LIVES IN THIS STRUCT.** [`Driver`]
+    /// republishes the cell WHOLE on every step from fields of its own, so the first step a driver
+    /// takes overwrites this with `false` by construction — there is no clearing site anybody could
+    /// forget, and no second authority on *has this driver spoken yet*.
+    ///
+    /// ⚠ FALSE for every run a driver started, which is nearly every run ever: only
+    /// `sprag_host::runs::RunRegistry::restore` sets it, and only for the rows it builds out of a
+    /// file.
+    pub inherited: bool,
 }
 
 /// HOW MANY STEPS A RUN REMEMBERS.
@@ -985,6 +1010,11 @@ impl Driver {
             banked: self.banked.clone(),
             briefed: self.briefed,
             driving: self.driving,
+            // ⛔⛔⛔ **A DRIVER'S OWN COUNTERS ARE NEVER A PREDECESSOR'S** — register item 815, and
+            // this line is the whole of how that flag clears: the cell is republished WHOLE from
+            // this driver's fields, so the first step after a boot puts back a run overwrites the
+            // restored `true` with what is true now. There is no clearing site to forget.
+            inherited: false,
         };
         if let Some(cell) = &self.progress {
             let mut held = cell
@@ -1972,6 +2002,86 @@ mod tests {
             "⚠⚠⚠ AND THE TWO READERS MUST AGREE. A forwarder that assembles its own `Progress` \
              is free to drift from the cell one field at a time, and the two readers are the same \
              person looking at one run through two windows.",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE FIRST STEP TAKES THE CELL OVER FROM A DEAD DAEMON** — register item 815, and
+    /// the whole reason [`Progress::inherited`] lives in this struct rather than beside it.
+    ///
+    /// # What it is protecting
+    ///
+    /// `sprag_host::runs::RunRegistry::restore` fills a run's cell from a predecessor's LOG and
+    /// marks it. A boot may then put that run back on a driver of its own, and from that driver's
+    /// first step the numbers are its. **Nothing clears the mark explicitly**: the cell is
+    /// republished WHOLE from this driver's own fields, so the flag goes false by construction.
+    ///
+    /// ⚠⚠ **THAT IS A CLAIM ABOUT `publish` AND NOT ABOUT A CALLER**, which is why it is driven
+    /// here. A driver in another process never touches the restored cell at all — for that arm the
+    /// row reads `RunSummary::reported` instead, and `sprag-host`'s own gate holds it. This one is
+    /// the arm a daemon told `run-driver-process = off` takes, where the cell IS the answer.
+    ///
+    /// ⚠ The cell is handed in ALREADY MARKED, which is exactly the shape `put_back` produces: it
+    /// gives the thread driver the restored run's own cell rather than a fresh one, so that the row
+    /// keeps showing what the predecessor managed until this driver has something to say.
+    #[test]
+    fn a_drivers_first_step_takes_over_a_cell_a_restore_marked_as_a_predecessors() {
+        struct Stepping;
+        impl Plugin for Stepping {
+            fn step(&mut self, _: &dyn PaneAccess, _: &RunContext) -> Result<Step, PaneError> {
+                Ok(Step::new(Cost::Bytes(1), Verdict::Continue))
+            }
+            fn driving(&self) -> Option<PaneId> {
+                None
+            }
+        }
+
+        // The cell as a restore hands it over: a predecessor's counters, marked as such.
+        let cell: ProgressCell = Arc::new(Mutex::new(Progress {
+            iterations: 7,
+            deliveries: Deliveries {
+                made: 3,
+                folded: 0,
+                unsubmitted: 0,
+                unreported: 0,
+            },
+            inherited: true,
+            ..Progress::default()
+        }));
+        assert!(
+            cell.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .inherited,
+            "⚠⚠ THE PREMISE: the cell must arrive marked, or what follows is a statement about a \
+             flag that was never set and would hold of any writer at all",
+        );
+
+        let _ = Driver::new(Guardrails {
+            max_iterations: 1,
+            max_cost: None,
+            max_duration: None,
+        })
+        .reporting_to(Arc::clone(&cell))
+        .run(
+            &mut Stepping,
+            &RecordingPanes::new(),
+            &RunContext::uncancellable(),
+        );
+
+        let held = cell
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert!(
+            !held.inherited,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 815: this driver has taken a step and the cell still says its \
+             numbers are a predecessor's. A row reading that publishes *nothing has driven this \
+             run since* about a run that is working — a warning that never clears, which a reader \
+             learns to skip, on the one row item 774 exists to make legible. Held: {held:?}",
+        );
+        assert_eq!(
+            held.iterations, 1,
+            "⚠⚠ AND THE COUNTERS ARE THIS DRIVER'S NOW, which is the fact the flag was describing: \
+             a cell that kept the inherited 7 while clearing the flag would be worse than either.",
         );
     }
 
