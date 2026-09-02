@@ -27,3 +27,9 @@ path = "src/bin/sweep-coverage.rs"
 [[bin]]
 name = "pty-demand"
 path = "src/bin/pty-demand.rs"
+
+# Register item 823: what the north star's "zero" is counting. The population had two predicates
+# and they disagreed on 32 of 45 items, so it becomes a mark each ledger item states.
+[[bin]]
+name = "north-star"
+path = "src/bin/north-star.rs"

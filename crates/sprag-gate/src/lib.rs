@@ -122,6 +122,15 @@ pub mod pty_demand;
 /// *the runner's pty pool was exhausted* got written down with nothing behind it.
 pub mod refusals;
 
+/// What the north star is COUNTING — register item 823.
+///
+/// Beside the others for their reason, on the one quantity that is about the ledger rather than
+/// about the code: *"zero unpaid ai-loop items"* had two predicates on 2026-09-02 and they returned
+/// 13 and 45. No test inside the workspace can settle that, because the subject is a document the
+/// workspace does not contain — so the population becomes a MARK each item states, and this reads
+/// it.
+pub mod north_star;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
