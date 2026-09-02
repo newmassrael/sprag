@@ -122,6 +122,61 @@ pub const SEVERITY: &str = "@sev:";
 /// would make the backlog grow every time something is closed — a ratchet that punishes payment.
 pub const SEVERITY_DECLARATION: &str = "@sev-unclassified:";
 
+/// The line an item states its PARENT on: `@from: <item number>`, or `@from: none` for a debt
+/// nobody found while paying something else.
+///
+/// Register item 833(2), the owner's decision of 2026-09-02: *"부채의 부채는 몇 depth까지 갚을지
+/// scxml에 지정할수있게하고 default로 1 depth로해"*.
+///
+/// # ⛔⛔⛔⛔⛔ WHY THE DEPTH IS THE ITEM'S AND NOT THE RUN'S
+///
+/// The first build of this counted **re-aims inside one run** and reset at every run boundary.
+/// Measured the evening it shipped: the five runs placed that day all took a milestone registered
+/// THAT SAME DAY, three of them registered hours earlier by the watcher placing the run. The chain
+/// the owner asked to bound was never inside a run — it crossed run boundaries, and a fresh run
+/// starting at zero is exactly the laundering step that made it invisible.
+///
+/// So depth is carried by the DEBT: an item found while paying `X` says so, and its depth is one
+/// more than `X`'s. Nothing a run does can reset that, because a run does not own it.
+///
+/// # ⛔⛔⛔⛔ CAUSED BY, NEVER MERELY MET WHILE — and the difference is the whole scheme
+///
+/// **Handed over by `sprag-14` the hour this was written, and it is a defect this would have had.**
+/// A round paying `X` runs into two different things and only one of them is `X`'s child:
+///
+/// * it BROKE something, or its own repair left a residue → that debt exists *because* `X` was
+///   paid, and it is one step down;
+/// * it walked into a red that was **already there** — someone else's, or HEAD's — and merely
+///   noticed it. That debt is a ROOT. Nothing created it; a round happened to be standing there.
+///
+/// ⚠⚠ Counting the second as a child is not a rounding error, it inverts the cap: **every
+/// pre-existing debt anybody stumbles over gets pushed further down the chain**, and the deeper it
+/// is pushed the longer it is deferred. The oldest debts would sink fastest. That is the exact
+/// opposite of what item 833 exists to do.
+///
+/// The measured pair, from that round: item 836 was a mutation build left in `target/` that became
+/// the dock's app — the payment *made* it, so `@from: 825`. Item 837 was a red already standing in
+/// HEAD that the same suite happened to reach — so `none`, though both were written in one hour by
+/// one round.
+///
+/// # ⚠⚠ `none` IS A VALUE, NOT AN ABSENCE
+///
+/// A debt nothing created — found by a person, by CI, or by a watcher reading the product — is a
+/// ROOT and says `none`. Leaving the line off instead would make "nobody wrote it down" and
+/// "nothing created it" the same reading, which is the distinction [`Fault::UnknownTag`]'s
+/// neighbours already exist to keep. Unstated items are carried by [`Reading::unrooted`] under
+/// their own ratchet.
+pub const PARENT: &str = "@from:";
+
+/// The line the ledger declares its own count of items that state no [`PARENT`]:
+/// `@from-unclassified: <n>`.
+///
+/// ⚠ Every item written before this mark existed is unstated, and demanding they all be annotated
+/// at once is the kind of retroactive sweep that gets abandoned half-done. The ratchet holds the
+/// standing count instead: a NEW item must state its parentage, because adding one without it
+/// raises the count above the floor and reds.
+pub const PARENT_DECLARATION: &str = "@from-unclassified:";
+
 /// Where section A begins and ends. A number outside it is not this population's business.
 const SECTION_A: &str = "## A. ";
 /// Any other top-level section heading ends A.
@@ -208,6 +263,36 @@ impl fmt::Display for Severity {
     }
 }
 
+/// What an item says about where it came from — [`PARENT`]'s value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parent {
+    /// Nothing found this while paying something else: a person, CI, or a watcher reading the
+    /// product. **Depth 0** — the debts the north star is actually about.
+    Root,
+    /// Found while paying that item. Its depth is one more than that item's.
+    Item(u32),
+}
+
+impl Parent {
+    /// Parse the value that follows [`PARENT`]. `none` is the root; anything else must be a number.
+    fn parse(value: &str) -> Option<Self> {
+        let word = value.split_whitespace().next()?;
+        if word == "none" {
+            return Some(Self::Root);
+        }
+        word.parse().ok().map(Self::Item)
+    }
+}
+
+impl fmt::Display for Parent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Root => f.write_str("none"),
+            Self::Item(number) => write!(f, "{number}"),
+        }
+    }
+}
+
 /// One numbered item of section A, after its blocks have been grouped.
 ///
 /// ⚠ A number can own several blocks: this ledger closes an item by laying a new block ON TOP of
@@ -221,6 +306,8 @@ pub struct Item {
     pub tag: Option<Tag>,
     /// Its severity, if it states one. Read for OPEN items only — see [`SEVERITY_DECLARATION`].
     pub severity: Option<Severity>,
+    /// What it says found it, if it says. See [`PARENT`].
+    pub parent: Option<Parent>,
     /// Whether any block of it names the loop — the alarm's input, never the population's.
     pub names_the_loop: bool,
     /// Whether the prose vocabulary reads it as closed — likewise only the alarm's input.
@@ -281,6 +368,43 @@ pub enum Fault {
     },
     /// The one [`SEVERITY_DECLARATION`] line carries no number.
     UnreadableSeverityDeclaration {
+        /// The line as written.
+        line: String,
+    },
+    /// A [`PARENT`] line whose value is neither `none` nor a number.
+    UnknownParent {
+        /// The item it was found in, or `None` when it sits outside any numbered block.
+        number: Option<u32>,
+        /// The line as written.
+        line: String,
+    },
+    /// An item names a parent section A does not have. **A chain that leaves the ledger cannot be
+    /// walked**, so the depth of everything below it is unknown rather than zero.
+    DanglingParent {
+        /// The item that said it.
+        number: u32,
+        /// What it named.
+        named: u32,
+    },
+    /// The parent chain comes back to where it started. Depth would not terminate.
+    ParentCycle {
+        /// The item the walk started from.
+        number: u32,
+    },
+    /// More items with no [`PARENT`] than the ledger declares.
+    ParentRatchetGrew {
+        /// What this reading counted.
+        counted: usize,
+        /// What [`PARENT_DECLARATION`] claims.
+        declared: usize,
+    },
+    /// No [`PARENT_DECLARATION`] line, or more than one.
+    ParentDeclaration {
+        /// How many were found.
+        found: usize,
+    },
+    /// The one [`PARENT_DECLARATION`] line carries no number.
+    UnreadableParentDeclaration {
         /// The line as written.
         line: String,
     },
@@ -385,6 +509,42 @@ impl fmt::Display for Fault {
                 "`{}` states no number — a floor nobody can read is not a floor",
                 line.trim(),
             ),
+            Self::UnknownParent { number, line } => {
+                let where_ =
+                    number.map_or_else(|| "outside any item".to_string(), |n| format!("item {n}"));
+                write!(
+                    f,
+                    "{where_}: `{}` is neither `none` nor an item number — say what found this, or \
+                     say nothing found it",
+                    line.trim()
+                )
+            }
+            Self::DanglingParent { number, named } => write!(
+                f,
+                "item {number} says it was found while paying {named}, which section A does not \
+                 have — a chain that leaves the ledger cannot be walked, so nothing below it has a \
+                 depth",
+            ),
+            Self::ParentCycle { number } => write!(
+                f,
+                "item {number}: its parent chain returns to it — depth would not terminate",
+            ),
+            Self::ParentRatchetGrew { counted, declared } => write!(
+                f,
+                "{counted} items state no `{PARENT}`, but the ledger declares {declared}: this \
+                 backlog may shrink, never grow. A new item says what found it (`{PARENT} <n>`) or \
+                 that nothing did (`{PARENT} none`)",
+            ),
+            Self::ParentDeclaration { found } => write!(
+                f,
+                "found {found} `{PARENT_DECLARATION}` lines, need exactly 1 — a ratchet with no \
+                 floor holds nothing",
+            ),
+            Self::UnreadableParentDeclaration { line } => write!(
+                f,
+                "`{}` states no number — a floor nobody can read is not a floor",
+                line.trim(),
+            ),
         }
     }
 }
@@ -398,6 +558,8 @@ pub struct Reading {
     pub declared: Option<usize>,
     /// What [`SEVERITY_DECLARATION`] said, when exactly one line said it.
     pub severity_declared: Option<usize>,
+    /// What [`PARENT_DECLARATION`] said, when exactly one line said it.
+    pub parent_declared: Option<usize>,
     /// Everything that has to be fixed.
     pub faults: Vec<Fault>,
 }
@@ -435,6 +597,68 @@ impl Reading {
         self.items
             .iter()
             .filter(|item| item.tag == Some(Tag::Open) && item.severity == Some(Severity::Critical))
+            .map(|item| item.number)
+            .collect()
+    }
+
+    /// **HOW FAR DOWN THE DEBT CHAIN AN ITEM SITS** — register item 833(2).
+    ///
+    /// 0 is a debt nothing found while paying something else. 1 is a debt found while paying one of
+    /// those. `None` is *nobody wrote it down* — an item with no [`PARENT`], or one whose chain
+    /// runs into a dangling parent or a cycle. **Unknown is never reported as 0**: that would make
+    /// the whole standing backlog look like roots and hand the cap nothing to hold.
+    #[must_use]
+    pub fn depth(&self, number: u32) -> Option<u32> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut at = number;
+        let mut depth = 0;
+        loop {
+            if !seen.insert(at) {
+                return None;
+            }
+            let item = self.items.iter().find(|item| item.number == at)?;
+            match item.parent? {
+                Parent::Root => return Some(depth),
+                Parent::Item(up) => {
+                    depth += 1;
+                    at = up;
+                }
+            }
+        }
+    }
+
+    /// **WHAT A ROUND MAY TAKE** — the open items whose [`Reading::depth`] is known and within
+    /// `cap`, in numeric order. Register item 833(2), and the owner's default of 1.
+    ///
+    /// ⚠⚠ An item of UNKNOWN depth is takeable, and that is deliberate rather than an oversight:
+    /// the standing backlog states no parentage and refusing all of it would stop the loop dead on
+    /// the day this shipped. What the cap bites on is the chain this scheme can actually see — a
+    /// debt that SAYS it came from another. As the backlog is annotated the cap reaches further,
+    /// which is the same direction [`Reading::unclassified`] pays down in.
+    #[must_use]
+    pub fn takeable(&self, cap: u32) -> Vec<u32> {
+        self.population()
+            .into_iter()
+            .filter(|number| self.depth(*number).is_none_or(|depth| depth <= cap))
+            .collect()
+    }
+
+    /// The open items the cap holds back — registered, and not to be worked until the budget
+    /// allows. **This is the number that says the scheme is doing anything at all.**
+    #[must_use]
+    pub fn deferred(&self, cap: u32) -> Vec<u32> {
+        self.population()
+            .into_iter()
+            .filter(|number| self.depth(*number).is_some_and(|depth| depth > cap))
+            .collect()
+    }
+
+    /// The items that state no [`PARENT`] — the backlog [`Fault::ParentRatchetGrew`] holds.
+    #[must_use]
+    pub fn unrooted(&self) -> Vec<u32> {
+        self.items
+            .iter()
+            .filter(|item| item.parent.is_none())
             .map(|item| item.number)
             .collect()
     }
@@ -515,6 +739,11 @@ fn mark_value(line: &str) -> Option<&str> {
 /// The value of a [`SEVERITY`] line, by the same whole-line rule [`mark_value`] holds.
 fn severity_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(SEVERITY)
+}
+
+/// The value of a [`PARENT`] line, by the same whole-line rule [`mark_value`] holds.
+fn parent_value(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix(PARENT)
 }
 
 /// Read the one line that declares a ratchet's floor, faulting when there is not exactly one or
@@ -611,15 +840,33 @@ pub fn read(text: &str) -> Reading {
         |found| Fault::SeverityDeclaration { found },
         |line| Fault::UnreadableSeverityDeclaration { line },
     );
+    let parent_declared = declared_floor(
+        text,
+        PARENT_DECLARATION,
+        &mut faults,
+        |found| Fault::ParentDeclaration { found },
+        |line| Fault::UnreadableParentDeclaration { line },
+    );
 
     let mut items: Vec<Item> = Vec::new();
     for (number, bodies) in &blocks {
         let mut tag = None;
         let mut severity = None;
+        let mut parent = None;
         for body in bodies {
             let mut in_block: Vec<Tag> = Vec::new();
             let mut severities: Vec<Severity> = Vec::new();
+            let mut parents: Vec<Parent> = Vec::new();
             for line in body {
+                if let Some(value) = parent_value(line) {
+                    match Parent::parse(value) {
+                        Some(found) => parents.push(found),
+                        None => faults.push(Fault::UnknownParent {
+                            number: Some(*number),
+                            line: (*line).to_string(),
+                        }),
+                    }
+                }
                 if let Some(value) = severity_value(line) {
                     match Severity::parse(value) {
                         Some(found) => severities.push(found),
@@ -649,6 +896,9 @@ pub fn read(text: &str) -> Reading {
             // Topmost block wins, exactly as the membership mark does.
             if severity.is_none() {
                 severity = severities.first().copied();
+            }
+            if parent.is_none() {
+                parent = parents.first().copied();
             }
             if in_block.len() > 1 && in_block.iter().any(|found| *found != in_block[0]) {
                 faults.push(Fault::ConflictingTags {
@@ -680,6 +930,7 @@ pub fn read(text: &str) -> Reading {
             number: *number,
             tag,
             severity,
+            parent,
             names_the_loop,
             reads_as_closed,
         });
@@ -708,12 +959,65 @@ pub fn read(text: &str) -> Reading {
         });
     }
 
-    Reading {
+    let unrooted = items.iter().filter(|item| item.parent.is_none()).count();
+    if let Some(floor) = parent_declared
+        && unrooted > floor
+    {
+        faults.push(Fault::ParentRatchetGrew {
+            counted: unrooted,
+            declared: floor,
+        });
+    }
+
+    // ⚠ The chain is judged AFTER every item is known: a parent may be filed below its child, and
+    // reading forward-only would call a legal chain dangling.
+    let numbers: std::collections::BTreeSet<u32> = items.iter().map(|item| item.number).collect();
+    for item in &items {
+        if let Some(Parent::Item(named)) = item.parent
+            && !numbers.contains(&named)
+        {
+            faults.push(Fault::DanglingParent {
+                number: item.number,
+                named,
+            });
+        }
+    }
+
+    let mut reading = Reading {
         items,
         declared,
         severity_declared,
+        parent_declared,
         faults,
+    };
+    // A cycle is only visible once the walk exists, and it must be a fault rather than a silent
+    // `None` — an item whose chain eats itself would otherwise read as merely unstated.
+    let cycles: Vec<u32> = reading
+        .items
+        .iter()
+        .filter(|item| item.parent.is_some())
+        .map(|item| item.number)
+        .filter(|number| {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut at = *number;
+            loop {
+                if !seen.insert(at) {
+                    return true;
+                }
+                let Some(found) = reading.items.iter().find(|item| item.number == at) else {
+                    return false;
+                };
+                match found.parent {
+                    Some(Parent::Item(up)) => at = up,
+                    _ => return false,
+                }
+            }
+        })
+        .collect();
+    for number in cycles {
+        reading.faults.push(Fault::ParentCycle { number });
     }
+    reading
 }
 
 #[cfg(test)]
@@ -727,10 +1031,12 @@ mod tests {
 ## A. THE SHARPEST THINGS OPEN
 @ns-unclassified: 1
 @sev-unclassified: 0
+@from-unclassified: 3
 
 900. ⛔ **An open loop item**
      @ns: open — the loop's own driver
      @sev: critical — it stops the loop dead
+     @from: none
      body mentioning ai_loop here
 
 899. ✅✅ **PAID 2026-09-02**
@@ -1140,6 +1446,177 @@ mod tests {
                 .faults
                 .contains(&Fault::SeverityDeclaration { found: 0 }),
             "no floor is not a pass: {:?}",
+            reading.faults,
+        );
+    }
+
+    // ── register item 833(2): the debt chain ───────────────────────────────────────────────────
+
+    /// A chain hung off 900: 901 was found while paying it, 902 while paying 901.
+    fn with_a_chain() -> String {
+        let link = |number: u32, from: u32| {
+            format!(
+                "{number}. ⛔ **Found while paying {from}**\n     @ns: open\n     @sev: ordinary\n \
+                 \u{20}   @from: {from}\n\n"
+            )
+        };
+        LEDGER.replace(
+            "900. ⛔ **An open loop item**",
+            &format!(
+                "{}{}900. ⛔ **An open loop item**",
+                link(902, 901),
+                link(901, 900)
+            ),
+        )
+    }
+
+    /// **DEPTH IS THE ITEM'S, NOT THE RUN'S** — the whole point of register item 833(2). A debt
+    /// found while paying a debt is one step further down, and no run boundary resets that.
+    #[test]
+    fn a_debt_found_while_paying_one_sits_a_step_below_it() {
+        let reading = read(&with_a_chain());
+        assert_eq!(reading.depth(900), Some(0), "nothing found it");
+        assert_eq!(reading.depth(901), Some(1), "found while paying a root");
+        assert_eq!(reading.depth(902), Some(2), "found while paying that");
+        assert!(reading.is_green(), "faults: {:?}", reading.faults);
+    }
+
+    /// **THE CAP THE OWNER SET** — at 1, the chain's third link is registered and not taken.
+    #[test]
+    fn the_default_cap_takes_one_step_off_the_brief_and_defers_the_next() {
+        let reading = read(&with_a_chain());
+        assert_eq!(
+            reading.takeable(1),
+            vec![900, 901],
+            "a root and one step off it are work; the step below is not",
+        );
+        assert_eq!(
+            reading.deferred(1),
+            vec![902],
+            "and the held-back one is NAMED — a cap nobody can count is a quiet deferral",
+        );
+    }
+
+    /// ⚠ The standing backlog states no parentage, and refusing all of it would stop the loop on
+    /// the day this shipped. Unknown depth is takeable; the cap bites on the chain it can see.
+    #[test]
+    fn an_item_that_states_no_parent_is_still_work() {
+        let reading = read(LEDGER);
+        assert_eq!(reading.depth(897), None, "897 states nothing");
+        assert!(
+            reading.takeable(1).contains(&900),
+            "the population is still workable: {:?}",
+            reading.takeable(1),
+        );
+        assert!(
+            reading.deferred(1).is_empty(),
+            "nothing is held back by a chain nobody stated: {:?}",
+            reading.deferred(1),
+        );
+    }
+
+    /// A parent section A does not have breaks the walk, and **that must not read as depth 0** —
+    /// a dangling chain would otherwise promote everything below it to a root.
+    #[test]
+    fn a_parent_the_ledger_does_not_have_is_a_fault_and_not_a_root() {
+        let ledger = with_a_chain().replace("     @from: 900", "     @from: 404");
+        let reading = read(&ledger);
+        assert!(
+            reading.faults.contains(&Fault::DanglingParent {
+                number: 901,
+                named: 404,
+            }),
+            "the chain leaves the ledger and the reading says so: {:?}",
+            reading.faults,
+        );
+        assert_eq!(
+            reading.depth(902),
+            None,
+            "and nothing below it claims a depth it cannot support",
+        );
+    }
+
+    /// A chain that returns to itself must be a fault rather than a silent `None`.
+    #[test]
+    fn a_parent_chain_that_eats_itself_is_named() {
+        let ledger = with_a_chain().replace("     @from: none", "     @from: 902");
+        let reading = read(&ledger);
+        assert!(
+            reading
+                .faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::ParentCycle { .. })),
+            "depth would not terminate and saying nothing would hide it: {:?}",
+            reading.faults,
+        );
+    }
+
+    /// `none` is a VALUE. A typo must not read as absent, and absent must not read as a root.
+    #[test]
+    fn a_mistyped_parent_is_a_fault_rather_than_a_silence() {
+        let ledger = LEDGER.replace("     @from: none", "     @from: nobody");
+        let reading = read(&ledger);
+        assert!(
+            reading.faults.iter().any(|fault| matches!(
+                fault,
+                Fault::UnknownParent {
+                    number: Some(900),
+                    ..
+                }
+            )),
+            "`nobody` is neither `none` nor a number: {:?}",
+            reading.faults,
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **CAUSED BY, NEVER MERELY MET WHILE** — handed over by `sprag-14`, and the reason
+    /// this is a gate rather than a sentence in the docs.
+    ///
+    /// Two items written in one hour by one round paying 825: 836 was CREATED by that payment (a
+    /// mutation build left behind became the dock's app), 837 was a red already standing in HEAD
+    /// that the same suite reached. If both were children, every pre-existing debt anybody stumbles
+    /// over sinks a level — and the oldest debts, which are stumbled over most, sink fastest.
+    #[test]
+    fn a_debt_a_round_merely_walked_into_is_a_root_and_does_not_sink() {
+        let met = LEDGER.replace(
+            "897. ⛔ **Unmarked and quiet**",
+            "895. ⛔ **A red that was already in HEAD**\n     @ns: open\n     @sev: ordinary\n     \
+             @from: none\n\n897. ⛔ **Unmarked and quiet**",
+        );
+        let reading = read(&met);
+        assert_eq!(
+            reading.depth(895),
+            Some(0),
+            "the round met it; nothing created it",
+        );
+        assert!(
+            reading.takeable(1).contains(&895),
+            "so the cap does not hold it back: {:?}",
+            reading.takeable(1),
+        );
+        // The same item written as a child of the thing that was being paid sinks, which is what
+        // the distinction buys — and what makes getting it wrong expensive.
+        let caused = met.replace("     @from: none\n\n897.", "     @from: 900\n\n897.");
+        let reading = read(&caused);
+        assert_eq!(reading.depth(895), Some(1), "created by 900's payment");
+    }
+
+    /// An item added without parentage raises the standing count and reds — the same ratchet the
+    /// other two marks hold.
+    #[test]
+    fn an_item_added_without_a_parent_grows_the_backlog_and_reds() {
+        let ledger = LEDGER.replace(
+            "897. ⛔ **Unmarked and quiet**",
+            "895. ⛔ **New, and says nothing about where it came from**\n     @ns: out\n\n897. ⛔ \
+             **Unmarked and quiet**",
+        );
+        let reading = read(&ledger);
+        assert!(
+            reading.faults.contains(&Fault::ParentRatchetGrew {
+                counted: 4,
+                declared: 3,
+            }),
+            "the backlog may shrink, never grow: {:?}",
             reading.faults,
         );
     }

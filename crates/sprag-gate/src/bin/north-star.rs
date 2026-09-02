@@ -71,6 +71,28 @@ fn main() -> std::process::ExitCode {
             .severity_declared
             .map_or_else(|| "none".to_string(), |n| n.to_string()),
     );
+    // ⚠⚠ THE CAP IS THE DOCUMENT'S, NOT THIS BINARY'S — register item 833(2) and 773's axis ("the
+    // subject is the launcher's, the policy is the document's"). This prints what the shipped
+    // default holds so a reader can see the chain; a round that changes the document's number and
+    // wants this line to agree passes it.
+    let cap: u32 = std::env::var("SPRAG_REAIM_MAX")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    let deferred = reading.deferred(cap);
+    let held: Vec<String> = deferred.iter().map(ToString::to_string).collect();
+    println!(
+        "deferred {} at depth > {cap}: {}",
+        deferred.len(),
+        held.join(" "),
+    );
+    println!(
+        "unrooted {} (declared {})",
+        reading.unrooted().len(),
+        reading
+            .parent_declared
+            .map_or_else(|| "none".to_string(), |n| n.to_string()),
+    );
     println!("items {} in section A", reading.items.len());
 
     if reading.is_green() {
