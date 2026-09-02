@@ -3672,6 +3672,9 @@ dependencies = [
 [[package]]
 name = "sprag-gate"
 version = "0.0.1"
+dependencies = [
+ "sprag-scratch",
+]
 
 [[package]]
 name = "sprag-grid"

@@ -308,6 +308,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Grant => grant(args.collect()),
         Verb::Doctor => doctor(args.collect()),
         Verb::Words => words(args.collect()),
+        Verb::Daemons => daemons(args.collect()),
         Verb::ShowGrammar => show_grammar(args.collect()),
         Verb::Orchestrate => orchestrate(args.collect()),
         Verb::Runs => runs(args.collect()),
@@ -544,6 +545,80 @@ fn words(args: Vec<String>) -> io::Result<()> {
         // the whole list for a script.
         println!("{name}  — {answers}");
         println!("  {}", said.join(" "));
+    }
+    Ok(())
+}
+
+/// ⛔⛔⛔⛔⛔ **WHICH DAEMONS ARE RUNNING, AND WHERE** — register item 825, and the verb that
+/// exists so a LAUNCHER never has to guess a socket path again.
+///
+/// # ⚠⚠⚠⚠⚠ The sentence this replaces was true and sent its reader to the wrong machine
+///
+/// The owner pressed the dock icon six times over six days. Each press asked the well-known socket,
+/// found the file a daemon had left behind on 2026-08-25, and put *"no server running at
+/// `/run/user/1000/sprag-host.sock`"* on screen — while a daemon served six windows on
+/// `/run/user/1000/sprag-loop.sock`. **Nothing it printed was false.** What it lacked was the
+/// question this verb asks.
+///
+/// # ⚠⚠⚠ Every socket gets a WORD, and there is no fourth
+///
+/// [`Answered`](sprag_rpc::survey::Answered) is closed — `serving`, `refused`, `silent` — and each
+/// one is a different repair. The launcher's own header had two of them written down before this
+/// round (*a daemon that is not running and a daemon that is too old are different problems*); the
+/// third is *a daemon that is running somewhere else*, which is what item 825 measured.
+///
+/// ⚠⚠ **THE POPULATION IS PRINTED EVEN WHEN IT IS EMPTY.** A reader told *no daemon* must be able
+/// to tell that from *it did not look where mine is* — a daemon whose operator pointed
+/// `SPRAG_HOST_RPC_SOCK` outside this product's own naming is not asked about, and the last line
+/// says so by naming the directory and the pattern rather than leaving silence to be read as
+/// absence.
+///
+/// ⚠ `--serving` prints the serving sockets and nothing else, one per line: it is what a script
+/// consumes, so no caller has to parse a sentence written for a person.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidInput`] for any argument other than `--serving`. A machine with no
+/// daemon on it is not an error of this kind — it EXITS 1 after printing every socket's word, so a
+/// caller branches on the status and a reader still gets the population.
+fn daemons(args: Vec<String>) -> io::Result<()> {
+    let mut only_serving = false;
+    for arg in &args {
+        if arg == "--serving" {
+            only_serving = true;
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("daemons: unexpected argument {arg:?} (it takes [--serving])"),
+            ));
+        }
+    }
+    let under = sprag_rpc::survey::runtime_dir();
+    // ⚠ THE SAME ID EVERY OTHER COMMAND OF THIS PROCESS USES, so a daemon's log shows the survey as
+    // the client it was rather than as an anonymous connect it cannot account for.
+    let found = sprag_rpc::survey::survey(&under, &cli_client_id(), CONNECT_TIMEOUT);
+    let serving = found.serving();
+    if only_serving {
+        for path in &serving {
+            println!("{}", path.display());
+        }
+    } else {
+        for row in &found.asked {
+            println!("{}  {}", row.path.display(), row.answer);
+        }
+        // ⚠⚠ ALWAYS, including when something WAS found: the population is what makes the answer
+        // readable, and a line that appears only on failure is one nobody has read when it matters.
+        println!(
+            "asked {} socket(s) matching {} under {}",
+            found.asked.len(),
+            sprag_rpc::survey::Survey::pattern(),
+            under.display(),
+        );
+    }
+    if serving.is_empty() {
+        // ⚠ A REFUSAL EXIT, because the caller asked a yes/no question and a script must be able to
+        // branch without reading the lines. The lines above have already said WHY for each socket.
+        std::process::exit(1);
     }
     Ok(())
 }

@@ -190,7 +190,22 @@ fn spawn_host_argv(
     program_and_args: &[&str],
     envs: &[(&str, &str)],
 ) -> (HostChild, PathBuf) {
-    let sock = socket_path();
+    spawn_host_on(socket_path(), leading, program_and_args, envs)
+}
+
+/// [`spawn_host_argv`] on a socket the CALLER chose.
+///
+/// ⚠ Register item 825's gate is the reason this seam exists: the claim there is *a daemon is found
+/// on a socket nobody named*, and the population a survey draws from is a DIRECTORY. A daemon whose
+/// socket the harness put in the shared temporary directory could not be surveyed without sweeping
+/// every other case's socket too, so that test needs its daemon inside a runtime directory of its
+/// own. Every other caller keeps [`socket_path`], which is what makes parallel cases safe.
+fn spawn_host_on(
+    sock: PathBuf,
+    leading: &[String],
+    program_and_args: &[&str],
+    envs: &[(&str, &str)],
+) -> (HostChild, PathBuf) {
     let _ = std::fs::remove_file(&sock);
     // ⚠⚠⚠ BEFORE `.envs`, so a caller that wants to CHOOSE the state home (the restore tests, which
     // hand the same one to two daemon lifetimes) still overrides this. What it replaces is the
@@ -1040,6 +1055,130 @@ fn version_answers_without_a_daemon() {
         "and says so: {}",
         needs_one.stderr,
     );
+}
+
+/// ⛔⛔⛔⛔⛔ **A DAEMON ON A SOCKET NOBODY NAMED IS FOUND, AND THE THREE ANSWERS ARE THREE
+/// WORDS** — register item 825, against a real daemon rather than a staged one.
+///
+/// # The state this stages is the one that was measured
+///
+/// The owner's machine on 2026-09-02 held four `sprag*.sock` files and **the name did not say which
+/// was a daemon**: a file one had left behind on 2026-08-25, a socket a program owned that refused
+/// `client/hello`, and one live host — plus other programs' sockets sitting beside them. So all
+/// three are staged here, with a stranger's socket among them, and the CLI is pointed at NONE of
+/// them.
+///
+/// ⚠⚠ **`SPRAG_HOST_RPC_SOCK` names a socket that has nothing on it**, deliberately. That is the
+/// sharp version of *nobody named it*: a build that still resolved its endpoint the old way would
+/// have exactly the failure item 825 records — a true sentence about a dead socket while a daemon
+/// serves elsewhere — and pointing the variable at the live one would hide it.
+///
+/// ⚠ The population line is asserted too. A survey that found nothing must be distinguishable from
+/// one that did not look where the reader's daemon is, and the directory plus the pattern is the
+/// only thing that says so.
+#[test]
+fn a_daemon_on_a_socket_nobody_named_is_found_by_the_survey() {
+    use std::os::unix::net::UnixListener;
+
+    // A runtime directory of this case's own. The survey's population is a DIRECTORY, so a daemon
+    // in the shared temporary directory would drag every parallel case's socket into the answer.
+    let runtime = socket_path().with_extension("runtime");
+    std::fs::create_dir_all(&runtime).expect("a runtime directory for this case");
+
+    // ⚠ Named `sprag-loop.sock` because that is the socket the owner's daemon was actually on, and
+    // the point of the item is that the name is not what makes it a daemon.
+    let (_host, live) = spawn_host_on(
+        runtime.join("sprag-loop.sock"),
+        &["--".to_owned()],
+        &["cat"],
+        &[],
+    );
+    let dead = runtime.join("sprag-host.sock");
+    std::fs::write(&dead, b"").expect("a file where a daemon used to be");
+    let taken = runtime.join("sprag-gui.sock");
+    let _listener = UnixListener::bind(&taken).expect("a socket some other program owns");
+    // Not this product's, so it must not be knocked on at all — connecting to a stranger's socket
+    // to see what it says is not this product's business.
+    let stranger = runtime.join("ssh-askpass-1a2b.sock");
+    let _stranger = UnixListener::bind(&stranger).expect("another program's socket");
+
+    let elsewhere = runtime.join("nothing-here.sock");
+    let env: &[(&str, &str)] = &[
+        ("XDG_RUNTIME_DIR", runtime.to_str().expect("utf-8 path")),
+        (
+            "SPRAG_HOST_RPC_SOCK",
+            elsewhere.to_str().expect("utf-8 path"),
+        ),
+    ];
+
+    let run = sprag_env(&live, &["daemons"], env);
+    assert!(
+        run.ok,
+        "a daemon is running, so the survey succeeds: {} {}",
+        run.stdout, run.stderr,
+    );
+    for (path, word) in [(&live, "serving"), (&dead, "silent"), (&taken, "refused")] {
+        assert!(
+            run.stdout.contains(&format!("{}  {word}", path.display())),
+            "⛔ ITEM 825: {} must answer {word:?}. Three sockets, three different repairs — start \
+             a daemon, look at another socket, or rebuild the one that will not talk — and the \
+             sentence this replaces could spell only the first. Got:\n{}",
+            path.display(),
+            run.stdout,
+        );
+    }
+    assert!(
+        !run.stdout.contains("ssh-askpass"),
+        "⚠⚠ AND A STRANGER'S SOCKET IS NOT KNOCKED ON. The name bounds whose door it is polite to \
+         open; it decides nothing about what is behind it. Got:\n{}",
+        run.stdout,
+    );
+    assert!(
+        run.stdout.contains(&format!(
+            "asked 3 socket(s) matching sprag*.sock under {}",
+            runtime.display()
+        )),
+        "⚠ AND WHERE IT LOOKED, so a reader can tell *there is no daemon* from *it did not look \
+         where mine is* — an operator who named a socket outside this pattern is never asked \
+         about. Got:\n{}",
+        run.stdout,
+    );
+
+    // What a launcher consumes: the sockets, and nothing written for a person to read.
+    let only = sprag_env(&live, &["daemons", "--serving"], env);
+    assert!(only.ok, "{}", only.stderr);
+    assert_eq!(
+        only.stdout.trim(),
+        live.display().to_string(),
+        "⛔⛔ `--serving` is what the dock's launcher reads. A socket that merely ACCEPTS a \
+         connect must not appear here: handing a display client one that refuses `client/hello` \
+         is the panic-with-no-window the launcher exists to prevent",
+    );
+
+    // The CONTROL: the same three sockets with the daemon gone answer no daemon at all, so the
+    // success above is the survey finding it rather than this directory always saying yes.
+    drop(_host);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while HostConn::connect(&live, Duration::from_millis(200)).is_ok() {
+        assert!(Instant::now() < deadline, "the daemon never let go");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let gone = sprag_env(&live, &["daemons"], env);
+    assert!(
+        !gone.ok,
+        "no daemon serves, so the survey exits non-zero — that status is how a script branches \
+         without parsing the lines: {}",
+        gone.stdout,
+    );
+    assert!(
+        gone.stdout.contains("silent") && !gone.stdout.contains("serving"),
+        "and every word it prints is still a socket's own: {}",
+        gone.stdout,
+    );
+
+    drop(_listener);
+    drop(_stranger);
+    let _ = std::fs::remove_dir_all(&runtime);
 }
 
 /// A session does NOT outlive its last pane, and `kill-pane` says so — R309.
@@ -13972,7 +14111,11 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
         // the only one they can take back. Both are shell verbs, so both land in the first column.
         // ⚠ REGISTER ITEM 773: `words` is the 62nd, and it is DRIVEN by the sweep above before the
         // count moves — which is what makes this a claim about the binary rather than the table.
-        (62, 5, 3),
+        // ⚠ REGISTER ITEM 825: `daemons` is the 63rd, and the sweep drives it with NO daemon on
+        // the socket — which for this verb is not a degraded case but its subject. It is the one
+        // shell verb here whose answer is about the MACHINE rather than about a daemon, so a run
+        // that found none is a real answer and the sweep reads its refusal exit, not a fault.
+        (63, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -14152,7 +14295,10 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         // pane they are looking at.
         // ⚠ REGISTER ITEM 773: `words` is the 39th in the third column — it answers something and
         // this client has no view for a vocabulary, which is every answering verb's reason here.
-        (15, 10, 39, 6),
+        // ⚠ REGISTER ITEM 825: `daemons` is the 40th, on `words`' reason with one of its own — a
+        // keystroke is pressed inside a client that is ALREADY attached to a daemon, so a client
+        // asking which daemons exist has answered its own question by being there.
+        (15, 10, 40, 6),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

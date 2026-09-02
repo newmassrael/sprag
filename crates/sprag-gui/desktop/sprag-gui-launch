@@ -1,0 +1,122 @@
+#!/bin/bash
+# Launch the sprag GUI build that can talk to a daemon that is ACTUALLY RUNNING.
+#
+# ⚠⚠⚠ WHY THIS EXISTS RATHER THAN A PATH IN THE .desktop FILE, measured 2026-08-16:
+# the wire protocol is bumped by ordinary rounds, and a GUI one version off is refused at
+# `client/hello`. `sprag-gui` turns that refusal into a PANIC (`terminal.rs`'s
+# `.expect("boot the sprag-term wire host")`), and a panic in a dock-launched app is a window that
+# never appears with no message anywhere the clicker will look — the owner hit this twice before
+# anybody read the journal. So: pick by asking, and if nothing fits, SAY SO on screen.
+#
+# ⚠ The build pick is by MTIME, so a rebuild is picked up with no edit anywhere — that is the whole
+# "keep it current" requirement, and it needs no watcher and no daemon.
+#
+# ⛔⛔⛔⛔⛔ WHY IT ASKS WHICH SOCKET, register item 825, measured 2026-09-02:
+# the pick above was the only question this script asked. It called the sibling client with no
+# socket named, so the client resolved the WELL-KNOWN DEFAULT every time — and the owner's dock
+# press produced *"no server running at /run/user/1000/sprag-host.sock"* six times over six days
+# while a daemon served six windows on /run/user/1000/sprag-loop.sock. Nothing it printed was
+# false. It had never asked the question whose answer it needed.
+#
+# ⚠⚠⚠⚠⚠ AND WHY THE ANSWER IS NOT A SECOND PATH IN THIS FILE. This machine had FOUR sockets
+# matching `sprag*.sock` and the file name does not say which is a daemon: one file a dead daemon
+# left behind on 2026-08-25, one owned by a program that accepts and then refuses `client/hello`,
+# one dead GUI endpoint, and one live host. So the list comes from the RUNTIME DIRECTORY and the
+# verdict comes from CONNECTING — `sprag daemons`, whose survey lives in `sprag-rpc::survey` and is
+# gated in `sprag-gate::launcher`. A hardcoded second path would be the same defect with a longer
+# list, and it would age the same way.
+#
+# ⚠⚠ THE THREE PROBLEMS THIS NOW TELLS APART. The header above already named two — a daemon that is
+# not running and a daemon that is too old are different problems with different fixes — and item
+# 825 measured the third: a daemon that is RUNNING SOMEWHERE ELSE. The product spells all three
+# (`silent` / `refused` / `serving`), so the refusal below is shown verbatim rather than summarised
+# into a sentence this file would have to keep true by hand.
+set -u
+
+REPO=${SPRAG_REPO:-/home/coin/sprag}
+LOG=${SPRAG_GUI_LAUNCH_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/sprag/gui-launch.log}
+mkdir -p "$(dirname "$LOG")" 2>/dev/null
+
+say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >>"$LOG"; }
+
+# ⚠ ON SCREEN, because the clicker is not reading a log. Split out so the gate can watch what would
+# have been shown without a notification daemon in the loop.
+tell() {
+    say "showing: $2"
+    if [[ -n ${SPRAG_GUI_LAUNCH_NOTIFY:-} ]]; then
+        printf '%s\n%s\n' "$1" "$2" >>"$SPRAG_GUI_LAUNCH_NOTIFY"
+    else
+        notify-send -u critical "$1" "$2" 2>/dev/null
+    fi
+}
+
+# Every GUI this tree has built, newest first.
+mapfile -t GUIS < <(ls -t "$REPO"/target/*/sprag-gui 2>/dev/null)
+if [[ ${#GUIS[@]} -eq 0 ]]; then
+    say "no sprag-gui built under $REPO/target"
+    tell "sprag" "No sprag-gui is built.
+Run: cargo build -p sprag-gui"
+    exit 1
+fi
+
+# ⚠⚠ AN ENDPOINT SOMEBODY NAMED IS NOT THIS SCRIPT'S TO REPLACE. When the environment already says
+# which daemon this session belongs to — a launch from inside a pane, an operator's override — the
+# survey would be answering a question that has already been answered, and picking a different
+# socket than the GUI itself would resolve. So the named case keeps the ORIGINAL probe (`ls`, which
+# resolves by the same policy) and execs the GUI with the environment untouched.
+#
+# ⚠ The probe is given the name under the CLI's own variable: the CLI reads `SPRAG_HOST_RPC_SOCK`
+# and the display clients read `SPRAG_GUI_HOST_SOCK` first, and a probe that consulted a different
+# variable than the process it is vouching for is precisely the afternoon `endpoint.rs` records —
+# a client that quietly fell back to the well-known socket and drove the machine's live daemon.
+NAMED=${SPRAG_GUI_HOST_SOCK:-${SPRAG_HOST_RPC_SOCK:-}}
+
+refusal=""
+for gui in "${GUIS[@]}"; do
+    client="$(dirname "$gui")/sprag"
+    [[ -x $client ]] || { say "skip $gui (no sibling client)"; continue; }
+
+    if [[ -n $NAMED ]]; then
+        # ⚠ The CLIENT beside each GUI is what answers whether that build's wire is accepted — they
+        # are built together, so the sibling's verdict is the GUI's verdict, and asking costs one
+        # connect instead of a panic.
+        if out=$(SPRAG_HOST_RPC_SOCK="$NAMED" "$client" ls 2>&1); then
+            say "launching $gui on $NAMED (named by the environment)"
+            exec "$gui" "$@"
+        fi
+        [[ -z $refusal ]] && refusal="$out"
+        say "refused $gui: $out"
+        continue
+    fi
+
+    # ⚠⚠ NO PIPE. `$?` of a pipeline is its LAST command's, so `daemons --serving | head -1` would
+    # report the trim's success and hide the client's refusal. The first line is taken with a
+    # parameter expansion instead, and the status read is the client's own.
+    serving=$("$client" daemons --serving 2>/dev/null)
+    if [[ -n $serving ]]; then
+        sock=${serving%%$'\n'*}
+        # ⚠ MORE THAN ONE DAEMON IS A CHOICE THAT IS THE PERSON'S, and a dock click cannot ask. It
+        # opens the first in path order — stable, so two clicks open the same one — and SAYS the
+        # others exist, because an arbitrary pick made silently is the shape this item is about.
+        if [[ $serving == *$'\n'* ]]; then
+            tell "sprag opened one of several daemons" "$sock
+
+Others are running. To open one of them:
+  SPRAG_GUI_HOST_SOCK=<socket> $gui
+$serving"
+        fi
+        say "launching $gui on $sock"
+        exec env SPRAG_GUI_HOST_SOCK="$sock" "$gui" "$@"
+    fi
+
+    # Keep the FIRST refusal: it is the newest build's, which is the one a reader wants quoted.
+    # ⚠ The whole SURVEY, not a one-line summary: every socket's word is a different repair, and
+    # the population line is what tells "there is no daemon" from "it did not look where mine is".
+    out=$("$client" daemons 2>&1)
+    [[ -z $refusal ]] && refusal="$out"
+    say "no daemon $gui can speak to"
+done
+
+say "no build fitted; showing the survey"
+tell "sprag cannot connect" "${refusal:-no sprag build could reach the daemon}"
+exit 1

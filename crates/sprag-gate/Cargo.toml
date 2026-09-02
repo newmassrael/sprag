@@ -13,6 +13,19 @@ publish = false
 # that may itself have gone wrong (`if: always()` in CI). `std` is the whole toolkit it needs.
 [dependencies]
 
+# ⚠⚠ TEST-ONLY, and the one exception to the paragraph above — register items 794 and 825. The
+# rule that matters is *a gate BINARY must build when the product does not*, and a dev-dependency
+# cannot touch one: `ambient-home-guard`, `sweep-coverage`, `pty-demand` and `north-star` still
+# compile against `std` alone.
+#
+# What it buys is the thing item 794 measured: `std::env::temp_dir()` returns a RELATIVE path when
+# `TMPDIR` is set-and-empty, so a fixture that asked the operating system directly would write into
+# this crate's own directory inside the repository. `sprag-scratch` is the one place that asks, it
+# declares no dependencies of its own, and this workspace holds a RATCHET on the number of sites
+# that still bypass it — so a new one is a red rather than a habit.
+[dev-dependencies]
+sprag-scratch = { workspace = true }
+
 [[bin]]
 name = "ambient-home-guard"
 path = "src/bin/ambient-home-guard.rs"

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# A `sprag-gui` that RECORDS the endpoint it was launched with instead of opening a window.
+#
+# ⚠ The whole claim of register item 825 is about what the GUI is POINTED AT, and the real GUI
+# answers that by connecting — which needs a display, a daemon and a wire version. This records the
+# two variables `HostEndpoint::client()` consults, in its own precedence order, so a case can say
+# *the launcher pointed it at the daemon that is running* without any of that.
+#
+# TRACKED rather than written by the suite: register item 467.
+set -u
+{
+    printf 'ran %s\n' "$0"
+    printf 'SPRAG_GUI_HOST_SOCK=%s\n' "${SPRAG_GUI_HOST_SOCK-<unset>}"
+    printf 'SPRAG_HOST_RPC_SOCK=%s\n' "${SPRAG_HOST_RPC_SOCK-<unset>}"
+    printf 'args=%s\n' "$*"
+} >>"${SPRAG_GATE_GUI_RECORD:?the fixture must say where to record}"

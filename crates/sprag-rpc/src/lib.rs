@@ -28,6 +28,11 @@ pub mod call;
 pub mod client;
 pub mod endpoint;
 pub mod grammar;
+// ⛔ WHICH DAEMONS ARE RUNNING — `endpoint`'s question in the plural, and register item 825's
+// answer to *where does the list of sockets to ask come from*. Beside `endpoint` because the two
+// are one decision seen from two ends: one process resolving its own socket, and a launcher asking
+// which sockets have daemons behind them at all.
+pub mod survey;
 pub use call::{
     FillError, Flag, GrammarError, PublishedArg, PublishedForm, build_call, read_surface,
     selector_of,

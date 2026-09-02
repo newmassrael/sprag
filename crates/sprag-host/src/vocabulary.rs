@@ -247,6 +247,8 @@ pub enum Verb {
     Doctor,
     /// `words` — the closed vocabularies a run's answer speaks, asked of this build.
     Words,
+    /// `daemons` — WHICH daemons are running and on which sockets, asked of the machine.
+    Daemons,
     /// `show-grammar` — HOW TO CALL the daemon's own verbs, asked of the daemon.
     ShowGrammar,
     /// `detach-client` — give the terminal back, leave the session running.
@@ -578,7 +580,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 70] = [
+    pub const ALL: [Self; 71] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -643,6 +645,7 @@ impl Verb {
         Self::Help,
         Self::Doctor,
         Self::Words,
+        Self::Daemons,
         Self::ShowGrammar,
         Self::DetachClient,
         Self::SendPrefix,
@@ -1278,6 +1281,30 @@ impl Verb {
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::NotBuilt,
             ),
+            // ⛔⛔⛔⛔⛔ **WHICH DAEMONS ARE RUNNING, ASKED OF THE MACHINE** — register item 825.
+            //
+            // It needs NO DAEMON, and that is the whole point rather than a property it happens to
+            // have: every other verb here asks A daemon something, and this one asks whether there
+            // is one at all. A verb that had to connect first could not answer the question it
+            // exists for — which is what the launcher's *"no server running at the well-known
+            // socket"* was, six times, while a daemon served six windows on another socket.
+            //
+            // ⚠ NOT BOUND TO A KEY, on `words`' terms: a keystroke is pressed inside a client that
+            // is already attached to a daemon, so a client asking which daemons exist has answered
+            // its own question by being there.
+            //
+            // ⚠⚠ REFUSED to an agent rather than filed as a gap, and the distinction is rule 6's:
+            // an agent is born in a pane and inherits that pane's daemon (`pane_env_source`), so
+            // this question reaches OUTSIDE the session it works in exactly as `kill-server` does.
+            // `NotBuilt` would have said *nobody got to it yet* about a decision, and invited the
+            // gap to be closed by handing an agent a choice between daemons.
+            Self::Daemons => (
+                "daemons",
+                Group::Tool,
+                Shell::Runs("[--serving]"),
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Cannot(NotAnAgents::OutsideItsSession),
+            ),
             // THE DOOR ONTO THE WIRE'S OWN GRAMMAR, and the reason it is a verb rather than a
             // document: it ASKS THE DAEMON. herdr's equivalent (`herdr api schema`) prints a JSON
             // Schema a test wrote into its docs and the binary `include_str!`'d — so it describes
@@ -1709,7 +1736,13 @@ mod tests {
             // the vocabulary in the row it is already holding, so asking twice would be a second
             // authority on one fact — but *what are your words* is a legitimate ask (a tool could
             // answer it once and cache), and nobody has built it.
-            (38, 11, 21),
+            // ⚠ REGISTER ITEM 825: `daemons` is the 22nd REFUSAL and deliberately not a 12th gap.
+            // An agent is born in a pane and inherits that pane's daemon (`pane_env_source`), so
+            // *which daemons are running on this machine* reaches outside the session it works in
+            // exactly as `kill-server` does. Filing it as not-built would have invited somebody to
+            // close the gap by handing an agent a choice between daemons — this workspace's rule 6:
+            // a category that means *nobody got to it yet* is the wrong home for a decision.
+            (38, 11, 22),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1879,7 +1912,11 @@ mod tests {
             // ⚠ REGISTER ITEM 773: `words` is the 62nd, and it is the one shell verb here whose
             // whole purpose is that a shell can reach it with NO DAEMON and from any directory —
             // the two ways the answer it replaces (three `grep`s into this tree) could not be had.
-            (62, 3, 5),
+            // ⚠ REGISTER ITEM 825: `daemons` is the 63rd, and the SECOND that needs no daemon —
+            // for a sharper reason than `words`. Every other verb here asks A daemon something;
+            // this one asks whether there is one at all, so a version of it that had to connect
+            // first could not answer the question it exists for.
+            (63, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1975,7 +2012,10 @@ mod tests {
             // ⚠ REGISTER ITEM 773: `words` is the 39th refusal — it ANSWERS something and this
             // client has no view for the answer, which is the reason every answering verb here
             // carries. It becomes bindable the day a surface exists to show a vocabulary in.
-            (25, 6, 39),
+            // ⚠ REGISTER ITEM 825: `daemons` is the 40th refusal, on `words`' terms and with one
+            // more: a keystroke is pressed INSIDE a client that is already attached to a daemon,
+            // so a client asking which daemons exist has answered its own question by being there.
+            (25, 6, 40),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );

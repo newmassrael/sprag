@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# A `sprag` CLI that PLAYS BACK a survey staged beside it — the launcher gate's stand-in.
+#
+# ⚠ It answers from FILES IN ITS OWN DIRECTORY, not from the environment, because the claim under
+# test is that the launcher asks EACH BUILD'S OWN client: two staged builds must be able to answer
+# differently, and every process in this tree shares one environment.
+#
+#   survey    what `sprag daemons` prints (the rows and the population line)
+#   serving   what `sprag daemons --serving` prints (one socket path per line; absent = none)
+#   ls-ok     present when `sprag ls` succeeds — the probe for an endpoint somebody NAMED
+#
+# ⚠ `$0` is the path as INVOKED, and this file is reached through a symlink the fixture puts at
+# `target/<profile>/sprag`, so `dirname` lands in the staged build directory rather than here. That
+# is the whole reason the tape is read relative to `$0`.
+#
+# TRACKED rather than written by the suite: register item 467.
+set -u
+here=$(dirname "$0")
+
+# What the launcher asked, so a case can claim a question was NOT put (the named-endpoint case).
+[ -n "${SPRAG_GATE_CLIENT_RECORD:-}" ] && printf '%s %s\n' "$here" "$*" >>"$SPRAG_GATE_CLIENT_RECORD"
+
+case "${1:-}" in
+    ls)
+        [ -e "$here/ls-ok" ] && exit 0
+        echo "sprag: no server running at /run/user/1000/sprag-host.sock (the well-known default; SPRAG_HOST_RPC_SOCK is unset)" >&2
+        exit 1
+        ;;
+    daemons)
+        if [ "${2:-}" = "--serving" ]; then
+            [ -s "$here/serving" ] || exit 1
+            cat "$here/serving"
+            exit 0
+        fi
+        [ -r "$here/survey" ] && cat "$here/survey"
+        # ⚠ THE STATUS IS THE PRODUCT'S: `daemons` exits 1 when nothing serves, having printed
+        # every socket's word. A double that exited 0 would let a launcher branch on the status
+        # and still look right here.
+        [ -s "$here/serving" ] || exit 1
+        exit 0
+        ;;
+    *)
+        echo "stand-in sprag: this gate stages no answer for ${1:-<no verb>}" >&2
+        exit 64
+        ;;
+esac

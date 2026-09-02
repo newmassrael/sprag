@@ -131,6 +131,16 @@ pub mod refusals;
 /// it.
 pub mod north_star;
 
+/// What the DOCK's launcher does — register item 825.
+///
+/// Here for this crate's own charter, one turn further out than the others: the launcher is not
+/// compiled by anything. No `cargo build` reaches it and no crate imports it, so a change to it —
+/// or its DELETION — goes unremarked by every other instrument in this tree. Register item 285's
+/// `sprag (loop).desktop` left this machine exactly that way, and item 825 is what its absence
+/// then cost: six dock presses over six days, each answered with a sentence that was true and
+/// pointed at the wrong socket.
+pub mod launcher;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
