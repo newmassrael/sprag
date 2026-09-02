@@ -692,6 +692,13 @@ pub(crate) const DEFAULT_SERVICE_RETRY_TEXT: &str = "continue";
 /// the load it must survive. What bounds the cost of being generous is
 /// `reflect_after_refusals` — two checks per milestone at most.
 ///
+/// ⭐⭐⭐ **AND ONE READING HAS SINCE COME FROM A LOADED HOST, WHICH NARROWS THAT RESIDUE WITHOUT
+/// CLOSING IT** — 2026-09-02, register item 839's round. At load 7.91 across 32 cores, four times
+/// anything above, the same program and the same default model answered in **33.3 s** — FASTER than
+/// every idle reading. One reading is not a distribution; what it settles is that **load is not the
+/// dominant term**, and what dominates is how much the judge has to search: that question named the
+/// files to open. See `CHECK_READINGS`, where the arm is priced.
+///
 /// ⚠ It is a constant and not a `<data>`, on register item 314's correction: the rule that a
 /// duration belongs to the document bites on durations a CALLER can pass, and no caller can pass
 /// this. The day a check becomes a wire argument, its bound goes beside it.
@@ -772,6 +779,25 @@ const CHECK_READINGS: &[(u64, &str)] = &[
     (
         14_000,
         "2026-08-31 claude -p --model haiku, idle host (load 0.82)",
+    ),
+    // ⭐⭐⭐⭐⭐ 2026-09-02, register item 839's round — AND IT IS THE THIRD REMEDY, WHICH NOTHING
+    // HERE HAD PRICED. A real milestone check came back `Unfinished(NotYet)` again; the same
+    // program, the same DEFAULT model, on a host under FOUR TIMES the load every reading above was
+    // taken at (7.91 across 32 cores) answered in a sixth of the worst reading — because the
+    // QUESTION named the five files to open instead of asking a judge to find its own way around
+    // a tree. Thirteen turns, `is_error: false`, and a verdict citing line numbers off disk.
+    //
+    // ⛔⛔ **SO *give it longer, or a faster judge* WAS A SHORT LIST**, and this table's own gate
+    // asserted the short list by holding that the FASTEST reading is the cheap-model one. It is
+    // not, and a smaller question is the arm a reader can reach for without changing judges or
+    // waiting longer.
+    //
+    // ⚠ AND IT IS THE FIRST READING TAKEN UNDER CONTENTION, which `CHECK_WITHIN`'s doc named as
+    // the residue it could not measure. One reading is not a distribution; what it does settle is
+    // that load is not the dominant term, because this one is FASTER than every idle reading above.
+    (
+        33_330,
+        "2026-09-02 claude -p default model, focused question, loaded host (load 7.91)",
     ),
 ];
 
@@ -21204,15 +21230,46 @@ mod tests {
         // ⚠⚠ `Unheard::Unfinished` offers a reader two remedies and, until this reading, exactly
         // one of them had a number. The cheap model answered the SAME question on the SAME host in
         // a thirteenth of the time, so *a faster judge* is now the arm a reader can price.
-        let fastest = CHECK_READINGS
+        //
+        // ⛔⛔⛔⛔⛔ **THIS ASKED FOR THE TABLE'S MINIMUM AND THAT WAS A PREMISE, NOT THE CLAIM** —
+        // 2026-09-02. The claim is *the cheap arm is priced*; taking the minimum silently ALSO
+        // claimed that nothing else can be faster than a cheap judge, and a reading taken the day
+        // this changed refutes exactly that. So the cheap arm is found BY NAME now: a gate whose
+        // subject is one row must address that row, or a truer table turns it red.
+        let cheap = CHECK_READINGS
             .iter()
-            .min_by_key(|(took, _)| *took)
-            .expect("a non-empty table has a fastest reading");
+            .find(|(_, whose)| whose.contains("haiku"))
+            .expect("the cheap-judge arm must be in the table for its remedy to have a number");
         assert!(
-            fastest.0 * 13 <= worst.0 && fastest.1.contains("haiku"),
+            cheap.0 * 13 <= worst.0,
             "⛔⛔⛔ REGISTER ITEM 674: the two arms of *give it longer, or a faster judge* are not \
              both priced here. A remedy with no number beside it is one nobody chooses: \
-             {fastest:?} against {worst:?}",
+             {cheap:?} against {worst:?}",
+        );
+
+        // ── AND THE THIRD REMEDY NOBODY HAD PRICED: ASK A SMALLER QUESTION ────────────────────
+        //
+        // ⭐⭐⭐⭐⭐ 2026-09-02. `Unheard::Unfinished`'s sentence names two ways out and the check
+        // that produced it was not slow because of the judge or the host — it was slow because it
+        // had been asked to find its own way around a tree. The SAME program, the SAME default
+        // model, on a host under four times the load, answered a question that named the files to
+        // open in a sixth of the worst reading. That arm costs nothing and changes no judge, so a
+        // reader meeting a `NotYet` should reach for it first.
+        //
+        // ⚠ Held as a RATIO against the worst rather than as a literal, for `check_headroom`'s own
+        // reason: what matters is the margin, and a pinned millisecond would be this host's number
+        // rather than the finding.
+        let focused = CHECK_READINGS
+            .iter()
+            .find(|(_, whose)| whose.contains("focused question"))
+            .expect(
+                "the smaller-question arm must be in the table for its remedy to have a number",
+            );
+        assert!(
+            focused.0 * 5 <= worst.0,
+            "⛔⛔⛔ the third remedy has stopped being worth reaching for. *Ask a smaller question* \
+             is the only arm of `Unheard::Unfinished` that costs nothing and changes no judge, and \
+             it is only a remedy while it is measurably faster: {focused:?} against {worst:?}",
         );
 
         // ── AND AN EMPTY TABLE IS NOT INFINITE ROOM ───────────────────────────────────────────

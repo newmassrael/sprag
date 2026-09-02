@@ -522,10 +522,18 @@ impl Unheard {
             Self::Unstarted(why) => {
                 format!("the checker would not start ({why}) — look at the argv it was given")
             }
+            // ⭐⭐⭐⭐⭐ THREE REMEDIES AND NOT TWO, and the third is the one to reach for first —
+            // measured 2026-09-02 and priced in `crate::outer`'s readings table. This sentence
+            // named a longer wait and a cheaper judge, and a check that produced it was slow for
+            // NEITHER reason: the same program, the same default model, on a host under four times
+            // the load of every reading the bound was sized on, answered in a SIXTH of the worst
+            // once the question named the files to open. A judge asked to find its own way around
+            // a tree pays for the search, and nothing here was telling anybody that.
             Self::Unfinished(over) => {
                 format!(
-                    "the checker was started and never answered: the wait ended {over:?} — give it \
-                     longer, or a faster judge"
+                    "the checker was started and never answered: the wait ended {over:?} — ask a \
+                     SMALLER question (name the files to open: measured 6x faster, and it costs \
+                     nothing), or give it longer, or a faster judge"
                 )
             }
             Self::Unaccountable => {
