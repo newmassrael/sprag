@@ -196,6 +196,12 @@ pub enum Fault {
         /// How many were found.
         found: usize,
     },
+    /// The one [`DECLARATION`] line carries no number. **A floor nobody can read is not a floor**,
+    /// and dropping it silently is what let a prose quotation stand in for the real one.
+    UnreadableDeclaration {
+        /// The line as written.
+        line: String,
+    },
 }
 
 impl fmt::Display for Fault {
@@ -236,6 +242,12 @@ impl fmt::Display for Fault {
                 f,
                 "found {found} `{DECLARATION}` lines, need exactly 1 — a ratchet with no floor \
                  holds nothing",
+            ),
+            Self::UnreadableDeclaration { line } => write!(
+                f,
+                "`{}` states no number — a floor nobody can read is not a floor, and skipping it \
+                 quietly is how a sentence about the scheme comes to stand in for it",
+                line.trim(),
             ),
         }
     }
@@ -371,20 +383,36 @@ pub fn read(text: &str) -> Reading {
 
     // The declaration is read from the WHOLE document: it is the ledger's statement about itself
     // and need not sit inside section A.
-    let declarations: Vec<usize> = text
+    //
+    // ⚠⚠⚠⚠⚠ A DECLARATION IS A LINE THAT STARTS WITH THE TOKEN, and its value being unreadable is
+    // a FAULT rather than a line that quietly does not count. Both halves were measured wrong here
+    // on 2026-09-02: register item 823 explains the scheme and therefore QUOTES this token in
+    // prose, so two lines carried it — and the gate stayed green only because the prose one failed
+    // to parse and was silently dropped from the count. That is luck, and it cuts both ways: a
+    // sentence that happened to quote a number would have gone red, and a typo in the REAL
+    // declaration would have handed its job to the sentence.
+    let stated: Vec<&str> = text
         .lines()
-        .filter_map(|line| {
-            let (_, rest) = line.split_once(DECLARATION)?;
-            rest.split_whitespace().next()?.parse().ok()
-        })
+        .filter(|line| line.trim_start().starts_with(DECLARATION))
         .collect();
-    let declared = if declarations.len() == 1 {
-        Some(declarations[0])
-    } else {
-        faults.push(Fault::Declaration {
-            found: declarations.len(),
-        });
-        None
+    let declared = match stated.as_slice() {
+        [only] => {
+            let value = only
+                .trim_start()
+                .strip_prefix(DECLARATION)
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|word| word.parse().ok());
+            if value.is_none() {
+                faults.push(Fault::UnreadableDeclaration {
+                    line: (*only).to_string(),
+                });
+            }
+            value
+        }
+        many => {
+            faults.push(Fault::Declaration { found: many.len() });
+            None
+        }
     };
 
     let mut items: Vec<Item> = Vec::new();
@@ -667,6 +695,53 @@ mod tests {
             "counting fewer than declared is the goal, not a fault: {:?}",
             reading.faults,
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SAME SHAPE, ON THE FLOOR LINE** — and this one was green BY LUCK until it was
+    /// measured (2026-09-02).
+    ///
+    /// Item 823 explains the scheme, so its entry quotes this token in prose; the ledger therefore
+    /// carried two lines containing it. The first reading counted a line by the token appearing
+    /// ANYWHERE, and stayed green only because the prose one had no number after it and was
+    /// silently dropped. Both halves were wrong: a sentence that happened to quote a number would
+    /// have reddened the ledger for describing itself, and a typo in the real declaration would
+    /// have let the sentence take its place.
+    #[test]
+    fn a_sentence_that_quotes_the_declaration_is_not_one() {
+        let ledger = LEDGER.replace(
+            "     body mentioning ai_loop here",
+            "     the ledger declares its floor on an `@ns-unclassified: 7` line — that is prose\n     \
+             body mentioning ai_loop here",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.declared,
+            Some(1),
+            "the real floor still won: {:?}",
+            reading.faults,
+        );
+        assert!(
+            reading.is_green(),
+            "and quoting the token in a sentence is not a second declaration: {:?}",
+            reading.faults,
+        );
+    }
+
+    /// **A FLOOR NOBODY CAN READ IS NOT A FLOOR.** Dropping an unparseable declaration quietly is
+    /// the escape hatch that let the prose stand in for the real line.
+    #[test]
+    fn a_declaration_with_no_number_is_a_fault_rather_than_a_skip() {
+        let ledger = LEDGER.replace("@ns-unclassified: 1", "@ns-unclassified: soon");
+        let reading = read(&ledger);
+        assert!(
+            reading
+                .faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::UnreadableDeclaration { .. })),
+            "an unreadable floor is its own fault: {:?}",
+            reading.faults,
+        );
+        assert_eq!(reading.declared, None, "and it declared nothing");
     }
 
     /// A missing floor is a fault: a ratchet nobody declared holds nothing, and this gate would
