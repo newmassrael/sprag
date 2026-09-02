@@ -3787,6 +3787,7 @@ dependencies = [
  "serde_json",
  "sprag-detect",
  "sprag-input",
+ "sprag-scratch",
  "sprag-terminal",
  "sprag-vt",
 ]

@@ -1256,6 +1256,24 @@ impl Plugin for AiLoop {
         self.inner.checks()
     }
 
+    /// 🎯 **THE DOCUMENT'S OWN `deferred`, ON ITS WAY TO THE ROW SOMEBODY READS** — register item
+    /// 833(2).
+    ///
+    /// ⚠⚠ IT IS THE DOCUMENT'S COUNT AND NOT A SECOND ONE. The guard that sets a proposal aside is
+    /// written in `ai_loop.scxml`, and the `<assign>` beside it is what counts — so nothing out
+    /// here increments anything, exactly as `deliveries` and `checks` above delegate rather than
+    /// tally. A driver-side counter would agree with the document until the day the document grew a
+    /// second way to defer.
+    ///
+    /// ⚠ [`None`] survives as [`None`]: a datamodel that has stopped answering is *nobody was
+    /// counting*, and the narrowing to `u32` is saturating for the same reason a negative here
+    /// would be a datamodel nobody should be reporting from.
+    fn deferred(&self) -> Option<u32> {
+        self.inner
+            .deferred()
+            .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
     /// ⚠ DELEGATED for `deliveries`' reason — register item 719. The driver that put the brief in
     /// is the only thing that read it back out of the datamodel, and a size measured at this layer
     /// would be measuring the REQUEST rather than what the machine holds — a second authority on
@@ -1940,6 +1958,10 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            // ⚠ DECLINED, so the TEMPLATE's own cap stands — which is what the gates about item
+            // 833(2) want: they move the document's number and watch the run's behaviour move with
+            // it, and a number named here would be a caller overriding the thing being measured.
+            reaim_max: None,
             milestone_check: None,
             // ⚠ DECLINED, like the two above it: a stand-in peer has no service to fail, so a
             // needle here would be quoting words nothing in these fixtures ever prints. The
@@ -5855,6 +5877,312 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// 🎯🎯🎯🎯🎯 **THE DEPTH CAP A RUN OBEYS IS ITS DOCUMENT'S, AND MOVING THE DOCUMENT'S NUMBER
+    /// MOVES THE RUN** — the owner's decision of 2026-09-02, register item 833(2).
+    ///
+    /// # ⚠⚠⚠⚠⚠ What this is a gate against, and why an assertion about ONE number is not it
+    ///
+    /// The failure this exists to catch is the one register item 445 names: **a second author of a
+    /// policy**. A driver holding `const DEPTH_CAP: i64 = 1` beside the document's `<data>` passes
+    /// every assertion about the shipped behaviour, and drifts the first day a kind authors its
+    /// own — silently, because both numbers are 1 until somebody changes one of them.
+    ///
+    /// So the claim is a DIFFERENCE: two runs over the same peer, differing in nothing but the cap
+    /// their document was briefed with, must re-aim a different number of times. A constant cannot
+    /// produce that difference, and neither can a driver that reads the cap once and caches it.
+    ///
+    /// # ⚠⚠⚠ The peer names a FRESH checkpoint every time, and that is load-bearing
+    ///
+    /// [`standin_agent_reflecting`](crate::testing::standin_agent_reflecting) proposes the same
+    /// milestone at every reflection, so the run is already aiming where it is being pointed and
+    /// **no re-aim happens at all** — correctly, by the document's own guard. A cap measured
+    /// against that peer would be a cap that never fired, reported as a cap that works. See
+    /// [`standin_agent_reflecting_afresh`](crate::testing::standin_agent_reflecting_afresh).
+    ///
+    /// ⚠⚠ THE CAP IS AUTHORED THROUGH THE `Brief` FIELD, which is the road a KIND travels — the
+    /// same road item 494's gate uses for `reflect_after_refusals`, and the reason that item's
+    /// residue said *a constant that exists only for a test is sometimes the shape of a missing
+    /// channel*. There is no `set_variable` here: what is exercised is the channel a real kind uses.
+    #[test]
+    fn a_documents_depth_cap_is_the_one_a_run_obeys() {
+        /// What the peer proposes at each reflection, before the counter it appends.
+        const AFRESH: &str = "a different debt this run just found";
+        /// And what it says the replacement should read.
+        const READ_NEXT: &str = "the register entry for that one";
+        /// How many working prompts before the peer says the done marker — high enough that the
+        /// run reflects on its budget several times rather than reaching anything.
+        const PROMPTS: u32 = 30;
+        /// Reflect often, so several reflections fit inside one bounded walk.
+        const EVERY: i64 = 2;
+        /// The step ceiling of the walk below. ⚠ A BOUND ON THE GATE, never on the claim: a run
+        /// that needs more steps than this has changed shape, and the assertions say so by name
+        /// rather than by this loop quietly ending early.
+        ///
+        /// ⚠⚠⚠ **160 → 400, MEASURED 2026-09-02, and the reason is worth keeping.** A RE-AIM and a
+        /// DEFERRAL cost wildly different numbers of steps: a re-aim goes on through `reviewing`,
+        /// `restarting`, `resuming` and `priming` — a whole session replacement — while a deferral
+        /// returns straight to `working`. So the arm with the LOOSER cap is the slower one, and at
+        /// 160 it reached only its first re-aim while the tighter arm had already re-aimed once and
+        /// deferred repeatedly. ⚠ That is this ceiling being the subject rather than the cap, which
+        /// is exactly what the sentence above forbids — it surfaced as `left: Some(1) right:
+        /// Some(2)`, a red that reads like the product and was the gate's own stamina.
+        const STEPS: usize = 400;
+
+        /// Drive a run until it has spent `reflections` reflections or the walk runs out, then
+        /// answer what the DOCUMENT holds: how far it re-aimed, and what it set aside.
+        fn cap_of(cap: i64) -> (Option<i64>, Option<i64>) {
+            // ⚠⚠⚠ ONE FILE, and the peer's proposal counter lives in it because a re-aim RESPAWNS
+            // the pane — see `standin_agent_reflecting_afresh`, where the shell-variable draft of
+            // this counter is written down as the thing that made this gate unable to reach depth
+            // 2 at all. The name carries the pid and a nanosecond count, like every fixture path
+            // here, so two runs of this suite cannot share it.
+            // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item
+            // 794. The bare call answers a RELATIVE path when `TMPDIR` is set-and-empty, and this
+            // file would then be written into the crate's own directory inside the repository.
+            let counter = sprag_scratch::scratch_root().join(format!(
+                "sprag-reaim-count-{}-{}-{cap}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.subsec_nanos()),
+            ));
+            let _ = std::fs::remove_file(&counter);
+            let (workspace, pane) = crate::testing::standin_agent_reflecting_afresh(
+                PROMPTS, AFRESH, READ_NEXT, &counter,
+            );
+            let access = crate::testing::supervised(&workspace);
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    reflect_every: Some(EVERY),
+                    reaim_max: Some(crate::outer::Counted::Of(cap)),
+                    ..brief_for(40)
+                },
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            let run = RunContext::uncancellable();
+            for _ in 0..STEPS {
+                loops
+                    .step(&access, &run)
+                    .expect("every step of a reflecting run must be readable");
+                if loops.inner.finished() {
+                    break;
+                }
+            }
+            let held = (loops.inner.re_aimed(), loops.inner.deferred());
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            // ⚠ TAKEN AWAY BEFORE THE ASSERTIONS, so a red leaves nothing behind either.
+            let _ = std::fs::remove_file(&counter);
+            held
+        }
+
+        let (tight_depth, tight_deferred) = cap_of(1);
+        let (loose_depth, loose_deferred) = cap_of(2);
+
+        // ── THE CONTROL: BOTH RUNS ACTUALLY REFLECTED, OR THE DIFFERENCE BELOW IS ABOUT NOTHING ──
+        assert_eq!(
+            tight_depth,
+            Some(1),
+            "⚠⚠⚠ THE CONTROL FOR THE WHOLE GATE: a run capped at one must re-aim EXACTLY once — \
+             zero means this walk never reached a reflection at all and everything below is a \
+             comparison of two nothings, and more than one means the cap did not hold. Deferred \
+             {tight_deferred:?}",
+        );
+        assert_eq!(
+            loose_depth,
+            Some(2),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 833(2): THE SAME PEER, THE SAME PROMPTS, A DIFFERENT \
+             DOCUMENT — and the run must re-aim twice. A driver holding the cap as a constant \
+             beside the document's `<data>` passes every assertion about the shipped `1` and \
+             fails here, which is the whole reason this gate compares two runs instead of \
+             asserting one number. Deferred {loose_deferred:?}",
+        );
+        assert!(
+            tight_deferred.is_some_and(|set_aside| set_aside > 0),
+            "⚠⚠⚠⚠ AND THE PROPOSALS IT DID NOT TAKE ARE COUNTED. A cap that simply stopped \
+             adopting would be indistinguishable from a loop whose agent ran out of ideas — item \
+             833's own stated danger, in its own words — so the deferring arm's `deferred` must \
+             have moved. Got {tight_deferred:?}",
+        );
+        assert!(
+            loose_deferred.is_some_and(|set_aside| set_aside > 0),
+            "⚠⚠⚠ AND THE LOOSER CAP BITES TOO, eventually — which is what separates *a bigger \
+             budget* from *no budget at all*. A run that re-aimed twice and then never counted \
+             anything would be one whose guard stopped firing after the second adoption, and the \
+             number above would have been produced by the peer running out rather than by the cap. \
+             Got {loose_deferred:?}",
+        );
+
+        // ⚠⚠⚠⚠⚠ **AND THE COUNTS ARE NOT COMPARED, WHICH IS A MEASUREMENT AND NOT A SOFTENING.**
+        // The first draft asserted `tight_deferred > loose_deferred` — *every proposal the looser
+        // run took is one the tighter run had to count* — and it is FALSE here for a reason worth
+        // writing down: both walks stop at `STEPS`, and past its cap each run defers once per
+        // reflection at the same cadence. Measured 2026-09-02: **11 and 11**. What the caps change
+        // is WHEN the deferring starts, which is exactly what the two `re_aimed` assertions above
+        // say; a count comparison would be measuring this gate's step ceiling.
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A REFLECTION THAT CHANGES NO DIRECTION SPENDS NO DEPTH** — register item
+    /// 833(2), and the correction that the first build of this cap needed.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The arrival this gate is about, and why it is easy to miss
+    ///
+    /// `reflect.applied` carries TWO findings and only one of them is a re-aim:
+    ///
+    /// | what happened | what the driver sends | is it a re-aim |
+    /// |---|---|---|
+    /// | the agent named a successor | that successor | **yes** |
+    /// | nothing proposed, a standing instruction learned | the milestone the run already had | no |
+    ///
+    /// The second exists because `screening` APPENDS to `standing` and reflection is where the list
+    /// is normalised, so a run whose peer asked a screened question reflects to adopt it and comes
+    /// back pointing at the same checkpoint. An unconditional `reaimed + 1` on that transition
+    /// spends the budget on it — and a run whose agent kept asking one screened question would
+    /// reach its cap **without ever having changed direction once**, then defer the first real
+    /// proposal it ever made.
+    ///
+    /// ⚠⚠ THE CONTROL IS HALF THE GATE. *Depth stayed at zero* is also what a run that never
+    /// reflected at all looks like, so this asserts the arrow was actually taken — otherwise the
+    /// claim is about a transition this walk never reached.
+    #[test]
+    fn a_reflection_that_names_no_successor_spends_no_depth() {
+        /// The edge this gate is about: the reflection that adopted something and reviewed.
+        const THE_EDGE: &str = "Reflecting --ReflectApplied--> Reviewing";
+        /// The dialog the refusing stand-in raises, which the rule below is written against.
+        const ASKS: &str = "Which way should I build this?";
+        /// What the standing instruction says to do instead — the text `screening` types.
+        const INSTEAD: &str = "neither; do the smallest verifiable thing and report";
+
+        let (workspace, pane) = crate::testing::standin_agent_refusing(true, u32::MAX, None);
+        let access = crate::testing::supervised_asking(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                screen_rules: Some(
+                    crate::screen::ScreenRules::of(vec![
+                        crate::screen::ScreenRule::parse(ASKS.to_owned(), INSTEAD.to_owned())
+                            .expect("both halves are non-empty"),
+                    ])
+                    .expect("a non-empty list"),
+                ),
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        // ⚠ A BOUND ON THE GATE, never on the claim — the control below says by name if the run
+        // needed more steps than this rather than letting the loop end quietly.
+        while walked.len() < 120 {
+            let step = loops
+                .step(&access, &run)
+                .expect("every step of a screening run must be readable");
+            if let Some(note) = step.note.clone() {
+                walked.push(note);
+            }
+            if walked.iter().any(|note| note.starts_with(THE_EDGE)) || loops.inner.finished() {
+                break;
+            }
+        }
+        let depth = loops.inner.re_aimed();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        // ── THE CONTROL: the arrow was taken, or the assertion below is about nothing ──
+        assert!(
+            walked.iter().any(|note| note.starts_with(THE_EDGE)),
+            "⚠⚠⚠ THE CONTROL FOR THIS GATE: this run must have taken {THE_EDGE:?} — a reflection \
+             that adopted the standing instruction its peer's screened question produced. Without \
+             it, *depth is zero* is only saying the run never reflected. Walked {walked:?}",
+        );
+        assert_eq!(
+            depth,
+            Some(0),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 833(2): THIS REFLECTION RE-AIMED AT NOTHING AND SPENT A STEP \
+             OF THE BUDGET ANYWAY. Its agent proposed no successor; the driver echoed back the \
+             checkpoint the run already had, and the run went on to exactly the same place. A cap \
+             spent by that arrival is a run that reaches its limit without ever changing direction \
+             — and then sets aside the first real proposal it makes. Walked {walked:?}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A KIND MAY DECLINE THE DEPTH CAP, AND ONE THAT SAYS NOTHING GETS THE
+    /// TEMPLATE'S OWN — WHICH IS ONE** — register item 833(2), the owner's *"default로 1 depth로해"*.
+    ///
+    /// # ⚠⚠⚠⚠ The two halves are one claim, on `reflect_after_refusals`' terms
+    ///
+    /// *Declinable* alone is satisfied by a template with no cap at all, and *defaults to one*
+    /// alone is satisfied by a hard-coded one no author can move. What makes the pair a channel is
+    /// that both roads end in the datamodel the document's own guard reads — and this asserts the
+    /// datamodel rather than the field it was handed, because SCE PR-87 was a round in which
+    /// exactly that crossing was silently lossy.
+    ///
+    /// ⚠⚠ **THE DEFAULT IS ASSERTED AS A NUMBER, DELIBERATELY.** The owner's instruction names it
+    /// — *default 1 depth* — so a template that quietly shipped `2` would be a decision nobody
+    /// made, and this is the only place that says so. ⚠ A repository's OWN answer is
+    /// `debt_loop.scxml`'s, read at the daemon's door, and `sprag_plugin::kind`'s gate holds that
+    /// half.
+    ///
+    /// ⚠ The third case — a document that declares NOTHING — is refused rather than defaulted, and
+    /// it is held in `crate::outer`'s own module because staging a silent datamodel needs the
+    /// engine stand-in that lives there.
+    #[test]
+    fn a_kind_may_decline_the_depth_cap_and_silence_takes_the_templates_one() {
+        let (workspace, pane) = standin_agent(1);
+        let access = crate::testing::supervised(&workspace);
+
+        // ── DECLINED: the word reaches the datamodel, because the guard short-circuits on it ──
+        let declining = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                reaim_max: Some(crate::outer::Counted::Never),
+                ..brief_for(3)
+            },
+            &standin_spec(),
+        )
+        .expect("a kind that declines the cap starts a run");
+        assert_eq!(
+            declining.inner.authored_count("reaim_max"),
+            Some(crate::outer::Counted::Never),
+            "⚠⚠⚠ A DECLINE MUST REACH THE DATAMODEL AS THE WORD. The document's guard reads \
+             `reaim_max != 'never'` before it compares, so a decline that arrived as a NUMBER \
+             would be a cap of that number — the opposite of what the author asked for, and \
+             silently",
+        );
+
+        // ── SILENT CALLER: the TEMPLATE's own number, and it is 1 ──
+        let quiet = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                reaim_max: None,
+                ..brief_for(3)
+            },
+            &standin_spec(),
+        )
+        .expect("a caller who names no cap starts a run on the template's own");
+        assert_eq!(
+            quiet.inner.authored_count("reaim_max"),
+            Some(crate::outer::Counted::Of(1)),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 833(2), the owner's words: *default로 1 depth로해*. This is \
+             the only assertion in the workspace that the shipped default is ONE, so a template \
+             that drifted to another number would be a decision nobody made. ⚠ It must also not \
+             be the LAST caller's decline leaking across — the echo exists so a document's own \
+             number survives, not so a value travels between runs",
+        );
+        drop((declining, quiet));
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠⚠⚠ **A DECLINED BUDGET REACHES THE DATAMODEL AS A WORD, AND THE RUN STARTS** — the
     /// resolution half of the kind's *"this loop does not end on turns"*.
     ///
@@ -7903,6 +8231,36 @@ mod tests {
         loops.stand_down();
         let (stood_down_end, stood_down_walk) = run_of(&mut loops, &access);
 
+        // ── ARM 4: THE MILESTONE WAS REACHED, A SUCCESSOR WAS NAMED, AND THE CAP WAS SPENT ──
+        //
+        // 🎯🎯🎯🎯🎯 REGISTER ITEM 833(2). ⚠⚠⚠ THE SAME PEER AS ARM 1's CONTROL — it reaches the
+        // milestone and answers the reflection with a successor — and left alone that run does NOT
+        // close at all: it adopts the proposal and carries on, which the control above asserts. The
+        // only difference here is the DOCUMENT's cap, and it is `0` so the very first proposal
+        // meets it.
+        //
+        // ⚠⚠ A CAP OF ZERO IS A REAL AUTHOR'S CHOICE and not a fixture's trick: *do exactly what I
+        // pointed you at and register everything else* is the tightest honest reading of the
+        // owner's decision, and it is the only value that makes this ending reachable in one
+        // milestone. A gate needing three milestones to reach a word would be measuring the
+        // fixture's stamina.
+        //
+        // ⚠ IT MUST NOT BE `no_successor`: this agent DID name one. That is the whole reason the
+        // vocabulary grew a fourth word rather than reusing the third.
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(2, NEXT, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                reaim_max: Some(crate::outer::Counted::Of(0)),
+                ..brief_for(40)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+        let (capped_end, capped_walk) = run_of(&mut loops, &access);
+
         // ⚠⚠⚠ EACH ARM CARRIES THE ARROW IT ARRIVES BY, because they are not all the same one any
         // more. The two reflection endings pass through `reflecting` — the run asked what was next
         // and the answer ended it. A STAND-DOWN does not: the order is already standing when the
@@ -7927,6 +8285,16 @@ mod tests {
                 DoneReason::StoodDown,
                 &stood_down_walk,
                 "Judging --Judge--> Closing",
+            ),
+            // 🎯 AND THE FOURTH ARRIVES BY AN ARROW NONE OF THE THREE ABOVE USES: `reflect.applied`
+            // straight into `closing`. The two reflection endings above come in on `reflect.done`
+            // and the stand-down on `judge`, so a reader can tell all four apart by the arrow alone
+            // — which is what this column is for.
+            (
+                "the depth cap was spent",
+                DoneReason::Capped,
+                &capped_walk,
+                "Reflecting --ReflectApplied--> Closing",
             ),
         ];
 
@@ -7954,6 +8322,16 @@ mod tests {
                 DoneReason::StoodDown,
                 &stood_down_end,
                 &stood_down_walk,
+            ),
+            // 🎯🎯🎯 AND A CAPPED RUN CONVERGES TOO, which is the claim rather than an accident.
+            // The checkpoint the caller named WAS reached, so the account this run writes is true;
+            // what it does not claim is the north star, and `capped` is the only thing on the row
+            // that says a proposal was left on the table.
+            (
+                "the depth cap was spent",
+                DoneReason::Capped,
+                &capped_end,
+                &capped_walk,
             ),
         ] {
             assert_eq!(

@@ -548,6 +548,19 @@ pub struct Outcome {
     /// and the file is never written. One number covering both would answer that question with a
     /// count that includes every refusal.
     pub screened: u32,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY NEXT CHECKPOINTS THIS RUN'S AGENT NAMED AND THIS RUN COUNTED RATHER
+    /// THAN TOOK** — the owner's decision of 2026-09-02, register item 833(2). See
+    /// [`Plugin::deferred`], where the argument lives.
+    ///
+    /// ⚠ Reported for EVERY terminal state, on [`answered`](Self::answered)'s argument: a run that
+    /// set three proposals aside and then hit its iteration ceiling is exactly the run somebody
+    /// reads an outcome to understand, and a tally present only on convergence would be missing
+    /// from the endings that most need explaining.
+    ///
+    /// ⚠⚠ [`None`] is *this plugin does not set proposals aside* — every bundled plugin but the
+    /// loop, and a loop whose datamodel has stopped answering. Never `Some(0)`, which is *it had
+    /// the choice and never had to make it*.
+    pub deferred: Option<u32>,
     /// ⚠⚠⚠ **WHAT THE RUN PUT INTO ITS PANE AND HOW MUCH OF IT WAS NEVER VISIBLE THERE** —
     /// register item 591, [`Progress::deliveries`] read at the end.
     ///
@@ -690,6 +703,14 @@ pub struct Driver {
     /// HOW MANY OF ITS PEER'S TOOL CALLS THIS RUN REFUSED AND REDIRECTED, on the loop author's
     /// standing instructions — [`Self::answered`]'s argument, for the other decision.
     screened: u32,
+    /// 🎯 **WHAT THE PLUGIN LAST SAID ITS SET-ASIDE PROPOSALS CAME TO** — register item 833(2),
+    /// held for [`deliveries`](Self::deliveries)' reason and read from the plugin at the same one
+    /// place.
+    ///
+    /// ⚠ NEVER incremented here. The rule that sets a proposal aside is a guard in the plugin's own
+    /// document, so a second counter out here would be a number that agrees until the day it does
+    /// not — `deliveries`' own words, one field down.
+    deferred: Option<u32>,
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS DELIVERIES CAME TO** — register item 591, held for
     /// [`at`](Self::at)'s reason and read from the plugin at the same one place.
     ///
@@ -777,6 +798,16 @@ pub struct Progress {
     /// one whose standing rule is too broad, and this count is the only thing that says so while
     /// there is still time to stop it.
     pub screened: u32,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS THIS RUN HAS SET ASIDE AT ITS RE-AIMING CAP, SO FAR** —
+    /// register item 833(2).
+    ///
+    /// ⚠⚠ Watched WHILE THE RUN IS GOING for `screened`'s reason exactly: a run deferring proposal
+    /// after proposal is one whose cap is too tight for the work it was pointed at, and the person
+    /// who can widen it is the one reading this row now. An ending-only tally answers that question
+    /// after the chance to act on it has gone.
+    ///
+    /// ⚠ [`None`] is *nobody was counting* — see [`Outcome::deferred`].
+    pub deferred: Option<u32>,
     /// ⚠⚠⚠⚠⚠ **WHERE THE RUN IS** — the plugin's own machine position, from [`Plugin::at`].
     ///
     /// # The fact that existed only as prose — register item 543
@@ -981,6 +1012,10 @@ impl Driver {
             taken_over: None,
             answered: 0,
             screened: 0,
+            // ⚠ `None` AND NOT `Some(0)` — a run that has not been stepped has not been asked, and
+            // *nobody was counting* is a different answer from *it set nothing aside*. See
+            // `Plugin::deferred`.
+            deferred: None,
             deliveries: Deliveries::NONE,
             checks: Checks::NONE,
             banked: None,
@@ -1030,6 +1065,10 @@ impl Driver {
             journal: self.journal.clone(),
             answered: self.answered,
             screened: self.screened,
+            // 🎯 AND WHAT IT HAS SET ASIDE SO FAR — register item 833(2), published WHILE THE RUN
+            // IS STILL GOING for `answered`'s reason on the row below: a person watching a loop
+            // defer proposal after proposal is the one who can still change its brief.
+            deferred: self.deferred,
             at: self.at,
             waiting: self.waiting.clone(),
             place: self.place.clone(),
@@ -1385,6 +1424,13 @@ impl Driver {
                     // three facts about three moments, and a reader weighing a `converged` needs
                     // them to describe one run.
                     self.checks = plugin.checks();
+                    // 🎯🎯🎯 AND HOW MANY PROPOSALS IT HAS SET ASIDE AT ITS RE-AIMING CAP —
+                    // register item 833(2), in the same breath as the three above and for their
+                    // reason. ⚠ It is KEPT where the plugin stops being able to answer, on
+                    // `banked`'s terms one line down: the last step is the one that ends the run,
+                    // and a machine in a final state may no longer read its own datamodel — what a
+                    // reader wants is the last answer it COULD give, not the silence after it.
+                    self.deferred = plugin.deferred().or_else(|| self.deferred.take());
                     // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS COMPLETE AND KEPT — register item 604, in
                     // the same breath as the three above and for their reason. It is asked EVERY
                     // step rather than once at the end because the last step is the one that ends
@@ -1807,6 +1853,7 @@ impl Driver {
             stopped: self.stopped,
             answered: self.answered,
             screened: self.screened,
+            deferred: self.deferred,
             deliveries: self.deliveries,
             checks: self.checks.clone(),
             banked: self.banked,

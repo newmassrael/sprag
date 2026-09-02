@@ -598,6 +598,34 @@ impl LoopKind {
         self.machine.policy().reflect_after_refusals()
     }
 
+    /// 🎯🎯🎯🎯🎯 **HOW FAR A RUN OF THIS KIND MAY RE-AIM ITSELF AWAY FROM THE CHECKPOINT IT WAS
+    /// GIVEN** — or [`None`] where this kind says nothing and the template's own number stands. The
+    /// owner's decision of 2026-09-02, register item 833(2).
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a KIND is the party that decides this, and not a caller or the template
+    ///
+    /// It is a rule about **how work is done in a particular repository**. A template other
+    /// repositories copy cannot know whether a run that finds a second thing while paying the first
+    /// should take it — that depends on what the debt looks like where it is running. And a CALLER
+    /// must not decide it, on `milestone_check`'s argument exactly: one who could name it could
+    /// delete the cap by spelling `never` on a launch nobody reviewed, so there is no wire key.
+    ///
+    /// ⚠⚠ **WHAT ITS ABSENCE COST, MEASURED.** With no cap at all, this repository's loop closed
+    /// eleven register items in twenty-two commits on 2026-09-02 and **nine of the eleven had been
+    /// registered the same day**, while the forty-one items standing that morning lost exactly one.
+    /// The population went UP, 41 to 50 — a loop paying its own debt for ever, which is the report
+    /// the owner's decision answers.
+    ///
+    /// ⚠ **IT READS THROUGH THE INTERPRETING READER, like [`turn_budget`](Self::turn_budget) and
+    /// unlike the three above it.** [`Counted`] is a UNION — a number, or the word `never` — and no
+    /// accessor typed from one document's literal can carry it: a kind that wrote `1` would get an
+    /// `Option<i64>` accessor and a kind that wrote `'never'` an `Option<String>`, so a reader
+    /// typed off the codegen would stop compiling the day a repository changed its mind.
+    #[must_use]
+    pub fn reaim_max(&self) -> Option<Counted> {
+        OuterLoop::authored_count_in(&self.script, &self.session, "reaim_max")
+    }
+
     /// **WHO DECIDES A MILESTONE OF THIS KIND WAS REACHED**, as an argv — or [`None`] where this
     /// kind says nothing and the working agent's own word stands.
     ///

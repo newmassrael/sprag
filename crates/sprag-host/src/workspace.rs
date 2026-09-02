@@ -4396,6 +4396,7 @@ mod tests {
                 stopped: None,
                 answered: 0,
                 screened: 0,
+                deferred: None,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,

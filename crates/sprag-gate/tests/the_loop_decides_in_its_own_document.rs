@@ -447,7 +447,14 @@ const DECLARED_ACTS: usize = 15;
 /// by a driver reading the datamodel and picking. ⚠ No [`DRIVER_ARMS`] row fell with it, which is
 /// the ordinary case this file's header describes: the decision was never in the driver to begin
 /// with, because until this item there was nothing to decide.
-const SERVED_ACTS: usize = 43;
+///
+/// 🎯 **43 → 44 on 2026-09-02, and the act is a THIRD `prompt.say` out of `reflecting`** — register
+/// item 833(2). The owner capped how far a run may re-aim itself away from the checkpoint it was
+/// given; a reflection that meets that cap declines the proposal and goes back to `working`, which
+/// — like `reflect.none` beside it — owes the turn prompt, because the state was entered mid-work
+/// and a run returning with nothing said would wait for a turn nobody opened. ⚠ No [`DRIVER_ARMS`]
+/// row fell with it: the decision is a GUARD in the document, and it never lived in the driver.
+const SERVED_ACTS: usize = 44;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

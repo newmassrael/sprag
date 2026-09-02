@@ -848,6 +848,26 @@ const REFERENCE: &str = "reference";
 /// `priming`. See the document, and [`OuterLoop::reflect`].
 const STANDING: &str = "standing";
 
+/// 🎯 **HOW FAR A RUN MAY RE-AIM ITSELF AWAY FROM THE CHECKPOINT IT WAS GIVEN** — the owner's
+/// decision of 2026-09-02, register item 833(2), and a POLICY the DOCUMENT holds for register item
+/// 773's reason: *the subject is the launcher's, the policy is the document's*.
+///
+/// ⚠⚠⚠ **THIS DRIVER NEITHER HOLDS THE NUMBER NOR COMPARES AGAINST IT.** The guard that spends the
+/// budget is written in `ai_loop.scxml`, on the two `reflect.applied` arms, exactly as
+/// `service_retry_max`'s ceiling is written there and not here — a second reader of a policy number
+/// is a second author of the policy, which is register item 445's shape. The one thing this name is
+/// for is the DOOR: [`OuterLoop::brief`] refuses a document that declares no cap, because a policy
+/// whose absence means *do whatever you like* is the escape hatch that disables its own gate.
+const REAIM_MAX: &str = "reaim_max";
+/// The datamodel variable counting **how far this run has re-aimed itself already** — incremented by
+/// the `reflect.applied` arm that moves the milestone, and read by [`OuterLoop::re_aimed`]. See
+/// [`REAIM_MAX`].
+const REAIMED: &str = "reaimed";
+/// The datamodel variable counting **proposals this run set aside at its depth cap** — published on
+/// the run's row, because a cap whose deferrals nobody counts is indistinguishable from a loop that
+/// never found anything. See [`REAIM_MAX`] and [`OuterLoop::deferred`].
+const DEFERRED: &str = "deferred";
+
 /// **WHAT THIS PARTICULAR LOOP IS FOR** — the template's parts, supplied by whoever starts the run.
 ///
 /// # ⚠⚠⚠ Why this type exists, measured
@@ -1071,6 +1091,33 @@ pub struct Brief {
     /// template allows and does not recommend — so this is a plain `Option<i64>` on
     /// [`context_ceiling`](Self::context_ceiling)'s terms rather than a [`Counted`].
     pub reflect_after_refusals: Option<i64>,
+    /// 🎯🎯🎯🎯🎯 **HOW FAR A RUN MAY RE-AIM ITSELF AWAY FROM THE CHECKPOINT IT WAS GIVEN**, or
+    /// [`None`] to let the kind's document — and then the template's own `<data id="reaim_max">`
+    /// — decide. The owner's decision of 2026-09-02, register item 833(2).
+    ///
+    /// # ⚠⚠⚠⚠⚠ What it bounds, and the measurement that asked for it
+    ///
+    /// Depth is counted FROM THE BRIEF: depth 0 is the checkpoint a person launched the run with,
+    /// and every reflection that adopts a DIFFERENT one is a step away from what they asked for. A
+    /// cap of one therefore says *pay what you were pointed at, and the one thing you found while
+    /// paying it; register the rest*.
+    ///
+    /// Measured on 2026-09-02 in this repository, with no cap at all: the loop closed eleven
+    /// register items in twenty-two commits and **nine of the eleven had been registered the same
+    /// day**, while the forty-one items standing that morning lost exactly one. The population went
+    /// UP, 41 to 50. A run that may re-aim without bound pays its own debt for ever.
+    ///
+    /// ⚠⚠ **A [`Counted`] and not a plain number, because a kind may DECLINE the cap** — `never`,
+    /// spelled the way `max_turns` spells it, which is the behaviour every run had before this
+    /// existed. What a kind may NOT do is say nothing: [`brief`](OuterLoop::brief) refuses a
+    /// document that declares no cap at all, on `max_turns`' own terms.
+    ///
+    /// ⚠⚠⚠ **AND THERE IS DELIBERATELY NO WIRE KEY**, which is [`working_rules`](Self::working_rules)'
+    /// argument rather than an omission. This is a policy, and register item 773's axis is *the
+    /// subject is the launcher's, the policy is the document's*: a caller who could name it could
+    /// delete the cap by spelling `never` on a launch nobody reviewed, and the cap would then be
+    /// exactly as absent as it was before — silently, and on the runs least likely to be watched.
+    pub reaim_max: Option<Counted>,
     /// **STANDING INSTRUCTIONS FOR DIALOGS THIS CALLER HAS ALREADY DECIDED ABOUT** — the authored
     /// `screen_rules`, supplied by somebody who did not edit the file.
     ///
@@ -2103,11 +2150,38 @@ pub enum DoneReason {
     /// its own orders region — so the document assigns this word as a literal rather than echoing
     /// one the driver sent. That is the first time an ending has been the document's own to spell.
     StoodDown,
+    /// 🎯🎯🎯🎯🎯 **THE MILESTONE WAS REACHED, A SUCCESSOR WAS NAMED, AND THIS RUN HAD SPENT ITS
+    /// RE-AIMING BUDGET** — the owner's decision of 2026-09-02, register item 833(2).
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the cap needed an ENDING and not only a deferral
+    ///
+    /// Every other reflection that hits the cap goes back to `working`, because every other reason
+    /// for reflecting leaves the run with work still in front of it — a budget that came round, a
+    /// standing instruction just learned, a claim a check did not believe. This one does not: the
+    /// checkpoint is DONE, and declining the successor without ending would ask an agent to reach a
+    /// checkpoint it has just reached, for ever. **That is [`NoSuccessor`](Self::NoSuccessor)'s
+    /// livelock arriving by a second road**, and it was in the first build of this cap.
+    ///
+    /// ⚠⚠ **IT IS NOT [`NoSuccessor`](Self::NoSuccessor), and the difference is what a reader has
+    /// to act on.** There, the agent had nothing to propose — the run genuinely ran out. Here it
+    /// proposed something and **the run was not allowed to take it**: there IS more to do, it is
+    /// named, and the run's `deferred` count says how many such proposals went by. A reader told
+    /// `no_successor` would conclude the work had dried up.
+    ///
+    /// ⚠ Like [`StoodDown`](Self::StoodDown) and unlike the driver's two, the DOCUMENT spells this
+    /// word as a literal — the cap is its own datum and this driver neither holds it nor compares
+    /// against it, so the fact belongs to the file that decided it.
+    Capped,
 }
 
 impl DoneReason {
     /// Every arm, so the runs that produce them and the readers below are one list.
-    pub const ALL: [Self; 3] = [Self::Declared, Self::NoSuccessor, Self::StoodDown];
+    pub const ALL: [Self; 4] = [
+        Self::Declared,
+        Self::NoSuccessor,
+        Self::StoodDown,
+        Self::Capped,
+    ];
 
     /// **THE WORD THIS DRIVER PUBLISHES** as `_event.data.done_reason`.
     ///
@@ -2123,6 +2197,11 @@ impl DoneReason {
             // ending whose fact the document can see for itself. A gate holds the two spellings
             // together, because a word that drifted here would leave a run ending in silence.
             Self::StoodDown => "stood_down",
+            // ⚠ Spelled in the DOCUMENT too, as a literal on the third `reflect.applied` arm — the
+            // second ending this file can see for itself, because the cap it names is the
+            // document's own datum and this driver neither holds it nor compares against it. The
+            // gate that holds `stood_down`'s two spellings together holds this pair as well.
+            Self::Capped => "capped",
         }
     }
 
@@ -2152,6 +2231,14 @@ impl DoneReason {
                  first, so the work in the account was BANKED rather than discarded — there was \
                  more to do and a person said stop, which is what makes this different from a run \
                  that ran out of things to propose"
+            }
+            Self::Capped => {
+                "the milestone was reached, the reflection DID name a next checkpoint, and this \
+                 run had spent the re-aiming budget its document gives it — so the proposal was \
+                 counted rather than taken and the run stopped rather than asking an agent to \
+                 reach a checkpoint it had just reached; the run's `deferred` count says how many \
+                 such proposals it set aside, and they are owed a look wherever this kind \
+                 registers them"
             }
         }
     }
@@ -5481,6 +5568,28 @@ impl OuterLoop {
                 held: None,
             };
         };
+        // 🎯🎯🎯🎯🎯 **AND HOW FAR THIS RUN MAY RE-AIM ITSELF, ON THE SAME TERMS AS THE BUDGET
+        // ABOVE** — the owner's decision of 2026-09-02, register item 833(2), and the ONE thing
+        // this driver does with the cap.
+        //
+        // ⚠⚠⚠⚠⚠ **AN ABSENT CAP IS REFUSED, NEVER SILENTLY UNBOUNDED, and that is the whole reason
+        // this line is a refusal rather than an `unwrap_or`.** The guard over in the document reads
+        // `reaim_max != 'never' && … && reaimed >= reaim_max`, and a datamodel holding
+        // nil for it answers that guard FALSE — so a document that simply forgot the key would get
+        // the behaviour of one that had thought about wandering and decided against bounding it,
+        // and nothing anywhere would say which had happened. **The failure reads as safe from every
+        // direction**, which is exactly the escape hatch that disables its own gate.
+        //
+        // ⚠⚠ `never` IS AN ANSWER AND IT IS ACCEPTED, on `max_turns`' terms: a kind that spells it
+        // is asking for the behaviour every run had before this cap existed, and it gets it. What
+        // is refused is silence.
+        let Some(depth) = brief.reaim_max.or_else(|| self.authored_count(REAIM_MAX)) else {
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Briefed::NotHeld {
+                part: REAIM_MAX,
+                held: None,
+            };
+        };
         let payload = serde_json::json!({
             "north_star": brief.north_star,
             "context_ceiling": ceiling,
@@ -5505,6 +5614,16 @@ impl OuterLoop {
             Turn::WIRE_KEY: turn_ms,
             "max_turns": turns.as_json(),
             "reflect_every": reflect.as_json(),
+            // 🎯🎯🎯 AND HOW FAR THIS RUN MAY WANDER FROM THE `milestone` TWO KEYS UP — register
+            // item 833(2). It travels on the SAME edge as the checkpoint it is measured against,
+            // which is what makes *depth is counted from the brief* a true sentence rather than a
+            // hopeful one: a cap that arrived on some later edge would be measuring a run against a
+            // checkpoint it no longer held.
+            //
+            // ⚠ Through `Counted::as_json`, so a kind that DECLINED the cap crosses as the word
+            // `never` and the document's guard short-circuits on it — the one spelling of
+            // *unbounded* this workspace has, rather than a second one that means the same thing.
+            REAIM_MAX: depth.as_json(),
             // ⚠ Unconditional, like `screen_rules` beside it and for the same reason: the template
             // ships `''` and a caller who adds nothing must not delete what the document composes.
             "closing_rules": brief.closing_rules.clone().unwrap_or_default(),
@@ -9323,6 +9442,29 @@ impl OuterLoop {
                 serde_json::json!({STANDING: learned}),
             ));
         }
+        // 🎯🎯🎯🎯🎯 **AND WHETHER THIS RUN MAY STILL RE-AIM ITSELF IS NOT ASKED HERE** — the
+        // owner's decision of 2026-09-02, register item 833(2), and the one place this round had to
+        // be careful about which party decides.
+        //
+        // An agent that names a successor is asking the run to work on something OTHER than what a
+        // person asked it for, and until `reaim_max` existed nothing bounded how far that
+        // could go: measured on 2026-09-02, this repository's loop closed eleven register items
+        // and NINE of them had been registered the same day, while the forty-one standing that
+        // morning lost exactly one — **the population went up**.
+        //
+        // ⚠⚠⚠ **THE DRIVER REPORTS, THE DOCUMENT DECIDES, so the cap is a GUARD over there and not
+        // a branch here.** What only this driver can see is that an agent named a successor, off a
+        // pane; what a named successor is WORTH at this depth is a policy, and `ai_loop.scxml` is
+        // where policy lives (register item 773). The worked example is one door along:
+        // [`wait_out_service`](Self::wait_out_service) raises `service.retry` and this driver
+        // *neither holds nor compares* `service_retry_max` — because a second reader of a number is
+        // a second author of the rule, which is register item 445's shape.
+        //
+        // ⚠⚠ So what goes in is the same `reflect.applied` it has always been, carrying the
+        // proposal, and the document's two arms decide whether that is a re-aim it may take or one
+        // it counts and sets aside. **The echo matters to those guards**: when the agent named
+        // nothing this carries the milestone the run already had, which is what lets the deferring
+        // guard tell a proposal from an ordinary reflection.
         Ok(Raise::carrying(
             AiLoopEvent::ReflectApplied,
             serde_json::json!({
@@ -9331,6 +9473,47 @@ impl OuterLoop {
                 STANDING: learned,
             }),
         ))
+    }
+
+    /// **HOW FAR THIS RUN HAS RE-AIMED ITSELF AWAY FROM THE CHECKPOINT IT WAS BRIEFED WITH** — the
+    /// document's own `reaimed`, incremented by the `reflect.applied` arm that actually moves a
+    /// milestone. Register item 833(2).
+    ///
+    /// # ⚠⚠⚠ Read, never held, and never compared here
+    ///
+    /// The cap this is measured against is `reaim_max` and it is the DOCUMENT's: the guard
+    /// that spends this budget is written in `ai_loop.scxml`, exactly as `service_retry_max`'s is,
+    /// and this driver has no branch on either number. What it has is this reading, so a run can be
+    /// asked how far it has come — and `a_documents_depth_cap_is_the_one_a_run_obeys` is what holds
+    /// the arrangement to it by moving the document's number and watching the run's behaviour move
+    /// with it.
+    ///
+    /// ⚠ [`None`] is a datamodel that stopped answering, which is *nobody was counting* and never
+    /// *it has not re-aimed* — [`deferred`](Self::deferred)'s own distinction one number over.
+    #[must_use]
+    pub fn re_aimed(&self) -> Option<i64> {
+        match self.script.get_variable(&self.session, REAIMED) {
+            Ok(ScriptValue::Int(depth)) => Some(depth),
+            _ => None,
+        }
+    }
+
+    /// **HOW MANY PROPOSALS THIS RUN SET ASIDE AT ITS DEPTH CAP** — the document's own `deferred`,
+    /// incremented by the guarded `reflect.applied` arm.
+    ///
+    /// # ⚠⚠⚠ Why this is published rather than left in the datamodel
+    ///
+    /// Register item 833(2) states the risk in its own words: the VALUE of a depth cap is that the
+    /// run goes on toward its north star, and its DANGER is that what the run set aside is counted
+    /// nowhere. A cap without this number is indistinguishable from a loop that never found
+    /// anything — so it rides on the run's row beside [`screened`](Self::screened), which is the
+    /// fact of the same shape this document already publishes.
+    #[must_use]
+    pub fn deferred(&self) -> Option<i64> {
+        match self.script.get_variable(&self.session, DEFERRED) {
+            Ok(ScriptValue::Int(deferred)) => Some(deferred),
+            _ => None,
+        }
     }
 
     /// **WHAT THE AGENT NAMED BEHIND `marker`'s LABEL IN THE TURN JUST ENDED**, or [`None`] where it
@@ -9400,7 +9583,7 @@ impl OuterLoop {
             .fresh(panes, self.driving.pane)
             .iter()
             .filter_map(|row| opens_with(row, &label))
-            .rfind(|said| !said.is_empty() && !asked.contains(said.as_str()))
+            .rfind(|said| !said.is_empty() && !echoes(asked, &label, said))
     }
 
     /// **CLOSE THE INNER SESSION AND OPEN A FRESH ONE** — `restarting`'s effect.
@@ -11264,6 +11447,50 @@ fn once_each(standing: &str) -> String {
 /// and the whole reason this reader is careful is that the prompt naming the label is on the screen
 /// too. What an agent CLI actually puts in front of its own text is a bullet, a box edge or a
 /// prompt glyph, and that is the list.
+/// ⛔⛔⛔⛔⛔ **WHETHER A ROW OPENING WITH `label` IS THIS LOOP READING ITS OWN QUESTION BACK** —
+/// and it is ORDER that decides, not mere presence.
+///
+/// # ⚠⚠⚠⚠⚠ What the presence rule silently threw away, MEASURED 2026-09-02
+///
+/// This was `asked.contains(said)` — reject any candidate whose text appears anywhere in the prompt
+/// just delivered — and [`wraps_onto`] had already written down why that is too coarse: *"the prompt
+/// has to name the marker, so «the prompt contains this» is true of every genuine answer as well"*.
+/// It was a note about a cost nobody had priced. Here is the price:
+///
+/// `reflect_prompt` composes `'You have been working toward: ' + milestone`, so **the checkpoint the
+/// run is on is a substring of its own question.** An agent that answers `NEXT MILESTONE: <the
+/// checkpoint it is already on>` therefore had its answer DISCOUNTED AS AN ECHO, and the reader fell
+/// back to the row before it. Measured with `standin_agent_reflecting`, whose peer paints a
+/// provisional row it thought better of first:
+///
+/// ```text
+/// DIAG decided=Some("a checkpoint it thought better of") milestone="the debt this run picked …"
+/// ```
+///
+/// **Four reflections in a row read the agent's discarded draft as its decision.** It was invisible
+/// until register item 833(2) gave the loop a reason to COMPARE the proposal with the milestone;
+/// before that the wrong string was simply adopted and nothing anywhere disagreed with it.
+///
+/// # ⚠⚠⚠ The rule, and why it catches everything the wrap can produce
+///
+/// An echo is the prompt's own bytes, broken by a terminal that wraps where it likes — so the text
+/// behind an echoed label is **what follows that label IN THE PROMPT**, from its first character.
+/// A row cut short by the wrap is a PREFIX of that, which `starts_with` accepts. What the prompt
+/// does not contain is the label followed by a checkpoint the run happens to be on, so a genuine
+/// repeat survives.
+///
+/// ⚠ EVERY occurrence of the label is tried, because a prompt may name it more than once and the
+/// wrap decides which one a row came from.
+///
+/// ⚠⚠ IT FAILS IN THE SAME DIRECTION AS BEFORE. An answer this cannot separate from the question is
+/// still discounted, which leaves the milestone as it was — one more turn toward a checkpoint
+/// somebody chose, rather than a run rewritten out of text nobody meant as an answer.
+fn echoes(asked: &str, label: &str, said: &str) -> bool {
+    asked
+        .match_indices(label)
+        .any(|(at, _)| asked[at + label.len()..].trim_start().starts_with(said))
+}
+
 fn opens_with(row: &str, label: &str) -> Option<String> {
     Some(
         row.trim_matches(DECORATION)
@@ -15145,12 +15372,24 @@ mod tests {
 
         let lines: Vec<&str> = DOCUMENT.lines().collect();
         // Each edge into `closing`, as (the line an author would open, whether it is guarded on the
-        // driver's key, the expression it assigns).
-        let mut edges: Vec<(usize, bool, Option<&str>)> = Vec::new();
+        // driver's key, whether it is guarded AT ALL, the expression it assigns).
+        let mut edges: Vec<(usize, bool, bool, Option<&str>)> = Vec::new();
         for (at, line) in lines.iter().enumerate() {
             if !line.contains(INTO) {
                 continue;
             }
+            // ⚠⚠⚠⚠⚠ **THE START TAG, NOT THE LINE — and that is a needle that HAD gone blind.**
+            // Both questions below are about the `<transition …>` element, and an author whose
+            // guard is long enough to wrap writes it across several lines. Measured 2026-09-02:
+            // register item 833(2)'s capped ending carries a four-clause `cond` on its own line
+            // above `target="closing">`, and the one-line reading called it UNGUARDED — a red
+            // about a transition that was guarded, which is this file's own *"does the gate still
+            // SEE?"* failing in the direction that at least announces itself.
+            let opened = (0..=at)
+                .rev()
+                .find(|above| lines[*above].contains("<transition"))
+                .unwrap_or(at);
+            let tag: String = lines[opened..=at].join(" ");
             let body = lines[at + 1..]
                 .iter()
                 .take_while(|body| !body.contains("</transition>"));
@@ -15164,7 +15403,8 @@ mod tests {
             };
             edges.push((
                 at + 1,
-                line.contains(&format!("cond=\"{DRIVERS_KEY}\"")),
+                tag.contains(&format!("cond=\"{DRIVERS_KEY}\"")),
+                tag.contains("cond="),
                 assigned,
             ));
         }
@@ -15196,9 +15436,9 @@ mod tests {
         //   the same, because a literal nobody can read back is the silence this whole gate is about
         //   wearing a different hat.
         let words: Vec<&str> = DoneReason::ALL.iter().map(|it| it.word()).collect();
-        let nameless: Vec<(usize, bool, Option<&str>)> = edges
+        let nameless: Vec<(usize, bool, bool, Option<&str>)> = edges
             .iter()
-            .filter(|(_, guarded_on_driver, assigned)| {
+            .filter(|(_, guarded_on_driver, _, assigned)| {
                 let carries_drivers_word = *guarded_on_driver && *assigned == Some(DRIVERS_KEY);
                 let spells_its_own = assigned.is_some_and(|expr| {
                     expr.strip_prefix('\'')
@@ -15226,12 +15466,12 @@ mod tests {
         // owes a `cond` of its own, whatever it reads.
         let ungoverned: Vec<usize> = edges
             .iter()
-            .filter(|(line, guarded_on_driver, assigned)| {
+            .filter(|(_, guarded_on_driver, guarded, assigned)| {
                 assigned.is_some_and(|expr| expr.starts_with('\''))
                     && !guarded_on_driver
-                    && !lines[line - 1].contains("cond=")
+                    && !guarded
             })
-            .map(|(line, _, _)| *line)
+            .map(|(line, _, _, _)| *line)
             .collect();
         assert!(
             ungoverned.is_empty(),
@@ -15680,6 +15920,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -15818,6 +16059,7 @@ mod tests {
             closing_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -15970,6 +16212,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
+                reaim_max: None,
                 // ⚠ NO CHECKER AUTHORED — the world that must stay silent, and the control.
                 milestone_check: None,
                 service: None,
@@ -16052,6 +16295,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -16147,6 +16391,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -16198,6 +16443,116 @@ mod tests {
         drop(access);
     }
 
+    /// 🎯🎯🎯🎯🎯 **A DOCUMENT THAT NAMES NO DEPTH CAP IS REFUSED, AND ONE THAT DECLINES IT IS
+    /// NOT** — the owner's decision of 2026-09-02, register item 833(2), and the clause that keeps
+    /// this policy from having an escape hatch.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why SILENCE cannot be allowed to mean the same thing as `never`
+    ///
+    /// The guard that spends the budget is written in `ai_loop.scxml`:
+    /// `reaim_max != 'never' && _event.data.milestone != milestone && reaimed >=
+    /// reaim_max`. A datamodel holding nil for that id answers it FALSE — so a kind that
+    /// simply **forgot the key** gets exactly the behaviour of one that thought about wandering and
+    /// decided against bounding it, and nothing anywhere says which of the two happened. The
+    /// failure reads as safe from every direction, which is this workspace's own definition of the
+    /// escape hatch that disables its own gate (register rule 6).
+    ///
+    /// It is the same argument `hold_within_ms` makes about a zero one gate up, and the same one
+    /// `--seen`'s bare form makes in `hosted-read.sh`: **an unclassified answer is a debt, never a
+    /// pass.** The remedy is identical too — refuse at the door, and name the key.
+    ///
+    /// # ⚠⚠ The pair is the claim
+    ///
+    /// *Refused* alone is satisfied by a door that refuses every value, which would make the cap
+    /// unauthorable — item 492's failure exactly, where a number the document owned had no road to
+    /// it at all. So the second half drives [`Counted::Never`] through the same door and requires
+    /// the brief to be TAKEN: a decline is an answer, and it gets what it asked for.
+    ///
+    /// ⚠ The absence is staged by [`Disagreeing`], because the shipped template always declares the
+    /// cap. A gate that could only go red by editing a document is a gate nothing runs.
+    #[test]
+    fn a_document_that_names_no_depth_cap_is_refused_at_the_door() {
+        // ⚠ AN EMPTY STRING IS HOW A NIL `<data>` CROSSES, measured by `probe_absent.scxml` and
+        // written down on `authored_count`: an id declared and left empty and an id no document
+        // declares are the same reading, which is precisely why a decline had to be a WORD.
+        let silent = Disagreeing::about("reaim_max", ScriptValue::String(String::new()));
+        let briefed = |reaim_max| Brief {
+            north_star: "n".to_string(),
+            milestone: "m".to_string(),
+            reference: "r".to_string(),
+            closing_rules: None,
+            working_rules: None,
+            unverified_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            reaim_max,
+            milestone_check: None,
+            service: None,
+            max_turns: Some(Counted::Of(3)),
+            reflect_every: Some(99),
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: Some(0),
+            handback_still_ms: None,
+            hold_within_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        };
+
+        // ── THE DOCUMENT SAYS NOTHING, AND NOBODY NAMED ONE: REFUSED, BY NAME ──
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = bounded_at(
+            Arc::clone(&silent) as Arc<dyn IScriptEngine>,
+            pane,
+            Duration::from_secs(1),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        // ⚠ TRUTHFUL UNTIL NOW: the loop was built against an honest engine, so what follows is
+        // about the cap being unreadable and not about construction having quietly failed.
+        silent.start_lying();
+        let answer = loops.brief(&briefed(None));
+        let Briefed::NotHeld { part, held } = answer else {
+            panic!(
+                "🎯🎯🎯🎯🎯 REGISTER ITEM 833(2): A DOCUMENT WITH NO DEPTH CAP WAS ACCEPTED. Its \
+                 guard now answers false for ever, so this run may re-aim itself without bound — \
+                 which is the behaviour the owner's decision of 2026-09-02 exists to end, restored \
+                 by a key somebody forgot rather than by anybody deciding. Got {answer:?}",
+            );
+        };
+        assert_eq!(
+            part, REAIM_MAX,
+            "⚠⚠ AND THE REFUSAL MUST NAME THIS KEY. Item 264 measured what one sentence for four \
+             ceilings costs: a person sent to rewrite a number that is not the problem. Got \
+             {part:?}",
+        );
+        assert_eq!(
+            held, None,
+            "⚠ and it carries no `held`: nothing crossed and came back different — the cap was \
+             refused before the event, which is a different sentence from the read-back's",
+        );
+        drop(access);
+
+        // ── AND A DECLINE IS AN ANSWER: TAKEN, or the cap would be unauthorable ──
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut declining = bounded_at(
+            Arc::clone(&silent) as Arc<dyn IScriptEngine>,
+            pane,
+            Duration::from_secs(1),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        silent.start_lying();
+        assert_eq!(
+            declining.brief(&briefed(Some(Counted::Never))),
+            Briefed::Took,
+            "⛔⛔⛔ A KIND CANNOT DECLINE THE CAP AT ALL — which is item 492's failure rather than \
+             item 833's fix. The door must refuse SILENCE and take a decline, or *unbounded* stops \
+             being a decision an author can make and becomes one only a forgotten key can produce",
+        );
+        drop(access);
+    }
+
     #[test]
     fn a_brief_the_datamodel_does_not_hold_exactly_is_refused_rather_than_delivered() {
         let engine = Disagreeing::about(
@@ -16226,6 +16581,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -16312,6 +16668,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
@@ -16464,6 +16821,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -16658,6 +17016,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
@@ -17889,6 +18248,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: Some("/bin/echo YES".to_string()),
                 service: None,
                 max_turns: Some(Counted::Of(3)),
@@ -18226,6 +18586,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: Some(check.to_string()),
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -18599,6 +18960,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: Some(format!("/bin/sh {}", script.display())),
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -19315,6 +19677,7 @@ mod tests {
                     unverified_rules: None,
                     context_ceiling: Some(ROOMY),
                     reflect_after_refusals: None,
+                    reaim_max: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -19531,6 +19894,7 @@ mod tests {
                     // itself**, and item 477's eight-of-eight is what that cost in production.
                     context_ceiling: Some(ceiling),
                     reflect_after_refusals: None,
+                    reaim_max: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -19711,6 +20075,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -19850,6 +20215,7 @@ mod tests {
                 // replaced: a `set_variable` into the datamodel, which is a road no caller had.
                 context_ceiling: Some(ceiling),
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -19950,6 +20316,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(4)),
@@ -20184,6 +20551,7 @@ mod tests {
                     unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
+                    reaim_max: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -20674,6 +21042,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: Some(ceiling),
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -20934,6 +21303,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -21201,6 +21571,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -21469,6 +21840,7 @@ mod tests {
                     // register item 494. The `set_variable` that used to stand here reached the
                     // datamodel by a door no caller had.
                     reflect_after_refusals: Some(ceiling),
+                    reaim_max: None,
                     milestone_check: Some(DENIES.to_string()),
                     service: None,
                     // ⚠⚠ BOTH OTHER ESCAPES ARE OUT OF REACH, which is what makes the arm below
@@ -21677,6 +22049,7 @@ mod tests {
                     unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
+                    reaim_max: None,
                     // ⚠⚠⚠ THROUGH THE BRIEF, WHICH IS THE CHANNEL A KIND'S CHECK ACTUALLY TRAVELS.
                     // This used to `set_variable` the slot behind the brief's back, on the reading
                     // that no caller could name one — true of the WIRE and never of a kind. What
@@ -21992,6 +22365,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: check.map(ToOwned::to_owned),
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -22825,6 +23199,7 @@ mod tests {
                     unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
+                    reaim_max: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -23019,6 +23394,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -23333,6 +23709,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -23512,6 +23889,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -23703,6 +24081,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -23940,6 +24319,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: Some(NEVER),
+                reaim_max: None,
                 milestone_check: Some(DENIES.to_string()),
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -24151,6 +24531,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: Some(NEVER),
+                reaim_max: None,
                 milestone_check: Some(CANNOT_ANSWER.to_string()),
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -24433,6 +24814,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: Some(outage.clone()),
             max_turns: Some(Counted::Of(3)),
@@ -24545,6 +24927,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: None,
                 service: Some(outage.clone()),
                 max_turns: Some(Counted::Of(3)),
@@ -24672,6 +25055,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: Some(outage.clone()),
             max_turns: Some(Counted::Of(3)),
@@ -25212,6 +25596,7 @@ mod tests {
                         unverified_rules: None,
                         context_ceiling: None,
                         reflect_after_refusals: None,
+                        reaim_max: None,
                         milestone_check: None,
                         service: Some(ServiceOutage {
                             needles: vec!["the service is down".to_string()],
@@ -25774,6 +26159,7 @@ mod tests {
                     unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
+                    reaim_max: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -25953,6 +26339,7 @@ mod tests {
                 unverified_rules: None,
                 context_ceiling: None,
                 reflect_after_refusals: None,
+                reaim_max: None,
                 milestone_check: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -26156,6 +26543,7 @@ mod tests {
                     unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
+                    reaim_max: None,
                     milestone_check: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -26435,6 +26823,7 @@ mod tests {
                     unverified_rules: None,
                     context_ceiling: None,
                     reflect_after_refusals: None,
+                    reaim_max: None,
                     milestone_check: None,
                     service: Some(outage.clone()),
                     max_turns: Some(Counted::Of(40)),
@@ -26761,6 +27150,7 @@ mod tests {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(Counted::Of(40)),

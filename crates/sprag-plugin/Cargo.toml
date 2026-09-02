@@ -39,6 +39,12 @@ serde_json = { workspace = true }
 # handing in an engine that answers differently about one variable, which is a fixture this crate
 # can only build because the engine is a parameter.
 sce-rust-lua = { workspace = true }
+# ⛔ REGISTER ITEM 794's harness half — a gate, not a convenience. `std::env::temp_dir()` answers a
+# RELATIVE path when `TMPDIR` is set-and-empty, and nothing downstream refuses one: under that
+# environment a fixture's scratch file lands in the crate's own directory inside this repository
+# (measured 2026-08-31: 131 untracked entries, 414 tests failed). `scratch_root()` asserts
+# `is_absolute` where the root is taken and panics naming the variable instead.
+sprag-scratch = { workspace = true }
 # ⚠⚠⚠⚠⚠ THE COMPILER OF `ai_loop.scxml`, AS A DEV DEPENDENCY TOO — register item 547.
 #
 # It is already this crate's BUILD dependency (above), and a build dependency cannot be driven by a

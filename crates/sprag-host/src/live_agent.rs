@@ -1032,6 +1032,10 @@ fn a_live_judge_hears_the_marker_whatever_the_milestone_asked_for() {
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        // ⚠ ITEM 833(2)'s CAP IS LEFT TO THE DOCUMENTS, like every other policy in these live
+        // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
+        // number named here would be one these runs assert nothing about.
+        reaim_max: None,
         milestone_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
@@ -1223,6 +1227,10 @@ fn a_live_judge_hears_the_marker_on_the_budget_the_deaf_runs_shared() {
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        // ⚠ ITEM 833(2)'s CAP IS LEFT TO THE DOCUMENTS, like every other policy in these live
+        // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
+        // number named here would be one these runs assert nothing about.
+        reaim_max: None,
         milestone_check: None,
         service: None,
         // ⚠⚠ THE ONE THING CHANGED, AND IT IS A PAIR because the two are one decision: the
@@ -1410,6 +1418,10 @@ fn a_turn_that_outran_its_bound_is_looked_at_again_and_never_judged() {
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        // ⚠ ITEM 833(2)'s CAP IS LEFT TO THE DOCUMENTS, like every other policy in these live
+        // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
+        // number named here would be one these runs assert nothing about.
+        reaim_max: None,
         milestone_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
@@ -1561,6 +1573,10 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        // ⚠ ITEM 833(2)'s CAP IS LEFT TO THE DOCUMENTS, like every other policy in these live
+        // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
+        // number named here would be one these runs assert nothing about.
+        reaim_max: None,
         milestone_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
@@ -1796,6 +1812,10 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        // ⚠ ITEM 833(2)'s CAP IS LEFT TO THE DOCUMENTS, like every other policy in these live
+        // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
+        // number named here would be one these runs assert nothing about.
+        reaim_max: None,
         milestone_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
@@ -2007,6 +2027,10 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        // ⚠ ITEM 833(2)'s CAP IS LEFT TO THE DOCUMENTS, like every other policy in these live
+        // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
+        // number named here would be one these runs assert nothing about.
+        reaim_max: None,
         milestone_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(UNSPENDABLE_TURNS)),
@@ -2257,6 +2281,10 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        // ⚠ ITEM 833(2)'s CAP IS LEFT TO THE DOCUMENTS, like every other policy in these live
+        // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
+        // number named here would be one these runs assert nothing about.
+        reaim_max: None,
         milestone_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
@@ -2464,6 +2492,10 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        // ⚠ ITEM 833(2)'s CAP IS LEFT TO THE DOCUMENTS, like every other policy in these live
+        // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
+        // number named here would be one these runs assert nothing about.
+        reaim_max: None,
         milestone_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
@@ -2702,6 +2734,10 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        // ⚠ ITEM 833(2)'s CAP IS LEFT TO THE DOCUMENTS, like every other policy in these live
+        // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
+        // number named here would be one these runs assert nothing about.
+        reaim_max: None,
         milestone_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
@@ -4073,6 +4109,10 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        // ⚠ ITEM 833(2)'s CAP IS LEFT TO THE DOCUMENTS, like every other policy in these live
+        // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
+        // number named here would be one these runs assert nothing about.
+        reaim_max: None,
         milestone_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),

@@ -202,6 +202,20 @@ pub const RUN_WHY_KEY: &str = "why";
 /// BEHALF, so *"this run answered nothing"* is a claim a reader must be able to get affirmatively
 /// rather than by not finding a key.
 pub const RUN_ANSWERED_KEY: &str = "answered";
+/// 🎯🎯🎯🎯🎯 **HOW MANY NEXT CHECKPOINTS A RUN COUNTED RATHER THAN TOOK**, because it had spent
+/// the budget its document gives it for re-aiming itself — the owner's decision of 2026-09-02,
+/// register item 833(2). ABSENT for a plugin that sets no proposals aside.
+///
+/// # ⚠⚠ Why this one omits where [`RUN_ANSWERED_KEY`] above always publishes
+///
+/// They are absent for different reasons, and the two rules are the same rule read at two
+/// distances. `answered` is a decision taken on somebody's behalf, so *none were* has to be
+/// obtainable affirmatively. Here the ABSENCE says *this plugin has no such choice to make* — every
+/// bundled plugin but the loop, and a loop whose datamodel stopped answering — which is
+/// [`RUN_BANKED_KEY`]'s distinction below and not a `0`. A `0` from the loop is a real claim: **it
+/// had the budget and never had to spend it**, and a reader who cannot tell that from *nobody was
+/// counting* cannot tell a healthy run from a broken one.
+pub const RUN_DEFERRED_KEY: &str = "deferred";
 /// **WHAT A RUN KEPT**, on an ending — `{"completed": N, "unit": "turn"}`, or ABSENT for a plugin
 /// that counts no completed work at all.
 ///
@@ -4436,6 +4450,21 @@ fn ai_loop_brief(
         // resolved in `OuterLoop::brief`, the only place that can read the last.
         reflect_after_refusals: opt_count(map, "reflect_after_refusals")?
             .or_else(|| kind.reflect_after_refusals()),
+        // 🎯🎯🎯🎯🎯 REGISTER ITEM 833(2) — the owner's decision of 2026-09-02, and the one
+        // number on this list with a TWO-step fall-through rather than three.
+        //
+        // ⚠⚠⚠ THERE IS NO `opt_count(map, …)` IN FRONT OF IT, and that is the decision
+        // rather than an omission. This is a POLICY — how far a run may re-aim itself away
+        // from the checkpoint a person gave it — and register item 773's axis is *the
+        // subject is the launcher's, the policy is the document's*. A caller who could
+        // name it could spell `never` on a launch nobody reviewed and delete the cap
+        // silently, on exactly the runs least likely to be watched, which is
+        // `milestone_check`'s own argument three fields down.
+        //
+        // ⚠⚠ So it is THIS repository's kind document, then the template's own — the
+        // second resolved in `OuterLoop::brief`, which is the only place that can read it,
+        // and which REFUSES a document that declares neither.
+        reaim_max: kind.reaim_max(),
         // ⚠⚠ ABSENT MEANS "WHAT THE DOCUMENT'S AUTHOR WROTE", not *"screen nothing"*.
         // The rules live in the loop template, so a caller who says nothing about
         // screening is not overriding it — and the driver echoes the document's own
@@ -4879,6 +4908,18 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         // your behalf while there is still time to cancel.
         RUN_ANSWERED_KEY: progress.answered,
     });
+    // 🎯🎯🎯🎯🎯 AND WHAT THIS RUN HAS SET ASIDE AT ITS RE-AIMING CAP, MID-FLIGHT — register item
+    // 833(2), and the polling argument above applies to it hardest of the three. A cap that is too
+    // tight for the work a run was pointed at shows up as this number climbing, and **the person
+    // who can widen the brief is the one reading the row now**; an ending-only tally answers after
+    // the chance to act on it has gone.
+    //
+    // ⚠ PRESENT ONLY WHEN THERE IS ONE, which is this surface's `RUN_CEILING_KEY` rule: the absence
+    // says *this plugin has no such choice to make* and a `0` says *it had the budget and never
+    // spent it*. See `RUN_DEFERRED_KEY`, where the two are argued apart.
+    if let Some(deferred) = progress.deferred {
+        answer[RUN_DEFERRED_KEY] = json!(deferred);
+    }
     // ⚠⚠⚠⚠⚠ **AND WHERE THE RUN'S MACHINE IS — register item 662, and this renderer is the ONLY
     // way that fact can cross a process boundary.** A driver in another process reports through
     // here and nowhere else, so a key missing here is a fact the daemon cannot know about such a
@@ -6498,6 +6539,15 @@ pub fn outcome_to_json(outcome: &Outcome) -> Value {
         // error 32)")` reaching an agent, which is R283's leak on the loop's own answer.
         "failure": outcome.failure.as_ref().map(ToString::to_string),
     });
+    // 🎯🎯🎯🎯🎯 AND WHAT IT SET ASIDE AT ITS RE-AIMING CAP — register item 833(2), published on
+    // EVERY ending and not only the happy one: a run that deferred three proposals and then hit its
+    // iteration ceiling is exactly the run somebody reads an outcome to understand.
+    //
+    // ⚠ OMITTED RATHER THAN NULLED where the plugin has no such choice, on `RUN_CEILING_KEY`'s
+    // rule — see `RUN_DEFERRED_KEY` for why a `0` and an absence are two different claims here.
+    if let Some(deferred) = outcome.deferred {
+        answer[RUN_DEFERRED_KEY] = json!(deferred);
+    }
     // WHICH CEILING, present only when there was one — so the key's presence is itself the claim,
     // the rule `run_to_json` follows for `opened_by`. `exhausted` with no ceiling beside it told a
     // caller to change something without saying what, and the three ceilings have three different
@@ -12075,6 +12125,7 @@ mod tests {
             stopped: None,
             answered,
             screened: 0,
+            deferred: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
@@ -14168,6 +14219,7 @@ mod tests {
             stopped: None,
             answered: 0,
             screened: 0,
+            deferred: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(banked),
@@ -14213,6 +14265,7 @@ mod tests {
             stopped: None,
             answered: 0,
             screened: 0,
+            deferred: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(sprag_plugin::Banked {

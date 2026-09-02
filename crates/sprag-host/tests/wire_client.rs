@@ -6950,6 +6950,7 @@ fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
         unverified_rules: None,
         context_ceiling: None,
         reflect_after_refusals: None,
+        reaim_max: None,
         // ⛔⛔⛔ THE WHOLE REASON THIS RUN IS BUILT HERE RATHER THAN REQUESTED.
         milestone_check: Some(format!("/bin/sh {}", checker.display())),
         service: None,
@@ -7490,6 +7491,7 @@ fn a_host_run_drives_its_turns_on_the_turn_contract_that_ships() {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
@@ -7781,6 +7783,7 @@ fn a_host_run_replaces_its_inner_session_and_the_fresh_one_works() {
         // in the `restart_reason` it writes. A number here would make this gate about capacity.
         context_ceiling: None,
         reflect_after_refusals: None,
+        reaim_max: None,
         milestone_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
@@ -8131,6 +8134,7 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
             // no caller has is measuring itself (register item 492).
             context_ceiling: Some(ceiling),
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
@@ -8218,13 +8222,35 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
             "⚠⚠⚠ THE PREMISE FAILED: the {name} arm never reached `reviewing`, so it took neither \
              of the doors this gate is about. The walk: {walk:?}",
         );
+        // ⚠⚠⚠⚠⚠ **UNANIMOUS RATHER THAN ONCE, and that is a repair to the PREMISE rather than a
+        // weakening of it.** What this line has to rule out is *which door* being a question about
+        // several decisions read as one — and what makes that impossible is every exit from
+        // `reviewing` in this arm naming the SAME door, not there being exactly one of them.
+        //
+        // ⚠⚠ IT WAS `== 1` AND THAT WAS AN ARITHMETIC ACCIDENT, measured 2026-09-02. This
+        // stand-in reports the same reading in EVERY session, so a run over the ceiling hands over
+        // at every reflection it takes — how many that is, is `max_turns / reflect_every` and
+        // nothing else. It came out as one only because `OuterLoop::proposed` was discarding the
+        // peer's answer as an echo of the prompt (the prompt carries the current milestone, so an
+        // agent naming a checkpoint the run already held was read as the loop quoting itself), and
+        // a discarded proposal takes `reflect.none`, which does NOT restart. Repairing that reader
+        // made the second handover appear, and this premise called a correct run ambiguous.
+        let doors: Vec<&String> = walk
+            .iter()
+            .filter(|note| note.starts_with("Reviewing --"))
+            .collect();
+        let words: std::collections::BTreeSet<&str> = doors
+            .iter()
+            .map(|note| note.split_once(" — ").map_or("", |(_, why)| why))
+            .collect();
         assert_eq!(
-            walk.iter()
-                .filter(|note| note.contains("--> Reviewing"))
-                .count(),
+            words.len(),
             1,
-            "⚠⚠ and it must have decided EXACTLY ONCE, or *which door* is a question about several \
-             decisions read as one. The walk: {walk:?}",
+            "⚠⚠ and every exit from `reviewing` in this arm must name the SAME door, or *which \
+             door* is a question about several decisions read as one. Got {} exit(s) naming {} \
+             distinct reason(s). The walk: {walk:?}",
+            doors.len(),
+            words.len(),
         );
     }
 
@@ -8420,6 +8446,7 @@ fn a_run_that_has_been_stood_down_finishes_its_milestone_and_stops() {
             // control's ending evidence about the peer rather than about the loop's housekeeping.
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
@@ -8659,6 +8686,7 @@ fn a_loop_converges_on_what_its_agent_says_not_on_what_its_terminal_shows() {
             unverified_rules: None,
             context_ceiling: None,
             reflect_after_refusals: None,
+            reaim_max: None,
             milestone_check: None,
             service: None,
             // ⚠⚠ Above what either arm needs, so a run that FAILED to read the declaration does not

@@ -61,9 +61,22 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// that set with **no exemption arm**. `hold_within_ms` was the one ceiling a kind still could not
 /// author, so the honest way to keep that gate strict was to open the channel rather than to write
 /// the exemption — and opening it put the claim in the template, where this pin sees it.
+/// 🎯🎯🎯🎯🎯 SIX since 2026-09-02, and the sixth is a POLICY rather than a bound — register item
+/// 833(2), the owner's decision of that day: *"부채의 부채는 몇 depth까지 갚을지 scxml에
+/// 지정할수있게하고 default로 1 depth로해"*.
+///
+/// `reaim_max` says how far a run may re-aim itself away from the checkpoint a person gave
+/// it, and it arrived here in the same commit as its reader, its `Brief` field and the template's
+/// `<assign>` — which is the ONLY way this pin is allowed to move, and the reason the gate beside
+/// it is an equality.
+///
+/// ⚠⚠ IT IS DELIBERATELY WIRE-KEY-LESS, which this gate's own premise permits and its module doc
+/// argues for: a caller who could name a cap could spell `never` on a launch nobody reviewed and
+/// delete it silently. `milestone_check` and the service needle are kind-only for the same reason.
 const CLAIMED: &[&str] = &[
     "reference",
     "working_rules",
+    "reaim_max",
     "hold_within_ms",
     "reflect_after_refusals",
     "context_ceiling",

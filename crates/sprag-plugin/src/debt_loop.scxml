@@ -305,6 +305,47 @@
     <data id="reflect_after_refusals" expr="2"/>
 
     <!--
+      🎯🎯🎯🎯🎯 HOW FAR A DEBT RUN MAY RE-AIM ITSELF AWAY FROM THE CHECKPOINT A
+      PERSON GAVE IT — the owner's decision of 2026-09-02, verbatim: *"부채의
+      부채는 몇 depth까지 갚을지 scxml에 지정할수있게하고 default로 1 depth로해"*.
+      Register item 833(2).
+
+      ⚠⚠⚠⚠⚠ IT IS AUTHORED HERE AND NOT LEFT TO THE TEMPLATE, even though the
+      number is the same, and the reason is that THIS is the document a person
+      tunes. The template's `1` is what a repository copying it starts from; this
+      line is sprag's own answer, and a round that wants to try `2` for a week
+      changes it here without touching a file every other repository shares.
+
+      WHAT ONE MEANS, in this loop's own terms. Depth 0 is the register item the
+      milestone names. Depth 1 is what the run finds WHILE PAYING that item —
+      the residue that only exists because somebody went and looked. Depth 2 is
+      what that in turn uncovers. A cap of one pays the first two and REGISTERS
+      the rest, which is the whole of the owner's instruction.
+
+      ⚠⚠⚠⚠ THE MEASUREMENT THAT ASKED FOR IT, and it is this repository's own.
+      2026-09-02, with no cap: twenty-two commits closed ELEVEN register items
+      and NINE of the eleven had been registered that same day, while the
+      forty-one items standing that morning lost exactly one. The population
+      went UP, 41 to 50. Every one of those nine was real work; none of it was
+      the work the run was launched for.
+
+      ⚠⚠ THE RESIDUE THIS ACCEPTS, STATED RATHER THAN HIDDEN. A capped run defers
+      proposals instead of paying them, and a deferral nobody counts is
+      indistinguishable from a run that found nothing. That is why the count is
+      published on the run's row (`deferred`, and `sprag runs` prints it) and why
+      the reflection prompt tells the agent to REGISTER what it set aside. If
+      that number climbs while the register does not, this cap has become a way
+      of losing findings and the right answer is a bigger number, not a quieter
+      one.
+
+      ⚠ `'never'` DECLINES THE CAP, spelled the way `max_turns` above spells it.
+      What a kind may NOT do is say nothing: the driver refuses a document that
+      declares no cap at all, because an absent policy that reads as *do what you
+      like* is the escape hatch that disables its own gate.
+    -->
+    <data id="reaim_max" expr="1"/>
+
+    <!--
       ⚠⚠⚠⚠⚠ AND WHO DECIDES A CHECKPOINT WAS REACHED — NOT THE AGENT THAT WORKED
       ON IT. Register item 428, whose mechanism the template shipped and whose
       second half is this line: the slot exists, EMPTY is the template's default,

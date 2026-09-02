@@ -1161,6 +1161,33 @@ pub trait Plugin {
         Checks::NONE
     }
 
+    /// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS THIS RUN SET ASIDE BECAUSE IT HAD SPENT ITS RE-AIMING
+    /// BUDGET** — the owner's decision of 2026-09-02, register item 833(2), and the half of that
+    /// decision that keeps a cap from becoming a quiet way of losing findings.
+    ///
+    /// # ⚠⚠⚠⚠⚠ A cap without this number is indistinguishable from a loop that found nothing
+    ///
+    /// The VALUE of bounding how far a run may re-aim itself is that it goes on toward the thing a
+    /// person asked for. The DANGER, in the item's own words, is that what it set aside is counted
+    /// nowhere: **a run that deferred eight proposals and a run that never had an idea publish the
+    /// same row.** So the count rides on the outcome and on the live progress both, and the mouth a
+    /// person reads prints it — because a fact that reaches the wire and dies at the mouth is the
+    /// shape this workspace keeps paying for.
+    ///
+    /// ⚠⚠ [`None`] is **this plugin does not set proposals aside**, which is every bundled plugin
+    /// but the loop, and it is also what a loop answers when its datamodel has stopped speaking.
+    /// Never `Some(0)` for either — [`banked`](Self::banked)'s distinction exactly, and the wire
+    /// omits the key rather than publishing a zero somebody would read as *it deferred nothing*.
+    ///
+    /// ⚠ Asked by the [`Driver`] each step, on [`deliveries`](Self::deliveries)' argument: a TOTAL
+    /// carried on a [`Step`] can be forgotten at one of the twenty-odd sites that build one, and a
+    /// forgotten deferral reads as a run that never had to make the choice.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn deferred(&self) -> Option<u32> {
+        None
+    }
+
     /// ⚠⚠⚠ **THE RUN'S BUDGET IS SPENT — CAN YOU SAY WHERE IT GOT TO, AND HOW LONG DO YOU NEED?**
     ///
     /// Called by the [`Driver`] the moment one of ITS ceilings binds, before the run is ended, and

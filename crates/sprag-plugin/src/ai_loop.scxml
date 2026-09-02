@@ -1396,6 +1396,90 @@
     <data id="reflect_every" expr="8"/>
 
     <!--
+      🎯🎯🎯🎯🎯 HOW FAR A RUN MAY RE-AIM ITSELF AWAY FROM THE CHECKPOINT IT WAS
+      GIVEN - the owner's decision of 2026-09-02, register item 833(2), and a
+      POLICY rather than a launch argument for register item 773's reason
+      ("the subject is the launcher's, the policy is the document's").
+
+      DEPTH IS COUNTED FROM THE BRIEF, and that is the only definition of it
+      that nothing has to be trusted for. Depth 0 is the milestone this run was
+      launched with. Every reflection that ADOPTS a different one is one step
+      away from what a person asked for, and `reaimed` below counts those.
+      A default of 1 therefore says: the run may re-aim itself ONCE - onto
+      something it found while doing the work it was given - and after that a
+      proposal is REGISTERED rather than taken.
+
+      ⚠⚠ THE NAME IS `reaim_max` AND NOT A WORD FOR WHAT ANY ONE REPOSITORY
+      KEEPS IN ITS REGISTER, which a gate over this file insists on: a template
+      other repositories copy may not carry the vocabulary of the tree it was
+      written in. What it bounds is how far a run wanders from its brief, and
+      that is true wherever it runs.
+
+      WHY THIS EXISTS, measured rather than argued. On 2026-09-02 the loop in
+      the repository this template was written in closed eleven register items
+      in twenty-two commits, and NINE of the eleven had been registered the same
+      day: it was paying off work it had itself just created, while the
+      forty-one items standing that morning lost exactly one. The population
+      went UP, from 41 to 50. Nothing capped how far a reflection could carry a
+      run from its brief, and this datum is that cap.
+
+      `never` DECLINES THE CAP and is how a document asks for the behaviour
+      every run had before this existed - see `max_turns`, whose word this
+      borrows rather than inventing a second spelling of "unbounded". The guard
+      below spells `reaim_max != 'never'` ahead of its comparison, which is
+      this document's own idiom for a count that may be declined.
+
+      AND AN ABSENT VALUE IS REFUSED AT THE DOOR, never silently unbounded:
+      `Briefed::NotHeld` answers for it exactly as it answers for a document
+      that cannot say how long its own run may be. A policy whose absence means
+      "do whatever you like" is the escape hatch that disables its own gate.
+
+      ⚠⚠ AND IT IS THE KIND'S TO AUTHOR, like `max_turns` and `reflect_every`.
+      How far a run may wander from the checkpoint a person gave it is a rule
+      about how work is done in a particular repository, not a bound a template
+      other repositories copy can choose on their behalf. The road is the four
+      steps item 492 built - a reader on `LoopKind`, a `Brief` field, the
+      `<assign>` in `brief` below - and deliberately NOT a wire key: a caller
+      who could name this could delete the cap by spelling `never` on a launch
+      nobody reviewed, which is `working_rules`' own argument one `<data>` over.
+    -->
+    <data id="reaim_max" expr="1"/>
+    <!--
+      HOW FAR THIS RUN HAS RE-AIMED ITSELF ALREADY - incremented by
+      `reflect.applied` below, and only where that transition ACTUALLY MOVES
+      the milestone, so the count cannot drift from the thing it counts.
+
+      ⚠⚠⚠ A REFLECTION THAT CHANGES NO DIRECTION SPENDS NOTHING, and that is a
+      correction rather than a nicety. `reflect.applied` also arrives when the
+      agent named no successor and the run merely adopted a standing
+      instruction it had just learned: the driver echoes back the milestone it
+      already had, so an unconditional increment would spend this budget on a
+      reflection that re-aimed at nothing - and a run whose peer kept asking
+      the same question would reach its cap without ever changing direction.
+
+      IT IS THE RUN'S AND NOT THE SESSION'S. `restarting` replaces the inner
+      agent and `priming` recomposes every prompt, but the run is still the same
+      person's request - so a reflection that replaced a session has still spent
+      a step of this budget, and zeroing it there would make the cap unreachable
+      by the road it is most likely to be hit on.
+    -->
+    <data id="reaimed" expr="0"/>
+    <!--
+      HOW MANY PROPOSALS THIS RUN SET ASIDE AT ITS CAP - the count kept by the
+      guarded `reflect.applied` arm below, and the half of item 833(2) that
+      keeps the cap from becoming a quiet deferral.
+
+      A CAP WITHOUT THIS NUMBER IS INDISTINGUISHABLE FROM A LOOP THAT NEVER
+      FOUND ANYTHING. That is the risk the item states in its own words: the
+      value of the cap is that the run goes on toward the north star, and its
+      danger is that what it set aside is never counted anywhere. So the count
+      is published on the run's row through `Plugin::deferred`, beside the count
+      of questions a run answered on somebody's behalf, which is the fact of the
+      same shape this workspace already puts there.
+    -->
+    <data id="deferred" expr="0"/>
+
+    <!--
       ⚠⚠⚠ HOW LONG `awaiting_human` WAITS FOR THE PERSON, in milliseconds — the
       number that state's only run-ending edge is written against.
 
@@ -2816,6 +2900,24 @@
       -->
       <assign location="reflect_after_refusals" expr="_event.data.reflect_after_refusals"/>
       <!--
+        🎯🎯🎯🎯🎯 AND HOW FAR THIS RUN MAY RE-AIM ITSELF AWAY FROM THE
+        CHECKPOINT IT IS BEING GIVEN RIGHT HERE — register item 833(2), the
+        owner's decision of 2026-09-02, and the third number this document
+        invites a kind to author.
+
+        ⚠⚠ IT IS ASSIGNED IN THE SAME BREATH AS `milestone`, which is what makes
+        the cap's own definition true: depth is counted FROM THE BRIEF, so the
+        budget and the checkpoint it is measured against have to arrive on one
+        edge or a run could be capped against a milestone it no longer holds.
+
+        ⚠⚠ UNCONDITIONAL, like its three neighbours: the driver echoes this
+        document's own number back when nobody named one, and a nil assigned
+        here would delete a kind's cap — which is the one failure that reads as
+        SAFE from every direction, because the run then wanders exactly as it
+        did before this datum existed.
+      -->
+      <assign location="reaim_max" expr="_event.data.reaim_max"/>
+      <!--
         ⚠⚠ THE STANDING INSTRUCTIONS TOO, and this assignment is UNCONDITIONAL, which is why the
         driver always sends them: a caller that says nothing about screening has the document's own
         rules read out and echoed back here. Omitting the key would assign nil and delete an
@@ -3231,6 +3333,8 @@
                     ' read on its last request, of which ' + floor + ' is a floor no restart escapes, leaving ' + (context - floor) +
                     ' that replacing this session would discard. Replacing it wrote ' + cold + ' of cache to begin with and would write that again, and this run has already bought ' + restarts +
                     ' replacements. Writing cache costs about twenty times reading it, so discarding has to beat that toll to be worth anything. A zero is a number that could not be read, not a small one.' + '\n' +
+                    'Depth budget: ' + reaimed + ' of ' + reaim_max +
+                    ' re-aims spent. A re-aim is this run adopting a checkpoint other than the one it was given. Once the budget is spent, a different checkpoint named here is COUNTED AND NOT TAKEN: this run carries on toward the checkpoint it already has, or finishes if that one is already done. So name what you actually think is next — it is recorded either way — and REGISTER it wherever this repository registers such things, because a proposal set aside is only findable there.' + '\n' +
                     'Stop and decide what comes next, from what you have just done and what you now know. Answer from what you already have; do not use a tool.' + '\n' +
                     'Reply with exactly two lines and nothing else. Open the first with the label ' + milestone_marker +
                     ' and then the next checkpoint in one line. Open the second with the label ' + reference_marker +
@@ -4772,7 +4876,129 @@
       going, and a run that may rewrite its own destination cannot be said to
       have reached it.
     -->
+    <!--
+      🎯🎯🎯🎯🎯 THE AGENT NAMED A DIFFERENT CHECKPOINT AND THIS RUN HAS SPENT
+      ITS RE-AIMING BUDGET, SO THE PROPOSAL IS COUNTED AND NOT TAKEN - the
+      owner's decision of 2026-09-02, register item 833(2).
+
+      ⚠⚠⚠⚠⚠ IT IS A GUARD ON THIS DOCUMENT AND NOT AN EVENT FROM THE DRIVER,
+      and that is the whole design rather than a detail of it. What the driver
+      alone can see is that an agent named a successor, off a pane; what a
+      named successor is WORTH at this depth is a POLICY, and this document is
+      where policy lives (register item 773). `service_retry_max` is the
+      worked example three states up: the driver raises `service.retry` and
+      *"neither holds nor compares"* the ceiling, because a second reader of a
+      number would be a second author of the rule (register item 445).
+
+      ⚠⚠⚠ THREE CLAUSES, AND EACH ONE IS LOAD-BEARING:
+      * `reaim_max != 'never'` - a document may decline the cap, spelled
+        the way `max_turns` spells it, and the comparison must not be reached
+        with a word on its right-hand side;
+      * `_event.data.milestone != milestone` - the driver ECHOES the milestone
+        back when the agent named no successor, so without this an ordinary
+        reflection that adopted a standing instruction would be reported as a
+        proposal somebody set aside;
+      * `reaimed >= reaim_max` - the budget itself, compared the way
+        `turns >= max_turns` is compared one state over.
+
+      IT GOES BACK TO `working`, NOT TO `reviewing`, and the difference is the
+      point of the arm. The unguarded arm below reviews because the loop's
+      PARTS changed and a session may have to be replaced to carry them; here
+      nothing changed - the run is still aiming at the checkpoint it already
+      had - so paying for a review would spend a session replacement on a
+      decision that was declined.
+
+      ⚠⚠⚠ AND GOING BACK TO WORK IS ONLY HONEST BECAUSE THE ARM ABOVE TOOK THE
+      REACHED CHECKPOINT AWAY FIRST. Every reason that reaches here leaves the
+      run with work still to do: `budget` and `capacity` interrupt it mid-task,
+      `instruction` is a rule it has just learned, and `refused`/`unverified`
+      are a claim that was NOT believed - so the checkpoint it returns to is
+      one it has not reached. The one reason that would make this a livelock is
+      `milestone`, and that is the guard one transition up.
+
+      IT ADOPTS THE STANDING LIST, for `reflect.none`'s measured reason exactly:
+      `screen.matched` APPENDS, reflection is where the list is normalised, and
+      an exit that skipped it would leave a duplicate behind - which is a
+      `standing` the prompts do not carry, which is a restart.
+
+      AND IT SENDS THE TURN PROMPT, again on `reflect.none`'s terms: this state
+      was entered mid-work, the peer has just answered a question about
+      DIRECTION rather than about the work, and a run that returned to `working`
+      with nothing said would be waiting for a turn nobody opened.
+    -->
+    <!--
+      🎯🎯🎯🎯🎯 THE SAME CAP, ON THE ONE REFLECTION THAT CANNOT GO BACK TO WORK
+      - register item 833(2), and the livelock the arm below would otherwise
+      walk straight into.
+
+      ⚠⚠⚠⚠⚠ THE CHECKPOINT HAS BEEN REACHED. `reflect_reason` says `milestone`,
+      which means `judging` sent the run here because its agent said the
+      checkpoint was DONE. Declining the successor and returning to `working`
+      would ask an agent to reach a checkpoint it has just reached - for ever -
+      which is exactly the livelock `no_successor` exists to prevent, arriving
+      by a second road that nobody had walked.
+
+      SO THE RUN CLOSES, and that is the safe direction as well as the
+      terminating one: what the caller asked for WAS met, so the account this
+      writes is true. What it is not is a claim about the north star - nobody
+      said that was reached, and `capped` is the word for the difference.
+
+      ⚠⚠ THE PROPOSAL IS STILL COUNTED. It is the same finding the arm below
+      counts, set aside for the same reason, and a cap whose deferrals go
+      uncounted on ONE of its two roads is a cap with a hole in exactly the
+      place a run ends and stops being watched.
+
+      ⚠ THE WORD IS A LITERAL HERE, like `stood_down` and unlike the two the
+      driver spells: *the cap was reached* is a fact this document holds by
+      itself - the driver neither holds `reaim_max` nor compares against
+      it - so spelling it here is this file saying what it knows. A gate holds
+      the spelling against `DoneReason`'s vocabulary all the same.
+    -->
+    <transition event="reflect.applied"
+                cond="reaim_max != 'never' &amp;&amp; _event.data.milestone != milestone &amp;&amp; reaimed &gt;= reaim_max &amp;&amp; reflect_reason == 'milestone'"
+                target="closing">
+      <assign location="deferred" expr="deferred + 1"/>
+      <assign location="done_reason" expr="'capped'"/>
+    </transition>
+    <transition event="reflect.applied"
+                cond="reaim_max != 'never' &amp;&amp; _event.data.milestone != milestone &amp;&amp; reaimed &gt;= reaim_max"
+                target="working">
+      <assign location="standing" expr="_event.data.standing"/>
+      <!--
+        THE COUNT IS THE POINT - see `deferred`. A cap that set proposals aside
+        without counting them would be indistinguishable from a loop that never
+        found anything, which is the danger register item 833 states in its own
+        words.
+      -->
+      <assign location="deferred" expr="deferred + 1"/>
+      <!--
+        EVALUATED AFTER THE ASSIGNS ABOVE (W3C SCXML 6.2.3), so what goes out
+        carries the tidied list rather than the one that arrived.
+      -->
+      <send type="x-sprag-host" event="prompt.say">
+        <param name="text" expr="turn_prompt"/>
+        <param name="asks" expr="'work'"/>
+      </send>
+    </transition>
     <transition event="reflect.applied" target="reviewing">
+      <!--
+        🎯🎯🎯 THE RUN HAS MOVED ONE STEP FROM ITS BRIEF - register item 833(2),
+        and the counting happens BEFORE the assignment below because the
+        comparison is against the milestone this run still holds. W3C SCXML
+        6.2.3 executes a transition's content in document order, so an
+        increment written after the `<assign>` would compare a value with
+        itself and never fire.
+
+        ⚠⚠ GUARDED, because this transition arrives for TWO different findings.
+        One is *the agent named a successor*; the other is *nothing was
+        proposed and a standing instruction was learned*, where the driver
+        echoes the milestone back unchanged (see its `reflect`, whose comment
+        calls echoing the safe direction). Only the first is a re-aim, and a
+        budget spent by the second is a budget the run never chose to spend.
+      -->
+      <if cond="_event.data.milestone != milestone">
+        <assign location="reaimed" expr="reaimed + 1"/>
+      </if>
       <assign location="milestone" expr="_event.data.milestone"/>
       <!--
         AND THE AGE RESETS WITH IT - register item 592. A reflection that moves

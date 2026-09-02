@@ -3404,6 +3404,7 @@ impl RunRegistry {
                         // decision: this one counts the peer's tool calls a run REFUSED, and the
                         // log has no column for it either.
                         screened: 0,
+                        deferred: None,
                         // ⚠⚠⚠ AND NOT HERE, THOUGH THE LOG NOW CARRIES IT — register item 606. The
                         // restored pair goes into `Progress` below, which is where every reader
                         // takes it from: `crate::plugins::run_to_json` publishes `delivered` out of
@@ -3527,6 +3528,7 @@ impl RunRegistry {
                     answered: 0,
                     // ⚠ Nor the count of calls it refused, for the same reason.
                     screened: 0,
+                    deferred: None,
                     // ⛔⛔⛔ AND NOTHING IS WAITED ON BY A RUN NOBODY IS DRIVING — register item
                     // 755. A restored run has no driver asking its plugin anything, so *is a
                     // person needed* has no answerer; `None` is the honest reading and the same one
@@ -3869,6 +3871,7 @@ mod tests {
                 stopped: None,
                 answered: 0,
                 screened: 0,
+                deferred: None,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
@@ -3915,6 +3918,7 @@ mod tests {
                     stopped: None,
                     answered: 0,
                     screened: 0,
+                    deferred: None,
                     deliveries: sprag_plugin::Deliveries::NONE,
                     checks: sprag_plugin::Checks::NONE,
                     banked: None,
@@ -4018,6 +4022,7 @@ mod tests {
             stopped: None,
             answered: 0,
             screened: 0,
+            deferred: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -4840,6 +4845,7 @@ mod tests {
             stopped: None,
             answered: 0,
             screened: 0,
+            deferred: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,

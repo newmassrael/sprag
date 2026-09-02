@@ -9226,6 +9226,7 @@ mod tests {
             stopped: None,
             answered,
             screened: 0,
+            deferred: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one

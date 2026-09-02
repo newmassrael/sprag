@@ -1461,6 +1461,106 @@ done"
     (workspace, pane)
 }
 
+/// 🎯🎯🎯🎯🎯 **A STAND-IN AGENT THAT NAMES A DIFFERENT CHECKPOINT EVERY TIME IT IS ASKED** — the
+/// peer register item 833(2)'s depth cap is measured against, and the one thing
+/// [`standin_agent_reflecting`] deliberately cannot do.
+///
+/// # ⚠⚠⚠⚠⚠ Why its sibling could not measure a cap, and the gate that found out
+///
+/// [`standin_agent_reflecting`] answers every reflection with the SAME next milestone. That is
+/// right for the gates it serves — they are about a proposal being READ — but it makes a depth cap
+/// structurally unreachable: the second reflection proposes the checkpoint the run is already
+/// aiming at, the document's guard sees `_event.data.milestone == milestone`, and **no re-aim has
+/// happened**, correctly. A gate built on that peer would report a cap that never fired as a cap
+/// that works.
+///
+/// So this peer's answer CARRIES A COUNTER — `next_milestone 1`, then `next_milestone 2` — which is
+/// what an agent finding a fresh thing each time actually looks like, and the only peer in this
+/// module that can drive a run past depth 1.
+///
+/// ⚠⚠ IT STAGES THE SAME TWO HAZARDS ITS SIBLING DOES, and for that fixture's measured reason: the
+/// wrapped echo ([`REFLECTION_ECHO_SLICE`]) and the row the agent thought better of
+/// ([`REFLECTION_PROVISIONAL`]) are both painted before the real answer, so
+/// [`OuterLoop::proposed`](crate::outer::OuterLoop)'s two rules stay under test here as well —
+/// including the one that takes the LAST match rather than the first, which is what makes the
+/// counter readable at all.
+///
+/// ⚠ The counter is on the MILESTONE only. A reference that changed every turn would be a second
+/// thing moving in a gate about one, and the reference is not what any guard compares.
+///
+/// # ⛔⛔⛔⛔⛔ THE COUNTER LIVES IN A FILE, AND A SHELL VARIABLE IS WHAT THIS FIXTURE'S FIRST
+/// DRAFT GOT WRONG
+///
+/// A re-aim REPLACES THE SESSION — `reviewing` restarts, the pane is respawned, and the peer is a
+/// brand new `/bin/sh`. A counter held in `$r` therefore goes back to 1 on the very step that
+/// makes it matter, so this peer's second proposal repeated its first, the document's guard
+/// correctly saw *the run is already aiming there*, and **the gate could not drive depth past one
+/// no matter what cap it authored**.
+///
+/// ⚠⚠ IT LOOKED LIKE THE PRODUCT AND IT WAS THE FIXTURE — measured 2026-09-02, `left: Some(1)
+/// right: Some(2)` on a run that had ENDED rather than run out of steps. `standin_agent_refusing`'s
+/// `asks_on_its_second_life` had already established the idiom one fixture over: a life that must
+/// outlive a respawn keeps its state on disk, because that is the only thing here that does.
+///
+/// ⚠ `counter` is the caller's to make and to REMOVE. One file, so a panic leaks nothing a person
+/// has to go and find.
+pub(crate) fn standin_agent_reflecting_afresh(
+    prompts_before_done: u32,
+    next_milestone: &str,
+    next_reference: &str,
+    counter: &std::path::Path,
+) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let script = "\
+stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
+COUNTED='COUNTER_PATH'; \
+bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
+while read line; do \
+  printf '%s\\n' \"$line\"; \
+  case \"$line\" in \
+    *'MILESTONE_LABEL'*) \
+      r=0; [ -s \"$COUNTED\" ] && r=$(cat \"$COUNTED\"); \
+      r=$((r+1)); printf '%s' \"$r\" > \"$COUNTED\"; \
+      printf '%s\\n' 'MILESTONE_LABEL ECHO_SLICE'; \
+      printf '%s\\n' 'MILESTONE_LABEL PROVISIONAL'; \
+      printf 'MILESTONE_LABEL NEXT_MILESTONE %s\\n' \"$r\"; \
+      printf '%s\\n' 'REFERENCE_LABEL NEXT_REFERENCE'; \
+      bump; continue;; \
+  esac; \
+  case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
+  n=$((n+1)); \
+  if [ $n -ge TURNS_BEFORE_DONE ]; then printf 'MILESTONE REACHED\\n'; \
+  else printf 'ACK %s\\n' \"$n\"; fi; \
+  bump; \
+done"
+        .replace("COUNTER_PATH", &counter.display().to_string())
+        .replace("STOP_QUESTION", STOP_QUESTION)
+        .replace("ECHO_SLICE", REFLECTION_ECHO_SLICE)
+        .replace("PROVISIONAL", REFLECTION_PROVISIONAL)
+        .replace("MILESTONE_LABEL", REFLECTION_MILESTONE_LABEL)
+        .replace("REFERENCE_LABEL", REFLECTION_REFERENCE_LABEL)
+        .replace("NEXT_MILESTONE", next_milestone)
+        .replace("NEXT_REFERENCE", next_reference)
+        .replace("TURNS_BEFORE_DONE", &prompts_before_done.to_string());
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        AGENT_READY,
+    );
+    (workspace, pane)
+}
+
 /// **A STAND-IN AGENT THAT SAYS THE WHOLE JOB IS FINISHED WHEN A REFLECTION ASKS** — the peer the
 /// run's OTHER ending is measured against, and the first thing in this tree ever to say
 /// `north_star_marker`.

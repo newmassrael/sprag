@@ -5988,6 +5988,44 @@ fn render_answered(state: &Value) -> String {
     }
 }
 
+/// 🎯🎯🎯🎯🎯 HOW MANY NEXT CHECKPOINTS A RUN COUNTED RATHER THAN TOOK, as a clause — empty for a
+/// run that set none aside and for a plugin that has no such choice to make.
+///
+/// # ⚠⚠⚠⚠⚠ Why the cap that produced this number needed a mouth at all
+///
+/// Register item 833(2), the owner's decision of 2026-09-02. Bounding how far a run may re-aim
+/// itself is what stops a loop paying its own debt for ever — measured here that same day: eleven
+/// register items closed in twenty-two commits, **nine of them registered the same day**, and the
+/// forty-one standing that morning lost exactly one.
+///
+/// The DANGER the item names in its own words is that the cap becomes a quiet way of losing
+/// findings: *"a cap without this number is indistinguishable from a loop that never found
+/// anything"*. A count that reached the wire and died here would be exactly that — **a fact that
+/// reaches the wire and dies at the mouth somebody actually reads**, which is the shape this file
+/// has now written down four times.
+///
+/// ⚠⚠ READ FROM THE SAME KEY WHETHER THE RUN IS RUNNING OR DONE, on `render_answered`'s argument
+/// and with its own twist: a person who sees this climbing on a LIVE run is the one who can still
+/// widen the brief. Once the run is over the number is only a post-mortem.
+///
+/// ⚠ THE CLAUSE DISAPPEARS ON ZERO, not the key. `0` is a real claim — *it had the budget and never
+/// had to spend it* — and it is what a healthy run says; printing a line about it on every row
+/// would bury the rows where it is not zero.
+fn render_deferred(state: &Value) -> String {
+    match state[sprag_host::plugins::RUN_DEFERRED_KEY].as_u64() {
+        None | Some(0) => String::new(),
+        Some(1) => "\n  it set 1 next checkpoint aside at its depth cap — its agent proposed one \
+                    and this run counted it instead of taking it, so look for it wherever this \
+                    run's kind registers such things"
+            .to_owned(),
+        Some(many) => format!(
+            "\n  it set {many} next checkpoints aside at its depth cap — its agent proposed them \
+             and this run counted them instead of taking them, so look for them wherever this \
+             run's kind registers such things"
+        ),
+    }
+}
+
 /// WHAT THE PEER IS ASKING and why the run did not answer it, for a run that ended `blocked` —
 /// empty for every other run.
 ///
@@ -6303,7 +6341,7 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -6311,6 +6349,10 @@ fn render_run(run: &Value) -> String {
             // approval a person only learns about once the loop is over is one they could not have
             // stopped.
             render_answered(state),
+            // 🎯🎯🎯 AND WHAT IT HAS SET ASIDE, on exactly that argument — register item 833(2). A
+            // cap too tight for the work shows up as this number climbing, and the person who can
+            // widen the brief is the one reading this row now.
+            render_deferred(state),
             render_journal(run),
         ),
         Some("done") => {
@@ -6345,7 +6387,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{order}{walk_to}{briefed}{prompts}{verified}{uncommitted}{canceller}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{order}{walk_to}{briefed}{prompts}{verified}{uncommitted}{canceller}{}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -6366,6 +6408,12 @@ fn render_run(run: &Value) -> String {
                     .as_str()
                     .map_or_else(String::new, |stopped| format!("\n  {stopped}")),
                 render_answered(outcome),
+                // 🎯🎯🎯🎯🎯 AND WHAT IT SET ASIDE AT ITS DEPTH CAP — register item 833(2). It is
+                // on the ENDING as well as on the live row because the question it answers is asked
+                // most often about a run that is already over: *did this run go where I pointed it,
+                // and what did it leave behind on the way?* The count without a mouth is the
+                // failure this file names in four other places.
+                render_deferred(outcome),
                 // ⚠⚠⚠ AND WHAT THE PEER IS ASKING. A `blocked` run is one that WANTS AN ANSWER from
                 // the person reading this, and the word alone sent them to go find the pane and
                 // parse a menu this daemon had already parsed for them.
@@ -10233,6 +10281,7 @@ mod tests {
             stopped: None,
             answered,
             screened: 0,
+            deferred: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
@@ -10260,6 +10309,7 @@ mod tests {
             stopped: None,
             answered: 0,
             screened: 0,
+            deferred: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -10719,6 +10769,131 @@ mod tests {
             "⚠⚠ a finished run that never reported a pane is history rather than a question, and a \
              clause on every such row would train a reader to skip the line that matters — the \
              argument `render_answered`'s own gate makes one clause over: {finished}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A RUN SAYS HOW MANY CHECKPOINTS IT SET ASIDE AT ITS DEPTH CAP, WHILE IT IS
+    /// STILL RUNNING AND ONCE IT IS OVER** — the owner's decision of 2026-09-02, register item
+    /// 833(2), done-when ⑷.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the cap is not finished until this row says so
+    ///
+    /// Bounding how far a run may re-aim itself is what stops a loop paying its own debt for ever.
+    /// The item names its own danger in the same breath: **a cap without this number is
+    /// indistinguishable from a loop that never found anything.** A run that deferred eight
+    /// proposals and a run whose agent had no ideas publish the same row, and the second is fine
+    /// while the first is a repository quietly losing findings.
+    ///
+    /// So the count has to reach the mouth a PERSON reads, not only the wire. That is the failure
+    /// this file has now written down five times — *a fact that reaches the wire and dies at the
+    /// mouth somebody actually reads* — and it is why the assertions below drive `render_run` and
+    /// not `render_deferred`.
+    ///
+    /// # ⚠⚠ Four readings, and three of them are the ones a shortcut gets wrong
+    ///
+    /// * a LIVE run that has deferred — the reading that matters most, because the person seeing it
+    ///   can still widen the brief;
+    /// * an ENDED run that deferred — the post-mortem, on `render_answered`'s argument that a tally
+    ///   present only on convergence is missing from the endings that need explaining;
+    /// * a run that deferred NOTHING — `0` is a real claim and prints no clause, or the line
+    ///   becomes noise on every healthy row;
+    /// * a plugin with no such choice — the key is ABSENT, which must read the same as zero here
+    ///   and for a different reason.
+    #[test]
+    fn a_run_says_how_many_checkpoints_it_set_aside_at_its_depth_cap() {
+        /// A live row as the wire really carries one — `deferred` present only when the plugin
+        /// answered, which is `progress_to_json`'s own rule.
+        fn running(deferred: Option<u64>) -> Value {
+            let mut run = serde_json::json!({
+                "id": 833,
+                "label": "ai_loop pane=2",
+                "state": {
+                    "status": "running",
+                    "iterations": 12,
+                    "cost": 0,
+                    "unit": "steps",
+                    sprag_host::plugins::RUN_ANSWERED_KEY: 0,
+                },
+            });
+            if let Some(set_aside) = deferred {
+                run["state"][sprag_host::plugins::RUN_DEFERRED_KEY] = serde_json::json!(set_aside);
+            }
+            run
+        }
+
+        /// The same fact on an ending.
+        fn ended(deferred: Option<u64>) -> Value {
+            let mut run = serde_json::json!({
+                "id": 833,
+                "label": "ai_loop pane=2",
+                "state": {
+                    "status": "done",
+                    "outcome": {
+                        "state": "converged",
+                        "iterations": 40,
+                        "cost": 0,
+                        "unit": "steps",
+                        sprag_host::plugins::RUN_ANSWERED_KEY: 0,
+                    },
+                },
+            });
+            if let Some(set_aside) = deferred {
+                run["state"]["outcome"][sprag_host::plugins::RUN_DEFERRED_KEY] =
+                    serde_json::json!(set_aside);
+            }
+            run
+        }
+
+        // ── THE HEADLINE: a live run that has set two aside says so, and says how many ──
+        let live = render_run(&running(Some(2)));
+        assert!(
+            live.contains("set 2 next checkpoints aside"),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 833(2), done-when ⑷: this run's agent proposed two next \
+             checkpoints and the run counted them instead of taking them, and the row a person \
+             reads says nothing about it. That row is then identical to one whose agent never had \
+             an idea — which is the item's own stated danger, and it turns a depth cap into a way \
+             of losing findings quietly. Got: {live}",
+        );
+        assert!(
+            live.contains("registers such things"),
+            "⚠⚠⚠ AND THE ROW SAYS WHAT TO DO ABOUT IT. A bare number tells a person something \
+             happened and not where to look — and the whole value of the cap is that what it set \
+             aside got REGISTERED rather than paid. Got: {live}",
+        );
+
+        // ── AND ON THE ENDING, for `render_answered`'s reason ──
+        let over = render_run(&ended(Some(3)));
+        assert!(
+            over.contains("set 3 next checkpoints aside"),
+            "⚠⚠⚠⚠ A RUN THAT DEFERRED THREE PROPOSALS AND THEN ENDED is exactly the run somebody \
+             reads an outcome to understand — *did it go where I pointed it, and what did it leave \
+             behind?* A tally present only while running answers after the reader has gone. Got: \
+             {over}",
+        );
+
+        // ── ⚠ ONE IS SINGULAR, because a row that says `1 next checkpoints` is a row nobody
+        //    proof-read, and this clause is read by a person under time pressure ──
+        let single = render_run(&running(Some(1)));
+        assert!(
+            single.contains("set 1 next checkpoint aside") && !single.contains("checkpoints"),
+            "⚠⚠ the singular is the one a real capped run reaches first: {single}",
+        );
+
+        // ── ⚠⚠⚠ THE CONTROLS: zero is a CLAIM and prints nothing, and so does an absent key ──
+        let healthy = render_run(&running(Some(0)));
+        assert!(
+            !healthy.contains("aside"),
+            "⚠⚠⚠ A RUN THAT NEVER HAD TO SPEND ITS BUDGET MUST NOT CARRY THIS LINE. `0` is a real \
+             claim — it had the cap and never met it — and a clause on every healthy row trains a \
+             reader to skip the line that matters, which is the argument `render_answered`'s own \
+             gate makes one clause over. Got: {healthy}",
+        );
+        let no_such_choice = render_run(&running(None));
+        assert!(
+            !no_such_choice.contains("aside"),
+            "⚠⚠ AND A PLUGIN WITH NO SUCH CHOICE SAYS NOTHING RATHER THAN ZERO. Every bundled \
+             plugin but the loop omits the key, and a row that read the absence as a number would \
+             be claiming a decision that plugin cannot make: {no_such_choice}",
         );
     }
 
