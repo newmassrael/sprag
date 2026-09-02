@@ -4393,6 +4393,9 @@ mod tests {
     ///
     /// What this DOES hold: the wait for a person ends in one step and lasts at least the declared
     /// patience, on the path these fixtures can reach.
+    ///
+    /// ⚠ Its sibling for the OTHER side of the turn is
+    /// [`a_turn_judged_done_types_at_a_peer_the_supervisor_calls_blocked`], register item 828.
     #[test]
     fn a_run_waiting_for_a_person_spends_one_step_on_the_whole_wait() {
         /// Short enough to keep the gate cheap, long enough that a spinning driver needs hundreds
@@ -4500,6 +4503,97 @@ mod tests {
              same thing to every reader",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A TURN JUDGED DONE TYPES ITS NEXT PROMPT AT A PEER THE SUPERVISOR IS CALLING
+    /// `Blocked`** — register item 828, staged deterministically for the first time.
+    ///
+    /// # ⚠⚠⚠ WHAT THIS GATE ASSERTS, AND WHY IT ASSERTS THE DEFECT
+    ///
+    /// It pins **what the product does today**, not what it should do, and that is deliberate:
+    /// item 828's repair is NOT decided, and it must not be decided by a test written before it.
+    /// What the item needed first was a fixture that puts the loop at the delivery site with its
+    /// supervisor calling the peer blocked — measured, every run, instead of once in 240 contended
+    /// ones (826). This is that fixture.
+    ///
+    /// ⚠⚠ **SO A REPAIR MAKES THIS GATE RED, AND THAT IS THE POINT.** Whoever pays 828 rewrites
+    /// this assertion to the ending they chose, and the rewrite is the repair's proof. A gate that
+    /// went on passing through the repair would be measuring nothing.
+    ///
+    /// # ⚠⚠⚠⚠ Why the journal line is the right subject
+    ///
+    /// The reading is ALREADY taken at the honest moment — `OuterLoop::say` calls `Faced::read`
+    /// immediately before injecting, and its own comment says so: *"WHAT THIS RUN IS ABOUT TO TYPE
+    /// AT"*. The value reaches exactly two places: this journal line, and `submit_lands_when`,
+    /// which reads only `Faced::reported()` and never the STATE. **So the defect is not a missing
+    /// door — it is a door that opens, looks, and files what it saw.** Asserting the journal line
+    /// is therefore asserting the whole of what the product does with the reading.
+    ///
+    /// ⚠ It also settles the open question the item could not answer by reading: whether the
+    /// barrier is consulted on this road. It is not — if it were, this walk would end in
+    /// `AwaitingHuman` and this gate would say so.
+    #[test]
+    fn a_turn_judged_done_types_at_a_peer_the_supervisor_calls_blocked() {
+        let (workspace, pane) = crate::testing::standin_agent(4);
+        let (peer, access) = crate::testing::AsksOnceItsTurnIsJudged::over(&workspace);
+        let mut loops = AiLoop::new(
+            engine(),
+            pane,
+            &Brief {
+                handback_still_ms: Some(50),
+                ..brief_for(1_000_000)
+            },
+            &standin_spec(),
+        )
+        .expect("a well-briefed loop over a live pane starts");
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        // ── walk to a turn the loop has JUDGED DONE, which is the boundary this stages on ──
+        let mut judged = false;
+        for _ in 0..40 {
+            let step = loops
+                .step(&access, &run)
+                .expect("every step of a running loop must be readable");
+            if let Some(note) = step.note {
+                judged = note.starts_with("Working --TurnDone--> Judging");
+                walked.push(note);
+            }
+            if judged {
+                break;
+            }
+        }
+        assert!(
+            judged,
+            "⚠ the control: the loop must have JUDGED A TURN DONE before the peer can raise a \
+             question after it. Walked {walked:?}",
+        );
+
+        // ⭐ THE STAGING, and it is one line because the boundary is the caller's: the loop is
+        // between steps, so nothing is mid-pass and the very next read sees the new state.
+        peer.raise();
+
+        // ⚠⚠ THE STEP'S ERROR IS NOT `expect`ed, and the first mutation of this gate is why: a
+        // repair that REFUSES to type surfaces as an error here, and an `expect` would report it
+        // as *the step was unreadable* — a sentence about the harness — instead of at the pin
+        // below, which is the only place that can say what it means. Every ending this step can
+        // have is folded into one string and judged in one assertion.
+        let typed = match loops.step(&access, &run) {
+            Ok(step) => step.note.unwrap_or_default(),
+            Err(refused) => format!("the step REFUSED rather than typing: {refused:?}"),
+        };
+        walked.push(typed.clone());
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        assert!(
+            typed.contains("it typed at a peer its supervisor called Blocked"),
+            "⚠⚠⚠⚠⚠ REGISTER ITEM 828, AND THIS IS THE LINE THAT PINS IT. The step after a judged \
+             turn was expected to type at a peer this run's supervisor calls `Blocked` — the \
+             reading `OuterLoop::say` takes one line before it injects — and the journal said \
+             {typed:?} instead. Either the product now CONSULTS that reading (which is 828's \
+             repair, and this assertion is then the thing to rewrite), or the double stopped \
+             staging the moment. Walked {walked:?}",
+        );
     }
 
     /// ⛔⛔⛔⛔ **AND IT MUST NOT RE-READ THE PANE WHILE IT WAITS** — register item 280, the half of

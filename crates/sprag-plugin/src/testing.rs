@@ -2672,6 +2672,97 @@ impl DialogBetweenTheReads {
     }
 }
 
+/// **A SUPERVISOR THAT GOES `Blocked` AFTER THE TURN WAS JUDGED DONE** — the only arrangement in
+/// which register item 828's hazard can be staged, and the mirror of [`DialogBetweenTheReads`].
+///
+/// # ⚠⚠⚠ What it stages, and why it is not the double above
+///
+/// [`DialogBetweenTheReads`] puts the dialog between the two reads of ONE pass, which is where
+/// `Over::Asking` lives. Item 828 is the OTHER side of the turn: the completion has already said
+/// *the turn ended*, the machine has left `working`, and the peer raises its question while the
+/// run is composing the next prompt. Nothing reads the pane again on that road — `OuterLoop::say`
+/// takes `Faced::read` immediately before injecting and the value reaches only the journal — so
+/// the run types into a live menu and the newline is taken as its answer.
+///
+/// # ⭐ Why the flip is at a STEP BOUNDARY rather than after N reads
+///
+/// The double above spends a `grace` read, which ties the fixture to how many times the product
+/// happens to read per pass — a coupling its own doc admits ("if that order ever changes this
+/// fixture stops staging the window"). Here the boundary is one the CALLER owns: `AiLoop::step` is
+/// a single step, `Working --TurnDone--> Judging` is one, and the delivery that types is the NEXT
+/// one. So a gate walks to the judged turn, calls [`raise`](Self::raise), and steps once. **No read
+/// counting, and nothing to re-tune when the product reads a different number of times.**
+///
+/// ⚠ Until raised it answers `Idle` with the PEER's own counter, so `DoneWhen::Settles` ends turns
+/// exactly as [`supervised`] would — the run reaches a judged turn by the ordinary road, and this
+/// double changes nothing before the moment it is asked to.
+pub(crate) struct AsksOnceItsTurnIsJudged {
+    raised: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AsksOnceItsTurnIsJudged {
+    /// The double, and the access that reads through it.
+    pub(crate) fn over(workspace: &Arc<Mutex<Workspace>>) -> (Self, WorkspacePaneAccess) {
+        let raised: Arc<std::sync::atomic::AtomicBool> = Arc::default();
+        let source = {
+            let workspace = Arc::clone(workspace);
+            let raised = Arc::clone(&raised);
+            let high: SeqHighWater = Arc::default();
+            let identified: AgentSeen = Arc::default();
+            Arc::new(move |id: PaneId| {
+                let guard = workspace.lock().expect("the workspace mutex");
+                guard.pane(id)?.pty().with_screen(|screen| {
+                    // ⚠⚠ ONE SNAPSHOT FOR ONE OBSERVATION, for register item 826's reason: the two
+                    // halves of a reading minted at different instants is the defect that item
+                    // spent a round on, and a new double must not re-introduce it.
+                    let rows = screen.full_lines();
+                    let blocked = raised.load(std::sync::atomic::Ordering::Acquire);
+                    let seq = latched(&high, id, &rows);
+                    Some(AgentObservation {
+                        holding: None,
+                        state: if blocked {
+                            AgentState::Blocked
+                        } else {
+                            AgentState::Idle
+                        },
+                        agent: names_an_agent(&identified, id, &rows, blocked)
+                            .then(|| "claude".to_string()),
+                        authority: Authority::Scraped {
+                            rule: Some("dialog-choice-list".to_string()),
+                        },
+                        seq,
+                        asked_seq: seq,
+                        reports: 0,
+                        // ⚠ `None` for [`DialogBetweenTheReads`]'s reason: what this stages is a
+                        // STATE the delivery road reads, and a question invented here would be a
+                        // second parse of something no product code on that road consults.
+                        asking: None,
+                        asked: None,
+                        said: None,
+                        said_seq: 0,
+                        noticed: None,
+                        running: None,
+                        transcript: None,
+                        settling: crate::access::Settling::Nothing,
+                        reporter: crate::access::ReporterVoice::Speaking,
+                    })
+                })
+            }) as AgentStateSource
+        };
+        (
+            Self { raised },
+            WorkspacePaneAccess::new(Arc::clone(workspace)).with_agent_state(Some(source)),
+        )
+    }
+
+    /// Raise the question — from the very next read, because the caller is between steps and the
+    /// product is not mid-pass. See the type's doc for why that is the whole point.
+    pub(crate) fn raise(&self) {
+        self.raised
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// The supervision a real host would provide for [`standin_agent`], derived from the peer's OWN
 /// output.
 ///
