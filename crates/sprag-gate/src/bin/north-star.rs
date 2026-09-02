@@ -59,6 +59,18 @@ fn main() -> std::process::ExitCode {
             .declared
             .map_or_else(|| "none".to_string(), |n| n.to_string()),
     );
+    // ⚠⚠ PRINTED ABOVE THE TOTAL, because this is the line a round acts on — register item 833(1).
+    // The population says what is owed; this says what to take first.
+    let critical = reading.critical();
+    let ranked: Vec<String> = critical.iter().map(ToString::to_string).collect();
+    println!("critical {}: {}", critical.len(), ranked.join(" "));
+    println!(
+        "unranked {} (declared {})",
+        reading.severity_unclassified().len(),
+        reading
+            .severity_declared
+            .map_or_else(|| "none".to_string(), |n| n.to_string()),
+    );
     println!("items {} in section A", reading.items.len());
 
     if reading.is_green() {

@@ -88,6 +88,40 @@ pub const TAG: &str = "@ns:";
 /// goes red. Only one such line may exist.
 pub const DECLARATION: &str = "@ns-unclassified:";
 
+/// The line an item states its SEVERITY on: `@sev: <value>`, at any indentation.
+///
+/// Register item 833(1), the owner's decision of 2026-09-02: *"크리티컬한 문제만 먼저 갚고,
+/// 나머지는 우선순위를 낮추고 북극성을 목표로 나아가도록"*.
+///
+/// # ⚠⚠⚠⚠⚠ WHY A MARK, WHEN THE LEDGER ALREADY HAS A SEVERITY SIGNAL THAT NOTHING READS
+///
+/// It has `⚠` and `⛔` glyphs, and register item 659 measured what they are worth: *"`⚠` 의 개수가
+/// 사실상 유일한 신호인데 그건 **문자열이지 필드가 아니고**, 무엇도 그것을 읽지 않는다"*. Counting
+/// glyphs would be a predicate over prose, which is the mistake [`TAG`]'s own docs record being
+/// paid for twice. So severity gets a PLACE, exactly as membership did.
+///
+/// # ⛔⛔ TWO VALUES, BECAUSE THE DECISION THAT ASKED FOR THIS HAS TWO
+///
+/// The owner's sentence splits the world in two — critical, and the rest whose priority drops. A
+/// three- or five-level scale would be a finer answer to a question nobody asked, and every level
+/// nobody can define is a level items land in by default.
+///
+/// # ⚠⚠⚠ AND IT IS A GATE, NOT A SORT — register item 659's counter-argument, kept
+///
+/// 659 measured the cost of always chasing the sharpest thing: *"늘 가장 날카로운 것만 쫓는 루프는
+/// 축을 **끝내지 못한다**"*, because items that share a seam are cheap together and a severity sort
+/// scatters them. This scheme does not sort. It says: while anything is [`Severity::Critical`],
+/// take from those; when none is, the population is worked in whatever order coheres. The critical
+/// set is meant to be small and to empty.
+pub const SEVERITY: &str = "@sev:";
+
+/// The line the ledger declares its own count of open items with no severity: `@sev-unclassified:
+/// <n>`.
+///
+/// ⚠ Only OPEN items are counted here. A paid or out item needs no severity, and demanding one
+/// would make the backlog grow every time something is closed — a ratchet that punishes payment.
+pub const SEVERITY_DECLARATION: &str = "@sev-unclassified:";
+
 /// Where section A begins and ends. A number outside it is not this population's business.
 const SECTION_A: &str = "## A. ";
 /// Any other top-level section heading ends A.
@@ -143,6 +177,37 @@ impl fmt::Display for Tag {
     }
 }
 
+/// How urgently an OPEN item wants a round — [`SEVERITY`]'s value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Take this before anything else. **The set this scheme exists to keep small.**
+    Critical,
+    /// Everything else. Not "unimportant" — it is the north star's ordinary work, and saying so is
+    /// what stops [`Reading::severity_unclassified`] counting it.
+    Ordinary,
+}
+
+impl Severity {
+    /// Parse the value that follows [`SEVERITY`]. The first word decides; the rest is the author's
+    /// reason, which is where the argument for calling something critical belongs.
+    fn parse(value: &str) -> Option<Self> {
+        match value.split_whitespace().next()? {
+            "critical" => Some(Self::Critical),
+            "ordinary" => Some(Self::Ordinary),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Critical => "critical",
+            Self::Ordinary => "ordinary",
+        })
+    }
+}
+
 /// One numbered item of section A, after its blocks have been grouped.
 ///
 /// ⚠ A number can own several blocks: this ledger closes an item by laying a new block ON TOP of
@@ -154,6 +219,8 @@ pub struct Item {
     pub number: u32,
     /// Its mark, if it carries one.
     pub tag: Option<Tag>,
+    /// Its severity, if it states one. Read for OPEN items only — see [`SEVERITY_DECLARATION`].
+    pub severity: Option<Severity>,
     /// Whether any block of it names the loop — the alarm's input, never the population's.
     pub names_the_loop: bool,
     /// Whether the prose vocabulary reads it as closed — likewise only the alarm's input.
@@ -183,6 +250,39 @@ pub enum Fault {
     UntaggedCandidate {
         /// The item that must state its membership.
         number: u32,
+    },
+    /// A [`SEVERITY`] line whose value is neither of [`Severity`]'s two. A typo must not read as
+    /// absent — the same rule [`Fault::UnknownTag`] holds, for the same reason.
+    UnknownSeverity {
+        /// The item it was found in, or `None` when it sits outside any numbered block.
+        number: Option<u32>,
+        /// The line as written.
+        line: String,
+    },
+    /// One block states two different severities.
+    ConflictingSeverities {
+        /// The item.
+        number: u32,
+        /// The severities found, in the order written.
+        found: Vec<Severity>,
+    },
+    /// More OPEN items with no severity than the ledger declares. **This backlog may shrink, never
+    /// grow** — the same ratchet [`Fault::RatchetGrew`] holds over membership.
+    SeverityRatchetGrew {
+        /// What this reading counted.
+        counted: usize,
+        /// What [`SEVERITY_DECLARATION`] claims.
+        declared: usize,
+    },
+    /// No [`SEVERITY_DECLARATION`] line, or more than one.
+    SeverityDeclaration {
+        /// How many were found.
+        found: usize,
+    },
+    /// The one [`SEVERITY_DECLARATION`] line carries no number.
+    UnreadableSeverityDeclaration {
+        /// The line as written.
+        line: String,
     },
     /// More unmarked items than the ledger declares. **The backlog may shrink, never grow.**
     RatchetGrew {
@@ -249,6 +349,42 @@ impl fmt::Display for Fault {
                  quietly is how a sentence about the scheme comes to stand in for it",
                 line.trim(),
             ),
+            Self::UnknownSeverity { number, line } => {
+                let where_ =
+                    number.map_or_else(|| "outside any item".to_string(), |n| format!("item {n}"));
+                write!(
+                    f,
+                    "{where_}: `{}` is not one of critical/ordinary — a mistyped severity must not \
+                     read as an absent one",
+                    line.trim()
+                )
+            }
+            Self::ConflictingSeverities { number, found } => {
+                let spelled: Vec<String> = found.iter().map(ToString::to_string).collect();
+                write!(
+                    f,
+                    "item {number}: one block states {} severities ({}) — the topmost-wins rule \
+                     settles blocks, not a block arguing with itself",
+                    found.len(),
+                    spelled.join(", "),
+                )
+            }
+            Self::SeverityRatchetGrew { counted, declared } => write!(
+                f,
+                "{counted} open items state no `{SEVERITY}`, but the ledger declares {declared}: \
+                 this backlog may shrink, never grow. Say whether the new item is critical, or \
+                 lower `{SEVERITY_DECLARATION}` if you classified some",
+            ),
+            Self::SeverityDeclaration { found } => write!(
+                f,
+                "found {found} `{SEVERITY_DECLARATION}` lines, need exactly 1 — a ratchet with no \
+                 floor holds nothing",
+            ),
+            Self::UnreadableSeverityDeclaration { line } => write!(
+                f,
+                "`{}` states no number — a floor nobody can read is not a floor",
+                line.trim(),
+            ),
         }
     }
 }
@@ -260,6 +396,8 @@ pub struct Reading {
     pub items: Vec<Item>,
     /// What [`DECLARATION`] said, when exactly one line said it.
     pub declared: Option<usize>,
+    /// What [`SEVERITY_DECLARATION`] said, when exactly one line said it.
+    pub severity_declared: Option<usize>,
     /// Everything that has to be fixed.
     pub faults: Vec<Fault>,
 }
@@ -283,6 +421,34 @@ impl Reading {
         self.items
             .iter()
             .filter(|item| item.tag.is_none())
+            .map(|item| item.number)
+            .collect()
+    }
+
+    /// **WHAT A ROUND TAKES FIRST** — the open items marked [`Severity::Critical`], in numeric
+    /// order. Register item 833(1).
+    ///
+    /// ⚠ Open only. A paid item's severity is history, and an item outside the population was
+    /// never this loop's to rank.
+    #[must_use]
+    pub fn critical(&self) -> Vec<u32> {
+        self.items
+            .iter()
+            .filter(|item| item.tag == Some(Tag::Open) && item.severity == Some(Severity::Critical))
+            .map(|item| item.number)
+            .collect()
+    }
+
+    /// The OPEN items that state no severity — the backlog [`Fault::SeverityRatchetGrew`] holds.
+    ///
+    /// ⚠⚠ These are not "ordinary". **Unclassified is not a pass** — the same rule that makes an
+    /// unmarked item a debt rather than a "no" (working rule 6). A round that wants one of these
+    /// worked says so by classifying it.
+    #[must_use]
+    pub fn severity_unclassified(&self) -> Vec<u32> {
+        self.items
+            .iter()
+            .filter(|item| item.tag == Some(Tag::Open) && item.severity.is_none())
             .map(|item| item.number)
             .collect()
     }
@@ -346,6 +512,46 @@ fn mark_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(TAG)
 }
 
+/// The value of a [`SEVERITY`] line, by the same whole-line rule [`mark_value`] holds.
+fn severity_value(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix(SEVERITY)
+}
+
+/// Read the one line that declares a ratchet's floor, faulting when there is not exactly one or
+/// when its number cannot be read.
+///
+/// ⚠ Shared by both ratchets deliberately: two hand-written copies of this drifted apart in every
+/// register item that ever wrote the same rule twice.
+fn declared_floor(
+    text: &str,
+    token: &str,
+    faults: &mut Vec<Fault>,
+    many: impl Fn(usize) -> Fault,
+    unreadable: impl Fn(String) -> Fault,
+) -> Option<usize> {
+    let stated: Vec<&str> = text
+        .lines()
+        .filter(|line| line.trim_start().starts_with(token))
+        .collect();
+    match stated.as_slice() {
+        [only] => {
+            let value = only
+                .trim_start()
+                .strip_prefix(token)
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|word| word.parse().ok());
+            if value.is_none() {
+                faults.push(unreadable((*only).to_string()));
+            }
+            value
+        }
+        found => {
+            faults.push(many(found.len()));
+            None
+        }
+    }
+}
+
 /// Read section A of a ledger and judge it.
 ///
 /// The `declared` floor is read from the same text: see [`DECLARATION`].
@@ -391,36 +597,38 @@ pub fn read(text: &str) -> Reading {
     // to parse and was silently dropped from the count. That is luck, and it cuts both ways: a
     // sentence that happened to quote a number would have gone red, and a typo in the REAL
     // declaration would have handed its job to the sentence.
-    let stated: Vec<&str> = text
-        .lines()
-        .filter(|line| line.trim_start().starts_with(DECLARATION))
-        .collect();
-    let declared = match stated.as_slice() {
-        [only] => {
-            let value = only
-                .trim_start()
-                .strip_prefix(DECLARATION)
-                .and_then(|rest| rest.split_whitespace().next())
-                .and_then(|word| word.parse().ok());
-            if value.is_none() {
-                faults.push(Fault::UnreadableDeclaration {
-                    line: (*only).to_string(),
-                });
-            }
-            value
-        }
-        many => {
-            faults.push(Fault::Declaration { found: many.len() });
-            None
-        }
-    };
+    let declared = declared_floor(
+        text,
+        DECLARATION,
+        &mut faults,
+        |found| Fault::Declaration { found },
+        |line| Fault::UnreadableDeclaration { line },
+    );
+    let severity_declared = declared_floor(
+        text,
+        SEVERITY_DECLARATION,
+        &mut faults,
+        |found| Fault::SeverityDeclaration { found },
+        |line| Fault::UnreadableSeverityDeclaration { line },
+    );
 
     let mut items: Vec<Item> = Vec::new();
     for (number, bodies) in &blocks {
         let mut tag = None;
+        let mut severity = None;
         for body in bodies {
             let mut in_block: Vec<Tag> = Vec::new();
+            let mut severities: Vec<Severity> = Vec::new();
             for line in body {
+                if let Some(value) = severity_value(line) {
+                    match Severity::parse(value) {
+                        Some(found) => severities.push(found),
+                        None => faults.push(Fault::UnknownSeverity {
+                            number: Some(*number),
+                            line: (*line).to_string(),
+                        }),
+                    }
+                }
                 let Some(value) = mark_value(line) else {
                     continue;
                 };
@@ -431,6 +639,16 @@ pub fn read(text: &str) -> Reading {
                         line: (*line).to_string(),
                     }),
                 }
+            }
+            if severities.len() > 1 && severities.iter().any(|found| *found != severities[0]) {
+                faults.push(Fault::ConflictingSeverities {
+                    number: *number,
+                    found: severities.clone(),
+                });
+            }
+            // Topmost block wins, exactly as the membership mark does.
+            if severity.is_none() {
+                severity = severities.first().copied();
             }
             if in_block.len() > 1 && in_block.iter().any(|found| *found != in_block[0]) {
                 faults.push(Fault::ConflictingTags {
@@ -461,6 +679,7 @@ pub fn read(text: &str) -> Reading {
         items.push(Item {
             number: *number,
             tag,
+            severity,
             names_the_loop,
             reads_as_closed,
         });
@@ -476,9 +695,23 @@ pub fn read(text: &str) -> Reading {
         });
     }
 
+    let unranked = items
+        .iter()
+        .filter(|item| item.tag == Some(Tag::Open) && item.severity.is_none())
+        .count();
+    if let Some(floor) = severity_declared
+        && unranked > floor
+    {
+        faults.push(Fault::SeverityRatchetGrew {
+            counted: unranked,
+            declared: floor,
+        });
+    }
+
     Reading {
         items,
         declared,
+        severity_declared,
         faults,
     }
 }
@@ -493,9 +726,11 @@ mod tests {
 # Ledger
 ## A. THE SHARPEST THINGS OPEN
 @ns-unclassified: 1
+@sev-unclassified: 0
 
 900. ⛔ **An open loop item**
      @ns: open — the loop's own driver
+     @sev: critical — it stops the loop dead
      body mentioning ai_loop here
 
 899. ✅✅ **PAID 2026-09-02**
@@ -770,6 +1005,142 @@ mod tests {
             !reading.population().contains(&899),
             "the payment sits above the original and settles it: {:?}",
             reading.population(),
+        );
+    }
+
+    // ── register item 833(1): severity ─────────────────────────────────────────────────────────
+
+    /// **WHAT A ROUND TAKES FIRST.** The critical set is the mark, exactly as the population is.
+    #[test]
+    fn what_to_take_first_is_the_severity_mark_and_nothing_else() {
+        let reading = read(LEDGER);
+        assert_eq!(
+            reading.critical(),
+            vec![900],
+            "only an OPEN item marked `{SEVERITY} critical` is taken first",
+        );
+        assert!(
+            reading.severity_unclassified().is_empty(),
+            "every open item states a severity here: {:?}",
+            reading.severity_unclassified(),
+        );
+        assert!(reading.is_green(), "faults: {:?}", reading.faults);
+    }
+
+    /// ⚠⚠ **A PAID ITEM IS NOT TAKEN FIRST, WHATEVER IT SAYS.** Severity is read for the
+    /// population only — otherwise closing something would keep it at the head of the queue.
+    #[test]
+    fn a_severity_on_a_paid_item_does_not_reach_the_queue() {
+        let ledger = LEDGER.replace(
+            "899. ✅✅ **PAID 2026-09-02**\n     @ns: paid",
+            "899. ✅✅ **PAID 2026-09-02**\n     @ns: paid\n     @sev: critical — it was, once",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.critical(),
+            vec![900],
+            "899 is paid, so its severity is history: {:?}",
+            reading.critical(),
+        );
+    }
+
+    /// **UNCLASSIFIED IS NOT ORDINARY** — working rule 6. An open item that states nothing is
+    /// carried as a debt rather than silently sorted to the back.
+    #[test]
+    fn an_open_item_with_no_severity_is_carried_not_assumed() {
+        let ledger = LEDGER.replace("     @sev: critical — it stops the loop dead\n", "");
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.severity_unclassified(),
+            vec![900],
+            "it is named, not assumed ordinary: {:?}",
+            reading.severity_unclassified(),
+        );
+        assert!(
+            reading.critical().is_empty(),
+            "and it is certainly not critical: {:?}",
+            reading.critical(),
+        );
+        assert!(
+            reading.faults.contains(&Fault::SeverityRatchetGrew {
+                counted: 1,
+                declared: 0,
+            }),
+            "the backlog grew and the ratchet says so: {:?}",
+            reading.faults,
+        );
+    }
+
+    /// A mistyped severity must not read as an absent one — [`Fault::UnknownTag`]'s rule, one mark
+    /// over.
+    #[test]
+    fn a_mistyped_severity_is_a_fault_rather_than_a_silence() {
+        let ledger = LEDGER.replace("@sev: critical — it stops", "@sev: urgent — it stops");
+        let reading = read(&ledger);
+        assert!(
+            reading.faults.iter().any(|fault| matches!(
+                fault,
+                Fault::UnknownSeverity {
+                    number: Some(900),
+                    ..
+                }
+            )),
+            "`urgent` is not a value and saying nothing about it would hide the item: {:?}",
+            reading.faults,
+        );
+    }
+
+    /// ⚠⚠⚠ **THE 823 SHAPE, ONE MARK OVER**: this module's own prose quotes the token, and a
+    /// reading that took it from anywhere in the line would turn documentation into malformed
+    /// marks. A mark is the whole line's business.
+    #[test]
+    fn a_sentence_that_quotes_the_severity_token_is_not_one() {
+        let ledger = LEDGER.replace(
+            "     body mentioning ai_loop here",
+            "     the queue is `@sev: critical` items — and `@sev: nonsense` is not a value\n     \
+             body mentioning ai_loop here",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.critical(),
+            vec![900],
+            "the sentence describes the scheme and does not join it",
+        );
+        assert!(
+            reading.is_green(),
+            "describing the scheme is not a fault: {:?}",
+            reading.faults,
+        );
+    }
+
+    /// The severity declaration begins with `@sev-` and must not be mistaken for a mark whose
+    /// value is `-unclassified:` — the trap [`DECLARATION`] already fell into once.
+    #[test]
+    fn the_severity_declaration_line_is_not_read_as_a_mark() {
+        let reading = read(LEDGER);
+        assert!(
+            !reading
+                .faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::UnknownSeverity { .. })),
+            "`{SEVERITY_DECLARATION}` is a floor, not a malformed mark: {:?}",
+            reading.faults,
+        );
+        assert_eq!(reading.severity_declared, Some(0));
+    }
+
+    /// A ledger that declares no floor for this backlog is red — a ratchet with nothing to ratchet
+    /// against holds nothing.
+    #[test]
+    fn a_ledger_with_no_severity_declaration_is_red() {
+        let ledger = LEDGER.replace("@sev-unclassified: 0\n", "");
+        let reading = read(&ledger);
+        assert!(
+            reading
+                .faults
+                .contains(&Fault::SeverityDeclaration { found: 0 }),
+            "no floor is not a pass: {:?}",
+            reading.faults,
         );
     }
 }
