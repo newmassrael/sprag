@@ -216,6 +216,23 @@ pub const RUN_ANSWERED_KEY: &str = "answered";
 /// had the budget and never had to spend it**, and a reader who cannot tell that from *nobody was
 /// counting* cannot tell a healthy run from a broken one.
 pub const RUN_DEFERRED_KEY: &str = "deferred";
+/// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the owner's
+/// decision of 2026-09-03, register item 847, and [`RUN_DEFERRED_KEY`]'s twin at the other end of
+/// the same bound.
+///
+/// # ⛔⛔⛔⛔⛔ A bound that ships switched off, and said nothing about it
+///
+/// The loop's document names the program that decides whether a proposed next checkpoint may be
+/// taken, and the template it is copied from ships that slot EMPTY — deliberately, so a repository
+/// gets the machinery before it has a judgement to put in it. What was wrong is that it was inert
+/// **quietly**: *a run with the bound switched off and a run with it satisfied published this same
+/// row.* Measured 2026-09-03, no gate in the workspace named the slot and no sentence anybody reads
+/// mentioned it.
+///
+/// ⚠ ABSENT / `0` / above are three claims, on [`RUN_DEFERRED_KEY`]'s exact rule: *this plugin does
+/// not re-aim itself*, *every direction it took was checked*, and *it re-aimed on its agent's word
+/// alone this many times*.
+pub const RUN_UNCHECKED_KEY: &str = "unchecked";
 /// **WHAT A RUN KEPT**, on an ending — `{"completed": N, "unit": "turn"}`, or ABSENT for a plugin
 /// that counts no completed work at all.
 ///
@@ -4932,6 +4949,12 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
     if let Some(deferred) = progress.deferred {
         answer[RUN_DEFERRED_KEY] = json!(deferred);
     }
+    // 🎯🎯🎯 AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED — register item 847, on the line above's
+    // terms and with the polling argument applying just as hard: a person watching a loop re-aim
+    // itself unchecked is the one who can still go and name a classifier for that kind.
+    if let Some(unchecked) = progress.unchecked {
+        answer[RUN_UNCHECKED_KEY] = json!(unchecked);
+    }
     // ⚠⚠⚠⚠⚠ **AND WHERE THE RUN'S MACHINE IS — register item 662, and this renderer is the ONLY
     // way that fact can cross a process boundary.** A driver in another process reports through
     // here and nowhere else, so a key missing here is a fact the daemon cannot know about such a
@@ -6559,6 +6582,12 @@ pub fn outcome_to_json(outcome: &Outcome) -> Value {
     // rule — see `RUN_DEFERRED_KEY` for why a `0` and an absence are two different claims here.
     if let Some(deferred) = outcome.deferred {
         answer[RUN_DEFERRED_KEY] = json!(deferred);
+    }
+    // 🎯🎯🎯 AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED — register item 847, on EVERY ending for
+    // the line above's reason: a run that re-aimed itself four times on nobody's say-so and then
+    // hit a ceiling is exactly the run whose account must not read like a bounded one.
+    if let Some(unchecked) = outcome.unchecked {
+        answer[RUN_UNCHECKED_KEY] = json!(unchecked);
     }
     // WHICH CEILING, present only when there was one — so the key's presence is itself the claim,
     // the rule `run_to_json` follows for `opened_by`. `exhausted` with no ceiling beside it told a
@@ -10038,6 +10067,99 @@ mod tests {
     /// hold is that the two are the same value and that it is one `reviewing` can decide on.
     #[test]
     fn a_kind_documents_judgements_reach_a_run_that_named_none_of_them() {
+        a_kind_documents_judgements_reach_a_run_that_named_none_of_them_body();
+    }
+
+    /// 🎯🎯🎯🎯🎯 **WHAT A RUN SET ASIDE AND WHAT NOBODY CHECKED BOTH CROSS THE WIRE** — register
+    /// items 833(2) and 847, and **a gate a mutation asked for**.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The two lines nothing was watching
+    ///
+    /// These counts travel document → driver → **here** → the row a person reads, and the ends were
+    /// gated at both ends and nowhere in between: the row renderer's own gate builds its JSON by
+    /// hand, and the document's gate stops at the driver's reader. Measured 2026-09-03 by deleting
+    /// this publication: **every gate in the workspace stayed green.**
+    ///
+    /// So a fact could be counted correctly, rendered correctly, and never arrive — which is the
+    /// failure this file names in five places (*a fact that reaches the wire and dies at the
+    /// mouth*) with the two halves swapped.
+    ///
+    /// ⚠⚠ **THREE READINGS, AND THE MIDDLE ONE IS THE ESCAPE HATCH.** A number crosses; an ABSENT
+    /// key stays absent (*this plugin has no such choice*); and `0` crosses as a number, because
+    /// *it had the budget and never spent it* and *every direction it took was checked* are claims
+    /// a healthy loop makes affirmatively.
+    #[test]
+    fn a_run_says_on_the_wire_what_it_deferred_and_what_nobody_checked() {
+        /// A progress cell as a driver really hands one over, with the two counts as given.
+        fn progress(deferred: Option<u32>, unchecked: Option<u32>) -> sprag_plugin::Progress {
+            sprag_plugin::Progress {
+                iterations: 12,
+                cost: None,
+                at: None,
+                place: None,
+                journal: Vec::new(),
+                answered: 0,
+                screened: 0,
+                deferred,
+                unchecked,
+                waiting: None,
+                deliveries: sprag_plugin::Deliveries::NONE,
+                checks: sprag_plugin::Checks::NONE,
+                banked: None,
+                briefed: None,
+                driving: None,
+                inherited: false,
+            }
+        }
+
+        // ── THE CONTROL: the crossing carries something at all ──
+        let carried = progress_to_json(&progress(Some(2), Some(3)));
+        assert_eq!(
+            carried[RUN_DEFERRED_KEY].as_u64(),
+            Some(2),
+            "⚠⚠⚠ REGISTER ITEM 833(2): what a run set aside must CROSS, not only render. The row \
+             renderer builds its own JSON in its own gate, so this function is the only place the \
+             journey from a driver's tally to the key a person's row reads is measured: {carried}",
+        );
+        assert_eq!(
+            carried[RUN_UNCHECKED_KEY].as_u64(),
+            Some(3),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 847: how many directions nobody checked must CROSS. **This \
+             assertion exists because a mutation found the hole**: deleting this publication left \
+             every gate green — the row gate builds its own JSON by hand, and the document gate \
+             stops at the driver — so the fact could have died in the two lines between them. A \
+             fact that reaches the wire and dies at the mouth is the failure this file names in \
+             five places; this is the same failure one step earlier: {carried}",
+        );
+
+        // ── AND THE ABSENCES ARE ABSENCES, never zeroes ──
+        let silent = progress_to_json(&progress(None, None));
+        assert!(
+            silent.get(RUN_DEFERRED_KEY).is_none() && silent.get(RUN_UNCHECKED_KEY).is_none(),
+            "⛔⛔⛔ A PLUGIN WITH NO SUCH CHOICE OMITS THE KEY RATHER THAN PUBLISHING `0`. Every \
+             bundled plugin but the loop answers `None` to both, and a zero here would claim on \
+             their behalf that they had a budget and never spent it — `RUN_DEFERRED_KEY`'s own \
+             rule, and the distinction the loop's `0` depends on being reserved: {silent}",
+        );
+
+        // ── AND A ZERO IS PUBLISHED, because it is a CLAIM ──
+        let clean = progress_to_json(&progress(Some(0), Some(0)));
+        assert_eq!(
+            (
+                clean[RUN_DEFERRED_KEY].as_u64(),
+                clean[RUN_UNCHECKED_KEY].as_u64()
+            ),
+            (Some(0), Some(0)),
+            "⚠⚠ AND `0` CROSSES rather than being folded into the absence above. *It had the \
+             budget and never spent it* and *every direction it took was checked* are the two \
+             claims a healthy loop makes, and a reader who cannot get them affirmatively cannot \
+             tell a healthy run from a plugin that never had the choice: {clean}",
+        );
+    }
+
+    /// The body of [`a_kind_documents_judgements_reach_a_run_that_named_none_of_them`], whose whole
+    /// argument is in that test's doc comment above.
+    fn a_kind_documents_judgements_reach_a_run_that_named_none_of_them_body() {
         let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
             Arc::new(sce_rust_lua::LuaEngine::new());
         let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
@@ -12166,6 +12288,7 @@ mod tests {
             answered,
             screened: 0,
             deferred: None,
+            unchecked: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
@@ -14260,6 +14383,7 @@ mod tests {
             answered: 0,
             screened: 0,
             deferred: None,
+            unchecked: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(banked),
@@ -14306,6 +14430,7 @@ mod tests {
             answered: 0,
             screened: 0,
             deferred: None,
+            unchecked: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(sprag_plugin::Banked {

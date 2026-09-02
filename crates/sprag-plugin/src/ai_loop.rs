@@ -1314,6 +1314,16 @@ impl Plugin for AiLoop {
             .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
     }
 
+    /// 🎯 **THE DOCUMENT'S OWN `unchecked`, ON ITS WAY TO THE ROW SOMEBODY READS** — register item
+    /// 847, delegated on `deferred`'s exact terms above: the `<if>` that counts is written in
+    /// `ai_loop.scxml`, and a driver-side tally would agree with it until the day the document grew
+    /// a second way to adopt.
+    fn unchecked(&self) -> Option<u32> {
+        self.inner
+            .unchecked()
+            .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
     /// ⚠ DELEGATED for `deliveries`' reason — register item 719. The driver that put the brief in
     /// is the only thing that read it back out of the datamodel, and a size measured at this layer
     /// would be measuring the REQUEST rather than what the machine holds — a second authority on
@@ -6358,6 +6368,170 @@ mod tests {
             "⚠⚠⚠⚠ AND NOTHING WAS SET ASIDE, which is the half that says the run kept GOING. A \
              budget that is never spent is never met, so every proposal this arm made was taken — \
              where the arm above had to start counting. Re-aimed {fresh_depth:?}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A RUN THAT RE-AIMS ITSELF WITH NOBODY CHECKING COUNTS IT, AND ONE THAT IS
+    /// CHECKED COUNTS NOTHING** — the owner's decision of 2026-09-03, register item 847,
+    /// done-when ⑵ and ⑶.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The escape hatch: a bound that ships switched off and makes no sound
+    ///
+    /// The template ships `successor_check` EMPTY and empty means nobody classifies — on purpose, so
+    /// a repository copying the file gets the machinery before it has a judgement to put in it. What
+    /// was wrong is that it was inert **quietly**. Measured 2026-09-03: **no gate in this workspace
+    /// named that slot** and no sentence a person reads mentioned it, so a run with the bound off
+    /// and a run with it satisfied were indistinguishable everywhere a reader could look.
+    ///
+    /// ⚠⚠ **AND IT IS THIS REPOSITORY'S OWN WORKING RULE 6** — *an escape hatch must not disable
+    /// its own gate; unclassified is a red, not a pass* — broken inside the machine that carries
+    /// that rule to every other repository.
+    ///
+    /// # ⚠⚠⚠ THE CLAIM IS A DIFFERENCE, and the RATCHET is the arm that is zero
+    ///
+    /// Two runs over the same peer, differing in nothing but whether their document names a
+    /// classifier. The unchecked one must COUNT what it took on nobody's say-so; the checked one
+    /// must count **exactly zero**, and that zero is the ratchet: this repository's own kind names a
+    /// checker, so a build that started letting checked re-aims through uncounted — or that counted
+    /// every re-aim regardless — is red here rather than plausible.
+    ///
+    /// ⚠ `/bin/echo YES STEP` is a real classifier on the real road, and `STEP` rather than `FRESH`
+    /// for a reason this gate learned by going red: a FRESH proposal correctly spends no budget
+    /// (register item 840), so the checked arm's `re_aimed` stayed at zero and the control could
+    /// not tell *it re-aimed and was checked* from *it never re-aimed at all*. `STEP` makes both
+    /// arms charge the budget identically, so the ONE thing left between them is whether anybody
+    /// was asked.
+    #[test]
+    fn a_re_aim_nobody_checked_is_counted_and_a_checked_one_is_not() {
+        /// What the peer proposes at each reflection, before the counter it appends.
+        const AFRESH: &str = "a different register entry this run just found";
+        /// And what it says the replacement should read.
+        const READ_NEXT: &str = "the register entry for that one";
+        /// Enough working prompts that the run reflects on its budget several times over.
+        const PROMPTS: u32 = 30;
+        /// Reflect often, so several reflections fit inside one bounded walk.
+        const EVERY: i64 = 2;
+        /// The step ceiling of the walk — a bound on the GATE, never on the claim.
+        const STEPS: usize = 400;
+
+        /// Drive a run whose document names `check` (or names none), and answer what the DOCUMENT
+        /// holds: how far it re-aimed, and how much of that nobody checked.
+        fn checked_by(check: Option<&str>) -> (Option<i64>, Option<i64>, Option<u32>) {
+            let counter = sprag_scratch::scratch_root().join(format!(
+                "sprag-unchecked-count-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.subsec_nanos()),
+            ));
+            let _ = std::fs::remove_file(&counter);
+            let (workspace, pane) = crate::testing::standin_agent_reflecting_afresh(
+                PROMPTS, AFRESH, READ_NEXT, &counter,
+            );
+            let access = crate::testing::supervised(&workspace);
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    reflect_every: Some(EVERY),
+                    // ⚠⚠ THE CAP IS DECLINED IN BOTH ARMS. What separates them must be *was
+                    // anybody asked*, and a budget that bit would be a second explanation.
+                    reaim_max: Some(crate::outer::Counted::Never),
+                    successor_check: check.map(ToOwned::to_owned),
+                    ..brief_for(40)
+                },
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            let run = RunContext::uncancellable();
+            for _ in 0..STEPS {
+                loops
+                    .step(&access, &run)
+                    .expect("every step of a reflecting run must be readable");
+                if loops.inner.finished() {
+                    break;
+                }
+            }
+            // 🎯🎯🎯 **THE DRIVER'S ANSWER AND THE PLUGIN'S, TAKEN AT THE SAME MOMENT** — and the
+            // pair exists because a mutation asked for it. Reading only `loops.inner` left the
+            // DELEGATION uncovered: `Plugin::unchecked` could answer `None` for ever and this gate
+            // stayed green, so the count would be perfect in the document and never leave the
+            // crate. Two readers of one fact, compared — which is the only shape that catches a
+            // link nobody watches.
+            let held = (
+                loops.inner.re_aimed(),
+                loops.inner.unchecked(),
+                crate::plugin::Plugin::unchecked(&loops),
+            );
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            let _ = std::fs::remove_file(&counter);
+            held
+        }
+
+        let (silent_depth, silent_unchecked, silent_published) = checked_by(None);
+        let (asked_depth, asked_unchecked, asked_published) =
+            checked_by(Some("/bin/echo YES STEP"));
+
+        // ── ⛔⛔⛔⛔⛔ THE DELEGATION, WHICH A MUTATION ASKED FOR. `Plugin::unchecked` is the only
+        //    road this number takes out of the crate, and reading the driver alone left it free to
+        //    answer `None` for ever with every gate green — the count perfect where nobody outside
+        //    could see it. Asserted on BOTH arms, because a delegation that works for one value is
+        //    not one that works.
+        for (label, held, published) in [
+            ("no classifier", silent_unchecked, silent_published),
+            ("a classifier", asked_unchecked, asked_published),
+        ] {
+            assert_eq!(
+                published,
+                held.map(|count| u32::try_from(count).unwrap_or(u32::MAX)),
+                "⛔⛔⛔ REGISTER ITEM 847: with {label}, the document counted {held:?} and the \
+                 plugin published {published:?}. `Plugin::unchecked` is the one road this fact \
+                 takes to a run's row, and a driver-side count nobody can read is the escape hatch \
+                 this item is about wearing a different coat",
+            );
+        }
+
+        // ── THE CONTROL: both runs really did change direction, or the difference is about nothing
+        assert!(
+            silent_depth.is_some_and(|depth| depth > 0),
+            "⚠⚠⚠ THE CONTROL FOR THE WHOLE GATE: a document naming no classifier still re-aims — \
+             that is the behaviour the empty default preserves. Zero means this walk never reached \
+             a reflection and everything below compares two nothings. Unchecked \
+             {silent_unchecked:?}",
+        );
+
+        // ── THE HEADLINE: what nobody checked is COUNTED ──
+        assert_eq!(
+            silent_unchecked, silent_depth,
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 847: this document names no `successor_check`, so EVERY \
+             direction this run took was taken on its agent's word alone — and the count of those \
+             must be the count of them. A bound that ships switched off and says nothing is the \
+             escape hatch working rule 6 forbids, inside the machine that carries that rule to \
+             everybody else. Re-aimed {silent_depth:?}",
+        );
+        assert!(
+            silent_unchecked.is_some_and(|count| count > 0),
+            "⚠⚠ and it is not zero, which is what makes the arm below a DIFFERENCE rather than two \
+             runs that both counted nothing. Got {silent_unchecked:?}",
+        );
+
+        // ── AND THE RATCHET: a run whose kind DOES name one counts exactly zero ──
+        assert!(
+            asked_depth.is_some_and(|depth| depth > 0),
+            "⚠⚠⚠ THE CONTROL FOR THE RATCHET: the checked run must re-aim too, or its zero below \
+             is the zero of a run that never had the chance. Unchecked {asked_unchecked:?}",
+        );
+        assert_eq!(
+            asked_unchecked,
+            Some(0),
+            "⛔⛔⛔⛔⛔ THE RATCHET — register item 847, done-when ⑶, and the shape \
+             `@sev-unclassified` already has: a run whose document names a classifier took EVERY \
+             one of its directions with somebody checking, so this number is exactly zero and may \
+             never grow. It growing means either the count has stopped following the check, or a \
+             checked re-aim is being charged as an unchecked one — and both make the number above \
+             unreadable. Re-aimed {asked_depth:?}",
         );
     }
 

@@ -1533,6 +1533,46 @@
     <data id="deferred" expr="0"/>
 
     <!--
+      🎯🎯🎯🎯🎯 HOW MANY TIMES THIS RUN CHANGED DIRECTION WITH NOBODY CHECKING —
+      the owner's decision of 2026-09-03, register item 847, and the number that
+      makes `successor_check`'s empty default stop being SILENT.
+
+      ⛔⛔⛔⛔⛔ WHAT WENT WRONG. The slot above ships EMPTY, and empty means
+      nobody classifies: a repository that copies this file gets the machinery
+      that counts and defers, and no judgement to drive it. That is written up
+      one `<data>` over as a DESIGN — *inert until a kind gives it meaning* —
+      and the design is right. What was wrong is that it was inert QUIETLY:
+      nothing in a run's account said the proposals it adopted had been checked
+      by nobody, so a loop running with the bound switched off and a loop
+      running with it satisfied published the same row.
+
+      ⚠⚠⚠⚠ AND THAT IS THIS DOCUMENT'S OWN RULE BROKEN. The kind that runs here
+      holds a working rule saying an escape hatch must not disable its own gate
+      and that an UNCLASSIFIED thing is a red rather than a pass. An empty
+      checker is exactly such a hatch — it is the fourth time that shape has
+      been paid for, and the first time it was inside the machine that carries
+      the rule to everybody else.
+
+      ⚠⚠⚠ IT COUNTS ADOPTIONS AND NOT REFLECTIONS. A reflection that changed
+      nothing was never a judgement anybody owed; what is unaccounted for is a
+      run TAKING a new direction on nobody's say-so. So this moves on exactly
+      the arm that moves `reaimed`, under exactly the condition that publishes
+      no verdict.
+
+      ⚠⚠ WHAT THE FIX IS NOT: making every author spell their work list the way
+      one repository spells its own. The question this machine asks is *may I
+      take that next?* and the answer is YES or NO — how an author decides is
+      theirs, and demanding a shape would put one repository's habits into
+      everybody's file. The socket is at the right height; what was wrong is
+      that an empty one made no sound.
+
+      ⭐ AND IT IS FALSIFIABLE, which the item asks for in as many words: if
+      this number does not go to zero as authors name their checkers, the
+      prescription was wrong.
+    -->
+    <data id="unchecked" expr="0"/>
+
+    <!--
       🎯🎯🎯🎯🎯 HOW MANY TIMES A RUN WHOSE CHECKPOINT IS DONE MAY ASK ITS AGENT
       AGAIN — the owner's decision of 2026-09-02, and the half of the cap above
       that turns a STOP back into PROGRESS.
@@ -5312,6 +5352,24 @@
       -->
       <if cond="_event.data.milestone != milestone &amp;&amp; _event.data.chain != 'fresh'">
         <assign location="reaimed" expr="reaimed + 1"/>
+      </if>
+      <!--
+        🎯🎯🎯🎯🎯 AND WHEN NOBODY CHECKED IT, SAY SO BY COUNTING — register
+        item 847. `_event.data.admits` is falsy in exactly one world that
+        matters here: this document named no classifier, so the run has just
+        changed direction on its agent's word alone.
+
+        ⚠⚠⚠ THE SAME `_event.data.milestone != milestone` AS THE COUNT ABOVE,
+        because what is unaccounted for is an ADOPTION rather than a reflection.
+        A reflection that kept the checkpoint owed nobody a verdict.
+
+        ⚠⚠ WRITTEN AS *is `admits` falsy* AND NOT AS *is it `unasked`*: the
+        driver publishes NO WORD for that arm — the truthiness test is the whole
+        contract one `<data>` over — so a comparison against a spelling would be
+        a second reader of a decision this key already makes.
+      -->
+      <if cond="_event.data.milestone != milestone &amp;&amp; !_event.data.admits">
+        <assign location="unchecked" expr="unchecked + 1"/>
       </if>
       <assign location="milestone" expr="_event.data.milestone"/>
       <!--

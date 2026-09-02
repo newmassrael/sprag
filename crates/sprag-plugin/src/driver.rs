@@ -561,6 +561,16 @@ pub struct Outcome {
     /// loop, and a loop whose datamodel has stopped answering. Never `Some(0)`, which is *it had
     /// the choice and never had to make it*.
     pub deferred: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES THIS RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the owner's
+    /// decision of 2026-09-03, register item 847. See [`Plugin::unchecked`], where the argument is.
+    ///
+    /// ⚠ Reported for EVERY terminal state on [`deferred`](Self::deferred)'s argument, and it
+    /// matters more here than there: a run that ended anyhow having re-aimed itself four times on
+    /// nobody's say-so is precisely the run whose account must not read like a bounded one.
+    ///
+    /// ⚠⚠ [`None`] is *this plugin does not re-aim itself*; `Some(0)` is *every direction it took
+    /// was checked*, which is a real and different claim.
+    pub unchecked: Option<u32>,
     /// ⚠⚠⚠ **WHAT THE RUN PUT INTO ITS PANE AND HOW MUCH OF IT WAS NEVER VISIBLE THERE** —
     /// register item 591, [`Progress::deliveries`] read at the end.
     ///
@@ -711,6 +721,10 @@ pub struct Driver {
     /// document, so a second counter out here would be a number that agrees until the day it does
     /// not — `deliveries`' own words, one field down.
     deferred: Option<u32>,
+    /// 🎯 **WHAT THE PLUGIN LAST SAID ITS UNCHECKED RE-AIMS CAME TO** — register item 847, held on
+    /// the line above's terms and read from the plugin at the same one place. ⚠ NEVER incremented
+    /// here, for that field's reason exactly.
+    unchecked: Option<u32>,
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS DELIVERIES CAME TO** — register item 591, held for
     /// [`at`](Self::at)'s reason and read from the plugin at the same one place.
     ///
@@ -808,6 +822,10 @@ pub struct Progress {
     ///
     /// ⚠ [`None`] is *nobody was counting* — see [`Outcome::deferred`].
     pub deferred: Option<u32>,
+    /// 🎯 **AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED** — register item 847, published WHILE
+    /// THE RUN IS STILL GOING on the line above's argument: a person watching a loop re-aim itself
+    /// unchecked is the one who can still go and name a classifier for it.
+    pub unchecked: Option<u32>,
     /// ⚠⚠⚠⚠⚠ **WHERE THE RUN IS** — the plugin's own machine position, from [`Plugin::at`].
     ///
     /// # The fact that existed only as prose — register item 543
@@ -1016,6 +1034,9 @@ impl Driver {
             // *nobody was counting* is a different answer from *it set nothing aside*. See
             // `Plugin::deferred`.
             deferred: None,
+            // ⚠ `None` FOR `deferred`'s REASON ONE LINE UP — a run nobody has stepped has not been
+            // asked, and *nobody was counting* is not *every direction it took was checked*.
+            unchecked: None,
             deliveries: Deliveries::NONE,
             checks: Checks::NONE,
             banked: None,
@@ -1069,6 +1090,9 @@ impl Driver {
             // IS STILL GOING for `answered`'s reason on the row below: a person watching a loop
             // defer proposal after proposal is the one who can still change its brief.
             deferred: self.deferred,
+            // 🎯 AND HOW MANY OF THEM NOBODY CHECKED — register item 847, live for the reason
+            // above it: the person watching is the one who can still go and name a classifier.
+            unchecked: self.unchecked,
             at: self.at,
             waiting: self.waiting.clone(),
             place: self.place.clone(),
@@ -1431,6 +1455,11 @@ impl Driver {
                     // and a machine in a final state may no longer read its own datamodel — what a
                     // reader wants is the last answer it COULD give, not the silence after it.
                     self.deferred = plugin.deferred().or_else(|| self.deferred.take());
+                    // 🎯 AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED — register item 847, read in
+                    // the same breath and KEPT on the same terms: the step that ends a run is the
+                    // one whose machine may no longer read its own datamodel, and what a reader
+                    // wants is the last answer it COULD give rather than the silence after it.
+                    self.unchecked = plugin.unchecked().or_else(|| self.unchecked.take());
                     // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS COMPLETE AND KEPT — register item 604, in
                     // the same breath as the three above and for their reason. It is asked EVERY
                     // step rather than once at the end because the last step is the one that ends
@@ -1854,6 +1883,7 @@ impl Driver {
             answered: self.answered,
             screened: self.screened,
             deferred: self.deferred,
+            unchecked: self.unchecked,
             deliveries: self.deliveries,
             checks: self.checks.clone(),
             banked: self.banked,

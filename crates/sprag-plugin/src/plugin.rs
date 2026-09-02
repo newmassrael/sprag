@@ -1188,6 +1188,36 @@ pub trait Plugin {
         None
     }
 
+    /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES THIS RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the owner's
+    /// decision of 2026-09-03, register item 847, and [`deferred`](Self::deferred)'s twin at the
+    /// other end of the same bound.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A bound that ships switched off, and says nothing about it
+    ///
+    /// The loop's document names the program that decides whether a proposed next checkpoint may be
+    /// taken, and the TEMPLATE ships that slot empty — deliberately, so a repository copying the
+    /// file gets the machinery before it has a judgement to put in it. What was wrong is that it was
+    /// inert **quietly**: *a run with the bound switched off and a run with it satisfied published
+    /// the same row.* Measured 2026-09-03: no gate in this workspace named that slot, and no
+    /// sentence a person reads mentioned it.
+    ///
+    /// So this is the sound an empty socket makes. `0` is *every direction this run took was
+    /// checked*; anything above it is *this run re-aimed itself on its agent's word alone, this
+    /// many times*.
+    ///
+    /// ⚠⚠ [`None`] is **this plugin does not re-aim itself**, which is every bundled plugin but the
+    /// loop, and it is also what a loop answers when its datamodel has stopped speaking. Never
+    /// `Some(0)` for either — [`deferred`](Self::deferred)'s distinction exactly, and the wire omits
+    /// the key rather than publishing a zero somebody would read as *nothing went unchecked*.
+    ///
+    /// ⚠ It counts ADOPTIONS and not reflections: a reflection that kept the checkpoint it had
+    /// owed nobody a verdict.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn unchecked(&self) -> Option<u32> {
+        None
+    }
+
     /// ⚠⚠⚠ **THE RUN'S BUDGET IS SPENT — CAN YOU SAY WHERE IT GOT TO, AND HOW LONG DO YOU NEED?**
     ///
     /// Called by the [`Driver`] the moment one of ITS ceilings binds, before the run is ended, and

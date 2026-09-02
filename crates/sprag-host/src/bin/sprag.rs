@@ -6086,6 +6086,38 @@ fn render_answered(state: &Value) -> String {
 /// ⚠ THE CLAUSE DISAPPEARS ON ZERO, not the key. `0` is a real claim — *it had the budget and never
 /// had to spend it* — and it is what a healthy run says; printing a line about it on every row
 /// would bury the rows where it is not zero.
+/// 🎯🎯🎯🎯🎯 **HOW MANY TIMES THIS RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the owner's
+/// decision of 2026-09-03, register item 847, and [`render_deferred`]'s twin.
+///
+/// # ⛔⛔⛔⛔⛔ The clause that is printed on a NUMBER, not on its absence
+///
+/// The loop's document names the program that decides whether a proposed next checkpoint may be
+/// taken, and the template ships that slot empty on purpose — a repository gets the machinery
+/// before it has a judgement to put in it. It was inert **quietly**, which is what this ends: a run
+/// with the bound switched off and a run with it satisfied printed the same row.
+///
+/// ⚠⚠ **AND THE CLAUSE DISAPPEARS ON ZERO, EXACTLY AS `render_deferred`'s DOES.** `0` is the
+/// healthy claim — *every direction this run took was checked* — and a line about it on every row
+/// would bury the rows where it is not zero. The absence of the KEY is a third thing again (*this
+/// plugin does not re-aim itself*) and prints nothing either.
+///
+/// ⚠ It says what to DO, because a number a reader cannot act on is a number they scroll past: the
+/// remedy is naming a checker in the kind's own document, and nothing else here can say that.
+fn render_unchecked(state: &Value) -> String {
+    match state[sprag_host::plugins::RUN_UNCHECKED_KEY].as_u64() {
+        None | Some(0) => String::new(),
+        Some(1) => "\n  it changed direction ONCE with nobody checking — this run's kind names no \
+                    `successor_check`, so the bound on where a reflection may aim it is switched \
+                    off; name one in that kind's own document to turn it on"
+            .to_owned(),
+        Some(many) => format!(
+            "\n  it changed direction {many} times with nobody checking — this run's kind names no \
+             `successor_check`, so the bound on where a reflection may aim it is switched off; \
+             name one in that kind's own document to turn it on"
+        ),
+    }
+}
+
 fn render_deferred(state: &Value) -> String {
     match state[sprag_host::plugins::RUN_DEFERRED_KEY].as_u64() {
         None | Some(0) => String::new(),
@@ -6416,7 +6448,7 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{}{order}{walk_to}{briefed}{prompts}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -6428,6 +6460,10 @@ fn render_run(run: &Value) -> String {
             // cap too tight for the work shows up as this number climbing, and the person who can
             // widen the brief is the one reading this row now.
             render_deferred(state),
+            // 🎯🎯🎯 AND HOW MANY OF THOSE DIRECTIONS NOBODY CHECKED — register item 847, live for
+            // the line above's reason: the person watching is the one who can go and name a
+            // classifier for this kind before the run takes another.
+            render_unchecked(state),
             render_journal(run),
         ),
         Some("done") => {
@@ -6462,7 +6498,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{order}{walk_to}{briefed}{prompts}{verified}{uncommitted}{canceller}{}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{order}{walk_to}{briefed}{prompts}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -6489,6 +6525,11 @@ fn render_run(run: &Value) -> String {
                 // and what did it leave behind on the way?* The count without a mouth is the
                 // failure this file names in four other places.
                 render_deferred(outcome),
+                // 🎯🎯🎯 AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED — register item 847, on the
+                // ENDING as well for the line above's reason: the question is asked most often
+                // about a run that is already over, and *did anything bound where this went?* is
+                // the first thing a reader of such an account needs settled.
+                render_unchecked(outcome),
                 // ⚠⚠⚠ AND WHAT THE PEER IS ASKING. A `blocked` run is one that WANTS AN ANSWER from
                 // the person reading this, and the word alone sent them to go find the pane and
                 // parse a menu this daemon had already parsed for them.
@@ -10357,6 +10398,7 @@ mod tests {
             answered,
             screened: 0,
             deferred: None,
+            unchecked: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
@@ -10385,6 +10427,7 @@ mod tests {
             answered: 0,
             screened: 0,
             deferred: None,
+            unchecked: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -10969,6 +11012,129 @@ mod tests {
             "⚠⚠ AND A PLUGIN WITH NO SUCH CHOICE SAYS NOTHING RATHER THAN ZERO. Every bundled \
              plugin but the loop omits the key, and a row that read the absence as a number would \
              be claiming a decision that plugin cannot make: {no_such_choice}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A RUN WHOSE KIND NAMED NO CHECKER SAYS SO ON ITS OWN ROW** — the owner's
+    /// decision of 2026-09-03, register item 847, done-when ⑴ and ⑵.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A bound that shipped switched off, and nothing anywhere said so
+    ///
+    /// The loop's document names the program that decides whether a proposed next checkpoint may be
+    /// taken; the TEMPLATE ships that slot empty so a repository gets the machinery before it has a
+    /// judgement to put in it. That is right, and it was **silent**: measured 2026-09-03, no gate in
+    /// this workspace named the slot and no sentence a person reads mentioned it, so *a run with the
+    /// bound switched off and a run with it satisfied published the same row*.
+    ///
+    /// ⚠⚠ **AND IT IS THIS REPOSITORY'S OWN WORKING RULE, TURNED ON ITSELF**: an escape hatch must
+    /// not disable its own gate, and an unclassified thing is a red rather than a pass. The empty
+    /// checker is the fourth time that shape has been paid for here, and the first time it was
+    /// inside the machine that carries the rule to everybody else.
+    ///
+    /// # ⚠⚠⚠ The three readings, and the one a shortcut gets wrong
+    ///
+    /// * a run that re-aimed itself unchecked — the clause, on the LIVE row and on the ending;
+    /// * `0` — *every direction it took was checked*, a real claim that prints nothing;
+    /// * an ABSENT key — *this plugin does not re-aim itself*, which must read the same as zero and
+    ///   for a different reason. **That is the arm the escape hatch hid behind**, because a build
+    ///   that never published the key at all would satisfy every assertion about the clause.
+    #[test]
+    fn a_run_whose_kind_named_no_checker_says_so_on_its_own_row() {
+        /// A live row as the wire really carries one — the key present only when the plugin
+        /// answered, which is `progress_to_json`'s own rule.
+        fn running(unchecked: Option<u64>) -> Value {
+            let mut run = serde_json::json!({
+                "id": 847,
+                "label": "ai_loop pane=2",
+                "state": {
+                    "status": "running",
+                    "iterations": 12,
+                    "cost": 0,
+                    "unit": "steps",
+                    sprag_host::plugins::RUN_ANSWERED_KEY: 0,
+                },
+            });
+            if let Some(count) = unchecked {
+                run["state"][sprag_host::plugins::RUN_UNCHECKED_KEY] = serde_json::json!(count);
+            }
+            run
+        }
+
+        /// The same fact on an ending.
+        fn ended(unchecked: Option<u64>) -> Value {
+            let mut run = serde_json::json!({
+                "id": 847,
+                "label": "ai_loop pane=2",
+                "state": {
+                    "status": "done",
+                    "outcome": {
+                        "state": "converged",
+                        "iterations": 40,
+                        "cost": 0,
+                        "unit": "steps",
+                        sprag_host::plugins::RUN_ANSWERED_KEY: 0,
+                    },
+                },
+            });
+            if let Some(count) = unchecked {
+                run["state"]["outcome"][sprag_host::plugins::RUN_UNCHECKED_KEY] =
+                    serde_json::json!(count);
+            }
+            run
+        }
+
+        // ── THE HEADLINE: a live run that re-aimed twice unchecked says so, and says how many ──
+        let live = render_run(&running(Some(2)));
+        assert!(
+            live.contains("changed direction 2 times with nobody checking"),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 847: this run changed direction twice with its `successor_\
+             check` empty, and the row a person reads says nothing about it — so it is identical \
+             to a row whose every direction was checked. That is the escape hatch this item is: a \
+             bound that ships switched off and makes no sound. Got: {live}",
+        );
+        assert!(
+            live.contains("successor_check"),
+            "⚠⚠⚠ AND THE ROW NAMES THE SLOT, because a reader who is told a bound is off and not \
+             WHICH bound cannot turn it on. Got: {live}",
+        );
+        assert!(
+            live.contains("name one in that kind's own document"),
+            "⚠⚠⚠⚠ AND IT SAYS WHERE TO PUT IT — the kind's document, never the template. The whole \
+             design is that the machine is copied and the judgement is authored locally, and a row \
+             that sent somebody to edit the shared file would undo it. Got: {live}",
+        );
+
+        // ── AND ON THE ENDING, on `render_deferred`'s argument ──
+        let over = render_run(&ended(Some(3)));
+        assert!(
+            over.contains("changed direction 3 times with nobody checking"),
+            "⚠⚠⚠⚠ A RUN THAT RE-AIMED ITSELF THREE TIMES ON NOBODY'S SAY-SO AND THEN ENDED is \
+             exactly the run whose account must not read like a bounded one. A tally present only \
+             while running answers after the reader has gone. Got: {over}",
+        );
+
+        // ── ⚠ ONE IS SINGULAR, because a row nobody proof-read is read under time pressure ──
+        let single = render_run(&running(Some(1)));
+        assert!(
+            single.contains("changed direction ONCE with nobody checking")
+                && !single.contains("times with nobody"),
+            "⚠⚠ the singular is the one a real run reaches first: {single}",
+        );
+
+        // ── ⚠⚠⚠ THE CONTROLS: zero is a CLAIM and prints nothing, and so does an absent key ──
+        let checked = render_run(&running(Some(0)));
+        assert!(
+            !checked.contains("nobody checking"),
+            "⚠⚠⚠ A RUN WHOSE EVERY DIRECTION WAS CHECKED MUST NOT CARRY THIS LINE. `0` is a real \
+             claim, and a clause on every healthy row trains a reader to skip the line that \
+             matters. Got: {checked}",
+        );
+        let no_such_choice = render_run(&running(None));
+        assert!(
+            !no_such_choice.contains("nobody checking"),
+            "⚠⚠ AND A PLUGIN THAT DOES NOT RE-AIM ITSELF SAYS NOTHING RATHER THAN ZERO. Every \
+             bundled plugin but the loop omits the key, and a row reading that absence as a number \
+             would accuse it of a decision it cannot make: {no_such_choice}",
         );
     }
 

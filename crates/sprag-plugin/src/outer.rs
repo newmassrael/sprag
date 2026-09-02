@@ -963,6 +963,10 @@ const REAIMED: &str = "reaimed";
 /// the run's row, because a cap whose deferrals nobody counts is indistinguishable from a loop that
 /// never found anything. See [`REAIM_MAX`] and [`OuterLoop::deferred`].
 const DEFERRED: &str = "deferred";
+/// 🎯 The datamodel variable counting **how many times this run changed direction with nobody
+/// checking** — incremented by the adopting `reflect.applied` arm where the classifier published no
+/// word at all. Register item 847, and see [`OuterLoop::unchecked`].
+const UNCHECKED: &str = "unchecked";
 
 /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN WHOSE CHECKPOINT IS DONE MAY ASK ITS AGENT AGAIN** — register
 /// item 840, and the bound the owner's decision of 2026-09-02 needs in order to be safe.
@@ -10199,6 +10203,34 @@ impl OuterLoop {
     pub fn deferred(&self) -> Option<i64> {
         match self.script.get_variable(&self.session, DEFERRED) {
             Ok(ScriptValue::Int(deferred)) => Some(deferred),
+            _ => None,
+        }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES THIS RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the
+    /// document's own `unchecked`, incremented by the adopting arm where the `successor_check` slot
+    /// published no word at all. Register item 847.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The escape hatch this exists to make audible
+    ///
+    /// The template ships that slot EMPTY and empty means nobody classifies — deliberately, so a
+    /// repository copying the file gets the machine before it has a meaning to put in it. What was
+    /// wrong is that it was inert **quietly**: a run with the bound switched off and a run with it
+    /// satisfied published the same row, so *the enforcement everybody was told they had* could be
+    /// absent with nothing anywhere saying so. Measured 2026-09-03: **no gate in this workspace
+    /// named that slot, and no sentence a person reads mentioned it.**
+    ///
+    /// ⚠⚠ **IT IS THIS REPOSITORY'S OWN WORKING RULE, TURNED ON ITSELF.** The kind that runs here
+    /// holds a rule saying an escape hatch must not disable its own gate and that an unclassified
+    /// thing is a red rather than a pass. An empty checker is exactly that hatch — and it was
+    /// inside the machine that carries the rule to every other repository.
+    ///
+    /// ⚠ [`None`] is *nobody was counting* and never *it never happened*, which is
+    /// [`deferred`](Self::deferred)'s own distinction one number over.
+    #[must_use]
+    pub fn unchecked(&self) -> Option<i64> {
+        match self.script.get_variable(&self.session, UNCHECKED) {
+            Ok(ScriptValue::Int(unchecked)) => Some(unchecked),
             _ => None,
         }
     }
