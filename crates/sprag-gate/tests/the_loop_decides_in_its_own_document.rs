@@ -454,7 +454,11 @@ const DECLARED_ACTS: usize = 15;
 /// — like `reflect.none` beside it — owes the turn prompt, because the state was entered mid-work
 /// and a run returning with nothing said would wait for a turn nobody opened. ⚠ No [`DRIVER_ARMS`]
 /// row fell with it: the decision is a GUARD in the document, and it never lived in the driver.
-const SERVED_ACTS: usize = 44;
+/// 🎯 **44 → 45, register item 840**: `reflecting`'s entry now declares TWO `prompt.say` acts, one
+/// per arm of a branch — the ordinary reflection question, and the one that carries a refused
+/// proposal's own words back to the agent it asks again. ⚠ No [`DRIVER_ARMS`] row fell with it
+/// either: which sentence goes out is a branch in the document, and it never lived in the driver.
+const SERVED_ACTS: usize = 45;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

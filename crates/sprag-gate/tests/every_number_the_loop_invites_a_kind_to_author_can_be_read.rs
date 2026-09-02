@@ -77,6 +77,10 @@ const CLAIMED: &[&str] = &[
     "reference",
     "working_rules",
     "reaim_max",
+    // 🎯 Register item 840: how many times a run whose checkpoint is finished may ask its agent
+    // again when the successor it named was turned away. It sits beside `reaim_max` because it is
+    // that cap's other half — the cap used to END such a run, and this is what lets it carry on.
+    "reask_max",
     "hold_within_ms",
     "reflect_after_refusals",
     "context_ceiling",

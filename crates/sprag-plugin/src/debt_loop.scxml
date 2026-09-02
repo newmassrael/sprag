@@ -346,6 +346,31 @@
     <data id="reaim_max" expr="1"/>
 
     <!--
+      🎯🎯🎯🎯🎯 AND HOW MANY WRONG GUESSES THIS REPOSITORY WILL SIT THROUGH when
+      the cap above turns a proposal away and the checkpoint in hand is finished
+      — the owner's decision of 2026-09-02, register item 840: *"다음에 즉시
+      상환하도록해"*.
+
+      ⛔ THE RUN USED TO END THERE, and that is what this number replaces. It could
+      not move to the next debt either, because the budget counted CHANGES and
+      moving is a change — so a mechanism built to make this loop go further was
+      making it stop.
+
+      ⚠⚠⚠ TWO, AND THE NUMBER IS AN ESTIMATE THIS ROUND CANNOT MEASURE. Nobody
+      has yet watched an agent guess twice here, so what it rests on is the shape
+      of the failure rather than a reading: one retry is a typo's worth of
+      patience, and a large number is the livelock wearing a bound. ⭐ The data
+      that settles it is being collected — every refusal raises `deferred`, so a
+      later round can ask whether second guesses actually land and move this.
+
+      ⚠⚠ IT IS NOT A DECLINE. Unbounded has no spelling in this slot, deliberately
+      (see the template): an agent that keeps naming refused things would turn for
+      ever. Zero would mean *never ask again*, which is the behaviour this item
+      exists to end.
+    -->
+    <data id="reask_max" expr="2"/>
+
+    <!--
       ⚠⚠⚠⚠⚠ AND WHO DECIDES A CHECKPOINT WAS REACHED — NOT THE AGENT THAT WORKED
       ON IT. Register item 428, whose mechanism the template shipped and whose
       second half is this line: the slot exists, EMPTY is the template's default,

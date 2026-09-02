@@ -46,7 +46,17 @@ use sprag_gate::sources::workspace_root;
 ///   sent to a live session precisely because that one thing moved. Register item 800's second
 ///   half — see [`EVERY_DOOR_SAYS_WHICH`], which is what keeps it from being sent to a session that
 ///   was not there for the change.
-const MAY_NAME_IT: [&str; 3] = ["start_prompt", "reflect_prompt", "changed_prompt"];
+/// * `reask_prompt` ASKS TOO, and it is here for `reflect_prompt`'s reason exactly (register item
+///   840): it goes to the session that just FINISHED that checkpoint and is being asked what comes
+///   after it, so the milestone is the SUBJECT of the question rather than something retyped at
+///   somebody who already has it. It also composes `reflect_prompt` IN, so a rule that forbade it
+///   would forbid its own contents.
+const MAY_NAME_IT: [&str; 4] = [
+    "start_prompt",
+    "reflect_prompt",
+    "changed_prompt",
+    "reask_prompt",
+];
 
 /// The prompts that MUST NOT, and what each is for instead.
 ///
@@ -74,7 +84,11 @@ const MUST_NOT: [&str; 5] = [
 ///
 /// **8, measured 2026-09-01**: `end_prompt`, `start_prompt`, `turn_prompt`, `changed_prompt`,
 /// `reflect_prompt`, `dispute_prompt`, `unverified_prompt`, `stop_prompt`.
-const COMPOSED_PROMPTS: usize = 8;
+///
+/// **9 since 2026-09-03**, register item 840: `reask_prompt`, composed by `reflecting`'s entry on
+/// the road that comes back into that state — a run whose checkpoint is finished asking its agent
+/// again after the successor it named was turned away.
+const COMPOSED_PROMPTS: usize = 9;
 
 /// The datamodel id this gate is about.
 ///

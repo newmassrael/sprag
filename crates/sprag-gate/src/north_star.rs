@@ -627,6 +627,72 @@ impl Reading {
         }
     }
 
+    /// 🎯🎯🎯🎯🎯 **DOES `to` COME OUT OF `from`?** — `Some(true)` where `to`'s chain of
+    /// [`PARENT`] marks reaches `from`, `Some(false)` where it reaches a declared root without
+    /// meeting it, and [`None`] where the chain cannot be walked to either answer. Register item
+    /// 840.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The two things a run's budget was counting as one
+    ///
+    /// Register item 833(2) gave a run a bound on how far it may re-aim, and it counted CHANGES:
+    /// any milestone other than the one it holds spends a step. Two opposite movements were
+    /// therefore priced the same:
+    ///
+    /// * **going deeper** — taking a debt that the work in hand CREATED. The chain lengthens, and
+    ///   this is the thing the budget exists to stop.
+    /// * **going sideways** — taking an unrelated ROOT. The chain is length zero, and this is
+    ///   progress, not waste.
+    ///
+    /// So a capped run could not move to the next debt at all: moving spent the budget it had
+    /// already spent, and the run ended. This predicate is the difference, and it is the register's
+    /// to answer because only the register knows what created what.
+    ///
+    /// # ⚠⚠⚠ [`None`] IS NOT `Some(false)`, and the difference is working rule 6
+    ///
+    /// *Nobody wrote down where this came from* must not read as *nothing created it*. An unstated
+    /// parentage would otherwise make every item in the standing backlog free of the budget — the
+    /// escape hatch that disables its own gate. So the caller of this must treat [`None`] the way
+    /// it treats a step: **unclassified is not a pass**, and what unlocks the cheaper answer is the
+    /// same annotation [`Reading::unrooted`]'s ratchet already asks for.
+    ///
+    /// ⚠ `from == to` is `Some(true)`: a proposal naming the item the run is already on has not
+    /// gone anywhere, and the guard that reads this is reached only where the milestone MOVED.
+    #[must_use]
+    pub fn descends(&self, from: u32, to: u32) -> Option<bool> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut at = to;
+        loop {
+            if at == from {
+                return Some(true);
+            }
+            if !seen.insert(at) {
+                return None;
+            }
+            let item = self.items.iter().find(|item| item.number == at)?;
+            match item.parent? {
+                Parent::Root => return Some(false),
+                Parent::Item(up) => at = up,
+            }
+        }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AND THE TWO ANSWERS AS ONE PREDICATE** — register item 840, and the arrangement
+    /// the loop's document reads through a classifier.
+    ///
+    /// A proposal is *sideways* only when the register can WALK the chain to a declared root
+    /// without meeting `from`. Everything else — a chain that reaches `from`, one that runs into an
+    /// item stating no parentage, one that cannot be placed at all — is charged as a step.
+    ///
+    /// ⚠⚠ **THIS IS WHERE WORKING RULE 6 LIVES FOR THIS FEATURE**, spelled once so no caller has to
+    /// remember it: *unclassified is not the cheap answer*. A build that folded [`None`] into
+    /// *sideways* would let every unannotated item escape the budget, and nothing about that would
+    /// look wrong from the outside.
+    #[must_use]
+    pub fn sideways(&self, from: Option<u32>, to: u32) -> bool {
+        from.and_then(|held| self.descends(held, to))
+            .is_some_and(|derived| !derived)
+    }
+
     /// **WHAT A ROUND MAY TAKE** — the open items whose [`Reading::depth`] is known and within
     /// `cap`, in numeric order. Register item 833(2), and the owner's default of 1.
     ///
@@ -1649,6 +1715,64 @@ mod tests {
             vec![900, 901],
             "⛔ a critical mark does not lift the depth cap. Taking 902 here would make the cap \
              something a round could escape by ranking its own finding",
+        );
+    }
+
+    // ── register item 840: deeper against sideways ────────────────────────────────────────────
+
+    /// 🎯🎯🎯🎯🎯 **A DEBT THE WORK IN HAND CREATED IS A STEP; AN UNRELATED ROOT IS NOT** — the
+    /// distinction a re-aiming budget was counting as one movement, and the reason a capped run
+    /// could not move to the next thing at all.
+    #[test]
+    fn a_finding_that_came_out_of_the_work_in_hand_is_a_step_and_a_root_is_not() {
+        let reading = read(&with_a_chain());
+        assert_eq!(
+            reading.descends(900, 901),
+            Some(true),
+            "901 says it was found while paying 900, so taking it goes one step deeper",
+        );
+        assert_eq!(
+            reading.descends(900, 902),
+            Some(true),
+            "and so does the step below that — the chain is walked, not just its first link",
+        );
+        assert_eq!(
+            reading.descends(901, 900),
+            Some(false),
+            "🎯 but 900 is a declared ROOT: nothing found it, so moving there from 901 is going \
+             SIDEWAYS. Charging that is what left a capped run unable to take the next thing",
+        );
+        assert!(
+            reading.sideways(Some(901), 900),
+            "and the composed predicate says so in one call",
+        );
+        assert!(
+            !reading.sideways(Some(900), 901),
+            "while the movement the budget exists to bound is not sideways",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN UNWRITTEN CHAIN IS CHARGED, WHICH IS WORKING RULE 6** — *unclassified is not
+    /// a pass*, and *free* is the pass here. [`LEDGER`]'s 897 states no parentage.
+    #[test]
+    fn a_chain_nobody_wrote_down_is_not_the_cheap_answer() {
+        let reading = read(LEDGER);
+        assert_eq!(
+            reading.descends(900, 897),
+            None,
+            "THE CONTROL: 897 states no `@from:`, so this cannot be walked to either answer",
+        );
+        assert!(
+            !reading.sideways(Some(900), 897),
+            "⛔ and *cannot tell* must not read as *unrelated*: a build that folded them together \
+             would let every unannotated item escape the budget, and nothing about it would look \
+             wrong. What unlocks the cheaper reading is the annotation the unrooted ratchet asks \
+             for — this is what makes that ratchet worth paying down",
+        );
+        assert!(
+            !reading.sideways(None, 900),
+            "⚠ and neither may a proposal whose CHECKPOINT could not be placed: nothing was \
+             compared, so nothing may be called unrelated",
         );
     }
 

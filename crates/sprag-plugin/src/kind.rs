@@ -679,6 +679,33 @@ impl LoopKind {
     ///
     /// ⚠ Whitespace is what the driver splits on, exactly as above: the proposal it appends is the
     /// last argument, and everything before it is a program and its flags.
+    /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN OF THIS KIND MAY ASK ITS AGENT AGAIN** when the checkpoint
+    /// it finished is done and the successor it named was turned away — or [`None`] where this kind
+    /// says nothing and the template's own number stands. Register item 840.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What it is bounding, and why the bound must exist
+    ///
+    /// A reflection whose checkpoint was REACHED cannot go back to work, so a refused proposal used
+    /// to END the run — and because the re-aiming budget counted CHANGES rather than DEPTH, a
+    /// capped run could not move to an unrelated next thing either. The owner's answer is that it
+    /// asks its agent again, carrying the refusal's own words; **the machine choosing the next
+    /// checkpoint was refused**, on register item 659's measurement that a loop always chasing the
+    /// sharpest thing never finishes an axis.
+    ///
+    /// ⚠⚠ Asking again without a bound is a livelock — an agent that keeps naming refused things
+    /// turns for ever — the `REASK_MAX` constant's own doc names the register item, and is NAMED rather
+    /// than linked because it is private. At this bound
+    /// the run closes, which banks the work.
+    ///
+    /// ⚠ **ZERO IS A DECISION A KIND MAY MEAN**: never ask again, close on the first refusal, which
+    /// is what every run did before this existed. Read as a plain number for
+    /// [`reflect_after_refusals`](Self::reflect_after_refusals)' reason — and **unbounded has no
+    /// spelling here at all**, because unbounded is the failure rather than a choice.
+    #[must_use]
+    pub fn reask_max(&self) -> Option<i64> {
+        OuterLoop::authored_number_in(&self.script, &self.session, "reask_max")
+    }
+
     #[must_use]
     pub fn successor_check(&self) -> Option<String> {
         match self.script.get_variable(&self.session, "successor_check") {

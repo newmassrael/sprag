@@ -4395,6 +4395,12 @@ fn ai_loop_brief(
         // business, and a caller who could name the classifier could delete the whole
         // bound by naming nothing.
         successor_check: kind.successor_check(),
+        // 🎯🎯🎯 AND HOW MANY WRONG GUESSES A RUN OF THIS KIND SITS THROUGH before
+        // it banks the work and stops — register item 840, on the line above's
+        // terms. NO WIRE KEY: how patient a repository is with its own agent is
+        // its document's business, and a caller who could name this could turn a
+        // bound livelock back into an unbounded one.
+        reask_max: kind.reask_max(),
         // ⚠⚠⚠ NO WIRE KEY EITHER, on the two lines above's terms. What this
         // repository's peer prints when its SERVICE fails is its document's business,
         // and a caller who could name the needle could delete the wait by naming

@@ -228,6 +228,8 @@ struct Learned<'a> {
     /// What a classifier said about the checkpoint this pass's reflection NAMED — register item
     /// 839, and [`None`] on every pass where no successor was proposed.
     admits: Option<crate::outer::Admits>,
+    /// Whether taking that checkpoint would have gone deeper or sideways — register item 840.
+    chain: Option<crate::outer::Chain>,
     /// What that classifier said BESIDE its verdict — register item 839.
     ///
     /// ⚠ Borrowed, like [`explained`](Self::explained) beside it and for that field's reason.
@@ -561,6 +563,7 @@ impl AiLoop {
             explained,
             shown,
             admits,
+            chain,
             unadmitted,
             witnessed,
             faced,
@@ -628,6 +631,15 @@ impl AiLoop {
         // classified this* is what says the only bound on where this run may aim is a count.
         if let Some(verdict) = admits {
             note = format!("{note} — {}", verdict.describe());
+            // 🎯🎯🎯 AND WHAT TAKING IT WOULD COST — register item 840, INSIDE the admission's arm
+            // on the same rule the reason below follows: a price with no verdict beside it would
+            // describe a classification this line never says was made. ⚠ Said on all three of its
+            // arms, `Unsaid` included, because *nobody said* is the one that charges a run for a
+            // movement nothing looked at — and a clause printed only on the interesting arm is a
+            // sample with no control.
+            if let Some(price) = chain {
+                note = format!("{note} — {}", price.describe());
+            }
             // ⚠⚠ AND IN ITS OWN WORDS, quoted and attributed on `explained`'s exact terms above:
             // everything else on this line is the product speaking. ⚠ INSIDE the verdict's arm,
             // because a reason with no verdict beside it would describe a classification this line
@@ -1415,6 +1427,7 @@ impl Plugin for AiLoop {
                 explained,
                 shown,
                 admits,
+                chain,
                 unadmitted,
             } => {
                 // ⚠⚠⚠ AN APPROVAL IS REPORTED BEFORE ANYTHING ELSE THIS STEP DID, and TAKEN so it
@@ -1474,6 +1487,7 @@ impl Plugin for AiLoop {
                         explained: explained.as_deref(),
                         shown,
                         admits,
+                        chain,
                         unadmitted: unadmitted.as_deref(),
                         witnessed,
                         // ⚠⚠ TAKEN OFF THE LOOP rather than carried on `Pumped::Moved`, which is
@@ -1978,10 +1992,15 @@ mod tests {
     }
 
     /// A brief that reaches a milestone in `max_turns` and never reflects.
+    /// 🎯 **THE CHECKPOINT EVERY FIXTURE HERE IS BRIEFED WITH**, spelled once — register item 840.
+    /// It is what the driver appends to a `successor_check`'s argv ahead of the proposal, so a gate
+    /// that wants to see that argument arrive compares against THIS rather than retyping it.
+    pub(super) const MILESTONE_IN_HAND: &str = "reach it";
+
     fn brief_for(max_turns: i64) -> Brief {
         Brief {
             north_star: "the stand-in answers prompts and then says the marker".to_string(),
-            milestone: "reach it".to_string(),
+            milestone: MILESTONE_IN_HAND.to_string(),
             reference: "this gate".to_string(),
             // ⚠ These fixtures measure a BOUNDED run; the declined budget is a kind's decision and
             // has its own gate rather than being folded in here.
@@ -1996,6 +2015,9 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            // ⚠ DECLINED, so the template's own number stands. The base brief must not author a
+            // patience of its own: a gate that wants a different one says so beside its `Brief`.
+            reask_max: None,
             // ⚠ DECLINED, like the two above it: a stand-in peer has no service to fail, so a
             // needle here would be quoting words nothing in these fixtures ever prints. The
             // outage path has its own gates, which arm it deliberately.
@@ -6214,6 +6236,288 @@ mod tests {
         );
     }
 
+    /// 🎯🎯🎯🎯🎯 **GOING SIDEWAYS COSTS NOTHING; GOING DEEPER COSTS A STEP** — the owner's
+    /// decision of 2026-09-02, register item 840, and the difference a re-aiming budget could not
+    /// see.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Two opposite movements were priced the same, and it stopped the loop
+    ///
+    /// `reaimed` counted CHANGES: any milestone other than the one in hand spent a step. So
+    /// **taking a debt the work itself created** — the chain lengthening, which is what the budget
+    /// exists to bound — and **taking an unrelated root** — chain length zero, which is progress —
+    /// were one number. A run at its cap could therefore not move to the next thing AT ALL, and
+    /// the arm that met the cap ended it: a mechanism built to make a loop go further was making
+    /// it stop.
+    ///
+    /// # ⚠⚠⚠ THE CLAIM IS A DIFFERENCE, and nothing else in the two runs differs
+    ///
+    /// Same peer, same prompts, same cadence, same cap, same admission — the ONLY difference is the
+    /// movement word the classifier prints beside its YES. An assertion about one run's numbers is
+    /// satisfied by a product that hard-wires them; a guard that read the word and ignored it would
+    /// produce two identical runs.
+    ///
+    /// ⚠⚠ `/bin/echo YES FRESH` and `/bin/echo YES STEP` are real classifiers, not mocks: the
+    /// driver appends the checkpoint in hand and then the proposal, the reply goes through the same
+    /// `verdict_in` a model's does, and the movement word is read off the line that follows the
+    /// verdict — which is the contract the template states for a program a kind names.
+    #[test]
+    fn a_proposal_that_starts_a_fresh_line_of_work_spends_no_budget() {
+        /// What the peer proposes at each reflection, before the counter it appends.
+        const AFRESH: &str = "a different register entry this run just found";
+        /// And what it says the replacement should read.
+        const READ_NEXT: &str = "the register entry for that one";
+        /// Enough working prompts that the run reflects on its budget several times over.
+        const PROMPTS: u32 = 30;
+        /// Reflect often, so several reflections fit inside one bounded walk.
+        const EVERY: i64 = 2;
+        /// The step ceiling of the walk — a bound on the GATE, never on the claim.
+        const STEPS: usize = 400;
+
+        /// Drive a run whose classifier admits every proposal and calls the movement `word`, and
+        /// answer what the DOCUMENT holds: how far it re-aimed, and what it set aside.
+        fn moving(word: &str) -> (Option<i64>, Option<i64>) {
+            // ⚠ ONE FILE PER ARM — a re-aim RESPAWNS the pane, so a counter in a shell variable
+            // goes back to one and the peer proposes the same thing twice
+            // (`a_documents_depth_cap_is_the_one_a_run_obeys`' measured reason).
+            let counter = sprag_scratch::scratch_root().join(format!(
+                "sprag-chain-count-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.subsec_nanos()),
+            ));
+            let _ = std::fs::remove_file(&counter);
+            let (workspace, pane) = crate::testing::standin_agent_reflecting_afresh(
+                PROMPTS, AFRESH, READ_NEXT, &counter,
+            );
+            let access = crate::testing::supervised(&workspace);
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    reflect_every: Some(EVERY),
+                    // ⚠⚠ THE CAP IS TIGHT AND IDENTICAL IN BOTH ARMS. It has to BITE for the
+                    // difference to be about anything: with an unbounded cap neither arm would
+                    // ever meet it and both would re-aim for ever.
+                    reaim_max: Some(crate::outer::Counted::Of(1)),
+                    successor_check: Some(format!("/bin/echo YES {word}")),
+                    ..brief_for(40)
+                },
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            let run = RunContext::uncancellable();
+            for _ in 0..STEPS {
+                loops
+                    .step(&access, &run)
+                    .expect("every step of a reflecting run must be readable");
+                if loops.inner.finished() {
+                    break;
+                }
+            }
+            let held = (loops.inner.re_aimed(), loops.inner.deferred());
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            let _ = std::fs::remove_file(&counter);
+            held
+        }
+
+        let (fresh_depth, fresh_deferred) = moving("FRESH");
+        let (step_depth, step_deferred) = moving("STEP");
+
+        // ── THE ARM THE BUDGET IS FOR: a step off the work in hand is charged, and caps out ──
+        assert_eq!(
+            step_depth,
+            Some(1),
+            "⚠⚠⚠ THE CONTROL FOR THE WHOLE GATE: a proposal that comes OUT OF the work in hand \
+             spends the budget, so a run capped at one must re-aim exactly once. Zero means this \
+             walk never reached a reflection and everything below compares two nothings. Deferred \
+             {step_deferred:?}",
+        );
+        assert!(
+            step_deferred.is_some_and(|set_aside| set_aside > 0),
+            "⚠⚠ and once that budget is spent the cap turns its later proposals away, which is \
+             what makes the arm below a DIFFERENCE rather than two runs nobody bounded. Got \
+             {step_deferred:?}",
+        );
+
+        // ── AND THE ARM THAT IS PROGRESS: an unrelated start is free, so the cap never bites ──
+        assert_eq!(
+            fresh_depth,
+            Some(0),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 840: THE SAME PEER, THE SAME PROMPTS, THE SAME CAP — and a \
+             classifier that says the proposal starts a FRESH line of work. Moving sideways must \
+             spend NO budget: it is the movement that makes a loop go on rather than the one that \
+             makes it wander, and pricing the two the same is what left a capped run unable to \
+             take the next thing at all. Deferred {fresh_deferred:?}",
+        );
+        assert_eq!(
+            fresh_deferred,
+            Some(0),
+            "⚠⚠⚠⚠ AND NOTHING WAS SET ASIDE, which is the half that says the run kept GOING. A \
+             budget that is never spent is never met, so every proposal this arm made was taken — \
+             where the arm above had to start counting. Re-aimed {fresh_depth:?}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A RUN WHOSE PROPOSAL IS TURNED AWAY ASKS AGAIN RATHER THAN ENDING** — the
+    /// owner's decision of 2026-09-02, register item 840's second clause.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What ended, and why asking again is the remedy that was chosen
+    ///
+    /// A reflection asked because the checkpoint was REACHED cannot go back to work — that is the
+    /// livelock `no_successor` exists to prevent — so a refused proposal CLOSED the run. The
+    /// owner's instruction is that it should pick up the next thing immediately. **The machine
+    /// choosing was refused** (register item 659: a loop always chasing the sharpest thing never
+    /// finishes an axis), so what a run does instead is ASK ITS AGENT AGAIN, carrying the
+    /// refusal's own words — the agent proposes, the document vetoes.
+    ///
+    /// # ⚠⚠⚠ The classifier changes its mind, which is what makes this a run and not a loop
+    ///
+    /// A fixture whose classifier always refuses would only ever show the bound. This one says NO
+    /// once and YES after, so the walk shows the whole shape: refused, asked again, admitted,
+    /// carried on. ⚠ Its counter is a FILE for `standin_agent_reflecting_afresh`'s measured reason
+    /// — the pane is respawned by an adoption, and a shell variable goes back to one.
+    ///
+    /// ⚠⚠ **AND THE CONTROL IS THE SAME RUN WITH NO PATIENCE.** `reask_max: 0` is a real author's
+    /// choice — never ask again — and it is what every run did before this item. If both arms
+    /// behaved alike the number would be decorative.
+    #[test]
+    fn a_run_whose_successor_was_refused_asks_again_instead_of_ending() {
+        /// The edge that IS asking again — `reflecting` back into itself.
+        const ASK_AGAIN: &str = "Reflecting --ReflectApplied--> Reflecting";
+        /// The edge that means a proposal was adopted and the run carried on.
+        const ADOPTED: &str = "Reflecting --ReflectApplied--> Reviewing";
+        /// What the peer proposes, before the counter it appends.
+        const AFRESH: &str = "a different register entry this run just found";
+        /// And what it says the replacement should read.
+        const READ_NEXT: &str = "the register entry for that one";
+        /// Two working prompts and the peer says the marker — so the reflection that matters is
+        /// the one asked BECAUSE the checkpoint was reached, which is the only road that used to
+        /// end the run.
+        const PROMPTS: u32 = 2;
+
+        /// Drive a run whose classifier refuses its first proposal and admits after, with `asks`
+        /// as the document's patience — and hand back the walk and the outcome.
+        fn patience_of(asks: i64) -> (crate::driver::Outcome, Vec<String>) {
+            let stamp = format!(
+                "{}-{}-{asks}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.subsec_nanos()),
+            );
+            let proposals = sprag_scratch::scratch_root().join(format!("sprag-reask-peer-{stamp}"));
+            let asked = sprag_scratch::scratch_root().join(format!("sprag-reask-asked-{stamp}"));
+            let classifier = sprag_scratch::scratch_root().join(format!("sprag-reask-say-{stamp}"));
+            for path in [&proposals, &asked, &classifier] {
+                let _ = std::fs::remove_file(path);
+            }
+            // ⚠⚠ A REAL PROGRAM ON THE REAL ROAD: spawned in a pane, read through `verdict_in`,
+            // exactly as a model-backed classifier would be. What it says is all that is arranged.
+            std::fs::write(
+                &classifier,
+                format!(
+                    "n=0; [ -s '{c}' ] && n=$(cat '{c}'); n=$((n+1)); printf '%s' \"$n\" > '{c}'; \
+                     if [ \"$n\" -le 1 ]; then printf 'NO not that one\\n'; \
+                     else printf 'YES FRESH nothing here made it\\n'; fi\n",
+                    c = asked.display(),
+                ),
+            )
+            .expect("the classifier script is writable");
+
+            let (workspace, pane) = crate::testing::standin_agent_reflecting_afresh(
+                PROMPTS, AFRESH, READ_NEXT, &proposals,
+            );
+            let access = crate::testing::supervised(&workspace);
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    // ⚠ DECLINED, so the only thing that can turn a proposal away here is the
+                    // classifier — the budget must not be a second explanation for the refusal.
+                    reaim_max: Some(crate::outer::Counted::Never),
+                    successor_check: Some(format!("/bin/sh {}", classifier.display())),
+                    reask_max: Some(asks),
+                    ..brief_for(40)
+                },
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            let progress = ProgressCell::default();
+            // ⛔⛔⛔⛔⛔ **BOUNDED SO THE WHOLE WALK IS STILL IN THE JOURNAL** — measured
+            // 2026-09-03, and it is a fixture lesson worth writing down. At 120 iterations the
+            // patient run never ends (its classifier admits everything after the first refusal, so
+            // it adopts, restarts, works, finishes and proposes again for ever) and the journal is
+            // BOUNDED: the refusal and the second ask had scrolled out of it, and the assertion
+            // below read a walk whose first line was already the fourth reflection. **A green or a
+            // red about an edge the record no longer holds is about nothing** — the shape register
+            // item 277 priced. What this gate is about happens in the first dozen steps.
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 20,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(120)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &access, &RunContext::uncancellable());
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            for path in [&proposals, &asked, &classifier] {
+                let _ = std::fs::remove_file(path);
+            }
+            (outcome, walk)
+        }
+
+        // ── THE CONTROL: NO PATIENCE, SO THE FIRST REFUSAL ENDS IT — today's behaviour, named ──
+        let (impatient, impatient_walk) = patience_of(0);
+        assert_eq!(
+            impatient.done_reason.as_deref(),
+            Some(crate::outer::DoneReason::Unadmitted.word()),
+            "⚠⚠⚠ THE CONTROL: a document with no patience closes on the first refusal, which is \
+             what every run did before register item 840 — and if it did not, the arm below would \
+             be measuring a difference that was never there. Walked {impatient_walk:?}",
+        );
+        assert!(
+            !impatient_walk
+                .iter()
+                .any(|note| note.starts_with(ASK_AGAIN)),
+            "⚠⚠ and it must NOT have asked again — zero is a number a kind may mean. Walked \
+             {impatient_walk:?}",
+        );
+
+        // ── AND WITH PATIENCE: IT ASKS AGAIN, IS ANSWERED, AND CARRIES ON ──
+        let (patient, patient_walk) = patience_of(2);
+        assert!(
+            patient_walk.iter().any(|note| note.starts_with(ASK_AGAIN)),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 840: the SAME peer and the SAME classifier, and a document \
+             that allows a second ask. The run must go back into `reflecting` — the agent \
+             proposes and this document vetoes, so what a refusal buys is another question rather \
+             than an ending. Walked {patient_walk:?}",
+        );
+        assert!(
+            patient_walk.iter().any(|note| note.starts_with(ADOPTED)),
+            "⚠⚠⚠⚠ AND THE SECOND ANSWER IS TAKEN, which is the half that makes this progress \
+             rather than a longer way to stop: the classifier admitted the proposal it was asked \
+             about the second time, and the run adopted it. Walked {patient_walk:?}",
+        );
+        assert_ne!(
+            patient.done_reason.as_deref(),
+            Some(crate::outer::DoneReason::Unadmitted.word()),
+            "⚠⚠⚠ AND IT DID NOT END THE WAY THE CONTROL DID. That word means *a program refused \
+             the successor and this run had no ask left*, and this run had one and used it. \
+             Walked {patient_walk:?}",
+        );
+    }
+
     /// 🎯🎯🎯🎯🎯 **A REFLECTION THAT CHANGES NO DIRECTION SPENDS NO DEPTH** — register item
     /// 833(2), and the correction that the first build of this cap needed.
     ///
@@ -7496,9 +7800,14 @@ mod tests {
         // NOBODY classified it, and the equality below carries that rather than being loosened to
         // a `starts_with`: the clause is what says the only bound on where this run may aim is a
         // count, and a prefix match would go green the day it stopped being said.
+        // 🎯 AND THE PRICE BESIDE THE ADMISSION — register item 840. This document authors no
+        // classifier, so nothing said whether the proposal comes out of the work in hand either,
+        // and the run is charged for it: *unclassified is not the cheap answer* is the clause, and
+        // holding the whole line is what keeps it from quietly going away.
         let adopted = format!(
-            "Reflecting --ReflectApplied--> Reviewing — {}",
+            "Reflecting --ReflectApplied--> Reviewing — {} — {}",
             crate::outer::Admits::Unasked.describe(),
+            crate::outer::Chain::Unsaid.describe(),
         );
         assert!(
             walked.iter().any(|note| note == &adopted),
@@ -8449,6 +8758,12 @@ mod tests {
             pane,
             &Brief {
                 reaim_max: Some(crate::outer::Counted::Of(0)),
+                // 🎯 AND NO SECOND ASK — register item 840. This arm's subject is the WORD on the
+                // closing edge, and a run that asked again first would reach that edge through a
+                // peer with a different answer, which is a different claim. Zero is a real
+                // author's choice and is what every run did before that item: never ask again,
+                // close on the first refusal. The asking itself has its own gate.
+                reask_max: Some(0),
                 ..brief_for(40)
             },
             &standin_spec(),
@@ -8479,6 +8794,8 @@ mod tests {
             &Brief {
                 reaim_max: Some(crate::outer::Counted::Never),
                 successor_check: Some("/bin/echo NO".to_string()),
+                // 🎯 AND NO SECOND ASK, on the arm above's reason exactly — register item 840.
+                reask_max: Some(0),
                 ..brief_for(40)
             },
             &standin_spec(),
@@ -8503,6 +8820,7 @@ mod tests {
                 &declared_walk,
                 "Reflecting --ReflectDone--> Closing",
                 None,
+                None,
             ),
             (
                 "no successor was named",
@@ -8510,12 +8828,14 @@ mod tests {
                 &no_successor_walk,
                 "Reflecting --ReflectDone--> Closing",
                 None,
+                None,
             ),
             (
                 "a person asked it to stand down",
                 DoneReason::StoodDown,
                 &stood_down_walk,
                 "Judging --Judge--> Closing",
+                None,
                 None,
             ),
             // 🎯 AND THE FOURTH ARRIVES BY AN ARROW NONE OF THE THREE ABOVE USES: `reflect.applied`
@@ -8532,6 +8852,9 @@ mod tests {
                 &capped_walk,
                 "Reflecting --ReflectApplied--> Closing",
                 Some(crate::outer::Admits::Unasked),
+                // ⚠ NOTHING WAS ASKED, so nothing was quoted — the control for the arm below, and
+                // what makes its quote a measurement rather than a decoration.
+                None,
             ),
             // 🎯🎯🎯 AND THE FIFTH SHARES THE FOURTH'S ARROW, which is why the WORD had to grow
             // rather than the edge: two refusals, one transition, opposite remedies. Register item
@@ -8542,6 +8865,14 @@ mod tests {
                 &unadmitted_walk,
                 "Reflecting --ReflectApplied--> Closing",
                 Some(crate::outer::Admits::No),
+                // 🎯🎯🎯🎯🎯 AND WHAT THE CLASSIFIER IS QUOTED AS SAYING IS THE PROOF OF REGISTER
+                // ITEM 840's OTHER HALF. `/bin/echo NO` prints its arguments, and the driver
+                // appends TWO of them now — the checkpoint the run is holding, then the proposal.
+                // `verdict_in` cuts the reply at the QUESTION, which is the proposal, so what
+                // survives after the verdict is exactly the checkpoint in hand. A driver that
+                // stopped sending it would quote nothing here, and this is the only place in the
+                // suite where that argument's presence is visible in a run's own words.
+                Some(super::tests::MILESTONE_IN_HAND),
             ),
         ];
 
@@ -8624,7 +8955,7 @@ mod tests {
 
         // ── THE CONTROL ON THE VOCABULARY: these two are all of it ──
         let covered: std::collections::BTreeSet<DoneReason> =
-            arms.iter().map(|(_, ending, _, _, _)| *ending).collect();
+            arms.iter().map(|(_, ending, _, _, _, _)| *ending).collect();
         assert_eq!(
             covered,
             DoneReason::ALL.into_iter().collect(),
@@ -8635,7 +8966,7 @@ mod tests {
 
         // ── AND THE WALK SAYS WHICH ──
         let mut lines: Vec<&str> = Vec::new();
-        for (label, ending, walk, the_edge, classified) in arms {
+        for (label, ending, walk, the_edge, classified, quoted) in arms {
             let mut found = walk.iter().filter(|note| note.starts_with(the_edge));
             let line = found.next().unwrap_or_else(|| {
                 panic!(
@@ -8662,12 +8993,24 @@ mod tests {
             // item 839. It is said on BOTH of them, which is the point: `Unasked` is what tells a
             // reader that the capped run's proposal was turned away by a COUNT and by nothing
             // else, and a clause printed only on the refusal would be a sample with no control.
+            // 🎯 AND THE PRICE RIDES WITH IT — register item 840. Neither arm authors a
+            // classifier, so neither was told whether the proposal comes out of the work in hand,
+            // and both are charged for it: *unclassified is not the cheap answer*, said on the
+            // line rather than left to a comment.
             let admission = classified.map_or_else(String::new, |verdict: crate::outer::Admits| {
-                format!(" — {}", verdict.describe())
+                format!(
+                    " — {} — {}",
+                    verdict.describe(),
+                    crate::outer::Chain::Unsaid.describe(),
+                )
             });
+            // 🎯 AND WHAT THE CLASSIFIER IS QUOTED AS SAYING, on the arm that has one — see the
+            // table. It is the only place a run's own words show that the driver appended the
+            // checkpoint in hand to the classifier's argv (register item 840).
+            let said = quoted.map_or_else(String::new, |words| format!(" — it said: {words:?}"));
             assert_eq!(
                 line,
-                &format!("{the_edge} — {}{verdict}{admission}", ending.noted()),
+                &format!("{the_edge} — {}{verdict}{admission}{said}", ending.noted()),
                 "⚠⚠⚠ REGISTER ITEM 267: this run closed because {label}, and the one line its walk \
                  wrote about ending must say so. Two runs with opposite remedies — *weigh the \
                  account it wrote* against *nobody said the job was done, look at the milestone* — \

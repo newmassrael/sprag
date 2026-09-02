@@ -1533,6 +1533,91 @@
     <data id="deferred" expr="0"/>
 
     <!--
+      🎯🎯🎯🎯🎯 HOW MANY TIMES A RUN WHOSE CHECKPOINT IS DONE MAY ASK ITS AGENT
+      AGAIN — the owner's decision of 2026-09-02, and the half of the cap above
+      that turns a STOP back into PROGRESS.
+
+      ⛔⛔⛔⛔⛔ WHAT WENT WRONG WITHOUT IT. A reflection asked because the
+      checkpoint was REACHED cannot go back to work — that is the livelock
+      `no_successor` exists to prevent — so a proposal the cap turned away ended
+      the run. But `reaimed` counts CHANGES, and moving to an unrelated root is a
+      change, so a capped run could not move to the next thing AT ALL. A budget
+      built to make a loop go further was making it stop.
+
+      ⚠⚠⚠⚠⚠ SO THE RUN ASKS AGAIN, AND WHO CHOOSES DOES NOT CHANGE. Two ways to
+      pick up the next thing were put to the owner and this is the one chosen:
+      the AGENT proposes and this document VETOES. The alternative — the machine
+      picking the next checkpoint itself — was refused on a measurement: a loop
+      that always chases the sharpest thing never finishes an axis, because the
+      items that share a seam are cheap TOGETHER and only the working session
+      knows what it has already read and built. A machine can spot the urgent
+      one; it cannot spot the cheap one.
+      ⇒ NOTHING IN THIS FILE EVER NAMES A CHECKPOINT. Both `<assign>`s of
+      `milestone` take `_event.data.milestone`, which is the caller's at the door
+      and the AGENT'S at every reflection, and a gate holds that.
+
+      ⚠⚠⚠ AND ASKING AGAIN NEEDS A BOUND OR IT IS ITSELF A LIVELOCK: an agent
+      that keeps naming refused things would turn for ever. At this bound the run
+      CLOSES, which banks the work and lets a person launch again — the safe
+      direction, and deliberately NOT *"three wrong guesses, so the machine
+      picks"*, which would reach for the refused option's weakness at the worst
+      possible moment.
+
+      ⚠⚠ ZERO IS A NUMBER A KIND MAY MEAN and it is the behaviour every run had
+      before this existed: never ask again, close on the first refusal. UNBOUNDED
+      IS NOT OFFERED — `max_turns` spells a decline and this deliberately cannot,
+      because unbounded here is the livelock rather than a choice.
+
+      ⚠ IT IS THE KIND'S TO AUTHOR, like `reaim_max` above: how many wrong
+      guesses a repository will sit through before banking the work is a rule
+      about how work is done there. AND AN ABSENT VALUE IS REFUSED AT THE DOOR —
+      nil would answer the comparison below FALSE, which is *ask again for ever*.
+    -->
+    <data id="reask_max" expr="2"/>
+    <!--
+      HOW MANY TIMES THIS RUN HAS ALREADY ASKED AGAIN FOR THE CHECKPOINT IT IS
+      ON - incremented by the arm that asks, and reset by `reflecting`'s own
+      entry whenever that entry is NOT an ask-again.
+
+      ⚠⚠ IT IS PER CHECKPOINT AND NOT PER RUN, which is the whole difference
+      between *this agent keeps guessing wrong about what comes next* and *this
+      run has been going a long time*. A run that proposes something admissible,
+      works, finishes and reflects again starts its guesses at zero.
+    -->
+    <data id="reasked" expr="0"/>
+    <!--
+      WHAT AN AGENT WHOSE PROPOSAL WAS TURNED AWAY IS TOLD, and the parts are
+      here for `dispute_opening`'s reason exactly: a template that shipped these
+      empty would put `(edit me)` in front of a real agent, and what they say is
+      about THIS DOCUMENT'S mechanism rather than about any repository's work.
+
+      ⚠⚠ THE REFUSAL'S OWN WORDS ARE QUOTED WHERE THERE ARE ANY. A second guess
+      made blind is a guess, and the classifier's answer already says why it said
+      no and what could be taken instead - so carrying it is what makes asking
+      again worth more than asking twice.
+    -->
+    <data id="reask_opening"
+          expr="'That is not a checkpoint this run may take next, so it was counted and not taken.'"/>
+    <data id="reask_quoting" expr="'What decided said:'"/>
+    <data id="reask_unexplained"
+          expr="'Nothing said why beyond the budget this run has already spent moving away from what it was asked for.'"/>
+    <data id="reask_asking"
+          expr="'Name a DIFFERENT next checkpoint. A proposal that starts a fresh line of work costs this run nothing; one that comes out of what you have just been doing spends a budget that is already gone.'"/>
+    <!--
+      WHAT WAS ACTUALLY SAID, composed on the arm that asks again and consumed by
+      the entry below. EMPTY IS THE FLAG: a non-empty value is what tells that
+      entry it is an ask-again rather than a fresh reflection, so it is cleared
+      the moment it has been used and nothing else has to remember.
+    -->
+    <data id="reask_said" expr="''"/>
+    <!--
+      AND THE WHOLE SENTENCE, composed on entry like `dispute_prompt` and for its
+      reason: the parts cannot have changed since, and the refusal's words do not
+      exist until the edge that got here was taken.
+    -->
+    <data id="reask_prompt" expr="''"/>
+
+    <!--
       ⚠⚠⚠ HOW LONG `awaiting_human` WAITS FOR THE PERSON, in milliseconds — the
       number that state's only run-ending edge is written against.
 
@@ -2970,6 +3055,13 @@
         did before this datum existed.
       -->
       <assign location="reaim_max" expr="_event.data.reaim_max"/>
+      <!--
+        🎯🎯🎯 AND HOW MANY TIMES A RUN MAY ASK AGAIN WHEN THAT CAP TURNS A
+        PROPOSAL AWAY — register item 840, on the line above's exact terms. The
+        driver refuses a document that declares neither, because nil answers the
+        comparison FALSE and *ask again for ever* is the livelock this bounds.
+      -->
+      <assign location="reask_max" expr="_event.data.reask_max"/>
       <!--
         ⚠⚠ THE STANDING INSTRUCTIONS TOO, and this assignment is UNCONDITIONAL, which is why the
         driver always sends them: a caller that says nothing about screening has the document's own
@@ -4914,10 +5006,53 @@
         in this datamodel and a bare `direction` would be a variable nobody
         declared.
       -->
-      <send type="x-sprag-host" event="prompt.say">
-        <param name="text" expr="reflect_prompt"/>
-        <param name="asks" expr="'direction'"/>
-      </send>
+      <!--
+        🎯🎯🎯🎯🎯 AND WHETHER THIS ENTRY IS A SECOND ASK — the owner's decision
+        of 2026-09-02, register item 840. ONE BRANCH, on `disputing`'s argument:
+        the arm below that asks again is ONE decision, and whether the classifier
+        also explained itself is a fact about the ANSWER rather than a second
+        route.
+
+        ⚠⚠⚠⚠⚠ `reask_said` IS THE FLAG AND THE CONTENT AT ONCE, and clearing it
+        HERE is what makes it work: an ask-again arm fills it, this entry spends
+        it and empties it, so the NEXT entry — the ordinary one, from `judging` —
+        finds it empty and resets the guess count. Nothing else has to remember
+        which door was used, which is `refusals` and `silences` two clauses up.
+
+        ⚠⚠ AND THE COUNT RESETS ON THE ORDINARY ENTRY, never on the ask-again:
+        the guesses belong to the CHECKPOINT, so a run that took a proposal,
+        worked, finished and reflected again starts from zero.
+      -->
+      <if cond="reask_said != ''">
+        <!--
+          ⚠ COMPOSED INTO `reflect_prompt` RATHER THAN REPLACING IT, on
+          `dispute_prompt`'s argument: that prompt carries the north star, what
+          this session has cost and how to answer, so a re-ask that replaced it
+          would answer a refusal by taking the question away.
+          ⚠⚠ AND IT IS ITS OWN SLOT, never a rewrite of `reflect_prompt`: a
+          second ask would otherwise compose the refusal into a sentence that
+          already carried the first one, and the prompt would grow every turn.
+        -->
+        <assign location="reask_prompt"
+                expr="reask_opening + ' ' + reask_said + ' ' + reask_asking + '\n' + reflect_prompt"/>
+        <assign location="reask_said" expr="''"/>
+        <!--
+          ⚠ THE COMPOSED SENTENCE, and nothing downstream minds that it is not
+          `reflect_prompt`: the driver discounts this loop's own echo against
+          what the host actually TYPED (`OuterLoop::proposed` reads the delivery
+          rather than this datamodel), so a longer sentence is discounted whole.
+        -->
+        <send type="x-sprag-host" event="prompt.say">
+          <param name="text" expr="reask_prompt"/>
+          <param name="asks" expr="'direction'"/>
+        </send>
+      <else/>
+        <assign location="reasked" expr="0"/>
+        <send type="x-sprag-host" event="prompt.say">
+          <param name="text" expr="reflect_prompt"/>
+          <param name="asks" expr="'direction'"/>
+        </send>
+      </if>
     </onentry>
     <!--
       The driver rewrote the loop's parts and/or its environment; adopt them.
@@ -5045,7 +5180,7 @@
       vocabulary all the same.
     -->
     <transition event="reflect.applied"
-                cond="_event.data.milestone != milestone &amp;&amp; ((reaim_max != 'never' &amp;&amp; reaimed &gt;= reaim_max) || (_event.data.admits &amp;&amp; _event.data.admits != 'admitted')) &amp;&amp; reflect_reason == 'milestone'"
+                cond="_event.data.milestone != milestone &amp;&amp; ((reaim_max != 'never' &amp;&amp; reaimed &gt;= reaim_max &amp;&amp; _event.data.chain != 'fresh') || (_event.data.admits &amp;&amp; _event.data.admits != 'admitted')) &amp;&amp; reflect_reason == 'milestone' &amp;&amp; reasked &gt;= reask_max"
                 target="closing">
       <assign location="deferred" expr="deferred + 1"/>
       <if cond="_event.data.admits &amp;&amp; _event.data.admits != 'admitted'">
@@ -5054,8 +5189,70 @@
         <assign location="done_reason" expr="'capped'"/>
       </if>
     </transition>
+    <!--
+      🎯🎯🎯🎯🎯 THE SAME REFUSAL, WITH GUESSES LEFT: ASK AGAIN RATHER THAN END -
+      the owner's decision of 2026-09-02, register item 840, and the arm that
+      turns a stop back into progress.
+
+      ⛔⛔⛔⛔⛔ WHAT THIS REPLACES. Every refusal on this road used to close the
+      run, and `reaimed` counts CHANGES - so a run at its cap could not move to
+      an unrelated next thing either, because moving is a change. The owner's
+      instruction is that it should pick up the next thing immediately, and
+      asking again is how a run does that WITHOUT the machine choosing.
+
+      ⚠⚠⚠⚠⚠ IT GOES BACK TO `reflecting` - ITSELF - AND THAT RE-ENTRY IS THE
+      MECHANISM. Re-entering fires this state's `onentry`, which composes the
+      refusal into the question and puts it to the agent, so the second guess is
+      not made blind: the classifier already said WHY and what could be taken.
+
+      ⚠⚠⚠ THE GUESS IS COUNTED HERE AND THE COUNT IS WHAT ENDS THE RUN, one
+      transition up. An agent that keeps naming refused things would otherwise
+      turn for ever - and `deferred` moves too, because a proposal set aside on
+      THIS road is set aside exactly as on the other two.
+
+      ⚠⚠ IT DOES NOT ADOPT ANYTHING. `standing` is deliberately not assigned:
+      that list is normalised where a reflection RESOLVES, and this one has not
+      resolved - the run is still asking the same question.
+    -->
     <transition event="reflect.applied"
-                cond="_event.data.milestone != milestone &amp;&amp; ((reaim_max != 'never' &amp;&amp; reaimed &gt;= reaim_max) || (_event.data.admits &amp;&amp; _event.data.admits != 'admitted'))"
+                cond="_event.data.milestone != milestone &amp;&amp; ((reaim_max != 'never' &amp;&amp; reaimed &gt;= reaim_max &amp;&amp; _event.data.chain != 'fresh') || (_event.data.admits &amp;&amp; _event.data.admits != 'admitted')) &amp;&amp; reflect_reason == 'milestone'"
+                target="reflecting">
+      <assign location="deferred" expr="deferred + 1"/>
+      <assign location="reasked" expr="reasked + 1"/>
+      <!--
+        ⛔⛔⛔⛔⛔ THE REASON IS WRITTEN AND NOT INHERITED — register item 261.
+        `reflect_reason` is not cleared on entry, so an edge that assigns none
+        reports the PREVIOUS reflection's cause on this one. Here it would have
+        been accidentally right (the guard above only fires on `milestone`), and
+        accidentally right is what item 261 is about.
+
+        ⚠⚠⚠ AND IT IS THE SAME WORD, WHICH IS LOAD-BEARING RATHER THAN LAZY. The
+        checkpoint IS still reached — that has not stopped being true because a
+        proposal was refused — and the arm one transition up reads exactly this
+        word to know that going back to `working` would be a livelock. A new
+        word here would take that guard out from under the second ask, and the
+        run would be sent back to work on a checkpoint it has already finished.
+      -->
+      <assign location="reflect_reason" expr="'milestone'"/>
+      <!--
+        ⚠⚠ `_event.data.unadmitted` IS A NON-EMPTY WORD OR `false`, NEVER `''` -
+        the driver's, and it matters here rather than there for `disputing`'s
+        measured reason: this datamodel is Lua, where the empty string is TRUE,
+        so a classifier that explained itself with nothing would take the quoting
+        branch and quote nothing.
+        ⛔ AND THE ELSE ARM IS NOT OPTIONAL: `reask_said` empty means *this was
+        not an ask-again* to the entry above, so a refusal that left it empty
+        would reset the guess count and ask the same question for ever.
+      -->
+      <if cond="_event.data.unadmitted">
+        <assign location="reask_said"
+                expr="reask_quoting + ' ' + _event.data.unadmitted"/>
+      <else/>
+        <assign location="reask_said" expr="reask_unexplained"/>
+      </if>
+    </transition>
+    <transition event="reflect.applied"
+                cond="_event.data.milestone != milestone &amp;&amp; ((reaim_max != 'never' &amp;&amp; reaimed &gt;= reaim_max &amp;&amp; _event.data.chain != 'fresh') || (_event.data.admits &amp;&amp; _event.data.admits != 'admitted'))"
                 target="working">
       <assign location="standing" expr="_event.data.standing"/>
       <!--
@@ -5089,8 +5286,31 @@
         echoes the milestone back unchanged (see its `reflect`, whose comment
         calls echoing the safe direction). Only the first is a re-aim, and a
         budget spent by the second is a budget the run never chose to spend.
+
+        🎯🎯🎯🎯🎯 AND A THIRD CLAUSE, WHICH IS WHAT THIS BUDGET WAS ALWAYS FOR -
+        the owner's decision of 2026-09-02, register item 840. Moving the
+        milestone covers two OPPOSITE movements and this counted them the same:
+
+          * DEEPER - a checkpoint that comes out of the work in hand. The chain
+            of findings this run has itself created lengthens, and bounding that
+            is the whole reason the budget exists.
+          * SIDEWAYS - an unrelated start. The chain is length zero. This is
+            progress, and charging for it is what made a capped run unable to
+            move to the next thing at all.
+
+        ⚠⚠⚠ THE FACT COMES FROM THE CLASSIFIER, because a document cannot read
+        whatever a repository keeps its work list in. It rides on the same reply
+        the admission does, as a second marked word, and what counts as *came
+        out of* is that program's business - the same split register item 839
+        built: the machine here, the meaning there.
+
+        ⚠⚠ WRITTEN AS *is it fresh* AND NEVER AS *is it not a step*, which is
+        working rule 6 in one comparison: a movement NOBODY CLASSIFIED must land
+        on the spending side. A chain nobody wrote down being free would make
+        every unannotated item in a work list escape this budget - and it is why
+        the falsy arm of that key needs no third word to be handled.
       -->
-      <if cond="_event.data.milestone != milestone">
+      <if cond="_event.data.milestone != milestone &amp;&amp; _event.data.chain != 'fresh'">
         <assign location="reaimed" expr="reaimed + 1"/>
       </if>
       <assign location="milestone" expr="_event.data.milestone"/>

@@ -366,6 +366,21 @@ pub struct Authored {
     /// which is the honest preview and not a placeholder: it is the sentence the run really would
     /// send if its first reflection kept the checkpoint it was given.
     pub changed: String,
+    /// 🎯🎯🎯🎯🎯 **WHAT AN AGENT WHOSE PROPOSED NEXT CHECKPOINT WAS TURNED AWAY IS TOLD** —
+    /// `reflecting`'s second question, and register item 840.
+    ///
+    /// # ⚠⚠ Why a preview needs it, on [`dispute`](Self::dispute)'s argument
+    ///
+    /// It is the other prompt a caller can author a run into without knowing: naming a
+    /// `successor_check` is what makes this question reachable at all, and it is typed into
+    /// somebody's agent in somebody's language. A caller who can read eight of nine can see every
+    /// question their loop asks except the one it asks when it disagrees about DIRECTION.
+    ///
+    /// ⚠ **BEFORE A PROPOSAL HAS BEEN REFUSED IT IS EMPTY, AND THAT IS HONEST RATHER THAN A
+    /// PLACEHOLDER**: the sentence does not exist until a classifier has said something, and the
+    /// parts it is composed from are `<data>` a reader can see beside it. It is `start`'s and
+    /// `turn`'s shape — not readable until the state that composes it has run.
+    pub reask: String,
     /// What the agent says when it has reached the milestone.
     pub done_marker: String,
 }
@@ -415,6 +430,10 @@ impl Authored {
             // ⚠ NOT readable until `priming` has run, exactly like `start` and `turn`: it is
             // composed on that state's entry out of the milestone the run is holding.
             changed: text(Owed::Changed.variable())?,
+            // 🎯 NOT readable until a proposal has actually been refused, which is `changed`'s own
+            // shape one question over: the `<datamodel>` seeds it EMPTY because the sentence is
+            // composed out of what a classifier said, and there is no honest stand-in for that.
+            reask: text(Owed::Reask.variable())?,
             done_marker: text(DONE_MARKER)?,
         })
     }
@@ -945,6 +964,48 @@ const REAIMED: &str = "reaimed";
 /// never found anything. See [`REAIM_MAX`] and [`OuterLoop::deferred`].
 const DEFERRED: &str = "deferred";
 
+/// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN WHOSE CHECKPOINT IS DONE MAY ASK ITS AGENT AGAIN** — register
+/// item 840, and the bound the owner's decision of 2026-09-02 needs in order to be safe.
+///
+/// # ⛔⛔⛔⛔⛔ Why the run stopped, and why asking again is the remedy the owner chose
+///
+/// A reflection whose checkpoint was REACHED cannot go back to work — that is the livelock
+/// `no_successor` exists to prevent — so when its proposal was refused, the run CLOSED. The owner's
+/// instruction is *"다음에 즉시 상환하도록해"*: pick up the next thing and carry on.
+///
+/// Two ways to do that were put up and one was chosen. **The machine picking is refused**, on
+/// register item 659's measurement: *a loop that always chases the sharpest thing never finishes an
+/// axis*, because items that share a seam are cheap TOGETHER and only the working agent knows what
+/// this session has already read. So the answer is **the agent proposes and the document vetoes** —
+/// the run asks again, carrying the refusal's own words, and `kind.rs`' discipline holds: *the
+/// driver decides nothing; it transports*.
+///
+/// ⚠⚠⚠ **AND ASKING AGAIN NEEDS A BOUND OR IT IS A LIVELOCK.** An agent that keeps naming things
+/// the classifier refuses would turn for ever, which is a face this repository already knows
+/// (register item 834). At this bound the run CLOSES — an ending banks the work and a person can
+/// launch again, which is the safe direction.
+///
+/// ⚠⚠ **AND IT MUST NOT FALL BACK TO THE MACHINE PICKING**: *three wrong guesses, so the machine
+/// chooses* reaches for that option's weakness — it does not know the seam — at the worst possible
+/// moment. The bound ends the run instead.
+///
+/// ⚠ **ZERO IS A NUMBER A KIND MAY MEAN**, and it is the behaviour every run had before this
+/// existed: never ask again, close on the first refusal. Read as a plain count for
+/// `reflect_after_refusals`' reason — a decline already has a spelling one datum over, and a
+/// second way to say *unbounded* would be two vocabularies for one idea. **Unbounded is not
+/// offered at all**, because that is the livelock this bound is for.
+const REASK_MAX: &str = "reask_max";
+// ⚠⚠⚠ A `REASKED` CONSTANT STOOD HERE FOR ONE COMPILE AND CLIPPY WAS RIGHT TO REFUSE IT. The
+// document's `reasked` counter is incremented by the arm that asks again and reset by
+// `reflecting`'s own entry, and it is compared against `reask_max` in a GUARD over there — so no
+// Rust reads it, exactly as none reads `turns_since_reflect`, `refusals` or `silences`. `REAIMED`
+// and `DEFERRED` have constants beside them only because a READER publishes each on the run's row.
+// **A name spelled here for a counter nothing here touches is the driver keeping a copy of the
+// document's vocabulary**, which is the drift this file names wherever it finds two authorities.
+// ⚠ The day a run's remaining guesses are worth publishing, the constant comes back WITH the
+// reader — that is the shape, and a constant arriving without one is `CONTEXT_CEILING`'s receipt
+// two notes down: a spelling whose only writer was a test.
+
 /// **WHAT THIS PARTICULAR LOOP IS FOR** — the template's parts, supplied by whoever starts the run.
 ///
 /// # ⚠⚠⚠ Why this type exists, measured
@@ -1083,6 +1144,15 @@ pub struct Brief {
     /// author and there is no wire key for it — a caller who could name this could delete the whole
     /// bound by naming nothing, which is [`reaim_max`](Self::reaim_max)'s own argument one field up.
     pub successor_check: Option<String>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN WHOSE CHECKPOINT IS DONE MAY ASK ITS AGENT AGAIN** — or
+    /// [`None`] to leave the template's own number standing. Register item 840, and see
+    /// the private `REASK_MAX` constant, where the owner's decision and the livelock it bounds are
+    /// written out.
+    ///
+    /// ⚠⚠ It is the KIND's on [`reaim_max`](Self::reaim_max)'s argument exactly: how many wrong
+    /// guesses a repository will sit through before banking the work and stopping is a rule about
+    /// how work is done there, not one a template can choose for authors it has never met.
+    pub reask_max: Option<i64>,
     /// **WHAT THIS REPOSITORY'S PEER PRINTS WHEN ITS SERVICE FAILS, AND WHAT TO DO ABOUT IT** — or
     /// [`None`] to leave the template's empty needle standing, which declines the behaviour.
     ///
@@ -1794,6 +1864,25 @@ pub(crate) enum Owed {
     /// the greeting rather than opening it, because what it adds — the checkpoint moved — is the
     /// only thing the reader does not already hold.
     Changed,
+    /// 🎯🎯🎯🎯🎯 The `reask_prompt` — **what the agent is told when the checkpoint it finished is
+    /// done and the successor it named was turned away**, owed by `reflecting`'s entry on the one
+    /// road that comes back into that state. Register item 840.
+    ///
+    /// # ⚠⚠⚠ Why it is a slot of its own and not a rewrite of `reflect_prompt`
+    ///
+    /// A second ask composes the refusal INTO the reflection question — [`Dispute`](Self::Dispute)'s
+    /// shape, and for its reason: the question carries the north star, what the session has cost
+    /// and how to answer, so a re-ask that replaced it would answer a refusal by taking the
+    /// question away. Composing into `reflect_prompt` itself would be worse than either: a THIRD
+    /// ask would compose a refusal into a sentence that already carried the second one, and the
+    /// prompt would grow every time the agent guessed wrong.
+    ///
+    /// ⚠⚠ **AND THE DOOR HAD TO GAIN IT IN THE SAME COMMIT**, which is register item 750's whole
+    /// finding: this is a `<data>` the document sends, so a document shipped without it would build
+    /// a machine, start a run, and die at `error.execution` on the entry that composes it — at the
+    /// one moment a run has already spent its turn. The gate named beside [`ALL`](Self::ALL) is
+    /// what refused to let that happen twice.
+    Reask,
 }
 
 impl Owed {
@@ -1811,7 +1900,7 @@ impl Owed {
     /// ⚠⚠ **IT IS THE DOOR'S OWN WALK AND NOT A LIST KEPT FOR TESTS**: [`Authored::read`] iterates
     /// it before it fills a single field, so what the door checks is this array rather than
     /// whichever variants a struct literal happens to mention.
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Start,
         Self::Turn,
         Self::End,
@@ -1820,6 +1909,7 @@ impl Owed {
         Self::Dispute,
         Self::Unverified,
         Self::Changed,
+        Self::Reask,
     ];
 
     /// The datamodel variable this prompt is read out of.
@@ -1859,6 +1949,7 @@ impl Owed {
             Self::Dispute => DISPUTE_PROMPT,
             Self::Unverified => UNVERIFIED_PROMPT,
             Self::Changed => "changed_prompt",
+            Self::Reask => "reask_prompt",
         }
     }
 
@@ -3012,6 +3103,13 @@ pub enum Pumped {
         /// run's direction is worth needs to know a program agreed to it, and *nobody classified
         /// this* is the answer that says the only bound on where this run may aim is a count.
         admits: Option<Admits>,
+        /// 🎯 **AND WHETHER TAKING IT WOULD HAVE GONE DEEPER OR SIDEWAYS** — register item 840, and
+        /// [`None`] on every pass where no successor was classified.
+        ///
+        /// ⚠ It rides beside `admits` and never inside it, on that field's own rule: *is this one
+        /// to take* and *what does taking it cost* are two answers, and a line that dropped either
+        /// to make room for the other is the failure this payload keeps being about.
+        chain: Option<Chain>,
         /// **AND WHAT THAT CLASSIFIER SAID BESIDE ITS VERDICT** — register item 839, and [`None`]
         /// where it said only the word or nothing was proposed.
         ///
@@ -3748,6 +3846,123 @@ impl Admits {
                 "and the classifier said nothing this run could read — it would not start, outran \
                  its bound, or answered something that is not a verdict. Silence is not admission: \
                  fix the classifier, or every proposal this run meets will be set aside"
+            }
+        }
+    }
+}
+
+/// 🎯🎯🎯🎯🎯 **WHETHER TAKING THE PROPOSED CHECKPOINT GOES DEEPER OR SIDEWAYS** — register item
+/// 840, and the fact a re-aiming budget was missing while it counted CHANGES.
+///
+/// # ⛔⛔⛔⛔⛔ Two opposite movements were priced the same
+///
+/// `reaim_max` bounds how far a run may wander from its brief, and every reflection that moved
+/// the milestone spent a step of it. But *moving the milestone* covers two things that want
+/// opposite treatment:
+///
+/// * **deeper** — taking a debt the work in hand CREATED. The chain lengthens, and this is what the
+///   budget exists to stop: measured 2026-09-02, a loop closed eleven register items in a day and
+///   nine of them had been registered that same day.
+/// * **sideways** — taking an unrelated ROOT. The chain is length zero. This is progress.
+///
+/// So a run that hit its cap could not move to the next thing at all — moving spent a budget it had
+/// already spent — and the run ENDED. The owner's decision of 2026-09-02 is that it must carry on
+/// instead, and telling the two movements apart is what makes that possible.
+///
+/// # ⚠⚠⚠ The word comes from the classifier, and the MEANING of it is the register's
+///
+/// A document cannot read a register, so this rides on `_event.data` exactly as [`Admits`] does —
+/// as a SECOND MARKED WORD on the same reply, which is what keeps one question to one process. What
+/// counts as *created by* is the classifier's business; what it is WORTH is the document's guard.
+///
+/// ⚠⚠ **[`Unsaid`](Self::Unsaid) SPENDS, and that is working rule 6 rather than a default.** A
+/// chain nobody wrote down must not be the cheap answer, or every unannotated item in a backlog is
+/// free of the budget — the escape hatch that disables its own gate. It also gives the register's
+/// own `@from:` ratchet something to buy: annotating a chain is what unlocks the cheaper reading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chain {
+    /// The proposal is an unrelated root: **nothing the run is paying created it.**
+    Fresh,
+    /// The proposal comes out of the work in hand, so taking it goes one step deeper.
+    Step,
+    /// **Nobody said**, which is every other world: no classifier, a refusal (where the question
+    /// was not asked), a reply carrying no movement word, or a chain the register cannot walk.
+    Unsaid,
+}
+
+impl Chain {
+    /// Every arm, so the runs that produce them and the document that routes on them are one list.
+    pub const ALL: [Self; 3] = [Self::Fresh, Self::Step, Self::Unsaid];
+
+    /// **THE MARKED WORD A CLASSIFIER SPELLS FOR EACH**, which is the template's contract with a
+    /// program a KIND names — generic, because the file that carries it is copied.
+    #[must_use]
+    pub const fn marker(self) -> Option<&'static str> {
+        match self {
+            Self::Fresh => Some("FRESH"),
+            Self::Step => Some("STEP"),
+            Self::Unsaid => None,
+        }
+    }
+
+    /// **THE WORD THIS DRIVER PUBLISHES** as `_event.data.chain`, or [`None`] for the arm that
+    /// publishes nothing at all.
+    ///
+    /// ⚠⚠ A WORD OR `false`, NEVER AN EMPTY STRING — [`Admits::wire_str`]'s measured reason: this
+    /// datamodel is Lua, where `''` is TRUE. And the document's guard is written as *is it
+    /// `fresh`*, never as *is it not `step`*, so the falsy arm lands on the spending side without
+    /// the comparison having to know a third word exists.
+    #[must_use]
+    pub const fn wire_str(self) -> Option<&'static str> {
+        match self {
+            Self::Fresh => Some("fresh"),
+            Self::Step => Some("step"),
+            Self::Unsaid => None,
+        }
+    }
+
+    /// **WHICH MOVEMENT A CLASSIFIER'S REPLY NAMED**, read off the words that follow its verdict.
+    ///
+    /// ⚠⚠⚠ **THE FIRST TOKEN AND NOTHING FURTHER IN.** `Judgement::explained` is the line after
+    /// the verdict, so a classifier keeping this contract opens it with the movement word; a scan
+    /// that reached deeper would find a word inside somebody's prose, which is the fabrication
+    /// [`crate::judge`]'s own verdict reader refuses one field over.
+    ///
+    /// ⚠ Punctuation is trimmed off the ends and the case is held to CAPITALS, on that reader's
+    /// terms exactly: a marked word is the contract, and a lower-case `fresh` inside a sentence is
+    /// prose.
+    #[must_use]
+    pub fn in_reply(explained: Option<&str>) -> Self {
+        let Some(said) = explained else {
+            return Self::Unsaid;
+        };
+        let Some(first) = said.split_whitespace().next() else {
+            return Self::Unsaid;
+        };
+        let word = first.trim_matches(|c: char| !c.is_alphanumeric());
+        Self::ALL
+            .into_iter()
+            .find(|arm| arm.marker() == Some(word))
+            .unwrap_or(Self::Unsaid)
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — the sentence a walk carries.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Fresh => {
+                "and it is an unrelated root, so adopting it spends none of this run's re-aiming \
+                 budget — going sideways is progress, and only going DEEPER is what that budget \
+                 bounds (register item 840)"
+            }
+            Self::Step => {
+                "and it comes out of the work in hand, so adopting it spends a step of this run's \
+                 re-aiming budget — this is the movement that budget exists to bound"
+            }
+            Self::Unsaid => {
+                "and NOTHING SAID whether it comes out of the work in hand, so it is charged as \
+                 though it does: an unwritten chain must not be the cheap answer. Annotating what \
+                 created what is what makes the cheaper reading available"
             }
         }
     }
@@ -5155,6 +5370,13 @@ pub struct OuterLoop {
     /// for that field's reason exactly: an admission belongs to ONE proposal, and a stale one would
     /// say a later reflection's checkpoint had been classified when nobody looked at it.
     admits: Option<Admits>,
+    /// 🎯🎯🎯🎯🎯 **AND WHETHER TAKING IT WOULD GO DEEPER OR SIDEWAYS** — register item 840, and
+    /// [`Chain::Unsaid`] on every reflection that proposed nothing or was refused.
+    ///
+    /// ⚠ Not an [`Option`], unlike [`admits`](Self::admits) beside it: this vocabulary already has
+    /// an arm for *nobody said*, and a second spelling of the same absence is the two-authorities
+    /// shape this file names wherever it finds it.
+    chain: Chain,
     /// ⚠⚠⚠⚠⚠ **AND WHAT THAT CLASSIFIER SAID BESIDE ITS VERDICT** — [`explained`](Self::explained)'s
     /// argument one question over, and the field that keeps a deferral from being a bare number.
     ///
@@ -5490,6 +5712,7 @@ impl OuterLoop {
             shown: None,
             // ⚠ Nothing has reflected, so no successor has been proposed for anything to classify.
             admits: None,
+            chain: Chain::Unsaid,
             unadmitted: None,
             unaccountable: None,
             // ⚠ No turn has ended, so there is no turn for this to be an answer about.
@@ -5838,6 +6061,22 @@ impl OuterLoop {
                 held: None,
             };
         };
+        // 🎯🎯🎯🎯 **AND HOW MANY TIMES IT MAY ASK AGAIN WHEN THAT CAP TURNS A PROPOSAL AWAY** —
+        // register item 840, refused at the door on the line above's exact argument. A document
+        // holding nil for it answers `reasked >= reask_max` FALSE, so a document that simply forgot
+        // the key would ask again FOR EVER — the livelock this bound exists to prevent, arriving as
+        // an omission that reads safe from every direction.
+        let Some(reasks) = brief
+            .reask_max
+            .or_else(|| self.authored_number(REASK_MAX))
+            .filter(|asks| *asks >= 0)
+        else {
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Briefed::NotHeld {
+                part: REASK_MAX,
+                held: None,
+            };
+        };
         let payload = serde_json::json!({
             "north_star": brief.north_star,
             "context_ceiling": ceiling,
@@ -5872,6 +6111,11 @@ impl OuterLoop {
             // `never` and the document's guard short-circuits on it — the one spelling of
             // *unbounded* this workspace has, rather than a second one that means the same thing.
             REAIM_MAX: depth.as_json(),
+            // 🎯🎯🎯 AND HOW MANY TIMES A RUN MAY ASK AGAIN WHEN THAT CAP TURNS A PROPOSAL AWAY —
+            // register item 840. It travels on the SAME edge as the cap it answers for, which is
+            // what makes *this many wrong guesses for this checkpoint* a true sentence: a bound
+            // arriving on a later edge would be measuring against a checkpoint the run had left.
+            REASK_MAX: reasks,
             // ⚠ Unconditional, like `screen_rules` beside it and for the same reason: the template
             // ships `''` and a caller who adds nothing must not delete what the document composes.
             "closing_rules": brief.closing_rules.clone().unwrap_or_default(),
@@ -7634,6 +7878,7 @@ impl OuterLoop {
                     // ⚠ AND NOTHING REFLECTED HERE, so no successor was proposed for a classifier
                     // to be asked about — see `Pumped::Moved`'s `admits`.
                     admits: None,
+                    chain: None,
                     unadmitted: None,
                 })
             }
@@ -7680,6 +7925,7 @@ impl OuterLoop {
                     // ⚠ AND NOTHING REFLECTED HERE either: the peer left, and a proposal is
                     // something an agent that answered would have made.
                     admits: None,
+                    chain: None,
                     unadmitted: None,
                 })
             }
@@ -7777,6 +8023,7 @@ impl OuterLoop {
                     shown: None,
                     // ⚠ AND NO REFLECTION EITHER — nothing was asked, so nothing was proposed.
                     admits: None,
+                    chain: None,
                     unadmitted: None,
                 })
             }
@@ -8207,6 +8454,14 @@ impl OuterLoop {
         // on the state's NAME out here would be the topology written a second time in Rust
         // (register item 470, stage 3).
         let raised_reflection = does == Does::Reflect;
+        // 🎯🎯🎯 **THE TWO HALVES OF ONE CLASSIFICATION ARE TAKEN TOGETHER AND BEFORE THE PAYLOAD**
+        // — register item 840. `admits` is EMPTIED by the read (a slot nobody empties is a stale
+        // answer waiting to be reported as a fresh one), so a second look at it inside the literal
+        // below would be asking about the take rather than about this pass. And the movement is
+        // reported exactly where the admission is: they are one answer about one proposal, and a
+        // pass that published one without the other would price a decision it did not report.
+        let classified = raised_reflection.then(|| self.admits.take()).flatten();
+        let priced = classified.map(|_| std::mem::replace(&mut self.chain, Chain::Unsaid));
         let (to, spent) = self.advance(panes, run, raised)?;
         // ⚠ AFTER `advance` AND NOT BEFORE IT: a transition that delivers a prompt CLEARS the
         // notice, and a pass that ends holding nothing arrived at nothing.
@@ -8311,7 +8566,10 @@ impl OuterLoop {
             // never saw. ⚠ TAKEN rather than copied, for that same reason: a reflection that
             // proposed nothing leaves the slot empty, and a slot nobody emptied is a stale answer
             // waiting to be reported as a fresh one (the shape `unreadable` was measured in).
-            admits: raised_reflection.then(|| self.admits.take()).flatten(),
+            admits: classified,
+            // 🎯 ON THE SAME PASSES AND THE SAME CONDITION as the admission it prices — register
+            // item 840, resolved above the payload for the reason written there.
+            chain: priced,
             // ⚠ ON THE SAME PASSES AND THE SAME CONDITION as the verdict it explains — a reason
             // published where the verdict is not would be a sentence about a proposal this pass
             // never classified.
@@ -9766,18 +10024,23 @@ impl OuterLoop {
         // treatment `standing` and `milestone` already get twenty lines up and NOT the one
         // register item 674 measured going wrong: folding *the slot could not be read* into *the
         // author declared nothing* is what makes an instrument's failure read as a decision.
-        let (admits, why) = match decided.as_deref() {
+        let (admits, chain, why) = match decided.as_deref() {
             Some(proposal) => {
-                let Some(answer) = self.admitted(panes, run, proposal) else {
+                // 🎯 THE CHECKPOINT IN HAND GOES WITH THE PROPOSAL — register item 840. It is the
+                // one the run still holds at this moment: the `<assign>` that moves it is on the
+                // transition this event has not taken yet, so what goes out is what the proposal
+                // would be a move AWAY FROM.
+                let Some(answer) = self.admitted(panes, run, proposal, &milestone) else {
                     self.noticed = Some(Noticed::Undrivable(SUCCESSOR_CHECK));
                     return Ok(AiLoopEvent::Fail.into());
                 };
-                (Some(answer.0), answer.1)
+                (Some(answer.0), answer.1, answer.2)
             }
-            None => (None, None),
+            None => (None, Chain::Unsaid, None),
         };
         self.admits = admits;
-        self.unadmitted = why;
+        self.chain = chain;
+        self.unadmitted = why.clone();
         Ok(Raise::carrying(
             AiLoopEvent::ReflectApplied,
             serde_json::json!({
@@ -9794,6 +10057,26 @@ impl OuterLoop {
                 // both, and which one it was travels on the WALK where a reader needs it.
                 "admits": match admits.and_then(Admits::wire_str) {
                     Some(word) => serde_json::Value::from(word),
+                    None => serde_json::Value::Bool(false),
+                },
+                // 🎯🎯🎯 AND WHETHER TAKING IT GOES DEEPER OR SIDEWAYS — register item 840, on the
+                // line above's exact terms: a word or `false`, always carried. The falsy arm is
+                // *nobody said*, and the document's guard asks *is it `fresh`* so that arm lands
+                // on the SPENDING side without the comparison knowing a third word exists.
+                "chain": match chain.wire_str() {
+                    Some(word) => serde_json::Value::from(word),
+                    None => serde_json::Value::Bool(false),
+                },
+                // ⚠⚠⚠ AND WHAT THE CLASSIFIER SAID BESIDE ITS VERDICT, so the document can put it
+                // to the agent when it asks again — register item 840, and `disputing`'s road
+                // exactly (`_event.data.explained`). It DECIDES nothing: no `cond` reads it, and a
+                // gate holds that; what it does is stop a re-ask being a question asked blind.
+                //
+                // ⚠ A non-empty word or `false`, never `''` — `disputing`'s own measured reason:
+                // this datamodel is Lua, where the empty string is TRUE, so a classifier that
+                // explained itself with nothing would take the quoting branch and quote nothing.
+                "unadmitted": match why.filter(|words| !words.trim().is_empty()) {
+                    Some(words) => serde_json::Value::from(words),
                     None => serde_json::Value::Bool(false),
                 },
             }),
@@ -9827,15 +10110,30 @@ impl OuterLoop {
         panes: &dyn PaneAccess,
         run: &RunContext,
         proposal: &str,
-    ) -> Option<(Admits, Option<String>)> {
+        holding: &str,
+    ) -> Option<(Admits, Chain, Option<String>)> {
         let declared = self.text_of(SUCCESSOR_CHECK)?;
-        let argv: Vec<String> = declared.split_whitespace().map(ToOwned::to_owned).collect();
+        let mut argv: Vec<String> = declared.split_whitespace().map(ToOwned::to_owned).collect();
         if argv.is_empty() {
             // ⚠ THE AUTHOR'S DECISION, and the only world this arm may claim: the datamodel
             // answered, and what it answered was *nobody classifies*. Silent on purpose, and the
             // one arm that lets a proposal through unclassified.
-            return Some((Admits::Unasked, None));
+            return Some((Admits::Unasked, Chain::Unsaid, None));
         }
+        // 🎯🎯🎯🎯🎯 **AND THE CHECKPOINT IN HAND GOES WITH IT** — register item 840, and the one
+        // fact this driver adds to what the document spelled.
+        //
+        // The classifier could say whether a proposal is admissible and NOT whether taking it goes
+        // DEEPER or SIDEWAYS, because it was never told what the run is on. Those are opposite
+        // movements — one lengthens the chain of debts this work created, the other starts a fresh
+        // one — and the budget was pricing them the same, so a capped run could not move to the
+        // next thing at all.
+        //
+        // ⚠⚠ IT IS TRANSPORT AND NOT A DECISION, on `admitted`'s own terms: this appends a string
+        // the run already holds, in a position the template's own comment names, and what the two
+        // strings MEAN to each other is the classifier's business. ⚠ Ahead of the question, so the
+        // proposal stays the LAST argument and `verdict_in`'s echo cut goes on working.
+        argv.push(holding.to_owned());
         let standing_in = panes
             .origin()
             .and_then(|origin| origin.pane_start_dir(self.driving.pane));
@@ -9847,13 +10145,20 @@ impl OuterLoop {
             proposal,
             ADMITS_WITHIN,
         ) {
-            Ok(judged) if judged.holds => Some((Admits::Yes, judged.explained)),
-            Ok(judged) => Some((Admits::No, judged.explained)),
+            // ⚠ THE CHAIN WORD IS READ ONLY WHERE THE PROPOSAL WAS ADMITTED. A refusal's sentence
+            // is about why it was refused, and looking for a movement word in it would be reading
+            // whatever prose happened to start it.
+            Ok(judged) if judged.holds => Some((
+                Admits::Yes,
+                Chain::in_reply(judged.explained.as_deref()),
+                judged.explained,
+            )),
+            Ok(judged) => Some((Admits::No, Chain::Unsaid, judged.explained)),
             // ⚠⚠⚠ SILENCE IS NOT AN ADMISSION, which is the direction this whole file takes about
             // a process that did not answer — and here it is the direction that keeps a broken
             // instrument from becoming the reason a run wanders. What it costs is stated where the
             // cost lands: [`Admits::Silent`]'s own sentence tells a reader to fix the classifier.
-            Err(unheard) => Some((Admits::Silent, Some(unheard.describe()))),
+            Err(unheard) => Some((Admits::Silent, Chain::Unsaid, Some(unheard.describe()))),
         }
     }
 
@@ -16305,6 +16610,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
@@ -16445,6 +16751,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
@@ -16600,6 +16907,7 @@ mod tests {
                 // ⚠ NO CHECKER AUTHORED — the world that must stay silent, and the control.
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(99),
@@ -16683,6 +16991,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
@@ -16780,6 +17089,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
@@ -16875,6 +17185,7 @@ mod tests {
             reaim_max,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
@@ -16972,6 +17283,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
@@ -17060,6 +17372,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(99),
@@ -17162,8 +17475,9 @@ mod tests {
                 explained: None,
                 shown: None,
                 // ⚠ AND NOTHING REFLECTED, so no successor was proposed for a classifier to be
-                // asked about — register item 839.
+                // asked about — register item 839 — nor for anything to price (item 840).
                 admits: None,
+                chain: None,
                 unadmitted: None,
             },
             "⚠⚠⚠ the machine moved to `priming`, the prompt could not be read, and the document's \
@@ -17218,6 +17532,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
@@ -17414,6 +17729,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(99),
@@ -18647,6 +18963,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: Some("/bin/echo YES".to_string()),
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(3),
@@ -18986,6 +19303,7 @@ mod tests {
             reaim_max: None,
             milestone_check: Some(check.to_string()),
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
             reflect_every: Some(99),
@@ -19361,6 +19679,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: Some(format!("/bin/sh {}", script.display())),
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
                 reflect_every: Some(99),
@@ -20079,6 +20398,7 @@ mod tests {
                     reaim_max: None,
                     milestone_check: None,
                     successor_check: None,
+                    reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
                     // ⚠⚠ OFF, and it is load-bearing here rather than tidy: a reflection replaces
@@ -20297,6 +20617,7 @@ mod tests {
                     reaim_max: None,
                     milestone_check: None,
                     successor_check: None,
+                    reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
                     // ⚠ OFF, so the cadence cannot be what moves this run — which is the whole
@@ -20479,6 +20800,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
                 // ⚠ ON: one judged turn brings the run to `reflecting`, where the peer proposes the
@@ -20620,6 +20942,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
                 // ⚠ ON, and it is the only thing that can start a reflection here: the peer
@@ -20722,6 +21045,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(4)),
                 reflect_every: Some(2),
@@ -20958,6 +21282,7 @@ mod tests {
                     reaim_max: None,
                     milestone_check: None,
                     successor_check: None,
+                    reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
                     reflect_every: Some(99),
@@ -21481,6 +21806,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
                 // ⚠ ON, and it is what brings this run to `reviewing` TWICE: once with nothing
@@ -21743,6 +22069,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
                 reflect_every: Some(1),
@@ -22012,6 +22339,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
                 // ⚠⚠ TWO, AND THE SIBLING HARNESS'S ONE WOULD MEASURE NOTHING HERE: the run has to
@@ -22282,6 +22610,7 @@ mod tests {
                     reaim_max: None,
                     milestone_check: Some(DENIES.to_string()),
                     successor_check: None,
+                    reask_max: None,
                     service: None,
                     // ⚠⚠ BOTH OTHER ESCAPES ARE OUT OF REACH, which is what makes the arm below
                     // about the refusal ceiling and nothing else.
@@ -22498,6 +22827,7 @@ mod tests {
                     // CHECKED THAT CLAIM` with every part of the mechanism built (item 428).
                     milestone_check: check.map(ToOwned::to_owned),
                     successor_check: None,
+                    reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
                     // ⚠ OFF, so the budget cannot be what moves this run.
@@ -22809,6 +23139,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: check.map(ToOwned::to_owned),
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
                 // ⚠⚠ BOTH OTHER WAYS OUT OF `judging` ARE OUT OF REACH, so what this gate reads is
@@ -23644,6 +23975,7 @@ mod tests {
                     reaim_max: None,
                     milestone_check: None,
                     successor_check: None,
+                    reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
                     // ⚠ OFF, so nothing but the judge's own reading can move this run: a budget that
@@ -23840,6 +24172,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
             reflect_every: Some(99),
@@ -23919,6 +24252,7 @@ mod tests {
                     explained: _,
                     shown: _,
                     admits: _,
+                    chain: _,
                     unadmitted: _,
                 } => {
                     spent_total += spent;
@@ -24158,6 +24492,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
             reflect_every: Some(99),
@@ -24339,6 +24674,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
             reflect_every: Some(99),
@@ -24532,6 +24868,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
             // ⚠ HIGH, so the reflection under test is the one the MILESTONE bought and not one the
@@ -24771,6 +25108,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: Some(DENIES.to_string()),
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
                 reflect_every: Some(99),
@@ -24984,6 +25322,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: Some(CANNOT_ANSWER.to_string()),
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
                 reflect_every: Some(99),
@@ -25268,6 +25607,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: Some(outage.clone()),
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
@@ -25382,6 +25722,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: Some(outage.clone()),
                 max_turns: Some(Counted::Of(3)),
                 reflect_every: Some(99),
@@ -25511,6 +25852,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: Some(outage.clone()),
             max_turns: Some(Counted::Of(3)),
             reflect_every: Some(99),
@@ -25833,6 +26175,65 @@ mod tests {
         ),
     ];
 
+    /// 🎯🎯🎯🎯🎯 **NOTHING IN THIS DOCUMENT EVER NAMES A CHECKPOINT: THE AGENT PROPOSES AND THE
+    /// DOCUMENT VETOES** — the owner's decision of 2026-09-02, register item 840's fourth clause.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this had to become a predicate the day the run stopped ending
+    ///
+    /// A reflection whose checkpoint was reached used to CLOSE the run when its proposal was
+    /// refused. Item 840 makes it ask again instead — and the obvious cheaper build is the one the
+    /// owner refused: **let the machine pick the next checkpoint itself.** That was put up and
+    /// turned down on register item 659's measurement — *a loop that always chases the sharpest
+    /// thing never finishes an axis*, because the items that share a seam are cheap TOGETHER and
+    /// only the working session knows what it has already read and built.
+    ///
+    /// A decision like that decays into a comment. So it is measured instead: **every `<assign>` of
+    /// `milestone` in the template must take `_event.data.milestone`** — the caller's at the door,
+    /// the agent's at every reflection — and nothing else. A document that ever composed one, or
+    /// picked one off a list, would be the machine choosing, and it would go red here.
+    ///
+    /// ⚠⚠ **AND THE COUNT IS PINNED, NOT ONLY THE SHAPE.** A build that stopped assigning the
+    /// milestone anywhere would satisfy *every assign takes the event's* vacuously, which is
+    /// register item 799's vacuous green. Two is the number: `brief`, and the reflection that
+    /// adopts.
+    ///
+    /// ⚠ It reads the TEXT rather than a running engine, for the four gates above's reason: the
+    /// claim is about what an author shipped.
+    #[test]
+    fn the_document_never_names_a_checkpoint_of_its_own() {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ai_loop.scxml"),
+        )
+        .expect("the template");
+        let assigns: Vec<(usize, &str)> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.contains("<assign location=\"milestone\""))
+            .map(|(at, line)| (at + 1, line.trim()))
+            .collect();
+
+        assert_eq!(
+            assigns.len(),
+            2,
+            "⚠⚠⚠ THE CONTROL: this template must assign `milestone` in exactly two places — the \
+             door's `brief` and the reflection that ADOPTS a proposal. Fewer means the walk found \
+             nothing and the claim below is vacuous; more means a third writer arrived and the \
+             question *who chooses the next checkpoint* has a new answer nobody argued for. \
+             Found: {assigns:?}",
+        );
+        for (at, line) in &assigns {
+            assert!(
+                line.contains("expr=\"_event.data.milestone\""),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 840, THE OWNER'S DECISION OF 2026-09-02: the agent \
+                 proposes and this document vetoes. `ai_loop.scxml:{at}` assigns a milestone from \
+                 something other than the event, which is this machine CHOOSING one — the option \
+                 that was put up and refused, on register item 659's measurement that a loop \
+                 always chasing the sharpest thing never finishes an axis. What a run may not take \
+                 is a veto; what it works on next is somebody's judgement. Read: {line}",
+            );
+        }
+    }
+
     /// ⚠⚠⚠ **THE TEMPLATE IS FOR SOMEBODY ELSE'S REPOSITORY: IT MAY NAME NOTHING OF THIS ONE AND
     /// DECIDE NOTHING FOR THE NEXT ONE.**
     ///
@@ -26064,6 +26465,7 @@ mod tests {
                         reaim_max: None,
                         milestone_check: None,
                         successor_check: None,
+                        reask_max: None,
                         service: Some(ServiceOutage {
                             needles: vec!["the service is down".to_string()],
                             every_ms: 1,
@@ -26628,6 +27030,7 @@ mod tests {
                     reaim_max: None,
                     milestone_check: None,
                     successor_check: None,
+                    reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
                     reflect_every: Some(99),
@@ -26809,6 +27212,7 @@ mod tests {
                 reaim_max: None,
                 milestone_check: None,
                 successor_check: None,
+                reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
                 reflect_every: Some(99),
@@ -27014,6 +27418,7 @@ mod tests {
                     reaim_max: None,
                     milestone_check: None,
                     successor_check: None,
+                    reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
                     reflect_every: Some(99),
@@ -27295,6 +27700,7 @@ mod tests {
                     reaim_max: None,
                     milestone_check: None,
                     successor_check: None,
+                    reask_max: None,
                     service: Some(outage.clone()),
                     max_turns: Some(Counted::Of(40)),
                     reflect_every: Some(99),
@@ -27623,6 +28029,7 @@ mod tests {
             reaim_max: None,
             milestone_check: None,
             successor_check: None,
+            reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
             reflect_every: Some(8),

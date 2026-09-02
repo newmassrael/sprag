@@ -145,15 +145,25 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
     // is not YES or NO is *the checker said nothing this run could read* — the honest answer for an
     // instrument that could not judge, and the one that sends a reader to the instrument.
     let Some(path) = args.next() else {
-        eprintln!("north-star: --admits needs the ledger's path, then the proposal");
+        eprintln!(
+            "north-star: --admits needs the ledger's path, then the checkpoint in hand, \
+                   then the proposal"
+        );
+        return std::process::ExitCode::FAILURE;
+    };
+    // 🎯 THE CHECKPOINT THE RUN IS ON, APPENDED BY THE DRIVER AHEAD OF THE PROPOSAL — register
+    // item 840. Without it this can say whether a proposal is admissible and NOT whether taking it
+    // goes deeper or sideways, which are opposite movements the budget was pricing the same.
+    let Some(holding) = args.next() else {
+        eprintln!("north-star: --admits needs the checkpoint in hand before the proposal");
         return std::process::ExitCode::FAILURE;
     };
     let Some(proposal) = args.next() else {
-        eprintln!("north-star: --admits needs the proposal after the ledger");
+        eprintln!("north-star: --admits needs the proposal after the checkpoint in hand");
         return std::process::ExitCode::FAILURE;
     };
     if args.next().is_some() {
-        eprintln!("north-star: --admits takes one ledger and one proposal");
+        eprintln!("north-star: --admits takes one ledger, one checkpoint and one proposal");
         return std::process::ExitCode::FAILURE;
     }
     let text = match std::fs::read_to_string(&path) {
@@ -191,8 +201,30 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
         return std::process::ExitCode::SUCCESS;
     };
     if admitted.contains(&number) {
+        // 🎯🎯🎯🎯🎯 AND WHETHER TAKING IT GOES DEEPER OR SIDEWAYS — register item 840, carried as
+        // a SECOND MARKED WORD on the same reply the verdict rides. `FRESH` is an unrelated root:
+        // the chain it is on has length zero, so adopting it is progress and must not spend a
+        // budget meant for the debts this work itself creates. `STEP` is everything else.
+        //
+        // ⛔⛔ AND *cannot tell* IS SPELLED AS `STEP`, which is working rule 6 rather than a
+        // guess: a chain that runs into an item stating no parentage is UNCLASSIFIED, and an
+        // unclassified proposal must not be the cheap one. What unlocks the cheaper answer is the
+        // `@from:` annotation the unrooted ratchet already asks for — so this instrument pays that
+        // ratchet down by making it worth something.
+        //
+        // ⚠ A proposal whose CHECKPOINT this cannot place is `STEP` for the same reason: nothing
+        // was compared, so nothing may be called unrelated.
+        let sideways = reading.sideways(reading.names(&holding.to_string_lossy()), number);
+        let (chain, how) = match sideways {
+            true => ("FRESH", "and nothing this run is paying created it"),
+            false => (
+                "STEP",
+                "and it is a step off the work in hand, or nothing here can say it is not",
+            ),
+        };
         println!(
-            "YES — item {number} is in what this register says to take next ({} item(s)).",
+            "YES {chain} — item {number} is in what this register says to take next ({} item(s)), \
+             {how}.",
             admitted.len(),
         );
         return std::process::ExitCode::SUCCESS;
