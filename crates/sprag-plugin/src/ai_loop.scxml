@@ -268,6 +268,51 @@
     <data id="milestone_check" expr="''"/>
 
     <!--
+      🎯🎯🎯🎯🎯 AND WHO SAYS THE NEXT CHECKPOINT IS ONE THIS RUN MAY TAKE — the
+      owner's decision of 2026-09-02, and the twin of `milestone_check` above.
+
+      That one asks *was the claim true*. This one asks the other half nobody was
+      asking: *is what the agent proposes to do next a thing this repository
+      wants done next*. Until it existed, a reflection could aim a run at
+      anything at all and the only bound on it was `reaim_max` below — HOW MANY
+      times a run may change direction, and never WHERE it may go.
+
+      ⚠⚠⚠⚠⚠ WHAT MADE THIS A SLOT RATHER THAN A SENTENCE. The repository this
+      template was written in already had the rule — *while anything is ranked
+      most severe, take from those* — and had written it as PROSE, in a fragment
+      appended to the agent's first prompt. Nothing read it. Measured on the day
+      this shipped: the supervisor that wrote those rules put them on the line
+      under a rule of its own saying *reasoning written as prose is measured by
+      nobody; make it a predicate a document or an artifact can be asked*.
+
+      ⚠⚠⚠ THE MACHINE IS HERE AND THE MEANING IS NOT, which is the only shape
+      that can be in a file other repositories copy. This document counts a
+      proposal it may not take and declines to take it (see `reflect.applied`
+      below); WHAT MAY BE TAKEN is a rule about one repository's own work, and it
+      lives in the program named here. A repository that copies this file gets
+      the machine and nothing else, and turns it on by naming a command.
+
+      This is an ARGV on `milestone_check`'s exact terms — split on whitespace,
+      run by nobody this loop is driving, the proposal appended as one last
+      argument, and ONE MARKED WORD of the reply read as YES or NO. A reply
+      holding no such word is a silence, and a silence is not an admission.
+
+      ⚠⚠ EMPTY IS THE SHIPPED VALUE AND MEANS NOBODY CLASSIFIES, which is exactly
+      the behaviour this document had before the slot existed: every proposal is
+      taken, and `deferred` below stays at zero because nothing was set aside. It
+      does NOT mean *admitted* — the driver publishes no word at all for it, and
+      the guard below tests truthiness, so an author who wants proposals held to
+      something writes a command here.
+
+      ⚠ AND EVERY OTHER ANSWER IS A REFUSAL, deliberately: the command said no,
+      the command said nothing readable, the command would not start. An
+      instrument that cannot answer must not be the reason a run wanders, and
+      folding those into *admitted* is the escape hatch that disables this slot.
+      What keeps that honest is the count — see `deferred`.
+    -->
+    <data id="successor_check" expr="''"/>
+
+    <!--
       ⚠⚠⚠⚠⚠ WHAT ON THE SCREEN MEANS *THE PEER'S SERVICE FAILED*, WHICH IS NOT
       THE SAME AS THE PEER ASKING SOMETHING.
 
@@ -1465,11 +1510,19 @@
     -->
     <data id="reaimed" expr="0"/>
     <!--
-      HOW MANY PROPOSALS THIS RUN SET ASIDE AT ITS CAP - the count kept by the
-      guarded `reflect.applied` arm below, and the half of item 833(2) that
-      keeps the cap from becoming a quiet deferral.
+      HOW MANY PROPOSALS THIS RUN SET ASIDE - the count kept by the guarded
+      `reflect.applied` arms below, and the half of item 833(2) that keeps a
+      refusal from becoming a quiet deferral.
 
-      A CAP WITHOUT THIS NUMBER IS INDISTINGUISHABLE FROM A LOOP THAT NEVER
+      ⚠⚠ IT COUNTS BOTH REASONS AND DOES NOT SEPARATE THEM (register item 839).
+      A proposal set aside because this run had wandered its allowance and one
+      set aside because `successor_check` refused it are the same fact HERE:
+      something was found, and this run did not do it. Which reason it was
+      belongs where a reader can act on it - the ending's own word - and two
+      counters would ask every reader of a row to add them up to learn the one
+      thing the row is for.
+
+      A REFUSAL WITHOUT THIS NUMBER IS INDISTINGUISHABLE FROM A LOOP THAT NEVER
       FOUND ANYTHING. That is the risk the item states in its own words: the
       value of the cap is that the run goes on toward the north star, and its
       danger is that what it set aside is never counted anywhere. So the count
@@ -2994,6 +3047,13 @@
       delete an author's decision.
     -->
       <assign location="milestone_check" expr="_event.data.milestone_check"/>
+      <!--
+        🎯🎯🎯 AND WHO SAYS THE NEXT CHECKPOINT IS ONE THIS RUN MAY TAKE — the
+        twin of the line above it, carried on exactly its terms and arriving in
+        the same round the guard that reads it did. A slot no channel fills is
+        the failure the line above records paying for.
+      -->
+      <assign location="successor_check" expr="_event.data.successor_check"/>
       <assign location="closing_rules" expr="_event.data.closing_rules"/>
       <!--
         ⚠⚠⚠⚠ AND THE RULES THE WORK ITSELF IS DONE UNDER — register item 738,
@@ -4877,29 +4937,45 @@
       have reached it.
     -->
     <!--
-      🎯🎯🎯🎯🎯 THE AGENT NAMED A DIFFERENT CHECKPOINT AND THIS RUN HAS SPENT
-      ITS RE-AIMING BUDGET, SO THE PROPOSAL IS COUNTED AND NOT TAKEN - the
-      owner's decision of 2026-09-02, register item 833(2).
+      🎯🎯🎯🎯🎯 THE AGENT NAMED A CHECKPOINT THIS RUN MAY NOT TAKE, SO THE
+      PROPOSAL IS COUNTED AND NOT TAKEN - the owner's decisions of 2026-09-02,
+      register items 833(2) and 839.
 
       ⚠⚠⚠⚠⚠ IT IS A GUARD ON THIS DOCUMENT AND NOT AN EVENT FROM THE DRIVER,
       and that is the whole design rather than a detail of it. What the driver
-      alone can see is that an agent named a successor, off a pane; what a
-      named successor is WORTH at this depth is a POLICY, and this document is
-      where policy lives (register item 773). `service_retry_max` is the
-      worked example three states up: the driver raises `service.retry` and
-      *"neither holds nor compares"* the ceiling, because a second reader of a
-      number would be a second author of the rule (register item 445).
+      alone can see is that an agent named a successor, off a pane, and what a
+      program said about it; what a named successor is WORTH is a POLICY, and
+      this document is where policy lives (register item 773).
+      `service_retry_max` is the worked example three states up: the driver
+      raises `service.retry` and *"neither holds nor compares"* the ceiling,
+      because a second reader of a number would be a second author of the rule
+      (register item 445).
 
-      ⚠⚠⚠ THREE CLAUSES, AND EACH ONE IS LOAD-BEARING:
-      * `reaim_max != 'never'` - a document may decline the cap, spelled
-        the way `max_turns` spells it, and the comparison must not be reached
-        with a word on its right-hand side;
+      ⚠⚠⚠ FOUR CLAUSES, AND EACH ONE IS LOAD-BEARING:
       * `_event.data.milestone != milestone` - the driver ECHOES the milestone
         back when the agent named no successor, so without this an ordinary
         reflection that adopted a standing instruction would be reported as a
-        proposal somebody set aside;
+        proposal somebody set aside. It is factored out in front because BOTH
+        reasons below are about a proposal, and a run that was offered none has
+        nothing to decline;
+      * `reaim_max != 'never'` - a document may decline the cap, spelled
+        the way `max_turns` spells it, and the comparison must not be reached
+        with a word on its right-hand side;
       * `reaimed >= reaim_max` - the budget itself, compared the way
-        `turns >= max_turns` is compared one state over.
+        `turns >= max_turns` is compared one state over;
+      * `_event.data.admits && _event.data.admits != 'admitted'` - what the
+        `successor_check` said, on the terms `_event.data.stop_short` is read
+        on: a document that named no command has NO word published for it, so
+        the truthiness test is what makes the machine inert until a kind gives
+        it meaning. And EVERY other word refuses - the program said no, said
+        nothing readable, would not start - because an instrument that cannot
+        answer must not be why a run wanders (register item 839).
+
+      ⚠⚠ THE TWO REASONS ARE ONE ARM AND NOT TWO, deliberately: what they
+      decide is identical - this proposal is counted and not taken - and a
+      second arm would be a second copy of the body below, free to drift from
+      it in exactly the way a duplicated decision always does. Which reason it
+      was travels where a reader needs it: in the ENDING one transition up.
 
       IT GOES BACK TO `working`, NOT TO `reviewing`, and the difference is the
       point of the arm. The unguarded arm below reviews because the loop's
@@ -4927,9 +5003,9 @@
       with nothing said would be waiting for a turn nobody opened.
     -->
     <!--
-      🎯🎯🎯🎯🎯 THE SAME CAP, ON THE ONE REFLECTION THAT CANNOT GO BACK TO WORK
-      - register item 833(2), and the livelock the arm below would otherwise
-      walk straight into.
+      🎯🎯🎯🎯🎯 THE SAME REFUSAL, ON THE ONE REFLECTION THAT CANNOT GO BACK TO
+      WORK - register items 833(2) and 839, and the livelock the arm below would
+      otherwise walk straight into.
 
       ⚠⚠⚠⚠⚠ THE CHECKPOINT HAS BEEN REACHED. `reflect_reason` says `milestone`,
       which means `judging` sent the run here because its agent said the
@@ -4941,34 +5017,52 @@
       SO THE RUN CLOSES, and that is the safe direction as well as the
       terminating one: what the caller asked for WAS met, so the account this
       writes is true. What it is not is a claim about the north star - nobody
-      said that was reached, and `capped` is the word for the difference.
+      said that was reached, and the two words below are for the difference.
 
-      ⚠⚠ THE PROPOSAL IS STILL COUNTED. It is the same finding the arm below
-      counts, set aside for the same reason, and a cap whose deferrals go
-      uncounted on ONE of its two roads is a cap with a hole in exactly the
-      place a run ends and stops being watched.
+      ⚠⚠⚠⚠ AND IT SAYS WHICH REFUSAL IT WAS, because the two send a reader in
+      OPPOSITE directions. `capped` means the proposal was fine and this run had
+      wandered its allowance: register it, and the next run may take it.
+      `unadmitted` means the proposal was refused on its own merits: registering
+      it and launching at it would be refused again, so what a reader must look
+      at is the proposal and the program that turned it down. One word for both
+      would send half of these readers the wrong way.
 
-      ⚠ THE WORD IS A LITERAL HERE, like `stood_down` and unlike the two the
-      driver spells: *the cap was reached* is a fact this document holds by
-      itself - the driver neither holds `reaim_max` nor compares against
-      it - so spelling it here is this file saying what it knows. A gate holds
-      the spelling against `DoneReason`'s vocabulary all the same.
+      ⚠ THE REFUSAL ON MERIT IS TESTED FIRST, and that is the ordering rather
+      than an accident of typing: where BOTH hold, `capped` is the weaker fact -
+      it would still have been refused with the whole budget unspent.
+
+      ⚠⚠ THE PROPOSAL IS STILL COUNTED, on either word. It is the same finding
+      the arm below counts, set aside for the same reason, and a refusal whose
+      deferrals go uncounted on ONE of its roads has a hole in exactly the place
+      a run ends and stops being watched.
+
+      ⚠ THE WORDS ARE LITERALS HERE, like `stood_down` and unlike the two the
+      driver spells: *the cap was reached* and *the successor was not admitted*
+      are facts this document holds by itself - the driver neither holds
+      `reaim_max` nor compares against it, and the admission word it publishes
+      is a program's answer rather than a decision - so spelling them here is
+      this file saying what it knows. A gate holds both against `DoneReason`'s
+      vocabulary all the same.
     -->
     <transition event="reflect.applied"
-                cond="reaim_max != 'never' &amp;&amp; _event.data.milestone != milestone &amp;&amp; reaimed &gt;= reaim_max &amp;&amp; reflect_reason == 'milestone'"
+                cond="_event.data.milestone != milestone &amp;&amp; ((reaim_max != 'never' &amp;&amp; reaimed &gt;= reaim_max) || (_event.data.admits &amp;&amp; _event.data.admits != 'admitted')) &amp;&amp; reflect_reason == 'milestone'"
                 target="closing">
       <assign location="deferred" expr="deferred + 1"/>
-      <assign location="done_reason" expr="'capped'"/>
+      <if cond="_event.data.admits &amp;&amp; _event.data.admits != 'admitted'">
+        <assign location="done_reason" expr="'unadmitted'"/>
+      <else/>
+        <assign location="done_reason" expr="'capped'"/>
+      </if>
     </transition>
     <transition event="reflect.applied"
-                cond="reaim_max != 'never' &amp;&amp; _event.data.milestone != milestone &amp;&amp; reaimed &gt;= reaim_max"
+                cond="_event.data.milestone != milestone &amp;&amp; ((reaim_max != 'never' &amp;&amp; reaimed &gt;= reaim_max) || (_event.data.admits &amp;&amp; _event.data.admits != 'admitted'))"
                 target="working">
       <assign location="standing" expr="_event.data.standing"/>
       <!--
-        THE COUNT IS THE POINT - see `deferred`. A cap that set proposals aside
-        without counting them would be indistinguishable from a loop that never
-        found anything, which is the danger register item 833 states in its own
-        words.
+        THE COUNT IS THE POINT - see `deferred`. A refusal that set proposals
+        aside without counting them would be indistinguishable from a loop that
+        never found anything, which is the danger register item 833 states in
+        its own words.
       -->
       <assign location="deferred" expr="deferred + 1"/>
       <!--

@@ -653,6 +653,81 @@ impl Reading {
             .collect()
     }
 
+    /// **WHAT A ROUND MAY TAKE NEXT, AS ONE SET** — working rules 11 and 14 made into a predicate
+    /// instead of a sentence somebody reads. Register item 839.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this exists when [`Reading::critical`] and [`Reading::takeable`] both did
+    ///
+    /// The two lists were already printed and **nothing read them**. The rule that says what to do
+    /// with them — *while anything is critical, take from those; the cap holds the rest back* —
+    /// lived in prose the loop was greeted with, and a run that ignored it was refused by nobody.
+    /// Measured 2026-09-02: the loop's own supervisor wrote those rules into a prompt fragment
+    /// **on the line under the rule that says prose is measured by nobody**.
+    ///
+    /// So the two lists are composed HERE, once, and a proposal is admissible exactly when it names
+    /// a member of this set.
+    ///
+    /// # ⚠⚠ The composition, and why the fall-through is not an escape hatch
+    ///
+    /// * While any OPEN item is [`Severity::Critical`] **and within `cap`**, the set is those.
+    /// * When none is, it is [`Reading::takeable`] — the population minus what the cap holds back.
+    ///
+    /// The fall-through cannot admit something the cap refuses, because both arms are drawn from
+    /// [`Reading::takeable`]. And it is not an ordering: register item 659's counter-argument is
+    /// kept exactly as [`SEVERITY`]'s own docs state it — **this is a gate, not a sort**, so items
+    /// that share a seam may still be worked in whatever order coheres, as long as they are in the
+    /// set.
+    #[must_use]
+    pub fn admits(&self, cap: u32) -> Vec<u32> {
+        let takeable = self.takeable(cap);
+        let critical: Vec<u32> = self
+            .critical()
+            .into_iter()
+            .filter(|number| takeable.contains(number))
+            .collect();
+        if critical.is_empty() {
+            takeable
+        } else {
+            critical
+        }
+    }
+
+    /// **WHICH REGISTER ITEM A PROPOSAL NAMES** — the FIRST number in `text` that this ledger files
+    /// an item under, or [`None`] where it names none. Register item 839.
+    ///
+    /// # ⚠⚠⚠ Why the first, and why membership rather than a shape
+    ///
+    /// A milestone is prose a person or an agent wrote, and it cites other numbers freely — a date,
+    /// a byte count, the item that produced the one it is about. What it is ABOUT is the first
+    /// register item it names, which is this ledger's own convention (*"항목 839 를 갚아라 — …"*)
+    /// and the only rule here that does not need a parser for prose.
+    ///
+    /// Numbers are filtered through [`Reading::items`] rather than through a shape, so a year and a
+    /// byte count are skipped for the reason they should be: **nothing is filed under them.**
+    ///
+    /// ⚠ The residue, stated rather than hidden: a proposal that cites another item before naming
+    /// its own is read as being about the citation. The remedy is the ledger's convention, not a
+    /// longer rule — and where the citation is outside the admissible set the answer is a REFUSAL,
+    /// which is the safe direction for a check whose whole job is to hold a run to its brief.
+    #[must_use]
+    pub fn names(&self, text: &str) -> Option<u32> {
+        let mut digits = String::new();
+        for character in text.chars().chain(std::iter::once(' ')) {
+            if character.is_ascii_digit() {
+                digits.push(character);
+                continue;
+            }
+            let read = digits.parse::<u32>().ok();
+            digits.clear();
+            // ⚠ A number the ledger files nothing under is not a citation of anything, so the scan
+            // goes on rather than stopping at the first integer it meets.
+            if read.is_some_and(|number| self.items.iter().any(|item| item.number == number)) {
+                return read;
+            }
+        }
+        None
+    }
+
     /// The items that state no [`PARENT`] — the backlog [`Fault::ParentRatchetGrew`] holds.
     #[must_use]
     pub fn unrooted(&self) -> Vec<u32> {
@@ -1494,6 +1569,108 @@ mod tests {
             reading.deferred(1),
             vec![902],
             "and the held-back one is NAMED — a cap nobody can count is a quiet deferral",
+        );
+    }
+
+    // ── register item 839: what a round may take, as a predicate ──────────────────────────────
+
+    /// 🎯🎯🎯🎯🎯 **WHILE ANYTHING IS CRITICAL, THE SET IS THOSE** — working rule 11 made into a
+    /// predicate, and the half of register item 833(1) nothing measured.
+    ///
+    /// ⚠ [`LEDGER`]'s 900 is the only open item and it is critical, so the two arms are separated
+    /// by a ledger with an ordinary sibling: a build that returned the whole population would be
+    /// green against a ledger whose critical set IS its population.
+    #[test]
+    fn while_anything_is_critical_the_admissible_set_is_those() {
+        let ledger = LEDGER.replace(
+            "900. ⛔ **An open loop item**",
+            "895. ⛔ **An ordinary open item**\n     @ns: open\n     @sev: ordinary\n     @from: \
+             none\n\n900. ⛔ **An open loop item**",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.population(),
+            vec![895, 900],
+            "THE CONTROL: two open items, or the narrowing below is about nothing",
+        );
+        assert_eq!(
+            reading.admits(1),
+            vec![900],
+            "🎯 the ordinary one is open, takeable, and NOT what a round takes next — that is the \
+             whole of working rule 11, and until this predicate existed it was prose",
+        );
+    }
+
+    /// **AND WHEN NONE IS, THE SET IS THE POPULATION THE CAP ALLOWS** — working rule 11's other
+    /// half, and register item 659's counter-argument kept: this is a gate, not a sort.
+    #[test]
+    fn with_nothing_critical_the_admissible_set_is_what_the_cap_allows() {
+        let ledger = with_a_chain().replace(
+            "     @sev: critical — it stops the loop dead",
+            "     @sev: ordinary — nothing is urgent here",
+        );
+        let reading = read(&ledger);
+        assert!(
+            reading.critical().is_empty(),
+            "THE CONTROL: nothing is critical, or this is the other arm: {:?}",
+            reading.critical(),
+        );
+        assert_eq!(
+            reading.admits(1),
+            vec![900, 901],
+            "the population minus what the depth cap holds back — and 902 is held back, which is \
+             what makes the fall-through incapable of admitting more than `takeable` does",
+        );
+    }
+
+    /// ⛔⛔⛔ **AND A CRITICAL ITEM THE CAP HOLDS BACK IS NOT ADMITTED EITHER** — the arms are
+    /// composed rather than chosen between, so severity cannot smuggle a deferred item past the
+    /// depth cap.
+    #[test]
+    fn a_critical_item_deeper_than_the_cap_is_still_held_back() {
+        let ledger = with_a_chain()
+            .replace(
+                "     @sev: critical — it stops the loop dead",
+                "     @sev: ordinary — nothing is urgent here",
+            )
+            .replace(
+                "902. ⛔ **Found while paying 901**\n     @ns: open\n     @sev: ordinary",
+                "902. ⛔ **Found while paying 901**\n     @ns: open\n     @sev: critical",
+            );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.critical(),
+            vec![902],
+            "THE CONTROL: the only critical item is the one at depth 2: {:?}",
+            reading.faults,
+        );
+        assert_eq!(
+            reading.admits(1),
+            vec![900, 901],
+            "⛔ a critical mark does not lift the depth cap. Taking 902 here would make the cap \
+             something a round could escape by ranking its own finding",
+        );
+    }
+
+    /// **WHICH ITEM A PROPOSAL NAMES** — the first number in it this ledger files something under.
+    #[test]
+    fn a_proposal_is_read_as_the_first_register_item_it_names() {
+        let reading = read(LEDGER);
+        assert_eq!(
+            reading.names("항목 900 을 갚아라 — 897 도 같은 얼굴이다"),
+            Some(900),
+            "the first item named is what the milestone is about; the later citation is a citation",
+        );
+        assert_eq!(
+            reading.names("2026-09-02 에 잰 72 바이트 한계"),
+            None,
+            "⚠ a year and a byte count are not items — numbers are filtered through what the \
+             ledger actually files, which is why no shape rule is needed",
+        );
+        assert_eq!(
+            reading.names("항목 896 은 섹션 B 다"),
+            None,
+            "and section B is not this ledger's population, so nothing here is filed under 896",
         );
     }
 

@@ -4389,6 +4389,12 @@ fn ai_loop_brief(
         // caller who could name the checker could delete it by naming nothing, which is
         // the self-certification the whole item is about.
         milestone_check: kind.milestone_check(),
+        // 🎯🎯🎯 AND WHO SAYS A PROPOSED CHECKPOINT IS ONE TO TAKE NEXT — register
+        // item 839, on the line above's terms exactly. NO WIRE KEY, for its reason and
+        // for `reaim_max`'s: what a repository works on next is its document's
+        // business, and a caller who could name the classifier could delete the whole
+        // bound by naming nothing.
+        successor_check: kind.successor_check(),
         // ⚠⚠⚠ NO WIRE KEY EITHER, on the two lines above's terms. What this
         // repository's peer prints when its SERVICE fails is its document's business,
         // and a caller who could name the needle could delete the wait by naming
@@ -10096,6 +10102,34 @@ mod tests {
             kind.milestone_check(),
             "⚠⚠⚠ and WHO CERTIFIES A MILESTONE — item 428's second half, where a live run judged \
              `NOTHING CHECKED THAT CLAIM` while this document named a checker",
+        );
+        // 🎯🎯🎯🎯🎯 AND WHO SAYS A PROPOSED CHECKPOINT IS ONE TO TAKE NEXT — register item 839,
+        // the same road one question over. The defect it repays is the class this gate is about
+        // arriving in a new place: `ai_loop.scxml` grew the guard, `debt_loop.scxml` grew the
+        // value, and a door that did not carry it would leave every run of this kind taking
+        // whatever its agent proposed while both documents said otherwise.
+        assert_eq!(
+            brief.successor_check,
+            kind.successor_check(),
+            "⚠⚠⚠ ITEM 839: what a run of this kind may re-aim ONTO is this document's decision, \
+             and a channel that stops here is the shape item 428 was measured in",
+        );
+        // ⛔⛔⛔⛔⛔ AND THIS REPOSITORY'S KIND MUST NAME ONE, which is the half no template can
+        // hold. The machine in `ai_loop.scxml` is inert until a kind gives it meaning — that is
+        // deliberate, because other repositories copy that file — so the thing that makes it bind
+        // HERE is this document, and nothing but a gate can say it still does. ⚠ A kind that
+        // deleted this line would go green on every assertion above.
+        let classifier = kind.successor_check().expect(
+            "⚠⚠⚠⚠⚠ ITEM 839: `debt_loop.scxml` must name a `successor_check`. Without one the \
+             loop's only bound on where a reflection may aim it is a COUNT, and what should have \
+             said otherwise is prose in `working_rules` that no `cond` reads — which is the whole \
+             defect this item is",
+        );
+        assert!(
+            classifier.split_whitespace().count() > 1,
+            "⚠⚠ and it must be a command with the arguments that make it answer about THIS \
+             register: the driver appends only the proposal, so everything else — which register, \
+             which mode — has to be spelled here. Read {classifier:?}",
         );
         assert_eq!(
             brief.closing_rules,

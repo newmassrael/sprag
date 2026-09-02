@@ -6953,6 +6953,7 @@ fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
         reaim_max: None,
         // ⛔⛔⛔ THE WHOLE REASON THIS RUN IS BUILT HERE RATHER THAN REQUESTED.
         milestone_check: Some(format!("/bin/sh {}", checker.display())),
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(4)),
         // ⚠ EQUAL to the turn budget, which is what keeps `reflecting` unreachable: `judging` tests
@@ -7493,6 +7494,7 @@ fn a_host_run_drives_its_turns_on_the_turn_contract_that_ships() {
             reflect_after_refusals: None,
             reaim_max: None,
             milestone_check: None,
+            successor_check: None,
             service: None,
             max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
             // ⚠ EQUAL to the turn budget, which keeps `reflecting` unreachable: `judging` tests the
@@ -7785,6 +7787,7 @@ fn a_host_run_replaces_its_inner_session_and_the_fresh_one_works() {
         reflect_after_refusals: None,
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
         reflect_every: Some(EVERY),
@@ -8136,6 +8139,7 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
             reflect_after_refusals: None,
             reaim_max: None,
             milestone_check: None,
+            successor_check: None,
             service: None,
             max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
             reflect_every: Some(EVERY),
@@ -8448,6 +8452,7 @@ fn a_run_that_has_been_stood_down_finishes_its_milestone_and_stops() {
             reflect_after_refusals: None,
             reaim_max: None,
             milestone_check: None,
+            successor_check: None,
             service: None,
             max_turns: Some(sprag_plugin::Counted::Of(TURNS)),
             // ⚠ EQUAL to the budget, which is what shuts the cadence: `judging` tests the budget
@@ -8688,6 +8693,7 @@ fn a_loop_converges_on_what_its_agent_says_not_on_what_its_terminal_shows() {
             reflect_after_refusals: None,
             reaim_max: None,
             milestone_check: None,
+            successor_check: None,
             service: None,
             // ⚠⚠ Above what either arm needs, so a run that FAILED to read the declaration does not
             // end on its budget looking like one that did — it runs on and this gate says so.

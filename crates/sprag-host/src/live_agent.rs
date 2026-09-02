@@ -749,6 +749,8 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 made,
                 explained,
                 shown,
+                admits,
+                unadmitted,
                 witnessed,
                 spent: _,
             } => {
@@ -841,10 +843,24 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 let evidence = witnessed
                     .map(|proof| format!(" — {}", proof.noted()))
                     .unwrap_or_default();
+                // 🎯🎯🎯🎯🎯 AND WHAT A CLASSIFIER SAID ABOUT WHERE THIS RUN WAS ASKED TO GO NEXT —
+                // register item 839, and the verdict above's twin at the other end of a run. This
+                // harness is where it is worth the most for the same reason that one is: a person
+                // watching a live agent propose a next checkpoint otherwise sees the run either
+                // take it or quietly count it, with nothing saying which program decided and why.
+                let admission = admits
+                    .map(|verdict| {
+                        let why = unadmitted
+                            .as_deref()
+                            .map(|words| format!(" — it said: {words:?}"))
+                            .unwrap_or_default();
+                        format!(" — {}{why}", verdict.describe())
+                    })
+                    .unwrap_or_default();
                 step(
                     began,
                     &format!(
-                        "{from:?} --{raised:?}--> {to:?}{cause}{outcome}{verdict}{evidence}{arrived}{unread}"
+                        "{from:?} --{raised:?}--> {to:?}{cause}{outcome}{verdict}{admission}{evidence}{arrived}{unread}"
                     ),
                 );
                 walked.push((from, raised, to));
@@ -1037,6 +1053,7 @@ fn a_live_judge_hears_the_marker_whatever_the_milestone_asked_for() {
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         reflect_every: Some(LIVE_MAX_TURNS),
@@ -1232,6 +1249,7 @@ fn a_live_judge_hears_the_marker_on_the_budget_the_deaf_runs_shared() {
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         // ⚠⚠ THE ONE THING CHANGED, AND IT IS A PAIR because the two are one decision: the
         // template's default for reflection IS the budget, so a run that declines the budget must
@@ -1423,6 +1441,7 @@ fn a_turn_that_outran_its_bound_is_looked_at_again_and_never_judged() {
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         reflect_every: Some(LIVE_MAX_TURNS),
@@ -1578,6 +1597,7 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         // ⚠ EQUAL to the budget, which is what keeps `reflecting` — an unbuilt state — off the
@@ -1817,6 +1837,7 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         // ⚠ EQUAL to the budget, so `judging` takes the turn-budget edge rather than the reflect
@@ -2032,6 +2053,7 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(UNSPENDABLE_TURNS)),
         reflect_every: Some(UNSPENDABLE_TURNS),
@@ -2286,6 +2308,7 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         reflect_every: Some(LIVE_MAX_TURNS),
@@ -2497,6 +2520,7 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         reflect_every: Some(LIVE_MAX_TURNS),
@@ -2739,6 +2763,7 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         // ⚠⚠⚠ THE BUDGET TRIGGER IS OFF, so the reflection below is caused by the STANDING
@@ -4114,6 +4139,7 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
         milestone_check: None,
+        successor_check: None,
         service: None,
         max_turns: Some(sprag_plugin::Counted::Of(LIVE_MAX_TURNS)),
         reflect_every: Some(LIVE_MAX_TURNS),

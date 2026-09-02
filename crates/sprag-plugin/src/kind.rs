@@ -654,6 +654,39 @@ impl LoopKind {
         }
     }
 
+    /// 🎯🎯🎯🎯🎯 **WHO DECIDES A CHECKPOINT PROPOSED FOR THIS KIND IS ONE TO TAKE NEXT**, as an
+    /// argv — or [`None`] where this kind says nothing and every proposal is taken. Register item
+    /// 839.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The half the cap could not reach
+    ///
+    /// [`reaim_max`](Self::reaim_max) bounds how MANY times a run may change direction. Nothing
+    /// bounded WHERE it could go, so a run with a budget of one could still spend it on anything at
+    /// all — and this repository's answer to *what should be worked on next* was **prose in a
+    /// prompt fragment**: `working_rules`, appended to a session's first message, read by no `cond`
+    /// and held by no gate. Measured 2026-09-02, on the line beneath a rule of its own saying
+    /// reasoning written as prose is measured by nobody.
+    ///
+    /// ⚠⚠⚠ **THE MEANING IS THE KIND'S AND THE MACHINE IS THE TEMPLATE'S**, which is what makes
+    /// this a slot rather than a branch anywhere. What may be taken next is a rule about one
+    /// repository's own work — for this one, *while anything is ranked most severe, take from
+    /// those*, which its own register can be asked — and the template that other repositories copy
+    /// may not carry that vocabulary at all.
+    ///
+    /// ⚠⚠ It travels like [`milestone_check`](Self::milestone_check) and NOT like a wire argument,
+    /// on that field's argument and [`reaim_max`](Self::reaim_max)'s: a caller who could name this
+    /// could delete the whole bound by naming nothing.
+    ///
+    /// ⚠ Whitespace is what the driver splits on, exactly as above: the proposal it appends is the
+    /// last argument, and everything before it is a program and its flags.
+    #[must_use]
+    pub fn successor_check(&self) -> Option<String> {
+        match self.script.get_variable(&self.session, "successor_check") {
+            Ok(ScriptValue::String(argv)) if !argv.trim().is_empty() => Some(argv),
+            _ => None,
+        }
+    }
+
     /// **WHAT THIS REPOSITORY'S PEER PRINTS WHEN ITS SERVICE FAILS, AND WHAT TO DO ABOUT IT** — or
     /// [`None`] when this document declines, which is the template's shipped state.
     ///

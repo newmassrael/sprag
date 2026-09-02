@@ -401,6 +401,52 @@
     <data id="milestone_check" expr="'claude -p --output-format json'"/>
 
     <!--
+      🎯🎯🎯🎯🎯 AND WHO SAYS A PROPOSED CHECKPOINT IS ONE TO TAKE NEXT — register
+      item 839, and the owner's decision of 2026-09-02: *"전부 공통되게 해야해,
+      지금 프로젝트말고 다른 프로젝트에서도 자동으로 적용되게 범용적으로 들어가야해"*.
+
+      ⛔⛔⛔⛔⛔ WHAT THIS REPLACES IS A PARAGRAPH OF `working_rules` BELOW. Rules
+      11 to 14 down there say what a round takes first — while anything is marked
+      critical, take from those; a debt deeper than the re-aiming cap is
+      registered rather than worked. They are PROSE. `working_rules` is one of six
+      fragments concatenated into `start_prompt`; no `cond` reads it, no gate
+      holds a run to it, and a run that ignored it was refused by nobody. The
+      supervisor that wrote those four rules put them on the line under rule 10,
+      which says exactly that. This is that decision made into a predicate.
+
+      ⚠⚠⚠ THE RULE ITSELF IS NOT HERE, AND THAT IS THE DESIGN. `ai_loop.scxml`
+      holds the machine — count a proposal you may not take, and do not take it —
+      and other repositories copy that file, so it may not know the word
+      `critical` or that this tree keeps a register at all. What may be taken here
+      is `north-star`'s admissibility mode, which composes this repository's own
+      two lists (`critical` while it is non-empty, else the population the depth
+      cap allows) and answers YES or NO with one sentence.
+
+      ⚠⚠ IT IS THE SAME SHAPE AS `milestone_check` ABOVE and deliberately not the
+      same KIND of program. That one asks a model to read a tree; this asks a
+      predicate to read a file, so it is deterministic, it costs nothing anybody
+      is billed for, and it cannot be talked round. Measured the day it was
+      written: 2.22 s from a cold build of its own binary, 0.27 s warm.
+
+      ⚠⚠ ITS OWN TARGET DIRECTORY, WHICH IS NOT TIDINESS. `target/` in this tree
+      is shared with the agent this loop is driving (register item 196), and a
+      `cargo` invocation that queued behind that agent's build would outrun the
+      driver's bound and answer *silent* — which sets every proposal aside. A
+      separate directory cannot contend with it, and `sprag-gate` declares no
+      dependencies, so what it costs on a cold cache is one crate.
+
+      ⚠ THE MANIFEST IS NAMED ABSOLUTELY rather than left to the spawn's
+      directory, on `reference` below's terms: this document is this repository's
+      own, and a classifier that silently answered about whatever tree it happened
+      to land in would be worse than one that failed to start.
+    -->
+    <data id="successor_check"
+          expr="'env CARGO_TARGET_DIR=/home/coin/.cache/sprag-admits ' +
+                'cargo run -q --manifest-path /home/coin/sprag/Cargo.toml ' +
+                '-p sprag-gate --bin north-star -- --admits ' +
+                '/home/coin/.claude/projects/-home-coin-sprag/memory/debt-open.md'"/>
+
+    <!--
       ⚠⚠⚠⚠⚠ THE WORDS THIS REPOSITORY'S PEER PRINTS WHEN ITS SERVICE FAILS, and
       the template ships this empty for exactly the reason this file can fill it:
       the sentence is `claude`'s, and this document is the one that knows its

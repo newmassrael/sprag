@@ -9,6 +9,21 @@
 //!
 //! Why a mark rather than a word list, and why an unmarked item is a debt instead of a "no", are in
 //! [`sprag_gate::north_star`]'s own docs.
+//!
+//! # 🎯🎯🎯🎯🎯 `--admits <ledger> <proposal>` — register item 839
+//!
+//! ```text
+//! north-star --admits <debt-open.md> "항목 839 를 갚아라 — …"
+//! ```
+//!
+//! Answers `YES` or `NO` as its first word, then one sentence. It is the shape a loop's
+//! `successor_check` is read by — a verdict is a WORD, and everything about how that reply is found
+//! is `sprag_plugin::judge`'s, not this binary's.
+//!
+//! ⚠⚠ **THIS BINARY DECIDES WHAT THIS REPOSITORY ADMITS, AND NOTHING ABOUT ANY OTHER.** The machine
+//! that counts a refused proposal and declines to take it is in `ai_loop.scxml`, which other
+//! repositories copy; the MEANING is here, where this ledger's marks are. That split is the whole
+//! of item 839.
 
 use sprag_gate::north_star;
 
@@ -21,6 +36,9 @@ fn main() -> std::process::ExitCode {
         );
         return std::process::ExitCode::FAILURE;
     };
+    if path == *"--admits" {
+        return admits(args);
+    }
     if args.next().is_some() {
         eprintln!("north-star: one ledger, not several");
         return std::process::ExitCode::FAILURE;
@@ -103,4 +121,95 @@ fn main() -> std::process::ExitCode {
         eprintln!("  {fault}");
     }
     std::process::ExitCode::FAILURE
+}
+
+/// 🎯🎯🎯🎯🎯 **IS THIS PROPOSAL ONE A ROUND MAY TAKE NEXT?** — register item 839, and the half of
+/// register item 833(1) that had been written as prose.
+///
+/// # ⛔⛔⛔⛔⛔ Why a `NO` and a *"cannot tell"* are the same answer here
+///
+/// Working rule 6 in one place: an unclassified thing is not a pass. A proposal this cannot place
+/// in the ledger — it names no item, the ledger will not read — is one nothing has said is
+/// admissible, and admitting it would make every failure of this instrument read as a green.
+///
+/// ⚠ The COST of that direction is real and is stated rather than hidden: a broken ledger path
+/// stops a loop re-aiming at all. It is visible where it happens — the run counts every proposal it
+/// set aside, and the sentence below travels with the verdict — which is exactly what a silent
+/// admission would not be.
+///
+/// ⚠⚠ **THE CAP IS THE DOCUMENT'S AND THIS ONLY MIRRORS IT**, as the report above already does:
+/// `SPRAG_REAIM_MAX` names the same number `ai_loop.scxml` holds, and a round that moves the
+/// document's value and wants this to agree passes it.
+fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::ExitCode {
+    // ⚠ NOT `println!` on the failure paths: this reply is read as a VERDICT, and a first word that
+    // is not YES or NO is *the checker said nothing this run could read* — the honest answer for an
+    // instrument that could not judge, and the one that sends a reader to the instrument.
+    let Some(path) = args.next() else {
+        eprintln!("north-star: --admits needs the ledger's path, then the proposal");
+        return std::process::ExitCode::FAILURE;
+    };
+    let Some(proposal) = args.next() else {
+        eprintln!("north-star: --admits needs the proposal after the ledger");
+        return std::process::ExitCode::FAILURE;
+    };
+    if args.next().is_some() {
+        eprintln!("north-star: --admits takes one ledger and one proposal");
+        return std::process::ExitCode::FAILURE;
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!(
+                "north-star: cannot read {}: {error}",
+                path.to_string_lossy()
+            );
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let reading = north_star::read(&text);
+    if reading.items.is_empty() {
+        eprintln!(
+            "north-star: {} has no section A items — a ledger nothing was read out of cannot \
+             admit or refuse anything",
+            path.to_string_lossy(),
+        );
+        return std::process::ExitCode::FAILURE;
+    }
+    let cap: u32 = std::env::var("SPRAG_REAIM_MAX")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    let admitted = reading.admits(cap);
+    let spelled: Vec<String> = admitted.iter().map(ToString::to_string).collect();
+    let proposal = proposal.to_string_lossy();
+    let Some(number) = reading.names(&proposal) else {
+        println!(
+            "NO — this proposal names no item of the register, so nothing here can say it is one \
+             to take now. What a round may take: {}",
+            spelled.join(" "),
+        );
+        return std::process::ExitCode::SUCCESS;
+    };
+    if admitted.contains(&number) {
+        println!(
+            "YES — item {number} is in what this register says to take next ({} item(s)).",
+            admitted.len(),
+        );
+        return std::process::ExitCode::SUCCESS;
+    }
+    // ⚠⚠ THE REASON NAMES WHICH RULE REFUSED IT, because the two remedies differ: an item the
+    // severity gate holds back waits for the critical set to empty, and one the depth cap holds
+    // back waits for the cap to lift. A reader told only *"not in the set"* cannot act.
+    let why = if reading.deferred(cap).contains(&number) {
+        format!(
+            "item {number} sits deeper than {cap} in the chain that found it, so it is \
+                 registered rather than worked"
+        )
+    } else if reading.population().contains(&number) {
+        format!("item {number} is open but not in the set to take next")
+    } else {
+        format!("item {number} is not in this register's open population")
+    };
+    println!("NO — {why}. What a round may take: {}", spelled.join(" "));
+    std::process::ExitCode::SUCCESS
 }
