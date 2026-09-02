@@ -2376,6 +2376,119 @@ mod tests {
         HostState::new(host, channels, None)
     }
 
+    /// [`host_with`], plus a hook the pane's reader runs AT THE CHILD'S EXIT.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a hook and not a clock — register item 826
+    ///
+    /// The reader's tail is ORDERED: publish EOF, bump for the exit, call `on_exit`, reap, bump
+    /// again. So anything read INSIDE this hook is read with the reap's bump still owed to it **by
+    /// construction, on every platform**.
+    ///
+    /// A reading taken by polling [`wait_for_pane0_eof`] has that property only where the platform
+    /// delays EOF past the child's death — which is a fact about the platform and not about this
+    /// repository. Linux publishes EOF when the last slave descriptor closes, so a child that
+    /// closes its three and then sleeps leaves a whole second of window; macOS does not, and the
+    /// same fixture there reaches EOF only as the child dies, with the reap's bump landing inside
+    /// the poll's own 20 ms. Measured: two consecutive `headless (macos)` reds on a test Linux ran
+    /// green three times over.
+    fn host_with_exit_hook(
+        script: &str,
+        cols: u16,
+        rows: u16,
+        at_exit: impl Fn(&ChannelRegistry) + Send + 'static,
+    ) -> HostState {
+        let channels = Arc::new(ChannelRegistry::default());
+        let seen = Arc::clone(&channels);
+        let host = Host::new((cols, rows));
+        host.spawn(
+            sh(script),
+            "sh".to_string(),
+            cols,
+            rows,
+            sprag_terminal::PaneBirthHooks {
+                on_dirty: Some(bump_on_dirty(&channels.revision(BOOT))),
+                on_exit: Some(Box::new(move || at_exit(&seen))),
+                ..sprag_terminal::PaneBirthHooks::default()
+            },
+        )
+        .expect("spawn pane");
+        HostState::new(host, channels, None)
+    }
+
+    /// [`host_with`], plus a count of how many times **the pane** woke the host.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a separate count and not the revision — register item 826
+    ///
+    /// The revision is moved by BOTH the pane and the dispatch path: a `scene/invoke` is a mutation
+    /// and bumps on its own, measured here at **two** bumps for one keystroke request. So anything
+    /// asking *did the pane wake anybody* out of the revision alone is asking about a SUM, and
+    /// subtracting a fixed offset from that sum is a constant nobody keeps.
+    ///
+    /// ⚠⚠ AND THE OBVIOUS SUBSTITUTE IS WRONG TOO, MEASURED. Waiting for the echo to appear ON THE
+    /// SCREEN and then reading the revision looks like an event-shaped barrier, and it is — for the
+    /// wrong event. The reader applies the batch to the emulator and bumps AFTER it, in that order,
+    /// so a screen already showing the echo has not necessarily bumped for it: with the bump
+    /// deleted outright the counter read exactly the same (`before_key=1 after_echo=3`) as with the
+    /// product intact, and a control built on it passed its own mutation.
+    ///
+    /// `on_dirty` is the pane's OWN door. Counting it is the only reading that stays about the pane.
+    fn host_with_pane_wakes(
+        script: &str,
+        cols: u16,
+        rows: u16,
+    ) -> (HostState, Arc<std::sync::atomic::AtomicU64>) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let channels = Arc::new(ChannelRegistry::default());
+        let wakes = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&wakes);
+        let bump = bump_on_dirty(&channels.revision(BOOT));
+        let host = Host::new((cols, rows));
+        host.spawn(
+            sh(script),
+            "sh".to_string(),
+            cols,
+            rows,
+            sprag_terminal::PaneBirthHooks {
+                on_dirty: Some(Box::new(move || {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                    bump();
+                })),
+                ..sprag_terminal::PaneBirthHooks::default()
+            },
+        )
+        .expect("spawn pane");
+        (HostState::new(host, channels, None), wakes)
+    }
+
+    /// Block (bounded) until the pane has woken the host more than `mark` times.
+    fn wait_until_pane_wakes_past(wakes: &std::sync::atomic::AtomicU64, mark: u64, because: &str) {
+        use std::sync::atomic::Ordering;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if wakes.load(Ordering::Relaxed) > mark {
+                return;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        panic!("the pane never woke the host again after {mark} wake(s): {because}");
+    }
+
+    /// Block (bounded) until `cell` holds a value, answering what was put there.
+    ///
+    /// ⚠ What is WAITED for is the recording, and what is RETURNED is the value the recorder saw —
+    /// so the answer is about the recorder's moment, not about this thread's. That is the whole of
+    /// what makes a hook-taken baseline immune to the poll interval.
+    fn wait_until_recorded(cell: &Mutex<Option<u64>>, because: &str) -> u64 {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if let Some(value) = *lock(cell) {
+                return value;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        panic!("{because}");
+    }
+
     /// One request through the dispatch path (no serve loop / shutdown join), so
     /// the `HostState` persists across calls and a background run is not joined
     /// between requests.
@@ -6228,26 +6341,49 @@ mod tests {
     /// carrying its exit STATUS — and those are two different moments, since a closed descriptor
     /// does not prove a terminated child.
     ///
-    /// The fixture widens what is otherwise a race into something a clock can see: the child closes
-    /// all three descriptors and only THEN sleeps, so the master reaches EOF at once while
-    /// `child.wait()` stays parked for a whole second. A reading taken at EOF is therefore taken
-    /// with a bump still owed, which is exactly the state that made a search look like a writer.
+    /// # ⛔⛔⛔⛔⛔ THE BASELINE IS TAKEN IN THE EXIT HOOK, NOT ON A CLOCK — register item 826
+    ///
+    /// The first draft widened the race with a FIXTURE: the child closes all three descriptors and
+    /// only then sleeps, so Linux publishes EOF at once while `child.wait()` stays parked for a
+    /// whole second, and a poll on `is_eof` lands inside that second. **That window is a property
+    /// of the platform, not of this repository** — macOS publishes EOF only as the child dies, the
+    /// reap's bump lands inside the poll's own 20 ms, and the same test was red there on two
+    /// consecutive runs while Linux was green three times over. A test whose subject exists on one
+    /// operating system is measuring that operating system.
+    ///
+    /// [`host_with_exit_hook`] removes the clock entirely. The reader's tail is ordered — publish
+    /// EOF, bump, call `on_exit`, reap, bump — so the number read INSIDE the hook has the reap's
+    /// bump owed to it by construction, wherever the EOF itself happened to fall. The fixture keeps
+    /// its `sleep 1` because on Linux it also makes the two moments visibly distinct; nothing here
+    /// depends on that any more.
     ///
     /// ⚠ Asserted as *"it rises again"* rather than *"it rose by two"*: the count is the reader
     /// thread's business and a third wake added there is not this test's failure. That the number
     /// is still MOVING is the whole of what a baseline-taker needs to know.
     #[test]
     fn a_pane_at_eof_still_has_a_wake_owed_to_it() {
-        let state = host_with("printf hit; exec 0<&- 1>&- 2>&-; sleep 1", 20, 4);
-        wait_for_pane0_eof(&state);
-        let at_eof = state.revision(BOOT).current();
+        let at_exit: Arc<Mutex<Option<u64>>> = Arc::default();
+        let record = Arc::clone(&at_exit);
+        let state = host_with_exit_hook(
+            "printf hit; exec 0<&- 1>&- 2>&-; sleep 1",
+            20,
+            4,
+            move |channels| {
+                *lock(&record) = Some(channels.revision(BOOT).current());
+            },
+        );
+        let at_eof = wait_until_recorded(
+            &at_exit,
+            "the reader never reached its exit hook within 5s, so nothing below is about a pane \
+             whose child has gone",
+        );
 
         wait_until_revision_moves_past(
             &state,
             at_eof,
-            "either the reader stopped waking on a child's exit — which strands every parked \
-             `scene/waitFor` over a dead pane — or the fixture no longer holds its descriptors \
-             open past the close, in which case this test no longer measures the window it names",
+            "either the reader stopped waking on the child's REAP — which strands every parked \
+             `scene/waitFor` over a dead pane — or the exit hook has moved to after the reap, in \
+             which case this test no longer measures the window it names",
         );
     }
 
@@ -6270,7 +6406,8 @@ mod tests {
     /// about a descriptor, so what it settles is what is measured.
     #[test]
     fn a_find_query_does_not_bump_the_revision() {
-        let state = host_with("printf hit; exec cat", 20, 4);
+        use std::sync::atomic::Ordering;
+        let (state, pane_wakes) = host_with_pane_wakes("printf hit; exec cat", 20, 4);
         wait_until_pane0_find_matches(&state, "hit");
         let before = state.revision(BOOT).current();
         for _ in 0..5 {
@@ -6289,21 +6426,38 @@ mod tests {
         // still move the number — so what was measured is a search failing to move a live counter
         // rather than a dead one holding still.
         //
-        // ⚠⚠ THE BASELINE IS TAKEN AFTER THE KEYSTROKE, and that is the whole of what makes this a
-        // control over the PANE. Measured: with `on_dirty` removed — a pane whose output moves
-        // nothing at all — a control anchored at `before` stayed GREEN, because a `scene/invoke` is
-        // a mutation and bumps on its own. It was answering about the dispatch path while claiming
-        // to be about the child.
+        // ⚠⚠ THE INVOKE'S OWN BUMP MUST NOT STAND IN FOR THE PANE'S. Measured: with `on_dirty`
+        // removed — a pane whose output moves nothing at all — a control that only asked whether
+        // the number had risen since `before` stayed GREEN, because a `scene/invoke` is a mutation
+        // and bumps on its own. It was answering about the dispatch path while claiming to be
+        // about the child.
+        //
+        // ⛔⛔⛔⛔⛔ AND ANCHORING THAT EXCLUSION ON AN INSTANT IS WHAT REGISTER ITEM 826 IS. Reading
+        // the revision once the invoke has RETURNED excludes the invoke's bump only while the
+        // echo's has not landed yet: the reader is another thread, and when it gets there first
+        // nothing bumps afterwards and the wait dies at its five seconds with the pane blameless.
+        // Measured on `f03dd7e`'s `headless (linux)` and reproduced here 1 run in 28.
+        //
+        // ⛔⛔ THE FIRST REPAIR FOR *THAT* WAS WRONG TOO, AND ITS OWN MUTATION SAID SO. Waiting for
+        // the echo to reach the SCREEN and then reading the revision is event-shaped, but it is the
+        // wrong event: the reader applies the batch to the emulator and bumps AFTER it. With the
+        // bump deleted outright the counter read the same `before_key=1 after_echo=3` as with the
+        // product intact — the whole of that 2 is the dispatch's — so the control passed its own
+        // mutation while claiming to be about the child.
+        //
+        // ⇒ THE PANE'S WAKES ARE COUNTED AT THE PANE'S OWN DOOR. `host_with_pane_wakes` tallies
+        // `on_dirty`, which nothing but this pane calls, so no arithmetic against the dispatch is
+        // needed and no instant is raced: the keystroke goes out and the tally must rise.
+        let woke_before = pane_wakes.load(Ordering::Relaxed);
         let key = format!(
             r#"{{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{{"path":"{}","args":{{"key":"z"}}}}}}"#,
             crate::wire::pane_input_path(0, crate::wire::KEY_ACTION),
         );
         let typed = serve_one(&state, &key);
         assert!(typed.get("error").is_none(), "keystroke error: {typed}");
-        let after_key = state.revision(BOOT).current();
-        wait_until_revision_moves_past(
-            &state,
-            after_key,
+        wait_until_pane_wakes_past(
+            &pane_wakes,
+            woke_before,
             "the pane's own output no longer wakes anybody, so the equality above is a dead \
              counter holding still rather than a search declining to move a live one",
         );
