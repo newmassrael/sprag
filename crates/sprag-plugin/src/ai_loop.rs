@@ -4395,7 +4395,7 @@ mod tests {
     /// patience, on the path these fixtures can reach.
     ///
     /// ⚠ Its sibling for the OTHER side of the turn is
-    /// [`a_turn_judged_done_types_at_a_peer_the_supervisor_calls_blocked`], register item 828.
+    /// [`a_turn_judged_done_types_nothing_at_a_peer_parked_at_a_dialog`], register item 828.
     #[test]
     fn a_run_waiting_for_a_person_spends_one_step_on_the_whole_wait() {
         /// Short enough to keep the gate cheap, long enough that a spinning driver needs hundreds
@@ -4505,41 +4505,65 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
-    /// ⛔⛔⛔⛔⛔ **A TURN JUDGED DONE TYPES ITS NEXT PROMPT AT A PEER THE SUPERVISOR IS CALLING
-    /// `Blocked`** — register item 828, staged deterministically for the first time.
+    /// ⭐⭐⭐⭐⭐ **A TURN JUDGED DONE TYPES NOTHING AT A PEER PARKED AT A DIALOG — IT TELLS THE
+    /// MACHINE INSTEAD** — register item 828, paid.
     ///
-    /// # ⚠⚠⚠ WHAT THIS GATE ASSERTS, AND WHY IT ASSERTS THE DEFECT
+    /// # ⛔⛔⛔ What was measured before the door existed
     ///
-    /// It pins **what the product does today**, not what it should do, and that is deliberate:
-    /// item 828's repair is NOT decided, and it must not be decided by a test written before it.
-    /// What the item needed first was a fixture that puts the loop at the delivery site with its
-    /// supervisor calling the peer blocked — measured, every run, instead of once in 240 contended
-    /// ones (826). This is that fixture.
+    /// One contended run in 240 (register item 826's sweep): the loop judged a turn done, composed
+    /// its next prompt, typed it at a peer its own supervisor was calling `Blocked`, **wrote that
+    /// fact on its journal line**, and converged. A prompt ends in a NEWLINE and a peer showing a
+    /// menu takes that newline as the menu's answer — so the cost was not a turn opened at a
+    /// distracted agent, it was a choice nobody consented to, pressed by a run that then reported
+    /// having asked a question.
     ///
-    /// ⚠⚠ **SO A REPAIR MAKES THIS GATE RED, AND THAT IS THE POINT.** Whoever pays 828 rewrites
-    /// this assertion to the ending they chose, and the rewrite is the repair's proof. A gate that
-    /// went on passing through the repair would be measuring nothing.
+    /// ⚠⚠ **THE READING WAS ALREADY IN HAND AND NOTHING BRANCHED ON IT.** `OuterLoop::say` mints
+    /// `Faced::read` one line before it injects, and the value reached the journal and
+    /// `submit_lands_when` — which consults `Faced::reported()` and never the STATE. So this item
+    /// was never *a missing door*: it was a door that opened, looked, and filed what it saw.
     ///
-    /// # ⚠⚠⚠⚠ Why the journal line is the right subject
+    /// # ⚠⚠⚠⚠⚠ Why the three assertions below are the whole of the repair
     ///
-    /// The reading is ALREADY taken at the honest moment — `OuterLoop::say` calls `Faced::read`
-    /// immediately before injecting, and its own comment says so: *"WHAT THIS RUN IS ABOUT TO TYPE
-    /// AT"*. The value reaches exactly two places: this journal line, and `submit_lands_when`,
-    /// which reads only `Faced::reported()` and never the STATE. **So the defect is not a missing
-    /// door — it is a door that opens, looks, and files what it saw.** Asserting the journal line
-    /// is therefore asserting the whole of what the product does with the reading.
+    /// * **not one byte** is the harm itself, and the only claim a reader needs: the newline that
+    ///   would have answered the menu did not go in;
+    /// * **the machine was told, in its own word** — `turn.blocked`, through the composer the
+    ///   turn-that-ended-at-a-dialog door already used, so the two arrivals of one fact cannot
+    ///   route differently;
+    /// * **and a person is reached** rather than the run pressing on. Without this last one the
+    ///   gate would pass on a product that refused and then died silently, which buys a caller
+    ///   nothing over the defect.
     ///
-    /// ⚠ It also settles the open question the item could not answer by reading: whether the
-    /// barrier is consulted on this road. It is not — if it were, this walk would end in
-    /// `AwaitingHuman` and this gate would say so.
+    /// ⚠⚠⚠ **AND THE SUBJECT IS THE QUESTION, NOT THE STATE WORD.** A door keyed on
+    /// `facing.state == Blocked` passes THIS gate and breaks two of the three places this loop
+    /// types: a supervisor goes on calling a pane blocked for its whole settle window after a
+    /// dialog has gone, and both `Refused::Gone` arms type inside exactly that window.
+    ///
+    /// ⛔⛔⛔⛔⛔ **SO THIS GATE ALONE CANNOT HOLD THE DESIGN, AND THE FIVE THAT DO ARE NAMED
+    /// RATHER THAN ALLUDED TO.** Measured 2026-09-02 by keying the door on the state word: this
+    /// gate stayed GREEN and exactly these went red —
+    /// `a_loop_carries_out_the_standing_instruction_its_author_wrote`,
+    /// `a_standing_instruction_reaches_every_prompt_once_it_has_been_adopted`,
+    /// `a_reflection_replaces_the_session_and_the_new_one_is_told_what_was_learned`,
+    /// `a_replacement_session_that_comes_up_asking_ends_the_run_saying_what_it_asked`,
+    /// `the_walk_says_why_a_run_stopped_to_reflect`. A reader who changes this door's subject and
+    /// runs only the 828 gate learns nothing, and the first draft of this paragraph named ONE of
+    /// the five and guessed at a second — which is the shape a list has to be measured to avoid.
+    ///
+    /// ⚠ This gate also settled the open question the item could not answer by reading: the
+    /// barrier is NOT consulted on the delivery road, which is why a door had to be put there.
     #[test]
-    fn a_turn_judged_done_types_at_a_peer_the_supervisor_calls_blocked() {
+    fn a_turn_judged_done_types_nothing_at_a_peer_parked_at_a_dialog() {
+        /// Short enough to keep the gate cheap, and the reason it is authored at all is the last
+        /// assertion: a run that reaches a person must not sit on the default patience to prove it.
+        const PATIENCE: Duration = Duration::from_millis(200);
+
         let (workspace, pane) = crate::testing::standin_agent(4);
         let (peer, access) = crate::testing::AsksOnceItsTurnIsJudged::over(&workspace);
         let mut loops = AiLoop::new(
             engine(),
             pane,
             &Brief {
+                await_person_ms: Some(PATIENCE.as_millis() as i64),
                 handback_still_ms: Some(50),
                 ..brief_for(1_000_000)
             },
@@ -4573,26 +4597,61 @@ mod tests {
         // between steps, so nothing is mid-pass and the very next read sees the new state.
         peer.raise();
 
-        // ⚠⚠ THE STEP'S ERROR IS NOT `expect`ed, and the first mutation of this gate is why: a
-        // repair that REFUSES to type surfaces as an error here, and an `expect` would report it
-        // as *the step was unreadable* — a sentence about the harness — instead of at the pin
-        // below, which is the only place that can say what it means. Every ending this step can
-        // have is folded into one string and judged in one assertion.
-        let typed = match loops.step(&access, &run) {
-            Ok(step) => step.note.unwrap_or_default(),
-            Err(refused) => format!("the step REFUSED rather than typing: {refused:?}"),
+        // ⚠⚠ THE STEP'S ERROR IS NOT `expect`ed, and a mutation of this gate is why: a product
+        // that ENDS THE RUN here instead of telling the machine surfaces as an error, and an
+        // `expect` would report it as *the step was unreadable* — a sentence about the harness —
+        // instead of at the pins below, which are the only place that can say what it means. Every
+        // ending this step can have is folded into one pair and judged there.
+        let (spent, delivered) = match loops.step(&access, &run) {
+            Ok(step) => (step.cost, step.note.unwrap_or_default()),
+            Err(refused) => (
+                Cost::Bytes(0),
+                format!("the run ENDED rather than telling the machine: {refused:?}"),
+            ),
         };
-        walked.push(typed.clone());
+        walked.push(delivered.clone());
+
+        // ⭐⭐⭐⭐⭐ THE HARM ITSELF: the newline that would have answered the menu did not go in.
+        assert_eq!(
+            spent,
+            Cost::Bytes(0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 828. The step after a judged turn spent {spent:?} at a peer \
+             parked at a dialog, so a prompt WAS typed and its Enter was taken as the menu's \
+             answer — a choice nobody consented to. Journal: {delivered:?}. Walked {walked:?}",
+        );
+        // ⭐⭐⭐⭐ AND THE MACHINE WAS TOLD, IN THE DOCUMENT'S OWN WORD rather than by the run
+        // quietly declining to type. A driver that refused and reported nothing would leave the
+        // pass after it saying `prompt.sent` about a prompt that was never sent.
+        assert!(
+            delivered.starts_with("Working --TurnBlocked--> Screening"),
+            "⚠⚠⚠⚠ THE REFUSAL MUST REACH THE DOCUMENT. The step typed nothing, which is half the \
+             repair, but the journal said {delivered:?} rather than the `turn.blocked` this \
+             document routes a parked peer on — so the machine was left standing where the prompt \
+             was supposed to have gone. Walked {walked:?}",
+        );
+
+        // ── and the run must reach a PERSON, which is what the refusal is for ──
+        for _ in 0..40 {
+            if loops.state() == AiLoopState::AwaitingHuman {
+                break;
+            }
+            let step = loops
+                .step(&access, &run)
+                .expect("every step of a blocked run must be readable");
+            if let Some(note) = step.note {
+                walked.push(note);
+            }
+        }
+        let reached = loops.state();
         access.lifecycle().expect("lifecycle").close(pane);
 
-        assert!(
-            typed.contains("it typed at a peer its supervisor called Blocked"),
-            "⚠⚠⚠⚠⚠ REGISTER ITEM 828, AND THIS IS THE LINE THAT PINS IT. The step after a judged \
-             turn was expected to type at a peer this run's supervisor calls `Blocked` — the \
-             reading `OuterLoop::say` takes one line before it injects — and the journal said \
-             {typed:?} instead. Either the product now CONSULTS that reading (which is 828's \
-             repair, and this assertion is then the thing to rewrite), or the double stopped \
-             staging the moment. Walked {walked:?}",
+        assert_eq!(
+            reached,
+            AiLoopState::AwaitingHuman,
+            "⚠⚠⚠⚠⚠ AND THE DIALOG MUST REACH SOMEBODY. Not typing is worth nothing on its own: a \
+             run that declines and then dies has swapped one silent ending for another. This one \
+             stopped at {reached:?}, so the question the peer asked is on a screen with nobody \
+             coming. Walked {walked:?}",
         );
     }
 

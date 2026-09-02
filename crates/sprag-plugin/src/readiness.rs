@@ -1809,6 +1809,59 @@ impl Readiness {
         }
     }
 
+    /// **WHAT THE PEER IS PARKED AT THAT THIS RUN MAY NOT ANSWER** — the one question the TYPING
+    /// door asks, and [`None`] for every other state that pane can be in.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a second entry point, when [`reached`](Self::reached) answers this already
+    ///
+    /// Register item 828. A driver that has judged a turn over composes its next prompt and types
+    /// it, and the peer can raise a menu in the gap between the pass's barrier and that injection —
+    /// **measured, and the newline was taken as the menu's answer.** So the door at the injection
+    /// has to ask, and what it needs is NARROWER than a pass boundary's question by exactly the
+    /// three facts it must not act on:
+    ///
+    /// * **a person at the keyboard** is [`Reached::Interrupted`], whose remedy is the run ending
+    ///   and whose door is the pass boundary. Asking it here would give one fact two authorities;
+    /// * **the readiness condition** is answered once per run and then latched, so re-asking it at
+    ///   every injection would arm and poll a marker that has already been seen;
+    /// * **waiting for a person** is what the BARRIER does with a refusal. Here the refusal travels
+    ///   to the document instead, which reaches the same person through its own `screening` and
+    ///   does it where an author can read the route.
+    ///
+    /// ⚠⚠⚠ **AND IT IS NOT A SECOND OPINION ON WHAT A RUN MAY ANSWER.** It is built from the two
+    /// primitives `reached` itself uses — [`settled_question`] for what is on the pane, and
+    /// [`answer`](Self::answer) for what this run's consents make of it — so a clause that answers
+    /// a dialog at a pass boundary answers it here, in the same words, by the same code.
+    ///
+    /// ⚠⚠ **THE SETTLE WINDOW IS WHAT MAKES THE STATE THE WRONG SUBJECT AND THE QUESTION THE RIGHT
+    /// ONE.** A supervisor goes on calling a pane `Blocked` for [`sprag_detect::DEFAULT_SETTLE`]
+    /// after a dialog has been answered and gone — so a door keyed on the STATE would refuse every
+    /// prompt a screen rule or a redirect types straight after answering one. `settled_question`
+    /// waits that ambiguity out, which is the whole reason it exists.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError`] from the answering injection itself — an unencodable key or a failed write,
+    /// which is a failure of the run rather than a refusal of the answer.
+    pub(crate) fn unanswered_question(
+        &self,
+        panes: &dyn PaneAccess,
+        pane: PaneId,
+        run: &RunContext,
+    ) -> Result<Option<Unanswered>, PaneError> {
+        let Some(asking) = settled_question(panes, pane, run) else {
+            return Ok(None);
+        };
+        Ok(match self.answer(panes, pane, asking, run)? {
+            Reached::Asking(unanswered) => Some(unanswered),
+            // ⚠ EVERY OTHER ANSWER IS *THE DIALOG IS NOT IN THIS RUN'S WAY*: a consent took it
+            // ([`Reached::Answered`]), the pane is ready ([`Reached::Yes`]), or the run ended
+            // underneath — and that last one is the CALLER's to notice, at the `?` its own
+            // delivery is about to reach, rather than a second ending invented here.
+            _ => None,
+        })
+    }
+
     /// **WHAT THIS BARRIER WAS STILL WAITING FOR, AND WHAT THE PANE WAS DOING INSTEAD** — built in
     /// ONE place because both of [`reached`](Self::reached)'s unsatisfied endings hand it back and
     /// they must not be able to say different things.

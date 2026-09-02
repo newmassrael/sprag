@@ -4501,6 +4501,24 @@ pub struct OuterLoop {
     /// answer, a redirect). That is the property the deleted `Owed::asked_for_an_account` had by
     /// being an exhaustive match, kept by making it an argument of the one function that types.
     asks: Option<crate::act::Asks>,
+    /// **WHAT THIS DOCUMENT SAYS ITS PEER PRINTS WHEN ITS SERVICE FAILS**, as the pass in force
+    /// handed it over — or [`None`] where this pass was not given the act that carries it.
+    ///
+    /// # ⚠⚠⚠⚠ Why the pass's own value is kept, when register item 470 took every other one away
+    ///
+    /// It is not a second authority and it is not a datamodel read: it is the ONE value the
+    /// document sends whose reader is no longer inside the pass. Two doors now compose
+    /// `turn.blocked` — the turn that ENDED at a dialog, out of [`Self::watch`], and the prompt
+    /// this loop DID NOT TYPE because one was already up (register item 828, caught at
+    /// [`Self::pump`]'s funnel for `peer.gone`'s reason). The second is on the far side of the act,
+    /// so either the needles are kept here or that door composes its payload without them — and a
+    /// blocked delivery during an outage would then route to `screening` while its twin one line
+    /// over routed to `service_down`, which is two answers to one fact.
+    ///
+    /// ⚠ Re-seeded on EVERY pass that is given an act, beside the barrier's four contracts and for
+    /// their reason: a value taken once would outlive the document that said it, and `restarting`
+    /// replaces the document's whole peer without replacing this driver.
+    needles: Option<String>,
     /// The engine its `<data>` lives in, and the session id it files them under.
     script: Arc<dyn IScriptEngine>,
     session: String,
@@ -5107,6 +5125,9 @@ impl OuterLoop {
             serving,
             // Nothing has been asked, so no question is in flight for anything to be asking for.
             asks: None,
+            // ⚠ No pass has run, so the document has not said what an outage looks like yet — the
+            // field's own rule, which is that this is the PASS's value and never a construction one.
+            needles: None,
             script,
             session,
             // ⚠ Nothing yet: the line this is measured from is the BRIEF, which has not landed —
@@ -7011,6 +7032,23 @@ impl OuterLoop {
     /// pass. It is bounded by construction — the door refuses every write at a dead pane, so the
     /// only bytes that can be lost are ones that went into a pane still alive at the time — and the
     /// alternative is threading a partial cost out of six acts that do not return one.
+    ///
+    /// # ⛔⛔⛔ And a second one for the same reason: *the peer is already at a dialog*
+    ///
+    /// Register item 828. The typing door refuses a prompt whose newline a menu would have taken as
+    /// its answer, and that is the same fact `watch` reads at the top of a pass — arriving one
+    /// moment later, at the injection. So it is told to the document as `turn.blocked` through the
+    /// composer both doors share, `parked_at_a_dialog`, and it is caught HERE for the reason
+    /// directly above: three of this driver's acts type and only one goes through `advance`.
+    ///
+    /// ⚠ Both readers are SPELLED rather than linked: they are private and this method is public,
+    /// so an intra-doc link to either is `private_intra_doc_links` under `-D warnings` (item 365,
+    /// met again by this paragraph on its first commit).
+    ///
+    /// ⚠⚠ **UNLESS THE DOCUMENT DECLARES NO EDGE FOR IT THERE, IN WHICH CASE THE REFUSAL STANDS.**
+    /// A machine that did not move has not been told anything, and the pass after it would report a
+    /// prompt that was never sent — so an unclassified state ends the run with a sentence naming
+    /// the pane and the dialog rather than passing quietly.
     pub fn pump(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Pumped, PaneError> {
         // ⚠⚠⚠⚠⚠ **EMPTIED HERE, AT THE VERY TOP, AND THE PLACE IS THE POINT.** `witnessed` below
         // is cleared after the orders are carried in, which is right for a DELIVERY and would be
@@ -7264,6 +7302,100 @@ impl OuterLoop {
                     shown: None,
                 })
             }
+            // ⛔⛔⛔⛔⛔ **THE PROMPT WAS NOT TYPED BECAUSE THE PEER WAS ALREADY AT A DIALOG** —
+            // register item 828, and the second refusal this funnel translates rather than
+            // propagates.
+            //
+            // ⚠⚠⚠⚠⚠ IT IS THE SAME FACT `watch` READS AT THE TOP OF A PASS, ARRIVING ONE MOMENT
+            // LATER — which is the barrier's own two-doors shape, one layer out. So it is told to
+            // the document in the SAME WORDS, through the same composer
+            // ([`Self::parked_at_a_dialog`]): a blocked delivery during an outage reaches
+            // `service_down` and one a judge's rule claims reaches `redirecting`, exactly as its
+            // twin does. A bare raise here would have been a second, poorer answer to one fact.
+            //
+            // ⚠⚠⚠ **AND AT THE FUNNEL RATHER THAN IN `advance`, WHICH IS `peer.gone`'S MEASURED
+            // REASON.** Three acts of this driver type — the prompt a transition owes, a screen
+            // rule's answer and a judge's redirect — and only the first goes through `advance`.
+            // Catching there would leave the other two propagating, which is exactly the shape the
+            // dead-pane catch found the hard way one arm down.
+            //
+            // ⚠⚠ THE NOTICE IS NOT RE-RECORDED HERE. `say` wrote it in the barrier's own
+            // vocabulary at the moment it refused, and `judged` — asked inside the composer below —
+            // reads that notice to claim the question. A second copy taken here would be a reading
+            // of a pane a dialog's worth of time later, which is `screen`'s rule exactly.
+            Err(PaneError::PeerAsking { pane, asking }) => {
+                // ⚠⚠ READ AT THE RAISE, NOT AT THE TOP OF THE PASS — the sibling arms' measured
+                // reason: this arm raises AFTER `pumping` has run, so the pass's opening state is
+                // one the machine may already have left, and a walk line naming the wrong state is
+                // what register item 605 spent four rounds believing.
+                let from = self.state();
+                let raised = self.parked_at_a_dialog(panes, run);
+                let event = raised.event;
+                match raised.data {
+                    Some(data) => self.walk_carrying(event, &data),
+                    None => self.walk(event),
+                }
+                // ⛔⛔⛔⛔⛔ **AND WHERE THE DOCUMENT DECLARES NO EDGE FOR IT, THE RUN STOPS RATHER
+                // THAN CARRIES ON QUIETLY.** NINE states of this document can be at this door —
+                // seven that a `<send prompt.say>` lands a transition in (`priming`, `working`,
+                // `disputing`, `unverified`, `reflecting`, `closing`, `stopping`) plus the two that
+                // type without one (`screening`'s rule, `redirecting`'s), and exactly ONE of them
+                // answers `turn.blocked` today. In the other eight the machine stays where it is —
+                // and the pass after that reports `prompt.sent` about a prompt that was never sent,
+                // which is the measured defect `advance`'s own door comment is about. An
+                // unclassified state is therefore a REFUSAL and never a pass: the run ends naming
+                // the pane and the dialog, which is a sentence somebody can act on. ⚠ Register
+                // item 832 is that residue — the edges are the DOCUMENT's to author, with evidence,
+                // and a driver that invented them here would be deciding topology (item 470).
+                //
+                // ⚠⚠⚠ **THE WALK IS TAKEN AND THEN JUDGED, BECAUSE THIS ENGINE CANNOT BE ASKED
+                // WHETHER A STATE WOULD CONSUME AN EVENT WITHOUT SENDING IT.** So the edge `walk`
+                // recorded is WITHDRAWN in the same breath: `X --TurnBlocked--> X` is a non-event
+                // rendered as an event, which is this file's headline defect, and a reader of the
+                // run's path must not meet one. ⚠ The test is `from == to` and the residue is
+                // stated rather than hidden: a document that ever gives `turn.blocked` a SELF
+                // transition would be read here as having no edge at all. None of the three this
+                // document declares is one (`service_down`, `redirecting`, `screening`).
+                if self.state() == from {
+                    self.walked.pop();
+                    return Err(PaneError::PeerAsking { pane, asking });
+                }
+                Ok(Pumped::Moved {
+                    from,
+                    raised: event,
+                    to: self.state(),
+                    // ⚠ NOT ONE BYTE. That is the whole of what this refusal buys, and a cost of
+                    // anything else here would be this pass claiming a delivery it declined.
+                    spent: 0,
+                    // ⚠ Diffed rather than written `None`, on the dead-pane arm's terms: the door
+                    // refuses ahead of every mark and every injection, so nothing was delivered on
+                    // this pass and this answers `None` today — but it cannot become the one place
+                    // a delivery goes unreported if an act ever types before the door refuses.
+                    witnessed: self.told.tell(self.witnessed),
+                    // ⚠⚠⚠⚠⚠ **AND THE QUESTION THAT STOPPED THE PROMPT IS PUBLISHED, WHICH IS THE
+                    // WHOLE OF WHAT A READER GETS FOR THE TURN THIS PASS DID NOT OPEN.** Taken
+                    // rather than diffed, unlike its twin in `pumping`: the door OVERWROTE the
+                    // notice one line before it refused, so what is in the slot belongs to this
+                    // pass by construction rather than by comparison — and the comparison could
+                    // not be made here anyway, since the pass's opening snapshot is `pumping`'s.
+                    found: self.asking_now().cloned(),
+                    because: None,
+                    // ⚠ This pass never reached a turn's end, so it read no record and discovered
+                    // nothing about one.
+                    unreadable: None,
+                    // ⚠ AND NO JUDGEMENT HAPPENED — the judge asked inside the composer above is
+                    // the SCREEN judge that claims a dialog, which is a different question from
+                    // the milestone check this field carries.
+                    checked: None,
+                    // ⚠ NOR DID A TURN END. Nothing was asked, so there is no turn for anything to
+                    // have produced.
+                    made: None,
+                    // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
+                    // said beside, and no artifact for anything to have been shown.
+                    explained: None,
+                    shown: None,
+                })
+            }
             otherwise => otherwise,
         }
     }
@@ -7333,6 +7465,13 @@ impl OuterLoop {
             expected,
             answering,
         } = asking;
+        // ⛔⛔⛔ **AND WHAT AN OUTAGE LOOKS LIKE, KEPT WHERE THE OTHER DOOR CAN REACH IT** —
+        // register item 828. The `turn.blocked` a REFUSED DELIVERY raises is composed at
+        // [`Self::pump`]'s funnel, on the far side of this act, and a payload built there without
+        // these needles would route a blocked delivery during an outage to `screening` while the
+        // identical fact one line over went to `service_down`. Seeded beside the barrier's four
+        // contracts and for their reason — see the field.
+        self.needles = needles.clone();
         // ⚠⚠ THE BARRIER'S BOUND, SEEDED THE MOMENT THE DOCUMENT HAS SAID IT AND BEFORE ANY ACT IS
         // PERFORMED — it waits until here only because it arrives with the act rather than out of
         // the datamodel. It is re-seeded on EVERY pass for the funnel's reason and one of its own:
@@ -7441,31 +7580,10 @@ impl OuterLoop {
                     // engine has no seam to register a host function on, and SCXML does not promise
                     // how often it evaluates one, so a judgement inside a `cond` would be a model
                     // call of unknown multiplicity inside a microstep.
-                    AiLoopEvent::TurnBlocked => {
-                        // ⚠⚠⚠⚠⚠ ASKED FIRST, AND THE JUDGE IS NOT ASKED AT ALL WHEN IT ANSWERS
-                        // YES. A service failure is not a design decision, and judging one is a
-                        // model call — 4-6 seconds, measured — spent to arrive at the wrong state.
-                        // The document routes on this above `judged` for the same reason; doing it
-                        // in the other order here would pay for the judgement anyway.
-                        let service = self.service_failed(panes, needles.as_deref());
-                        let rule = if service {
-                            None
-                        } else {
-                            self.judged(panes, run)
-                        };
-                        Raise::carrying(
-                            AiLoopEvent::TurnBlocked,
-                            // ⚠ A BOOLEAN BESIDE THE NAME, because this datamodel is Lua and the
-                            // only false values there are `nil` and `false`. A guard reading the
-                            // name alone would fire on the empty string, i.e. on every blocked turn
-                            // of every run that matched nothing.
-                            serde_json::json!({
-                                "service": service,
-                                "judged": rule.is_some(),
-                                "rule": rule.unwrap_or_default(),
-                            }),
-                        )
-                    }
+                    // ⚠⚠⚠ COMPOSED SOMEWHERE OF ITS OWN SINCE REGISTER ITEM 828, because a SECOND
+                    // door now raises this event: a delivery this loop refused to make because a
+                    // menu was already up. See [`Self::parked_at_a_dialog`].
+                    AiLoopEvent::TurnBlocked => self.parked_at_a_dialog(panes, run),
                     // ⚠⚠⚠⚠⚠ **THE SECOND DOOR AN OUTAGE ARRIVES AT, AND IT WAS SHUT** — register
                     // item 715, measured 2026-08-27 on run 5. A 529 ENDS a turn, so it comes in
                     // above. A USAGE LIMIT ends nothing: the peer prints what happened, stops
@@ -8223,6 +8341,48 @@ impl OuterLoop {
         } else {
             AiLoopEvent::Null
         }
+    }
+
+    /// **THE MACHINE'S OWN SENTENCE FOR A PEER PARKED AT A DIALOG**, with everything the document
+    /// routes it on — composed HERE because two doors raise it and one payload is what keeps them
+    /// from being two answers to one fact.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The two doors, and why the second one had to exist
+    ///
+    /// * a turn that ENDED at a dialog, read by [`watch`](Self::watch) at the top of a pass;
+    /// * a prompt this loop DID NOT TYPE because a dialog was already up — register item 828,
+    ///   refused at the delivery door and caught at [`pump`](Self::pump)'s funnel.
+    ///
+    /// They are the same fact arriving at two moments, exactly as the barrier's two doors are, and
+    /// the document must not be able to tell them apart: a blocked delivery during an outage has to
+    /// reach `service_down`, and one a judge's rule claims has to reach `redirecting`, for the same
+    /// reasons its twin does.
+    ///
+    /// ⚠⚠⚠⚠⚠ THE SERVICE IS ASKED FIRST, AND THE JUDGE IS NOT ASKED AT ALL WHEN IT ANSWERS YES. A
+    /// service failure is not a design decision, and judging one is a model call — 4-6 seconds,
+    /// measured — spent to arrive at the wrong state. The document routes on this above `judged`
+    /// for the same reason; doing it in the other order here would pay for the judgement anyway.
+    fn parked_at_a_dialog(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Raise {
+        // ⚠ CLONED because `service_failed` borrows this driver and the needles live on it — the
+        // field's own doc holds why the pass's value is kept there rather than re-read.
+        let needles = self.needles.clone();
+        let service = self.service_failed(panes, needles.as_deref());
+        let rule = if service {
+            None
+        } else {
+            self.judged(panes, run)
+        };
+        Raise::carrying(
+            AiLoopEvent::TurnBlocked,
+            // ⚠ A BOOLEAN BESIDE THE NAME, because this datamodel is Lua and the only false values
+            // there are `nil` and `false`. A guard reading the name alone would fire on the empty
+            // string, i.e. on every blocked turn of every run that matched nothing.
+            serde_json::json!({
+                "service": service,
+                "judged": rule.is_some(),
+                "rule": rule.unwrap_or_default(),
+            }),
+        )
     }
 
     /// **DOES THE PANE SAY THE PEER'S SERVICE FAILED** — the fact the document routes `turn.blocked`
@@ -9929,6 +10089,49 @@ impl OuterLoop {
                     within,
                 });
             }
+        }
+        // ⛔⛔⛔⛔⛔ **AND WHETHER THE PEER IS PARKED AT A QUESTION NOTHING HERE MAY ANSWER, WHICH IS
+        // THE SECOND CONDITION THAT MAKES TYPING ITSELF WRONG** — register item 828, and the hold
+        // above's sibling for the reason that hold gives: a prompt ends in a NEWLINE, and a peer
+        // showing a menu takes that newline as the menu's answer. So the cost is not a turn opened
+        // at a distracted agent — it is a choice nobody consented to, pressed by a run that then
+        // reports having asked a question.
+        //
+        // ⚠⚠⚠⚠⚠ **THE READING WAS ALREADY BEING TAKEN ONE LINE DOWN, AND NOTHING BRANCHED ON IT.**
+        // That is what made this a defect rather than a gap: `facing` below is minted at exactly
+        // this moment, its own comment says so, and its two readers are the journal line and
+        // `submit_lands_when` — which consults `Faced::reported()` and never the STATE. Measured
+        // (one contended run in 240): the loop judged a turn done, typed its next prompt at a peer
+        // its supervisor was calling `Blocked`, WROTE THAT FACT ON ITS JOURNAL LINE, and converged.
+        //
+        // ⚠⚠⚠ **AND IT IS THE QUESTION THAT IS ASKED, NEVER THE STATE WORD.** A supervisor goes on
+        // calling a pane blocked for its whole settle window after a dialog has gone, so a door
+        // keyed on `facing.state` would refuse the prompt a screen rule types the instant it has
+        // cleared one — TWO of the three places this function is called from are exactly that. See
+        // [`Readiness::unanswered_question`](crate::readiness::Readiness::unanswered_question),
+        // which waits that ambiguity out and puts this run's own consents to the dialog first, so a
+        // clause that answers it at a pass boundary answers it here by the same code.
+        //
+        // ⚠⚠ **AHEAD OF THE FOUR MARKS BELOW, ON THE HOLD'S TERMS**: they arm this turn's contract
+        // and its baselines, and a door that refuses after them would leave a turn armed against a
+        // question that was never asked.
+        //
+        // ⚠ AFTER THE HOLD AND NOT BEFORE IT, for the reading's reason one paragraph down: the
+        // moment worth asking about is the one the bytes actually go in at.
+        if let Some(unanswered) =
+            self.driving
+                .ready
+                .unanswered_question(panes, self.driving.pane, run)?
+        {
+            // ⚠⚠ THE NOTICE IS RECORDED IN THE BARRIER'S OWN VOCABULARY, and it is the SAME notice
+            // `barrier_says` records for the same fact — so `screening` can quote the question and
+            // `judged` can claim it, whichever door the run came in at.
+            let asking = unanswered.noted();
+            self.noticed = Some(Noticed::Asking(unanswered));
+            return Err(PaneError::PeerAsking {
+                pane: self.driving.pane,
+                asking,
+            });
         }
         // ⚠⚠⚠⚠⚠ **WHAT THIS RUN IS ABOUT TO TYPE AT** — register item 745(C), and here for the
         // reason the line below is here: this function is the only place every question passes

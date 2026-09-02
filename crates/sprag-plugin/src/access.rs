@@ -356,6 +356,46 @@ pub enum PaneError {
         running: String::new(),
         within: std::time::Duration::ZERO,
     },
+    /// ⛔⛔⛔⛔⛔ **THIS PANE'S PEER IS PARKED AT A QUESTION NOTHING THIS RUN HOLDS MAY ANSWER, SO
+    /// NOTHING WAS TYPED INTO IT** — register item 828, and [`PeerBusy`](Self::PeerBusy)'s sibling
+    /// at the same door one fact over.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a menu makes typing itself wrong, and not merely early
+    ///
+    /// A prompt ends in a newline, and a peer showing a menu takes that newline **as the menu's
+    /// answer**. So the cost of typing here is not a turn opened at a distracted agent — it is a
+    /// CHOICE NOBODY CONSENTED TO, pressed by a run that then goes on as though it had asked a
+    /// question. Measured on this workspace (register item 828, one contended run in 240): the
+    /// loop judged a turn done, composed its next prompt, typed it at a peer its own supervisor
+    /// was calling `Blocked`, **wrote that fact on its journal line**, and converged.
+    ///
+    /// ⚠⚠⚠ **THE READING WAS ALWAYS THERE, AND THAT IS WHAT MADE THIS A DEFECT RATHER THAN A GAP.**
+    /// The delivery door takes a record of the peer one line before it injects, and the record
+    /// reached the journal and nothing else — no code in this workspace branched on it. This
+    /// refusal is that branch: the door still looks, and now what it sees can stop it.
+    ///
+    /// ⚠⚠ **IT IS THE QUESTION AND NEVER THE STATE WORD.** A supervisor goes on calling a pane
+    /// blocked for its whole settle window after a dialog has been answered and gone, so a door
+    /// keyed on the state would refuse the prompt a screen rule types the instant it has cleared
+    /// one. The door is `Readiness::unanswered_question`, which waits that ambiguity out and puts
+    /// this run's own consents to the dialog before it calls anything unanswered.
+    ///
+    /// ⚠ That reader is SPELLED rather than linked: it is crate-private and this type is public, so
+    /// an intra-doc link to it is `private_intra_doc_links` under `-D warnings` (item 365).
+    ///
+    /// ⚠ It NAMES THE PANE, on [`PeerGone`](Self::PeerGone)'s terms, and quotes the refusal in the
+    /// barrier's own vocabulary rather than inventing a second sentence for one dialog.
+    PeerAsking {
+        /// Which pane, for [`PeerBusy`](Self::PeerBusy)'s reason exactly.
+        pane: PaneId,
+        /// **WHY THIS RUN MAY NOT ANSWER IT**, in the answering contract's own words —
+        /// [`Unanswered::noted`](crate::consent::Unanswered::noted), so the published word and the
+        /// sentence a person acts on travel together.
+        asking: String,
+    } = {
+        pane: PaneId(0),
+        asking: String::new(),
+    },
     /// ⚠ A PROMPT WAS WRITTEN INTO A READY PANE AND THE PANE NEVER SHOWED IT, so nothing was
     /// submitted and the peer was never asked.
     ///
@@ -702,6 +742,19 @@ impl std::fmt::Display for PaneError {
                  call is not at rest, so a prompt typed there opens no turn this run could judge, \
                  and bytes left in a composer are what the next delivery concatenates onto. The \
                  remedy is the CHILD and never the prompt — let it finish, or look at the pane",
+                pane.0,
+            ),
+            // ⚠⚠⚠ IT SAYS WHAT THE BYTES WOULD HAVE DONE, on `PeerBusy`'s terms one arm up. A
+            // reader told only *the peer is asking* reaches for the prompt again; what makes this
+            // refusal worth having is that the newline at the end of a prompt is an ANSWER on a
+            // pane showing a menu, so the remedy is the dialog and never the sentence.
+            Self::PeerAsking { pane, asking } => write!(
+                f,
+                "pane {}'s peer is parked at a question this run may not answer ({asking}), so \
+                 nothing was typed: a prompt ends in a newline and a peer showing a menu takes \
+                 that newline as the menu's answer, which presses a choice nobody consented to. \
+                 The remedy is the DIALOG — answer it, widen the run's consents, or write a \
+                 standing instruction that claims it",
                 pane.0,
             ),
             Self::Spawn(why) => write!(f, "the pane could not be started: {why}"),

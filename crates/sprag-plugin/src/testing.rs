@@ -2733,9 +2733,13 @@ impl AsksOnceItsTurnIsJudged {
                         seq,
                         asked_seq: seq,
                         reports: 0,
-                        // ⚠ `None` for [`DialogBetweenTheReads`]'s reason: what this stages is a
-                        // STATE the delivery road reads, and a question invented here would be a
-                        // second parse of something no product code on that road consults.
+                        // ⛔⛔⛔ **`None` IS A DIALOG NO PARSER HERE UNDERSTOOD, AND SINCE ITEM 828
+                        // WAS PAID IT IS LOAD-BEARING RATHER THAN A DECLINE TO INVENT ONE.** This
+                        // doc used to say the delivery road reads a STATE and never a question;
+                        // re-measured, `peer_asking` gates on `Blocked` and then hands back
+                        // `seen.asking`, so what the door actually meets here is *blocked, and
+                        // nothing readable* — [`Unanswered::unreadable`], whose remedy is a person.
+                        // That is the harshest arm to stage and the one a run must not type into.
                         asking: None,
                         asked: None,
                         said: None,
