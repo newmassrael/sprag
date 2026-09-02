@@ -1823,6 +1823,23 @@ pub(crate) enum Asks {
     OnItsFirstPromptAfterWorking,
 }
 
+/// **THE MENU [`standin_agent_asking`] RAISES**, lifted out of its script so the gate that sweeps
+/// this peer's paint can run the peer's own shell rather than a second spelling of it.
+///
+/// ⚠ Five lines and no counter: what the peer PUBLISHES about the paint is [`Asks`]'s to decide,
+/// and [`Asks::raises_its_menu`] is where the two are composed — in the order register item 826
+/// paid for.
+const MENU_PAINT: &str = "\
+printf 'Bash command\\n'; \
+printf 'Do you want to proceed?\\n'; \
+printf '\\342\\235\\257 1. Yes\\n'; \
+printf '  2. Yes, and do not ask again\\n'; \
+printf '  3. No, and tell me what to do\\n'; ";
+
+/// **THE COUNTER THE SUPERVISOR SCRAPES**, defined once for [`MENU_PAINT`]'s reason: a gate that
+/// sweeps this paint has to produce the peer's own bytes, not bytes that resemble them.
+const COUNTER_FN: &str = "bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; ";
+
 impl Asks {
     /// The `case` pattern that decides it: everything, or the stopping question alone.
     const fn pattern(self) -> &'static str {
@@ -1832,13 +1849,48 @@ impl Asks {
         }
     }
 
-    /// What the peer does BEFORE it raises the menu — a `bump` for the variant that has worked, and
-    /// nothing for the two that ask straight away.
-    const fn works_before_asking(self) -> &'static str {
+    /// **WHETHER THIS PEER PUBLISHES A NEW OBSERVATION IN THE TURN IT ASKS IN** — a `bump` for the
+    /// variant that has worked, and nothing for the two that ask straight away.
+    const fn publishes_a_counter(self) -> &'static str {
         match self {
             Self::OnItsFirstPromptAfterWorking => "bump; ",
             Self::OnItsFirstPrompt | Self::WhenTheRunStopsShort => "",
         }
+    }
+
+    /// **THE WHOLE PAINT THAT RAISES THE MENU** — the menu itself and then, for the variant that
+    /// has worked, the counter that says its observation moved.
+    ///
+    /// # ⛔⛔⛔⛔⛔ THE COUNTER COMES LAST, AND THAT ORDER IS THE REPAIR — register item 826
+    ///
+    /// It used to come FIRST, and the two gates standing on this peer died carrying `Converged`
+    /// where they wanted `AwaitingHuman` — on CI, and once in 240 contended local runs. The
+    /// mechanism is in the two predicates the supervisor feeds, which share every term but one:
+    ///
+    /// * *the turn ended* (`DoneWhen::Settles`) — `Idle`, this agent, and `seq > addressed.seq`
+    /// * *it stopped to ask* (`Completion::asked`) — `Blocked`, this agent, and `seq >
+    ///   addressed.seq`
+    ///
+    /// So the counter is the term that says **the baseline was crossed**, and the menu is the
+    /// event being waited for. Publishing the counter first opens a window in which the baseline
+    /// has been crossed and the event has not arrived — and in that window the supervisor reads
+    /// `Idle`, the loop calls the turn OVER, types its next prompt, and that newline is taken as
+    /// the menu's answer. *Not yet* and *finished* were one picture.
+    ///
+    /// Painting it last closes the window **by ordering rather than by a clock**: bytes reach the
+    /// emulator in the order they were written, so a screen showing the counter has already shown
+    /// the whole menu, whatever chunks the reader happened to take. The opposite window — menu up,
+    /// counter not yet — satisfies NEITHER predicate, so the loop waits, which is what a run
+    /// nobody has answered should do.
+    ///
+    /// ⚠ The counter's POSITION is a fact about this peer's wire to its supervisor, not a claim
+    /// about how an agent CLI paints. What the variant asserts about a real one is that its
+    /// observation has MOVED inside the turn it asks in, and that holds either way round.
+    ///
+    /// ⚠⚠ Held by `no_prefix_of_the_asking_peers_paint_reads_as_a_finished_turn`, which runs this
+    /// very shell and puts the question to EVERY prefix rather than hoping to sample the window.
+    fn raises_its_menu(self) -> String {
+        format!("{MENU_PAINT}{}", self.publishes_a_counter())
     }
 }
 
@@ -2216,18 +2268,13 @@ pub(crate) fn standin_agent_asking(asks: Asks) -> (Arc<Mutex<Workspace>>, PaneId
     let script = "\
 stty -echo; printf 'AGENT-READY\\n'; n=0; asked=0; s=0; k=''; \
 readbyte() { dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'; }; \
-bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
+COUNTER_FN\
 while read line; do \
   printf '%s\\n' \"$line\"; \
   case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
   case \"$line\" in ASKS_AT) ;; *) n=$((n+1)); printf 'ACK %s\\n' \"$n\"; bump; continue;; esac; \
   if [ $asked -eq 0 ]; then \
-    asked=1; WORKS_FIRST\
-    printf 'Bash command\\n'; \
-    printf 'Do you want to proceed?\\n'; \
-    printf '\\342\\235\\257 1. Yes\\n'; \
-    printf '  2. Yes, and do not ask again\\n'; \
-    printf '  3. No, and tell me what to do\\n'; \
+    asked=1; RAISES_MENU\
     stty -icanon; \
     while :; do \
       k=$(readbyte); \
@@ -2243,7 +2290,8 @@ done"
         // ⚠ THE PATTERN FIRST: it CONTAINS the placeholder for one of the two variants, so
         // substituting the question first would leave the pattern's own copy unreplaced.
         .replace("ASKS_AT", asks.pattern())
-        .replace("WORKS_FIRST", asks.works_before_asking())
+        .replace("RAISES_MENU", &asks.raises_its_menu())
+        .replace("COUNTER_FN", COUNTER_FN)
         .replace("STOP_QUESTION", STOP_QUESTION);
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
@@ -2468,14 +2516,18 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
         let identified: AgentSeen = Arc::default();
         let last_menu: Mutex<Option<std::time::Instant>> = Mutex::new(None);
         Arc::new(move |id: PaneId| {
-            let rows = WorkspacePaneAccess::new(Arc::clone(&workspace))
-                .pane_full_lines(id)
-                .unwrap_or_default();
-            // ⚠⚠ THE PEER'S OWN COUNTER, not a count of its words, latched per PANE — see
-            // [`peer_seq`] for the two walks that measured both halves of that.
-            let seq = latched(&high, id, &rows);
             let guard = workspace.lock().expect("the workspace mutex");
             guard.pane(id)?.pty().with_screen(|screen| {
+                // ⚠⚠⚠⚠ ONE SNAPSHOT FOR ONE OBSERVATION — register item 826. These two facts used
+                // to come from two reads of a moving pane, `pane_full_lines` outside the lock and
+                // the parser inside it, so a supervisor could report a counter from one instant
+                // and a question from another. Nothing a caller can do repairs an observation
+                // whose halves are minted at different times, and `Settles` and `asked` differ by
+                // exactly one of these halves — so the two are taken from the same screen.
+                let rows = screen.full_lines();
+                // ⚠⚠ THE PEER'S OWN COUNTER, not a count of its words, latched per PANE — see
+                // [`peer_seq`] for the two walks that measured both halves of that.
+                let seq = latched(&high, id, &rows);
                 let asking = sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW);
                 let mut seen = last_menu.lock().expect("the settle mutex");
                 if asking.is_some() {
@@ -3163,9 +3215,100 @@ impl<A: PaneAccess> PaneHands for Counted<A> {
 
 #[cfg(test)]
 mod tests {
-    use super::refused_naming;
+    use super::{Asks, COUNTER_FN, STANDIN_COLUMNS, peer_seq, refused_naming};
     use crate::access::{JobLeader, PaneDoing, PaneError};
     use crate::readiness::ReadyWhen;
+
+    /// The rows [`standin_agent_asking`](super::standin_agent_asking) runs on, so the sweep below
+    /// reads the geometry the peer is actually painted into rather than a roomier one.
+    const STANDIN_ROWS: u16 = 16;
+
+    /// ⛔⛔⛔⛔⛔ **NO PREFIX OF THE ASKING PEER'S PAINT MAY READ AS A FINISHED TURN** — register
+    /// item 826's remaining half, and the assertion that replaces a lucky sample with a question.
+    ///
+    /// # ⚠⚠⚠ Why a prefix sweep rather than a repeat count
+    ///
+    /// The defect is a WINDOW: between the peer's counter and its menu, a supervisor reads `Idle`
+    /// with a moved sequence, which is `DoneWhen::Settles` — *the turn ended* — about a peer that
+    /// has stopped to ask. Two gates died of it on CI, and reproducing it here took **240 contended
+    /// runs to hit once**. A repeat count large enough to catch it reliably is a gate nobody would
+    /// run, and one that missed it would report the window closed when it was merely narrow.
+    ///
+    /// So this does not sample the window: it enumerates every screen the window can contain. The
+    /// reader hands the emulator whatever chunk it read, so **every prefix of the peer's bytes is a
+    /// screen some observer can see**, and the claim is about all of them at once.
+    ///
+    /// ⚠⚠ **IT RUNS THE PEER'S OWN SHELL.** The bytes come from `/bin/sh` executing
+    /// [`Asks::raises_its_menu`](super::Asks) — the same string the fixture's script is built
+    /// from — so a peer that changes its paint changes this gate's subject with it. A hand-written
+    /// copy of the menu here would hold a fiction green while the fixture drifted.
+    ///
+    /// ⚠ The `\n` → `\r\n` rewrite is the line discipline's, not a convenience: the peer paints
+    /// through a pseudoterminal in `ONLCR`, a pipe does not translate, and an emulator fed bare
+    /// line feeds staircases its rows. `parsed_dialog` spells the same thing the same way.
+    #[test]
+    fn no_prefix_of_the_asking_peers_paint_reads_as_a_finished_turn() {
+        use sprag_vt::VtPort;
+
+        let painted = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "s=0; {COUNTER_FN}{}",
+                Asks::OnItsFirstPromptAfterWorking.raises_its_menu()
+            ))
+            .output()
+            .expect("the peer's paint is produced by running the peer's own shell");
+        assert!(
+            painted.status.success(),
+            "⚠ the peer's own paint must RUN — {:?} said {:?}",
+            painted.status,
+            String::from_utf8_lossy(&painted.stderr),
+        );
+        let wire = String::from_utf8(painted.stdout)
+            .expect("the peer paints text")
+            .replace('\n', "\r\n")
+            .into_bytes();
+
+        /// What a supervisor reading this many bytes would say: has the counter moved, and is
+        /// there a question on the screen?
+        fn read_by_a_supervisor(wire: &[u8]) -> (u64, bool) {
+            let mut emulator = sprag_vt::Emulator::new(STANDIN_COLUMNS, STANDIN_ROWS);
+            emulator.advance(wire);
+            let rows = emulator.screen().full_lines();
+            let asking =
+                sprag_detect::question(emulator.screen(), sprag_detect::DIALOG_WINDOW).is_some();
+            (peer_seq(&rows), asking)
+        }
+
+        for cut in 0..=wire.len() {
+            let (seq, asking) = read_by_a_supervisor(&wire[..cut]);
+            assert!(
+                seq == 0 || asking,
+                "⚠⚠⚠⚠⚠ THE COUNTER IS VISIBLE BEFORE THE QUESTION IS. After {cut} of \
+                 {} bytes this peer's screen carries `SEQ {seq}` and no question, which a \
+                 supervisor publishes as `Idle` with a moved sequence — and that is \
+                 `DoneWhen::Settles`, so the loop calls the turn OVER, types its next prompt, and \
+                 the newline answers the menu. The two gates that wait for a person then end in \
+                 `Converged`. Register item 826: the mark that says the baseline was crossed must \
+                 not arrive before the event being waited for. Screen:\n{}",
+                wire.len(),
+                String::from_utf8_lossy(&wire[..cut]),
+            );
+        }
+
+        // ── the control, and it is not decoration: `seq == 0 || asking` is satisfied for free by
+        // a peer that never bumps at all, which is the variant this one exists to NOT be. So the
+        // sweep is only worth its green if the whole paint reaches the state the two waiting gates
+        // need — a question up AND a sequence that has moved past the turn's arming.
+        let (seq, asking) = read_by_a_supervisor(&wire);
+        assert!(
+            seq > 0 && asking,
+            "⚠⚠⚠ THE PAINT MUST REACH `asked`: after all {} bytes the screen has seq {seq} and \
+             asking={asking}, so this peer can no longer stage a run that stops to ask and the \
+             sweep above passes over nothing.",
+            wire.len(),
+        );
+    }
 
     /// ⚠⚠ **THE HELPER'S OWN REFUSALS FIRE** — the two paths that were registered as *"built by
     /// nothing"* rather than written, which took a `#[should_panic]` each.
