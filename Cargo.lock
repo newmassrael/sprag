@@ -3647,6 +3647,7 @@ dependencies = [
  "sprag-input",
  "sprag-peer",
  "sprag-rpc",
+ "sprag-scratch",
  "sprag-terminal",
  "sprag-vt",
  "tracing",
