@@ -317,6 +317,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::ShowGrammar => show_grammar(args.collect()),
         Verb::Orchestrate => orchestrate(args.collect()),
         Verb::Runs => runs(args.collect()),
+        Verb::MyRuns => my_runs(args.collect()),
         Verb::CancelRun => cancel_run(args.collect()),
         Verb::StandDown => stand_down(args.collect()),
         Verb::HoldRun => hold_run(args.collect(), true),
@@ -6280,6 +6281,226 @@ fn usage_for(
 /// [`connect_scoped`] is the pre-flight every window and pane verb already made, and the one item
 /// 425 gave `processes` / `resources` for this same half of the same defect. Found by the sweep
 /// that item asked of every other verb publishing `-t`: nine readers probed, eight already clean.
+/// **HOW ONE CONVERSATION IS ATTACHED TO ONE RUN** — register item 865's ⑷.
+///
+/// # ⛔⛔⛔⛔⛔ The two ends are different acts, so they are two words and not one
+///
+/// A conversation that ASKED for a run may cancel it, answer for it, and be asked before a
+/// promotion kills it — item 865's whole subject. A conversation the run is DRIVING is the thing
+/// being typed into; it decides nothing about the run and a promotion killing that run kills its
+/// work. Merging them would put *go and ask them* and *this is being done to you* under one word.
+///
+/// ⚠ [`Both`](Self::Both) is kept rather than folded into `Asked` for the reason
+/// [`Blind`](sprag_terminal::doctor::Blind)'s bar admits: a conversation that asked for a run onto
+/// its OWN pane is on both ends at once, and a reader told only *you asked for it* would not know
+/// that stopping it stops what is typing into them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Stake {
+    /// This conversation asked for the run.
+    Asked,
+    /// The run is driving the pane this conversation is living in.
+    Driven,
+    /// It asked for the run AND the run is driving its pane.
+    Both,
+}
+
+impl Stake {
+    /// Every stake, so the walk that holds the three sentences apart needs no list somebody has to
+    /// remember to extend.
+    ///
+    /// ⚠ `#[cfg(test)]` because the product never walks these — it classifies one run at a time —
+    /// and a constant carried into the binary for a gate's sake is dead weight clippy is right
+    /// about. It is a LIST rather than a literal in the gate for the usual reason: a fourth arm
+    /// joins the walk in the compile that adds it.
+    #[cfg(test)]
+    const ALL: [Self; 3] = [Self::Asked, Self::Driven, Self::Both];
+
+    /// What being on this end MEANS to whoever is reading — a sentence about what they may do,
+    /// because *which end* is only useful as a difference in what happens next.
+    const fn describe(self) -> &'static str {
+        match self {
+            Self::Asked => {
+                "YOU ASKED FOR IT — this run is yours to cancel, to answer, and to be asked about \
+                 before anybody ends it"
+            }
+            Self::Driven => {
+                "IT IS DRIVING YOU — this run is typing into your pane. You did not ask for it and \
+                 stopping it is not yours to decide, but its work is what is happening to you"
+            }
+            Self::Both => {
+                "BOTH ENDS — you asked for this run and it is driving your pane, so stopping it \
+                 stops what is typing into you"
+            }
+        }
+    }
+
+    /// The stake conversation `me` in pane `seat` has in `run`, or [`None`] for a run it is on
+    /// neither end of.
+    ///
+    /// # ⚠⚠⚠ `me` is an [`Option`] because a SHELL pane can be driven
+    ///
+    /// The asking end is a conversation and a shell has none, so that half is unanswerable there —
+    /// but a run drives a pane, and an `orchestrator` run driving a shell is the ordinary case. A
+    /// version of this that refused a seatless caller outright would answer *nothing* about a pane
+    /// something is demonstrably typing into.
+    ///
+    /// # ⚠⚠ The driven end is RUNNING runs only, and that is the daemon's own rule
+    ///
+    /// `Progress::driving` still names the pane an ENDED run drove — item 540's point, asked of
+    /// history — and the daemon's `driven` marker on the panes listing filters on the state for
+    /// exactly this reason: *"reading it here would say somebody is driving a pane nobody is"*.
+    /// The asking end carries no such filter, on the same source's terms: *whose work is this* is a
+    /// question an ended run answers perfectly well.
+    fn of(run: &Value, me: Option<&str>, seat: u64) -> Option<Self> {
+        let asked =
+            me.is_some_and(|me| run[sprag_host::plugins::RUN_ASKED_BY_KEY].as_str() == Some(me));
+        let driven = run["state"]["status"].as_str()
+            == Some(sprag_host::plugins::RunStatus::Running.wire_str())
+            && run[sprag_host::plugins::RUN_DRIVING_KEY].as_u64() == Some(seat);
+        match (asked, driven) {
+            (true, true) => Some(Self::Both),
+            (true, false) => Some(Self::Asked),
+            (false, true) => Some(Self::Driven),
+            (false, false) => None,
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ `my-runs [-t SESSION]`: **WHICH RUNS THIS CONVERSATION IS ON** — register item 865's
+/// ⑷, and the one direction every other half of that item left unbuilt.
+///
+/// # ⚠⚠⚠⚠⚠ What was measured, and why asking somebody else is not an answer
+///
+/// Item 865 was opened because a promotion about to kill a live run had to find its owner by
+/// MESSAGING THREE SESSIONS — five messages, forty minutes. Its ⑴⑵⑶ gave the RUN a mouth for its
+/// asker and ⑸ gave the PANE a mouth for its occupant. Every one of those is answered by somebody
+/// looking at a run or a pane **from outside**. The half that stayed open is the one the
+/// `watching-zenoh` watcher reported in its own words when the same promotion reached it:
+///
+/// > *"제가 어느 sprag run 에 매달려 있는지 «제 쪽에서 볼 수 있는 계기가 없습니다» … 그래서
+/// > 「제 것이 아니다」라고도 말하지 않겠습니다."*
+///
+/// That refusal was CORRECT — the rule a peer wrote for this item is *"a session that does not own
+/// a run approving it is not approval, it is a guess"* — and it is what this verb exists to make
+/// unnecessary. A conversation that can ask this can say *mine* or *not mine* without anybody
+/// answering for it.
+///
+/// # ⛔⛔ IT TAKES NO SUBJECT, and that is a safety property rather than a missing feature
+///
+/// Item 871 measured the shape: **a caller may POINT and may not NAME.** `$SPRAG_PANE` is the
+/// daemon's own stamp on this process, so a caller reading it repeats an identity it was given;
+/// a `my-runs <SESSION>` argument would let anybody assert somebody else's. The subject here is
+/// always the caller, and the conversation is resolved BY THE DAEMON from the pane.
+///
+/// # ⚠⚠ It keys on the CONVERSATION and never on the pane, for the asking end
+///
+/// `PersistedRun::opened_by_session`'s own doc: *"pane 3 comes back as pane 3, but the successor
+/// has no way to know whether the thing sitting in it is the asker or a stranger who booted into
+/// the same seat"*. Runs also carry `opened_by` (a pane) and filtering on it would have needed no
+/// second read at all — and would answer wrongly for exactly the case item 865 was opened on.
+///
+/// # ⚠ TWO SLOT READS, and what the second one cannot tear
+///
+/// The first read answers *who is asking* and the second *what that conversation is on*. They are
+/// not the torn read [`layout`] is a separate verb to avoid: what is carried between them is the
+/// caller's own identity, which does not change under the caller — and if the pane were respawned
+/// mid-command the answer would be about a conversation that has ended, which the run rows below
+/// say for themselves.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidInput`] when `$SPRAG_PANE` is unset — the caller is a shell that is not
+/// a pane of this daemon, so there is nobody to answer about — and whatever [`resolve_pane`]
+/// refuses a stale one with.
+fn my_runs(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "my-runs")?;
+    if let Some(extra) = rest.first() {
+        return Err(bad_input(&format!(
+            "my-runs: unexpected argument {extra:?} (it takes only -t SESSION). It answers about \
+             the CALLER and takes no subject: a caller may point at itself and may not name \
+             somebody else (register item 871)."
+        )));
+    }
+    let mut conn = connect_scoped(session.as_deref())?;
+    // ⛔ WHO IS ASKING, OR A REFUSAL — never an empty list. A shell outside this daemon has no
+    // conversation, and answering it *you are on no run* would be a claim about a caller nothing
+    // here can identify: exactly the *"「제 것이 아니다」라고도 말하지 않겠습니다"* case, answered
+    // wrongly.
+    let raw = std::env::var(sprag_host::PANE_ENV_VAR).map_err(|_| {
+        bad_input(&format!(
+            "my-runs: ${} is not set, so this command cannot tell which conversation is asking. \
+             It answers about the caller, and a shell that is no pane of this daemon has no \
+             conversation to answer about — run it inside the pane whose runs you are asking about.",
+            sprag_host::PANE_ENV_VAR,
+        ))
+    })?;
+    let site = resolve_pane(&mut conn, session.as_deref(), &raw, "my-runs")?;
+    // ⚠ THE SAME SCOPE `panes` READS, for `panes`' stated reason (item 759): a listing narrowed at
+    // one end and addressed at the other is neither window's.
+    let listed: Value = query_slot(
+        &mut conn,
+        match site.window.as_deref() {
+            Some(window) => windowed_params(
+                session.as_deref(),
+                mux_action_path(PANES_SLOT),
+                Some(window),
+            ),
+            None => here_params(session.as_deref(), mux_action_path(PANES_SLOT)),
+        },
+    )?;
+    let me = listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|pane| pane["id"].as_u64() == Some(site.id))
+        .and_then(|pane| pane[sprag_host::wire::PANE_SESSION_KEY].as_str());
+    let answer = query_slot(
+        &mut conn,
+        scoped_params(
+            session.as_deref(),
+            sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+        ),
+    )?;
+    let entries = answer
+        .as_array()
+        .ok_or_else(|| bad_input("my-runs: the daemon's answer was not a list of runs"))?;
+    // ⛔⛔⛔ A PANE WITH NO CONVERSATION SAYS SO, and says WHICH HALF that costs. Silence here would
+    // read as *you asked for nothing*, which is a claim, where the truth is that the asking end
+    // cannot be asked at all from a shell.
+    match me {
+        Some(id) => println!("my-runs: pane {} holds conversation {id}", site.id),
+        None => println!(
+            "my-runs: pane {} holds NO conversation (it is not an agent's pane), so WHAT THIS \
+             CONVERSATION ASKED FOR cannot be answered here — only what is driving this pane",
+            site.id,
+        ),
+    }
+    let mine: Vec<(&Value, Stake)> = entries
+        .iter()
+        .filter_map(|run| Stake::of(run, me, site.id).map(|stake| (run, stake)))
+        .collect();
+    if mine.is_empty() {
+        println!(
+            "  NO RUN of this daemon has this caller on either end — nothing asked for by this \
+             conversation, and nothing driving this pane. That is an ANSWER: it is what lets a \
+             caller say `not mine` instead of `I cannot tell`"
+        );
+        return Ok(());
+    }
+    // ⛔⛔⛔ THE HEADING AND NOT THE BLOCK, and it is `render_run`'s OWN heading rather than a
+    // second opinion on how a run is named. Measured against the live daemon while this verb was
+    // written: printing the block gave **one run and ninety lines**, forty-eight of them journal
+    // steps — a caller asking *am I on this* had to read a run's whole history to find out that it
+    // was. `sprag runs` is the verb for the rest, and it is one command away.
+    for (run, stake) in mine {
+        println!("  {}", stake.describe());
+        let block = render_run(run);
+        println!("  {}", block.lines().next().unwrap_or_default().trim());
+    }
+    println!("  (`sprag runs` has each of these in full)");
+    Ok(())
+}
+
 fn runs(args: Vec<String>) -> io::Result<()> {
     let (session, args) = scope_and_rest(args, "runs")?;
     if let Some(extra) = args.first() {
@@ -12062,6 +12283,117 @@ mod tests {
         assert!(
             extra.to_string().contains("one at a time"),
             "⚠ and the refusal says what the shape is: {extra}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE TWO ENDS A CONVERSATION CAN BE ON ARE TOLD APART, AND A SHELL STILL GETS THE
+    /// HALF THAT IS ANSWERABLE** — register item 865's ⑷.
+    ///
+    /// # What this holds that the integration gate cannot
+    ///
+    /// `cli.rs` drives a real daemon and reads the printed sentences, so it can only ask for
+    /// SUBSTRINGS. This asks the classifier itself, over rows built here, so a build that answered
+    /// the wrong END — the difference between *go and stop it, it is yours* and *this is being done
+    /// to you* — goes red on the arm rather than on a needle.
+    ///
+    /// # ⚠⚠ The three sentences must DIFFER, and that is the point of the split
+    ///
+    /// A `Stake` whose arms all read the same is a distinction that makes no difference to the
+    /// person reading, which is the defect item 827's gate was built for one axis over. ⚠ And the
+    /// FOURTH case — on neither end — is [`None`] rather than a variant, because the verb answers
+    /// it once for the whole listing (*nothing has you on either end*) and not per run.
+    #[test]
+    fn a_conversation_is_told_which_end_of_a_run_it_is_on() {
+        const ME: &str = "3f2c9a17-0000-4000-8000-0000000008ff";
+        const SOMEBODY_ELSE: &str = "3f2c9a17-0000-4000-8000-000000000900";
+        const SEAT: u64 = 807;
+
+        let row = |asker: Option<&str>, driving: Option<u64>, status: &str| -> Value {
+            let mut run = serde_json::json!({ "id": 1, "state": { "status": status } });
+            if let Some(asker) = asker {
+                run[sprag_host::plugins::RUN_ASKED_BY_KEY] = serde_json::json!(asker);
+            }
+            if let Some(pane) = driving {
+                run[sprag_host::plugins::RUN_DRIVING_KEY] = serde_json::json!(pane);
+            }
+            run
+        };
+        let running = sprag_host::plugins::RunStatus::Running.wire_str();
+
+        assert_eq!(
+            Stake::of(&row(Some(ME), None, running), Some(ME), SEAT),
+            Some(Stake::Asked),
+            "⛔ a run this conversation asked for is one it may stop",
+        );
+        assert_eq!(
+            Stake::of(
+                &row(Some(SOMEBODY_ELSE), Some(SEAT), running),
+                Some(ME),
+                SEAT
+            ),
+            Some(Stake::Driven),
+            "⛔⛔ REGISTER ITEM 865 ⑷: a run driving this caller's pane is one it is ON, and it is \
+             NOT the same end as having asked for it — a watcher that could not tell these apart \
+             had to answer `I cannot say whether it is mine`",
+        );
+        assert_eq!(
+            Stake::of(&row(Some(ME), Some(SEAT), running), Some(ME), SEAT),
+            Some(Stake::Both),
+            "⚠⚠ asking for a run onto one's OWN pane puts a conversation on both ends at once",
+        );
+        assert_eq!(
+            Stake::of(
+                &row(Some(SOMEBODY_ELSE), Some(999), running),
+                Some(ME),
+                SEAT
+            ),
+            None,
+            "⚠ and a run this conversation is on neither end of is None — the answer that lets a \
+             caller say `not mine` rather than `I cannot tell`",
+        );
+
+        // ⛔⛔⛔ A SHELL PANE STILL GETS THE DRIVEN HALF. `orchestrator` runs drive shells, and a
+        // version of this that refused a seatless caller outright would answer *nothing* about a
+        // pane something is demonstrably typing into.
+        assert_eq!(
+            Stake::of(&row(Some(ME), Some(SEAT), running), None, SEAT),
+            Some(Stake::Driven),
+            "⛔ a pane with no conversation is still driven, and `me` being absent must not take \
+             that answer away",
+        );
+        assert_eq!(
+            Stake::of(&row(Some(ME), None, running), None, SEAT),
+            None,
+            "⚠ ...and it can be on no ASKING end, because it has no conversation to have asked",
+        );
+
+        // ⛔⛔⛔⛔ AND AN ENDED RUN IS NOT DRIVING ANYBODY — the daemon's own rule for the panes
+        // listing's `driven` marker, applied here: `Progress::driving` still names the pane an
+        // ended run drove, and reading it unfiltered would say somebody is driving a pane nobody
+        // is. ⚠ The ASKING end carries no such filter on purpose — *whose work is this* is a
+        // question an ended run answers perfectly well.
+        for ended in ["done", "panicked", "interrupted"] {
+            assert_eq!(
+                Stake::of(&row(Some(SOMEBODY_ELSE), Some(SEAT), ended), Some(ME), SEAT),
+                None,
+                "⛔ a run that has ended `{ended}` is not driving this pane now",
+            );
+            assert_eq!(
+                Stake::of(&row(Some(ME), Some(SEAT), ended), Some(ME), SEAT),
+                Some(Stake::Asked),
+                "⚠ ...while a run it ASKED for is still its own after that run ended",
+            );
+        }
+
+        // ⚠⚠ THE CONTROL: three ends, three DIFFERENT sentences. Without it a build whose arms all
+        // read alike satisfies every assertion above and publishes a split nobody can act on.
+        let mut said: Vec<&str> = Stake::ALL.iter().map(|stake| stake.describe()).collect();
+        said.sort_unstable();
+        said.dedup();
+        assert_eq!(
+            said.len(),
+            Stake::ALL.len(),
+            "⛔ two ends say the same thing, so telling them apart changes nothing for the reader",
         );
     }
 

@@ -50,11 +50,17 @@ const DIAGNOSIS: &str = "why_not_serving";
 /// for its replacement. That is the ratchet doing exactly what it was built for — the number moved
 /// in the commit that moved the population, twice, and neither time by anybody remembering to.
 ///
-/// ⚠ AND BY ONE ON 2026-09-03, THREE TIMES: register items 871, 865's ⑸ and 870 each added a gate
-/// that spawns a daemon of its own, so each waits once. Third, fourth and fifth time the ratchet has
+/// ⚠ AND BY ONE ON 2026-09-03, FOUR TIMES: register items 871, 865's ⑸, 870 and 865's ⑷ each added
+/// a gate that spawns a daemon of its own, so each waits once. Third to sixth time the ratchet has
 /// named the change rather than anybody remembering to — and by then it was the round's own rhythm
 /// rather than a surprise, which is what a ratchet is for.
-const WAITS_REGISTERED: usize = 44;
+///
+/// ⛔⛔ **THE SIXTH ONE IS ALSO WHAT CAUGHT A LANE THAT WAS MEASURING NOTHING.** 865's ⑷ was run
+/// through `cargo test -p sprag-gate -p sprag-host --bin sprag --test cli`, which came back green
+/// twice — and `--bin`/`--test` are TARGET filters applied to EVERY package named, so `sprag-gate`
+/// (which has no target called `cli` or `sprag`) contributed no tests at all. The commit hook runs
+/// `cargo test -p sprag-gate` with no filter, and that is where this went red.
+const WAITS_REGISTERED: usize = 45;
 
 /// This gate's own source, which must SPELL the needle in order to hunt for it.
 ///

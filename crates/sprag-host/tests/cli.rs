@@ -4897,6 +4897,263 @@ fn a_run_launched_from_a_pane_records_the_conversation_that_asked_for_it() {
     drop(guard);
 }
 
+/// ⛔⛔⛔⛔⛔ **A CONVERSATION CAN ASK, OF ITSELF, WHICH RUNS IT IS ON** — register item 865's ⑷,
+/// and the one direction every other half of that item left unbuilt.
+///
+/// # ⚠⚠⚠⚠⚠ What was measured, in the words of the session that could not ask
+///
+/// Item 865's ⑴⑵⑶ gave a RUN a mouth for its asker and its ⑸ gave a PANE a mouth for its
+/// occupant. All four are answered by somebody looking **from outside**. When the same promotion
+/// reached the `watching-zenoh` watcher, it answered:
+///
+/// > *"제가 어느 sprag run 에 매달려 있는지 «제 쪽에서 볼 수 있는 계기가 없습니다» … 그래서
+/// > 「제 것이 아니다」라고도 말하지 않겠습니다."*
+///
+/// That refusal was CORRECT, and it is what this verb makes unnecessary: the rule a peer wrote for
+/// this item is *"a session that does not own a run approving it is not approval, it is a guess"*.
+///
+/// # ⛔⛔⛔ THE DISCRIMINATOR IS TWO CALLERS AND ONE RUN
+///
+/// The same daemon, the same run, asked by the pane that STARTED it and by the pane it is TYPING
+/// INTO, must answer differently. Without that arm a build that printed one sentence for every run
+/// a caller can see satisfies every *the clause is present* assertion — and leaves the two ends as
+/// indistinguishable as it found them, which is the state item 865 was opened in.
+///
+/// ⚠ The sentences are asked for as SUBSTRINGS here because the classifier is private to the
+/// binary; `a_conversation_is_told_which_end_of_a_run_it_is_on` beside it holds those strings to
+/// the type, including that the three of them differ.
+#[test]
+fn a_conversation_can_ask_which_runs_it_is_on() {
+    /// A pane no workspace in this test holds — the same construction as its neighbour's.
+    const NO_SUCH_PANE: u64 = 900_004;
+    const ASKER: &str = "3f2c9a17-0000-4000-8000-00000000090a";
+    const DRIVEN: &str = "3f2c9a17-0000-4000-8000-00000000090b";
+
+    let sock = socket_path();
+    let state = sprag_scratch::scratch_root().join(format!(
+        "sprag-mine-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    // ⚠⚠ A TRACKED DOUBLE, LINKED — register item 467, and under this daemon's own state directory
+    // so `DaemonGuard` takes it away. The daemon reads a pane's ARGV for its identity, so what the
+    // program IS matters not at all; what it is CALLED is the whole of it.
+    let dir = state.join("stand-in-agent");
+    std::fs::create_dir_all(&dir).expect("create the stand-in agent dir");
+    let bin = sprag_gate::doubles::Doubles::of(env!("CARGO_MANIFEST_DIR"))
+        .set("cli")
+        .link("claude", &dir.join("claude"));
+    let argv = |identity: &str| {
+        json!([
+            bin.to_str().expect("a utf-8 path"),
+            "--session-id",
+            identity
+        ])
+    };
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "mine", "cmd": argv(ASKER) },
+        }),
+    )
+    .expect("new_session answers");
+    let panes_now = |conn: &mut HostConn| -> Vec<u64> {
+        conn.call(
+            "scene/query",
+            json!({ "session": "mine", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|pane| pane["id"].as_u64())
+        .collect()
+    };
+    let asker = *panes_now(&mut conn).first().expect("the session's pane");
+    let mut spawn = |cmd: Value| -> u64 {
+        let before = panes_now(&mut conn);
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": "mine",
+                "path": mux_action_path(SPAWN_ACTION),
+                "args": { "cmd": cmd },
+            }),
+        )
+        .expect("the pane is spawned");
+        *panes_now(&mut conn)
+            .iter()
+            .find(|id| !before.contains(id))
+            .expect("the new pane")
+    };
+    let driven = spawn(argv(DRIVEN));
+    // ⚠ A SHELL, deliberately: `agent_session` is absent for a pane that is not an agent's, and the
+    // control below is about what this verb says to a caller it cannot name.
+    let bystander = spawn(json!(["cat"]));
+
+    let start = |on: u64, from: u64| -> CliRun {
+        let on = on.to_string();
+        sprag_env(
+            &sock,
+            &[
+                "orchestrate",
+                "-t",
+                "mine",
+                "orchestrator",
+                "--pane",
+                &on,
+                "--stimulus",
+                "x",
+                "--sentinel",
+                "A SENTINEL THIS PANE NEVER PRINTS",
+                "--max_iterations",
+                "100000",
+                "--max_seconds",
+                "3000",
+            ],
+            &[(sprag_host::PANE_ENV_VAR, from.to_string().as_str())],
+        )
+    };
+    let launched = start(driven, asker);
+    assert!(launched.ok, "the run is submitted: {}", launched.stderr);
+    let onto_itself = start(asker, asker);
+    assert!(
+        onto_itself.ok,
+        "the second run starts: {}",
+        onto_itself.stderr
+    );
+
+    let mine_of = |pane: u64| -> CliRun {
+        sprag_env(
+            &sock,
+            &["my-runs", "-t", "mine"],
+            &[(sprag_host::PANE_ENV_VAR, pane.to_string().as_str())],
+        )
+    };
+    // ⚠ `driving` is published only once a step has REPORTED it (`RUN_DRIVING_KEY`'s
+    // presence-is-the-claim rule), so the driven end arrives a moment after the launch returns.
+    // Waiting on the claim rather than sleeping is this suite's rule.
+    assert!(
+        wait_for(Duration::from_secs(10), || mine_of(driven)
+            .stdout
+            .contains("IT IS DRIVING YOU")),
+        "the run never reported which pane it drives: {}",
+        mine_of(driven).stdout,
+    );
+
+    // ── ① THE ASKER'S OWN ANSWER ────────────────────────────────────────────────────────────────
+    let asked = mine_of(asker);
+    assert!(asked.ok, "my-runs answers for a pane: {}", asked.stderr);
+    assert!(
+        asked.stdout.contains(ASKER),
+        "⛔⛔⛔ REGISTER ITEM 865 ⑷: the caller must be told WHICH CONVERSATION it resolved to — \
+         the id is the join between this listing and the roster a person reads, and a verb that \
+         answered about *you* without saying who *you* is cannot be checked by its caller: {}",
+        asked.stdout,
+    );
+    assert!(
+        asked.stdout.contains("YOU ASKED FOR IT"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 865 ⑷: a conversation that started a run must be able to ask, OF \
+         ITSELF, that it did. Item 865 was opened because finding a run's owner took three \
+         sessions messaged and forty minutes, and its other halves all answer from outside: {}",
+        asked.stdout,
+    );
+    assert!(
+        asked.stdout.contains("BOTH ENDS"),
+        "⚠⚠ ...AND A RUN IT ASKED FOR ONTO ITS OWN PANE IS BOTH, which a caller told only *you \
+         asked for it* would not know is also typing into them: {}",
+        asked.stdout,
+    );
+
+    // ── ② THE DISCRIMINATOR: the SAME run, the other end ────────────────────────────────────────
+    let being_driven = mine_of(driven);
+    assert!(
+        being_driven.stdout.contains("IT IS DRIVING YOU"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 865 ⑷: this is the sentence the `watching-zenoh` watcher could \
+         not get — *which sprag run am I hanging on* — and answering it is what lets a session say \
+         `not mine` instead of `I cannot tell`: {}",
+        being_driven.stdout,
+    );
+    assert!(
+        !being_driven.stdout.contains("YOU ASKED FOR IT")
+            && !being_driven.stdout.contains("BOTH ENDS"),
+        "⛔⛔⛔ THE TWO ENDS MUST COME APART. The same daemon and the same runs, asked by the pane \
+         that STARTED one and by the pane it is TYPING INTO, answered the same thing — which \
+         leaves *go and stop it, it is yours* and *this is being done to you* exactly as \
+         indistinguishable as item 865 found them: {}",
+        being_driven.stdout,
+    );
+    // ⚠⚠ THE HEADER LINE, not the whole answer: a run's own row names its ASKER (item 865's ⑴)
+    // and that clause is correct there — what must be the caller's own conversation is the line
+    // that says who the caller IS.
+    let header = being_driven.stdout.lines().next().unwrap_or_default();
+    assert!(
+        header.contains(DRIVEN) && !header.contains(ASKER),
+        "⚠⚠ AND IT IS THE CALLER'S OWN CONVERSATION, never the run's asker: a build that echoed \
+         whoever asked would name the wrong session to the wrong reader: {header}",
+    );
+
+    // ── ③ A PANE WITH NO CONVERSATION SAYS WHICH HALF THAT COSTS ────────────────────────────────
+    let shell = mine_of(bystander);
+    assert!(
+        shell.ok,
+        "a shell pane still gets an answer: {}",
+        shell.stderr
+    );
+    assert!(
+        shell.stdout.contains("holds NO conversation"),
+        "⛔⛔ A SHELL IS TOLD THAT THE ASKING HALF CANNOT BE ASKED, rather than shown an empty \
+         list: silence there reads as *you asked for nothing*, which is a claim: {}",
+        shell.stdout,
+    );
+    assert!(
+        shell.stdout.contains("NO RUN of this daemon"),
+        "⚠⚠ ...AND *ON NO RUN* IS ITSELF AN ANSWER, said out loud. It is the whole point of the \
+         verb: a caller that gets it can say `not mine`: {}",
+        shell.stdout,
+    );
+
+    // ── ④ A CALLER THIS DAEMON CANNOT PLACE IS REFUSED, NOT ANSWERED ────────────────────────────
+    //
+    // ⚠⚠ REFUSED and NOT *you are on no run*. The two are the difference between *I looked and
+    // there is nothing* and *I do not know who you are*, and answering the second with the first
+    // is precisely the wrong answer the watcher declined to give.
+    let nowhere = sprag(&sock, &["my-runs", "-t", "mine"]);
+    assert!(
+        !nowhere.ok && nowhere.stderr.contains(sprag_host::PANE_ENV_VAR),
+        "⛔⛔⛔ a caller in no pane must be REFUSED, naming the variable that would have placed \
+         it — not told it is on nothing: ok={} {}",
+        nowhere.ok,
+        nowhere.stderr,
+    );
+    let stale = sprag_env(
+        &sock,
+        &["my-runs", "-t", "mine"],
+        &[(sprag_host::PANE_ENV_VAR, NO_SUCH_PANE.to_string().as_str())],
+    );
+    assert!(
+        !stale.ok,
+        "⛔⛔ a `$SPRAG_PANE` this daemon does not hold is a caller it cannot place, and ids \
+         restart with the daemon so a surviving process really does hold one: {}",
+        stale.stdout,
+    );
+    drop(guard);
+}
+
 /// ⛔⛔⛔⛔⛔ **A RUN'S ROW SAYS WHOSE DECISIONS IT IS BEING JUDGED BY** — register item 870.
 ///
 /// # ⚠⚠⚠⚠⚠ Item 848 made the caller choose, and then nothing said what they chose
@@ -14621,7 +14878,11 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
         // on the socket for `words`' reason — the classification it publishes is compiled in, and
         // the reader it exists for (`.githooks/loop-read.sh`) runs at push time with no daemon at
         // all. Driven here before the count moved.
-        (64, 5, 3),
+        // ⚠ REGISTER ITEM 865 ⑷: `my-runs` is the 65th, and the sweep drives it against a live
+        // daemon from OUTSIDE any pane — which for this verb is not a degraded case but a control:
+        // a caller this daemon cannot place must be REFUSED rather than told it is on nothing, so
+        // the sweep reads its refusal exit and not a fault.
+        (65, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -14807,7 +15068,10 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         // ⚠ REGISTER ITEM 867: `disposition` is the 41st, on `words`' reason exactly — it answers
         // something and this client has no view for a table of endings. Its reader is a push-time
         // hook, which presses no keys.
-        (15, 10, 41, 6),
+        // ⚠ REGISTER ITEM 865 ⑷: `my-runs` is the 42nd in the third column, on `runs`' reason — it
+        // answers, and this client has no view for it. Its reader is a conversation asking about
+        // ITSELF from a shell inside its own pane, which presses no keys.
+        (15, 10, 42, 6),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

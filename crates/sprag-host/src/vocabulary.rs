@@ -249,6 +249,8 @@ pub enum Verb {
     Words,
     /// `disposition` — what happens next to a run that ended, per ending, asked of this build.
     Disposition,
+    /// `my-runs` — which runs THIS conversation is on, asked by the caller about itself.
+    MyRuns,
     /// `daemons` — WHICH daemons are running and on which sockets, asked of the machine.
     Daemons,
     /// `show-grammar` — HOW TO CALL the daemon's own verbs, asked of the daemon.
@@ -582,7 +584,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 72] = [
+    pub const ALL: [Self; 73] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -648,6 +650,7 @@ impl Verb {
         Self::Doctor,
         Self::Words,
         Self::Disposition,
+        Self::MyRuns,
         Self::Daemons,
         Self::ShowGrammar,
         Self::DetachClient,
@@ -1303,6 +1306,27 @@ impl Verb {
                 "disposition",
                 Group::Tool,
                 Shell::Runs("[OUTCOME]"),
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::NotBuilt,
+            ),
+            // ⛔⛔⛔⛔⛔ **WHICH RUNS THE CALLER IS ON, ASKED BY THE CALLER ABOUT ITSELF** —
+            // register item 865's ⑷, and the one direction its other halves could not reach: ⑴⑵⑶
+            // gave a RUN a mouth for its asker and ⑸ gave a PANE a mouth for its occupant, and all
+            // four are answered by somebody looking from OUTSIDE.
+            //
+            // ⚠⚠ IT TAKES NO SUBJECT, which is item 871's safety property rather than a gap: a
+            // caller may POINT (`$SPRAG_PANE` is the daemon's own stamp on this process) and may
+            // not NAME. An argument here would let anybody assert somebody else's identity.
+            //
+            // ⚠ NOT BOUND TO A KEY, on `runs`' terms — it answers, and this client has no view for
+            // it. `NotBuilt` for an agent and NOT `Refused`: an agent asking which runs it is on is
+            // exactly the case this verb was measured for (a watcher that could not say whether a
+            // run was its own), and it reaches it through a shell today. A tool for it is a gap
+            // nobody has got to, not a decision.
+            Self::MyRuns => (
+                "my-runs",
+                Group::Orchestration,
+                Shell::Runs("[-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::NotBuilt,
             ),
