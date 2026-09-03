@@ -85,6 +85,12 @@ fn main() -> ExitCode {
             // needs a tab the client is NOT on, and making its own would test a window whose
             // creation had just selected it.
             check_a_tab_click_moves_a_live_client(&mut smoke, &mut report);
+            // ⚠ IMMEDIATELY AFTER IT, AND THE ORDER IS LOAD-BEARING BOTH WAYS. That check asserts
+            // every `tab_click` line in the log says `landed`; this one deliberately writes one that
+            // says `unaddressed`, so it must not run first. And it asks the question that check
+            // cannot: what the PERSON sees when a click lands nowhere. Register item 860 lived
+            // between them — both ends of `TabOutcome` were green while the middle was empty.
+            check_a_tab_click_that_lands_nowhere_says_so(&mut smoke, &mut report);
             // Needs the client ALIVE — it asks the client what its own last frame cost, so it cannot
             // join the log-reading check below the session kill.
             check_the_frames_report_their_settle_work(&mut smoke, &mut report);
@@ -997,6 +1003,227 @@ fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report)
     );
     report.check(
         &format!("the tab check put the client back on {before}"),
+        smoke
+            .wait_for(|s| {
+                let now = s.chrome_current_window()?;
+                (now == before).then_some(now)
+            })
+            .is_ok(),
+    );
+}
+
+/// A tab click that lands NOWHERE says so **on the person's screen** — and one that lands says
+/// nothing, because the window changed under their eyes.
+///
+/// # ⛔⛔⛔⛔⛔ This is the middle of register item 860, and it was the empty half
+///
+/// The owner's report was *"I press the tab and the window does not change"*, and the whole episode
+/// turned on one thing: **a click that worked and a click that did nothing were the same event to
+/// the person.** R852 built the value that tells them apart (`TabOutcome`), and by the time this was
+/// written BOTH ENDS of that value were gated — `wtabs`' unit tests drive the `Option<Report>` the
+/// reducer arm answers, and `check_a_tab_click_moves_a_live_client` reads the `verdict=` line off a
+/// live client's log. Nothing gated the MIDDLE: that `main`'s reducer arm passes the report to
+/// `message::show` instead of dropping it, which is the ONE line separating this build from the one
+/// the owner met. That arm had dropped a `bool` for as long as the tab strip existed.
+///
+/// So the mutation this check owes a red to is not a synthetic one — **deleting `message::show`
+/// from that arm restores `c24fac9` exactly**, and this is the gate that then goes red.
+///
+/// # 🔬 And the mutation's GREEN half is the answer the item was actually after
+///
+/// Item 860 asked *why the old build did not switch windows*. Under that mutation the two checks
+/// below go red and **everything else stays green** — `check_a_tab_click_moves_a_live_client` still
+/// moves the client, and the `verdict=` line still says `landed`. So the old build LANDED its
+/// clicks; what it could not do was say so. That matches the code: the send is
+/// `select_window(&WindowRef::Picked(painted id))` in both builds, byte for byte, and `git diff
+/// c24fac9 HEAD` over the client and daemon halves of that path is empty apart from a `#[must_use]`
+/// and this report. **"It was fixed and you could not see it" and "it was never fixed" look the
+/// same from a screen that says nothing** — which is the whole reason the item stayed open through
+/// five layers of green gates.
+///
+/// # Why a tag PAST the painted end, and not a window killed under a tab
+///
+/// `Unaddressed` needs a tab whose painted slot carries no identity. Killing a window to make one is
+/// a race against the poll that repaints the strip, and a check that sometimes finds the tab already
+/// gone would be measuring the poll. The strip registers [`WINDOW_TAB_BUTTONS`] buttons and paints
+/// only the live ones, so the first tag past the painted end is that state **by construction** —
+/// the button routes, the map has no entry, and no window has to die for it.
+///
+/// # ⚠ It must run AFTER `check_a_tab_click_moves_a_live_client`
+///
+/// That check asserts EVERY `tab_click` line in the log says `landed`, and this one deliberately
+/// writes a line that says `unaddressed`. The ordering is enforced by the call site, and reordering
+/// them fails loudly there rather than silently here.
+fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut Report) {
+    let Ok(tabs) = smoke.tabs() else {
+        report.check(
+            "the client's painted tree answers a tab strip to click",
+            false,
+        );
+        return;
+    };
+    let Some(before) = smoke.chrome_current_window() else {
+        report.check(
+            &format!("the strip says which window this client is on ({tabs:?})"),
+            false,
+        );
+        return;
+    };
+    // The reachable-but-unpainted tag this check is built on. Reported as a CLAIM rather than
+    // assumed: a strip painting every registered button has no such tag, and that is a finding about
+    // the fixture (too many windows), not a defect in the product.
+    let ghost = tabs.len();
+    report.check(
+        &format!(
+            "the strip paints fewer tabs than it registers, so tab {ghost} routes to no window \
+             ({tabs:?})"
+        ),
+        ghost < WINDOW_TAB_BUTTONS,
+    );
+    if ghost >= WINDOW_TAB_BUTTONS {
+        return;
+    }
+
+    // ── A CLICK THAT LANDS. Fired first, so the silence below is measured on a client that WORKS —
+    // `check_a_key_that_finds_nothing_says_so_on_the_screen`'s discipline, for its reason.
+    //
+    // Messages expire (`report::DEFAULT_DISPLAY_TIME`), so a strip an earlier check raised clears on
+    // its own; waiting for that rather than sleeping past it is this file's rule.
+    let quiet_first = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_message_strip")).then_some(())
+    });
+    report.check(
+        &format!("the message strip is clear before the pair is fired ({quiet_first:?})"),
+        quiet_first.is_ok(),
+    );
+    let Some(at) = tabs.iter().position(|name| *name != before) else {
+        report.check(
+            &format!("the strip holds a tab this client is NOT on ({tabs:?}, on {before})"),
+            false,
+        );
+        return;
+    };
+    let want = tabs[at].clone();
+    let landed = smoke
+        .invoke(
+            &format!("{TAB_TAG_PREFIX}{at}"),
+            "send",
+            json!("KeyboardActivate"),
+        )
+        .is_ok()
+        && smoke
+            .wait_for(|s| {
+                let now = s.chrome_current_window()?;
+                (now == want).then_some(now)
+            })
+            .is_ok();
+    report.check(
+        &format!("a tab click that LANDS moves the client onto {want} ({tabs:?})"),
+        landed,
+    );
+    // `Report::on_screen()` is `Said::Nothing` — a claim, not an omission. The window changing IS
+    // the answer, and a sentence here would be noise on every working click.
+    report.check(
+        "...and says nothing on the strip, because the window it moved to is the answer",
+        smoke
+            .tags()
+            .map(|tags| !tags.contains_key("sprag_message_strip"))
+            .unwrap_or(false),
+    );
+
+    // ── AND A CLICK THAT LANDS NOWHERE, which differs from the one above in ONE thing: the tab
+    // index. Same button kind, same gesture, same client, same instant.
+    let before_lines = smoke
+        .gui_log()
+        .lines()
+        .filter(|line| line.contains("tab_click"))
+        .count();
+    let pressed = smoke.invoke(
+        &format!("{TAB_TAG_PREFIX}{ghost}"),
+        "send",
+        json!("KeyboardActivate"),
+    );
+    report.check(
+        &format!("the unpainted tab {ghost} is a button a person can press ({pressed:?})"),
+        pressed.is_ok(),
+    );
+    let shown = smoke.wait_for_tag("sprag_message_strip");
+    // ⚠ The SENTENCE in the brief, not the tag map `wait_for_tag` answers: that map is every painted
+    // node in the client and renders to several thousand characters on ONE line, which is register
+    // item 837's face. What a reader of a red needs here is what the strip said, or why it never
+    // came up.
+    let said = shown
+        .as_ref()
+        .ok()
+        .and_then(|tags| tags.get("sprag_message_strip"))
+        .map(|painted| painted.text.join("\u{1f}"))
+        .unwrap_or_default();
+    report.check(
+        &format!(
+            "⛔⛔⛔⛔⛔ a tab click that addresses no window RAISES the strip ({}) — the owner \
+             pressed tabs dozens of times against a build whose reducer dropped this report, and a \
+             click that did nothing was indistinguishable from one that worked",
+            shown
+                .as_ref()
+                .map_or_else(|why| why.clone(), |_| said.clone()),
+        ),
+        shown.is_ok(),
+    );
+    report.check(
+        &format!("...and the strip says there was no window to select ({said:?})"),
+        said.contains("no window to select"),
+    );
+    // ⚠ NOT `window_gone`'s sentence. The two silent outcomes have OPPOSITE prescriptions — this one
+    // sends a reader to what the daemon publishes, `gone` to the window list — so a check that
+    // accepted either would re-merge exactly what R852 split.
+    report.check(
+        &format!(
+            "...and NOT the far sentence, which would send a reader to the wrong place ({said:?})"
+        ),
+        !said.contains("gone"),
+    );
+    // The log half of the same click, read as a DELTA so it is this click's line and not an earlier
+    // one's. `-a`-style caution does not apply here: this is a string read, not grep.
+    let after = smoke.gui_log();
+    let fresh: Vec<&str> = after
+        .lines()
+        .filter(|line| line.contains("tab_click"))
+        .skip(before_lines)
+        .collect();
+    report.check(
+        &format!("...and the log gained a verdict for it ({fresh:?})"),
+        !fresh.is_empty(),
+    );
+    report.check(
+        &format!("...and that verdict is `unaddressed`, not `landed` ({fresh:?})"),
+        !fresh.is_empty()
+            && fresh
+                .iter()
+                .all(|line| line.contains("unaddressed") && !line.contains("landed")),
+    );
+    // A click that addressed nothing must MOVE nothing — the other half of "it did nothing".
+    report.check(
+        &format!("...and the client is still on {want}, because nothing was selected"),
+        smoke.chrome_current_window().as_deref() == Some(want.as_str()),
+    );
+
+    // ⚠⚠⚠⚠⚠ LEAVE THE CLIENT WHERE IT WAS FOUND — this file's standing discipline: moving the
+    // client changes which panes are painted, and the checks below would assert on leftovers.
+    let Some(home) = tabs.iter().position(|name| *name == before) else {
+        report.check(
+            &format!("the tab this client started on is still in the strip ({tabs:?})"),
+            false,
+        );
+        return;
+    };
+    let _ = smoke.invoke(
+        &format!("{TAB_TAG_PREFIX}{home}"),
+        "send",
+        json!("KeyboardActivate"),
+    );
+    report.check(
+        &format!("the nowhere-click check put the client back on {before}"),
         smoke
             .wait_for(|s| {
                 let now = s.chrome_current_window()?;
@@ -6147,6 +6374,15 @@ const NEW_WINDOW_TAG: &str = "sprag_gui.wnew";
 /// share a module tree with `wtabs`; the strip's own `tab_tag` is the other speller, and
 /// `check_a_tab_click_moves_a_live_client` fails loudly if they ever disagree.
 const TAB_TAG_PREFIX: &str = "sprag_gui.wtab.";
+/// How many per-tab buttons the strip REGISTERS, which is more than it paints — `wtabs`'
+/// `MAX_WINDOW_TABS`, spelled here for [`TAB_TAG_PREFIX`]'s reason.
+///
+/// The INEQUALITY is the point rather than the number: a button exists at every one of these tags
+/// whether or not a window is painted under it, so a tag past the painted end is a reachable click
+/// that addresses no window — the product's own `Unaddressed`, and the only way
+/// [`check_a_tab_click_that_lands_nowhere_says_so`] can drive that arm on a live client without
+/// racing a window's death. If the two spellings ever disagree, that check's invoke fails loudly.
+const WINDOW_TAB_BUTTONS: usize = 16;
 /// The environment variable a client reads to learn WHICH session to attach to — the one
 /// `sprag attach` sets, and the only route by which a launch can be told to join a NAMED session.
 const SESSION_ENV: &str = "SPRAG_GUI_SESSION";
