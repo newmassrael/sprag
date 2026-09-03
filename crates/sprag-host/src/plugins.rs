@@ -10916,6 +10916,105 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND THE SPLIT OF A RUN'S FOLDS CROSSES THE SAME WAY** — register item 856(1),
+    /// and **the second gate this crossing's own mutation asked for.**
+    ///
+    /// # ⛔⛔⛔⛔ Measured, exactly as the gate above was, and with the same answer
+    ///
+    /// The split travels driver → **`progress_to_json`** → `progress_from_report` → the row a
+    /// person reads. Deleting its publication on that crossing was measured on 2026-09-04 against
+    /// `sprag-host`, `sprag-plugin` and `sprag-gate` together: **the only red was the standing one
+    /// (register item 837), and every gate this round had just written stayed green.** The
+    /// type-level gate drives `folds_by_reason_json` directly, the loop-level gate stops inside the
+    /// plugin, and the two lines in between were watched by nothing.
+    ///
+    /// ⚠⚠⚠ **AND THIS IS THE ONE CROSSING ITEM 856 CANNOT DO WITHOUT.** Every run this daemon
+    /// starts is driven in ANOTHER PROCESS, so a value that does not survive `progress_to_json` is
+    /// a value no real run ever publishes — the instrument would read `0 of 0` for ever while
+    /// looking perfectly healthy in the tests. That is item 856's own shape, one layer down: a
+    /// measurement nobody can take.
+    ///
+    /// # ⚠⚠ Why the absence is asserted too
+    ///
+    /// A run that never reflected crosses as six empty rows and not as a missing key. That differs
+    /// from the two counts above deliberately: `None` there means *this plugin has no such choice*,
+    /// whereas here the table is always a claim this image may make — `is_empty` is what the ROW
+    /// then uses to publish nothing, so the silence is decided at the mouth and not on the wire.
+    #[test]
+    fn the_split_of_a_runs_folds_crosses_the_wire_to_the_row() {
+        /// A progress cell as a driver really hands one over, carrying `folds`.
+        fn progress(folds: sprag_plugin::FoldsByReason) -> sprag_plugin::Progress {
+            sprag_plugin::Progress {
+                iterations: 12,
+                cost: None,
+                at: None,
+                place: None,
+                journal: Vec::new(),
+                answered: 0,
+                screened: 0,
+                deferred: None,
+                unchecked: None,
+                unadmitted: None,
+                waiting: None,
+                deliveries: sprag_plugin::Deliveries::NONE,
+                folds_by_reason: folds,
+                checks: sprag_plugin::Checks::NONE,
+                banked: None,
+                briefed: None,
+                driving: None,
+                inherited: false,
+            }
+        }
+
+        let mut counted = sprag_plugin::FoldsByReason::NONE;
+        for _ in 0..3 {
+            counted.record(sprag_plugin::ReflectReason::Capacity, true);
+        }
+        // The CONTROL row: same prompt shape, different reason, and it landed — the comparison the
+        // whole split exists to make possible.
+        for _ in 0..4 {
+            counted.record(sprag_plugin::ReflectReason::Budget, false);
+        }
+
+        // ── ① IT CROSSES, AND IT COMES BACK THE SAME TABLE ──
+        let carried = progress_to_json(&progress(counted));
+        assert_eq!(
+            progress_from_report(&carried).folds_by_reason,
+            Some(counted),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): the split does not survive the crossing every real \
+             run takes. Deleting this publication was MEASURED to leave every other gate in this \
+             workspace green, so the instrument would read `0 of 0` for ever while its own tests \
+             passed — item 856's shape one layer down, a measurement nobody can take: {carried}",
+        );
+
+        // ── ② AND THE ROW'S SENTENCE IS COMPOSABLE FROM WHAT ARRIVED ──
+        //
+        // ⚠⚠ Read off the SAME JSON the crossing produced rather than a hand-built object, which
+        // is the hole the gate above was written for: two spellings of one shape are free to agree
+        // in a test and differ in production.
+        let beside = &carried[REPORTED_BESIDE_KEY];
+        let said = folds_by_reason_sentence(beside)
+            .expect("a table that crossed can be said back to a person");
+        assert!(
+            said.contains("capacity 3 of 3") && said.contains("budget 0 of 4"),
+            "⛔⛔⛔⛔ REGISTER ITEM 856(1): the split arrived and the mouth cannot say it, which \
+             is *a fact that reaches the wire and dies at the mouth* — the failure this file names \
+             in five places. The LANDING row matters most: it is the only shape that can refute \
+             this item's axis: {said:?}",
+        );
+
+        // ── ③ AND A RUN THAT NEVER REFLECTED CROSSES A TABLE, NOT A SILENCE ──
+        let quiet = progress_to_json(&progress(sprag_plugin::FoldsByReason::NONE));
+        assert_eq!(
+            progress_from_report(&quiet).folds_by_reason,
+            Some(sprag_plugin::FoldsByReason::NONE),
+            "⚠⚠⚠ THIS IMAGE LOOKED, so six empty rows are a claim it may make. A MISSING key must \
+             stay reserved for a driver whose build knew none — that is the only thing telling \
+             *nobody counted* apart from *nothing reflected*, and the row's own `is_empty` is what \
+             turns the second into silence: {quiet}",
+        );
+    }
+
     /// The body of [`a_kind_documents_judgements_reach_a_run_that_named_none_of_them`], whose whole
     /// argument is in that test's doc comment above.
     fn a_kind_documents_judgements_reach_a_run_that_named_none_of_them_body() {

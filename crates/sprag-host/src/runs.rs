@@ -4756,6 +4756,98 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND THE SPLIT OF THOSE FOLDS SURVIVES THE DAEMON TOO** — register item 856(1),
+    /// on item 606's measurement one gate up and **written because a mutation showed nothing was
+    /// watching.**
+    ///
+    /// # ⛔⛔⛔⛔ Measured 2026-09-04, exactly as item 847's crossing gate was
+    ///
+    /// Writing `folds_by_reason: None` at the persist site was run against `sprag-host` and
+    /// `sprag-gate` together: **the only red was the standing one (register item 837).** The
+    /// type-level gate drives the wire shape, the loop-level gate stops inside the plugin, and the
+    /// durable log — the one crossing item 606 proved matters most — was watched by nothing.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this crossing is the one item 856 cannot do without
+    ///
+    /// Item 606 asked two live daemons for their runs' delivery pairs and **thirteen answered with
+    /// none, every one restored**: *a run is READ after it ends, and the daemon that drove it is
+    /// restarted between rounds.* Item 856's split is read on exactly those runs, so a split that
+    /// died with its daemon would be an instrument whose readings are available only while nobody
+    /// is reading — item 856's own shape, one layer down.
+    ///
+    /// ⚠⚠ **THROUGH THE FILE**, the neighbouring gates' argument: a field `serde` never writes
+    /// would still satisfy an in-process round trip. It matters more here than for the pair above,
+    /// because this value is a MAP and `#[serde(flatten)]` is the one attribute that can silently
+    /// swallow a whole table.
+    ///
+    /// ⚠ The two rows differ in BOTH numbers and in reason, so a restore that dropped one, or
+    /// filled it from its neighbour, fails here rather than agreeing by coincidence — and the
+    /// LANDING row is the one whose loss would be silent, since a table of pure folds looks exactly
+    /// like the hand tally this item replaced.
+    #[test]
+    fn the_split_of_a_runs_folds_survives_the_daemon_that_counted_it() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let progress = ProgressCell::default();
+        let mut folds = sprag_plugin::FoldsByReason::NONE;
+        for _ in 0..3 {
+            folds.record(sprag_plugin::ReflectReason::Capacity, true);
+        }
+        // ⚠⚠ THE CONTROL ROW, and the one that must not be lost: same prompt shape, a different
+        // reason, and it LANDED. It is the only shape that can refute item 856's axis, so a
+        // restore that kept only the folds would leave the register unable to be contradicted —
+        // which is the state this item exists to end.
+        for _ in 0..4 {
+            folds.record(sprag_plugin::ReflectReason::Budget, false);
+        }
+        lock(&progress).folds_by_reason = folds;
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            overridden: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(an_outcome()),
+                output: None,
+                uncommitted: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress,
+        });
+
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+
+        let carried = successor.snapshot()[0].progress.folds_by_reason;
+        assert_eq!(
+            carried.under(sprag_plugin::ReflectReason::Capacity),
+            sprag_plugin::FoldsUnder {
+                delivered: 3,
+                folded: 3
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): the split did not survive its daemon, and item 606 \
+             MEASURED that this is the crossing every reader takes — thirteen live runs, every one \
+             restored, none carrying its delivery pair. An instrument that empties at the daemon \
+             boundary can be consulted only while nobody is consulting it. Got {carried:?} from \
+             {on_disk}",
+        );
+        assert_eq!(
+            carried.under(sprag_plugin::ReflectReason::Budget),
+            sprag_plugin::FoldsUnder {
+                delivered: 4,
+                folded: 0
+            },
+            "⛔⛔⛔⛔ AND THE ROW THAT LANDED SURVIVED. A restore that kept the folds and dropped \
+             this one leaves a table whose denominator is its numerator — the hand tally item \
+             856(1) replaced, restored faithfully. Got {carried:?} from {on_disk}",
+        );
+    }
+
     /// ⛔⛔⛔⛔ **THE ANSWER TO *WAS MY WORK KEPT* SURVIVES THE DAEMON THAT MEASURED IT** — register
     /// item 616, the residue item 604 left behind and named rather than hid.
     ///
