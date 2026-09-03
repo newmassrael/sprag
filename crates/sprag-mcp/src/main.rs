@@ -2810,6 +2810,19 @@ fn render_run(run: &Value) -> String {
     // `read_pane` is exactly what it would do next and a folded prompt is not there to be read.
     let prompts = sprag_host::plugins::delivery_sentence(run)
         .map_or_else(String::new, |said| format!(" {said}."));
+    // ⛔⛔⛔⛔⛔ AND WHICH REFLECTIONS THOSE FOLDS FELL ON — register item 856(1), from the host's
+    // own renderer for the reason every clause here is: two mouths reading one fact must not reach
+    // two conclusions.
+    //
+    // ⚠⚠⚠⚠⚠ **AND THIS IS THE MOUTH THAT MATTERS MOST FOR THIS PARTICULAR FACT, which is not
+    // true of the clause above it.** The line above tells a supervisor *do not go and read that
+    // pane*; this one is the evidence for what folding DEPENDS ON — and the reader here is a
+    // supervising agent watching the very loop that produces the reading. Item 856's remaining debt
+    // is *somebody sees a `capacity` reflection that landed*, and the party best placed to see one
+    // is the party watching the run it happens in. A split that reached only the person's terminal
+    // would be an instrument aimed away from its only continuous reader.
+    let split = sprag_host::plugins::folds_by_reason_sentence(run)
+        .map_or_else(String::new, |said| format!(" {said}."));
     // ⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601. An
     // agent reading `converged` is the reader most likely to act on it as *the work is done*, and
     // register item 428 exists because the party that did the work is not the party to certify it.
@@ -2852,7 +2865,7 @@ fn render_run(run: &Value) -> String {
         // long run and sees the same numbers twice has learned it is stuck, and `still running`
         // could not say that. It also lets an agent see spend BEFORE the budget is gone.
         Some("running") => format!(
-            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}{order}{prompts}{verified}{canceller}\n{}",
+            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}{order}{prompts}{split}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -2865,7 +2878,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  What it captured:\n{text}\n"));
             format!(
-                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{order}{prompts}{verified}{canceller}{}{}\n{}{reply}",
+                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{order}{prompts}{split}{verified}{canceller}{}{}\n{}{reply}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING, because the three have three different remedies and an agent
                 // told only `exhausted` has to guess which one to change. It is also the fact an
@@ -2900,7 +2913,7 @@ fn render_run(run: &Value) -> String {
         // under a standing order left a reader a bare word and no way to learn that what was asked
         // for had never happened.
         _ => format!(
-            "Run {id} ({label}): {}.{withheld}{not_resumed}{order}{prompts}{verified}{canceller}\n",
+            "Run {id} ({label}): {}.{withheld}{not_resumed}{order}{prompts}{split}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("in an unknown state"),
         ),
     }
@@ -9175,20 +9188,50 @@ mod tests {
             "⚠⚠⚠ THE CONTROL for the delivery pair: a run that delivered nothing must not talk \
              about prompts at all: {quiet}",
         );
+        // ⛔⛔⛔ AND THE SPLIT OF THOSE FOLDS IS ITS OWN CONTROL — register item 856(1), for the
+        // delivery pair's reason: it is a TABLE this mouth reads, not a sentence the host carried.
+        assert!(
+            !quiet.contains("folds by why it reflected"),
+            "⚠⚠⚠ THE CONTROL for the split: a run that reflected nothing has no comparison to \
+             publish, and empty rows beside runs with real ones are an invented population: \
+             {quiet}",
+        );
 
         for (key, sentence) in clauses {
             run[*key] = Value::String((*sentence).to_owned());
         }
         run[sprag_host::plugins::RUN_DELIVERED_KEY] = serde_json::json!(14);
         run[sprag_host::plugins::RUN_FOLDED_KEY] = serde_json::json!(14);
+        // ⛔⛔⛔⛔⛔ AND THE SPLIT — register item 856(1). **This mouth had no clause for it at
+        // all**, and nothing said so: this gate's population is a hand-written list, so a fact the
+        // daemon publishes and this renderer never learned about is invisible to the one gate whose
+        // NAME is *every fact a run publishes reaches the agent reading it*. That is rule 6 at the
+        // gate rather than in the product, and it is the second time this round the same list has
+        // been found short (the person's mouth was the first).
+        //
+        // ⚠⚠ THE LANDING ROW IS IN THE FIXTURE ON PURPOSE: item 856's own refutation is a
+        // reflection that LANDED, so a mouth printing only folds must fail here.
+        run[sprag_host::plugins::RUN_FOLDS_BY_REASON_KEY] = serde_json::json!({
+            "capacity": {"delivered": 3, "folded": 3},
+            "budget": {"delivered": 4, "folded": 0},
+        });
         let said = render_run(&run);
 
         let delivered = sprag_host::plugins::delivery_sentence(&run)
             .expect("a run that delivered has a delivery sentence");
+        let split = sprag_host::plugins::folds_by_reason_sentence(&run)
+            .expect("a run that reflected has a split to say");
+        assert!(
+            split.contains("budget 0 of 4"),
+            "⚠⚠⚠ THE PREMISE: the composed sentence must carry the row that LANDED, or *the agent \
+             is shown it* is a claim about a sentence that already dropped the only shape able to \
+             refute item 856: {split:?}",
+        );
         for sentence in clauses
             .iter()
             .map(|(_, sentence)| *sentence)
             .chain(std::iter::once(delivered.as_str()))
+            .chain(std::iter::once(split.as_str()))
         {
             assert!(
                 said.contains(sentence),
