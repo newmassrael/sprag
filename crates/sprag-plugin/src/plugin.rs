@@ -420,11 +420,44 @@ pub struct Deliveries {
     /// [`unsubmitted`](Self::unsubmitted)'s doc is explicit that a split is earned by remedies
     /// differing, not by evidence differing.
     ///
-    /// ⚠ The residue, stated rather than hidden: **a run cannot tell here how many of its folds the
-    /// agent actually named.** A run whose folds are all `LetGo` has hooks reporting nothing, which
-    /// is a real diagnosis and a real question — and it earns a fifth field the day somebody
-    /// measures it, on this struct's rule that a number the product does not read is folklore.
+    /// ⚠ The residue this used to state rather than hide — *a run cannot tell here how many of its
+    /// folds the agent actually named* — **is paid by [`released`](Self::released), and the day it
+    /// named arrived.**
     pub folded: u32,
+    /// ⛔⛔⛔⛔⛔ **HOW MANY OF [`folded`](Self::folded) THE COMPOSER SETTLED RATHER THAN THE
+    /// AGENT** — [`Witnessed::LetGo`](crate::deliver::Witnessed), and register item 669.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A SUB-COUNT, not a fifth sibling, and the difference is this struct's own rule
+    ///
+    /// [`unsubmitted`](Self::unsubmitted) states the rule in as many words: **a split is earned by
+    /// remedies differing, not by evidence differing.** The remedies here do NOT differ — neither
+    /// prompt is on that pane, and *do not go and look* is the answer either way — so this is not a
+    /// number beside `folded`. It is a number INSIDE it: `released <= folded` always, and a reader
+    /// who wants the fold ratio still reads `folded` of `made` and is unaffected.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What earns it is register item 669's rule, and the argument that withheld it was
+    /// circular
+    ///
+    /// This field was declined on the ground that *a road earns its own number with its own
+    /// measurement, and this one has never run in production*. **That measurement was impossible
+    /// while the number did not exist**: `Account` and `LetGo` reach the same `folded`, so no run,
+    /// row or log could say which witness settled a fold. Measured 2026-09-04 over this
+    /// repository's own loop log — **151 live runs, 2,940 delivery attempts, 1,030+ folds, and
+    /// nothing anywhere could say whether [`crate::deliver::SubmittedWhen::Released`] had ever
+    /// answered once.** That contract was built FOR item 669 and shipped 2026-08-31.
+    ///
+    /// ⇒ A contract nobody can observe firing is a contract nobody can say is working, which is the
+    /// position item 669 exists to end — and it is the same disease one level up: item 669's
+    /// finding was *NO has no channel*, and this is *the channel has no counter*.
+    ///
+    /// # ⚠⚠ What it diagnoses, which is why it is read and not folklore
+    ///
+    /// A run whose folds are **all** `released` has a peer whose hooks report nothing (register
+    /// item 709's territory), and one whose folds are **never** `released` is a run where the
+    /// composer reading is absent — no manifest claim, no composer rule, or a daemon too old to
+    /// send the key. Those are different faults with different remedies, and until this field
+    /// existed they published the same number.
+    pub released: u32,
     /// How many prompts this run typed onto a pane, saw painted there, and **never got asked** —
     /// [`crate::deliver::Delivered::Unsubmitted`], the composer holding a question nobody
     /// submitted.
@@ -474,6 +507,7 @@ impl Deliveries {
     pub const NONE: Self = Self {
         made: 0,
         folded: 0,
+        released: 0,
         unsubmitted: 0,
         unreported: 0,
     };

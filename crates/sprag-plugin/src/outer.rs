@@ -7969,6 +7969,17 @@ impl OuterLoop {
         if folded {
             self.deliveries.folded = self.deliveries.folded.saturating_add(1);
         }
+        // ⛔⛔⛔⛔⛔ **AND WHICH WITNESS SETTLED THAT FOLD** — register item 669. Written HERE, in
+        // the same act as the total it is inside, for the reason the paragraph above gives about
+        // the split: a sub-count maintained anywhere else is free to disagree with its own
+        // container, and `released > folded` is a sentence about a run that cannot exist.
+        //
+        // ⚠⚠⚠ THE CLASSIFICATION IS THE TYPE'S — `Witnessed::composer_let_go`, exhaustive, for
+        // `folded_away`'s reason exactly. ⚠ It is read BESIDE `folded` and never instead of it:
+        // this predicate alone would read *not the composer's road* as *not a fold*.
+        if folded && evidence.composer_let_go() {
+            self.deliveries.released = self.deliveries.released.saturating_add(1);
+        }
         // ⛔⛔⛔⛔⛔ **AND THE SAME EVENT, SPLIT BY WHY THIS PROMPT WAS BEING ASKED** — register
         // item 856(1). The line above is a TOTAL, and a total is the one shape that cannot refute
         // anything: item 856's axis says a full session folds, its discriminator is the `capacity`
@@ -14864,6 +14875,210 @@ mod tests {
             !painted.all_folded(),
             "⚠⚠ and a run whose prompt is on the screen must not tell anybody to distrust it. Got \
              {painted:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN SAYS WHICH WITNESS CLOSED EACH OF ITS FOLDS** — register item 669, and the
+    /// first gate anywhere that drives [`crate::deliver::SubmittedWhen::Released`] to an answer
+    /// through a whole loop pass.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The contract was built for item 669, shipped, and could not be observed firing
+    ///
+    /// `Released` converges where the agent's account expires, and item 669 is the measurement that
+    /// asked for it: of five live runs, four held prompts that were never asked and **the run could
+    /// not tell**. It landed 2026-08-31. Then `Witnessed::Account` and `Witnessed::LetGo` both
+    /// raised the same `folded`, so no run, row or log could say which witness had closed a fold —
+    /// measured 2026-09-04 over this repository's own loop log, **151 live runs and 2,940 delivery
+    /// attempts, with nothing anywhere able to say whether the contract had answered once.**
+    ///
+    /// ⇒ **A contract nobody can observe firing is a contract nobody can say is working**, which is
+    /// item 669's own position one level up: its finding was *NO has no channel*, and this is *the
+    /// channel has no counter*.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The two arms differ in ONE field, and it is the agent's account
+    ///
+    /// Both peers FOLD — same script, same road ([`crate::deliver::OnScreen::MovedWithoutIt`]),
+    /// same composer readings. What differs is whether the submit hook NAMES the question it
+    /// received. With a name, the account settles it and `Submission::landed` prefers the account
+    /// because it knows the TEXT; without one, the account expires and the composer's emptying is
+    /// what settles the submit.
+    ///
+    /// ⇒ So `folded` must read `1` on BOTH arms and only the sub-count may move. A build that
+    /// counted `released` off its container — or off the road rather than the witness — passes an
+    /// assertion about either arm alone and fails the pair.
+    ///
+    /// ⚠⚠ **AND THE MUTE ARM IS THE POPULATION, NOT AN EDGE CASE**: a peer whose hooks report no
+    /// question is register item 709's territory and this loop meets it whenever a hook is killed
+    /// by its own five-second timeout — the arithmetic in `DEFAULT_SUBMIT_GRACE`'s doc.
+    #[test]
+    fn a_run_says_which_witness_closed_each_of_its_folds() {
+        /// Its neighbour's folding peer, verbatim: a composer that paints a placeholder and
+        /// swallows the rest, so no character of the prompt is on that screen.
+        ///
+        /// ⚠ Copied rather than shared because the two gates ask different questions of it — one
+        /// compares folding against painting, this one compares two witnesses over one fold — and a
+        /// constant reshaped for a second caller is how a control quietly stops being one.
+        const FOLDS: &str = "stty raw -echo; printf 'GO'; \
+             dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '[Pasted text #2 +5 lines]'; \
+             exec cat > /dev/null";
+
+        // Drive ONE pass over the folding peer, with `named` deciding whether its submit hook
+        // reports the question it received. Everything else is held constant.
+        let start = |named: bool| {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+            let pane = {
+                let mut command = CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg(FOLDS);
+                command.env("TERM", "dumb");
+                workspace
+                    .lock()
+                    .unwrap()
+                    .spawn(command, "sh".to_string(), 80, 8)
+                    .expect("spawn pane")
+            };
+            let reader = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let published = Arc::new(Mutex::new(0_u64));
+            let source: crate::access::AgentStateSource = Arc::new(move |id: PaneId| {
+                let typed = reader
+                    .input_trail()
+                    .and_then(|echo| echo.pane_recent_input(id))
+                    .unwrap_or_default();
+                let submitted = typed.contains('\r');
+                let mut seq = published.lock().expect("the published verdict");
+                if submitted && *seq == 0 {
+                    *seq = 1;
+                }
+                Some(crate::access::AgentObservation {
+                    // ⛔⛔⛔⛔⛔ **THE COMPOSER, IN THE SLOT THE ARBITRATION DOES NOT TOUCH** —
+                    // register item 762, and what makes this pane answerable at all. The box holds
+                    // the text from the moment it is typed and lets go the moment the submit goes
+                    // out, which is the property `Released` reads: both readings are STABLE, so the
+                    // contract converges where the account below merely expires.
+                    holding: Some(!typed.is_empty() && !submitted),
+                    state: if submitted {
+                        sprag_detect::AgentState::Working
+                    } else {
+                        sprag_detect::AgentState::Idle
+                    },
+                    agent: Some("claude".to_owned()),
+                    // ⚠⚠ REPORTED IN BOTH ARMS, its neighbour's decision and for its reason: the
+                    // authority is what promotes the submit contract to `Took`, so holding it fixed
+                    // is what leaves the account as the only difference. It is also the population
+                    // item 669 is about — a supervisor's agents all report.
+                    authority: crate::access::Authority::Reported {
+                        source: "hook:claude".to_owned(),
+                    },
+                    seq: *seq,
+                    asked_seq: *seq,
+                    reports: 0,
+                    asking: None,
+                    // ⛔⛔⛔⛔⛔ **THE ONE FIELD THAT DIFFERS.** `Some` is a hook naming the question
+                    // it received, which is what `Took` compares against; `None` is a peer whose
+                    // hooks say nothing, and then the ONLY thing that can settle this submit is the
+                    // composer letting go.
+                    asked: (named && submitted).then(|| typed.replace('\r', "")),
+                    said: None,
+                    said_seq: 0,
+                    noticed: None,
+                    running: None,
+                    transcript: None,
+                    settling: crate::access::Settling::Nothing,
+                    reporter: crate::access::ReporterVoice::Speaking,
+                })
+            });
+            let access =
+                WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+            let mut loops = with_bound(
+                OuterLoop::new(
+                    lua,
+                    pane,
+                    &AiLoopSpec {
+                        shows_the_prompt: true,
+                        ..spec(None)
+                    },
+                )
+                .expect("the document's datamodel must carry its four authored strings"),
+                Duration::from_secs(1),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            assert_eq!(
+                loops.deliveries(),
+                crate::plugin::Deliveries::NONE,
+                "a loop that has delivered nothing must say so",
+            );
+            // The peer has to be past its `stty` before anything is typed — its neighbour's rule,
+            // or the line discipline echoes the prompt and this measures the kernel.
+            let up = Instant::now();
+            while !access
+                .pane_collapsed(pane)
+                .is_some_and(|screen| screen.contains("GO"))
+            {
+                assert!(
+                    up.elapsed() < Duration::from_secs(10),
+                    "the peer never configured its terminal",
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let pumped = loops.pump(&access, &RunContext::uncancellable());
+            let screen = access.pane_collapsed(pane).unwrap_or_default();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (pumped, loops.deliveries(), screen)
+        };
+
+        // ══ ① THE ACCOUNT CLOSED IT — the road that already had a witness ══════════════════════
+        let (told_pump, told, told_screen) = start(true);
+        told_pump.expect("a fold the agent named is a delivery, not a refusal");
+        assert!(
+            told_screen.contains("[Pasted text"),
+            "⚠ THE FIXTURE'S OWN PREMISE: this peer must have folded, or neither arm is on the road \
+             where a second witness exists at all. Screen: {told_screen:?}",
+        );
+        assert_eq!(
+            (told.made, told.folded, told.released),
+            (1, 1, 0),
+            "⛔⛔⛔⛔ REGISTER ITEM 669: a fold the AGENT named is being counted as one the composer \
+             settled. Then the number says *this peer's hooks report nothing* about a peer that had \
+             just reported — the one reading this field exists to make possible, inverted. Got \
+             {told:?}",
+        );
+
+        // ══ ② THE COMPOSER CLOSED IT — the channel item 669 asked for, firing ═══════════════════
+        let (mute_pump, mute, mute_screen) = start(false);
+        mute_pump.expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 669: the composer LET GO of this prompt, so a question was \
+             asked and this pass must not refuse. A refusal here is the contract failing to answer \
+             on the very population it was built for — a peer whose hooks name nothing, which is \
+             every peer whose hook was killed by its own timeout",
+        );
+        assert!(
+            mute_screen.contains("[Pasted text"),
+            "⚠ AND THE CONTROL'S PREMISE: the two arms must differ in the HOOK and not in the fold. \
+             Screen: {mute_screen:?}",
+        );
+        assert_eq!(
+            (mute.made, mute.folded, mute.released),
+            (1, 1, 1),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 669: the composer emptied and nobody named the question, and \
+             the run cannot say so. `folded` reads the same on both arms by construction, so a \
+             build that never raises this sub-count publishes an identical tally for a peer that \
+             reported and one that did not — which is the position item 669 was filed to end, and \
+             the reason the `Released` contract could not be observed firing at all. Got {mute:?}",
+        );
+
+        // ══ ③ AND THE CONTAINER DID NOT MOVE ═══════════════════════════════════════════════════
+        //
+        // ⚠⚠⚠ This is what makes the pair an instrument rather than two tallies. `released` is a
+        // SUB-COUNT of `folded` (`Deliveries::released`'s own doc), so a build that had split the
+        // remedy instead of the witness — raising one and not the other — satisfies each arm above
+        // read alone and destroys the comparison between them.
+        assert_eq!(
+            (told.folded, mute.folded, told.made, mute.made),
+            (1, 1, 1, 1),
+            "⛔⛔⛔⛔ REGISTER ITEM 669: the two arms disagree about the FOLD, so what differs \
+             between them is no longer the witness alone and the sub-count above is measuring \
+             something else. Told {told:?}, mute {mute:?}",
         );
     }
 

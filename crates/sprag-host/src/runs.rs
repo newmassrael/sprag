@@ -2402,6 +2402,18 @@ pub struct PersistedDeliveries {
     /// read differently, so the default stays and the caveat is written down instead of implied.
     #[serde(default)]
     pub unreported: u32,
+    /// [`sprag_plugin::Deliveries::released`] — register item 669, and the sub-count that says
+    /// WHICH witness closed this run's folds.
+    ///
+    /// ⚠⚠ `#[serde(default)]` for its neighbours' reason, and the residue is the SHARPEST of the
+    /// three: a missing `released` reads as *no fold of this run was settled by its composer*, and
+    /// that is precisely what every stored run says — the counter did not exist, so the runs whose
+    /// records predate it are the entire population item 669 wanted to measure. The alternative is
+    /// still worse (a version bump refuses every run this machine already has), so the default
+    /// stays and the ROW's mouth is what keeps the two apart: `crate::plugins::delivery_sentence`
+    /// reads the key's PRESENCE, not this field, and says nothing about a row that cannot say.
+    #[serde(default)]
+    pub released: u32,
 }
 
 impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
@@ -2411,6 +2423,7 @@ impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
             folded: live.folded,
             unsubmitted: live.unsubmitted,
             unreported: live.unreported,
+            released: live.released,
         }
     }
 }
@@ -2422,6 +2435,7 @@ impl From<PersistedDeliveries> for sprag_plugin::Deliveries {
             folded: stored.folded,
             unsubmitted: stored.unsubmitted,
             unreported: stored.unreported,
+            released: stored.released,
         }
     }
 }
@@ -4954,6 +4968,12 @@ mod tests {
             // question of this run went missing* about the one run that most needs the opposite
             // said, and it would agree with `folded` by coincidence if it were 3.
             unreported: 7,
+            // ⛔⛔⛔⛔⛔ AND THE FIFTH — register item 669, the sub-count that says WHICH witness
+            // closed those three folds. `2` rather than `3` on purpose: equal to `folded` would be
+            // satisfied by a restore that filled this from its container, and that is the one wrong
+            // answer that reads as a real diagnosis (*every fold was the composer, so that peer's
+            // hooks report nothing*).
+            released: 2,
         };
         registry.submit(NewRun {
             id,
@@ -4984,15 +5004,24 @@ mod tests {
         let restored = successor.snapshot();
         let carried = restored[0].progress.deliveries;
         assert_eq!(
-            (carried.made, carried.folded, carried.unsubmitted),
-            (14, 3, 5),
+            (
+                carried.made,
+                carried.folded,
+                carried.unsubmitted,
+                carried.unreported,
+                carried.released,
+            ),
+            (14, 3, 5, 7, 2),
             "⛔⛔⛔ ITEM 606: this run typed 14 prompts, 3 of them were folded away and 5 were \
              never asked at all, and a daemon restart lost them. Those numbers are the whole of \
              item 591's instrument, and a run is READ after it has ended — by which time the \
              daemon that drove it has usually been restarted. ⚠ THE THIRD IS ITEM 617's, asserted \
              beside the pair rather than in its own gate because it is one value: it says a prompt \
              is STILL SITTING in a composer, which is the one of the three a person can act on \
-             after the fact. Got {carried:?} from {on_disk}",
+             after the fact. ⛔⛔⛔⛔⛔ THE FOURTH AND FIFTH JOINED THIS ASSERTION ON 2026-09-04 — \
+             item 762's count was SET in this fixture and never read, so its durable crossing was \
+             unwatched for four days; the fifth is item 669's, and it is the one whose absence \
+             reads as a diagnosis rather than as a gap. Got {carried:?} from {on_disk}",
         );
     }
 

@@ -2484,6 +2484,7 @@ mod tests {
             deliveries: Deliveries {
                 made: 3,
                 folded: 0,
+                released: 0,
                 unsubmitted: 0,
                 unreported: 0,
             },

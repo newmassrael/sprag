@@ -628,6 +628,19 @@ pub const RUN_UNSUBMITTED_KEY: &str = "unsubmitted";
 /// ⚠ MEASURED: `run110` (2026-08-31) ended on this road twice, eighteen hours apart, and the round
 /// diagnosing it read the wrong remedy off the wire and spent itself on brief size.
 pub const RUN_UNREPORTED_KEY: &str = "unreported";
+/// The answer key carrying **HOW MANY OF THIS RUN'S FOLDS THE COMPOSER SETTLED RATHER THAN THE
+/// AGENT** — [`sprag_plugin::Deliveries::released`], and register item 669.
+///
+/// ⚠⚠⚠⚠⚠ **IT IS INSIDE [`RUN_FOLDED_KEY`] AND NOT BESIDE IT.** `released <= folded` always, and a
+/// reader taking the fold ratio still takes `folded` of [`RUN_DELIVERED_KEY`]. What this adds is
+/// WHICH WITNESS closed each fold — the agent naming the question, or the composer emptying with
+/// nobody naming it — and those are two different faults when the count runs to one extreme.
+///
+/// ⚠⚠ **AND THAT IS WHY IT IS NOT A REMEDY SPLIT**: `sprag_plugin::Deliveries::unsubmitted`'s rule
+/// is that a number is split when the REMEDIES differ, and both roads here mean *do not go and look
+/// at that pane*. This is earned by register item 669's rule instead — the `Released` contract was
+/// built for that item, shipped, and no run could say whether it had ever answered once.
+pub const RUN_RELEASED_KEY: &str = "released";
 /// The answer key carrying **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES** —
 /// register item 601, a sentence and absent for a run that put no claim to a checker.
 ///
@@ -5410,6 +5423,10 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
     answer[REPORTED_BESIDE_KEY] = json!({
         RUN_DELIVERED_KEY: progress.deliveries.made,
         RUN_FOLDED_KEY: progress.deliveries.folded,
+        // ⛔⛔⛔ AND WHICH WITNESS CLOSED THOSE FOLDS — register item 669. Beside the total it is
+        // inside, never instead of it: a driver that sent this and not `folded` would be publishing
+        // a sub-count with no container.
+        RUN_RELEASED_KEY: progress.deliveries.released,
         RUN_UNSUBMITTED_KEY: progress.deliveries.unsubmitted,
         RUN_UNREPORTED_KEY: progress.deliveries.unreported,
         // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1). Composed from
@@ -5635,6 +5652,12 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             // filling in `0` would publish *no question of this run's went missing* about every run
             // written before the counter existed, which is this workspace's rule 6 exactly.
             unreported: small(beside.get(RUN_UNREPORTED_KEY))?,
+            // ⚠⚠ AND THE FIFTH IS `?` TOO, on the neighbour's argument one line up — register item
+            // 669. A driver that reports four counters and not this one has not told its folds
+            // apart, and answering `0` for it would publish *this run's composer never settled a
+            // submit* about a build that could not have said otherwise. That reading is the one the
+            // whole item is about: it is what every run said before this key existed.
+            released: small(beside.get(RUN_RELEASED_KEY))?,
         })
     })();
     // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1), whole or nothing for the
@@ -6016,6 +6039,11 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
         // half of is what that type exists to prevent.
         entry[RUN_UNSUBMITTED_KEY] = json!(deliveries.unsubmitted);
         entry[RUN_UNREPORTED_KEY] = json!(deliveries.unreported);
+        // ⛔⛔⛔⛔ AND WHICH WITNESS CLOSED THE FOLDS — register item 669, published under the SAME
+        // predicate as the four above because it is one value (`sprag_plugin::Deliveries`) and a
+        // row carrying part of it is what that type exists to prevent. ⚠ It needs no clause of its
+        // own in the predicate: a fold is a delivery, so `released > 0` implies `made > 0`.
+        entry[RUN_RELEASED_KEY] = json!(deliveries.released);
     }
     // ⛔⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1). Its own predicate rather
     // than the triple's above, because the populations are different: a run may deliver a hundred
@@ -6769,9 +6797,18 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
     let deliveries = sprag_plugin::Deliveries {
         made: count(run, RUN_DELIVERED_KEY),
         folded: count(run, RUN_FOLDED_KEY),
+        released: count(run, RUN_RELEASED_KEY),
         unsubmitted: count(run, RUN_UNSUBMITTED_KEY),
         unreported: count(run, RUN_UNREPORTED_KEY),
     };
+    // ⛔⛔⛔⛔⛔ **AND WHETHER ANYBODY COUNTED THAT SUB-COUNT AT ALL** — register item 669, and the
+    // one place `count`'s zero-for-absent would lie. Every other key here reads `0` for a row that
+    // predates it and the reading survives; this one would read *no fold of this run was settled by
+    // its composer*, which is the reassuring answer to an unmeasured question and is EXACTLY what
+    // every row said while the counter did not exist. A row that cannot say gets no clause.
+    let witnessed = run[RUN_RELEASED_KEY]
+        .as_u64()
+        .map(|counted| u32::try_from(counted).unwrap_or(u32::MAX));
     // ⚠⚠⚠⚠⚠ **AND A PROMPT A COMPOSER SWALLOWED IS SAID FIRST OF ALL, BECAUSE ITS INSTRUCTION IS
     // THE ONE A READER GETS WRONG** — register item 762. It is read before the wedged clause below
     // for that clause's own reason turned around: `unsubmitted` says *go and look at that pane* and
@@ -6789,7 +6826,7 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
         if deliveries.made == 0 && deliveries.unsubmitted == 0 {
             return Some(swallowed);
         }
-        return Some(match delivered_clause(deliveries) {
+        return Some(match delivered_clause(deliveries, witnessed) {
             Some(delivered) => format!("{swallowed}; {delivered}"),
             None => swallowed,
         });
@@ -6814,7 +6851,7 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
         }
         // A run that delivered AND wedged has both readings, and neither survives being dropped for
         // the other: the earlier prompts are somewhere, and the last one is somewhere else.
-        return Some(match delivered_clause(deliveries) {
+        return Some(match delivered_clause(deliveries, witnessed) {
             Some(delivered) => format!("{wedged}. {delivered}"),
             None => wedged,
         });
@@ -6822,7 +6859,7 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
     if deliveries.made == 0 {
         return None;
     }
-    delivered_clause(deliveries)
+    delivered_clause(deliveries, witnessed)
 }
 
 /// ⛔⛔⛔⛔⛔ **WHICH REFLECTIONS THIS RUN'S FOLDS FELL ON**, or [`None`] for a run that reflected
@@ -6908,7 +6945,52 @@ pub fn folds_by_reason_sentence(run: &Value) -> Option<String> {
 /// ⚠ Split rather than duplicated: two spellings of *all of them were folded* would differ first in
 /// whichever one a later round forgot, which is the failure `delivery_sentence`'s own doc argues
 /// against one function up.
-fn delivered_clause(deliveries: sprag_plugin::Deliveries) -> Option<String> {
+fn delivered_clause(
+    deliveries: sprag_plugin::Deliveries,
+    witnessed: Option<u32>,
+) -> Option<String> {
+    /// ⛔⛔⛔⛔⛔ **WHICH WITNESS CLOSED THIS RUN'S FOLDS** — register item 669, appended to a fold
+    /// clause and never printed alone.
+    ///
+    /// The two are different faults when the count runs to an extreme: **all** of them settled by
+    /// the composer is a peer whose hooks report nothing (register item 709's territory), and
+    /// **none** of them is a run where the composer could not be read at all — no manifest claim,
+    /// no composer rule, or a daemon too old to send the key. Until this number existed both
+    /// published the same sentence.
+    ///
+    /// ⚠⚠ [`None`] for a row that predates the counter, and that is the whole reason this takes an
+    /// `Option`: `0` would say *no fold of this run was settled by its composer*, which is the
+    /// reassuring reading of a question nobody asked — and is what EVERY row said before item 669.
+    fn by_whom(deliveries: sprag_plugin::Deliveries, witnessed: Option<u32>) -> String {
+        let Some(released) = witnessed else {
+            return String::new();
+        };
+        // ⚠ A sub-count larger than its container is a run that cannot exist, and a mouth that
+        // printed it would be publishing arithmetic nobody can act on. Said rather than clamped:
+        // the reader is told the two numbers disagree and where to look.
+        if released > deliveries.folded {
+            return format!(
+                " (⚠ {released} of them are recorded as settled by that composer, which is MORE \
+                 folds than this run made — two counters that must move together have come apart)"
+            );
+        }
+        if released == 0 {
+            return " (none of them settled by the composer letting go — every one was the agent \
+                    naming the question, so its hooks were reporting)"
+                .to_owned();
+        }
+        if released == deliveries.folded {
+            return " (EVERY one of them settled by the composer letting go and NOT by the agent \
+                    naming the question — so that peer's hooks reported no question at all, which \
+                    is what is worth checking)"
+                .to_owned();
+        }
+        format!(
+            " ({released} of them settled by the composer letting go rather than by the agent \
+             naming the question)"
+        )
+    }
+
     if deliveries.made == 0 {
         return None;
     }
@@ -6923,13 +7005,16 @@ fn delivered_clause(deliveries: sprag_plugin::Deliveries) -> Option<String> {
     if deliveries.all_folded() {
         return Some(format!(
             "⚠ all {} of this run's prompts were folded away by its peer's composer — NONE of them \
-             is on that pane, so looking there for one will find a fold and not the text",
+             is on that pane, so looking there for one will find a fold and not the text{}",
             deliveries.made,
+            by_whom(deliveries, witnessed),
         ));
     }
     Some(format!(
-        "⚠ {} of {} prompts were folded away by its peer's composer and are not on that pane",
-        deliveries.folded, deliveries.made,
+        "⚠ {} of {} prompts were folded away by its peer's composer and are not on that pane{}",
+        deliveries.folded,
+        deliveries.made,
+        by_whom(deliveries, witnessed),
     ))
 }
 
@@ -8513,6 +8598,9 @@ mod tests {
                         // Its sentence must stay *go and look at that pane*, so a swallowed count
                         // leaking in here would prove nothing and hide the split.
                         unreported: 0,
+                        // ⚠ ZERO BECAUSE `folded` IS — register item 669. This sub-count can never
+                        // exceed its container, and a run that folded nothing settled nothing.
+                        released: 0,
                     }),
                 ),
                 // ── AND THE CONTROL: a run that put nothing into any pane ──
@@ -8536,11 +8624,25 @@ mod tests {
              {:?}",
             entry(0),
         );
+        // ⛔⛔⛔⛔⛔ AND THE FIFTH IS ON THE ROW — register item 669, asserted as PRESENT rather than
+        // as a value: `0` here is the honest reading (this run folded nothing, so its composer
+        // settled nothing), and what the item needs is that a reader can tell that apart from a row
+        // that never counted. `crate::plugins::delivery_sentence` keys on exactly this presence, so
+        // a row that stopped publishing the key would silently retire the whole diagnosis.
+        assert_eq!(
+            entry(0).get(RUN_RELEASED_KEY).and_then(Value::as_u64),
+            Some(0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 669: the sub-count that says WHICH witness closed a run's \
+             folds never reaches the row, so every reader falls back to *nobody counted this* — \
+             which is what every row said before the counter existed. Entry: {:?}",
+            entry(0),
+        );
         for key in [
             RUN_DELIVERED_KEY,
             RUN_FOLDED_KEY,
             RUN_UNSUBMITTED_KEY,
             RUN_UNREPORTED_KEY,
+            RUN_RELEASED_KEY,
         ] {
             assert!(
                 entry(1).get(key).is_none(),
@@ -8613,6 +8715,199 @@ mod tests {
             both.contains("do NOT go and look at that pane"),
             "⛔⛔⛔⛔ REGISTER ITEM 762: a run with both readings dropped the swallowed one, which is \
              the half a reader gets wrong: {both:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REPORT MISSING ANY ONE OF THE FIVE DELIVERY COUNTS IS REFUSED WHOLE** —
+    /// [`progress_from_report`]'s own stated rule, and **it was ungated until 2026-09-04.**
+    ///
+    /// # ⛔⛔⛔⛔⛔ Measured: softening the `?` on a key left every test in this workspace green
+    ///
+    /// The function's doc says *WHOLE OR NOTHING* and gives the reason — `sprag_plugin::Deliveries`
+    /// exists so a fold count can never travel without its denominator, and a reader that filled in
+    /// the half it did not receive would be the writer that type forbids. On 2026-09-04 each of the
+    /// five reads was replaced with `.unwrap_or_default()` in turn: the fourth (register item 762's
+    /// `unreported`, shipped 2026-08-31) and the fifth (register item 669's `released`) **reddened
+    /// nothing at all** — `-p sprag-host --lib` came back with only the standing red.
+    ///
+    /// ⇒ ⭐ **The rule was prose, and prose is not measured.** Two of the five keys could have gone
+    /// back to inventing a zero for an older driver and no run of this suite would have said so.
+    ///
+    /// # ⚠⚠⚠ Why it is one gate over ALL five and not five gates
+    ///
+    /// The rule is a property of the VALUE, not of any key: what it forbids is a `Deliveries`
+    /// assembled from a report that did not carry one. Five gates would be five chances to add a
+    /// sixth key with no gate — which is exactly how the fourth and fifth got here. This loops over
+    /// the keys, so a key added to the read and not to the list fails the count assertion below
+    /// rather than being quietly exempt.
+    #[test]
+    fn a_report_missing_any_one_delivery_count_is_refused_whole() {
+        let counts = [
+            RUN_DELIVERED_KEY,
+            RUN_FOLDED_KEY,
+            RUN_UNSUBMITTED_KEY,
+            RUN_UNREPORTED_KEY,
+            RUN_RELEASED_KEY,
+        ];
+        // ⚠ Distinct values, so a read that took one key's number for another's is a red here and
+        // not an agreement by coincidence.
+        let whole = json!({
+            RUN_DELIVERED_KEY: 9,
+            RUN_FOLDED_KEY: 4,
+            RUN_UNSUBMITTED_KEY: 3,
+            RUN_UNREPORTED_KEY: 2,
+            RUN_RELEASED_KEY: 1,
+        });
+
+        // ══ THE PREMISE: the complete report is read, and read CORRECTLY ═══════════════════════
+        assert_eq!(
+            progress_from_report(&json!({ REPORTED_BESIDE_KEY: whole })).deliveries,
+            Some(sprag_plugin::Deliveries {
+                made: 9,
+                folded: 4,
+                unsubmitted: 3,
+                unreported: 2,
+                released: 1,
+            }),
+            "⚠⚠⚠⚠⚠ THE PREMISE: a report carrying every count must be read, and each number must \
+             land in its own field — without this the refusals below are satisfied by a reader that \
+             answers `None` for everything",
+        );
+        assert_eq!(
+            counts.len(),
+            5,
+            "⚠⚠ AND THE LIST IS THE POPULATION: a sixth count added to the read and not to this \
+             list would be exempt from every refusal below, which is how the fourth and fifth \
+             arrived unwatched",
+        );
+
+        // ══ AND EACH ONE MISSING REFUSES THE WHOLE VALUE ═══════════════════════════════════════
+        for missing in counts {
+            let mut beside = json!({
+                RUN_DELIVERED_KEY: 9,
+                RUN_FOLDED_KEY: 4,
+                RUN_UNSUBMITTED_KEY: 3,
+                RUN_UNREPORTED_KEY: 2,
+                RUN_RELEASED_KEY: 1,
+            });
+            beside
+                .as_object_mut()
+                .expect("the report is an object")
+                .remove(missing);
+            assert_eq!(
+                progress_from_report(&json!({ REPORTED_BESIDE_KEY: beside })).deliveries,
+                None,
+                "⛔⛔⛔⛔⛔ A DRIVER THAT DID NOT SEND {missing:?} HAS NOT COUNTED IT, and inventing \
+                 a zero publishes a measurement nobody took. For {RUN_UNREPORTED_KEY:?} that reads \
+                 as *no question of this run went missing* and for {RUN_RELEASED_KEY:?} as *no fold \
+                 was settled by its composer* — both are diagnoses, both about builds that could \
+                 not have said either. The caller falls back to the daemon's own cell, which is a \
+                 number somebody did count.",
+            );
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN'S ROW SAYS WHICH WITNESS CLOSED ITS FOLDS, AND A ROW THAT CANNOT SAY SAYS
+    /// NOTHING** — register item 669, held at the sentence a person actually reads.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The two extremes are different faults and published the same sentence
+    ///
+    /// `sprag_plugin::Deliveries::released` is a SUB-COUNT of `folded`, so the fold ratio a reader
+    /// already takes is untouched. What it adds is the diagnosis: **all** of a run's folds settled
+    /// by the composer is a peer whose hooks report nothing (register item 709's territory), and
+    /// **none** of them is a peer that reports fine. Until this number existed both wrote the same
+    /// line, which is why the `Released` contract — built for item 669, shipped 2026-08-31 — could
+    /// not be observed firing over 151 live runs.
+    ///
+    /// # ⛔⛔⛔⛔⛔ And the ABSENT key is the arm that matters most
+    ///
+    /// Every other count here reads `0` for a row written before it existed and the reading
+    /// survives. This one would read *no fold of this run was settled by its composer* — the
+    /// reassuring answer to a question nobody asked, and **exactly what every stored row says**,
+    /// because the counter did not exist when they were written. So the mouth reads the key's
+    /// PRESENCE and a row that cannot say gets no clause at all: this workspace's rule 6, at the
+    /// one place where a default would have been a diagnosis.
+    #[test]
+    fn a_rows_folds_say_which_witness_closed_them_and_a_row_that_cannot_say_says_nothing() {
+        /// A run with `folded` of `made` folds, `released` of them settled by the composer — or
+        /// `None` for a row written before the counter existed.
+        fn said(made: u64, folded: u64, released: Option<u64>) -> String {
+            let mut run = json!({
+                RUN_DELIVERED_KEY: made,
+                RUN_FOLDED_KEY: folded,
+                RUN_UNSUBMITTED_KEY: 0,
+                RUN_UNREPORTED_KEY: 0,
+            });
+            if let Some(released) = released {
+                run[RUN_RELEASED_KEY] = json!(released);
+            }
+            delivery_sentence(&run).expect("a run that delivered has a sentence")
+        }
+
+        // ══ ① SOME OF THEM ═════════════════════════════════════════════════════════════════════
+        let some = said(5, 2, Some(1));
+        assert!(
+            some.contains("2 of 5 prompts were folded away")
+                && some.contains(
+                    "1 of them settled by the composer letting go rather than by the agent naming \
+                     the question"
+                ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 669: the row does not say which witness closed these folds, so \
+             a reader cannot tell a peer whose hooks report from one whose hooks are silent — and \
+             the contract built for that question cannot be observed answering. Said: {some:?}",
+        );
+
+        // ══ ② NONE OF THEM — a positive claim, not a silence ═══════════════════════════════════
+        //
+        // ⚠⚠⚠ It is PRINTED rather than omitted, and that is the half that makes this an
+        // instrument: item 669's channel is refuted by a run whose folds the agent named, so a
+        // mouth that spoke only when the composer had answered could confirm the channel and never
+        // contradict it.
+        let none = said(5, 2, Some(0));
+        assert!(
+            none.contains("none of them settled by the composer letting go"),
+            "⚠⚠⚠⚠ AND ZERO IS SAID OUT LOUD. A mouth that mentioned only the composer's answers \
+             would be an instrument that can confirm item 669's channel and never refute it — the \
+             defect item 856 paid one register over. Said: {none:?}",
+        );
+
+        // ══ ③ ALL OF THEM — the diagnosis this number exists for ═══════════════════════════════
+        let all = said(5, 2, Some(2));
+        assert!(
+            all.contains("EVERY one of them settled by the composer letting go")
+                && all.contains("hooks reported no question at all"),
+            "⛔⛔⛔⛔ REGISTER ITEM 669: a run whose every fold was settled by its composer has a \
+             peer that named NO question, which is register item 709's fault wearing item 591's \
+             numbers — and the row must name it rather than leave a reader to divide. Said: \
+             {all:?}",
+        );
+        assert_ne!(
+            none, all,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 669: the two extremes produce one sentence, so the sub-count \
+             bought a number nobody can act on differently — which is this workspace's own test for \
+             whether a split was earned",
+        );
+
+        // ══ ④ AND A ROW THAT PREDATES THE COUNTER SAYS NOTHING ABOUT THE WITNESS ═══════════════
+        let older = said(5, 2, None);
+        assert!(
+            older.contains("2 of 5 prompts were folded away"),
+            "⚠⚠ THE PREMISE: an older row must still get its FOLD clause — the pair it does carry \
+             is a real measurement, and dropping the whole sentence would lose it to gain nothing. \
+             Said: {older:?}",
+        );
+        assert!(
+            !older.contains("settled by the composer"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 669 AND RULE 6: a row written before this counter existed is \
+             being read as *no fold of this run was settled by its composer*. That is the \
+             reassuring answer to an unmeasured question, and it is what EVERY stored row would \
+             say — so the one diagnosis this field exists for would be published, wrongly, about \
+             the entire history. Said: {older:?}",
+        );
+        assert_ne!(
+            older, none,
+            "⛔⛔⛔⛔ AND *NOBODY COUNTED THIS* MUST NOT READ AS *NOTHING WAS COUNTED*. Two \
+             different facts arriving as one sentence is the whole shape item 669 was filed on",
         );
     }
 
@@ -17124,6 +17419,11 @@ mod tests {
                             // relay that dropped this count, or read it off one of them, fails
                             // here rather than agreeing by coincidence.
                             unreported: 4,
+                            // ⛔⛔⛔ AND THE FIFTH — register item 669. `1` rather than `2`: equal
+                            // to `folded` would be satisfied by a relay that filled this from its
+                            // own container, and that answer reads as a real diagnosis (*every
+                            // fold was the composer's, so this peer's hooks report nothing*).
+                            released: 1,
                         },
                         checks: sprag_plugin::Checks {
                             asked: 3,
@@ -17253,6 +17553,7 @@ mod tests {
                 folded: 2,
                 unsubmitted: 1,
                 unreported: 4,
+                released: 1,
             }),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 663 / 606: this is the column item 606 was filed for, and it \
              came back empty for the driver kind that fills it from a report. A run is READ after \
@@ -17310,6 +17611,7 @@ mod tests {
             moving.deliveries = sprag_plugin::Deliveries {
                 made: 7,
                 folded: 0,
+                released: 0,
                 unsubmitted: 0,
                 unreported: 0,
             };

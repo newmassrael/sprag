@@ -392,12 +392,26 @@ pub enum SubmittedWhen {
     ///   an agent paints for a long paste; a short prompt sits in the composer as itself and the
     ///   pane reads `Idle`. Right for a supervisor, whose prompts are long enough to fold — which
     ///   is how the fold was found — and wrong for a person typing a word.
-    /// * ⛔ **A pane whose agent REPORTS.** `sprag_detect`'s tracker does not run the manifest's
-    ///   rules on a pane a hook is reporting, so `Holding` is never published for one — pinned by
-    ///   `a_reported_pane_holding_a_paste_is_not_read_as_holding` in that crate. That is the
-    ///   population a supervisor drives, so this contract REFUSES there rather than passing: the
-    ///   baseline cannot be armed, and an unanswerable contract says so. Lifting it is the same
-    ///   change register item 524 already made for one other screen fact, and it is not made here.
+    /// * ⛔ **A pane no manifest claims, or one whose manifest authors no composer rule, or a
+    ///   daemon too old to send the key.** All three arrive as an ABSENT reading, which is *nothing
+    ///   could say* and never *not holding* — see [`crate::access::AgentObservation::holding`]. The
+    ///   baseline cannot be armed, so the contract refuses at once rather than spending its window:
+    ///   an unanswerable contract says so.
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND A THIRD BULLET STOOD HERE UNTIL 2026-09-04, SAYING THE OPPOSITE OF THE
+    /// TRUTH** — register item 669. It read: *"A pane whose agent REPORTS … this contract REFUSES
+    /// there rather than passing … Lifting it is the same change register item 524 already made for
+    /// one other screen fact, and it is not made here."* **That change WAS made** — register item
+    /// 762 put the composer reading in a slot of its own, so a reported pane answers it while the
+    /// arbitration stays exactly as item 524 left it, and `a_reported_pane_settles_the_composer_
+    /// contract` in this file is the gate. The sentence outlived its own repair by four days,
+    /// telling every reader that the one contract built for the loop cannot serve the loop.
+    ///
+    /// ⚠⚠ **Which is why the correction is not this paragraph**: prose that says *it works now* is
+    /// the same kind of thing that just spent four days being wrong. What holds it is the gate
+    /// named above, plus [`crate::plugin::Deliveries::released`] — the number that makes this
+    /// contract's firings COUNTABLE in a live run, so *does it work* stops being a question anybody
+    /// answers from a comment.
     Released {
         /// How long to wait for that, after which the delivery answers
         /// [`Delivered::Unsubmitted`].
@@ -1106,6 +1120,49 @@ impl Witnessed {
             // Every other road leaves the text somewhere a person can find it — painted by the
             // program, echoed by the terminal — or leaves nothing established at all, and neither
             // is a fold.
+            Self::Painted | Self::Echoed | Self::Unchecked | Self::Unasked | Self::Unproven => {
+                false
+            }
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND WHICH OF THE TWO FOLD ROADS SETTLED IT — THE COMPOSER, OR THE AGENT** —
+    /// register item 669, and the fifth field [`crate::plugin::Deliveries`] said it would earn
+    /// *"the day somebody measures it"*.
+    ///
+    /// `true` is [`LetGo`](Self::LetGo): the composer emptied and **nobody named the question**, so
+    /// what settled the submit was [`SubmittedWhen::Released`] — the one contract here that
+    /// converges instead of expiring.
+    ///
+    /// # ⛔⛔⛔⛔⛔ It is not the remedy that is being split, and that distinction is load-bearing
+    ///
+    /// [`folded_away`](Self::folded_away) says a reader *acts identically on both*, and that stays
+    /// true: neither prompt is on that pane. What differs is the EVIDENCE, and
+    /// [`crate::plugin::Deliveries::unsubmitted`]'s rule — *a split is earned by remedies
+    /// differing* — is why this is not a fifth sibling but a SUB-COUNT of `folded`.
+    ///
+    /// **What earns it is a different rule, and it is register item 669's own**: the `Released`
+    /// contract was built for that item, shipped 2026-08-31, and **no run could say whether it had
+    /// ever answered once.** Measured 2026-09-04 over this repository's own loop log — 151 live
+    /// runs carrying a brief, 2,940 delivery attempts, and every fold on either road counted as the
+    /// same number. A contract nobody can observe firing is a contract nobody can say is working,
+    /// which is the position item 669 was filed to end.
+    ///
+    /// # ⚠⚠ EXHAUSTIVE, WITH NO `_` ARM — [`folded_away`](Self::folded_away)'s reason exactly
+    ///
+    /// A seventh witness has to be decided rather than inherited. ⚠ And the arms that are `false`
+    /// here are NOT one thing: `Account` is a fold this does not claim, and the four below are not
+    /// folds at all. `folded_away` is the predicate that separates those two groups, and a caller
+    /// reading this alone would be reading *not the composer's road* as *not folded*.
+    #[must_use]
+    pub const fn composer_let_go(self) -> bool {
+        match self {
+            Self::LetGo => true,
+            // The agent named the question, so the account settled it and the composer reading was
+            // the weaker of two answers — see `Submission::landed`, where the account wins.
+            Self::Account => false,
+            // Not folds at all. ⚠ `folded_away` is what says so; this predicate is only ever read
+            // beside it.
             Self::Painted | Self::Echoed | Self::Unchecked | Self::Unasked | Self::Unproven => {
                 false
             }
