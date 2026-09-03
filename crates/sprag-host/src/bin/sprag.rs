@@ -6575,6 +6575,21 @@ fn render_run(run: &Value) -> String {
     let id = run["id"].as_u64().unwrap_or_default();
     let label = run["label"].as_str().unwrap_or("?");
     let opener = render_who_asked(run);
+    // ⛔⛔⛔⛔⛔ **AND WHOSE DECISIONS IT IS BEING JUDGED BY** — register item 870, on the heading
+    // beside who asked for it, because the two answer the same shape of question about a run.
+    //
+    // A kind is not a smaller run, it is a run JUDGED BY ANOTHER document — `debt` names this
+    // repository's register by absolute path, so a run under it working in some other tree has its
+    // next checkpoint admitted or refused against a record that has never heard of its work.
+    // Register item 848 made the caller name one for exactly that reason, and then nothing said
+    // which they had named: five live runs, three different kinds between them, rows identical
+    // apart from the pane.
+    //
+    // ⚠ Absent for a plugin that takes no kind, which is most of them — the presence-is-the-claim
+    // rule this row's other clauses use.
+    let kind = run[sprag_host::plugins::LOOP_KIND_KEY]
+        .as_str()
+        .map_or_else(String::new, |named| format!("  judged as {named}"));
     let state = &run["state"];
     // ⚠⚠⚠⚠⚠ WHAT BECAME OF A PERSON'S STAND-DOWN — register item 594 — AND WHY IT IS NOT ON THE
     // HEADING AND NOT AT THE END. `render_build`'s doc names the constraint: this repository's own
@@ -6748,7 +6763,7 @@ fn render_run(run: &Value) -> String {
     // hours**, while four runs started in the same window made one each. Every one of the seven
     // rows said `running`.
     let resumed = resumed_clause(run, state);
-    let head = format!("run {id}  {label}{opener}{}\n", render_build(run));
+    let head = format!("run {id}  {label}{opener}{kind}{}\n", render_build(run));
     match state["status"].as_str() {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.

@@ -5699,6 +5699,17 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
     if let Some(session) = &run.opened_by_session {
         entry[RUN_ASKED_BY_KEY] = json!(session);
     }
+    // ⛔⛔⛔⛔⛔ AND WHOSE DECISIONS IT IS BEING JUDGED BY — register item 870. Item 848 made this
+    // a REQUIRED request key precisely so the caller decides which document judges the run, and
+    // then no answer carried it: `wire.rs`' own pin says *"a caller says it and nothing answers
+    // with it"*. So a run judged against this repository's register while working in another tree
+    // was indistinguishable from one judged correctly. See `RunSummary::loop_kind`.
+    //
+    // ⚠ SAME KEY AS THE REQUEST, deliberately: it is the same fact travelling back, and a second
+    // spelling for the answer is how two copies of one word come to differ.
+    if let Some(kind) = &run.loop_kind {
+        entry[LOOP_KIND_KEY] = json!(kind);
+    }
     // ⚠⚠⚠ AND THE BUILD FOLLOWS THE SAME OMIT-RATHER-THAN-NULL RULE, for a reason of its own:
     // absent means NOTHING RECORDED WHICH BUILD THIS WAS — a run restored from a log written before
     // the field existed — and a reader that filled that in with the daemon it is talking to would
@@ -9064,6 +9075,11 @@ mod tests {
                 &crate::runs::RunSummary {
                     id: RunId(9),
                     label: "ai_loop pane=3".to_owned(),
+                    // ⚠ `None` and not a kind — item 870. This fixture is a hand-built summary,
+                    // so *nobody recorded one* is the honest value and the row must gain no clause
+                    // from it; `a_runs_row_says_whose_decisions_it_is_being_judged_by` drives the
+                    // real door for the filled case.
+                    loop_kind: None,
                     opened_by: None,
                     opened_by_session: None,
                     // ⚠ Not what this gate measures — item 853. Its own gates drive the key.
@@ -9148,6 +9164,8 @@ mod tests {
             &crate::runs::RunSummary {
                 id: RunId(7),
                 label: "ai_loop pane=3".to_owned(),
+                // ⚠ `None` on the fixture above's terms — item 870.
+                loop_kind: None,
                 opened_by: None,
                 opened_by_session: None,
                 overridden: None,
@@ -13305,6 +13323,8 @@ mod tests {
         let run = crate::runs::RunSummary {
             id: RunId(11),
             label: format!("ai_loop pane={}", pane.0),
+            // ⚠ `None` on the two fixtures above's terms — item 870.
+            loop_kind: None,
             opened_by: None,
             opened_by_session: None,
             overridden: None,

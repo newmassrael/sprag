@@ -4897,6 +4897,158 @@ fn a_run_launched_from_a_pane_records_the_conversation_that_asked_for_it() {
     drop(guard);
 }
 
+/// ⛔⛔⛔⛔⛔ **A RUN'S ROW SAYS WHOSE DECISIONS IT IS BEING JUDGED BY** — register item 870.
+///
+/// # ⚠⚠⚠⚠⚠ Item 848 made the caller choose, and then nothing said what they chose
+///
+/// A kind is not a smaller run, it is a run **judged by another document**. `debt` resolves to
+/// `debt_loop.scxml`, whose `successor_check` names this repository's own register **by absolute
+/// path** — so every checkpoint a run under it proposes is admitted or refused against THIS tree's
+/// record, whatever tree the run is working in. That document states the danger itself: *"a
+/// classifier that silently answered about whatever tree it happened to land in would be worse than
+/// one that failed to start."*
+///
+/// **Measured on the live daemon while this was written**: five recent runs, one `debt` driving a
+/// pane in another repository's tree, one `unclaimed`, one `debt` correctly — and every row printed
+/// identically apart from the pane. `wire.rs`' own version pin says why in as many words:
+/// *"`loop_kind` is a REQUEST word — a caller says it and nothing answers with it."* Required at
+/// the door, dropped on the way out.
+///
+/// # ⛔⛔⛔⛔ The two runs differ in ONE WORD, which is the whole assertion
+///
+/// A mouth that appended a fixed clause to every loop would satisfy *the row mentions a kind* and
+/// leave a `debt` run and an `unclaimed` run exactly as indistinguishable as it found them — which
+/// is the state this item was opened in. So this submits two runs identical in every argument but
+/// the kind, and asserts their rows are DIFFERENT and each carries its own word.
+///
+/// ⚠ And the control is a plugin that takes no kind at all: absence is a claim on this row, like
+/// every other clause it carries.
+#[test]
+fn a_runs_row_says_whose_decisions_it_is_being_judged_by() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-judged-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    // ⚠⚠ EVERY ARGUMENT THE SAME BUT THE KIND. Written as one closure so the pair cannot drift:
+    // a second literal would let the two calls come to differ somewhere else and the assertion
+    // below would then be about that difference instead.
+    let submit = |conn: &mut HostConn, session: &str, pane: u64, kind: &str| {
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": session,
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+                "args": {
+                    "plugin": "ai_loop",
+                    "pane": pane,
+                    "loop_kind": kind,
+                    "agent": "claude",
+                    "north_star": "say which document judges this run",
+                    "milestone": "be readable on the row",
+                    // ⚠ NAMED HERE RATHER THAN LEFT TO THE KIND, and that is the pair's whole
+                    // point: `unclaimed` authors no decisions, so a run under it takes the
+                    // caller's arguments and nothing else and the door refuses a launch missing
+                    // one. Leaving this out made the two calls differ in what the DOCUMENT
+                    // supplied as well as in the word, which is the confound this closure exists
+                    // to prevent — and the refusal that taught it is item 848's design working.
+                    "reference": "register item 870",
+                    "ready_when": { "match": "shows", "marker": "AGENT-READY" },
+                    "shows_prompt": false,
+                    "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+                },
+            }),
+        )
+        .expect("the loop is submitted");
+    };
+    let judged_here = loop_session(&mut conn, "here");
+    submit(
+        &mut conn,
+        "here",
+        judged_here,
+        sprag_plugin::kind::LoopKind::DEBT,
+    );
+    let judged_nowhere = loop_session(&mut conn, "nowhere");
+    submit(
+        &mut conn,
+        "nowhere",
+        judged_nowhere,
+        sprag_plugin::kind::LoopKind::UNCLAIMED,
+    );
+
+    let here = run_block_for(&sprag(&sock, &["runs", "-t", "here"]).stdout, judged_here);
+    let nowhere = run_block_for(
+        &sprag(&sock, &["runs", "-t", "nowhere"]).stdout,
+        judged_nowhere,
+    );
+
+    // ── EACH ROW CARRIES ITS OWN WORD ───────────────────────────────────────────────────────────
+    assert!(
+        here.contains(sprag_plugin::kind::LoopKind::DEBT),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 870: a run's row must name the document judging it. `debt` names \
+         THIS repository's register by absolute path, so a run under it in another tree has its \
+         next checkpoint refused by a record that has never heard of its work — and until this, \
+         every row printed identically apart from the pane. Row: {here}",
+    );
+    assert!(
+        nowhere.contains(sprag_plugin::kind::LoopKind::UNCLAIMED),
+        "⛔⛔⛔⛔ AND THE OTHER KIND'S OWN WORD, verbatim as the caller said it. A row carrying \
+         one fixed word would pass the assertion above and say nothing: {nowhere}",
+    );
+    // ── AND THE ONE-WORD PAIR ACTUALLY COMES APART ──────────────────────────────────────────────
+    assert!(
+        !here.contains(sprag_plugin::kind::LoopKind::UNCLAIMED)
+            && !nowhere.contains(sprag_plugin::kind::LoopKind::DEBT),
+        "⚠⚠⚠ NEITHER ROW MAY CARRY THE OTHER'S WORD — the pair differs in exactly one argument, so \
+         a row that mentioned both would be describing the vocabulary rather than this run. Read \
+         {here} against {nowhere}",
+    );
+
+    // ── THE CONTROL: a plugin that takes no kind gains no clause ────────────────────────────────
+    let plain = loop_session(&mut conn, "plain");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "plain",
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "orchestrator",
+                "pane": plain,
+                "stimulus": "x",
+                "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+                "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+            },
+        }),
+    )
+    .expect("the plain run is submitted");
+    let bare = run_block_of(
+        &sprag(&sock, &["runs", "-t", "plain"]).stdout,
+        "orchestrator",
+        plain,
+    );
+    assert!(
+        !bare.contains("judged as"),
+        "⚠⚠ THE CONTROL: a plugin that takes no kind must gain no clause. Absence is a claim on \
+         this row like every other one it carries, and a mouth printing unconditionally would pass \
+         both assertions above: {bare}",
+    );
+    drop(guard);
+}
+
 /// ⛔⛔⛔⛔⛔ **BEFORE CLOSING A PANE A PERSON CAN ASK WHO IS LIVING IN IT** — register item 865's
 /// ⑸, at the verb that is this CLI's discovery step.
 ///

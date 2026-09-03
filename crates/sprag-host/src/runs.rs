@@ -1445,6 +1445,35 @@ pub struct RunSummary {
     /// ⚠⚠ A LEVEL, not a latch, which is what separates it from the order above: `false` here means
     /// *nobody is holding it now*, never *nobody ever did*. `resume-run` really does take it back.
     pub held: bool,
+    /// ⛔⛔⛔⛔⛔ **WHOSE DECISIONS THIS RUN IS BEING JUDGED BY** — the `loop_kind` its caller named
+    /// (register item 848), or [`None`] for a run of any other plugin. Register item 870.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Item 848 made the caller choose and then nothing said what they chose
+    ///
+    /// A kind is not a smaller run, it is a run **judged by another document**: `debt` resolves to
+    /// `debt_loop.scxml`, whose `successor_check` names
+    /// `/home/coin/.claude/projects/-home-coin-sprag/memory/debt-open.md` **by absolute path**, so
+    /// every checkpoint a run under it proposes is admitted or refused against THIS repository's
+    /// register — whatever tree the run is actually working in. The document says so itself: *"a
+    /// classifier that silently answered about whatever tree it happened to land in would be worse
+    /// than one that failed to start."*
+    ///
+    /// **Measured on the live daemon**: of five recent runs, one was `debt` while driving a pane in
+    /// another repository's tree, one was `unclaimed`, one was `debt` correctly — and all five rows
+    /// printed identically apart from the pane. `wire.rs`' own pin records why: *"`loop_kind` is a
+    /// REQUEST word — a caller says it and nothing answers with it."* The key was required at the
+    /// door and dropped on the way out, so the one thing 848 made a caller decide was the one thing
+    /// no reader could check. ⚠ Do not carry that count — re-derive it:
+    /// `jq '[.runs[]|{id,kind:.request.loop_kind}]'` over a daemon's `*.runs.json`.
+    ///
+    /// ⚠⚠ **READ OFF THE RECORDED REQUEST rather than stored a second time.** The request map is
+    /// what a successor puts a run back from, so it is already the one authority on what this run
+    /// was asked with; a parallel field would be a second copy of a fact that has to survive a
+    /// restart, and the two would drift exactly across the restart that matters.
+    ///
+    /// ⚠ [`None`] for a plugin that takes no kind, which is most of them — and for a run restored
+    /// from a log written before its caller had to name one.
+    pub loop_kind: Option<String>,
     /// **WHO RAISED THE CANCEL** — [`RunHandle::cancelled_by`], or [`None`] when none was raised
     /// (and also when the run was restored from disk, where nobody in this process knows).
     ///
@@ -3709,6 +3738,15 @@ impl RunRegistry {
                 // a row say *running, and nobody is holding it* about a run that was held between
                 // the two reads, which is the one moment a person is watching for.
                 held: record.run.held(),
+                // ⛔⛔⛔⛔⛔ WHOSE DECISIONS IT RUNS UNDER — register item 870, read off the
+                // REQUEST because that map is already the one authority on what this run was asked
+                // with (it is what a successor puts the run back from). See the field.
+                loop_kind: record
+                    .request
+                    .as_ref()
+                    .and_then(|asked| asked.get(crate::plugins::LOOP_KIND_KEY))
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
                 // ⚠ SAME PASS, SAME REASON — item 596. The sentence a mouth prints weighs this
                 // against `state`, so the two must not be read a moment apart either.
                 cancelled_by: record.run.cancelled_by(),
