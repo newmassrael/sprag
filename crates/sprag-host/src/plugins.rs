@@ -233,6 +233,28 @@ pub const RUN_DEFERRED_KEY: &str = "deferred";
 /// not re-aim itself*, *every direction it took was checked*, and *it re-aimed on its agent's word
 /// alone this many times*.
 pub const RUN_UNCHECKED_KEY: &str = "unchecked";
+/// 🎯🎯🎯🎯🎯 **WHICH OF ITS BOUNDS A RUN IS NOT SPENDING UNDER ITS OWN DOCUMENT'S** — register
+/// item 853. A LIST of the field names the caller took, `[]` when it took none, and ABSENT for a
+/// run whose plugin has no document authoring any bound.
+///
+/// # ⛔⛔⛔⛔⛔ The row said nothing while a loop ran on ceilings 47 times its document's
+///
+/// Item 738 moved this repository's loop ceilings into `debt_loop.scxml`, which argues each number
+/// beside it. The launch skill went on instructing callers to pass all three, and on 2026-09-03 a
+/// run was started that way — `2 MiB / 5000 / 6 h` replaced by `100 MB / 100000 / 24 h`. Every
+/// surface answered success, because every surface was right: a named bound beats the document by
+/// design (register item 300, per field). **What no surface said is which of a run's two possible
+/// authors it had ended up under**, so the only way to find it was to already suspect it.
+///
+/// ⚠⚠ **THE `[]` IS THE POINT AND NOT THE PADDING.** It is the affirmative *this run's document set
+/// every bound it has*, which is what a watcher can hold as a ratchet; without it, a reader has to
+/// tell a healthy run from an unreported one by a key not being there. That is
+/// [`RUN_ANSWERED_KEY`]'s argument for always publishing a `0`, and [`RUN_UNCHECKED_KEY`]'s three
+/// claims read at this distance.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_WITHHELD_KEY`]'s argument unchanged: an added
+/// answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_OVERRIDDEN_KEY: &str = "overridden";
 /// **WHAT A RUN KEPT**, on an ending — `{"completed": N, "unit": "turn"}`, or ABSENT for a plugin
 /// that counts no completed work at all.
 ///
@@ -1622,12 +1644,26 @@ impl PluginsExternal {
         // Build the plugin first: it determines the run's cost UNIT, which the
         // guardrails are then sized in (a bare `max_cost` is read in that unit).
         let (plugin, label) = self.build_plugin(map)?;
-        let guardrails = parse_guardrails(map, plugin.cost_unit(), plugin.own_bounds())?;
+        // ⚠⚠ BOTH ANSWERS, and the second one is carried to the ROW — register item 853. This is
+        // the one of the three `parse_guardrails` call sites that REGISTERS a run, so it is the one
+        // that can say which of its two authors the run is going to spend under.
+        let Resolved {
+            bounds: guardrails,
+            overridden,
+        } = parse_guardrails(map, plugin.cost_unit(), plugin.own_bounds())?;
         let opened_by = self.parse_opener(map)?;
         // WHO is in that seat, asked of the daemon rather than taken from the request — see
         // `session_in`. This is what survives the daemon, so it is resolved while the pane is still
         // here to answer.
         let opened_by_session = self.session_in(opened_by);
+        // ⚠ THE FOUR FACTS THE DOOR LEARNED, AS ONE VALUE — see `Submitted`. Both arms of the fork
+        // below need all four, and neither may quietly leave one out.
+        let submitted = Submitted {
+            label,
+            opened_by,
+            opened_by_session,
+            overridden,
+        };
         // ⚠⚠⚠⚠⚠ THE FORK IS HERE AND NOT IN `spawn_run`, and the reason is what is still in hand:
         // the REQUEST MAP. A driver in another process builds its own plugin from it (one builder —
         // `plugin_from_request`), and `spawn_run` takes a plugin that is already built, so a fork
@@ -1644,11 +1680,9 @@ impl PluginsExternal {
             Some(spawn) => {
                 // ⚠ A RUN A CLIENT ASKS FOR STARTS AT THE TOP — where a machine resumes is a fact
                 // about a run this daemon INHERITED. See `RUN_PLACE_KEY`.
-                self.spawn_driven_run(spawn, map, label, opened_by, opened_by_session, &mut {
-                    plugin
-                })?
+                self.spawn_driven_run(spawn, map, submitted, &mut { plugin })?
             }
-            None => self.spawn_run(label, opened_by, opened_by_session, plugin, guardrails, map),
+            None => self.spawn_run(submitted, plugin, guardrails, map),
         };
         Ok(IntrospectValue::Int(
             i64::try_from(id.0).unwrap_or(i64::MAX),
@@ -1987,7 +2021,15 @@ pub fn drive_request(
             }
         }
     }
-    let guardrails = parse_guardrails(request, plugin.cost_unit(), plugin.own_bounds())?;
+    // ⚠ THE OVERRIDE REPORT IS NOT READ HERE, and that is a claim rather than a drop — register
+    // item 853. This is the DRIVER's own parse, in the child process, over the same map the daemon
+    // already parsed at `run`: the row belongs to the daemon, which answered the question at submit
+    // and holds the record. A second publication from over here would be a second author for one
+    // fact, which is what `parse_guardrails`'s own doc says this pair exists to prevent.
+    let Resolved {
+        bounds: guardrails,
+        overridden: _daemons_to_publish,
+    } = parse_guardrails(request, plugin.cost_unit(), plugin.own_bounds())?;
     let outcome =
         Driver::new(guardrails)
             .forwarding_to(report)
@@ -2359,13 +2401,17 @@ impl PluginsExternal {
     /// state and writes that into a shared cell; register it.
     fn spawn_run(
         &self,
-        label: String,
-        opened_by: Option<u64>,
-        opened_by_session: Option<String>,
+        submitted: Submitted,
         plugin: PluginKind,
         guardrails: Guardrails,
         request: &Map<String, Value>,
     ) -> RunId {
+        let Submitted {
+            label,
+            opened_by,
+            opened_by_session,
+            overridden,
+        } = submitted;
         let name = plugin.name();
         // The id BEFORE the thread, because the announcement names it and the worker cannot ask the
         // registry for its own id without taking the lock the registry is being written under.
@@ -2398,6 +2444,10 @@ impl PluginsExternal {
             state,
             run,
             progress,
+            // 🎯🎯🎯🎯🎯 AND WHICH OF ITS BOUNDS STOPPED BEING ITS DOCUMENT'S ON THE WAY IN —
+            // register item 853. Answered at the door, where both authors are in hand, and never
+            // re-derived: see `Resolved`.
+            overridden,
         })
     }
 
@@ -2554,11 +2604,15 @@ impl PluginsExternal {
         &self,
         spawn: &DriverSpawn,
         request: &Map<String, Value>,
-        label: String,
-        opened_by: Option<u64>,
-        opened_by_session: Option<String>,
+        submitted: Submitted,
         plugin: &mut PluginKind,
     ) -> Result<RunId, InvokeError> {
+        let Submitted {
+            label,
+            opened_by,
+            opened_by_session,
+            overridden,
+        } = submitted;
         // ⚠⚠ ASKED OF THE PLUGIN THIS DAEMON BUILT TO VALIDATE, which is the only copy on this side
         // of the seam — the driver's own is built over there and is unreachable from here. Both are
         // `plugin_from_request`'s answer for the same map, so the list is the same list.
@@ -2617,6 +2671,11 @@ impl PluginsExternal {
             // report over this cell precisely because this one can never move, and since register
             // item 662 so does the durable log.
             progress: sprag_plugin::ProgressCell::default(),
+            // 🎯🎯🎯🎯🎯 AND THE OVERRIDE REPORT, WHICH IS THIS DAEMON'S TO PUBLISH AND NOT THE
+            // CHILD'S — register item 853. The driver over there parses the same map and reads the
+            // same answer (`drive_request` says so where it declines to use it); publishing it from
+            // one side is what keeps a fact with two possible authors down to one.
+            overridden,
         }))
     }
 
@@ -2751,7 +2810,15 @@ impl PluginsExternal {
         // have been rebuilt to type into the dead one.
         let asked = inherited.asked_here();
         let (mut plugin, _label) = plugin_from_request(self, &asked)?;
-        let guardrails = parse_guardrails(&asked, plugin.cost_unit(), plugin.own_bounds())?;
+        // ⚠ AND THE OVERRIDE REPORT IS NOT WRITTEN HERE EITHER — register item 853, and unlike the
+        // driver's parse this one is a RESIDUE rather than a duplicate: a run put back keeps the
+        // record a restore built, and a restore has no request to have answered from. The row of a
+        // resumed run therefore OMITS the key, which is *nobody said* — its neighbours' rule for a
+        // restored row exactly (`RunRecord::plugin`, `RunRecord::request`). Registered as item 859.
+        let Resolved {
+            bounds: guardrails,
+            overridden: _not_carried_across_a_restart,
+        } = parse_guardrails(&asked, plugin.cost_unit(), plugin.own_bounds())?;
         // ⚠⚠⚠⚠ THE SAME FOUR ANSWERS `drive_request` READS, and they are worth spelling separately
         // here rather than collapsing to *it did not work*: the person who meets one of these is
         // holding a run log and a daemon that has just decided not to bring their run back.
@@ -3433,6 +3500,131 @@ impl AuthoredGuardrails {
             max_duration: None,
         }
     }
+
+    /// **WHICH OF THE BOUNDS THIS DOCUMENT AUTHORED THE CALLER NAMED FOR ITSELF** — register item
+    /// 853, over the caller's own `guardrails` object.
+    ///
+    /// [`None`] when the document authored NO bound at all: there was nothing here to take, and a
+    /// `[]` for that case would tell a reader *this run's document set every bound* about a run
+    /// whose document set none. [`Overridden`] states the three claims.
+    ///
+    /// ⚠ It answers per FIELD, exactly as the fall-through resolves per field. A document that
+    /// authored one ceiling and a caller that named a different one have not met, and a report that
+    /// said they had would send somebody to delete a flag that is doing no harm.
+    fn overridden_by(self, g: &Map<String, Value>) -> Option<Overridden> {
+        let pairs: [(bool, &'static str); 3] = [
+            (self.max_cost.is_some(), COST_BOUND_KEYS[0]),
+            (self.max_iterations.is_some(), "max_iterations"),
+            (self.max_duration.is_some(), "max_seconds"),
+        ];
+        // ⚠ The cost bound is TWO spellings of one field (`max_bytes` xor `max_tokens`), so the
+        // caller's is whichever it named — `parse_max_cost` refuses both at once, which is what
+        // makes this a lookup rather than a choice.
+        let named = |key: &'static str| -> Option<&'static str> {
+            if key == COST_BOUND_KEYS[0] {
+                return COST_BOUND_KEYS
+                    .into_iter()
+                    .find(|spelling| !declined(g, spelling));
+            }
+            (!declined(g, key)).then_some(key)
+        };
+        let mut authored_any = false;
+        let mut taken = Vec::new();
+        for (authored, key) in pairs {
+            if !authored {
+                continue;
+            }
+            authored_any = true;
+            if let Some(spelling) = named(key) {
+                taken.push(spelling);
+            }
+        }
+        authored_any.then_some(Overridden(taken))
+    }
+}
+
+/// The two spellings of the ONE cost bound, in the order a report names them — see
+/// [`parse_max_cost`], which refuses a caller that gives both.
+const COST_BOUND_KEYS: [&str; 2] = ["max_bytes", "max_tokens"];
+
+/// 🎯🎯🎯🎯🎯 **WHICH BOUNDS A CALLER TOOK FROM THE DOCUMENT THAT AUTHORED THEM** — register item
+/// 853. Empty when it took none, which is the healthy launch and the thing worth being able to read
+/// affirmatively.
+///
+/// # ⛔⛔⛔⛔⛔ The measured defect: an instruction outside the product told callers to override
+///
+/// Item 738 moved this loop's three ceilings into `debt_loop.scxml`, which argues each number where
+/// it is written — *"TWO MEBIBYTES. Four times the largest run this daemon"*. The launch skill went
+/// on saying **pass the three ceilings, always**, and on 2026-09-03 a run was started that way: the
+/// document's `2 MiB / 5000 / 6 h` were replaced by `100 MB / 100000 / 24 h`, **47, 20 and 4 times
+/// wider**, and every surface answered success. Nothing was wrong with the product — a caller
+/// naming a bound beats the document by design (register item 300, per field) — and nothing was
+/// wrong with the document. What was missing is that **the run said nothing about which of its two
+/// authors it was obeying**, so the mistake was only findable by a person who already suspected it.
+///
+/// # ⚠⚠ Why this and not a refusal
+///
+/// Because the override is legitimate. A caller who has read the document and wants a wider ceiling
+/// for one run is exactly who the per-field fall-through is for, and refusing it would take that
+/// away to catch a typo. This is [`RUN_BRIEFED_KEY`]'s decision one verb over — *report rather than
+/// refuse* — and for the same reason: no threshold here would be anything but invented.
+///
+/// # ⚠ Why a LIST and not a sentence
+///
+/// Its neighbours ([`RUN_CHECKS_KEY`], [`RUN_BRIEFED_KEY`], [`RUN_WITHHELD_KEY`]) publish sentences
+/// because what a reader does about them is a COMPARISON. What a reader does about this is delete
+/// named flags from a launcher, so the useful shape is the names — and a list is what a watcher's
+/// filter can test without parsing prose.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Overridden(Vec<&'static str>);
+
+impl Overridden {
+    /// The bounds the caller took, in the order this daemon resolves them. Empty is the claim
+    /// *this run's document set every bound it has*.
+    #[must_use]
+    pub fn taken(&self) -> &[&'static str] {
+        &self.0
+    }
+}
+
+/// What [`parse_guardrails`] answers: a run's RESOLVED bounds, and which of them stopped being its
+/// document's on the way — register item 853.
+///
+/// # ⚠⚠⚠ Why the two travel together instead of being asked twice
+///
+/// The second answer is decided by exactly the tests that decide the first — `declined` over the
+/// caller's `guardrails` object, per field. A caller that computed it separately would be a second
+/// reading of one question, and item 849 measured what that costs: gates at both ends of a value's
+/// road and a hole in the middle, found by mutation. Here the hole would be a row telling a person
+/// their document's ceiling was in force while the run spent against somebody else's.
+struct Resolved {
+    /// The bounds the run is driven with — every field decided.
+    bounds: Guardrails,
+    /// Which of them the caller took from this run's document, or [`None`] when the document
+    /// authored none. See [`Overridden`].
+    overridden: Option<Overridden>,
+}
+
+/// **WHAT THE DOOR LEARNED ABOUT A RUN FROM THE REQUEST THAT ASKED FOR IT** — the facts that are
+/// answered once, at submit, and then never change.
+///
+/// # ⚠⚠ Why these four travel as one value
+///
+/// They are not a bag assembled to shorten a signature: every one of them is a statement about the
+/// ASKING that the run itself can never re-derive — what a reader should call it, who asked, which
+/// conversation they were in, and which of its bounds stopped being its document's (register item
+/// 853). Both spawn paths need all four and neither may drop one, which a struct says and four
+/// positional arguments do not; the fourth was added by item 853 and is the one that made the
+/// grouping worth having.
+struct Submitted {
+    /// What the run is, in a reader's terms (`"ai_loop pane=3"`).
+    label: String,
+    /// The pane whose occupant asked, or [`None`] for a run nobody claims.
+    opened_by: Option<u64>,
+    /// The asking pane's `agent_session` — resolved here, while the pane is still there to answer.
+    opened_by_session: Option<String>,
+    /// Which bounds the caller took from this run's document — register item 853.
+    overridden: Option<Overridden>,
 }
 
 impl PluginKind {
@@ -4816,7 +5008,7 @@ fn parse_guardrails(
     map: &Map<String, Value>,
     default_cost: Cost,
     authored: AuthoredGuardrails,
-) -> Result<Guardrails, InvokeError> {
+) -> Result<Resolved, InvokeError> {
     // ⚠⚠⚠⚠⚠ THE THREE FALL-THROUGHS, IN ONE PLACE — register item 738, layer 1. Each bound is the
     // CALLER's number, then the number this run's own PLUGIN DOCUMENT authored, then this daemon's
     // constant. It is the same three-step chain `max_turns`, `context_ceiling` and
@@ -4835,10 +5027,16 @@ fn parse_guardrails(
     // language serialises an absent optional as `null` sends `"guardrails": null` on every
     // unguarded run, and answering `TypeMismatch` there refuses a well-formed call.
     if declined(map, "guardrails") {
-        return Ok(Guardrails {
-            max_iterations: iterations(),
-            max_cost: Some(cost()),
-            max_duration: Some(duration()),
+        return Ok(Resolved {
+            bounds: Guardrails {
+                max_iterations: iterations(),
+                max_cost: Some(cost()),
+                max_duration: Some(duration()),
+            },
+            // A caller that named no `guardrails` object at all took NOTHING, which is a different
+            // claim from *there was nothing to take* and is spelled by `overridden` rather than by
+            // an absence. See [`Overridden`].
+            overridden: authored.overridden_by(&Map::new()),
         });
     }
     let Value::Object(g) = &map["guardrails"] else {
@@ -4879,10 +5077,18 @@ fn parse_guardrails(
     } else {
         Duration::from_secs(g["max_seconds"].as_u64().ok_or(InvokeError::TypeMismatch)?)
     };
-    Ok(Guardrails {
-        max_iterations,
-        max_cost: parse_max_cost(g, cost())?,
-        max_duration: Some(max_duration),
+    Ok(Resolved {
+        bounds: Guardrails {
+            max_iterations,
+            max_cost: parse_max_cost(g, cost())?,
+            max_duration: Some(max_duration),
+        },
+        // ⚠⚠⚠⚠⚠ READ OFF THE SAME `g` AND THE SAME `declined` THE THREE BRANCHES ABOVE READ —
+        // register item 853. A second walk over the caller's keys, kept anywhere else, is how the
+        // report comes to disagree with the value it is reporting on: item 849's *gate both ends
+        // and the middle is empty*, at the one place where being wrong means telling a person their
+        // document's ceiling is in force when it is not.
+        overridden: authored.overridden_by(g),
     })
 }
 
@@ -5542,6 +5748,19 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
         .and_then(briefing_sentence)
     {
         entry[RUN_BRIEFED_KEY] = json!(said);
+    }
+    // 🎯🎯🎯🎯🎯 AND WHICH OF ITS BOUNDS ARE NOT ITS DOCUMENT'S — register item 853, beside the
+    // state on the terms every clause above it is published under.
+    //
+    // ⚠⚠ IT IS THE SUBMIT'S ANSWER AND NOT THE DRIVER'S, which is why there is no report-first
+    // fallback here as there is for the three keys above: the driver in the other process parses
+    // the same map and DECLINES to publish this (`drive_request` says so at the call), so a row
+    // that preferred a report would be preferring an answer nobody sends.
+    //
+    // ⚠ PRESENT WHENEVER THERE IS AN ANSWER, INCLUDING THE EMPTY ONE — see `RUN_OVERRIDDEN_KEY`.
+    // The absence is *nobody said*; the `[]` is *this run's document set every bound it has*.
+    if let Some(overridden) = &run.overridden {
+        entry[RUN_OVERRIDDEN_KEY] = json!(overridden.taken());
     }
     // ⛔⛔⛔⛔⛔ AND WHETHER ANY SUCCESSOR IS GOING TO PUT THIS RUN BACK — register item 737, beside
     // the state on the terms every clause above it is published under, and absent for every run
@@ -8669,6 +8888,8 @@ mod tests {
                     label: "ai_loop pane=3".to_owned(),
                     opened_by: None,
                     opened_by_session: None,
+                    // ⚠ Not what this gate measures — item 853. Its own gates drive the key.
+                    overridden: None,
                     state,
                     progress: sprag_plugin::Progress {
                         waiting: waiting.map(str::to_owned),
@@ -8751,6 +8972,7 @@ mod tests {
                 label: "ai_loop pane=3".to_owned(),
                 opened_by: None,
                 opened_by_session: None,
+                overridden: None,
                 state: RunState::Panicked(why.to_owned()),
                 progress: sprag_plugin::Progress::default(),
                 reported: None,
@@ -10487,8 +10709,9 @@ mod tests {
              the document and the driver, which is item 492's shape and is silent",
         );
         let brief = ai_loop_brief(map, &kind).expect("a well-formed request resolves");
-        let resolved =
-            parse_guardrails(built_from, unit, authored).expect("its guardrails resolve");
+        let resolved = parse_guardrails(built_from, unit, authored)
+            .expect("its guardrails resolve")
+            .bounds;
 
         for ceiling in Ceiling::ALL {
             // ⚠⚠⚠ EXHAUSTIVE, AND THAT IS THE GATE'S SPINE. Each arm answers with what the run is
@@ -10582,7 +10805,8 @@ mod tests {
             json!({ "guardrails": { "max_iterations": 60, "max_seconds": 21600 } }),
         );
         let run_41 = parse_guardrails(partly.as_object().expect("an object"), unit, authored)
-            .expect("the launch that filed this item resolves");
+            .expect("the launch that filed this item resolves")
+            .bounds;
         assert_eq!(
             run_41.max_cost, authored.max_cost,
             "⛔⛔⛔⛔⛔ THE LAUNCH THIS ITEM WAS FILED ON IS STILL ON THE DAEMON'S DEFAULT. Naming \
@@ -10605,7 +10829,8 @@ mod tests {
             json!({ "guardrails": { "max_bytes": 4096, "max_iterations": 7, "max_seconds": 11 } }),
         );
         let over = parse_guardrails(named.as_object().expect("an object"), unit, authored)
-            .expect("a caller naming guardrails resolves");
+            .expect("a caller naming guardrails resolves")
+            .bounds;
         assert_eq!(
             (over.max_iterations, over.max_cost, over.max_duration),
             (
@@ -10615,6 +10840,176 @@ mod tests {
             ),
             "⚠⚠⚠ a caller's own bounds must still win over the kind document's, on every one of \
              the three",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN SAYS WHICH OF ITS BOUNDS STOPPED BEING ITS DOCUMENT'S** — register item
+    /// 853.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was measured, and why no existing gate could have caught it
+    ///
+    /// The gate above this one proves the per-field fall-through: a caller's number wins, a
+    /// document's number fills in. Both directions are correct and both stay correct here. What
+    /// nothing asked is **whether a run states which of its two authors it ended up under** — and on
+    /// 2026-09-03 a launch instruction outside this repository told a caller to pass all three
+    /// ceilings, so `debt_loop.scxml`'s argued `2 MiB / 5000 / 6 h` became `100 MB / 100000 / 24 h`
+    /// and every surface answered success.
+    ///
+    /// The instruction is not in this tree and a gate in this tree cannot read it — nor should it,
+    /// because the same sentence can regrow in a second launcher, in a memory file, or in a
+    /// person's head. What IS in this tree is the moment the two authors meet, so this is where the
+    /// fact is made loud: **whatever told a caller to override, the run it started says so.**
+    ///
+    /// # ⚠⚠ The three claims, and the `[]` is the load-bearing one
+    ///
+    /// `None` = *nobody answered* (no document authored a bound); `[]` = *this run's document set
+    /// every bound it has*; a list = *the caller took these*. A design that only spoke up on the
+    /// third would leave a reader telling a healthy run from an unreported one by a key not being
+    /// there — [`RUN_ANSWERED_KEY`]'s argument, and rule 6 of this loop's own working rules: an
+    /// unclassified case is RED, not a pass.
+    #[test]
+    fn a_run_says_which_of_its_bounds_are_not_its_documents() {
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(script)
+            .expect("this repository's kind document opens");
+        let unit = Cost::Bytes(0);
+        // ⚠ THE DOCUMENT'S OWN CLAUSE, through the same reader the door uses — never restated here,
+        // which is the neighbouring gate's rule and item 441's.
+        let authored = kind_guardrails(&kind, unit).expect("its guardrail clause must be readable");
+        assert!(
+            authored.max_cost.is_some()
+                && authored.max_iterations.is_some()
+                && authored.max_duration.is_some(),
+            "⚠ THE CONTROL: this repository's loop document authors all three, or the arms below \
+             are asking about bounds nobody set: {authored:?}",
+        );
+
+        // ⑴ THE HEALTHY LAUNCH — the arguments `launch.sh` sends, and NO ceiling among them.
+        // ⚠ The key is REMOVED rather than left to the fixture: `ai_loop_request` carries a
+        // `guardrails` object of its own, and a first draft of this arm read it as the caller's —
+        // which is the fixture lying about the very thing being measured, caught by this gate's own
+        // first run.
+        let mut clean = ai_loop_request(PaneId(1), json!({}));
+        clean
+            .as_object_mut()
+            .expect("an object")
+            .remove("guardrails");
+        let clean = parse_guardrails(clean.as_object().expect("an object"), unit, authored)
+            .expect("a launch that names no bound resolves");
+        assert_eq!(
+            clean.overridden.as_ref().map(Overridden::taken),
+            Some(&[] as &[&str]),
+            "⚠⚠⚠⚠⚠ a run whose document set every bound must SAY SO AFFIRMATIVELY. An absent key \
+             here would make *this ran under its own document* and *nothing answered the question* \
+             the same row, which is the state item 853 was filed in: {:?}",
+            clean.overridden,
+        );
+
+        // ⑵ THE LAUNCH THAT FILED THIS ITEM — the skill's three flags, verbatim in shape.
+        let skill = ai_loop_request(
+            PaneId(1),
+            json!({ "guardrails": {
+                "max_bytes": 100_000_000, "max_iterations": 100_000, "max_seconds": 86_400,
+            } }),
+        );
+        let skill = parse_guardrails(skill.as_object().expect("an object"), unit, authored)
+            .expect("the launch that filed this item resolves");
+        assert_eq!(
+            skill.overridden.as_ref().map(Overridden::taken),
+            Some(&["max_bytes", "max_iterations", "max_seconds"] as &[&str]),
+            "⛔⛔⛔⛔⛔ THE LAUNCH THAT FILED ITEM 853 MUST NAME WHAT IT TOOK. Its bounds are 47, 20 \
+             and 4 times this document's, every one of them legitimately the caller's — and the \
+             defect was that no surface said which author a reader was looking at: {:?}",
+            skill.overridden,
+        );
+        assert_eq!(
+            skill.bounds.max_iterations, 100_000,
+            "⚠ and REPORTING IS NOT REFUSING — the caller's number still wins, which is what makes \
+             this a report rather than a policy change",
+        );
+
+        // ⑶ ONE FLAG, WHICH IS WHAT A PERSON ACTUALLY DOES — and the report is per FIELD, or a
+        // reader told to delete three flags goes looking for two that were never there.
+        let one = ai_loop_request(PaneId(1), json!({ "guardrails": { "max_seconds": 60 } }));
+        let one = parse_guardrails(one.as_object().expect("an object"), unit, authored)
+            .expect("a launch naming one bound resolves");
+        assert_eq!(
+            one.overridden.as_ref().map(Overridden::taken),
+            Some(&["max_seconds"] as &[&str]),
+            "⚠⚠⚠ the report must be per FIELD, exactly as the fall-through resolves per field: {:?}",
+            one.overridden,
+        );
+
+        // ⑷ A PLUGIN WITH NO DOCUMENT — the third claim, and the one an `[]` would falsify. There
+        // is nothing here to have been overridden, so *its document set every bound* is untrue.
+        let bare = parse_guardrails(
+            json!({ "guardrails": { "max_seconds": 60 } })
+                .as_object()
+                .expect("an object"),
+            unit,
+            AuthoredGuardrails::none(),
+        )
+        .expect("a plugin with no document resolves");
+        assert_eq!(
+            bare.overridden, None,
+            "⚠⚠⚠⚠ a plugin whose document authors NO bound must answer nothing at all: an `[]` \
+             there would tell a reader a document set bounds it never set, and a list would name an \
+             override of nobody",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE SPLIT — the three claims must be TOLD APART**, register item 853.
+    ///
+    /// The gate above drives each of them at its own arm. This one puts them side by side and
+    /// requires that no two answer the same thing, which is the assertion neither of those arms can
+    /// make on its own: a build that collapsed *nothing was authored* into *nothing was taken*
+    /// passes three of that gate's four arms, and it is exactly the collapse that would put a
+    /// reader back where item 853 found them.
+    ///
+    /// REVERT-PROOF: make `AuthoredGuardrails::overridden_by` answer `Some(Overridden(vec![]))`
+    /// unconditionally (the tidy-looking simplification) and this fails on the first pair.
+    #[test]
+    fn the_three_things_a_bound_report_can_say_are_three() {
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(script)
+            .expect("this repository's kind document opens");
+        let unit = Cost::Bytes(0);
+        // ⚠ THE DOCUMENT'S OWN CLAUSE, through the same reader the door uses — never restated here,
+        // which is the neighbouring gate's rule and item 441's.
+        let authored = kind_guardrails(&kind, unit).expect("its guardrail clause must be readable");
+        let _ = unit;
+        // ⚠ The INNER object — `overridden_by` is asked about the caller's `guardrails`, not about
+        // the request around it. A first draft passed the wrapper and got an empty answer from both
+        // arms, which this gate's `assert_ne!` is exactly what caught.
+        let named = json!({ "max_seconds": 60 });
+        let named = named.as_object().expect("an object");
+
+        let nothing_authored = AuthoredGuardrails::none().overridden_by(named);
+        let nothing_taken = authored.overridden_by(&serde_json::Map::new());
+        let something_taken = authored.overridden_by(named);
+
+        assert_ne!(
+            nothing_authored, nothing_taken,
+            "⚠⚠⚠⚠⚠ *no document set a bound here* and *the document set every bound* are the two \
+             sentences item 847 spent a round separating one key over, and a build that answers \
+             them alike cannot be asked which it means",
+        );
+        assert_ne!(
+            nothing_taken, something_taken,
+            "⚠⚠⚠ and a run under its document's ceilings must not read like one under a caller's — \
+             which is the whole of what this item is",
+        );
+        assert_ne!(
+            nothing_authored, something_taken,
+            "and neither pair collapses"
+        );
+        assert!(
+            nothing_taken
+                .as_ref()
+                .is_some_and(|it| it.taken().is_empty()),
+            "⚠ the middle claim is an EMPTY answer and not an absent one: {nothing_taken:?}",
         );
     }
 
@@ -12734,6 +13129,7 @@ mod tests {
             label: format!("ai_loop pane={}", pane.0),
             opened_by: None,
             opened_by_session: None,
+            overridden: None,
             state: RunState::Running,
             progress: sprag_plugin::Progress {
                 at: Some("working"),
@@ -14783,6 +15179,86 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND THE OVERRIDE REPORT REACHES THE ROW A PERSON READS** — register item 853,
+    /// and this is the MIDDLE of that fact's road rather than either end.
+    ///
+    /// # ⚠⚠⚠ Why the classifier's own gates are not enough
+    ///
+    /// `a_run_says_which_of_its_bounds_are_not_its_documents` drives `parse_guardrails`, and
+    /// `the_three_things_a_bound_report_can_say_are_three` drives the three claims. Both would stay
+    /// green if the answer were computed and then dropped on its way to `runs` — which is register
+    /// item 849's measured shape (*gate both ends and the middle is empty*, found by mutation on
+    /// exactly this kind of road) and item 852's, one surface over: an answer that is produced,
+    /// correct, and never read.
+    ///
+    /// So this submits a REAL run through the door a caller uses and reads the row back out of the
+    /// slot a client reads. Two launches, differing in ONE thing — whether the request names a
+    /// bound — and the rows must differ.
+    ///
+    /// REVERT-PROOF: drop the `overridden` field from `spawn_run`'s `NewRun`, or delete the clause
+    /// in `run_to_json`, and the first assertion fails.
+    #[test]
+    fn a_row_says_which_of_the_runs_bounds_came_from_its_caller() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let start = |external: &mut PluginsExternal, request: Value| -> i64 {
+            let started = external
+                .invoke(RUN_ACTION, IntrospectValue::Json(request))
+                .expect("a well-formed ai_loop run");
+            let IntrospectValue::Int(id) = started else {
+                panic!("a run answers its id: {started:?}");
+            };
+            id
+        };
+
+        // THE HEALTHY LAUNCH: the `guardrails` key removed, so every bound is the document's.
+        let mut clean = ai_loop_request(echoing_agent_pane(&workspace), json!({}));
+        clean
+            .as_object_mut()
+            .expect("an object")
+            .remove("guardrails");
+        let clean = start(&mut external, clean);
+        // AND THE ONE THAT FILED THE ITEM: the launch skill's three flags.
+        let taken = start(
+            &mut external,
+            ai_loop_request(
+                echoing_agent_pane(&workspace),
+                json!({ "guardrails": {
+                    "max_bytes": 100_000_000, "max_iterations": 100_000, "max_seconds": 86_400,
+                } }),
+            ),
+        );
+
+        let (clean, taken) = (row_of(&mut external, clean), row_of(&mut external, taken));
+        assert_eq!(
+            taken[RUN_OVERRIDDEN_KEY],
+            json!(["max_bytes", "max_iterations", "max_seconds"]),
+            "⛔⛔⛔⛔⛔ THE ROW IS WHERE A PERSON MEETS THE RUN, and on 2026-09-03 it said nothing \
+             while a loop spent against ceilings 47, 20 and 4 times its document's: {taken:?}",
+        );
+        assert_eq!(
+            clean[RUN_OVERRIDDEN_KEY],
+            json!([]),
+            "⚠⚠⚠⚠⚠ and a run under its own document's bounds must say THAT affirmatively, or a \
+             reader tells a healthy launch from an unreported one by a key not being there: \
+             {clean:?}",
+        );
+        assert_ne!(
+            clean[RUN_OVERRIDDEN_KEY], taken[RUN_OVERRIDDEN_KEY],
+            "⚠⚠⚠ THE CONTROL: two launches differing in one thing must not produce the same row — \
+             a constant published on every row would satisfy either assertion above alone",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **A RUN A DEAD DAEMON LEFT BEHIND COMES BACK ON A DRIVER OF THIS ONE'S** — register
     /// item 543's sixth brick, at the door a boot puts an inherited run through.
     ///
@@ -15350,6 +15826,7 @@ mod tests {
                 request: None,
                 opened_by: None,
                 opened_by_session: None,
+                overridden: None,
                 state: Arc::new(Mutex::new(RunState::Running)),
                 run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
                 progress: Arc::clone(&cell),
@@ -15696,6 +16173,7 @@ mod tests {
                 request: None,
                 opened_by: None,
                 opened_by_session: None,
+                overridden: None,
                 state: Arc::new(Mutex::new(RunState::Running)),
                 run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
                 progress: Arc::clone(&cell),

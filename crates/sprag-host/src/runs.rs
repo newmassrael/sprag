@@ -1251,6 +1251,21 @@ struct RunRecord {
     /// nothing downstream could re-derive this. The log is read once, at boot, and this is what is
     /// kept out of that reading. It is [`PersistedRun::withheld`]'s answer and nobody else's.
     withheld: Option<Withheld>,
+    /// 🎯🎯🎯🎯🎯 **WHICH BOUNDS THIS RUN'S CALLER TOOK FROM ITS OWN DOCUMENT** — register item
+    /// 853. Decided once, at submit, by the layer that held both authors.
+    ///
+    /// # ⚠⚠ The three claims, on [`crate::plugins::RUN_UNCHECKED_KEY`]'s exact rule
+    ///
+    /// [`None`] is *nobody said* — a plugin whose document authors no bound, and every run RESTORED
+    /// from a predecessor's log, which records the run rather than the answer this was. An EMPTY
+    /// [`Overridden`](crate::plugins::Overridden) is the affirmative *this run's document set every
+    /// bound it has*, which is the healthy launch and the one a reader needs to be able to get
+    /// without inferring it from a missing key. A non-empty one names what the caller took.
+    ///
+    /// ⚠ **A LEVEL THAT NEVER MOVES**, like [`withheld`](Self::withheld) above it: it is a fact
+    /// about the request this run was submitted with, and a row that showed it changing would be
+    /// reporting on the reading rather than on the run.
+    overridden: Option<crate::plugins::Overridden>,
     /// ⛔⛔⛔⛔⛔ **THE PROCESS THIS BOOT ENDED BECAUSE IT WAS STILL DRIVING A RUN NOBODY IS PUTTING
     /// BACK** — register item 740, written once by `put_back_inherited_runs` through
     /// [`RunRegistry::ended_leftover_driver`].
@@ -1451,6 +1466,10 @@ pub struct RunSummary {
     /// distinguish *your loop is waiting for a daemon to pick it up* from *no daemon ever will*.
     /// `Revival::not_put_back` is the same shape one door over, for a run whose driver died.
     pub withheld: Option<Withheld>,
+    /// 🎯🎯🎯🎯🎯 **WHICH BOUNDS THIS RUN'S CALLER TOOK FROM ITS OWN DOCUMENT** — `RunRecord::
+    /// overridden`, republished because the row is where a person meets the run, and the row is
+    /// what said nothing on 2026-09-03 while a loop spent against ceilings 47 times its document's.
+    pub overridden: Option<crate::plugins::Overridden>,
     /// ⛔⛔⛔⛔⛔ **THE PROCESS A BOOT ENDED BECAUSE IT WAS STILL DRIVING THIS WITHHELD RUN** —
     /// register item 740, and [`None`] wherever there was nothing left typing.
     ///
@@ -1511,6 +1530,10 @@ pub struct NewRun {
     pub run: Box<dyn RunHandle>,
     /// Where the driver writes what it has spent so far.
     pub progress: ProgressCell,
+    /// **WHICH BOUNDS THIS RUN'S CALLER TOOK FROM THE DOCUMENT THAT AUTHORED THEM** — register item
+    /// 853, answered at the door by `crate::plugins::parse_guardrails` and [`None`] when the run's
+    /// plugin has no document that authors any bound.
+    pub overridden: Option<crate::plugins::Overridden>,
 }
 
 /// **A RUN A PREDECESSOR DAEMON LEFT BEHIND THAT THIS ONE COULD PICK UP** — register item 543's
@@ -2513,6 +2536,10 @@ impl RunRegistry {
             // is starting it, so there is no predecessor's record for anything to have been kept
             // out of, and the absence is that fact rather than an unanswered question.
             withheld: None,
+            // 🎯🎯🎯🎯🎯 AND WHICH OF ITS BOUNDS ARE NOT ITS DOCUMENT'S — register item 853,
+            // carried from the submit that answered it. It is the CALLER's `NewRun` field and not a
+            // `None` written here, because this is the one moment the question has an answer.
+            overridden: run.overridden,
             // ⚠ AND NO PREDECESSOR LEFT A PROCESS DRIVING IT — register item 740, on the line
             // above's argument: this daemon is spawning this run's only driver, right now.
             ended_driver: None,
@@ -3626,6 +3653,12 @@ impl RunRegistry {
                 // back can now say whether there was nothing to put back or whether a promotion
                 // took the documents out from under all of it.
                 withheld: saved.withheld(),
+                // ⚠⚠ AND A PREDECESSOR'S LOG DOES NOT RECORD WHICH AUTHORS A RUN WAS SUBMITTED
+                // UNDER — register item 853, and [`None`] here is that absence rather than the
+                // claim *its document set every bound*. The log holds the REQUEST, so the answer is
+                // re-derivable, and a restored run's row omitting it is the residue this item's
+                // entry states and item 859 carries.
+                overridden: None,
                 // ⚠⚠ AND NOTHING HAS BEEN ENDED YET — register item 740. This reads the log; the
                 // boot that acts on it (`put_back_inherited_runs`) is a later call with the socket
                 // in hand, and this field is its answer rather than the file's. A record that
@@ -3683,6 +3716,9 @@ impl RunRegistry {
                 // the log, and a row that showed it changing would be showing a fact about the
                 // reading rather than about the run.
                 withheld: record.withheld.clone(),
+                // 🎯 AND SO IS THIS — item 853, on the line above's argument exactly: it is decided
+                // by the submit and nothing later can change which authors a run was started under.
+                overridden: record.overridden.clone(),
                 // ⚠ A LEVEL THAT NEVER MOVES EITHER — item 740, on the line above's argument. A
                 // boot ends a leftover once and writes it here once; a row that showed this
                 // appearing and going away would be reporting on the daemon, not on the run.
@@ -3951,6 +3987,10 @@ mod tests {
                 request: None,
                 opened_by: Some(7),
                 opened_by_session: None,
+                // ⚠ NOR WHICH AUTHORS ITS BOUNDS CAME FROM — item 853. These fixtures submit
+                // without parsing a request, so *nobody answered* is the only honest value; the
+                // gates that drive the answer are `parse_guardrails`'s own, in `plugins`.
+                overridden: None,
                 state,
                 run: Box::new(ThreadRun::new(
                     Orders::new(
@@ -4175,10 +4215,12 @@ mod tests {
             // ⚠ Stated rather than defaulted, for the recorder fixture's reason: these gates are
             // about workers and joins, and the plugin is not what any of them measures.
             plugin: crate::plugins::PluginName::Orchestrator,
-            // ⚠ Nor is what a successor could rebuild it from — item 543.
+            // ⚠ Nor is what a successor could rebuild it from — item 543, nor which authors set
+            // its bounds — item 853.
             request: None,
             opened_by: None,
             opened_by_session: None,
+            overridden: None,
             state: Arc::new(Mutex::new(RunState::Running)),
             run: Box::new(ThreadRun::new(
                 Orders::new(
@@ -4517,6 +4559,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
                 output: None,
@@ -4591,6 +4634,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(sprag_plugin::Outcome {
                     // ⚠ NOT a convergence, which is the whole point: the sentence's *work is
@@ -4719,6 +4763,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(ended),
                 output: None,
@@ -4798,6 +4843,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(sprag_plugin::Outcome {
                     // ⚠ NOT a convergence: the run this question is asked about is the one that
@@ -5532,10 +5578,11 @@ mod tests {
             // ⚠ THE PLUGIN IS IRRELEVANT TO THESE GATES and is stated rather than defaulted: the
             // handle is a recorder that honours everything, so what is measured is FORWARDING.
             plugin: crate::plugins::PluginName::Orchestrator,
-            // ⚠ And neither is what would rebuild it — item 543.
+            // ⚠ And neither is what would rebuild it — item 543, nor its bounds' authors — 853.
             request: None,
             opened_by: None,
             opened_by_session: None,
+            overridden: None,
             state: Arc::new(Mutex::new(RunState::Running)),
             run: Box::new(RecordingRun(Arc::clone(&log))),
             progress: ProgressCell::default(),
@@ -5900,6 +5947,7 @@ mod tests {
                 request: Some(asked.clone()),
                 opened_by: None,
                 opened_by_session: None,
+                overridden: None,
                 state: Arc::new(Mutex::new(if ended {
                     RunState::Reported(Box::new(serde_json::json!({ "state": "converged" })))
                 } else {

@@ -4350,8 +4350,11 @@ mod tests {
             // label names, said in the form nothing has to parse.
             plugin: crate::plugins::PluginName::AiLoop,
             // ⚠ Not what this gate measures — item 543. It asks what a PANE says about the run
-            // driving it, and a request is what a successor daemon would need instead.
+            // driving it, and a request is what a successor daemon would need instead. ⚠ Nor which
+            // authors set its bounds — item 853, which is `parse_guardrails`'s answer and not a
+            // fact a pane's row is about.
             request: None,
+            overridden: None,
             opened_by: None,
             opened_by_session: None,
             state: Arc::clone(&state),
@@ -4622,6 +4625,7 @@ mod tests {
             label: "ai_loop".to_owned(),
             plugin: crate::plugins::PluginName::AiLoop,
             request: None,
+            overridden: None,
             opened_by: None,
             // ⚠ THE WHOLE VARIABLE. It is the one name that survives a restart, and matching it is
             // what makes pane 0's answer about ownership rather than about a seat number.
