@@ -104,6 +104,10 @@
 //!                                          `status`, `outcome`, `verdict`, `refusal` — from the
 //!                                          types this build compiled. NEEDS NO DAEMON and no
 //!                                          source tree; naming one prints only that one
+//! sprag disposition [OUTCOME]              print WHAT HAPPENS NEXT to a run that ended — one line
+//!                                          per ending, its next step and what that means. NEEDS NO
+//!                                          DAEMON; naming one ending prints only that one, and an
+//!                                          ending nothing classifies is REFUSED, not answered
 //! sprag list-keys                          print the client keymap `config.toml` produces
 //! sprag bind-key [-nr] [-T TABLE] KEY ACTION…  give a key a meaning (tmux bind-key)
 //! sprag unbind-key [-n] [-T TABLE] KEY     take a key's meaning away (tmux unbind-key)
@@ -308,6 +312,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Grant => grant(args.collect()),
         Verb::Doctor => doctor(args.collect()),
         Verb::Words => words(args.collect()),
+        Verb::Disposition => disposition(args.collect()),
         Verb::Daemons => daemons(args.collect()),
         Verb::ShowGrammar => show_grammar(args.collect()),
         Verb::Orchestrate => orchestrate(args.collect()),
@@ -545,6 +550,111 @@ fn words(args: Vec<String>) -> io::Result<()> {
         // the whole list for a script.
         println!("{name}  — {answers}");
         println!("  {}", said.join(" "));
+    }
+    Ok(())
+}
+
+/// One line per ending this build can record: the ENDING, what happens NEXT, and the sentence that
+/// says what that means — register item 867.
+///
+/// # ⚠⚠⚠ The FIRST FIELD IS THE ENDING'S WORD, and `.githooks/loop-read.sh` depends on it
+///
+/// That hook reads the daemon's run log off disk at push time, holds an outcome word per finished
+/// run, and looks the word up in this table — the whole point being that it keeps no copy of the
+/// mapping. So the column order is a CONTRACT, not a layout: the leading spaces make the rows a
+/// person can scan, the first field is the word to match on, and everything after it is printed
+/// verbatim by whoever matched. `cli.rs`'s `the_push_time_reader_says_what_happens_next_…` holds
+/// the two ends of that together by running the real hook against this real binary.
+///
+/// ⚠ The pairing is asked of [`Disposition::table`](sprag_plugin::driver::Disposition::table) and
+/// never spelled here — the rule `outcome_word` states and the defect items 855 and 864 each
+/// paid for: a renderer with its own opinion is a second authority on a set `sprag_plugin` owns.
+fn disposition_rows() -> Vec<String> {
+    sprag_plugin::driver::Disposition::table()
+        .map(|(word, next)| {
+            format!(
+                "  {:<10}  {:<9}  {}",
+                word,
+                next.wire_str(),
+                next.describe()
+            )
+        })
+        .collect()
+}
+
+/// ⛔⛔⛔⛔⛔ `disposition [OUTCOME]`: **WHAT HAPPENS NEXT TO A RUN THAT ENDED, ASKED OF THIS
+/// BUILD** — register item 867, and the second half of item 827.
+///
+/// # ⚠⚠⚠⚠⚠ What item 827 left, and what this is for
+///
+/// 827 moved six endings' *and now what* out of doc comments and into
+/// [`Disposition`](sprag_plugin::driver::Disposition), and made `runs` print it for a run somebody
+/// asks about. It could not make anybody who is NOT asking about one particular run able to ask at
+/// all — and the reader that matters is exactly that one: `.githooks/loop-read.sh` runs at push
+/// time, with no daemon, and prints the endings nobody has read. It held a word per run and had
+/// nowhere to send it. Item 867 measured the alternative and refused it: writing the mapping into
+/// the script is the *"one value, two homes"* defect items 855 and 864 each paid for.
+///
+/// So the product publishes the table and the script relays what it says. It needs **no daemon**
+/// (`words`' reason: the classification is compiled in) and **no source tree**.
+///
+/// # ⛔ AN UNKNOWN OUTCOME IS A REFUSAL THAT NAMES WHAT THERE IS
+///
+/// This workspace's rule 6, and [`Disposition::of_outcome_word`](sprag_plugin::driver::Disposition::of_outcome_word)
+/// says it in its own doc: a word nothing has classified is a RED, not a pass. A caller who asked
+/// about `panicked` and got silence would read it as *nothing to do* — which is precisely the state
+/// item 827 was filed on, invented rather than recorded.
+///
+/// # ⚠ It prescribes NOTHING, and that is item 827's own prohibition carried forward
+///
+/// Nothing here starts, stops or schedules a run. Two of the four answers say a machine may not
+/// proceed alone, so *reading this table* and *obeying it* are different acts and only the first
+/// one is here.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidInput`] for an outcome word nothing classifies, and for a second
+/// argument.
+fn disposition(args: Vec<String>) -> io::Result<()> {
+    if let Some(extra) = args.get(1) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "disposition: unexpected argument {extra:?} (it takes [OUTCOME], one at a time)"
+            ),
+        ));
+    }
+    let rows = disposition_rows();
+    // ⚠ THE FILTER IS THE ONLY BRANCH — `words`' rule, for `words`' reason: printing every row and
+    // printing one are the same act over a different set, so a named OUTCOME cannot come to be
+    // formatted differently from the whole. The hook that parses these rows reads both forms.
+    let wanted = args.first();
+    let shown: Vec<&String> = rows
+        .iter()
+        .filter(|row| {
+            wanted.is_none_or(|asked| row.split_whitespace().next() == Some(asked.as_str()))
+        })
+        .collect();
+    if shown.is_empty() {
+        let asked = wanted.map_or_else(String::new, Clone::clone);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "disposition: nothing in this build classifies what happens next after an ending \
+                 spelled {asked:?}. The endings it classifies are {}.",
+                sprag_plugin::driver::Disposition::table()
+                    .map(|(word, _)| word)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        ));
+    }
+    println!(
+        "disposition  — what happens next to a run that ended this way. It says what to do, and \
+         does none of it"
+    );
+    for row in shown {
+        println!("{row}");
     }
     Ok(())
 }
@@ -11844,6 +11954,111 @@ mod tests {
 
         let extra = words(vec!["verdict".to_owned(), "outcome".to_owned()])
             .expect_err("⚠⚠ two names at once is refused rather than half-honoured");
+        assert!(
+            extra.to_string().contains("one at a time"),
+            "⚠ and the refusal says what the shape is: {extra}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY ENDING THIS BUILD CAN RECORD IS PUBLISHED WITH WHAT HAPPENS NEXT TO IT, AND
+    /// THE FOUR ANSWERS ARE FOUR DIFFERENT ANSWERS** — register item 867.
+    ///
+    /// # What this holds that the type's own gates do not
+    ///
+    /// `sprag_plugin` holds the classification: every outcome has a disposition, and a seventh
+    /// outcome joins [`OutcomeState::EVERY_SHAPE`] or nothing compiles. What nothing held before
+    /// this is the MOUTH — item 827 put those sentences on a run's row and left every reader who is
+    /// not asking about one particular run with no way to ask at all, which is the whole of item
+    /// 867's measurement (a push-time reader holding six words and nowhere to send them).
+    ///
+    /// # ⚠⚠ The expectation is DERIVED, never spelled
+    ///
+    /// Each row is checked against [`Disposition::wire_str`] and [`Disposition::describe`] read
+    /// from the type, so this cannot go green on a renderer that has drifted from the
+    /// classification — the defect items 855 and 864 each paid for. What it CAN catch is the
+    /// renderer, which is the thing it is for.
+    ///
+    /// ⚠ **AND THAT THE ANSWERS DIFFER.** A build whose four dispositions rendered to one sentence
+    /// would satisfy every per-row assertion and publish a classification that makes no difference,
+    /// which is the state item 827 was filed on wearing a table.
+    #[test]
+    fn what_happens_next_is_published_for_every_ending_and_refused_for_the_rest() {
+        use sprag_plugin::driver::Disposition;
+
+        disposition(Vec::new()).expect(
+            "⛔⛔⛔⛔⛔ ITEM 867: `sprag disposition` could not answer with no daemon running. The \
+             classification is compiled into this binary, and the reader it exists for — \
+             `.githooks/loop-read.sh` — runs at push time with no daemon at all.",
+        );
+
+        let rows = disposition_rows();
+        assert_eq!(
+            rows.len(),
+            Disposition::table().count(),
+            "one row per ending, and the count comes from the type: {rows:?}",
+        );
+        for (word, next) in Disposition::table() {
+            let row = rows
+                .iter()
+                .find(|row| row.split_whitespace().next() == Some(word))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "⛔⛔⛔ ITEM 867: no row's FIRST FIELD is `{word}`. That field is the \
+                         column `.githooks/loop-read.sh` matches a run's ending on, so a row that \
+                         leads with anything else is a push that says nothing about that \
+                         ending.\n  rows: {rows:?}"
+                    )
+                });
+            assert!(
+                row.contains(next.wire_str()) && row.contains(next.describe()),
+                "⛔⛔ ITEM 867: `{word}`'s row does not carry what the type says happens next \
+                 (`{}`). A row naming an ending without saying what follows it moves the lookup \
+                 back into the reader's head, which is where the answer already was.\n  row: \
+                 {row}\n  wanted: {}",
+                next.wire_str(),
+                next.describe(),
+            );
+            disposition(vec![word.to_owned()])
+                .unwrap_or_else(|why| panic!("`sprag disposition {word}` answers: {why}"));
+        }
+        // ⚠⚠ THE CONTROL: four dispositions, four DISTINCT sentences in the table. Without this a
+        // build that rendered one answer for everything passes every assertion above.
+        let mut sentences: Vec<&str> = Disposition::ALL
+            .iter()
+            .map(|next| next.describe())
+            .collect();
+        sentences.sort_unstable();
+        sentences.dedup();
+        assert_eq!(
+            sentences.len(),
+            Disposition::ALL.len(),
+            "⛔ two dispositions say the same thing, so the split this table publishes makes no \
+             difference to anybody reading it",
+        );
+
+        // ⛔ AN UNCLASSIFIED ENDING IS A REFUSAL THAT NAMES WHAT THERE IS — rule 6. `panicked` is a
+        // real word of this product (a `run_status`), which is exactly the kind of thing a caller
+        // arrives holding.
+        let refused = disposition(vec!["panicked".to_owned()]).expect_err(
+            "⚠⚠ THE PREMISE: an ending nothing classifies must be refused, never answered — a \
+             caller told nothing reads it as *nothing to do*, which is the answer item 827 says \
+             must be recorded rather than invented",
+        );
+        let said = refused.to_string();
+        assert!(
+            said.contains("panicked"),
+            "⚠⚠⚠ the refusal must quote what was ASKED: {said}",
+        );
+        for (word, _) in Disposition::table() {
+            assert!(
+                said.contains(word),
+                "⛔⛔⛔ ITEM 867: this refusal does not name `{word}`, so a caller is told their \
+                 word is wrong and left to go and find the list. Said: {said}",
+            );
+        }
+
+        let extra = disposition(vec!["failed".to_owned(), "converged".to_owned()])
+            .expect_err("⚠⚠ two endings at once is refused rather than half-honoured");
         assert!(
             extra.to_string().contains("one at a time"),
             "⚠ and the refusal says what the shape is: {extra}",

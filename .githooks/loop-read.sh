@@ -67,6 +67,19 @@ LOOP_READ_STRANDED_COST="a run whose daemon is gone stays open for ever, so ever
 count of how many are going includes it -- fourteen said running on 2026-09-01 \
 and three were"
 
+# ⛔⛔⛔⛔ WHAT AN ENDING NOBODY CAN ACT ON COSTS -- register item 867, and the
+# number item 827 measured for the half 798 left empty.
+#
+# 798 bought REACH: the ending leaves the screen and arrives at the push. It said
+# in its own body that it was not buying what somebody then DOES about it, and
+# 827 priced that: a sprag run ended 2026-09-02 at 08:10:18 and the next driver
+# started three hours forty-nine minutes later, while two other repositories were
+# re-launched inside three minutes. The ending was on a screen the whole time.
+LOOP_READ_NEXT_COST="a run ended at 08:10:18 on 2026-09-02 and the next driver \
+started three hours forty-nine minutes later, while two other repositories were \
+re-launched inside three minutes -- the ending was readable the whole time and \
+what nobody could ask was what to do about it"
+
 # WHERE THE DAEMON'S RUN LOGS ARE, derived the way the PRODUCT derives it.
 #
 # ⛔⛔ THE SAME THREE STEPS AS `durability::sprag_state_dir`, in the same order,
@@ -184,6 +197,160 @@ loop_read_ended_only() {
 
 loop_read_stranded_only() {
     printf '%s\n' "$1" | command grep '!stranded ' | command sed '/^$/d' || true
+}
+
+# ── WHAT HAPPENS NEXT TO AN ENDING -- register item 867 ───────────────────────
+#
+# ⛔⛔⛔⛔⛔ THE MAPPING IS NOT IN THIS FILE, AND THAT IS THE WHOLE POINT. The
+# endings this hook reads off disk are WORDS (`failed`, `converged`, ...), and
+# what to do about each of them is a decision `OutcomeState::disposition` holds
+# in the product. Writing a copy of it here -- six words and six answers -- is
+# the *one value, two homes* defect items 855 and 864 each paid for once, and
+# item 867 refuses it by name. So the product PUBLISHES the table (`sprag
+# disposition`) and this file relays what it says, matching on the first field
+# and printing the rest verbatim. It never spells an answer.
+#
+# ⚠⚠ AND IT PRESCRIBES NOTHING. Item 827's prohibition, carried forward by 867:
+# *automatically re-launch it* must not be assumed to be the answer, and two of
+# the four dispositions are endings a machine may NOT proceed past. This clause
+# says what the product says and does none of it -- the same shape as every other
+# sentence in this file, which reports and never gates.
+
+# THE REPOSITORY THIS FILE IS IN, derived from the file rather than from `pwd`.
+#
+# ⛔⛔⛔ RESOLVED AT SOURCE TIME AND NOT PER CALL, and that is a fix rather than a
+# saving: `${BASH_SOURCE[0]}` is the path this file was NAMED by, which `pre-push`
+# and a person alike give RELATIVELY (`.githooks/loop-read.sh`). Every arm below
+# runs from a throwaway repository, and `/`, so a `cd "$(dirname …)"` evaluated
+# there is a `cd .githooks` in somebody else's directory -- measured 2026-09-03,
+# it printed eight errors and answered the empty string.
+LOOP_READ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+loop_read_repo_root() {
+    printf '%s\n' "$LOOP_READ_ROOT"
+}
+
+# WHICH BUILD ANSWERS the disposition question, or EMPTY where none can.
+#
+# ⛔⛔ THE TREE'S BUILD IS PREFERRED OVER `PATH`, and that order is a measurement,
+# not a taste: register item 824 is a PROMOTED `sprag` that does not know verbs
+# this tree has -- so a `PATH` build asked first would answer about a different
+# product than the one being pushed. The tree's own `target/` is the build whose
+# classification matches the source in the commit.
+#
+# ⚠ `$LOOP_READ_SPRAG` is a TEST SEAM and not an escape hatch: pointing it at
+# nothing does not silence this report, it makes it say -- loudly -- that nothing
+# could be asked. There is no value of it that turns the sentence into a receipt.
+loop_read_sprag() {
+    local candidate root
+    candidate="${LOOP_READ_SPRAG:-}"
+    if [ -n "$candidate" ]; then
+        [ -x "$candidate" ] && printf '%s\n' "$candidate"
+        return 0
+    fi
+    root="$(loop_read_repo_root)"
+    for candidate in "$root/target/debug/sprag" "$root/target/release/sprag"; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    command -v sprag 2>/dev/null || true
+    return 0
+}
+
+# THE PRODUCT'S ENDING → NEXT-STEP TABLE, or EMPTY when the build that answered
+# does not know the question.
+#
+# ⛔⛔⛔ AN UNKNOWN VERB IS NOT AN EMPTY TABLE, and both are checked because they
+# are answered differently by different builds. Measured 2026-09-03 against this
+# tree's binary: `sprag nosuchverb` exits **2** with stdout EMPTY and the usage on
+# stderr. A build that instead printed its usage on stdout and exited 0 would hand
+# this hook a page of text to look words up in, so the header is checked too --
+# `disposition` is the first thing the verb prints and nothing else here is.
+loop_read_disposition_table() {
+    local sprag said
+    sprag="$(loop_read_sprag)"
+    [ -n "$sprag" ] || return 0
+    said="$("$sprag" disposition 2>/dev/null)" || return 0
+    case "$said" in
+        disposition*) printf '%s\n' "$said" ;;
+    esac
+    return 0
+}
+
+# THE SENTENCE for each ending in `$1`, grouped by the ending's own word.
+#
+# ⚠⚠ GROUPED BY THE ENDING AND NOT ONE LINE PER RUN, because the population says
+# so: measured 2026-09-03 on this clone, 48 owed endings spoke FOUR distinct words
+# (`failed`, `converged`, `cancelled`, `exhausted`). Forty-eight lines would be a
+# wall; four are a decision.
+#
+# ⚠ THE ORDER IS THE PRODUCT'S -- the walk is over the table's rows, not over the
+# endings -- so this file decides nothing about which answer comes first either.
+loop_read_next_steps() {
+    local ended sprag table rows word rest keys ekey eword classified unclassified
+    ended="$1"
+    [ -n "$ended" ] || return 0
+    sprag="$(loop_read_sprag)"
+    if [ -z "$sprag" ]; then
+        echo "loop-read: and WHAT HAPPENS NEXT TO THEM COULD NOT BE ASKED -- no" \
+             "sprag build is reachable under $(loop_read_repo_root)/target or on" \
+             "PATH, and this hook keeps no copy of that answer on purpose." \
+             "${LOOP_READ_NEXT_COST}"
+        return 0
+    fi
+    table="$(loop_read_disposition_table)"
+    if [ -z "$table" ]; then
+        echo "loop-read: and WHAT HAPPENS NEXT TO THEM COULD NOT BE ASKED --" \
+             "${sprag} does not answer 'disposition', so the build that replied is" \
+             "older than the question (register item 824). ${LOOP_READ_NEXT_COST}"
+        return 0
+    fi
+    # The rows and not the header: a row is indented, the header is not.
+    rows="$(printf '%s\n' "$table" | command grep '^  ' || true)"
+    while read -r word rest; do
+        [ -n "$word" ] || continue
+        keys=""
+        while read -r ekey eword; do
+            [ "$eword" = "$word" ] || continue
+            keys="$keys $ekey"
+        done <<ENDINGS
+$ended
+ENDINGS
+        [ -n "$keys" ] || continue
+        echo "loop-read: ${keys# } ended '${word}' -- ${rest}"
+    done <<ROWS
+$rows
+ROWS
+    # ⛔⛔⛔⛔⛔ AN ENDING NOTHING CLASSIFIES IS SAID, NEVER SKIPPED. This
+    # workspace's rule 6, and the product's own renderer says the same words for
+    # the same reason: a word no disposition covers is an ending that reached the
+    # log without anybody deciding what follows it -- which is exactly the state
+    # item 827 was filed on. Silence would render it as *nothing to do*.
+    classified=""
+    while read -r word rest; do
+        [ -n "$word" ] || continue
+        classified="${classified} ${word} "
+    done <<ROWS
+$rows
+ROWS
+    unclassified=""
+    while read -r ekey eword; do
+        [ -n "$ekey" ] || continue
+        case "$classified" in
+            *" ${eword} "*) continue ;;
+        esac
+        unclassified="$unclassified ${ekey}(${eword})"
+    done <<ENDINGS
+$ended
+ENDINGS
+    if [ -n "$unclassified" ]; then
+        echo "loop-read: NOTHING IN ${sprag} CLASSIFIES what happens next after" \
+             "${unclassified# } -- an ending reached the log and no disposition" \
+             "covers it, so what to do about it is recorded nowhere"
+    fi
+    return 0
 }
 
 # The keys (without outcomes) of every ending on disk, or empty when unknown.
@@ -368,6 +535,12 @@ loop_read_gap() {
         listed="$(printf '%s\n' "$ended" | command tr '\n' ' ')"
         echo "loop-read: ${count} run(s) ENDED AND NOBODY HAS RECORDED READING" \
              "THEM (${listed% }) -- ${LOOP_READ_UNREAD_COST}"
+        # ⛔⛔⛔⛔ AND WHAT TO DO ABOUT EACH -- register item 867. The line above is
+        # item 798's: the ending REACHES somebody. This one is item 827's other
+        # half: it says what follows. They are separate sentences because they are
+        # separate facts, and folding them is what every item in this file's family
+        # (776, 779, 781, 790, 793) was filed on.
+        loop_read_next_steps "$ended"
     fi
     stranded="$(loop_read_stranded_only "$owed")"
     if [ -n "$stranded" ]; then
@@ -743,6 +916,156 @@ STRANDSONLY
         fail=$((fail + 1))
     fi
 
+    # (12) ⛔⛔⛔⛔⛔ WHAT HAPPENS NEXT TO EACH ENDING -- register item 867.
+    #
+    # ⚠⚠ THE PRODUCT IS DOUBLED HERE, and the reason is `hosted-read.sh`'s for
+    # `gh`: a selftest that asked the REAL binary would measure whether this tree
+    # happens to have been built, and would go green on a build that answered
+    # nothing. The double is reached through `$LOOP_READ_SPRAG`, so the SUBJECT --
+    # the lookup, the grouping, and the three ways it can fail to get an answer --
+    # is what is under test. That the real binary's rows have the shape this
+    # matches on is held by `cli.rs`, which runs THIS hook against THAT binary.
+    mkdir -p "$tmp/bin"
+    cat > "$tmp/bin/sprag" <<'ASKED'
+#!/usr/bin/env bash
+echo "disposition  — what happens next to a run that ended this way"
+echo "  converged   next_work  DOUBLE SAYS: a next run, carrying different work"
+echo "  failed      person     DOUBLE SAYS: a person, and nothing else until then"
+ASKED
+    cat > "$tmp/bin/sprag-old" <<'REFUSED'
+#!/usr/bin/env bash
+echo "sprag: unknown command \"${1:-}\"" >&2
+exit 2
+REFUSED
+    cat > "$tmp/bin/sprag-chatty" <<'CHATTY'
+#!/usr/bin/env bash
+echo "usage: sprag <command> [arguments]"
+echo "  sessions"
+echo "    ls"
+CHATTY
+    cat > "$tmp/bin/sprag-partial" <<'PARTIAL'
+#!/usr/bin/env bash
+echo "disposition  — what happens next to a run that ended this way"
+echo "  converged   next_work  DOUBLE SAYS: a next run, carrying different work"
+PARTIAL
+    chmod +x "$tmp/bin/sprag" "$tmp/bin/sprag-old" "$tmp/bin/sprag-partial" \
+             "$tmp/bin/sprag-chatty"
+    cat > "$tmp/state/sprag/probe.runs.json" <<'NEXTSTEPS'
+{"version":1,"runs":[{"id":60,"finished":true,"outcome":"failed"},
+                     {"id":61,"finished":true,"outcome":"converged"}]}
+NEXTSTEPS
+
+    # (12a) ⭐ EACH ENDING GETS ITS OWN ANSWER, and they are DIFFERENT answers.
+    # ⛔ The pair is the arm: one sentence asserted alone would stay green on a
+    # relay that printed the first row for everything, which is the defect item
+    # 867 exists to prevent -- a classification that makes no difference.
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag" loop_read_gap)"
+    case "$said" in
+        *"probe#60 ended 'failed' -- person     DOUBLE SAYS: a person"*)
+            echo "  ok    an ended run is told what happens next, in the product's words"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  the next step for an ending said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    case "$said" in
+        *"probe#61 ended 'converged' -- next_work  DOUBLE SAYS: a next run"*)
+            echo "  ok    a DIFFERENT ending gets a DIFFERENT next step"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a second ending's next step said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⛔⛔ AND NEITHER GROUP HOLDS THE OTHER'S RUN. The two checks above are about
+    # what is PRESENT, and both survive a relay that files every run under every
+    # row -- measured 2026-09-03 by driving exactly that mutation, which left 30
+    # of 31 arms green. A classification that separates nothing is the defect.
+    #
+    # ⚠ ONE LINE, not the whole report: the groups are printed in the product's
+    # order, so a whole-blob test for *`probe#61` near `failed`* matches whenever
+    # the converged group happens to be printed first -- which it is.
+    said="$(printf '%s\n' "$said" | command grep "ended 'failed'" || true)"
+    case "$said" in
+        *"probe#61"*)
+            echo "  FAIL  the converged run was filed under 'failed' too: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    a run appears under its OWN ending and no other"
+            pass=$((pass + 1)) ;;
+    esac
+
+    # (12b) ⛔ NO BUILD TO ASK IS SAID OUT LOUD, never left silent -- the sentence
+    # would otherwise read exactly like a run whose ending needs nothing done.
+    said="$(LOOP_READ_SPRAG="$tmp/bin/nosuch" loop_read_gap)"
+    case "$said" in
+        *"COULD NOT BE ASKED"*"no sprag build is reachable"*)
+            echo "  ok    with no build to ask, the gap says so instead of falling silent"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  with no build to ask, the gap said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+
+    # (12c) ⛔⛔ A BUILD THAT DOES NOT KNOW THE QUESTION IS ITS OWN FINDING --
+    # register item 824, which is a PROMOTED `sprag` that does not speak this
+    # tree's verbs. Folding it into (12b) would name the wrong repair.
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag-old" loop_read_gap)"
+    case "$said" in
+        *"COULD NOT BE ASKED"*"older than the question"*)
+            echo "  ok    a build that refuses the verb is named as older, not as absent"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  an older build's answer said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+
+    # (12c2) ⛔⛔⛔ AND A BUILD THAT ANSWERS SOMETHING ELSE IS NOT A TABLE. An
+    # unknown verb exits 2 with an EMPTY stdout on this tree's binary (measured
+    # 2026-09-03), but that is a fact about today's binary, not a property of the
+    # design: a build that printed its usage on stdout and exited 0 would hand this
+    # hook a page of text to look endings up in, and every ending would come back
+    # *nothing classifies it* -- a false finding, which is worse than none.
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag-chatty" loop_read_gap)"
+    case "$said" in
+        *"COULD NOT BE ASKED"*"older than the question"*)
+            echo "  ok    an answer that is not this table is refused, not searched"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a build answering something else said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+
+    # (12d) ⛔⛔⛔ AN ENDING NOTHING CLASSIFIES IS A FINDING, NOT A PASS -- rule 6,
+    # and the state item 827 was filed on: a word that reached the log with nobody
+    # having decided what follows it.
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag-partial" loop_read_gap)"
+    case "$said" in
+        *"CLASSIFIES what happens next after"*"probe#60(failed)"*)
+            echo "  ok    an ending no disposition covers is named rather than skipped"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  an unclassified ending said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    case "$said" in
+        *"probe#61 ended 'converged'"*)
+            echo "  ok    and the endings that ARE classified still get their answer"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a classified ending beside an unclassified one said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+
+    # (12e) ⛔⛔⛔⛔⛔ AND IT IS CALLED THE WAY `pre-push` CALLS IT -- arm (10d)'s
+    # lesson, which this file paid a REFUSED PUSH for once: a `grep` that matched
+    # nothing killed the hook under `set -euo pipefail`. This clause has two of
+    # them.
+    bash -c 'set -euo pipefail; . "$1"; LOOP_READ_SPRAG="$2" loop_read_gap >/dev/null' \
+        _ "$here/loop-read.sh" "$tmp/bin/sprag"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  ok    the next-step clause exits 0 under set -euo pipefail"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  the next-step clause exits ${rc} under set -euo pipefail," \
+             "which is a REFUSED PUSH rather than a sentence"
+        fail=$((fail + 1))
+    fi
+    loop_read_seen 'probe#60' >/dev/null
+    loop_read_seen 'probe#61' >/dev/null
+
     # (11) The pre-push hook calls this instrument -- the reach item 798 asks for
     # is a sentence at the push, and a hook that stopped calling it is silence.
     # ⛔⛔ *UNREADABLE* AND *NOT WIRED* ARE SEPARATE FINDINGS — see the same arm in
@@ -774,8 +1097,9 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         --baseline)  loop_read_baseline ;;
         --seen)      shift; loop_read_seen "${1:-}" ;;
         --owed)      loop_read_owed ;;
+        --next)      loop_read_next_steps "$(loop_read_ended_only "$(loop_read_owed)")" ;;
         --gap|"")    loop_read_gap ;;
-        *) echo "usage: loop-read.sh [--gap|--owed|--baseline|--seen KEY|--selftest]" >&2
+        *) echo "usage: loop-read.sh [--gap|--owed|--next|--baseline|--seen KEY|--selftest]" >&2
            exit 2 ;;
     esac
 fi

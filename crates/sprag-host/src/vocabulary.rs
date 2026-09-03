@@ -247,6 +247,8 @@ pub enum Verb {
     Doctor,
     /// `words` — the closed vocabularies a run's answer speaks, asked of this build.
     Words,
+    /// `disposition` — what happens next to a run that ended, per ending, asked of this build.
+    Disposition,
     /// `daemons` — WHICH daemons are running and on which sockets, asked of the machine.
     Daemons,
     /// `show-grammar` — HOW TO CALL the daemon's own verbs, asked of the daemon.
@@ -580,7 +582,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 71] = [
+    pub const ALL: [Self; 72] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -645,6 +647,7 @@ impl Verb {
         Self::Help,
         Self::Doctor,
         Self::Words,
+        Self::Disposition,
         Self::Daemons,
         Self::ShowGrammar,
         Self::DetachClient,
@@ -1278,6 +1281,28 @@ impl Verb {
                 "words",
                 Group::Tool,
                 Shell::Runs("[NAME]"),
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::NotBuilt,
+            ),
+            // ⛔⛔⛔⛔⛔ **WHAT HAPPENS NEXT TO A RUN THAT ENDED, ASKED OF THE BUILD** — register
+            // item 867, and `words`' neighbour rather than a sixth entry inside it: `words`
+            // publishes VOCABULARIES (one list per name) and this publishes a PAIRING (an ending
+            // and what follows it), which is a different shape and would have to be formatted
+            // differently — the one thing `words` refuses to grow.
+            //
+            // ⚠⚠ It needs NO DAEMON, on `words`' terms exactly: the classification is
+            // `OutcomeState::disposition`, compiled in, so a person holding a finished run's word
+            // can be answered while the daemon that recorded it is gone. That is the whole reason
+            // this exists — item 867's reader is `.githooks/loop-read.sh`, which runs at push time
+            // with no daemon and reads run logs off disk.
+            //
+            // ⚠ NOT BOUND TO A KEY and NOT AN AGENT TOOL, for the reason every answering verb here
+            // carries: this client has no view for it, and an agent reading a run already gets the
+            // sentence in the row itself (`runs` prints it — item 827) rather than by asking twice.
+            Self::Disposition => (
+                "disposition",
+                Group::Tool,
+                Shell::Runs("[OUTCOME]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::NotBuilt,
             ),

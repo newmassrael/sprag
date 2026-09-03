@@ -14617,7 +14617,11 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
         // the socket — which for this verb is not a degraded case but its subject. It is the one
         // shell verb here whose answer is about the MACHINE rather than about a daemon, so a run
         // that found none is a real answer and the sweep reads its refusal exit, not a fault.
-        (63, 5, 3),
+        // ⚠ REGISTER ITEM 867: `disposition` is the 64th, and the sweep drives it with NO daemon
+        // on the socket for `words`' reason — the classification it publishes is compiled in, and
+        // the reader it exists for (`.githooks/loop-read.sh`) runs at push time with no daemon at
+        // all. Driven here before the count moved.
+        (64, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -14800,7 +14804,10 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         // ⚠ REGISTER ITEM 825: `daemons` is the 40th, on `words`' reason with one of its own — a
         // keystroke is pressed inside a client that is ALREADY attached to a daemon, so a client
         // asking which daemons exist has answered its own question by being there.
-        (15, 10, 40, 6),
+        // ⚠ REGISTER ITEM 867: `disposition` is the 41st, on `words`' reason exactly — it answers
+        // something and this client has no view for a table of endings. Its reader is a push-time
+        // hook, which presses no keys.
+        (15, 10, 41, 6),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 
@@ -18686,5 +18693,165 @@ fn a_run_drives_its_pane_while_the_session_is_looking_at_another_window() {
         !pane_ids_in(&still.stdout).contains(&pane),
         "⛔ AND THE PANE WAS NEVER IN THE CURRENT WINDOW: {}",
         still.stdout,
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **THE PUSH-TIME READER SAYS WHAT HAPPENS NEXT, IN THE PRODUCT'S OWN WORDS** — register
+/// item 867, and the seam nothing else in this workspace can hold.
+///
+/// # What is on each end, and why neither end alone is the gate
+///
+/// `.githooks/loop-read.sh` has its own selftest, and `crates/sprag-gate/` runs it — but that
+/// selftest DOUBLES the product, on `hosted-read.sh`'s reasoning: a shell arm that asked the real
+/// binary would be measuring whether this tree happened to be built. So it proves the lookup and
+/// the three ways it can fail to get an answer, and it cannot prove that the rows it matches on are
+/// the rows `sprag disposition` actually prints.
+///
+/// The other end has the same hole from the other side: the unit test beside that verb reads the
+/// table out of the type, and nothing there says a `bash` script can find a word in it.
+///
+/// **This runs the REAL hook against the REAL binary**, which is the only place the column contract
+/// — *the first field is the ending's word* — is actually exercised. Item 867's own measurement is
+/// what it costs to get this wrong: three hours forty-nine minutes with the ending readable the
+/// whole time.
+///
+/// # ⚠⚠ The expected sentences are ASKED OF THE TYPE, never spelled here
+///
+/// [`Disposition::describe`](sprag_plugin::driver::Disposition::describe) is the one authority on
+/// what each ending means, exactly as it is for the hook. A gate holding its own copy of those four
+/// sentences would go green on a build that had drifted from them — the defect items 855 and 864
+/// each paid for once.
+#[test]
+fn the_push_time_reader_says_what_happens_next_in_the_products_own_words() {
+    use sprag_plugin::driver::{Disposition, OutcomeState};
+
+    // ⚠ THE HOOK'S OWN READER NEEDS `jq`, so without it this gate measures NOTHING — and a probe
+    // pointed at nothing must never read as clean (this workspace's rule 6, and the sentence
+    // `loop-read.sh` itself carries about a directory it cannot read). It is a RED that names its
+    // own cause rather than a skip nobody sees.
+    assert!(
+        Command::new("jq")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success()),
+        "⛔ THIS GATE NEEDS `jq`: the hook reads the daemon's run log with it, so without it every \
+         assertion below would be about the sentence for a log that could not be read",
+    );
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("the workspace root is two above this crate")
+        .to_path_buf();
+    let hook = root.join(".githooks/loop-read.sh");
+    assert!(
+        hook.is_file(),
+        "⛔ the hook this gate holds to the binary is not at {} — a moved file must arrive as a red \
+         and not as a gate that stopped measuring",
+        hook.display(),
+    );
+
+    // ⚠ `sprag_scratch::scratch_root()` and not `std::env::temp_dir()` — register item 794, whose
+    // ratchet caught this line the first time it ran: a set-and-empty `TMPDIR` makes the bare std
+    // call answer a RELATIVE path, and every `create_dir_all` below would then land INSIDE this
+    // repository. The 164 older call sites are item 795's backlog; a new one joins the fix.
+    let dir =
+        sprag_scratch::scratch_root().join(format!("sprag-loop-read-it-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _guard = TempDir(dir.clone());
+    let state = dir.join("state");
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(state.join("sprag")).expect("a throwaway state directory");
+    std::fs::create_dir_all(&repo).expect("a throwaway repository for the marker");
+    assert!(
+        Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(&repo)
+            .status()
+            .is_ok_and(|status| status.success()),
+        "the marker lives in a git dir, so these arms run inside a throwaway repository",
+    );
+
+    // ⚠ The run log is written twice ON PURPOSE: the baseline swallows whatever is on disk when it
+    // is laid, so the endings this gate is about have to arrive AFTER it. That is the instrument's
+    // own rule (a baseline cannot be laid twice), not a trick of this test.
+    let log = state.join("sprag/probe.runs.json");
+    std::fs::write(
+        &log,
+        b"{\"version\":1,\"runs\":[{\"id\":9,\"finished\":true,\"outcome\":\"cancelled\"}]}\n"
+            .as_slice(),
+    )
+    .expect("one ending for the baseline to swallow");
+    let ask = |arm: &str| -> String {
+        let out = Command::new("bash")
+            .arg(&hook)
+            .arg(arm)
+            .current_dir(&repo)
+            .env("XDG_STATE_HOME", &state)
+            .env("HOME", dir.join("home"))
+            // THE BUILD UNDER TEST, named rather than found: the hook prefers its own tree's
+            // `target/`, and this binary is the one cargo just built from the source in the commit.
+            .env("LOOP_READ_SPRAG", env!("CARGO_BIN_EXE_sprag"))
+            .output()
+            .expect("the hook runs");
+        assert!(
+            out.status.success(),
+            "⛔ `loop-read.sh {arm}` exited {:?} — under `pre-push`'s `set -euo pipefail` that is a \
+             REFUSED PUSH rather than a sentence: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    ask("--baseline");
+    std::fs::write(
+        &log,
+        b"{\"version\":1,\"runs\":[{\"id\":9,\"finished\":true,\"outcome\":\"cancelled\"},\
+{\"id\":1,\"finished\":true,\"outcome\":\"failed\"},\
+{\"id\":2,\"finished\":true,\"outcome\":\"converged\"}]}\n"
+            .as_slice(),
+    )
+    .expect("two endings that arrived after the baseline");
+    let said = ask("--gap");
+
+    // ⛔⛔⛔ EVERY ENDING THE FIXTURE CARRIES IS ANSWERED, and the answers are DIFFERENT. Asserting
+    // one sentence alone would stay green on a relay that printed the first row for everything —
+    // which is a classification that makes no difference, the thing item 867 exists to prevent.
+    for (id, outcome) in [(1, OutcomeState::Failed), (2, OutcomeState::Converged)] {
+        let next = outcome.disposition();
+        let want = format!("probe#{id} ended '{}'", outcome.wire_str());
+        assert!(
+            said.contains(&want),
+            "⛔ REGISTER ITEM 867: the push-time reader did not name what happens next to \
+             probe#{id}, whose ending is `{}`. The hook matches on the FIRST FIELD of a \
+             `sprag disposition` row, so this is either a column that moved or a clause that \
+             stopped running.\n  it said: {said}",
+            outcome.wire_str(),
+        );
+        assert!(
+            said.contains(next.wire_str()) && said.contains(next.describe()),
+            "⛔ REGISTER ITEM 867: probe#{id} was named but the PRODUCT'S OWN SENTENCE for `{}` did \
+             not reach the push. The hook prints the rest of the row verbatim, so a missing \
+             sentence is a row this binary is not printing.\n  wanted: {}\n  it said: {said}",
+            next.wire_str(),
+            next.describe(),
+        );
+    }
+    // ⚠ THE CONTROL: the two endings did not get the SAME answer. Without it every assertion above
+    // is satisfied by one row printed twice.
+    assert_ne!(
+        OutcomeState::Failed.disposition(),
+        OutcomeState::Converged.disposition(),
+        "the fixture's two endings must fall under different dispositions or this gate proves \
+         nothing about the distinction",
+    );
+    assert!(
+        !said.contains(&format!(
+            "probe#1 ended 'failed' -- {}",
+            Disposition::NextWork.wire_str()
+        )),
+        "⛔ a failed run was told the converged run's next step: {said}",
     );
 }

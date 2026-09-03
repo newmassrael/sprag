@@ -600,6 +600,34 @@ impl Disposition {
             .find(|outcome| outcome.wire_str() == word)
             .map(OutcomeState::disposition)
     }
+
+    /// **EVERY ENDING THIS BUILD CAN RECORD, PAIRED WITH WHAT HAPPENS NEXT TO IT** — register item
+    /// 867, and the half item 827 stopped at.
+    ///
+    /// # ⛔⛔⛔ Why a TABLE and not just [`of_outcome_word`](Self::of_outcome_word)
+    ///
+    /// That method answers a caller who already holds a word. Item 867 measured the callers who do
+    /// not: `.githooks/loop-read.sh` reads the daemon's run log off disk and holds words it can
+    /// print and nothing it can ask, so *what happens next* was reachable only by writing the
+    /// mapping into the script — which is the *"one value, two homes"* defect items 855 and 864
+    /// each paid for once already. A reader that can ask for the WHOLE pairing never has to keep a
+    /// copy of any part of it.
+    ///
+    /// # ⚠⚠ It walks [`OutcomeState::EVERY_SHAPE`], so a seventh ending arrives here on its own
+    ///
+    /// The same walk `of_outcome_word` uses, for the same reason: the classification lives in
+    /// [`OutcomeState::disposition`] and this projects it. A `match` here would be a second
+    /// opinion, and a hand-kept list would be a table an outcome can be added without joining.
+    ///
+    /// ⚠ It prescribes NOTHING. Item 827 is explicit that *automatically re-launch it* must not be
+    /// assumed to be the answer, and item 867 repeats it: [`Person`](Self::Person) and
+    /// [`Nothing`](Self::Nothing) are endings a machine may NOT proceed past, so reading this table
+    /// and obeying it are different acts and only the first one lives here.
+    pub fn table() -> impl Iterator<Item = (&'static str, Self)> {
+        OutcomeState::EVERY_SHAPE
+            .iter()
+            .map(|outcome| (outcome.wire_str(), outcome.disposition()))
+    }
 }
 
 sprag_vt::closed_set! {
