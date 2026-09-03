@@ -1531,6 +1531,33 @@
       same shape this workspace already puts there.
     -->
     <data id="deferred" expr="0"/>
+    <!--
+      🎯🎯🎯🎯🎯 HOW MANY OF THOSE THE CLASSIFIER REFUSED - a SUBSET of the
+      count above, never a second total, and register item 833's own danger
+      arriving one surface further on.
+
+      ⛔⛔⛔⛔⛔ WHAT THE ONE COUNT COST, MEASURED ON A LIVE RUN. The comment
+      above argues - correctly - that two TOTALS would make every reader of a
+      row add them up, and that which reason it was belongs in the ending's own
+      word (`capped` against `unadmitted`). That argument holds for a run that
+      has ENDED. It does not reach a run that is still going: 2026-09-03, run
+      189 of this repository's own loop had set THREE proposals aside, every one
+      of them refused by `successor_check` and not one of them at the cap, and
+      the row a person reads said *"it set 3 next checkpoints aside at its depth
+      cap"*. There is no ending word on a running row to correct that, so the
+      mouth had invented the half of the fact the number does not carry.
+
+      ⚠⚠ SO THIS IS A SUBSET AND THE TOTAL IS UNTOUCHED: `deferred` is still the
+      one number the row is for, and this says how many of it were refusals. A
+      reader adds nothing up - the total is stated, and this qualifies it.
+
+      ⚠ THE TWO REMEDIES ARE WHY IT IS WORTH A NUMBER AT ALL. A proposal set
+      aside at the cap is registered and the next run may take it; one the
+      classifier refused will be refused again, because it is not in the set
+      that kind admits. Sending a reader to the first remedy for the second is
+      the whole of what this fixes.
+    -->
+    <data id="unadmitted" expr="0"/>
 
     <!--
       🎯🎯🎯🎯🎯 HOW MANY TIMES THIS RUN CHANGED DIRECTION WITH NOBODY CHECKING —
@@ -5224,6 +5251,7 @@
                 target="closing">
       <assign location="deferred" expr="deferred + 1"/>
       <if cond="_event.data.admits &amp;&amp; _event.data.admits != 'admitted'">
+        <assign location="unadmitted" expr="unadmitted + 1"/>
         <assign location="done_reason" expr="'unadmitted'"/>
       <else/>
         <assign location="done_reason" expr="'capped'"/>
@@ -5258,6 +5286,15 @@
                 cond="_event.data.milestone != milestone &amp;&amp; ((reaim_max != 'never' &amp;&amp; reaimed &gt;= reaim_max &amp;&amp; _event.data.chain != 'fresh') || (_event.data.admits &amp;&amp; _event.data.admits != 'admitted')) &amp;&amp; reflect_reason == 'milestone'"
                 target="reflecting">
       <assign location="deferred" expr="deferred + 1"/>
+      <!--
+        ⚠ THE SUBSET MOVES ON EVERY ROAD THE TOTAL DOES - see `unadmitted`. An
+        arm that counted the total and not the reason would publish a row whose
+        qualification was true of some of its deferrals and not others, which is
+        the defect that number exists to close.
+      -->
+      <if cond="_event.data.admits &amp;&amp; _event.data.admits != 'admitted'">
+        <assign location="unadmitted" expr="unadmitted + 1"/>
+      </if>
       <assign location="reasked" expr="reasked + 1"/>
       <!--
         ⛔⛔⛔⛔⛔ THE REASON IS WRITTEN AND NOT INHERITED — register item 261.
@@ -5302,6 +5339,13 @@
         its own words.
       -->
       <assign location="deferred" expr="deferred + 1"/>
+      <!--
+        ⚠ AND WHICH REASON IT WAS - see `unadmitted`. This is the arm a RUNNING
+        run takes, which is exactly where the ending's word cannot answer.
+      -->
+      <if cond="_event.data.admits &amp;&amp; _event.data.admits != 'admitted'">
+        <assign location="unadmitted" expr="unadmitted + 1"/>
+      </if>
       <!--
         EVALUATED AFTER THE ASSIGNS ABOVE (W3C SCXML 6.2.3), so what goes out
         carries the tidied list rather than the one that arrived.

@@ -3465,6 +3465,10 @@ impl RunRegistry {
                         // exactly — register item 847. A restored run's log has no column for it,
                         // and `None` is *nobody was counting* rather than *nothing went unchecked*.
                         unchecked: None,
+                        // ⚠ NOR HOW MANY OF ITS DEFERRALS WERE REFUSALS — register item 833, on
+                        // `deferred`'s reason exactly: the log has no column for it, and `None` is
+                        // *nobody was counting* rather than *none of them were refused*.
+                        unadmitted: None,
                         // ⚠⚠⚠ AND NOT HERE, THOUGH THE LOG NOW CARRIES IT — register item 606. The
                         // restored pair goes into `Progress` below, which is where every reader
                         // takes it from: `crate::plugins::run_to_json` publishes `delivered` out of
@@ -3592,6 +3596,9 @@ impl RunRegistry {
                     // ⚠ Nor how many of its directions nobody checked (register item 847), for the
                     // reason on the line above it.
                     unchecked: None,
+                    // ⚠ Nor how many of its deferrals were refusals (register item 833), for the
+                    // reason on the line above it.
+                    unadmitted: None,
                     // ⛔⛔⛔ AND NOTHING IS WAITED ON BY A RUN NOBODY IS DRIVING — register item
                     // 755. A restored run has no driver asking its plugin anything, so *is a
                     // person needed* has no answerer; `None` is the honest reading and the same one
@@ -3954,6 +3961,7 @@ mod tests {
                 screened: 0,
                 deferred: None,
                 unchecked: None,
+                unadmitted: None,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
@@ -4002,6 +4010,7 @@ mod tests {
                     screened: 0,
                     deferred: None,
                     unchecked: None,
+                    unadmitted: None,
                     deliveries: sprag_plugin::Deliveries::NONE,
                     checks: sprag_plugin::Checks::NONE,
                     banked: None,
@@ -4111,6 +4120,7 @@ mod tests {
             screened: 0,
             deferred: None,
             unchecked: None,
+            unadmitted: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -4941,6 +4951,7 @@ mod tests {
             screened: 0,
             deferred: None,
             unchecked: None,
+            unadmitted: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,

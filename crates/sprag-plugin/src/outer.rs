@@ -994,6 +994,10 @@ const DEFERRED: &str = "deferred";
 /// checking** — incremented by the adopting `reflect.applied` arm where the classifier published no
 /// word at all. Register item 847, and see [`OuterLoop::unchecked`].
 const UNCHECKED: &str = "unchecked";
+/// 🎯 The datamodel variable counting **how many of [`DEFERRED`] the classifier REFUSED** — a
+/// SUBSET of that total and never a second one. Register item 833, and see
+/// [`OuterLoop::unadmitted_count`].
+const UNADMITTED_COUNT: &str = "unadmitted";
 
 /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN WHOSE CHECKPOINT IS DONE MAY ASK ITS AGENT AGAIN** — register
 /// item 840, and the bound the owner's decision of 2026-09-02 needs in order to be safe.
@@ -10258,6 +10262,40 @@ impl OuterLoop {
     pub fn unchecked(&self) -> Option<i64> {
         match self.script.get_variable(&self.session, UNCHECKED) {
             Ok(ScriptValue::Int(unchecked)) => Some(unchecked),
+            _ => None,
+        }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **HOW MANY OF THE PROPOSALS THIS RUN SET ASIDE WERE REFUSED BY THE CLASSIFIER** —
+    /// the document's own `unadmitted`, a SUBSET of [`deferred`](Self::deferred). Register item 833.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the single count cost, measured on a live run
+    ///
+    /// Two different things increment `deferred`: the run spent its own re-aiming budget, and the
+    /// kind's `successor_check` refused the proposal. The document argues — correctly — that two
+    /// TOTALS would make every reader of a row add them up, and that which reason it was belongs in
+    /// the ending's own word (`capped` against `unadmitted`).
+    ///
+    /// **That argument reaches a run that has ENDED and no further.** Measured 2026-09-03: run 189
+    /// of this repository's own loop was still going, had set THREE proposals aside, every one of
+    /// them refused by the classifier and not one at the cap — and the row a person reads said
+    /// *"it set 3 next checkpoints aside at its depth cap"*. A running row has no ending word to
+    /// correct it, so the mouth had supplied the half of the fact the number does not carry.
+    ///
+    /// ⚠⚠ **SO IT IS A SUBSET AND THE TOTAL IS UNTOUCHED.** `deferred` is still the one number the
+    /// row is for; this qualifies it. A reader adds nothing up.
+    ///
+    /// ⚠ **The two remedies are why it is worth a number.** A proposal set aside at the cap is
+    /// registered and the next run may take it; one the classifier refused will be refused again,
+    /// because it is not in the set that kind admits. Sending a reader to the first remedy for the
+    /// second is the whole of what this closes.
+    ///
+    /// ⚠ [`None`] on the same terms as its neighbours: a datamodel that has stopped answering is
+    /// *nobody was counting*, never a zero.
+    #[must_use]
+    pub fn unadmitted_count(&self) -> Option<i64> {
+        match self.script.get_variable(&self.session, UNADMITTED_COUNT) {
+            Ok(ScriptValue::Int(refused)) => Some(refused),
             _ => None,
         }
     }

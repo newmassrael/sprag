@@ -1324,6 +1324,16 @@ impl Plugin for AiLoop {
             .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
     }
 
+    /// 🎯 **THE DOCUMENT'S OWN `unadmitted`, ON ITS WAY TO THE ROW SOMEBODY READS** — register item
+    /// 833, delegated on `deferred`'s exact terms: the `<if>` that counts is written in
+    /// `ai_loop.scxml` beside the one that counts the total, so the subset cannot come to disagree
+    /// with the total it qualifies.
+    fn unadmitted(&self) -> Option<u32> {
+        self.inner
+            .unadmitted_count()
+            .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
     /// ⚠ DELEGATED for `deliveries`' reason — register item 719. The driver that put the brief in
     /// is the only thing that read it back out of the datamodel, and a size measured at this layer
     /// would be measuring the REQUEST rather than what the machine holds — a second authority on
@@ -5995,7 +6005,7 @@ mod tests {
 
         /// Drive a run until it has spent `reflections` reflections or the walk runs out, then
         /// answer what the DOCUMENT holds: how far it re-aimed, and what it set aside.
-        fn cap_of(cap: i64) -> (Option<i64>, Option<i64>) {
+        fn cap_of(cap: i64) -> (Option<i64>, Option<i64>, Option<i64>) {
             // ⚠⚠⚠ ONE FILE, and the peer's proposal counter lives in it because a re-aim RESPAWNS
             // the pane — see `standin_agent_reflecting_afresh`, where the shell-variable draft of
             // this counter is written down as the thing that made this gate unable to reach depth
@@ -6036,7 +6046,15 @@ mod tests {
                     break;
                 }
             }
-            let held = (loops.inner.re_aimed(), loops.inner.deferred());
+            // ⛔ AND HOW MANY OF THEM WERE REFUSALS — register item 833. This brief names NO
+            // classifier, so the answer is zero and that is the half the subset's own gate cannot
+            // reach: a subset incremented wherever the total is passes every assertion about a
+            // refusing run and says `refused` about this one.
+            let held = (
+                loops.inner.re_aimed(),
+                loops.inner.deferred(),
+                loops.inner.unadmitted_count(),
+            );
             for live in access.pane_ids() {
                 access.lifecycle().expect("lifecycle").close(live);
             }
@@ -6045,8 +6063,21 @@ mod tests {
             held
         }
 
-        let (tight_depth, tight_deferred) = cap_of(1);
-        let (loose_depth, loose_deferred) = cap_of(2);
+        let (tight_depth, tight_deferred, tight_refused) = cap_of(1);
+        let (loose_depth, loose_deferred, loose_refused) = cap_of(2);
+
+        // ⛔⛔⛔⛔⛔ EVERY DEFERRAL HERE IS THE CAP AND NONE OF THEM IS A REFUSAL — register item
+        // 833. Nothing classifies in this brief, so a run that reported refusals would be sending
+        // its reader to the one remedy that cannot help: *naming it again gets the same answer* is
+        // false of a proposal the cap set aside, which a later run may simply take.
+        assert_eq!(
+            (tight_refused, loose_refused),
+            (Some(0), Some(0)),
+            "⛔⛔⛔ REGISTER ITEM 833: this brief names no classifier, so nothing here can have \
+             been refused — and the subset says otherwise. A subset incremented wherever the TOTAL \
+             is passes every assertion about a refusing run and then calls a capped run's \
+             deferrals refusals. Deferred {tight_deferred:?} / {loose_deferred:?}",
+        );
 
         // ── THE CONTROL: BOTH RUNS ACTUALLY REFLECTED, OR THE DIFFERENCE BELOW IS ABOUT NOTHING ──
         assert_eq!(
@@ -6134,7 +6165,7 @@ mod tests {
 
         /// Drive a run whose document names `check` as its classifier, and answer what the DOCUMENT
         /// holds: how far it re-aimed, and what it set aside.
-        fn classified_by(check: &str) -> (Option<i64>, Option<i64>) {
+        fn classified_by(check: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
             // ⚠ ONE FILE PER ARM, for `a_documents_depth_cap_is_the_one_a_run_obeys`' measured
             // reason: a re-aim RESPAWNS the pane, so a counter in a shell variable goes back to
             // one and the peer proposes the same thing twice.
@@ -6174,7 +6205,14 @@ mod tests {
                     break;
                 }
             }
-            let held = (loops.inner.re_aimed(), loops.inner.deferred());
+            // ⛔⛔⛔ AND HOW MANY OF THOSE DEFERRALS WERE REFUSALS — register item 833. The cap is
+            // DECLINED in this brief, so every deferral here is a refusal and nothing else: this
+            // arm is the one place the subset can be held to the total without arithmetic.
+            let held = (
+                loops.inner.re_aimed(),
+                loops.inner.deferred(),
+                loops.inner.unadmitted_count(),
+            );
             for live in access.pane_ids() {
                 access.lifecycle().expect("lifecycle").close(live);
             }
@@ -6182,8 +6220,8 @@ mod tests {
             held
         }
 
-        let (admitted_depth, admitted_deferred) = classified_by("/bin/echo YES");
-        let (refused_depth, refused_deferred) = classified_by("/bin/echo NO");
+        let (admitted_depth, admitted_deferred, admitted_refused) = classified_by("/bin/echo YES");
+        let (refused_depth, refused_deferred, refused_refused) = classified_by("/bin/echo NO");
         // ⛔⛔⛔⛔⛔ AND A THIRD ARM, WHICH IS WORKING RULE 6 IN ONE RUN: a classifier that answers
         // something that is not a verdict has classified NOTHING, and an unclassified proposal is
         // not a pass. `perhaps` is the honest shape of that — a program that ran, printed, exited
@@ -6193,7 +6231,7 @@ mod tests {
         // asking *did it say `declined`* rather than *did it say `admitted`* is green on both arms
         // above and lets every broken classifier through — which is the escape hatch that disables
         // its own gate, arriving as a comparison written the other way round.
-        let (silent_depth, silent_deferred) = classified_by("/bin/echo perhaps");
+        let (silent_depth, silent_deferred, silent_refused) = classified_by("/bin/echo perhaps");
 
         // ── THE CONTROL: THE ADMITTING ARM REALLY RE-AIMED, or the comparison is about nothing ──
         assert!(
@@ -6227,6 +6265,35 @@ mod tests {
             "⚠⚠⚠⚠ AND THE PROPOSALS IT DID NOT TAKE ARE COUNTED — register item 833's stated \
              danger in its own words, one refusal over. A run that simply stopped adopting would \
              be indistinguishable from one whose agent ran out of ideas. Got {refused_deferred:?}",
+        );
+        // ⛔⛔⛔⛔⛔ AND WHY THEY WERE SET ASIDE, WHICH THE TOTAL CANNOT SAY — register item 833.
+        //
+        // The cap is DECLINED in this brief, so every one of those deferrals is a refusal. The
+        // document keeps one total on purpose and puts the reason in the ending's own word — and a
+        // run that is still going has no ending word. Measured 2026-09-03 against the live loop
+        // daemon: run 189 had set three aside, every one of them a refusal, and the row a person
+        // reads said *"at its depth cap"* about all three.
+        assert_eq!(
+            refused_refused, refused_deferred,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 833: this run's cap is DECLINED, so every proposal it set \
+             aside was set aside by the classifier — and the subset that says so does not agree \
+             with the total. A reader of this row is sent to register something already \
+             registered, where the true remedy is that naming it again gets the same answer. \
+             Deferred {refused_deferred:?}, of which refused {refused_refused:?}",
+        );
+        assert_eq!(
+            admitted_refused,
+            Some(0),
+            "⚠⚠⚠ AND AN ADMITTED PROPOSAL IS NOT A REFUSED ONE. Without this the subset could be \
+             the total's twin — incremented wherever the total is — and it would say `refused` \
+             about a run nothing refused. Deferred {admitted_deferred:?}",
+        );
+        assert!(
+            silent_refused.is_some_and(|refused| refused > 0),
+            "⛔⛔ AND A CLASSIFIER THAT SAID NOTHING READABLE REFUSED IT — working rule 6 reaching \
+             the subset too. `perhaps` classified nothing, the proposal was not taken, and calling \
+             that a budget deferral would send its reader to widen a cap that is switched off. \
+             Deferred {silent_deferred:?}, of which refused {silent_refused:?}",
         );
 
         // ── AND A CLASSIFIER THAT SAID NOTHING READABLE IS NOT AN ADMISSION ──

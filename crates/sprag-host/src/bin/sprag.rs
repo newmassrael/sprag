@@ -6693,19 +6693,71 @@ fn render_unchecked(state: &Value) -> String {
     }
 }
 
+/// **HOW MANY NEXT CHECKPOINTS A RUN COUNTED RATHER THAN TOOK, AND WHY** — register items 833 and
+/// 839.
+///
+/// # ⛔⛔⛔⛔⛔ The clause named a reason the number does not carry
+///
+/// Two different things set a proposal aside — the run spent the re-aiming budget its document
+/// gives it, and the kind's `successor_check` refused what its agent named — and the document keeps
+/// ONE total on purpose, because two would make every reader add them up. It puts the reason in the
+/// ending's own word (`capped` against `unadmitted`), which is right for a run that has ENDED.
+///
+/// **Measured 2026-09-03 against the live loop daemon**: run 189 was still going, had set THREE
+/// aside, every one of them a refusal and not one at the cap — and this clause said *"at its depth
+/// cap"*. There is no ending word on a running row, so the sentence had supplied the missing half
+/// itself, and it supplied the wrong one for all three.
+///
+/// ⚠⚠ **THE REMEDIES ARE OPPOSITE, which is why this is worth a second number rather than a longer
+/// sentence.** A proposal set aside at the cap is registered and the next run may take it; one the
+/// classifier refused will be refused again, because it is not in the set that kind admits.
+///
+/// ⚠ The qualifying clause is present only when the daemon SAID how many were refusals: an older
+/// daemon omits the key, and this then says the total without claiming a reason — which is the
+/// honest reading and the one this function had no way to give before.
 fn render_deferred(state: &Value) -> String {
-    match state[sprag_host::plugins::RUN_DEFERRED_KEY].as_u64() {
-        None | Some(0) => String::new(),
-        Some(1) => "\n  it set 1 next checkpoint aside at its depth cap — its agent proposed one \
-                    and this run counted it instead of taking it, so look for it wherever this \
-                    run's kind registers such things"
-            .to_owned(),
-        Some(many) => format!(
-            "\n  it set {many} next checkpoints aside at its depth cap — its agent proposed them \
-             and this run counted them instead of taking them, so look for them wherever this \
-             run's kind registers such things"
+    let Some(many) = state[sprag_host::plugins::RUN_DEFERRED_KEY]
+        .as_u64()
+        .filter(|deferred| *deferred > 0)
+    else {
+        return String::new();
+    };
+    let (one, them, counted) = if many == 1 {
+        (
+            "1 next checkpoint".to_owned(),
+            "it",
+            "its agent proposed one and this run counted it instead of taking it".to_owned(),
+        )
+    } else {
+        (
+            format!("{many} next checkpoints"),
+            "them",
+            "its agent proposed them and this run counted them instead of taking them".to_owned(),
+        )
+    };
+    // ⛔⛔⛔ WHY, WHEN THE DAEMON SAID — and the two answers are two different things to do next.
+    let why = match state[sprag_host::plugins::RUN_UNADMITTED_KEY].as_u64() {
+        None => String::new(),
+        Some(0) => format!(
+            "\n  all of that is the re-aiming budget this run's own document gives it — nothing was \
+             refused, so what it set aside is registered and a later run may take {them}"
         ),
-    }
+        Some(refused) if refused >= many => {
+            "\n  every one of those was REFUSED by this run's kind \
+             — naming the same thing again gets the same answer, because it is not in the set that \
+             kind admits"
+                .to_owned()
+        }
+        Some(refused) => format!(
+            "\n  {refused} of those were REFUSED by this run's kind and the rest ran out of the \
+             re-aiming budget, and the two want opposite things next: a refused one is not in the \
+             set that kind admits, and a budgeted one is registered for a later run"
+        ),
+    };
+    format!(
+        "\n  it set {one} aside — {counted}, so look for {them} wherever this run's kind registers \
+         such things{why}"
+    )
 }
 
 /// WHAT THE PEER IS ASKING and why the run did not answer it, for a run that ended `blocked` —
@@ -11192,6 +11244,7 @@ mod tests {
             screened: 0,
             deferred: None,
             unchecked: None,
+            unadmitted: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
@@ -11221,6 +11274,7 @@ mod tests {
             screened: 0,
             deferred: None,
             unchecked: None,
+            unadmitted: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -11711,7 +11765,7 @@ mod tests {
     /// * a plugin with no such choice — the key is ABSENT, which must read the same as zero here
     ///   and for a different reason.
     #[test]
-    fn a_run_says_how_many_checkpoints_it_set_aside_at_its_depth_cap() {
+    fn a_run_says_how_many_checkpoints_it_set_aside_and_why() {
         /// A live row as the wire really carries one — `deferred` present only when the plugin
         /// answered, which is `progress_to_json`'s own rule.
         fn running(deferred: Option<u64>) -> Value {
@@ -11805,6 +11859,67 @@ mod tests {
             "⚠⚠ AND A PLUGIN WITH NO SUCH CHOICE SAYS NOTHING RATHER THAN ZERO. Every bundled \
              plugin but the loop omits the key, and a row that read the absence as a number would \
              be claiming a decision that plugin cannot make: {no_such_choice}",
+        );
+
+        // ══ ⛔⛔⛔⛔⛔ AND WHY EACH ONE WAS SET ASIDE — register item 833 ══════════════════════
+        //
+        // Measured 2026-09-03 against the live loop daemon: run 189 was STILL GOING, had set three
+        // aside, every one of them refused by its kind's `successor_check` and not one at the cap
+        // — and this clause said *"at its depth cap"* about all three. The document keeps ONE total
+        // deliberately and puts the reason in the ending's word (`capped` / `unadmitted`); a
+        // running row has no ending word, so the sentence had been supplying the missing half
+        // itself and supplying it wrong.
+        //
+        // ⚠⚠ THE THREE READINGS MUST DIFFER, because the remedies are opposite: a proposal set
+        // aside for BUDGET is registered and a later run may take it; one the kind REFUSED will be
+        // refused again. A clause that read the same for both sends half its readers to the wrong
+        // remedy — which is exactly the argument `DoneReason`'s own two words were split on.
+        let why = |deferred: u64, refused: Option<u64>| -> String {
+            let mut run = running(Some(deferred));
+            if let Some(refused) = refused {
+                run["state"][sprag_host::plugins::RUN_UNADMITTED_KEY] = serde_json::json!(refused);
+            }
+            render_run(&run)
+        };
+        let all_budget = why(3, Some(0));
+        let all_refused = why(3, Some(3));
+        let mixed = why(3, Some(1));
+        assert!(
+            all_refused.contains("REFUSED") && !all_refused.contains("budget"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 833: three proposals REFUSED by this run's kind read as three \
+             set aside for budget. Naming a refused one again gets the same answer, and the row \
+             sent its reader to go and register something that is already registered: {all_refused}",
+        );
+        assert!(
+            all_budget.contains("re-aiming budget") && !all_budget.contains("REFUSED"),
+            "⛔⛔⛔ ...AND THE OTHER WAY. A run that spent its own re-aiming budget has findings a \
+             later run may take, and telling its reader they were refused stops them looking: \
+             {all_budget}",
+        );
+        assert!(
+            mixed.contains("REFUSED") && mixed.contains("re-aiming budget"),
+            "⚠⚠⚠ AND A RUN CAN BE BOTH. One total with two reasons under it is the shape the \
+             document chose on purpose, so the row has to carry the split rather than pick a \
+             winner: {mixed}",
+        );
+        // ⚠ THE CONTROL: the three are three DIFFERENT sentences. Without it a clause that printed
+        // one fixed line containing every needle above satisfies all three assertions.
+        assert!(
+            all_budget != all_refused && all_refused != mixed && all_budget != mixed,
+            "⛔ two of the three readings are byte-identical, so the split makes no difference to \
+             anybody reading:\n  budget: {all_budget}\n  refused: {all_refused}\n  mixed: {mixed}",
+        );
+        // ⛔⛔ AND AN OLDER DAEMON CLAIMS NO REASON AT ALL. The key is absent from a daemon that
+        // predates it and from every restored run, and a row that filled that in would be inventing
+        // the half of the fact it does not have — which is the defect, one build earlier.
+        let unsaid = why(3, None);
+        assert!(
+            unsaid.contains("set 3 next checkpoints aside")
+                && !unsaid.contains("REFUSED")
+                && !unsaid.contains("re-aiming budget"),
+            "⚠⚠⚠⚠ A DAEMON THAT DID NOT SAY MUST NOT BE ANSWERED FOR. The count is still the \
+             count; the reason is what an older build cannot say, and supplying one is how this \
+             clause came to name `at its depth cap` for three refusals: {unsaid}",
         );
     }
 

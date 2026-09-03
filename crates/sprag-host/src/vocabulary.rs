@@ -636,6 +636,13 @@ impl Verb {
         Self::Events,
         Self::Orchestrate,
         Self::Runs,
+        // ⛔⛔⛔ BESIDE `runs` AND NOT BESIDE `words` — register item 865's ⑷, and the position is
+        // load-bearing: this list is *the order the help prints them*, and `usage` walks it
+        // emitting a heading whenever the GROUP changes. An orchestration verb filed among the
+        // tool verbs makes `orchestration` appear TWICE, which
+        // `the_usage_is_the_shell_half_of_the_table` caught the moment `-p sprag-host --lib` was
+        // finally run against it.
+        Self::MyRuns,
         Self::CancelRun,
         Self::StandDown,
         Self::HoldRun,
@@ -650,7 +657,6 @@ impl Verb {
         Self::Doctor,
         Self::Words,
         Self::Disposition,
-        Self::MyRuns,
         Self::Daemons,
         Self::ShowGrammar,
         Self::DetachClient,
@@ -1791,7 +1797,13 @@ mod tests {
             // exactly as `kill-server` does. Filing it as not-built would have invited somebody to
             // close the gap by handing an agent a choice between daemons — this workspace's rule 6:
             // a category that means *nobody got to it yet* is the wrong home for a decision.
-            (38, 11, 22),
+            // ⚠ REGISTER ITEM 867: `disposition` is the TWELFTH not-built — an agent reading a run
+            // already gets what happens next in the row itself, and asking twice is a second
+            // authority; a tool for the whole table is a gap nobody has got to.
+            // ⚠ REGISTER ITEM 865's ⑷: `my-runs` is the THIRTEENTH, and it is the one on this list
+            // measured wanting: the session that could not say whether a run was its own was an
+            // AGENT, and it reached the answer through a shell because there is no tool.
+            (38, 13, 22),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1811,6 +1823,10 @@ mod tests {
                 "run",
                 "move-window",
                 "list-hooks",
+                // ⚠⚠ REGISTER ITEM 865's ⑷, and the ONE ENTRY ON THIS LIST THAT WAS MEASURED
+                // WANTING: the session that could not say whether a live run was its own was an
+                // AGENT, and it reached the answer through a shell because this mouth has no tool.
+                "my-runs",
                 // ⚠ A SUPERVISING agent standing another run down is the ask with no tool behind it.
                 // A run standing ITSELF down would be a different verb and a refusal, not this gap.
                 "stand-down",
@@ -1825,6 +1841,10 @@ mod tests {
                 // so a tool would be a second authority on one fact — but *what does this build
                 // speak* is still a legitimate ask, and nothing answers it on that mouth.
                 "words",
+                // ⚠ REGISTER ITEM 867, on `words`' terms one axis over: a run's row already says
+                // what happens next to THAT run, so a tool would ask twice — but *what does this
+                // build classify* is a legitimate ask with no tool behind it.
+                "disposition",
             ],
             "the agent surface's remaining gap, by name",
         );
@@ -1965,7 +1985,13 @@ mod tests {
             // for a sharper reason than `words`. Every other verb here asks A daemon something;
             // this one asks whether there is one at all, so a version of it that had to connect
             // first could not answer the question it exists for.
-            (63, 3, 5),
+            // ⚠ REGISTER ITEM 867: `disposition` is the 64th, and the THIRD needing no daemon —
+            // the ending→next-step classification is compiled in, and its reader is a push-time
+            // hook with no daemon to ask.
+            // ⚠ REGISTER ITEM 865's ⑷: `my-runs` is the 65th. It takes no subject at all, which is
+            // the only verb here of that shape: a caller may point at itself and may not name
+            // somebody else.
+            (65, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -2064,7 +2090,11 @@ mod tests {
             // ⚠ REGISTER ITEM 825: `daemons` is the 40th refusal, on `words`' terms and with one
             // more: a keystroke is pressed INSIDE a client that is already attached to a daemon,
             // so a client asking which daemons exist has answered its own question by being there.
-            (25, 6, 40),
+            // ⚠ REGISTER ITEM 867: `disposition` is the 41st refusal, on `words`' terms — it
+            // answers, and this client has no view for a table of endings.
+            // ⚠ REGISTER ITEM 865's ⑷: `my-runs` is the 42nd. Its reader is a conversation asking
+            // about ITSELF from a shell inside its own pane, and a pane presses no keys.
+            (25, 6, 42),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );

@@ -761,6 +761,10 @@ pub struct Outcome {
     /// ⚠⚠ [`None`] is *this plugin does not re-aim itself*; `Some(0)` is *every direction it took
     /// was checked*, which is a real and different claim.
     pub unchecked: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY OF [`deferred`](Self::deferred) THE CLASSIFIER REFUSED** — register
+    /// item 833, a SUBSET of that count and never a second total. See [`Plugin::unadmitted`], where
+    /// the measurement is: a running row has no ending word, and the mouth had been supplying one.
+    pub unadmitted: Option<u32>,
     /// ⚠⚠⚠ **WHAT THE RUN PUT INTO ITS PANE AND HOW MUCH OF IT WAS NEVER VISIBLE THERE** —
     /// register item 591, [`Progress::deliveries`] read at the end.
     ///
@@ -915,6 +919,9 @@ pub struct Driver {
     /// the line above's terms and read from the plugin at the same one place. ⚠ NEVER incremented
     /// here, for that field's reason exactly.
     unchecked: Option<u32>,
+    /// 🎯 **WHAT THE PLUGIN LAST SAID ITS REFUSED DEFERRALS CAME TO** — register item 833, held on
+    /// `deferred`'s terms and read from the plugin at the same one place. ⚠ NEVER incremented here.
+    unadmitted: Option<u32>,
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS DELIVERIES CAME TO** — register item 591, held for
     /// [`at`](Self::at)'s reason and read from the plugin at the same one place.
     ///
@@ -1016,6 +1023,10 @@ pub struct Progress {
     /// THE RUN IS STILL GOING on the line above's argument: a person watching a loop re-aim itself
     /// unchecked is the one who can still go and name a classifier for it.
     pub unchecked: Option<u32>,
+    /// 🎯 **AND HOW MANY OF THE PROPOSALS IT SET ASIDE WERE REFUSED** — register item 833, published
+    /// WHILE THE RUN IS STILL GOING for the reason it exists at all: the ending's word answers this
+    /// for a run that has ended, and a running row had nothing to answer it with.
+    pub unadmitted: Option<u32>,
     /// ⚠⚠⚠⚠⚠ **WHERE THE RUN IS** — the plugin's own machine position, from [`Plugin::at`].
     ///
     /// # The fact that existed only as prose — register item 543
@@ -1227,6 +1238,9 @@ impl Driver {
             // ⚠ `None` FOR `deferred`'s REASON ONE LINE UP — a run nobody has stepped has not been
             // asked, and *nobody was counting* is not *every direction it took was checked*.
             unchecked: None,
+            // ⚠ `None` FOR `deferred`'s REASON TWO LINES UP — *nobody was counting* is not
+            // *none of them were refused*.
+            unadmitted: None,
             deliveries: Deliveries::NONE,
             checks: Checks::NONE,
             banked: None,
@@ -1283,6 +1297,9 @@ impl Driver {
             // 🎯 AND HOW MANY OF THEM NOBODY CHECKED — register item 847, live for the reason
             // above it: the person watching is the one who can still go and name a classifier.
             unchecked: self.unchecked,
+            // 🎯 AND HOW MANY OF THEM THE CLASSIFIER REFUSED — register item 833, live for the
+            // reason the number exists: a running row has no ending word to say which reason it was.
+            unadmitted: self.unadmitted,
             at: self.at,
             waiting: self.waiting.clone(),
             place: self.place.clone(),
@@ -1650,6 +1667,9 @@ impl Driver {
                     // one whose machine may no longer read its own datamodel, and what a reader
                     // wants is the last answer it COULD give rather than the silence after it.
                     self.unchecked = plugin.unchecked().or_else(|| self.unchecked.take());
+                    // 🎯 AND HOW MANY OF ITS DEFERRALS WERE REFUSALS — register item 833, read in
+                    // the same breath and kept on the same terms as the two above.
+                    self.unadmitted = plugin.unadmitted().or_else(|| self.unadmitted.take());
                     // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS COMPLETE AND KEPT — register item 604, in
                     // the same breath as the three above and for their reason. It is asked EVERY
                     // step rather than once at the end because the last step is the one that ends
@@ -2074,6 +2094,7 @@ impl Driver {
             screened: self.screened,
             deferred: self.deferred,
             unchecked: self.unchecked,
+            unadmitted: self.unadmitted,
             deliveries: self.deliveries,
             checks: self.checks.clone(),
             banked: self.banked,

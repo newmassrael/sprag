@@ -268,6 +268,29 @@ pub const RUN_DEFERRED_KEY: &str = "deferred";
 /// not re-aim itself*, *every direction it took was checked*, and *it re-aimed on its agent's word
 /// alone this many times*.
 pub const RUN_UNCHECKED_KEY: &str = "unchecked";
+/// 🎯🎯🎯🎯🎯 **HOW MANY OF [`RUN_DEFERRED_KEY`] THE CLASSIFIER REFUSED** — a SUBSET of that count
+/// and never a second total. Register item 833.
+///
+/// # ⛔⛔⛔⛔⛔ The number was right and the sentence beside it was not
+///
+/// Two different things set a proposal aside: the run spent the re-aiming budget its own document
+/// gives it, and the kind's `successor_check` refused what its agent named. The document keeps ONE
+/// total deliberately — two would make every reader of a row add them up — and puts the reason in
+/// the ending's own word (`capped` against `unadmitted`).
+///
+/// **That reaches a run that has ENDED and no further.** Measured 2026-09-03 against the live loop
+/// daemon: run 189 was still going, had set THREE proposals aside, every one of them a refusal and
+/// not one at the cap, and the row a person reads said *"it set 3 next checkpoints aside at its
+/// depth cap"*. A running row has no ending word, so the mouth supplied the half of the fact the
+/// number does not carry.
+///
+/// ⚠⚠ The two want opposite things next: a proposal set aside at the cap is registered and the next
+/// run may take it; one the classifier refused will be refused again. That is why the split earns a
+/// number rather than a longer sentence.
+///
+/// ⚠ ABSENT / `0` / above are three claims, on [`RUN_DEFERRED_KEY`]'s exact rule: *this plugin sets
+/// nothing aside*, *it set some aside and none of them were refused*, and *this many were*.
+pub const RUN_UNADMITTED_KEY: &str = "unadmitted";
 /// 🎯🎯🎯🎯🎯 **WHICH OF ITS BOUNDS A RUN IS NOT SPENDING UNDER ITS OWN DOCUMENT'S** — register
 /// item 853. A LIST of the field names the caller took, `[]` when it took none, and ABSENT for a
 /// run whose plugin has no document authoring any bound.
@@ -5214,6 +5237,13 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
     if let Some(unchecked) = progress.unchecked {
         answer[RUN_UNCHECKED_KEY] = json!(unchecked);
     }
+    // 🎯🎯🎯🎯🎯 AND HOW MANY OF THOSE DEFERRALS WERE REFUSALS — register item 833. This is THE row
+    // the number exists for: the ending's word tells the two reasons apart for a run that has
+    // ended, and a running row had nothing to tell them apart with while the mouth beside it named
+    // one of them. See `RUN_UNADMITTED_KEY`.
+    if let Some(unadmitted) = progress.unadmitted {
+        answer[RUN_UNADMITTED_KEY] = json!(unadmitted);
+    }
     // ⚠⚠⚠⚠⚠ **AND WHERE THE RUN'S MACHINE IS — register item 662, and this renderer is the ONLY
     // way that fact can cross a process boundary.** A driver in another process reports through
     // here and nowhere else, so a key missing here is a fact the daemon cannot know about such a
@@ -6880,6 +6910,12 @@ pub fn outcome_to_json(outcome: &Outcome) -> Value {
     // hit a ceiling is exactly the run whose account must not read like a bounded one.
     if let Some(unchecked) = outcome.unchecked {
         answer[RUN_UNCHECKED_KEY] = json!(unchecked);
+    }
+    // 🎯🎯🎯 AND HOW MANY OF ITS DEFERRALS WERE REFUSALS — register item 833, on EVERY ending even
+    // though the closing word names the LAST one: a run that closed `capped` may have been refused
+    // three times on its way there, and the word names one of them.
+    if let Some(unadmitted) = outcome.unadmitted {
+        answer[RUN_UNADMITTED_KEY] = json!(unadmitted);
     }
     // WHICH CEILING, present only when there was one — so the key's presence is itself the claim,
     // the rule `run_to_json` follows for `opened_by`. `exhausted` with no ceiling beside it told a
@@ -10543,6 +10579,10 @@ mod tests {
                 screened: 0,
                 deferred,
                 unchecked,
+                // ⚠ `None` HERE AND ASSERTED ELSEWHERE — register item 833. This fixture is about
+                // the two counts it takes as arguments; the subset that says WHY has its own gate
+                // beside the row that reads it.
+                unadmitted: None,
                 waiting: None,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 checks: sprag_plugin::Checks::NONE,
@@ -13060,6 +13100,7 @@ mod tests {
             screened: 0,
             deferred: None,
             unchecked: None,
+            unadmitted: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
@@ -15176,6 +15217,7 @@ mod tests {
             screened: 0,
             deferred: None,
             unchecked: None,
+            unadmitted: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(banked),
@@ -15223,6 +15265,7 @@ mod tests {
             screened: 0,
             deferred: None,
             unchecked: None,
+            unadmitted: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(sprag_plugin::Banked {

@@ -1218,6 +1218,30 @@ pub trait Plugin {
         None
     }
 
+    /// 🎯🎯🎯🎯🎯 **HOW MANY OF [`deferred`](Self::deferred) THE CLASSIFIER REFUSED** — a SUBSET of
+    /// that count and never a second total. Register item 833.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The count was right and the sentence beside it was not
+    ///
+    /// Two different things set a proposal aside: the run spent its own re-aiming budget, and the
+    /// kind's `successor_check` refused what its agent named. The document keeps ONE total on
+    /// purpose — two would make every reader add them up — and puts the reason in the ending's word
+    /// (`capped` against `unadmitted`). **A run that is still going has no ending word.** Measured
+    /// 2026-09-03 on this repository's own loop: three proposals set aside, every one of them a
+    /// refusal, and the row said *"at its depth cap"*.
+    ///
+    /// ⚠⚠ The two want opposite things next, which is why the split is worth a number: a proposal
+    /// set aside at the cap is registered and the next run may take it; one the classifier refused
+    /// will be refused again.
+    ///
+    /// ⚠ [`None`] is **this plugin sets nothing aside**, on [`deferred`](Self::deferred)'s exact
+    /// terms — never `Some(0)` for a plugin with no such choice to make.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn unadmitted(&self) -> Option<u32> {
+        None
+    }
+
     /// ⚠⚠⚠ **THE RUN'S BUDGET IS SPENT — CAN YOU SAY WHERE IT GOT TO, AND HOW LONG DO YOU NEED?**
     ///
     /// Called by the [`Driver`] the moment one of ITS ceilings binds, before the run is ended, and
