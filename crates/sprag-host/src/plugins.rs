@@ -146,6 +146,31 @@ const RUN_ID_KEY: &str = "id";
 /// The answer key carrying the pane whose occupant asked for a run — absent for a run nobody
 /// claims, on [`sprag_terminal::Pane::opened_by`]'s terms.
 const RUN_OPENED_BY_KEY: &str = "opened_by";
+/// The answer key naming **WHICH CONVERSATION ASKED** for a run — absent when nothing recorded one,
+/// on `RUN_OPENED_BY_KEY`'s omit-rather-than-null terms.
+///
+/// # ⛔⛔⛔⛔⛔ Register item 865: the daemon HELD this and published a pane instead
+///
+/// `RunRecord::opened_by_session` has carried the asking conversation since register item 619, and
+/// the one reader it had converted it straight back into a SEAT (`PluginsExternal::seat_of`) so the
+/// row could carry `opened_by`. A pane is *where a run types*; the conversation is *who asked* —
+/// and only the second survives the pane closing, the seat being re-taken, or a daemon restart.
+/// Item 865 was opened after a promotion had to find a run's owner by MESSAGING THREE SESSIONS,
+/// while this string sat in the record the whole time.
+///
+/// ⚠⚠ **BESIDE `opened_by` RATHER THAN INSTEAD OF IT.** The two answer different questions and the
+/// seat is still the one every pane verb takes; replacing it would break a reader to fix a reader.
+///
+/// ⚠ **NO [`sprag_rpc::WIRE_PROTOCOL`] BUMP, on items 492 and 494's measurement**: an OPTIONAL key
+/// ADDED to an ANSWER leaves every existing client's requests well-formed and its parsing intact,
+/// where item 848 bumped for a REQUIRED argument that narrowed what a door accepts. A client that
+/// has never heard of this key reads the row exactly as it did before.
+///
+/// ⚠ `pub` where `RUN_OPENED_BY_KEY` beside it is not, deliberately: the CLI mouth that renders
+/// this reads the constant rather than re-spelling the string, which is the drift `RUN_WAITING_KEY`
+/// and its neighbours are `pub` to prevent. The older key's literal at that mouth is the shape this
+/// one is not repeating.
+pub const RUN_ASKED_BY_KEY: &str = "opened_by_session";
 /// The answer key naming WHICH BUILD DROVE a run — absent when nothing recorded one.
 ///
 /// # ⚠⚠⚠⚠⚠ What it is for: a walk is evidence about the daemon's build, not about the tree
@@ -5655,6 +5680,15 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
     if let Some(opener) = seat {
         entry[RUN_OPENED_BY_KEY] = json!(opener);
     }
+    // ⛔⛔⛔⛔⛔ AND WHO ASKED, WHICH IS NOT THE SEAT — register item 865. The line above resolves
+    // the conversation INTO a pane and then throws the conversation away; this publishes the thing
+    // the record actually holds. The seat can be `None` while this is `Some` (the asker's pane
+    // closed, or their session moved out of this workspace) and that is exactly the case item 865
+    // was opened for: a promotion about to kill somebody's run, with the owner's name sitting
+    // unread in the log. Read off `run` and not off `seat`, so the two cannot come to disagree.
+    if let Some(session) = &run.opened_by_session {
+        entry[RUN_ASKED_BY_KEY] = json!(session);
+    }
     // ⚠⚠⚠ AND THE BUILD FOLLOWS THE SAME OMIT-RATHER-THAN-NULL RULE, for a reason of its own:
     // absent means NOTHING RECORDED WHICH BUILD THIS WAS — a run restored from a log written before
     // the field existed — and a reader that filled that in with the daemon it is talking to would
@@ -7724,6 +7758,136 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE ROW CARRIES THE CONVERSATION, NOT ONLY THE SEAT IT RESOLVES TO** — register
+    /// item 865.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was wrong: the daemon held the answer and published a different question
+    ///
+    /// `RunRegistry::restore`'s rule 1 turns a surviving conversation back into a seat, and the run
+    /// row published THAT — `opened_by`, a pane. So the row answered *where this run types* when the
+    /// question a promotion has to ask is *who do I go and ask before I kill it*. Item 865 was
+    /// opened after that cost three sessions messaged and forty minutes, with the owner's name in
+    /// the record the whole time. The comment in the gate above said it in as many words —
+    /// *"the slot does not publish it"* — as a fact about the fixture rather than a defect.
+    ///
+    /// # ⚠⚠⚠⚠ The stage that matters is the one where the SEAT IS ABSENT
+    ///
+    /// A conversation nobody in this workspace is holding is exactly item 865's case: the asker's
+    /// pane closed, or their session moved. `seat_of` answers [`None`], `opened_by` is omitted, and
+    /// before this the row went **completely silent about a run whose owner was recorded and
+    /// reachable**. So this asserts the conversation crosses THERE first, before any pane is born
+    /// to hold it — a gate that only checked the seated case would be green on a build that
+    /// published the name only when the pane made it redundant.
+    ///
+    /// ⚠⚠ **AND THE CONTROL IS A RUN WITH NO CONVERSATION AT ALL**, which must carry no key:
+    /// omit-rather-than-null is what lets the CLI mouth tell *nobody asked* from *nobody wrote it
+    /// down*, and a row that stamped the key unconditionally would collapse those two back together.
+    ///
+    /// ⚠ It reads the SLOT, the product's own door, for the reason the gate above states: a test
+    /// calling the record directly is green whether or not anything ever publishes it.
+    #[test]
+    fn a_runs_row_names_the_conversation_that_asked_for_it() {
+        const ASKER: &str = "9c1f6b02-0000-4000-8000-0000000000ff";
+
+        // A predecessor's unfinished run that remembers WHO asked and has lost the seat — the shape
+        // `RunRegistry::restore` leaves behind, and the shape every promotion meets.
+        let log = crate::runs::RunLog {
+            version: crate::runs::RUN_LOG_VERSION,
+            runs: vec![
+                crate::runs::PersistedRun {
+                    opened_by_session: Some(ASKER.to_owned()),
+                    ..a_run_nobody_wrote_down(0)
+                },
+                // ⚠ THE CONTROL, in the same read: a run whose asker was never recorded.
+                a_run_nobody_wrote_down(1),
+            ],
+        };
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        lock(&registry).restore(&log);
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // ── THE CLAIM, WITH NO SEAT ANYWHERE ───────────────────────────────────────────────────
+        let listed = read_runs(&external);
+        assert!(
+            listed[0].get(RUN_OPENED_BY_KEY).is_none(),
+            "⛔ THE PREMISE: no pane in this workspace holds that conversation, so there is no seat \
+             to publish — without this the claim below could pass on a seated run: {:?}",
+            listed[0],
+        );
+        assert_eq!(
+            listed[0].get(RUN_ASKED_BY_KEY).and_then(Value::as_str),
+            Some(ASKER),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 865: a run whose asker is recorded must NAME them, and this \
+             is the stage where it matters — nobody is holding that conversation, so the seat is \
+             absent and this key is the only thing standing between a person and messaging three \
+             sessions to find out whose run they are about to kill: {:?}",
+            listed[0],
+        );
+        assert!(
+            listed[1].get(RUN_ASKED_BY_KEY).is_none(),
+            "⚠⚠ THE CONTROL: a run nobody claims must carry no key at all. A row that stamped it \
+             unconditionally would make *nobody asked* and *nobody wrote it down* one answer again, \
+             which is the collapse item 865's ⑴ is about: {:?}",
+            listed[1],
+        );
+
+        // ── AND THE SEATED CASE CARRIES BOTH, because they answer different questions ───────────
+        let seat = resumed_pane(&workspace, ASKER);
+        let listed = read_runs(&external);
+        assert_eq!(
+            (
+                listed[0].get(RUN_OPENED_BY_KEY).and_then(Value::as_u64),
+                listed[0].get(RUN_ASKED_BY_KEY).and_then(Value::as_str),
+            ),
+            (Some(seat.0), Some(ASKER)),
+            "⚠⚠⚠ BESIDE, NOT INSTEAD OF. The seat is what every pane verb takes and the \
+             conversation is who to ask; a build that published one and dropped the other would \
+             leave one of those two readers with nothing: {:?}",
+            listed[0],
+        );
+    }
+
+    /// A predecessor daemon's unfinished run with NOTHING optional recorded — the shape an older
+    /// log has, so a fixture that wants one field only has to name that one.
+    fn a_run_nobody_wrote_down(id: u64) -> crate::runs::PersistedRun {
+        crate::runs::PersistedRun {
+            id,
+            label: format!("agent pane={id}"),
+            request: None,
+            iterations: 1,
+            cost: None,
+            unit: None,
+            moved_at: None,
+            ended_at: None,
+            finished: false,
+            outcome: None,
+            ceiling: None,
+            output: None,
+            build: None,
+            driver: None,
+            driving: None,
+            opened_by_session: None,
+            at: None,
+            document: None,
+            stood_down: None,
+            cancelled_by: None,
+            deliveries: None,
+            banked: None,
+            briefed: None,
+            done_reason: None,
+            place: None,
+        }
+    }
+
     /// ⚠⚠⚠⚠⚠ **A RUN'S ASKER MAY BE SITTING IN A WINDOW THIS POOL IS NOT** — register item 689.
     ///
     /// # What was wrong, and why four hundred gates were blind to it
@@ -7812,10 +7976,14 @@ mod tests {
              above and still leave the asker unable to find its own run: {:?}",
             listed[0],
         );
-        // ⚠ READ OFF THE REGISTRY'S OWN RECORD and not off the slot above, because the slot does
-        // not publish it: the conversation is what a SUCCESSOR daemon re-derives the seat from
-        // (`RunRegistry::restore`'s rule 1), so the record is where it lives and where a reader
-        // that matters — a boot — will look for it.
+        // ⚠ READ OFF THE REGISTRY'S OWN RECORD and not off the slot above, because the RECORD is
+        // what this claim is about: the conversation is what a SUCCESSOR daemon re-derives the seat
+        // from (`RunRegistry::restore`'s rule 1), so it is where a reader that matters — a boot —
+        // will look for it.
+        // ⚠⚠ This used to say *"because the slot does not publish it"*, which was true and was a
+        // DEFECT rather than a property — register item 865. The slot publishes it now
+        // (`a_runs_row_names_the_conversation_that_asked_for_it`), and this read stays on the record
+        // because a boot is still the reader whose answer decides whether the run comes back.
         let recorded = lock(&registry).snapshot();
         assert_eq!(
             recorded[0].opened_by_session.as_deref(),

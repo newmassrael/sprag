@@ -6408,13 +6408,74 @@ fn render_why_it_ended(state: &Value) -> String {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHO ASKED FOR THIS RUN** — register item 865, and this clause is never empty.
+///
+/// # ⚠⚠⚠⚠⚠ Why silence was the defect, and not merely a missing name
+///
+/// A promotion kills every run the daemon is driving, so before one somebody has to find each run's
+/// owner and ask. Item 865 records what that cost when this row said nothing: **three sessions
+/// messaged, five messages, about forty minutes** — and the owner had been alive and reachable the
+/// whole time. The row's answer was `pane=786`, which is *where the run types*, not *who asked for
+/// it*; the two differ the moment a loop replaces its agent's session, and a pane that has closed
+/// answers nothing at all.
+///
+/// # ⚠⚠⚠⚠ The three states a reader must be able to tell apart
+///
+/// Before this, a run whose asker was recorded and a run whose asker was never recorded produced
+/// **byte-identical rows** — both silent — so a person could not tell *nobody asked* from *nobody
+/// wrote it down*, and had no way to learn which. Item 865's ⑴ says so in as many words: *「모른다」
+/// also is an answer; right now the cell is missing entirely, so we cannot even tell whether asking
+/// would help.* So:
+///
+/// * a conversation was recorded → name it, and the seat too when one is still holding it;
+/// * only a seat → say the pane AND say the conversation was not recorded, because that pane is a
+///   guess about an owner and a reader must know it is one;
+/// * neither → say so out loud.
+///
+/// ⚠⚠ **THE THIRD ARM IS THE ONE THAT IS TRUE TODAY.** Measured on the live loop daemon while this
+/// was written: **190 of 190 runs** carried no conversation, because the CLI door that launches them
+/// sends no opener at all (the MCP surface stamps one; `sprag orchestrate` has no way to). Printing
+/// nothing made a product-wide gap look like a per-run coincidence. ⚠ Do not carry that count
+/// forward — re-derive the predicate, which is what does not age:
+/// `jq '[.runs[] | select(.opened_by_session != null)] | length' <state>/*.runs.json`.
+///
+/// ⚠ It stays on the HEADING line, where the old pane clause already was: `render_run`'s own comment
+/// records that this repository's outer-loop watcher reads the STATUS as the line after the heading
+/// and the walk as the block's last line, so this must not become a detail line.
+fn render_who_asked(run: &Value) -> String {
+    let seat = run["opened_by"].as_u64();
+    match run[sprag_host::plugins::RUN_ASKED_BY_KEY].as_str() {
+        // The answer this row exists to give: a name somebody can be reached at.
+        Some(session) => match seat {
+            Some(pane) => format!("  (asked for by {session}, sitting in pane {pane})"),
+            // ⚠ THE CASE ITEM 865 WAS OPENED FOR. The conversation is recorded and no pane in this
+            // workspace is holding it — the asker's pane closed, or their session moved. The daemon
+            // resolves the seat on every read (`PluginsExternal::seat_of`), so this is not stale
+            // data; it is the honest answer, and it is still enough to go and ask.
+            None => format!("  (asked for by {session}, whose pane is no longer here)"),
+        },
+        // ⚠⚠ A SEAT WITHOUT A NAME, AND THE ROW SAYS BOTH HALVES. The pane is real but it is a
+        // guess about an owner: a seat is re-taken, and item 865's own measurement is that cwd and
+        // session age do not tell one occupant from another.
+        None => match seat {
+            Some(pane) => {
+                format!(
+                    "  (asked for by pane {pane}; no conversation recorded, so that pane is a guess)"
+                )
+            }
+            // ⚠ *asked for* verbatim, like the three arms above it: the clause a reader scans for
+            // is the same clause whatever it goes on to say, and its own gate reads that one token
+            // off all four rather than four spellings of the same idea.
+            None => "  (nobody recorded as having asked for this run)".to_owned(),
+        },
+    }
+}
+
 /// One run as a person reads it: what it is, who asked for it, and where it got to.
 fn render_run(run: &Value) -> String {
     let id = run["id"].as_u64().unwrap_or_default();
     let label = run["label"].as_str().unwrap_or("?");
-    let opener = run["opened_by"]
-        .as_u64()
-        .map_or_else(String::new, |pane| format!("  (asked for by pane {pane})"));
+    let opener = render_who_asked(run);
     let state = &run["state"];
     // ⚠⚠⚠⚠⚠ WHAT BECAME OF A PERSON'S STAND-DOWN — register item 594 — AND WHY IT IS NOT ON THE
     // HEADING AND NOT AT THE END. `render_build`'s doc names the constraint: this repository's own
@@ -10558,6 +10619,117 @@ mod tests {
                 "output": Value::Null,
             },
         })
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ROW A PERSON READS SAYS WHO ASKED FOR THE RUN, WHATEVER THE ANSWER IS** —
+    /// register item 865 at the one mouth that is not an agent's.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Silence was the defect, and it was silence about a product-wide gap
+    ///
+    /// A promotion kills every run a daemon drives, so somebody has to find each run's owner first.
+    /// This row's answer was `pane=786` — where the run TYPES — and no clause at all when nothing
+    /// was recorded. Item 865 measured what that cost: three sessions messaged, five messages,
+    /// forty minutes, and the owner alive and reachable throughout.
+    ///
+    /// **Measured on the live loop daemon while this gate was written: 190 of 190 runs carried no
+    /// conversation**, because the CLI door that launches them sends no opener. A row that printed
+    /// nothing made that look like a per-run coincidence instead of a door with no mouth. ⚠ Do not
+    /// carry the count — re-derive the predicate:
+    /// `jq '[.runs[] | select(.opened_by_session != null)] | length'` over the daemon's `*.runs.json`.
+    ///
+    /// # ⚠⚠⚠ The three rows must DIFFER, or this gate measures nothing
+    ///
+    /// *Named*, *seat only*, and *nothing recorded* are three different things to do next — go and
+    /// ask; go and look at that pane knowing it is a guess; ask the person. A renderer appending one
+    /// fixed sentence would satisfy *the clause is never empty* and leave all three exactly as
+    /// indistinguishable as it found them, which is the state item 865 was opened in.
+    ///
+    /// ⚠⚠ **AND THE SEATLESS NAMED ROW IS THE ONE THE ITEM IS ABOUT**: a conversation recorded with
+    /// no pane holding it. That is the promotion case, and a mouth that only spoke when a seat was
+    /// present would be silent exactly when it is needed.
+    ///
+    /// ⚠ Position asserted, not described — `render_run`'s constraint: the outer-loop watcher reads
+    /// the STATUS as the line after the heading, so this clause belongs ON the heading.
+    #[test]
+    fn the_row_a_person_reads_says_who_asked_for_the_run() {
+        const ASKER: &str = "pinion-66";
+
+        let asked_by = |session: Option<&str>, seat: Option<u64>| -> String {
+            let mut row = run_entry(&a_run_that_closed(None));
+            if let Some(session) = session {
+                row[sprag_host::plugins::RUN_ASKED_BY_KEY] = serde_json::json!(session);
+            }
+            if let Some(seat) = seat {
+                row["opened_by"] = serde_json::json!(seat);
+            }
+            render_run(&row)
+        };
+
+        let nobody = asked_by(None, None);
+        let seat_only = asked_by(None, Some(786));
+        let named_seatless = asked_by(Some(ASKER), None);
+        let named_seated = asked_by(Some(ASKER), Some(786));
+
+        // ── NEVER SILENT ────────────────────────────────────────────────────────────────────────
+        for (what, row) in [
+            ("nobody recorded", &nobody),
+            ("a seat and no name", &seat_only),
+            ("a name and no seat", &named_seatless),
+            ("a name and a seat", &named_seated),
+        ] {
+            assert!(
+                row.lines().next().unwrap_or_default().contains("asked for"),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 865 ⑴: every run row says who asked, INCLUDING when the \
+                 answer is that nobody wrote it down — *「모른다」도 답이다*. Until this, a run with \
+                 a recorded owner and a run with none produced identical rows, so a person could \
+                 not tell whether asking would help. This row is {what}: {row}",
+            );
+        }
+
+        // ── AND THE FOUR ANSWERS ARE FOUR ANSWERS ───────────────────────────────────────────────
+        assert!(
+            named_seatless.contains(ASKER) && named_seated.contains(ASKER),
+            "⛔⛔⛔⛔⛔ THE NAME ITSELF, verbatim, because it is what a person types to reach the \
+             owner. Read {named_seatless} and {named_seated}",
+        );
+        assert!(
+            !seat_only.contains(ASKER) && !nobody.contains(ASKER),
+            "⚠⚠ THE CONTROL: a row with no conversation recorded must not invent one. Without this \
+             a mouth printing a constant would pass every claim here: {seat_only} / {nobody}",
+        );
+        assert!(
+            seat_only.contains("786") && seat_only.contains("guess"),
+            "⚠⚠⚠ A SEAT WITHOUT A NAME IS A GUESS AND THE ROW SAYS SO. Item 865's own measurement \
+             is that neither cwd nor session age tells one occupant of a pane from another, so a \
+             bare pane number reads as an owner and is not one: {seat_only}",
+        );
+        assert_ne!(
+            named_seatless, named_seated,
+            "⚠⚠⚠⚠ THE SEATLESS NAMED ROW IS THE ONE ITEM 865 WAS OPENED FOR — the asker's pane \
+             closed or their session moved, `seat_of` answers None, and before this the row went \
+             silent about a run whose owner was recorded and reachable. If these two are identical \
+             the row is not saying that the pane is gone: {named_seatless}",
+        );
+        assert!(
+            named_seatless
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .contains("no longer here"),
+            "⚠⚠⚠ ...and it says which way it is gone, because *ask this conversation* and *look in \
+             this pane* are different next steps: {named_seatless}",
+        );
+
+        // ── ON THE HEADING, where `render_run`'s constraint puts it ─────────────────────────────
+        assert!(
+            !named_seated
+                .lines()
+                .skip(1)
+                .any(|line| line.contains("asked for by")),
+            "⚠⚠ `render_run`'s constraint as a predicate: this clause belongs on the heading, where \
+             the pane clause it replaces already was. A detail line here would move the outer-loop \
+             watcher, which reads the STATUS as the line right after the heading: {named_seated}",
+        );
     }
 
     /// A run that stopped on its peer's question, refused for `why`.

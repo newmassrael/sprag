@@ -1989,6 +1989,46 @@ fn killing_a_session_releases_its_viewers_and_a_new_session_of_that_name_inherit
     drop(attacher);
 }
 
+/// **ONE RUN'S BLOCK out of a `sprag runs` listing** — the loop driving `pane`, heading and all its
+/// detail lines, or a panic naming what was listed instead.
+///
+/// # ⚠⚠⚠⚠ One block and not the whole listing, which is not tidiness
+///
+/// `runs` prints every run the daemon holds, so a `contains` over the lot is satisfied by ANOTHER
+/// loop's row — and a control asserting some text is absent would then be asserting it about a
+/// listing that necessarily contains it. Measured: the first form of one of these gates failed
+/// exactly there.
+///
+/// # ⛔⛔⛔⛔⛔ Why the heading is matched by BOUNDARY and not by `ends_with` — register item 865
+///
+/// Five copies of this closure lived in this file and every one asked whether the heading ENDED
+/// with `ai_loop pane=N`. That was never a property of the row: `render_run` appends clauses after
+/// the label — `render_build`'s *(driven by build …)* has done so since it existed — and the five
+/// passed only because their fixtures ran the daemon's own build, where that clause is empty. Item
+/// 865 gave the heading a clause that is **never** empty (a run now always says who asked for it,
+/// even when the answer is that nobody wrote it down), and all five went red at once against a
+/// product that was right.
+///
+/// So the boundary is what the `ends_with` was actually reaching for: `pane=1` must not match the
+/// row for `pane=10`. That is checked directly here, which is both stronger than the old form and
+/// indifferent to what the renderer appends next.
+///
+/// ⚠ ONE definition rather than five, on this repository's own recorded rule: two copies of a rule
+/// drift, and five copies drifted into asserting something nobody meant.
+fn run_block_for(listed: &str, pane: u64) -> String {
+    let heading = format!("ai_loop pane={pane}");
+    listed
+        .split("\nrun ")
+        .map(|chunk| chunk.trim_end().to_owned())
+        .find(|chunk| {
+            chunk.lines().next().is_some_and(|head| {
+                head.split_once(&heading)
+                    .is_some_and(|(_, rest)| !rest.starts_with(|c: char| c.is_ascii_digit()))
+            })
+        })
+        .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
+}
+
 /// Poll `predicate` until it holds or `timeout` elapses. The CLI's per-client attachment reads
 /// depend on the daemon's async `on_disconnect`, so a populated/emptied assertion is polled, not
 /// asserted once.
@@ -5578,23 +5618,11 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
 
     // ── THE CLAIM: the row a person opens says it is not coming back, and names both builds ──
     //
-    // ⚠⚠⚠⚠ ONE RUN'S BLOCK AND NOT THE WHOLE LISTING, which is not tidiness: `runs` prints every
-    // run this daemon holds, so a `contains` over the lot is satisfied by the OTHER loop's row —
-    // and the control below would then be asserting the claim's own text is absent from a listing
-    // that necessarily contains it. Measured: the first form of this gate failed exactly there.
-    let block_for = |listed: &str, pane: u64| -> String {
-        let heading = format!("ai_loop pane={pane}");
-        listed
-            .split("\nrun ")
-            .map(|chunk| chunk.trim_end().to_owned())
-            .find(|chunk| {
-                chunk
-                    .lines()
-                    .next()
-                    .is_some_and(|head| head.trim_end().ends_with(&heading))
-            })
-            .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
-    };
+    // ⚠ ONE definition, at module scope — `run_block_for` owns both reasons now: why this reads ONE
+    // run's block rather than the whole listing (the control below would otherwise assert its own
+    // text is absent from a listing that necessarily contains it — measured, this gate's first form
+    // failed exactly there), and why the heading is matched by boundary rather than by `ends_with`.
+    let block_for = run_block_for;
     let listed = sprag(&sock, &["runs", "-t", "promoted"]);
     assert!(listed.ok, "{}", listed.stderr);
     let moved = block_for(&listed.stdout, promoted);
@@ -5950,19 +5978,9 @@ fn a_promotion_that_changes_the_documents_ends_the_drivers_it_is_not_bringing_ba
     );
 
     // ── THE PREMISE, ASSERTED FROM THE PRODUCT'S OWN MOUTH: neither run came back ────────────
-    let block_for = |listed: &str, pane: u64| -> String {
-        let heading = format!("ai_loop pane={pane}");
-        listed
-            .split("\nrun ")
-            .map(|chunk| chunk.trim_end().to_owned())
-            .find(|chunk| {
-                chunk
-                    .lines()
-                    .next()
-                    .is_some_and(|head| head.trim_end().ends_with(&heading))
-            })
-            .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
-    };
+    // ⚠ ONE definition, at module scope — see `run_block_for` for what these five copies had drifted
+    // into asserting, and why the heading is matched by boundary rather than by `ends_with`.
+    let block_for = run_block_for;
     let row_of = |session: &str, pane: u64| -> String {
         let listed = sprag(&sock, &["runs", "-t", session]);
         assert!(listed.ok, "{}", listed.stderr);
@@ -6337,19 +6355,9 @@ fn a_promotion_follows_a_loop_that_replaced_its_session_and_says_when_it_cannot(
         );
     }
 
-    let block_for = |listed: &str, pane: u64| -> String {
-        let heading = format!("ai_loop pane={pane}");
-        listed
-            .split("\nrun ")
-            .map(|chunk| chunk.trim_end().to_owned())
-            .find(|chunk| {
-                chunk
-                    .lines()
-                    .next()
-                    .is_some_and(|head| head.trim_end().ends_with(&heading))
-            })
-            .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
-    };
+    // ⚠ ONE definition, at module scope — see `run_block_for` for what these five copies had drifted
+    // into asserting, and why the heading is matched by boundary rather than by `ends_with`.
+    let block_for = run_block_for;
 
     // ── THE CONTROL FIRST: something came back, so *nothing was resumed* is off the table ────
     let control_back = wait_for(Duration::from_secs(45), || {
@@ -6834,19 +6842,9 @@ fn a_rescued_run_types_its_first_prompt_and_a_pane_that_came_back_a_shell_types_
     // of the OTHER arm's text: measured 2026-09-01, when register item 815 gave the shelled arm a
     // clause containing *put back by a boot* and the restored arm's control failed over a sentence
     // that was never on its row.
-    let block_for = |listed: &str, pane: u64| -> String {
-        let heading = format!("ai_loop pane={pane}");
-        listed
-            .split("\nrun ")
-            .map(|chunk| chunk.trim_end().to_owned())
-            .find(|chunk| {
-                chunk
-                    .lines()
-                    .next()
-                    .is_some_and(|head| head.trim_end().ends_with(&heading))
-            })
-            .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
-    };
+    // ⚠ ONE definition, at module scope — see `run_block_for` for what these five copies had drifted
+    // into asserting, and why the heading is matched by boundary rather than by `ends_with`.
+    let block_for = run_block_for;
     let restored_row = block_for(&sprag(&sock, &["runs", "-t", "restored"]).stdout, restored);
     assert!(
         restored_row.contains("prompt(s) delivered"),
@@ -7083,19 +7081,9 @@ fn a_rescued_runs_row_says_its_counters_are_a_predecessors_until_a_driver_here_s
     //
     // ⚠⚠ ONE RUN'S BLOCK AND NOT THE WHOLE LISTING: `sprag runs -t` prints every run this daemon
     // holds, so a reader that took the text whole would find the other arm's sentences in it.
-    let block_for = |listed: &str, pane: u64| -> String {
-        let heading = format!("ai_loop pane={pane}");
-        listed
-            .split("\nrun ")
-            .map(|chunk| chunk.trim_end().to_owned())
-            .find(|chunk| {
-                chunk
-                    .lines()
-                    .next()
-                    .is_some_and(|head| head.trim_end().ends_with(&heading))
-            })
-            .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
-    };
+    // ⚠ ONE definition, at module scope — see `run_block_for` for what these five copies had drifted
+    // into asserting, and why the heading is matched by boundary rather than by `ends_with`.
+    let block_for = run_block_for;
     let rescued_row = block_for(&sprag(&sock, &["runs", "-t", "quiet"]).stdout, quiet);
     assert!(
         rescued_row.contains("prompt(s) delivered"),
