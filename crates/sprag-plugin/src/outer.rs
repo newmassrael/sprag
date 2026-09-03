@@ -1725,15 +1725,22 @@ impl Briefing {
     /// invites the reader to invent one — and the measurement above says every scale they could
     /// invent is wrong. What it can honestly say is *this is what a composer will be asked to
     /// swallow, and nothing here can promise it will*.
+    ///
+    /// ⛔⛔⛔⛔ **IT DENIED THE SIZE AXIS WITHOUT NAMING ANY OTHER, AND THAT LEFT ITS READER
+    /// NOWHERE** — register item 856's ⑵. *"No size is known to be safe here"* is true and is the
+    /// whole of what this said; a person who reads it learns that the number in front of them
+    /// means nothing and is given nothing to look at instead. It now carries the axis that was
+    /// measured to move with the fold, from [`crate::ai_loop::THE_AXIS`] — the one place this
+    /// product says what folding is a function of, so its three notices cannot come to disagree.
     #[must_use]
     pub fn describe(&self) -> String {
         let (part, bytes) = self.largest();
         format!(
             "briefed with {} bytes ({part} is the largest at {bytes}), re-typed in full into every \
-             session this run opens — no size is known to be safe here, a 2,816-byte brief was \
-             measured folded away by a peer's composer, so read this run's delivery line for what \
-             became of it rather than trusting the number",
+             session this run opens — read this run's delivery line for what became of it rather \
+             than trusting the number. {}",
             self.bytes(),
+            crate::ai_loop::THE_AXIS,
         )
     }
 }
@@ -4183,7 +4190,13 @@ pub enum Retyped {
     /// falsy answer — [`Made`]'s rule one type up, for the same datamodel's reason.
     First,
     /// **THE SAME BYTES, AFTER A REPLACEMENT HAS ALREADY BEEN SPENT ON THEM** — carrying how many,
-    /// because the size is what a reader has to act on.
+    /// so the reader can tell WHICH prompt this was.
+    ///
+    /// ⛔⛔ **IT SAID *"because the size is what a reader has to act on"* until register item 856's
+    /// ⑵, and that was the wrong reason for the right field.** Size is measured not to be what
+    /// decides whether a composer folds — `pinion` run 191 had the same 224 bytes taken six times
+    /// by one session and refused on the seventh. The number identifies the prompt; it does not
+    /// tell anybody what to change.
     ///
     /// ⚠ The count is for the SENTENCE and never for a guard, [`Made::Something`]'s division
     /// exactly: what routes is the word.
@@ -4191,6 +4204,16 @@ pub enum Retyped {
 }
 
 impl Retyped {
+    /// **EVERY SHAPE THIS TYPE COMES IN**, so a gate over what the notices SAY has a population it
+    /// did not write itself — register item 856's ⑵.
+    ///
+    /// ⚠⚠ The payload is a sample and the gate must not assert on it: what is being held is the
+    /// SENTENCE each shape produces, and a hand-written list of the two functions would be exactly
+    /// the hand list this workspace has measured leaking (items 80 and 762). A third variant cannot
+    /// join in silence — [`Self::wire_str`] below is an exhaustive match and so is
+    /// `ai_loop::what_a_refused_question_says`, so adding one stops the build rather than the gate.
+    pub const EVERY_SHAPE: [Self; 2] = [Self::First, Self::Again(224)];
+
     /// **THE WORD THIS DRIVER PUBLISHES** as `_event.data.retyped`, or [`None`] for the arm that
     /// publishes `false`.
     ///
@@ -15272,8 +15295,25 @@ mod tests {
     /// ⛔⛔⛔ THE FOURTH CASE IS REGISTER ITEM 762's: `working_rules` is the KIND's text, so it is
     /// the one winner a caller cannot act on — and it was not in the list at all, which made this
     /// gate three-quarters of a comparison.
+    ///
+    /// # ⛔⛔⛔⛔⛔ ITS LAST ARM WAS A WORD, AND THE WORD WENT STALE — register item 856's ⑵
+    ///
+    /// It held that the sentence contains `"2,816"`, the smallest brief measured folded at the time
+    /// it was written, so that a reader could not take a small number for a safe one. The rule was
+    /// right and the instrument was not: `pinion` run 188 has since had **224** bytes refused by a
+    /// peer that had just swallowed 15,669, so 2,816 is no longer the sharp figure and a gate
+    /// pinned to it goes quietly out of date while staying green. It now holds the sentence against
+    /// [`crate::ai_loop::THE_AXIS`] — the constant the measurement is kept in — which is the same
+    /// trade this workspace made for its brief-block gates: **demand the SOURCE, not the word**,
+    /// because a gate naming a source is re-read when the source changes and a gate naming a word
+    /// is not.
+    ///
+    /// ⚠ The name says `names_the_axis` and no longer `names_the_part_to_shorten`. The door still
+    /// names the largest part — it is the number a caller compares against — but nothing here
+    /// prescribes shortening it any more, and a gate whose NAME prescribes what its subject must
+    /// not is how the next reader learns the wrong rule.
     #[test]
-    fn what_the_door_says_about_a_brief_names_the_part_to_shorten() {
+    fn what_the_door_says_about_a_brief_names_the_largest_part_and_the_axis() {
         for (part, briefing) in [
             (
                 "north_star",
@@ -15325,11 +15365,16 @@ mod tests {
                  part they can do something about. Said {said:?}",
             );
             assert!(
-                said.contains("2,816"),
-                "⛔⛔⛔⛔⛔ AND IT MUST REFUSE TO IMPLY A SAFE SIZE. Briefs at 9,025, 8,271, 4,532 \
-                 AND 2,816 bytes were all folded away by a composer, so a bare number here invites \
-                 the one reading the measurement refutes — *mine is small, so mine is fine*. \
-                 Said {said:?}",
+                said.contains(crate::ai_loop::THE_AXIS),
+                "⛔⛔⛔⛔⛔ AND IT MUST REFUSE TO IMPLY A SAFE SIZE — AND NAME WHAT MOVES INSTEAD. \
+                 Briefs at 9,025, 8,271, 4,532, 2,816 AND 224 bytes have all been folded away by a \
+                 composer, so a bare number here invites the reading the measurement refutes — \
+                 *mine is small, so mine is fine*. ⚠ REGISTER ITEM 856's ⑵: denying the size axis \
+                 is only half, and this door said only that half — it left its reader knowing the \
+                 number meant nothing and holding nothing else. Held against \
+                 `ai_loop::THE_AXIS` rather than against a byte figure copied here, because the \
+                 figures move as peers are measured and a copy of a measurement is a second thing \
+                 to keep in step. Said {said:?}",
             );
         }
     }

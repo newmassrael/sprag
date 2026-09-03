@@ -16311,12 +16311,22 @@ mod tests {
             // ⛔ 10,220 AND NOT 9,025 SINCE REGISTER ITEM 762: this fixture's `working_rules` is
             // 1,195 bytes and is typed into every session beside the three the caller wrote.
             // `reference` still wins at 7,000, which is what keeps this arm a comparison.
-            briefed.contains("10220") && briefed.contains("reference") && briefed.contains("2,816"),
+            //
+            // ⛔⛔ THE THIRD ARM WAS `"2,816"` UNTIL REGISTER ITEM 856's ⑵ — the smallest brief
+            // then measured folded, copied here as a word. `pinion` run 188 has since had 224
+            // bytes refused, so that figure is no longer the sharp one and a gate holding it
+            // would have stayed green while the caveat it stands for went out of date. It holds
+            // the SOURCE now, which is re-read whenever the measurement moves.
+            briefed.contains("10220")
+                && briefed.contains("reference")
+                && briefed.contains(sprag_plugin::ai_loop::THE_AXIS),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 663 / 719: what the door ACCEPTED did not reach a reader. \
              `orchestrate` answers a run id and points at this row, so a size that dies here is \
              item 719's second direction unpaid — the caller who wrote 9,025 bytes still has no \
              way to learn it, and the caveat that stops them reading a small number as a safe one \
-             goes with it. Said: {briefed:?}",
+             goes with it. ⚠ REGISTER ITEM 856's ⑵: that caveat is now two halves and this row \
+             must carry BOTH — that no size is safe, and what was measured to move instead. Said: \
+             {briefed:?}",
         );
         assert!(
             row[RUN_JOURNAL_KEY].as_array().is_some_and(

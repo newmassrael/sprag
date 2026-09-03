@@ -2296,6 +2296,22 @@ fn argument_help(name: &str) -> &'static str {
 
 /// The `orchestrate` tool's description, with one line per form — the alternation the flat schema
 /// above cannot carry, written from the same table.
+///
+/// # ⛔⛔⛔⛔ ITS BRIEF CLAUSE DENIES SIZE AND NAMES NOTHING, AND THAT IS A REGISTERED DEBT
+///
+/// *"There is no safe size to write to — briefs at 9,025 and at 2,816 bytes have both been measured
+/// folded away"* is true and is the whole of what it says: the number the caller is about to write
+/// means nothing, and no other is offered. That is register item 856's ⑵ exactly, one surface over
+/// — the three notices a RUN prints were repaired against `sprag_plugin::ai_loop::THE_AXIS`, and
+/// this one could not join them. **`sprag-plugin` is a DEV dependency of this crate on purpose**
+/// (see this crate's `Cargo.toml`: nothing from it reaches the runtime binary), and linking a
+/// statechart engine into a stdio server to share one English sentence is the coupling that comment
+/// exists to refuse. A second spelling here is the other thing the constant exists to refuse.
+///
+/// ⇒ Left as it stands and registered instead, because the fix is a HOME for that constant that
+/// both a run's notices and this door can reach at run time — a design question, not an edit. ⚠ Its
+/// two byte figures are already behind the measurement: `pinion` run 188 had 224 bytes refused by a
+/// peer that had just swallowed 15,669.
 fn orchestrate_description() -> String {
     let mut text = String::from(
         "Run a BOUNDED loop against panes and get a run id back immediately. This is what you \

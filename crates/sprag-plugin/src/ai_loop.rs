@@ -1001,22 +1001,8 @@ impl AiLoop {
                     Some(Noticed::Unasked {
                         attempts,
                         written,
-                        retyped: crate::outer::Retyped::Again(bytes),
-                    }) => format!(
-                        "it delivered the same {bytes} bytes of text that had already cost it a \
-                         session: {written} bytes went on the pane, it pressed {attempts} time(s), \
-                         and the composer would not take this text the second time either. \
-                         Replacing the session is the only recovery this loop has for a question \
-                         that was never asked, and it has now been spent on these exact bytes and \
-                         changed nothing — so what is left is the PROMPT. Shorten it, or split it: \
-                         a brief that a composer folds away is one nobody can submit, whichever \
-                         session it is typed into"
-                    ),
-                    Some(Noticed::Unasked {
-                        attempts,
-                        written,
-                        retyped: crate::outer::Retyped::First,
-                    }) => a_second_fold_with_the_budget_gone(*written, *attempts),
+                        retyped,
+                    }) => what_a_refused_question_says(*retyped, *written, *attempts),
                     Some(Noticed::Asking(unanswered)) => format!(
                         "the session it opened to replace the old one came up asking something \
                          nothing this run holds could answer ({unanswered:?}), so it was never \
@@ -1179,6 +1165,14 @@ impl AiLoop {
 /// longer means only *a fold happened earlier in this run* — it means **the session bought for that
 /// fold is still the one on the pane**. That is a narrower and much more useful fact for the reader:
 /// the two folds are not eighteen hours and four handovers apart, they are the same session's.
+///
+/// # ⛔⛔⛔⛔ AND WHAT IT DENIED WITHOUT REPLACING — register item 856's ⑵
+///
+/// It closed *"the size of this text is not known to be the cause and a smaller brief has folded
+/// the same way"*. Both clauses are true, and together they are the whole of what a reader was left
+/// with: the number in front of them means nothing, and nothing else was named. It now ends on
+/// [`THE_AXIS`] instead — the same constant the `Again` arm and [`crate::outer::Briefing::describe`]
+/// take, so this product's three fold notices cannot come to disagree about what was measured.
 fn a_second_fold_with_the_budget_gone(written: u64, attempts: u32) -> String {
     format!(
         "it put {written} bytes on the pane and pressed {attempts} time(s), and the question was \
@@ -1186,9 +1180,91 @@ fn a_second_fold_with_the_budget_gone(written: u64, attempts: u32) -> String {
          folded question, and the session it bought is STILL THE ONE ON THE PANE — nothing has \
          handed over since, so the peer holding this unsendable draft is the peer the earlier \
          replacement produced. What to look at is the run's journal, for that earlier fold and \
-         what was asked; the size of this text is not known to be the cause and a smaller brief \
-         has folded the same way"
+         what was asked. {THE_AXIS}"
     )
+}
+
+/// **WHAT THIS PRODUCT SAYS ABOUT WHAT MAKES A COMPOSER FOLD** — register item 856's ⑵, and the one
+/// place any of its notices may get that clause from.
+///
+/// # ⛔⛔⛔⛔⛔ Every sentence here used to point at SIZE, and the size axis is dead
+///
+/// Three notices reach a person when a prompt is folded away, and all three talked about the
+/// number of bytes — two by denying that any size is safe, one by telling its reader to shorten the
+/// text. **Measured, from three repositories and at three scales, the text is not what decides:**
+///
+/// | scale | measurement |
+/// |---|---|
+/// | between runs | the SAME 5,837-byte brief folded into a session that had just paid two items and LANDED into a freshly opened one ten minutes later, same daemon and same pane size (runs 179/180); run 183 then folded it again on the very pane that had taken it, once that pane's session was full |
+/// | inside one run | `pinion` run 188 delivered a **15,669-byte** brief and then had its **224-byte** turn prompt refused by two consecutive sessions — the same composer took seventy times more and baulked at the small one |
+/// | inside one session | `pinion` run 191 put the **same 224 bytes** in **six** times and had them taken, and was refused on the seventh — same session, same pane, same composer, same bytes |
+///
+/// ⇒ **The third row kills content as well as size**, and it is what makes *shorten it, or split
+/// it* an instruction nobody can follow: whatever it is shortened to goes in as bytes that have
+/// already been accepted six times.
+///
+/// # ⚠⚠ What it says instead, and what it deliberately does NOT claim
+///
+/// What MOVES with the fold is how full the receiving session is — `wz` run 187 folded on the very
+/// transition that reached `context_ceiling`, a new pane's first prompt landed 5 times out of 5,
+/// and a reused pane's first prompt folded 1 of 1. **That is a correlation and this sentence says
+/// so.** *Full sessions fold* would be a cause nobody has measured, and this file's neighbour
+/// (register item 830) is what a sentence outrunning its measurement costs.
+///
+/// ⚠ It is a CONSTANT rather than a sentence per notice, because the three notices differ in what
+/// the run did and not in what is known about folding. Three copies would drift, and the one that
+/// drifted would be the one somebody read.
+///
+/// # ⚠⚠⚠ Why it is `pub` when nothing outside this crate composes a notice
+///
+/// `sprag-host` renders the run row this brief line lands in, and its gate has to hold that row
+/// against something. Held against a byte figure copied into the assertion it goes stale in
+/// silence — which is what had happened: it pinned `2,816`, the smallest brief then measured
+/// folded, and `pinion` run 188 has since had **224** refused. Held against the SOURCE it is
+/// re-read whenever the measurement moves, which is register item 830's rule for a gate.
+///
+/// # ⛔⛔⛔⛔ AND A FOURTH NOTICE THAT COULD NOT TAKE IT — a registered debt, not an omission
+///
+/// `sprag-mcp`'s `orchestrate` description makes the same claim to a caller BEFORE any run exists,
+/// and still makes it the old way. It cannot take this constant: `sprag-plugin` is a DEV-only
+/// dependency of that crate by a documented decision, and a stdio server linking a statechart
+/// engine to share one English sentence is worse than the drift. **The fix is a HOME both can
+/// reach at run time**, which is a design question and is registered as its own item rather than
+/// improvised here.
+pub const THE_AXIS: &str = "What is not known is why: the size of this text is not the discriminator (a 15,669-byte brief \
+     was delivered by a peer that then refused 224 bytes twice) and neither are the bytes \
+     themselves (the same 224 bytes were taken six times by one session and refused on the \
+     seventh). What MOVES with a fold, measured and not explained, is HOW FULL THE RECEIVING \
+     SESSION IS, so look at what that session had already done rather than at this text";
+
+/// **THE SENTENCE A REFUSED QUESTION GETS**, one arm per [`crate::outer::Retyped`].
+///
+/// ⚠⚠ ONE FUNCTION over the whole type rather than two arms inside the notice `match`, for register
+/// item 762's stated reason and now for a second: these sentences are what a caller acts on, so
+/// they need a gate, and a gate cannot reach a `format!` buried in a `match` over a private slot
+/// without a fixture that would be product surface built for it. Over this, the population is the
+/// TYPE — `a_refused_questions_sentence_names_the_axis_and_prescribes_no_edit` walks
+/// [`crate::outer::Retyped::EVERY_SHAPE`] and a third variant cannot be added in silence, because
+/// this match is exhaustive and [`crate::outer::Retyped::wire_str`] is too.
+fn what_a_refused_question_says(
+    retyped: crate::outer::Retyped,
+    written: u64,
+    attempts: u32,
+) -> String {
+    match retyped {
+        crate::outer::Retyped::First => a_second_fold_with_the_budget_gone(written, attempts),
+        // ⛔⛔⛔⛔⛔ THIS ARM SAID *"so what is left is the PROMPT. Shorten it, or split it"* UNTIL
+        // register item 856's ⑵. It was the only notice here that told its reader what to DO, and
+        // what it told them to do cannot be done — `THE_AXIS` carries the measurement. A round is
+        // recorded following it: a brief cut from 1,700 to 717 bytes was then refused twice at 363.
+        crate::outer::Retyped::Again(bytes) => format!(
+            "it delivered the same {bytes} bytes of text that had already cost it a session: \
+             {written} bytes went on the pane, it pressed {attempts} time(s), and the composer \
+             would not take this text the second time either. Replacing the session is the only \
+             recovery this loop has for a question that was never asked, and it has now been spent \
+             on these exact bytes and changed nothing — so this run needs a person. {THE_AXIS}"
+        ),
+    }
 }
 
 impl Plugin for AiLoop {
@@ -16147,10 +16223,113 @@ mod tests {
         );
         assert!(
             !said.contains("Shorten it"),
-            "⛔⛔⛔⛔ REGISTER ITEM 762: the `Again` arm's remedy has leaked into this one. Shorten \
-             the brief is right when the SAME bytes were refused twice; here the bytes are new and \
-             a brief 26% of the size folded the same way half an hour later, so it is a guess \
-             dressed as an instruction: {said}",
+            "⛔⛔⛔⛔ REGISTER ITEM 762: this arm tells its reader to shorten the brief. ⚠ THE \
+             REASON HAS CHANGED AND THE RULE HAS NOT — register item 856's ⑵. 762 barred it here \
+             because it was the OTHER arm's remedy; it is now barred from both arms, because \
+             `pinion` run 191 had the same 224 bytes taken six times by one session and refused on \
+             the seventh, so shortening points at an axis nothing can act on: {said}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY SENTENCE A REFUSED QUESTION GETS NAMES THE AXIS AND PRESCRIBES NO EDIT** —
+    /// register item 856's ⑵.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The product printed a remedy nobody can follow, and a round followed it
+    ///
+    /// The `Again` arm ended *"so what is left is the PROMPT. Shorten it, or split it"*. It is the
+    /// only thing this loop's failure notices ever told a reader to DO, and the ledger records a
+    /// round doing it: a brief cut from 1,700 to 717 bytes, then refused twice at **363**. The
+    /// other two notices were not wrong so much as empty — they denied that any size is safe and
+    /// named nothing else, so a person who read one learned only that the number in front of them
+    /// meant nothing.
+    ///
+    /// **What killed the size axis is in [`super::THE_AXIS`], measured at three scales** — between
+    /// runs, inside one run (15,669 bytes delivered, 224 refused twice), and inside one session
+    /// (the same 224 bytes taken six times, refused on the seventh). The last of those kills the
+    /// CONTENT axis too, which is what makes *shorten it* unfollowable rather than merely unproven.
+    ///
+    /// # ⚠⚠⚠ Why the population is [`crate::outer::Retyped::EVERY_SHAPE`] and not two calls
+    ///
+    /// Because a gate naming the two functions it knows about is a hand list, and this workspace
+    /// has measured hand lists leaking (items 80 and 762). Walking the type means a third refusal
+    /// shape is judged the day it exists — and it cannot arrive in silence either, since
+    /// [`super::what_a_refused_question_says`] matches this type exhaustively.
+    ///
+    /// ⚠ The ceiling on what this may assert: it holds that the axis is NAMED, never that it is
+    /// true. `THE_AXIS` says *measured and not explained* on purpose — register item 830 is what a
+    /// sentence outrunning its measurement costs, and a gate demanding a cause here would push this
+    /// product back into exactly that.
+    #[test]
+    fn a_refused_questions_sentence_names_the_axis_and_prescribes_no_edit() {
+        /// What a reader is told to change when the product guesses instead of measuring. ⚠ Not an
+        /// exhaustive list of English and not meant to be: these are the phrasings this product has
+        /// actually shipped, and rule 6's escape hatch would be a gate that let a NEW one through
+        /// quietly — which the axis assertion below catches from the other side.
+        const PRESCRIBES_AN_EDIT: [&str; 4] =
+            ["Shorten it", "shorten it", "split it", "shorten that brief"];
+
+        // ⚠ ONE number for every shape, so what differs between the sentences is the SHAPE and not
+        // the arithmetic — the same rule the live gates in this workspace follow.
+        let sentences: Vec<(String, String)> = crate::outer::Retyped::EVERY_SHAPE
+            .into_iter()
+            .map(|shape| {
+                (
+                    format!("{shape:?}"),
+                    super::what_a_refused_question_says(shape, 2782, 1),
+                )
+            })
+            .collect();
+
+        // ⚠⚠⚠⚠ THE CONTROL, FIRST: a population of one would let a shape be dropped rather than
+        // fixed, and every assertion below is vacuous over an empty one.
+        assert!(
+            sentences.len() >= 2,
+            "⛔⛔⛔⛔⛔ `Retyped::EVERY_SHAPE` has stopped naming every refusal shape this product \
+             has. Two shapes reached a person when item 856's ⑵ was paid and this run walked {}. A \
+             gate that walks nothing passes forever.",
+            sentences.len(),
+        );
+
+        for (shape, said) in &sentences {
+            // ══ ⛔⛔⛔⛔⛔ NO SENTENCE MAY SEND ITS READER AT THE TEXT ═══════════════════════════
+            let prescribed: Vec<&str> = PRESCRIBES_AN_EDIT
+                .into_iter()
+                .filter(|edit| said.contains(edit))
+                .collect();
+            assert!(
+                prescribed.is_empty(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 856's ⑵: the `{shape}` notice tells its reader to \
+                 {prescribed:?}. Measured `pinion` run 191: the SAME 224 bytes were taken six \
+                 times by one session and refused on the seventh — so whatever the text is cut \
+                 down to has already been accepted by the composer that is now refusing it. A \
+                 round is recorded following this advice, cutting 1,700 bytes to 717 and being \
+                 refused twice at 363. Say what moves instead: {said}",
+            );
+
+            // ══ ⛔⛔⛔⛔ AND EVERY SENTENCE MUST NAME WHAT DOES ════════════════════════════════
+            //
+            // ⚠ Held against the CONSTANT rather than against a phrase copied here: two spellings
+            // of one fact are two things to keep in step, and the one that fell behind would be
+            // the one a person read. This is also what stops the notices disagreeing with the
+            // brief's own line, which takes the same constant.
+            assert!(
+                said.contains(super::THE_AXIS),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 856's ⑵: the `{shape}` notice does not carry \
+                 `THE_AXIS`, so it denies the size axis (or says nothing about it) and names \
+                 nothing a reader can look at instead. What is measured to MOVE with a fold is how \
+                 full the receiving session is — `wz` run 187 folded on the very transition that \
+                 reached `context_ceiling`, a new pane's first prompt landed 5 of 5, a reused \
+                 pane's folded 1 of 1. Got: {said}",
+            );
+        }
+
+        // ⚠⚠ AND THE SHAPES MUST STILL DIFFER. One constant appended to one sentence would satisfy
+        // every assertion above while telling both readers the same thing about two different runs
+        // — which is the defect register item 762 paid for, one axis over.
+        assert_ne!(
+            sentences[0].1, sentences[1].1,
+            "⛔⛔ two refusal shapes produced the SAME sentence, so the notice no longer says which \
+             road the run took and `THE_AXIS` has swallowed the arm it was appended to",
         );
     }
 
