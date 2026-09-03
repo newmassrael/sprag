@@ -545,6 +545,32 @@ pub const RUN_DELIVERED_KEY: &str = "delivered";
 /// `sprag_plugin::Deliveries::folded` — a run whose folds are all `LetGo` has hooks reporting
 /// nothing, which is a different diagnosis and earns its own key the day somebody measures it.
 pub const RUN_FOLDED_KEY: &str = "folded";
+/// ⛔⛔⛔⛔⛔ The answer key carrying **THOSE SAME FOLDS, SPLIT BY WHY THE LOOP WAS REFLECTING** —
+/// register item 856(1).
+///
+/// # ⛔⛔⛔⛔ A total can confirm what folding depends on and can never refute it
+///
+/// [`RUN_FOLDED_KEY`] above answers *how much of this run is invisible*, which is the question item
+/// 591 asked and it answers it well. Item 856 asks what folding is a FUNCTION of, and its
+/// discriminator is the `capacity` reflection — the one moment the loop knows the receiving session
+/// is full, because reaching the ceiling is what put it there. The register states its own
+/// refutation in one line: **one `capacity` reflection whose prompt LANDS**. A single total has no
+/// shape in which that fact can appear, so the count that existed was a person reading run logs and
+/// typing a tally into a register — a road that has already produced one retracted measurement.
+///
+/// # ⚠⚠⚠ Every reason, because `capacity` alone has no control group
+///
+/// `5 of 5 folded` under `capacity` is equally the evidence for *a full session folds* and for *a
+/// reflection's prompt folds*, and the second is live: a reflection's prompt is the longest this
+/// loop composes. The other reasons hold the prompt SHAPE constant and vary only what put the loop
+/// there, which is the comparison the axis needs — `sprag_plugin::FoldsByReason` carries the
+/// argument in full.
+///
+/// ⚠ An OBJECT keyed by the reason's word, beside [`RUN_CHECKS_KEY`]'s nested shape and for its
+/// reason: flat, these would be twelve keys spelling one table. An ADDED KEY on an answer, which is
+/// the change this surface's pin does not number — an older daemon omits it and the reader below
+/// answers [`None`] rather than filling in a table nobody reported.
+pub const RUN_FOLDS_BY_REASON_KEY: &str = "folds_by_reason";
 /// The answer key carrying **HOW MANY OF A RUN'S PROMPTS ARE SITTING IN A COMPOSER, TYPED AND NEVER
 /// ASKED** — register item 617, present beside [`RUN_DELIVERED_KEY`] and never alone.
 ///
@@ -5343,6 +5369,10 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         RUN_FOLDED_KEY: progress.deliveries.folded,
         RUN_UNSUBMITTED_KEY: progress.deliveries.unsubmitted,
         RUN_UNREPORTED_KEY: progress.deliveries.unreported,
+        // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1). Composed from
+        // `FoldsByReason::rows`, which walks `ReflectReason::ALL`, so a seventh reason arrives here
+        // with a row rather than being silently left out of a hand-written list.
+        RUN_FOLDS_BY_REASON_KEY: folds_by_reason_json(progress.folds_by_reason),
         RUN_CHECKS_KEY: {
             "asked": progress.checks.asked,
             "silent": progress.checks.silent,
@@ -5440,6 +5470,10 @@ pub struct ReportedProgress {
     /// What it said it had put into its pane — register items 663 / 617. [`None`] for a driver
     /// whose build knew no [`REPORTED_BESIDE_KEY`], never for one that has delivered nothing.
     pub deliveries: Option<sprag_plugin::Deliveries>,
+    /// ⛔⛔⛔ The split of those same folds by why it was reflecting — items 663 / 856(1). [`None`]
+    /// for a driver whose build knew no [`RUN_FOLDS_BY_REASON_KEY`], never for one that has never
+    /// reflected: that run reports a table of zero rows, which is a population and not a silence.
+    pub folds_by_reason: Option<sprag_plugin::FoldsByReason>,
     /// What it said its milestone checks came to — items 663 / 601. The TALLY; the sentence a
     /// reader gets is [`checks_sentence`]'s, composed here from this.
     pub checks: Option<sprag_plugin::Checks>,
@@ -5467,6 +5501,44 @@ pub struct ReportedProgress {
     /// rendered walk back into `StepRecord`s so the same function could render it again would be a
     /// second spelling of the walk with nothing asking for one.
     pub journal: Option<Vec<Value>>,
+}
+
+/// **THE SPLIT AS IT CROSSES THE WIRE** — one entry per reflect reason word, `{delivered, folded}`.
+///
+/// ⚠ Composed from `rows()` rather than from a list here, so [`sprag_plugin::ReflectReason::ALL`]
+/// stays the only authority on which reasons there are — register item 856(1) and this workspace's
+/// rule 6: a reason nobody classified must not quietly leave the table.
+fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
+    let mut out = serde_json::Map::new();
+    for (reason, row) in folds.rows() {
+        out.insert(
+            reason.word().to_owned(),
+            json!({ "delivered": row.delivered, "folded": row.folded }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// The reverse of [`folds_by_reason_json`] — see [`ReportedProgress::folds_by_reason`].
+///
+/// ⚠⚠ **WHOLE OR NOTHING**, the block below's rule for every compound value: a table half-read is a
+/// denominator somebody else's row is missing, and a comparison between rows is the entire point of
+/// this value. A word this build has no arm for makes the whole read fail rather than being
+/// dropped — the durable log drops it (a stored row is a fact from another build), but a LIVE peer
+/// naming a reason this daemon cannot spell is a BUILD SKEW, and answering a partial table for it
+/// would publish a comparison over a population this image never saw.
+fn folds_by_reason_in(beside: &Value) -> Option<sprag_plugin::FoldsByReason> {
+    let table = beside.get(RUN_FOLDS_BY_REASON_KEY)?.as_object()?;
+    let mut folds = sprag_plugin::FoldsByReason::NONE;
+    for (word, row) in table {
+        let reason = sprag_plugin::ReflectReason::named(word)?;
+        folds.restore(
+            reason,
+            small(row.get("delivered"))?,
+            small(row.get("folded"))?,
+        );
+    }
+    Some(folds)
 }
 
 /// Read a driver's progress report — see [`ReportedProgress`].
@@ -5497,6 +5569,9 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             unreported: small(beside.get(RUN_UNREPORTED_KEY))?,
         })
     })();
+    // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1), whole or nothing for the
+    // block's stated reason and one of its own: the value IS a comparison between rows.
+    let folds_by_reason = folds_by_reason_in(beside);
     let checks = (|| {
         let tally = beside.get(RUN_CHECKS_KEY)?;
         Some(sprag_plugin::Checks {
@@ -5575,6 +5650,7 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
                 .collect::<Option<Vec<_>>>()
         }),
         deliveries,
+        folds_by_reason,
         checks,
         driving: beside
             .get(RUN_DRIVING_KEY)
@@ -5868,6 +5944,17 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
         // half of is what that type exists to prevent.
         entry[RUN_UNSUBMITTED_KEY] = json!(deliveries.unsubmitted);
         entry[RUN_UNREPORTED_KEY] = json!(deliveries.unreported);
+    }
+    // ⛔⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1). Its own predicate rather
+    // than the triple's above, because the populations are different: a run may deliver a hundred
+    // prompts and reflect none, and a table of six empty rows on that row would be a comparison
+    // over nothing. ⚠ THE REPORT FIRST, for the triple's stated reason — an out-of-process run's
+    // cell is zeros for ever.
+    let folds = reported
+        .folds_by_reason
+        .unwrap_or(run.progress.folds_by_reason);
+    if !folds.is_empty() {
+        entry[RUN_FOLDS_BY_REASON_KEY] = folds_by_reason_json(folds);
     }
     // ⚠⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601,
     // beside the state for the two keys above's reason and absent when no claim was ever put to a
@@ -6624,6 +6711,44 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
     delivered_clause(deliveries)
 }
 
+/// ⛔⛔⛔⛔⛔ **WHICH REFLECTIONS THIS RUN'S FOLDS FELL ON**, or [`None`] for a run that reflected
+/// nothing — register item 856(1), and the sentence [`RUN_FOLDS_BY_REASON_KEY`] carries.
+///
+/// # ⚠⚠⚠⚠ It prints the rows that LANDED as loudly as the rows that folded
+///
+/// Item 856's stated refutation is *one `capacity` reflection whose prompt lands*, so a sentence
+/// that mentioned only the folds would be an instrument that can confirm the axis and never refute
+/// it — which is the whole defect this item pays. Every row with a denominator is printed, `0 of 4`
+/// included, and a reader comparing `capacity` against the rows beside it is doing the comparison
+/// the split exists for.
+///
+/// ⚠ A row with NO denominator is left out: *this reason never fired* is the absence of a
+/// population, and printing `0 of 0` beside real rows invites it to be read as a clean one.
+///
+/// ⚠⚠ Off the ROW's own JSON, [`delivery_sentence`]'s argument verbatim: the agent-facing mouth
+/// does not depend on the plugin crate, and a typed parameter would put the key-reading at every
+/// call site — two mouths spelling one projection twice.
+#[must_use]
+pub fn folds_by_reason_sentence(run: &Value) -> Option<String> {
+    let table = run.get(RUN_FOLDS_BY_REASON_KEY)?.as_object()?;
+    // ⚠⚠ WALKED IN `ReflectReason::ALL`'s ORDER and not the object's, so what a reader compares is
+    // stable between two runs — and so a reason this build cannot spell simply does not appear,
+    // rather than sorting itself into the middle of a comparison as an unexplained word.
+    let rows: Vec<String> = sprag_plugin::ReflectReason::ALL
+        .into_iter()
+        .filter_map(|reason| {
+            let row = table.get(reason.word())?;
+            let delivered = row.get("delivered")?.as_u64()?;
+            let folded = row.get("folded")?.as_u64()?;
+            (delivered > 0).then(|| format!("{} {folded} of {delivered}", reason.word()))
+        })
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    Some(format!("folds by why it reflected — {}", rows.join(" · "),))
+}
+
 /// What became of the prompts this run actually DELIVERED — [`delivery_sentence`]'s fold reading,
 /// lifted out so the wedged clause above can carry it too.
 ///
@@ -7280,6 +7405,7 @@ mod tests {
             stood_down: None,
             cancelled_by: None,
             deliveries: None,
+            folds_by_reason: None,
             banked: None,
             briefed: None,
             done_reason: None,
@@ -7814,6 +7940,7 @@ mod tests {
                 // ⚠ And this fixture IS an older log, so item 606's field is absent by the same
                 // argument as `stood_down` above: it reads as `0 of 0`, which claims nothing.
                 deliveries: None,
+                folds_by_reason: None,
                 // ⚠ And item 616's, for that reason exactly — absent reads as *nobody counted*,
                 // which is the honest answer for a log written before the column existed.
                 banked: None,
@@ -7993,6 +8120,7 @@ mod tests {
             stood_down: None,
             cancelled_by: None,
             deliveries: None,
+            folds_by_reason: None,
             banked: None,
             briefed: None,
             done_reason: None,
@@ -8202,6 +8330,7 @@ mod tests {
                 stood_down: None,
                 cancelled_by: None,
                 deliveries,
+                folds_by_reason: None,
                 banked: None,
                 briefed: None,
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
@@ -8327,6 +8456,99 @@ mod tests {
             both.contains("do NOT go and look at that pane"),
             "⛔⛔⛔⛔ REGISTER ITEM 762: a run with both readings dropped the swallowed one, which is \
              the half a reader gets wrong: {both:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SPLIT SURVIVES THE WIRE, AND IT PRINTS THE ROWS THAT *LANDED*** — register
+    /// item 856(1), held at the two places a reader meets it.
+    ///
+    /// # ⛔⛔⛔⛔ An instrument that only mentions folds cannot refute the thing it measures
+    ///
+    /// Item 856's whole discriminator is the `capacity` reflection and it states its own refutation
+    /// in one line: **one such reflection whose prompt LANDS**. So a sentence that named only the
+    /// reasons that folded would be an instrument that can confirm the axis and never contradict
+    /// it — the register would go on reading `1/1` for ever, which is exactly where it has stood.
+    /// The arm below drives the refuting shape (`3 of 3` beside `0 of 4`) and asserts the landing
+    /// row is printed, in the reader's own words.
+    ///
+    /// ⚠ Driven over the JSON, `a_swallowed_prompt_and_a_wedged_one_do_not_get_the_same_instruction`'s
+    /// stated reason one test up: the split is worth nothing unless it survives the wire, and the
+    /// wire is where a reader meets it.
+    #[test]
+    fn the_split_of_a_runs_folds_survives_the_wire_and_names_what_landed() {
+        let mut live = sprag_plugin::FoldsByReason::NONE;
+        // Three capacity reflections, all folded — the shape the register has recorded by hand.
+        for _ in 0..3 {
+            live.record(sprag_plugin::ReflectReason::Capacity, true);
+        }
+        // ⚠⚠⚠ AND FOUR BUDGET REFLECTIONS THAT LANDED, which is the CONTROL the axis needs: the
+        // prompt is the same shape either way, so a row that folds beside a row that does not is
+        // the comparison item 856 has never had.
+        for _ in 0..4 {
+            live.record(sprag_plugin::ReflectReason::Budget, false);
+        }
+
+        // ══ ① THE WIRE ═════════════════════════════════════════════════════════════════════════
+        let beside = json!({ RUN_FOLDS_BY_REASON_KEY: folds_by_reason_json(live) });
+        assert_eq!(
+            folds_by_reason_in(&beside),
+            Some(live),
+            "⛔⛔⛔⛔ REGISTER ITEM 856(1): the split does not survive its own round trip, so what \
+             a reader is shown is not what the run counted",
+        );
+
+        // ── AND A WORD THIS BUILD CANNOT SPELL REFUSES THE TABLE WHOLE ──
+        //
+        // ⚠⚠ Not dropped. A live peer naming a reason this daemon has no arm for is a BUILD SKEW,
+        // and answering a partial table for it would publish a comparison over a population this
+        // image never saw — which is the one reading the split must never produce.
+        let mut skewed = folds_by_reason_json(live);
+        skewed["a-reason-this-build-has-no-arm-for"] = json!({"delivered": 9, "folded": 9});
+        assert_eq!(
+            folds_by_reason_in(&json!({ RUN_FOLDS_BY_REASON_KEY: skewed })),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): a table carrying a reason this build cannot spell was \
+             read anyway, so a comparison between rows is being published over a population that \
+             is missing one. A skew must refuse the value, not shrink it",
+        );
+
+        // ══ ② THE MOUTH ════════════════════════════════════════════════════════════════════════
+        let said = folds_by_reason_sentence(&json!({
+            RUN_FOLDS_BY_REASON_KEY: folds_by_reason_json(live),
+        }))
+        .expect("a run that reflected has a split to say");
+        assert!(
+            said.contains("capacity 3 of 3"),
+            "⚠⚠⚠ THE PREMISE OF THE ARM BELOW: the folding row must be printed, or *the landing \
+             row is printed too* is a claim about a sentence that says nothing: {said:?}",
+        );
+        assert!(
+            said.contains("budget 0 of 4"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): the reflections that LANDED are not in the sentence, \
+             so the only shape that can refute this item's axis is the one shape the reader is \
+             never shown. An instrument that prints its confirmations and swallows its \
+             counter-examples is why `1/1` has stood unchallenged: {said:?}",
+        );
+
+        // ── AND A REASON THAT NEVER FIRED IS NOT PRINTED AS A CLEAN ONE ──
+        //
+        // ⚠⚠⚠ `0 of 0` beside `0 of 4` reads as a second reason that never folds, and a reader
+        // comparing rows would be comparing a population against an absence. Rule 6 the other way
+        // up: the escape here is not a pass, it is an invented row.
+        assert!(
+            !said.contains("milestone"),
+            "⛔⛔⛔⛔ REGISTER ITEM 856(1): a reason with no deliveries is printed anyway, so an \
+             absence of population reads as a clean bill beside rows that have one: {said:?}",
+        );
+
+        // ── AND A RUN THAT NEVER REFLECTED SAYS NOTHING AT ALL ──
+        assert_eq!(
+            folds_by_reason_sentence(&json!({
+                RUN_FOLDS_BY_REASON_KEY: folds_by_reason_json(sprag_plugin::FoldsByReason::NONE),
+            })),
+            None,
+            "⚠⚠⚠ a run that reflected nothing has no comparison to publish, and six empty rows \
+             on its row would be a table over nothing",
         );
     }
 
@@ -10640,6 +10862,7 @@ mod tests {
                 unadmitted: None,
                 waiting: None,
                 deliveries: sprag_plugin::Deliveries::NONE,
+                folds_by_reason: sprag_plugin::FoldsByReason::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
@@ -15667,6 +15890,7 @@ mod tests {
                     stood_down: None,
                     cancelled_by: None,
                     deliveries: None,
+                    folds_by_reason: None,
                     banked: None,
                     briefed: None,
                     // ⚠ Item 706's field, absent for the reason every field above it is.

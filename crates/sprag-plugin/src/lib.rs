@@ -236,8 +236,9 @@ pub use driver::{
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use outer::{
     AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, Briefing, Counted, DoneReason,
-    HOLD_TAKES_EFFECT, HOLD_WITHIN_KEY, INNER_SESSION_ENDS, LoopPlace, Made, NotResumed,
-    NotScreenable, Noticed, OuterLoop, Pumped, Retyped, STAND_DOWN_TAKES_EFFECT, refusal_in_words,
+    FoldsByReason, FoldsUnder, HOLD_TAKES_EFFECT, HOLD_WITHIN_KEY, INNER_SESSION_ENDS, LoopPlace,
+    Made, NotResumed, NotScreenable, Noticed, OuterLoop, Pumped, ReflectReason, Retyped,
+    STAND_DOWN_TAKES_EFFECT, refusal_in_words,
 };
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{

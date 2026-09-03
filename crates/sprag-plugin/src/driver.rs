@@ -929,6 +929,11 @@ pub struct Driver {
     /// evidence a delivery was accepted on is visible only inside the thing that delivered, so a
     /// second counter out here would be a number that agrees until the day it does not.
     deliveries: Deliveries,
+    /// ⛔⛔⛔ **AND THE SPLIT OF THOSE FOLDS BY WHY THE LOOP WAS REFLECTING** — register item
+    /// 856(1), held and read exactly as [`deliveries`](Self::deliveries) is, and never added to
+    /// here for that field's reason: the split and the total are two readings of ONE event, and
+    /// only the thing that delivered saw it.
+    folds_by_reason: crate::outer::FoldsByReason,
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS INDEPENDENT CHECKS CAME TO** — register item 601, held
     /// and read exactly as [`deliveries`](Self::deliveries) is, and never added to here.
     checks: Checks,
@@ -1085,6 +1090,18 @@ pub struct Progress {
     /// ⚠ [`Deliveries::NONE`] for a plugin that delivers no composed prompt, which is three of the
     /// four bundled ones; see that constant for why the absence is a claim rather than a default.
     pub deliveries: Deliveries,
+    /// ⛔⛔⛔⛔⛔ **THOSE SAME FOLDS, SPLIT BY WHY THE LOOP WAS REFLECTING** —
+    /// [`Plugin::folds_by_reason`], register item 856(1).
+    ///
+    /// The field above is a TOTAL, and item 856 is about what folding is a FUNCTION of — a question
+    /// no total can answer either way. The register's own refutation is *one `capacity` reflection
+    /// whose prompt lands*, and this is the only shape that fact can arrive in: the walk says it
+    /// per line and the journal beside this is bounded, so a long run has already dropped the lines
+    /// that carried it.
+    ///
+    /// ⚠ [`crate::outer::FoldsByReason::NONE`] for every plugin that does not reflect — every row
+    /// `0 of 0`, which is *no reason ever fired* and not *nothing folded*.
+    pub folds_by_reason: crate::outer::FoldsByReason,
     /// ⚠⚠⚠⚠⚠ **WHICH PANE THIS RUN IS DRIVING RIGHT NOW** — [`Plugin::driving`], register item 540.
     ///
     /// # The fact that was published only as prose inside a name
@@ -1242,6 +1259,7 @@ impl Driver {
             // *none of them were refused*.
             unadmitted: None,
             deliveries: Deliveries::NONE,
+            folds_by_reason: crate::outer::FoldsByReason::NONE,
             checks: Checks::NONE,
             banked: None,
             briefed: None,
@@ -1304,6 +1322,7 @@ impl Driver {
             waiting: self.waiting.clone(),
             place: self.place.clone(),
             deliveries: self.deliveries,
+            folds_by_reason: self.folds_by_reason,
             checks: self.checks.clone(),
             banked: self.banked.clone(),
             briefed: self.briefed,
@@ -1650,6 +1669,11 @@ impl Driver {
                     // `Step` means it cannot be forgotten at one of the twenty-odd sites that
                     // build one, where a forgotten fold reads as a prompt somebody can go and see.
                     self.deliveries = plugin.deliveries();
+                    // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1), in the same
+                    // breath as the total it is a split of, which is stronger than the rule above:
+                    // read a step apart, the split could publish a denominator the total does not
+                    // have, and a ratio nobody can reproduce is worse than no ratio.
+                    self.folds_by_reason = plugin.folds_by_reason();
                     // ⚠⚠⚠ AND WHAT ITS CHECKS CAME TO — register item 601, in the same breath as
                     // the two above for the same reason: three totals read at three moments are
                     // three facts about three moments, and a reader weighing a `converged` needs

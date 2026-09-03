@@ -4460,6 +4460,7 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 stood_down: None,
                 cancelled_by: None,
                 deliveries: None,
+                folds_by_reason: None,
                 banked: None,
                 briefed: None,
                 done_reason: None,

@@ -2327,6 +2327,137 @@ impl ReflectReason {
     }
 }
 
+/// **HOW MANY PROMPTS ONE REFLECT REASON WAS ASKED UNDER, AND HOW MANY OF THEM FOLDED** — one row
+/// of [`FoldsByReason`], and register item 856(1).
+///
+/// ⚠ The denominator travels with the numerator for [`crate::plugin::Deliveries`]' stated reason:
+/// *three folds* is every prompt of this reason invisible if it was asked three times, and a
+/// rounding error if it was asked two hundred. Here it is sharper still, because the whole value of
+/// the split is a COMPARISON between rows, and a row with no denominator cannot be compared with
+/// one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FoldsUnder {
+    /// How many prompts this run delivered while reflecting for this reason.
+    pub delivered: u32,
+    /// How many of [`delivered`](Self::delivered) the peer's composer folded away.
+    pub folded: u32,
+}
+
+/// ⛔⛔⛔⛔⛔ **WHETHER A PROMPT FOLDS DEPENDS ON WHY THE LOOP WAS REFLECTING — THE SPLIT NOTHING
+/// PUBLISHED** — register item 856(1).
+///
+/// # ⛔⛔⛔⛔⛔ The instrument counted the confirming case and could not count the refuting one
+///
+/// Item 856 says a composer folds a prompt as a function of **how full the receiving session is**,
+/// and its whole discriminator is the `capacity` reflection — the one moment the loop KNOWS the
+/// session is full, because that is what put it there. The register's own words: *"판별자는
+/// `capacity` 반성 하나다"*, and *"반례 하나가 곧 반증"* — one capacity reflection whose prompt
+/// LANDS ends the hypothesis.
+///
+/// **And nothing could record that reflection.** [`crate::plugin::Deliveries`] counts folds for the
+/// whole run, which cannot be split by anything; the walk names the reason and the fold on one
+/// line, but the journal is bounded to its last steps (see `crate::driver::Progress::journal`) — so
+/// a 123-iteration run has already lost its early reflections by the time anyone reads it. The
+/// count that existed was therefore a PERSON reading run logs and typing a tally into a register,
+/// and that road has already produced one retracted measurement.
+///
+/// # ⚠⚠⚠⚠⚠ Why every reason and not `capacity` alone, which is what was asked for
+///
+/// **A `capacity`-only counter has no control group, so it cannot separate an axis — it can only
+/// confirm one.** `5/5 folded` under `capacity` is equally the evidence for *a full session folds*
+/// and for *a reflection's prompt folds*, and the second is a live rival: a reflection's prompt is
+/// the longest this loop composes. The reasons beside it are the control, and they are a GOOD one —
+/// every reflection delivers the same shape of prompt, so comparing rows holds the prompt constant
+/// and varies only what put the loop there. `capacity` fires because the session is full;
+/// `budget` fires on a cadence and `milestone` on an agent's word, at whatever fullness the session
+/// happens to be at.
+///
+/// ⚠⚠ The register warns that *"모집단을 넓히면 이 축이 흐려진다"* — broadening the population blurs
+/// the axis — and it is right about the thing it was warning against, which is POOLING every
+/// reflection into one ratio. A split does the opposite: no row is added to another, and the
+/// comparison between rows is the whole instrument.
+///
+/// # ⚠⚠⚠ Rule 6: an added reason cannot go uncounted
+///
+/// The rows are [`ReflectReason::ALL`], so a seventh reason arrives with a row rather than falling
+/// into a default nobody reads. The register's own rule — *unclassified is RED, not a pass* — is
+/// what a hand-maintained list of interesting reasons would have broken on the first addition.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FoldsByReason {
+    /// One row per [`ReflectReason::ALL`], in that array's order.
+    ///
+    /// ⚠ Private, so the only way in and out is by REASON — an index is a second spelling of the
+    /// order this array happens to be in, and a caller that wrote one would be free to disagree
+    /// with `ALL` about which row is which.
+    under: [FoldsUnder; ReflectReason::ALL.len()],
+}
+
+impl FoldsByReason {
+    /// **NOTHING REFLECTED YET** — every row zero, which is what a run that has not reflected has
+    /// honestly counted.
+    pub const NONE: Self = Self {
+        under: [FoldsUnder {
+            delivered: 0,
+            folded: 0,
+        }; ReflectReason::ALL.len()],
+    };
+
+    /// Where `reason`'s row lives — the one place an index is derived, so [`ReflectReason::ALL`] is
+    /// the only authority on the order.
+    fn at(reason: ReflectReason) -> usize {
+        ReflectReason::ALL
+            .iter()
+            .position(|it| *it == reason)
+            .expect("ReflectReason::ALL is every arm")
+    }
+
+    /// **RECORD ONE DELIVERY MADE WHILE REFLECTING FOR `reason`**, and whether its paste folded.
+    ///
+    /// ⚠ `folded` is passed rather than re-derived: the caller has already classified this delivery
+    /// through [`crate::deliver::Witnessed::folded_away`], and a second classification here would be
+    /// a second authority on which roads are folds — the defect this file pays for repeatedly.
+    pub fn record(&mut self, reason: ReflectReason, folded: bool) {
+        let row = &mut self.under[Self::at(reason)];
+        row.delivered = row.delivered.saturating_add(1);
+        if folded {
+            row.folded = row.folded.saturating_add(1);
+        }
+    }
+
+    /// **PUT A ROW BACK AS IT WAS WRITTEN DOWN** — for a host reading a run out of its durable log.
+    ///
+    /// ⚠⚠ Separate from [`record`](Self::record) rather than a loop over it, and the difference is
+    /// what each one may be trusted with: `record` is the LIVE act, one delivery at a time, and
+    /// anything that could reach it twice would double a run's own count. This is a RESTORE of a
+    /// number somebody already counted, so it assigns rather than adds — and a caller that used
+    /// `record` for it would turn `3 of 3` into a run that reflected three times more than it did.
+    pub fn restore(&mut self, reason: ReflectReason, delivered: u32, folded: u32) {
+        self.under[Self::at(reason)] = FoldsUnder { delivered, folded };
+    }
+
+    /// What `reason`'s row says.
+    #[must_use]
+    pub fn under(&self, reason: ReflectReason) -> FoldsUnder {
+        self.under[Self::at(reason)]
+    }
+
+    /// Every row with its reason, in [`ReflectReason::ALL`]'s order — **including the empty ones**,
+    /// because a reason that never fired and a reason that fired and never folded are different
+    /// facts and a reader has to be able to tell them apart.
+    pub fn rows(&self) -> impl Iterator<Item = (ReflectReason, FoldsUnder)> + '_ {
+        ReflectReason::ALL
+            .into_iter()
+            .map(|reason| (reason, self.under(reason)))
+    }
+
+    /// Whether anything has been counted at all — a run that has never reflected, so the split has
+    /// nothing to say rather than saying every reason is clean.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.under.iter().all(|row| row.delivered == 0)
+    }
+}
+
 /// **A COUNT A DOCUMENT MAY ALSO DECLINE** — read off a datamodel by `OuterLoop::authored_count`.
 ///
 /// ⚠ The reader is spelled rather than LINKED: it is crate-private and this type is public, so an
@@ -5595,6 +5726,17 @@ pub struct OuterLoop {
     /// [`Told`] is built on: the record and the answer are one act, so *what this run delivered*
     /// and *what its walk said about it* cannot drift apart.
     deliveries: crate::plugin::Deliveries,
+    /// ⛔⛔⛔⛔⛔ **THE SAME FOLDS, SPLIT BY WHY THE LOOP WAS REFLECTING** — register item 856(1),
+    /// answered through [`Plugin::folds_by_reason`](crate::Plugin).
+    ///
+    /// The field above is a TOTAL and a total cannot be compared with anything, so it can confirm
+    /// item 856's axis and never refute it. See [`FoldsByReason`] for why the split is over every
+    /// reason and not the one under test.
+    ///
+    /// ⚠ Written at the same ONE place as the total beside it, and in the same act: two counters
+    /// over one event, incremented at two sites, is exactly the drift both their docs argue
+    /// against.
+    folds: FoldsByReason,
     /// ⚠⚠⚠⚠⚠ **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, answered
     /// through [`Plugin::checks`](crate::Plugin).
     ///
@@ -5827,6 +5969,7 @@ impl OuterLoop {
             faced: None,
             told: Told::default(),
             deliveries: crate::plugin::Deliveries::NONE,
+            folds: FoldsByReason::NONE,
             checks: crate::plugin::Checks::NONE,
         })
     }
@@ -7629,6 +7772,18 @@ impl OuterLoop {
         self.deliveries
     }
 
+    /// ⛔⛔⛔⛔⛔ **THOSE SAME FOLDS, SPLIT BY WHY THE LOOP WAS REFLECTING** — register item 856(1),
+    /// and what [`crate::Plugin::folds_by_reason`] answers for an `ai_loop` run.
+    ///
+    /// ⚠ A LEVEL, for the tally above's reason and one harder: the walk carries the reason and the
+    /// fold on one line, but the journal is BOUNDED, so a long run has already dropped its early
+    /// reflections. A level is the only shape in which a 123-iteration run can still be asked what
+    /// its first `capacity` handover did.
+    #[must_use]
+    pub const fn folds_by_reason(&self) -> FoldsByReason {
+        self.folds
+    }
+
     /// **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, and what
     /// [`crate::Plugin::checks`] answers for an `ai_loop` run.
     ///
@@ -7693,8 +7848,31 @@ impl OuterLoop {
         // exhaustive match a seventh witness cannot be added past. It read `== Account` here, where
         // a new road would have joined the majority in SILENCE and been published as *this run's
         // prompts are visible*.
-        if evidence.folded_away() {
+        let folded = evidence.folded_away();
+        if folded {
             self.deliveries.folded = self.deliveries.folded.saturating_add(1);
+        }
+        // ⛔⛔⛔⛔⛔ **AND THE SAME EVENT, SPLIT BY WHY THIS PROMPT WAS BEING ASKED** — register
+        // item 856(1). The line above is a TOTAL, and a total is the one shape that cannot refute
+        // anything: item 856's axis says a full session folds, its discriminator is the `capacity`
+        // reflection, and *one capacity reflection whose prompt LANDS* is the register's own stated
+        // refutation. Nothing could record that reflection — see [`FoldsByReason`].
+        //
+        // ⚠⚠⚠⚠⚠ **IN THE SAME ACT AS THE TOTAL, WHICH IS THIS FUNCTION'S WHOLE ARGUMENT.** Its doc
+        // says a site that forgot the increment *"does not read as a missing count, it reads as a
+        // run whose prompts were visible"* — the reassuring answer. A split maintained anywhere but
+        // here would be that defect with a second face: a row that missed a delivery reads as a
+        // reason under which nothing was ever asked, which is how a denominator quietly shrinks
+        // until a ratio says what somebody hoped.
+        //
+        // ⚠⚠ **`None` IS NOT A GAP, IT IS THE OTHER HALF OF THE POPULATION.** A prompt asked while
+        // the machine is NOT reflecting belongs to no row — `working`'s prompts are the run's
+        // ordinary traffic and pooling them into a reflection's denominator is exactly the blurring
+        // register item 856 warns about. What they are counted in is `deliveries` above, which is
+        // every delivery this run made, so nothing is lost and the two readings answer different
+        // questions.
+        if let Some(reason) = self.reflecting_because() {
+            self.folds.record(reason, folded);
         }
     }
 
@@ -21213,6 +21391,185 @@ mod tests {
              the half a walk over one datamodel cannot make — a replacement is a DIFFERENT pane, so \
              the old checkpoint is absent or it was re-typed. Re-typed, the run drives at a \
              checkpoint it retired and nothing in the walk says so. Screen: {again:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REFLECTION WHOSE PROMPT *LANDED* IS RECORDED, WHICH IS THE ONLY THING THAT
+    /// CAN REFUTE REGISTER ITEM 856** — the axis split, driven on a real pane.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The instrument could count the confirming case and not the refuting one
+    ///
+    /// Item 856 says a composer folds a prompt as a function of how full the receiving session is,
+    /// and its discriminator is the `capacity` reflection. It also states its own refutation in one
+    /// line — ***one reflection whose prompt LANDS*** — and nothing could record that. The total
+    /// ([`crate::plugin::Deliveries::folded`]) cannot be split by anything; the walk names the
+    /// reason and the fold on one line, but `crate::driver::Progress::journal` is BOUNDED, so a
+    /// 123-iteration run has already dropped its early reflections. The count that existed was a
+    /// person reading run logs, and that road has produced one retracted measurement already.
+    ///
+    /// # ⚠⚠⚠⚠ Why the assertion is about a LANDING and not a fold
+    ///
+    /// A gate over *the fold was counted* would be green on an instrument that counts nothing else
+    /// — and an instrument that only counts folds is exactly the defect, because its denominator
+    /// can only ever equal its numerator and the ratio is `1/1` by construction. **The stand-in
+    /// does not fold**, so what this run produces is a reflection that LANDED, and the claim is
+    /// that it is in the reason's DENOMINATOR with a zero beside it. That is the shape of a
+    /// counter-example, and until this existed it had nowhere to be written down.
+    ///
+    /// ⚠⚠ The reason driven is `budget` and not `capacity`, and that costs the gate nothing: the
+    /// recording site is one line for every reason (`ReflectReason::ALL` is the population), and
+    /// `capacity` needs a session near a ceiling that a stand-in has no way to be near. What is
+    /// under test is that **a reflection's delivery reaches its own row** — the join item 856 asks
+    /// for — and the axis is then a fact about runs rather than about this file.
+    ///
+    /// ⚠ The rows that never fired are asserted EMPTY, because *this reason never happened* and
+    /// *this reason happened and never folded* are the two facts the whole split exists to keep
+    /// apart — collapsing them is how a denominator quietly disappears.
+    #[test]
+    fn a_reflection_whose_prompt_landed_is_counted_under_its_own_reason() {
+        /// Above any reading, so `capacity` can never be what moves this run — the sibling gates'
+        /// ROOMY, and here it also keeps the reason under test unambiguous.
+        const ROOMY: i64 = 800_000;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item 794. A
+        // bare std call writes into this crate's own directory inside the repository when `TMPDIR`
+        // is set-and-empty, which is litter `git status` cannot see.
+        let nowhere = sprag_scratch::scratch_root()
+            .join(format!("sprag-folds-{}", std::process::id()))
+            .join("no-record-was-ever-written.jsonl");
+        let access = crate::testing::supervised_writing(&workspace, &nowhere);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "keep the stand-in answering".to_string(),
+                milestone: "reach it".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                working_rules: None,
+                unverified_rules: None,
+                context_ceiling: Some(ROOMY),
+                reflect_after_refusals: None,
+                reaim_max: None,
+                milestone_check: None,
+                successor_check: None,
+                reask_max: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                // ⚠ ON: one judged turn brings the run to `reflecting`, which is the delivery this
+                // gate is about.
+                reflect_every: Some(1),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        while walked.len() < 60 {
+            let moved = loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable");
+            let Pumped::Moved {
+                from, raised, to, ..
+            } = moved
+            else {
+                panic!("this run must keep moving: {moved:?}, walked {walked:?}");
+            };
+            walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+            // ⚠⚠⚠ THE PASS THAT *LANDS* IN `reflecting` IS THE ONE THAT DELIVERS, and stopping on
+            // the pass that LEAVES would be a different moment. `pump` walks, reads the act the
+            // document composed on entry, and only then types — so by the time this arm sees
+            // `to == Reflecting` the reflection's prompt is already through `record_delivery`.
+            // Measured while writing this gate: the reflection leaves by `ReflectApplied` and never
+            // by `TurnDone`, so a premise written on the exit word waits for an edge that does not
+            // exist and this loop simply runs out of passes.
+            if to == AiLoopState::Reflecting {
+                break;
+            }
+        }
+        let folds = loops.folds_by_reason();
+        let deliveries = loops.deliveries();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        // ══ THE PREMISE, ASSERTED: this run really did reflect for the budget ══════════════════
+        //
+        // ⚠⚠⚠⚠⚠ Without it every claim below is satisfied by a run that never reached
+        // `reflecting` at all — six empty rows, and *no reflection folded* is trivially true of a
+        // run that made none. That is rule 6's vacuous population, in the one place it would be
+        // invisible.
+        assert!(
+            walked.iter().any(|edge| edge.ends_with("--> Reflecting")),
+            "⚠⚠⚠⚠⚠ THE PREMISE: this run must have reached `reflecting`, or the split below is a \
+             table of zeroes and every claim about it is vacuous. Walked {walked:?}",
+        );
+
+        // ══ ① THE COUNTER-EXAMPLE IS RECORDABLE — the whole of what item 856(1) was missing ════
+        let budget = folds.under(ReflectReason::Budget);
+        assert!(
+            budget.delivered > 0,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): a reflection was asked and its delivery reached no \
+             row, so the split has no denominator and the ratio it publishes can only ever be \
+             `n of n`. An instrument whose denominator is its numerator cannot refute anything — \
+             it is the hand tally this item exists to replace. Split: {folds:?}, walked {walked:?}",
+        );
+        assert_eq!(
+            budget.folded, 0,
+            "⛔⛔⛔⛔ AND THIS ONE LANDED. The stand-in has no composer to fold with, so a fold \
+             counted here is the join reading somebody else's event — which would put every \
+             landing in the numerator and make the axis unrefutable in the other direction. \
+             Split: {folds:?}",
+        );
+
+        // ══ ② AND A REASON THAT NEVER FIRED IS NOT A REASON THAT NEVER FOLDED ══════════════════
+        //
+        // ⚠⚠⚠ `capacity` is the reason item 856 is actually about, and this run's ceiling is
+        // ROOMY, so it never fired. Its row must therefore be EMPTY rather than a clean `0 of n` —
+        // the two would read alike to anybody comparing rows, which is the comparison the split
+        // was built for.
+        assert_eq!(
+            folds.under(ReflectReason::Capacity),
+            FoldsUnder {
+                delivered: 0,
+                folded: 0
+            },
+            "⚠⚠⚠⚠⚠ A REASON THAT NEVER FIRED MUST HAVE NO POPULATION. This run's ceiling is \
+             {ROOMY}, far above any reading, so `capacity` cannot have happened — a denominator \
+             here means deliveries are being filed under whatever row was last set, and every \
+             comparison between rows is then over invented populations. Split: {folds:?}",
+        );
+
+        // ══ ③ AND THE SPLIT IS A SPLIT OF THE TOTAL, NOT A SECOND COUNT ════════════════════════
+        //
+        // ⚠⚠ The two are recorded in ONE act (`record_delivery`), and this is what holds them to
+        // it: every row is a subset of the run's own deliveries, so a split that had drifted — a
+        // row counting a delivery the total never saw — is caught here rather than in somebody's
+        // arithmetic six weeks later.
+        let (rows, folded): (u32, u32) = folds.rows().fold((0, 0), |(rows, folded), (_, row)| {
+            (rows + row.delivered, folded + row.folded)
+        });
+        assert!(
+            rows <= deliveries.made && folded <= deliveries.folded,
+            "⛔⛔⛔⛔ THE SPLIT MUST BE A SUBSET OF THE TOTAL IT SPLITS. A reflection's prompt is \
+             one of this run's deliveries, so rows summing past `made` means the two counters are \
+             being written at two sites — the drift both their docs argue against. Split \
+             {rows}/{folded}, total {deliveries:?}",
         );
     }
 

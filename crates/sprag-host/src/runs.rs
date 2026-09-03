@@ -2097,6 +2097,20 @@ pub struct PersistedRun {
     /// of. [`RUN_LOG_VERSION`] does not move — [`build`](Self::build)'s argument.
     #[serde(default)]
     pub deliveries: Option<PersistedDeliveries>,
+    /// ⛔⛔⛔⛔⛔ **THOSE SAME FOLDS, SPLIT BY WHY THE LOOP WAS REFLECTING** — register item 856(1).
+    /// See [`PersistedFoldsByReason`] for why a split that died with its daemon would be readable
+    /// only while nobody was reading.
+    ///
+    /// [`None`] for a log written before this field existed, and it must NOT read as *no reflection
+    /// of this run folded*: an absent split is one nobody wrote down. What the reader does with
+    /// that is refuse the sentence rather than print a clean bill — the split's own `is_empty`, and
+    /// register item 762's rule on the field above.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move — [`build`](Self::build)'s argument, and the same call
+    /// items 606, 616 and 762 each made: a bump would refuse every run this machine already has, to
+    /// gain a value no reader would treat differently from the absence.
+    #[serde(default)]
+    pub folds_by_reason: Option<PersistedFoldsByReason>,
     /// ⚠⚠⚠⚠⚠ **HOW MUCH OF ITS WORK WAS COMPLETE AND KEPT** — register item 616, the residue item
     /// 604 left. See [`PersistedBanked`] for why this crosses a restart where
     /// [`at`](Self::at) may not.
@@ -2223,6 +2237,86 @@ impl From<PersistedDeliveries> for sprag_plugin::Deliveries {
             unsubmitted: stored.unsubmitted,
             unreported: stored.unreported,
         }
+    }
+}
+
+/// **THE STORED SHAPE OF [`sprag_plugin::FoldsByReason`]** — register item 856(1), on
+/// [`PersistedDeliveries`]' terms one type up: `sprag-plugin` states a serde-free contract, so the
+/// host owns every mapping to a stored shape.
+///
+/// # ⛔⛔⛔⛔⛔ IT HAS TO CROSS A RESTART OR IT MEASURES NOTHING, AND THAT IS MEASURED
+///
+/// Item 606 asked two live daemons for their runs' delivery pairs and **thirteen answered with
+/// none** — every one restored. Its conclusion is this field's whole reason: *a run is read AFTER
+/// it ends, and the daemon that drove it is restarted between rounds.* Item 856's split is read on
+/// exactly those runs and by exactly that road, so a split that died with its daemon would be an
+/// instrument whose readings are only available while nobody is reading.
+///
+/// # ⚠⚠⚠ Keyed by the reason's WORD, and why that is safe here where a state name is not
+///
+/// [`PersistedRun::at`] is never restored into a live cell, because a state name means what a
+/// `.scxml` says it means and a foreign document's word is not this build's. A
+/// [`sprag_plugin::ReflectReason`] word is the same kind of thing — and it crosses anyway, for
+/// [`PersistedBanked`]'s stated reason: the value is a COUNT, and a word this build cannot spell is
+/// simply dropped rather than mis-restored. What comes back is *the rows this build has words for*,
+/// which is honest in both directions — a row that arrives unspelled was written by a build that
+/// knew a reason this one does not, and inventing a home for it would put a count under the wrong
+/// axis, which is worse than losing it.
+///
+/// ⚠ A map rather than an array, because an array is a promise about ORDER that two builds could
+/// disagree about silently — the identical failure a positional wire shape has, one surface over.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedFoldsByReason {
+    /// One entry per reflect reason WORD, each `[delivered, folded]`.
+    ///
+    /// ⚠ Rows with no deliveries are written too: *this reason never fired* and *this build had no
+    /// word for it* must not read alike, and the only thing that tells them apart is the row being
+    /// present and zero.
+    #[serde(flatten)]
+    pub under: std::collections::BTreeMap<String, PersistedFoldsUnder>,
+}
+
+/// One row of [`PersistedFoldsByReason`] — [`sprag_plugin::FoldsUnder`] as the log carries it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedFoldsUnder {
+    /// [`sprag_plugin::FoldsUnder::delivered`].
+    pub delivered: u32,
+    /// [`sprag_plugin::FoldsUnder::folded`].
+    pub folded: u32,
+}
+
+impl From<sprag_plugin::FoldsByReason> for PersistedFoldsByReason {
+    fn from(live: sprag_plugin::FoldsByReason) -> Self {
+        Self {
+            under: live
+                .rows()
+                .map(|(reason, row)| {
+                    (
+                        reason.word().to_owned(),
+                        PersistedFoldsUnder {
+                            delivered: row.delivered,
+                            folded: row.folded,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<PersistedFoldsByReason> for sprag_plugin::FoldsByReason {
+    fn from(stored: PersistedFoldsByReason) -> Self {
+        let mut live = Self::NONE;
+        for (word, row) in stored.under {
+            // ⚠ A word this build has no arm for is DROPPED, which is this type's stated decision:
+            // a count restored under the wrong axis is worse than a count lost, and `ReflectReason`
+            // is the only authority on which words there are.
+            let Some(reason) = sprag_plugin::ReflectReason::named(&word) else {
+                continue;
+            };
+            live.restore(reason, row.delivered, row.folded);
+        }
+        live
     }
 }
 
@@ -3325,6 +3419,16 @@ impl RunRegistry {
                                 .unwrap_or(run.progress.deliveries)
                                 .into(),
                         ),
+                        // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1), written
+                        // the way the pair above is and for its reasons: always `Some` (this image
+                        // looked, so every row is a claim it may make), and the REPORT is preferred
+                        // over the cell because an out-of-process run's cell is zeros for ever.
+                        folds_by_reason: Some(
+                            reported
+                                .folds_by_reason
+                                .unwrap_or(run.progress.folds_by_reason)
+                                .into(),
+                        ),
                         // ⚠⚠⚠⚠⚠ AND HOW MUCH OF THE WORK IS KEPT — register item 616. `None` here
                         // is the PLUGIN's own answer (*I count no completed work*) rather than
                         // this daemon's silence, which is why it is mapped through rather than
@@ -3620,6 +3724,19 @@ impl RunRegistry {
                     deliveries: saved
                         .deliveries
                         .map_or(sprag_plugin::Deliveries::NONE, Into::into),
+                    // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS IS RESTORED WITH IT — register item
+                    // 856(1), on `deliveries`' argument exactly and for the reason item 606
+                    // MEASURED: the runs anybody reads are restored ones, so a split that stopped
+                    // at the daemon boundary would be an instrument nobody could ever consult.
+                    //
+                    // ⚠ An older log reads as every row `0 of 0`, which publishes no sentence at
+                    // all (`is_empty`) rather than a clean bill. That is the honest reading of a
+                    // file whose writer could not count this, and it is the same shape the pair
+                    // above takes.
+                    folds_by_reason: saved
+                        .folds_by_reason
+                        .clone()
+                        .map_or(sprag_plugin::FoldsByReason::NONE, Into::into),
                     // ⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, on the same argument.
                     checks: sprag_plugin::Checks::NONE,
                     // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS KEPT **IS** RESTORED — register item 616,
@@ -5006,6 +5123,7 @@ mod tests {
                 stood_down: None,
                 cancelled_by: None,
                 deliveries: None,
+                folds_by_reason: None,
                 // ⚠ `None` is what an OLDER LOG reads as, which is what these fixtures are about.
                 banked: None,
                 briefed: None,
@@ -5249,6 +5367,7 @@ mod tests {
             stood_down: None,
             cancelled_by: None,
             deliveries: None,
+            folds_by_reason: None,
             // ⚠ `None` is what an OLDER LOG reads as, which is what this fixture is about.
             banked: None,
             briefed: None,
@@ -5357,6 +5476,7 @@ mod tests {
             stood_down: None,
             cancelled_by: None,
             deliveries: None,
+            folds_by_reason: None,
             banked: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -5455,6 +5575,7 @@ mod tests {
             stood_down: None,
             cancelled_by: None,
             deliveries: None,
+            folds_by_reason: None,
             banked: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -5883,6 +6004,7 @@ mod tests {
                 cancelled_by: None,
                 // ⚠ Nor what it delivered — item 606's field, absent in a log written before it.
                 deliveries: None,
+                folds_by_reason: None,
                 // ⚠ Nor how much it banked — item 616's field, absent for that field's reason.
                 banked: None,
                 briefed: None,

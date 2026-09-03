@@ -767,6 +767,7 @@ mod tests {
             document: None,
             stood_down: None,
             deliveries: None,
+            folds_by_reason: None,
             banked: None,
             cancelled_by: None,
             briefed: None,

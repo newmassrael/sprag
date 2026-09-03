@@ -1149,6 +1149,27 @@ pub trait Plugin {
         Deliveries::NONE
     }
 
+    /// ⛔⛔⛔⛔⛔ **THOSE SAME FOLDS, SPLIT BY WHY THE LOOP WAS REFLECTING** — register item 856(1).
+    ///
+    /// # ⛔⛔⛔⛔ A total can confirm an axis and can never refute one
+    ///
+    /// [`deliveries`](Self::deliveries) above answers *how much of this run is invisible*, which is
+    /// the question register item 591 asked. Item 856 asks a different one — **what does folding
+    /// depend on** — and its discriminator is the `capacity` reflection, the one moment the loop
+    /// knows the receiving session is full because that is what put it there. The register's own
+    /// refutation is *one capacity reflection whose prompt lands*, and a single total has no shape
+    /// in which that fact can appear.
+    ///
+    /// ⚠ The default is [`crate::outer::FoldsByReason::NONE`], which is the honest answer for every
+    /// plugin that does not reflect: no reason ever fired, so no row has a denominator. It is not
+    /// *nothing folded* — the rows say `0 of 0`, which is a population and not a clean bill.
+    ///
+    /// ⚠⚠ Asked here for [`deliveries`](Self::deliveries)' reason exactly: a level with one call
+    /// site, never a per-[`Step`] delta that twenty-odd construction sites could each forget.
+    fn folds_by_reason(&self) -> crate::outer::FoldsByReason {
+        crate::outer::FoldsByReason::NONE
+    }
+
     /// ⚠⚠⚠⚠⚠ **WHAT BECAME OF THIS PLUGIN'S INDEPENDENT CHECKS** — register item 601, and
     /// [`deliveries`](Self::deliveries)' argument one fact over: asked here, at the one site a step
     /// completes, so it cannot be forgotten at any of the twenty-odd places a [`Step`] is built —

@@ -1365,6 +1365,13 @@ impl Plugin for AiLoop {
         self.inner.deliveries()
     }
 
+    /// ⚠ DELEGATED for `deliveries`' reason — register item 856(1). It is the SAME EVENT split two
+    /// ways, recorded in one act by the driver that witnessed it, so a tally at this layer could
+    /// disagree with the total it is a split of.
+    fn folds_by_reason(&self) -> crate::outer::FoldsByReason {
+        self.inner.folds_by_reason()
+    }
+
     /// ⚠ DELEGATED for `deliveries`' reason — register item 601. The driver that puts the claim to
     /// a checker is the only thing that sees what came back, so a tally at this layer would be a
     /// second authority on one fact.
