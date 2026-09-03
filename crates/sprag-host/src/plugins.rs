@@ -72,6 +72,27 @@ pub const CANCEL_ACTION: &str = "cancel";
 /// stated: a client newer than its daemon gets `UnknownPath` for it, which is the daemon saying it
 /// does not serve that address, and is the answer that case should get.
 pub const STAND_DOWN_ACTION: &str = "stand_down";
+/// ⛔⛔⛔⛔⛔ The `stand_down` argument saying **WHICH PANE THE ORDER CAME FROM** — register item
+/// 835, and the half a `stood_down` ending could not carry.
+///
+/// # ⛔⛔⛔⛔ *A person asked this run to stand down* — which person?
+///
+/// Measured 2026-09-02: another repository's watcher read that closing line on a run it had not
+/// stopped, could not tell whose decision it was, and **re-launched the run twice.** Several
+/// watchers share one daemon here, so *stand everything down* was not one act — the population kept
+/// refilling and it took three passes to empty.
+///
+/// ⚠⚠ **THE CALLER POINTS AND THE DAEMON READS**, exactly as [`RUN_OPENED_BY_KEY`] does and for the
+/// argument written on `PluginGrammar::OPENED_BY`: what is sent is a PANE, and this daemon reads
+/// the conversation off it. A forged pane can attribute an order to a real pane of this daemon and
+/// can never invent a name.
+///
+/// ⚠ OPTIONAL, and absence means **nobody wrote it down** — never *a person*. An older client sends
+/// nothing and an older daemon swallows it, and both leave the row exactly as it was before this
+/// key existed: the order lands, and who gave it is unrecorded. That is why this earns no
+/// `WIRE_PROTOCOL` bump — the behaviour a caller asked for is performed either way, and what is
+/// missing is a RECORD, which the absence already says.
+pub const STOOD_DOWN_BY_KEY: &str = "ordered_by";
 /// **HALT A RUN BETWEEN TURNS, OR LET IT GO** — the third thing a person may say to a run, and the
 /// only one they can take back (register item 9).
 ///
@@ -1754,7 +1775,7 @@ impl PluginsExternal {
             bounds: guardrails,
             overridden,
         } = parse_guardrails(map, plugin.cost_unit(), plugin.own_bounds())?;
-        let opened_by = self.parse_opener(map)?;
+        let opened_by = self.parse_opener(map, RUN_OPENED_BY_KEY)?;
         // ⚠⚠⚠⚠⚠ READ HERE AND ACTED ON AT THE BOTTOM — register item 873, and the split is the
         // whole of what makes it safe. READING is a validation and belongs with its neighbours: a
         // value of the wrong type must be refused exactly as a malformed guardrail is. ACTING is
@@ -1842,8 +1863,17 @@ impl PluginsExternal {
     /// opening a window of its own is that it is not sitting in the one it works in. The scope that
     /// matches the doc above is *a pane this daemon does not hold*, and [`SeatElsewhere`] is how
     /// this layer asks that without learning what a session tree is.
-    fn parse_opener(&self, map: &Map<String, Value>) -> Result<Option<u64>, InvokeError> {
-        let opener = match map.get(RUN_OPENED_BY_KEY) {
+    /// ⛔⛔⛔ **`key` IS A PARAMETER SINCE REGISTER ITEM 835**, because a second door asks the same
+    /// question: `stand_down` records WHERE ITS ORDER CAME FROM, on exactly these terms — the
+    /// caller points at a pane, a stale one is dropped rather than honoured, and the daemon reads
+    /// the name itself. Two copies of this validation would be two ideas of what a provenance is,
+    /// and the refusal sentence is where they would first differ.
+    fn parse_opener(
+        &self,
+        map: &Map<String, Value>,
+        key: &str,
+    ) -> Result<Option<u64>, InvokeError> {
+        let opener = match map.get(key) {
             None | Some(Value::Null) => return Ok(None),
             Some(value) => value.as_u64().ok_or(InvokeError::TypeMismatch)?,
         };
@@ -1954,10 +1984,23 @@ impl PluginsExternal {
         // door used to collapse three states of the world into one boolean and answer `refused: no
         // run N is in flight` for the only one it could name, while a run of a plugin with no
         // reader for the order was answered OK and drove straight on.
+        // ⛔⛔⛔⛔⛔ WHERE THE ORDER CAME FROM — register item 835. Validated through the SAME door
+        // a run's opener goes through, so a stale `$SPRAG_PANE` is refused here rather than
+        // stamping a provenance that names nothing.
+        //
+        // ⚠⚠⚠ THE NAME IS READ HERE AND NOW, never taken from the caller: `session_in` asks the
+        // pane what conversation is in it, which is what makes this a fact rather than a claim —
+        // and it must happen while the pane is still there to answer, which is
+        // `PersistedRun::opened_by_session`'s own rule one order over.
+        let ordered_by = self.parse_opener(map, STOOD_DOWN_BY_KEY)?;
+        let by = ordered_by.map(|pane| crate::runs::StoodDownBy {
+            pane,
+            session: self.session_in(Some(pane)),
+        });
         // ⚠ NOTHING IS ANNOUNCED HERE — see `cancel` above and register item 664: the delivery
         // itself publishes, so the accepted arm is the only arm that ever could.
         lock(&self.runs)
-            .stand_down(RunId(id))
+            .stand_down(RunId(id), by)
             .map(|()| IntrospectValue::Null)
             .map_err(|why| refused(why.describe(RunId(id))))
     }
@@ -5885,8 +5928,12 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
     // one of the two facts that mean the same thing whether the run is still going or over. Nesting
     // it under `done` would make a standing order invisible on exactly the runs a person can still
     // do something about, and nesting it under `running` would erase it at the moment they need it.
+    // ⛔⛔⛔ AND WHO GAVE IT — register item 835, woven into the same sentence rather than put in a
+    // key beside it. Two keys would let a reader meet the order without the orderer, which is the
+    // exact reading that had a stopped run re-launched twice.
     if run.stood_down {
-        entry[RUN_STOOD_DOWN_KEY] = json!(stand_down_sentence(&run.state));
+        entry[RUN_STOOD_DOWN_KEY] =
+            json!(stand_down_sentence(&run.state, run.stood_down_by.as_ref()));
     }
     // ⚠⚠⚠⚠⚠ AND THE SAME ORDERS AS DATA, FOR THE DRIVER — register item 699. The sentence above is
     // for a person and cannot be read by a machine; this is the machine's copy and cannot be read
@@ -6224,8 +6271,47 @@ pub fn outcome_from_words(word: Option<&str>, ceiling: Option<&str>) -> OutcomeS
 ///
 /// ⚠ The outcome's own word comes from [`outcome_word`], so the host never spells a variant here —
 /// a seventh [`OutcomeState`] gets its sentence on the day it exists rather than a silent omission.
+/// ⛔⛔⛔⛔⛔ **`by` IS WHO ORDERED IT — REGISTER ITEM 835, AND IT IS NOT OPTIONAL PROSE**
+///
+/// Every arm below used to open *"a person asked this run to stand down"*. Measured 2026-09-02:
+/// another repository's watcher read that on a run it had not stopped, **could not tell whose
+/// decision it was, and re-launched the run twice.** Several watchers share one daemon here, so a
+/// closing word that says *a person* and not *which* is read by the next one as a normal handover
+/// it should pick up.
+///
+/// ⚠⚠⚠⚠⚠ **AND [`None`] DOES NOT RENDER AS *A PERSON*.** An order this daemon has no record of is
+/// one **nobody wrote down** — `crate::runs::StoodDownBy::UNRECORDED` — which is the distinction
+/// `crate::runs::Canceller`'s own doc demanded and the one that was missing here. Rendering an
+/// absence as a person is the deduction the whole `cancelled_by` discipline forbids.
 #[must_use]
-pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
+pub fn stand_down_sentence(
+    state: &crate::runs::RunState,
+    by: Option<&crate::runs::StoodDownBy>,
+) -> String {
+    // ⚠ ONE SUBJECT, COMPOSED ONCE, so the six arms below cannot come to disagree about who is
+    // being named — the drift every split sentence in this file is written against.
+    let asked = by.map_or_else(
+        || crate::runs::StoodDownBy::UNRECORDED.to_owned(),
+        crate::runs::StoodDownBy::raiser,
+    );
+    // ⚠⚠ AND WHAT TO DO WITH THE NAME, on the arms that describe an ENDING — which is where item
+    // 835's harm landed: a supervisor reading somebody else's finished run needs to be told to go
+    // and ask, because the alternative it chose was to pick the work up.
+    let ask_them = by.map_or_else(
+        || {
+            format!(
+                " ⚠ NOBODY WROTE DOWN WHO, so this ending names no one you can ask — treat it as \
+                 unattributed rather than as yours to pick up ({})",
+                crate::runs::StoodDownBy::UNRECORDED,
+            )
+        },
+        |who| {
+            format!(
+                " ASK {} BEFORE TREATING THIS AS YOURS TO PICK UP",
+                who.raiser().to_uppercase(),
+            )
+        },
+    );
     /// What every ending that is not a convergence has to tell the reader, in one place so the
     /// three of them cannot drift into three different degrees of bad news.
     ///
@@ -6303,18 +6389,20 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
         // hold it to the document — `sprag_plugin::STAND_DOWN_TAKES_EFFECT`, printed by the command
         // — and what a RUNNING run publishes is the fact plus where the answer will come from.
         crate::runs::RunState::Running => {
-            "a person asked this run to stand down; it has not stopped yet — its ending is what \
-             says whether the order landed"
-                .to_owned()
+            format!(
+                "{asked} asked this run to stand down; it has not stopped yet — its ending is what \
+                 says whether the order landed"
+            )
         }
         crate::runs::RunState::Done { outcome, .. } => {
             if outcome.state == OutcomeState::Converged {
                 // ⚠ *ended on its own terms* rather than *stopped at a milestone*, for `CUT_SHORT`'s
                 // reason: convergence is what every plugin's own `Verdict` can say, and only one of
                 // them has milestones to stop at.
-                "a person asked this run to stand down and it converged, so it ended on its own \
-                 terms and its work is banked"
-                    .to_owned()
+                format!(
+                    "{asked} asked this run to stand down and it converged, so it ended on its own \
+                     terms and its work is banked.{ask_them}"
+                )
             } else {
                 // ⚠⚠⚠⚠⚠ **TWO FACTS, AND NEITHER MAY EAT THE OTHER.** *The order was not honoured*
                 // is register item 594's, and it is true of every ending that is not a convergence
@@ -6323,8 +6411,8 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
                 // the plugin answers. Collapsing them is how this line got wrong the first time —
                 // one constant carried both and could only be right about one.
                 format!(
-                    "⚠ a person asked this run to stand down and it ended {:?} instead — this is \
-                     not what `sprag stand-down` promised; {}",
+                    "⚠ {asked} asked this run to stand down and it ended {:?} instead — this is \
+                     not what `sprag stand-down` promised; {}.{ask_them}",
                     outcome_word(outcome),
                     work_after(outcome),
                 )
@@ -6345,9 +6433,10 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
             // SECOND author of a word `OutcomeState::wire_str` already owns, and the two would
             // drift the day upstream renamed it, silently and only for out-of-process runs.
             if word == Some(OutcomeState::Converged.wire_str()) {
-                "a person asked this run to stand down and it converged, so it ended on its own \
-                 terms"
-                    .to_owned()
+                format!(
+                    "{asked} asked this run to stand down and it converged, so it ended on its own \
+                     terms.{ask_them}"
+                )
             } else {
                 // ⚠⚠⚠ THE SAME TWO FACTS AND THE SAME TWO AUTHORS as the `Done` arm above —
                 // register item 650 closed. *The order was not honoured* is item 594's, and *what
@@ -6355,8 +6444,8 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
                 // function that composes it. This arm used to say `this cannot say what became of
                 // the work`, honestly, because the render dropped `banked`; it carries it now.
                 format!(
-                    "⚠ a person asked this run to stand down and it ended {:?} instead — this is \
-                     not what `sprag stand-down` promised; {}",
+                    "⚠ {asked} asked this run to stand down and it ended {:?} instead — this is \
+                     not what `sprag stand-down` promised; {}.{ask_them}",
                     word.unwrap_or("unreported"),
                     banked_after(banked_reported(reported).as_ref()),
                 )
@@ -6367,7 +6456,7 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
         // outcome word.
         crate::runs::RunState::Panicked(_) => {
             format!(
-                "⚠ a person asked this run to stand down and its driver died first — {CUT_SHORT}"
+                "⚠ {asked} asked this run to stand down and its driver died first — {CUT_SHORT}.{ask_them}"
             )
         }
         // ⚠⚠ THE ONE THIS ITEM WAS MEASURED ON. A daemon restarted under a standing order used to
@@ -6375,8 +6464,8 @@ pub fn stand_down_sentence(state: &crate::runs::RunState) -> String {
         // learn that the thing they asked for had never happened.
         crate::runs::RunState::Interrupted => {
             format!(
-                "⚠ a person asked this run to stand down and the daemon driving it died first — \
-                 {CUT_SHORT}"
+                "⚠ {asked} asked this run to stand down and the daemon driving it died first — \
+                 {CUT_SHORT}.{ask_them}"
             )
         }
     }
@@ -7403,6 +7492,7 @@ mod tests {
             at: None,
             document: Some(document.to_owned()),
             stood_down: None,
+            stood_down_by: None,
             cancelled_by: None,
             deliveries: None,
             folds_by_reason: None,
@@ -7934,6 +8024,7 @@ mod tests {
                 // ⚠ `None` and not `Some(false)` — this fixture IS a log written by an older
                 // daemon, so the honest value is *nobody recorded whether an order was given*.
                 stood_down: None,
+                stood_down_by: None,
                 // ⚠ Likewise, and here `None` needs no such caveat: a canceller is an option
                 // already, so *nobody cancelled it* and *nothing was written down* are one answer.
                 cancelled_by: None,
@@ -8118,6 +8209,7 @@ mod tests {
             at: None,
             document: None,
             stood_down: None,
+            stood_down_by: None,
             cancelled_by: None,
             deliveries: None,
             folds_by_reason: None,
@@ -8328,6 +8420,7 @@ mod tests {
                 at: None,
                 document: None,
                 stood_down: None,
+                stood_down_by: None,
                 cancelled_by: None,
                 deliveries,
                 folds_by_reason: None,
@@ -9405,6 +9498,7 @@ mod tests {
                     reported: None,
                     build: Some(crate::wire::BUILD.to_owned()),
                     stood_down: false,
+                    stood_down_by: None,
                     held: false,
                     cancelled_by: None,
                     withheld: None,
@@ -9487,6 +9581,7 @@ mod tests {
                 reported: None,
                 build: Some(crate::wire::BUILD.to_owned()),
                 stood_down: false,
+                stood_down_by: None,
                 held: false,
                 cancelled_by: None,
                 withheld: None,
@@ -9552,6 +9647,7 @@ mod tests {
                     reported: None,
                     build: Some(crate::wire::BUILD.to_owned()),
                     stood_down: false,
+                    stood_down_by: None,
                     held: false,
                     cancelled_by: None,
                     withheld: None,
@@ -10187,6 +10283,134 @@ mod tests {
              answer; the remedy differs by what happened instead, and the word is already in this \
              very entry — a reader should not have to pair two lines by eye. Got {said:?} beside \
              {ordered:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A STOOD-DOWN RUN SAYS *WHICH* SUPERVISOR STOOD IT DOWN, AND AN UNRECORDED
+    /// ORDER DOES NOT SAY *A PERSON*** — register item 835.
+    ///
+    /// # ⛔⛔⛔⛔⛔ One word, two supervisors, and a stopped run restarted twice
+    ///
+    /// Measured 2026-09-02. This repository's watcher stood five runs down on the owner's
+    /// instruction. Another repository's watcher saw one of them end and re-launched it **twice**,
+    /// and said exactly why:
+    ///
+    /// > I never saw the stand-down. What I saw was *"a person asked this run to stand down"*, and
+    /// > **I had no way to know who that person was.** I had not asked, so I suspected a false
+    /// > claim, and I was in the middle of asking the owner whether they had pressed something in
+    /// > the GUI.
+    ///
+    /// Several watchers share one daemon here, so *stand everything down* was not one act: the
+    /// population kept refilling and it took three passes. `Canceller`'s own doc had already
+    /// written this item's sentence — *a reader must be able to tell **nobody decided this** from
+    /// **nobody wrote it down*** — while `cancel` carried WHO and `stand_down` carried only THAT.
+    ///
+    /// # ⚠⚠⚠⚠ Why the control is the half that could go wrong quietly
+    ///
+    /// Naming the orderer when one is recorded is the easy direction. The dangerous one is the
+    /// absence: rendering *no record* as *a person* is a DEDUCTION, and it is the deduction the
+    /// whole `cancelled_by` discipline forbids — *REPEATED, NEVER DEDUCED*. So both arms assert
+    /// the words **a person** are gone, and the unrecorded arm asserts the reader is told so.
+    ///
+    /// ⚠⚠ Driven THROUGH THE WIRE VERB, its neighbour's stated reason: the CLI reaches the
+    /// registry through this action, and the pane resolution and the name-reading both live on
+    /// this side of it. A gate calling `RunRegistry::stand_down` directly would skip the two steps
+    /// that make the record a fact rather than a claim.
+    #[test]
+    fn a_stood_down_run_names_which_supervisor_ordered_it() {
+        /// One `ai_loop` run over a stand-in agent, stood down with or without an orderer, then
+        /// cancelled — and the entry `query("runs")` publishes once it is over.
+        ///
+        /// ⚠ ONE BODY FOR BOTH ARMS, the neighbouring gate's rule: two hand-written setups is how
+        /// a control quietly stops being one. `from` is the ONLY difference.
+        fn a_run_stood_down(from_own_pane: bool) -> (Value, u64) {
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+            let pane = echoing_agent_pane(&workspace);
+            let registry = Arc::new(Mutex::new(RunRegistry::default()));
+            let mut external = PluginsExternal::new(
+                Arc::clone(&workspace),
+                Arc::clone(&registry),
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
+            let started = external
+                .invoke(
+                    RUN_ACTION,
+                    IntrospectValue::Json(ai_loop_request(pane, json!({}))),
+                )
+                .expect("a well-formed ai_loop run");
+            let IntrospectValue::Int(id) = started else {
+                panic!("a run answers its id: {started:?}");
+            };
+            let id = u64::try_from(id).expect("a run id is not negative");
+            let mut order = json!({ "id": id });
+            if from_own_pane {
+                order[STOOD_DOWN_BY_KEY] = json!(pane.0);
+            }
+            external
+                .invoke(STAND_DOWN_ACTION, IntrospectValue::Json(order))
+                .expect("a run in the directory takes a stand-down");
+            assert!(
+                lock(&registry).cancel(RunId(id)),
+                "the run this call started is one the registry can stop",
+            );
+            let entry = ended(&registry, id, Duration::from_secs(30));
+            assert!(
+                lock(&workspace).close(pane).is_some(),
+                "the pane this arm opened was there to close",
+            );
+            (entry, pane.0)
+        }
+
+        // ══ ① THE ARM: THE ORDER CAME FROM A PANE, AND THE ROW SAYS WHICH ═══════════════════════
+        let (named, pane) = a_run_stood_down(true);
+        let said = named[RUN_STOOD_DOWN_KEY].as_str().unwrap_or_else(|| {
+            panic!("a stood-down run publishes the order's sentence: {named:?}")
+        });
+        assert!(
+            said.contains(&format!("pane {pane}")),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 835: this order came from a pane this daemon holds and the \
+             ending does not say which. That is the reading another repository's watcher acted on \
+             — it re-launched a stopped run TWICE, because *a person* named nobody it could ask. \
+             Got {said:?}",
+        );
+        assert!(
+            !said.contains("a person asked"),
+            "⛔⛔⛔⛔ AND THE OLD WORDING IS GONE. *A person* is what the next supervisor read as \
+             a normal handover it should pick up; leaving it beside the pane id would keep the \
+             misreading available to anybody scanning for it. Got {said:?}",
+        );
+
+        // ══ ② THE CONTROL: NO PANE WAS NAMED, AND THE ROW MUST NOT INVENT ONE ═══════════════════
+        //
+        // ⚠⚠⚠ This is the arm that could go wrong quietly. Rendering an unrecorded order as *a
+        // person* is a DEDUCTION — the one `Canceller`'s discipline forbids — and it is exactly
+        // what this surface did for every stand-down until now.
+        let (anonymous, _) = a_run_stood_down(false);
+        let unattributed = anonymous[RUN_STOOD_DOWN_KEY]
+            .as_str()
+            .unwrap_or_else(|| panic!("a stood-down run publishes the order: {anonymous:?}"));
+        assert!(
+            !unattributed.contains("a person asked"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 835: an order nobody wrote down is published as *a person \
+             asked*, which is a claim this daemon cannot make and the exact one that cost two \
+             re-launches. *Nobody decided this* and *nobody wrote it down* must stay tellable \
+             apart — `Canceller`'s own doc says so. Got {unattributed:?}",
+        );
+        assert!(
+            unattributed.contains("did not write down"),
+            "⚠⚠⚠⚠ AND THE READER IS TOLD THAT, rather than left with a sentence that simply omits \
+             the orderer. A silence reads as *there was nothing to say*; this has to read as \
+             *there is something and nobody recorded it*, which is what tells the next supervisor \
+             not to treat the ending as theirs. Got {unattributed:?}",
+        );
+        assert_ne!(
+            said, unattributed,
+            "⚠⚠ THE TWO ARMS MUST DIFFER. Identical sentences would mean the pane travelled and \
+             changed nothing, which is this item with a key added and the defect intact",
         );
     }
 
@@ -13860,6 +14084,7 @@ mod tests {
             reported: None,
             build: Some(crate::wire::BUILD.to_owned()),
             stood_down: false,
+            stood_down_by: None,
             held: false,
             cancelled_by: None,
             withheld: None,
@@ -14714,8 +14939,16 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            82,
+            83,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
+             ones are deliberately not driven, because `null` for something the grammar demands is \
+             malformed rather than declined. ⛔⛔⛔ THE NEWEST IS `ordered_by` ON THE STAND-DOWN \
+             (item 835), and declining it means the order still lands — what is missing is the \
+             RECORD of who gave it, which the row then says in those words rather than naming a \
+             person nobody wrote down. ⚠ That is the whole reason the key may be optional at all: \
+             an absence here is a fact a reader can act on, where an absence on `dry_run` one form \
+             over would have been a run nobody asked for. THE OLD SENTENCE FOLLOWS. one probe per \
+             OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
              malformed rather than declined. ⚠⚠⚠⚠⚠ THE NEWEST IS `dry_run` ON ALL SIX FORMS \
              (item 873), and declining it means LAUNCH — the only reading available, since a run \
@@ -14830,8 +15063,21 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            128,
+            129,
             "one probe per declared argument of every FORM, nesting included: TWENTY-ONE for an \
+             orchestrator, EIGHTEEN for a pipe, TWENTY-TWO for an agent, seventeen for a dialogue, \
+             ELEVEN to answer a pane, THIRTY-THREE to run an AI loop, one to cancel, TWO TO STAND \
+             A RUN DOWN, and TWO TO REPORT A RUN'S PROGRESS. \
+             ⛔⛔⛔ THE NEWEST IS THE STAND-DOWN'S SECOND, `ordered_by` (item 835), and it is the \
+             first argument on that verb since it was built — the asymmetry it closes is that \
+             `cancel` has carried WHO since item 596 while a stand-down carried only THAT. \
+             Measured 2026-09-02: another repository's watcher read *a person asked this run to \
+             stand down* on a run it had not stopped, could not tell whose decision it was, and \
+             RE-LAUNCHED THE RUN TWICE. ⚠ This gate is what makes the key more than a declaration, \
+             on its predecessors' terms: a published argument the host does not READ is a key the \
+             surface swallows while the order reports `ok` — which here would be the defect exactly \
+             as it stood. THE OLD SENTENCE FOLLOWS. one probe per declared argument of every FORM, \
+             nesting included: TWENTY-ONE for an \
              orchestrator, EIGHTEEN for a pipe, TWENTY-TWO for an agent, seventeen for a dialogue, \
              ELEVEN to answer a pane, THIRTY-THREE to run an AI loop, one to cancel, one to stand \
              a run down, and TWO TO REPORT A RUN'S PROGRESS. \
@@ -15722,11 +15968,17 @@ mod tests {
         };
 
         // The sentence an IN-PROCESS run gets — the standard this reported one must meet.
-        let here = stand_down_sentence(&RunState::Done {
-            outcome: Box::new(ended.clone()),
-            output: None,
-            uncommitted: None,
-        });
+        // ⚠ NO ORDERER on either side — register item 835. This gate is about what became of the
+        // WORK crossing a process boundary, and giving the two sides different provenance would
+        // vary a second thing at the same time.
+        let here = stand_down_sentence(
+            &RunState::Done {
+                outcome: Box::new(ended.clone()),
+                output: None,
+                uncommitted: None,
+            },
+            None,
+        );
         assert!(
             here.contains("3 turns") && here.contains("BANKED"),
             "⚠ THE PREMISE: an in-process ending names the work it kept, or there is no standard \
@@ -15734,7 +15986,8 @@ mod tests {
         );
 
         // The same ending, having crossed a process boundary through the daemon's own renderer.
-        let there = stand_down_sentence(&RunState::Reported(Box::new(outcome_to_json(&ended))));
+        let there =
+            stand_down_sentence(&RunState::Reported(Box::new(outcome_to_json(&ended))), None);
         assert!(
             there.contains("3 turns") && there.contains("BANKED"),
             "⚠⚠⚠⚠⚠ a person who stood a run down must be told what was KEPT whichever process drove \
@@ -15771,7 +16024,10 @@ mod tests {
             // `sprag_plugin::Outcome::done_reason`.
             done_reason: None,
         };
-        let said = stand_down_sentence(&RunState::Reported(Box::new(outcome_to_json(&nothing))));
+        let said = stand_down_sentence(
+            &RunState::Reported(Box::new(outcome_to_json(&nothing))),
+            None,
+        );
         assert!(
             said.contains("completed nothing yet"),
             "⚠⚠⚠ a run that counted work and completed none says exactly that — a reassurance here \
@@ -16092,6 +16348,7 @@ mod tests {
                     at: None,
                     document: document.map(str::to_owned),
                     stood_down: None,
+                    stood_down_by: None,
                     cancelled_by: None,
                     deliveries: None,
                     folds_by_reason: None,

@@ -2400,13 +2400,28 @@ impl PluginGrammar {
     /// [`CANCEL_ACTION`](crate::plugins::CANCEL_ACTION) — the run to stop.
     pub const CANCEL: &'static [CallForm] = &[CallForm::object(&[ArgGrammar::open("id", "int")])];
 
-    /// [`STAND_DOWN_ACTION`](crate::plugins::STAND_DOWN_ACTION) — the run to finish up and stop.
+    /// [`STAND_DOWN_ACTION`](crate::plugins::STAND_DOWN_ACTION) — the run to finish up and stop,
+    /// and **where the order came from**.
     ///
-    /// ⚠ The SAME SHAPE as [`CANCEL`](Self::CANCEL) and deliberately not folded into it: the two
-    /// verbs take one id each and mean opposite things about the turn in flight, and a client
-    /// choosing between them is choosing whether that turn's work survives.
-    pub const STAND_DOWN: &'static [CallForm] =
-        &[CallForm::object(&[ArgGrammar::open("id", "int")])];
+    /// ⚠ It was the SAME SHAPE as [`CANCEL`](Self::CANCEL) and is no longer, which is the asymmetry
+    /// register item 835 closes in the other direction: `cancel` has carried WHO since item 596
+    /// (`Canceller`, decided inside this binary), and a stand-down comes over the wire, so the only
+    /// honest way to know who gave it is for the caller to say where from.
+    ///
+    /// ⛔⛔⛔ **A PANE, NOT A NAME** — `OPENED_BY`'s rule verbatim and for its
+    /// reason: the daemon reads the conversation off the pane itself, so a forged value can
+    /// attribute an order to a real pane of this daemon and can never invent an owner. Measured
+    /// 2026-09-02: another watcher read *"a person asked this run to stand down"* on a run it had
+    /// not stopped, could not tell whose decision it was, and re-launched it twice.
+    ///
+    /// ⚠ OPTIONAL, and absence is *nobody wrote it down* rather than *a person*. An older client
+    /// sends nothing and an older daemon swallows it; either way the order lands and the record is
+    /// missing, which is what the absence already says — so this earns no
+    /// [`sprag_rpc::WIRE_PROTOCOL`] bump on items 492 and 494's rule.
+    pub const STAND_DOWN: &'static [CallForm] = &[CallForm::object(&[
+        ArgGrammar::open("id", "int"),
+        ArgGrammar::open(crate::plugins::STOOD_DOWN_BY_KEY, "int").optional(),
+    ])];
 
     /// [`HOLD_RUN_ACTION`](crate::plugins::HOLD_RUN_ACTION) — the run to halt between turns, and
     /// which direction.
@@ -10771,7 +10786,20 @@ mod tests {
                 // grows must not need a line here — describing the keys would make this pin the
                 // second author of a shape that already has one.
                 "sprag_workspace/sprag_plugins/report_progress[object]:id:int progress:object",
-                "sprag_workspace/sprag_plugins/stand_down[object]:id:int",
+                // ⛔⛔⛔⛔⛔ **AN ADDED OPTIONAL THAT DOES *NOT* OWE THE NUMBER, AND THE REASON IS
+                // THE ONE ITEM 873 SHARPENED ONE FORM OVER.** R371's and R373's rule is that an
+                // added optional is free only while an older daemon swallowing it does nothing
+                // DIFFERENT — and item 873 raised the number because a daemon predating `dry_run`
+                // STARTS A LOOP when asked to start nothing.
+                //
+                // Here the swallowed key changes no behaviour at all: the order lands, the run
+                // stands down, and what is missing is the RECORD of who asked. ⚠⚠ And the skew
+                // fails in the SAFE direction, which is the half that matters for register item
+                // 835: a reader of such a run is told **nobody wrote down who**, which is TRUE of
+                // that daemon — so the next supervisor treats the ending as unattributed rather
+                // than as a normal handover it should pick up. That is the exact behaviour this
+                // item exists to produce; an older daemon simply produces it always.
+                "sprag_workspace/sprag_plugins/stand_down[object]:id:int ordered_by:int?",
             ],
         );
 

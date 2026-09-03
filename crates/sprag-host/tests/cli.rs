@@ -4458,6 +4458,7 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 // ⚠ FOREIGN, which is what makes the successor WITHHOLD rather than resume — 737.
                 document: Some("0000000000000000".to_owned()),
                 stood_down: None,
+                stood_down_by: None,
                 cancelled_by: None,
                 deliveries: None,
                 folds_by_reason: None,
@@ -4739,6 +4740,10 @@ fn a_run_launched_from_a_pane_records_the_conversation_that_asked_for_it() {
     // program sits is nothing to the claim — only what it is CALLED.
     let dir = state.join("stand-in-agent");
     std::fs::create_dir_all(&dir).expect("create the stand-in agent dir");
+    // ⛔ A DIRECTORY THAT CARRIES A `.git`, for arm ⑤ — see the `cwd` below for why it is staged
+    // here rather than borrowed from this repository.
+    let tree = state.join("a-tree-the-kind-document-accepts");
+    std::fs::create_dir_all(tree.join(".git")).expect("stage a directory carrying a .git");
     let bin = sprag_gate::doubles::Doubles::of(env!("CARGO_MANIFEST_DIR"))
         .set("cli")
         .link("claude", &dir.join("claude"));
@@ -4759,7 +4764,30 @@ fn a_run_launched_from_a_pane_records_the_conversation_that_asked_for_it() {
         "scene/invoke",
         json!({
             "path": mux_action_path(NEW_SESSION_ACTION),
-            "args": { "name": "asker", "cmd": argv(ASKER) },
+            // ⚠⚠ `cwd` IS THE WORKSPACE ROOT — register item 835's arm ⑤, which starts an
+            // `ai_loop`. This repository's loop-kind document refuses a run whose pane was opened
+            // outside a git tree (*"an agent started outside a tree asks whether the folder is
+            // trusted, and that dialog is not one this loop's consents cover"*), and a test process
+            // inherits the runner's `$HOME`. It changes nothing for the arms above, which read a
+            // pane's ARGV and never its directory.
+            //
+            // ⛔⛔⛔ **A DIRECTORY STAGED TO CARRY `.git`, NOT THIS REPOSITORY'S OWN.** Two gates
+            // refused the obvious roads and both were right: a manifest dir with `..` on the end
+            // bakes a root in at compile time (item 809), and reaching for this crate's published
+            // root-finder makes this file a tree-READER, which item 784's ratchet then requires
+            // the pre-commit hook to run — a 174-test integration suite in the commit lane.
+            //
+            // What the kind document actually asks is that the pane's directory carries a `.git`,
+            // so the honest staging is a directory that does. It lives under this daemon's own
+            // state dir, so `DaemonGuard` takes it away with everything else.
+            //
+            // ⚠ Item 784's detector is a SPELLING scan and its own doc says so, so naming that
+            // root-finder even in prose here would put this file back in its population.
+            "args": {
+                "name": "asker",
+                "cmd": argv(ASKER),
+                "cwd": tree.to_str().expect("a utf-8 staged tree"),
+            },
         }),
     )
     .expect("new_session answers");
@@ -4894,6 +4922,61 @@ fn a_run_launched_from_a_pane_records_the_conversation_that_asked_for_it() {
          coincidence for 190 runs instead of a door with no mouth — the reader has to be told the \
          variable was the reason: {}",
         stale.stderr,
+    );
+
+    // ══ ⑤ AND A STAND-DOWN GIVEN FROM A PANE NAMES THAT PANE'S CONVERSATION ═════════════════════
+    //
+    // ⛔⛔⛔⛔⛔ REGISTER ITEM 835, and it rides on this gate's own staging because it is the SAME
+    // door read twice: `orchestrate` records who ASKED for a run, and `stand-down` records who
+    // ORDERED it to stop. The asymmetry item 835 closes is that only the first of those two ever
+    // did — `cancel` has carried WHO since item 596, and a stand-down carried only THAT.
+    //
+    // ⚠⚠⚠ **MEASURED 2026-09-04, ON THIS ROUND'S OWN RULE**: deleting the CLI's `$SPRAG_PANE`
+    // forward left `sprag-host` and `sprag-gate` green apart from the standing red (item 837).
+    // The daemon-side gate drives the wire verb directly and the sentence gate drives the words;
+    // whether THIS BINARY ever says where it is calling from was watched by nothing.
+    //
+    // ⚠ The FORGING arm's discipline holds here too and is asserted the same way: the variable
+    // points at `theirs` while the run lives on `mine`, so a build reading the conversation off the
+    // run's own pane would answer ASKER and be caught.
+    //
+    // ⚠⚠ IT MUST BE AN `ai_loop` AND NOT THE `orchestrator` THE ARMS ABOVE USE, and the refusal
+    // that says so is the product working: *"`orchestrator` cannot stop at its next milestone —
+    // that order is only read by a plugin built to act on it"*. A stand-down nobody reads is not a
+    // stand-down, so a gate staged on one would be asserting about a refusal.
+    start_loop(&mut conn, "asker", mine, "the run item 835 is about");
+    let listed = sprag(&sock, &["runs", "-t", "asker"]).stdout;
+    let loop_id: u64 = listed
+        .lines()
+        .find(|line| line.contains("ai_loop"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|word| word.parse().ok())
+        .unwrap_or_else(|| panic!("the loop this arm started is listed: {listed}"));
+    let ordered = sprag_env(
+        &sock,
+        &["stand-down", "-t", "asker", &loop_id.to_string()],
+        &[(sprag_host::PANE_ENV_VAR, &theirs.to_string())],
+    );
+    assert!(
+        ordered.ok,
+        "the stand-down is accepted: {} {}",
+        ordered.stdout, ordered.stderr,
+    );
+    let listed = sprag(&sock, &["runs", "-t", "asker"]).stdout;
+    let stood = row_of(&listed, loop_id);
+    assert!(
+        stood.contains(A_STRANGER),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 835: this run was stood down from a pane holding a conversation \
+         and its row does not name it. That is the reading another repository's watcher acted on — \
+         it saw *a person asked this run to stand down* on a run it had not stopped, could not \
+         tell whose decision it was, and RE-LAUNCHED THE RUN TWICE. Several watchers share one \
+         daemon here, so *stand everything down* took three passes. Row: {stood}",
+    );
+    assert!(
+        !stood.contains("a person asked"),
+        "⛔⛔⛔⛔ AND THE WORDING THAT CAUSED IT IS GONE from the row a person and an agent both \
+         read. *A person* named nobody the next supervisor could ask, which is why it treated the \
+         ending as a handover: {stood}",
     );
     drop(guard);
 }

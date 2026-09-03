@@ -7449,12 +7449,30 @@ fn stand_down(args: Vec<String>) -> io::Result<()> {
     })?;
     // Pre-flighted for [`cancel_run`]'s reason, which is [`runs`]'.
     let mut conn = connect_scoped(session.as_deref())?;
+    // ⛔⛔⛔⛔⛔ AND WHERE THIS ORDER IS COMING FROM — register item 835, through the SAME door
+    // `orchestrate` records a run's opener with ([`asking_pane`]): the caller points at its own
+    // pane, a stale `$SPRAG_PANE` is dropped with a word on stderr rather than refusing the order,
+    // and the DAEMON reads the conversation off that pane itself.
+    //
+    // ⚠⚠⚠ **THIS COMMAND IS THE ONE THE MEASUREMENT WAS TAKEN ON.** Item 835 is another
+    // repository's watcher reading *"a person asked this run to stand down"* about an order given
+    // from a session exactly like this one, and re-launching the run twice because *person* named
+    // nobody it could ask. A supervisor standing runs down from its own pane is the common case,
+    // not the exotic one.
+    //
+    // ⚠ Absent when this process is not in a pane at all — a person at a plain terminal — and that
+    // absence is published as *nobody wrote it down* rather than as *a person*. See
+    // `crate::runs::StoodDownBy::UNRECORDED`.
+    let mut call = json!({ "id": id });
+    if let Some(pane) = asking_pane(&mut conn, session.as_deref()) {
+        call[sprag_host::plugins::STOOD_DOWN_BY_KEY] = json!(pane);
+    }
     invoke_action(
         &mut conn,
         scoped_call(
             session.as_deref(),
             sprag_host::wire::plugins_path(sprag_host::plugins::STAND_DOWN_ACTION),
-            json!({ "id": id }),
+            call,
         ),
     )?;
     // ⚠⚠⚠ THE SENTENCE IS THE PRODUCT'S, NOT THIS COMMAND'S — register item 594, and register item

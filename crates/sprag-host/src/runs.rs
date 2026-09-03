@@ -142,7 +142,10 @@ pub enum RunState {
 /// between. [`Hold`](Self::Hold) is a third because it is the only TWO-WAY one — a level somebody
 /// raises and lowers — where the other two are latches that must be, since an un-ordering racing a
 /// milestone would make a run's ending depend on which message arrived first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// ⚠ NO LONGER `Copy` — register item 835. [`StandDown`](Self::StandDown) carries the conversation
+/// this daemon read off the ordering pane, and a name is not a bit. Nothing here is on a hot path:
+/// an order is a message a person sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunOrder {
     /// Stop now and lose the turn in flight — `RunRegistry::cancel`, carrying WHO said so.
     ///
@@ -151,7 +154,12 @@ pub enum RunOrder {
     /// other. See [`Canceller`].
     Cancel(Canceller),
     /// Finish what you are doing and then stop — `RunRegistry::stand_down`. One-way.
-    StandDown,
+    ///
+    /// ⛔⛔⛔ **CARRYING WHERE THE ORDER CAME FROM** — register item 835, on the arm above's
+    /// argument exactly: the two arrive at the same flag, so a caller that had to record the
+    /// orderer separately could raise one and not the other. [`None`] is *nobody wrote it down*
+    /// and never *a person*; see [`StoodDownBy`].
+    StandDown(Option<StoodDownBy>),
     /// Halt between turns (`true`), or let go again (`false`) — `RunRegistry::hold`.
     Hold(bool),
 }
@@ -167,10 +175,10 @@ impl RunOrder {
     /// ⚠ No `_` arm: a fourth [`RunOrder`] has to be classified here rather than defaulting into
     /// *nobody needs to read it*, which is the answer that made this defect invisible.
     #[must_use]
-    pub const fn standing(self) -> Option<sprag_plugin::StandingOrder> {
+    pub const fn standing(&self) -> Option<sprag_plugin::StandingOrder> {
         match self {
             Self::Cancel(_) => None,
-            Self::StandDown => Some(sprag_plugin::StandingOrder::StandDown),
+            Self::StandDown(_) => Some(sprag_plugin::StandingOrder::StandDown),
             Self::Hold(_) => Some(sprag_plugin::StandingOrder::Hold),
         }
     }
@@ -529,6 +537,81 @@ impl Canceller {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHERE A STAND-DOWN ORDER CAME FROM** — register item 835, and the fact a
+/// `stood_down` ending could not carry.
+///
+/// # ⛔⛔⛔⛔ Two supervisors, one word, and a stopped run restarted twice
+///
+/// Measured 2026-09-02: this repository's watcher stood five runs down on the owner's instruction.
+/// Another repository's watcher (`scxml-core-engine-e9`) saw one of them end and re-launched it —
+/// **twice** — and said exactly why:
+///
+/// > I never saw the stand-down. What I saw was the run's closing line *"a person asked this run to
+/// > stand down"*, **and I had no way to know who that person was.** I had not asked, so I
+/// > suspected a false claim, and I was in the middle of asking the owner whether they had pressed
+/// > something in the GUI.
+///
+/// ⇒ **A closing word that says *a person* and not *which* is read by the next supervisor as a
+/// normal handover it should pick up.** In this system several watchers share one daemon, so *stand
+/// everything down* was not one act: the population kept refilling and it took three passes.
+///
+/// # ⚠⚠⚠⚠⚠ It POINTS, and the daemon reads the name — never the caller's word for itself
+///
+/// [`Canceller`] beside it is a closed vocabulary because the two cancels are raised inside this
+/// binary. A stand-down comes over the wire, so the honest shape is the one
+/// `PluginGrammar::OPENED_BY` already uses and its doc already argues: **the caller sends a PANE,
+/// and this daemon reads the conversation off that pane itself.** The worst a forged pane can do is
+/// attribute an order to a real pane of this daemon — it can never invent a name.
+///
+/// ⚠⚠ **AND ABSENCE IS NOT *A PERSON*.** A caller that sent no pane is one nobody wrote down, which
+/// is precisely the distinction `Canceller`'s own doc demands — *a reader must be able to tell
+/// **nobody decided this** from **nobody wrote it down***. Answering *a person* for an unrecorded
+/// order would be deducing, and the field's whole discipline is REPEATED, NEVER DEDUCED.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StoodDownBy {
+    /// The pane the order was sent from, as the caller pointed at it.
+    pub pane: u64,
+    /// **WHICH CONVERSATION WAS IN THAT PANE**, read by this daemon at the moment the order landed
+    /// — [`PersistedRun::opened_by_session`]'s rule one order over: resolved while the pane is
+    /// still there to answer, because that is what survives the pane.
+    ///
+    /// [`None`] when the pane held nothing agent-shaped, which is a person's own terminal and is a
+    /// different fact from an order with no pane at all.
+    pub session: Option<String>,
+}
+
+impl StoodDownBy {
+    /// **WHO TO GO AND ASK**, in words that claim nothing about how the run finished.
+    ///
+    /// ⚠ [`Canceller::raiser`]'s rule verbatim, and for the reason that method was measured into
+    /// existence: a clause naming the orderer must not contain a word this repository's own suites
+    /// read as *the run is over*, because a stand-down is an ORDER and the run may still be
+    /// working through the turn it was in.
+    #[must_use]
+    pub fn raiser(&self) -> String {
+        match &self.session {
+            Some(session) => format!("the conversation {session}, in pane {}", self.pane),
+            None => format!(
+                "somebody in pane {} that this daemon could put no conversation to",
+                self.pane,
+            ),
+        }
+    }
+
+    /// **THE SUBJECT OF A STAND-DOWN SENTENCE**, for an order this daemon has no record of.
+    ///
+    /// ⛔⛔⛔⛔⛔ **IT IS NOT *A PERSON*, AND THAT IS THE WHOLE OF REGISTER ITEM 835.** The word
+    /// *person* is what another supervisor read as *the owner, or somebody whose decision I can
+    /// treat as a normal handover* — and it re-launched the run twice. An unrecorded order is one
+    /// **nobody wrote down**, which is a different fact and the one [`Canceller`]'s own doc already
+    /// demanded be tellable apart.
+    ///
+    /// ⚠ Spelled here rather than at the renderer so the two subjects — recorded and not — are
+    /// composed in one place and cannot drift into two ideas of what an absence means.
+    pub const UNRECORDED: &'static str =
+        "somebody this daemon did not write down (an older client, or a caller that named no pane)";
+}
+
 /// **A RUN AS THE REGISTRY KNOWS IT** — the seam that lets [`RunRegistry`] be a DIRECTORY of runs
 /// instead of a container of threads.
 ///
@@ -574,6 +657,16 @@ pub trait RunHandle: Send + Sync {
     /// MEAN together is `crate::plugins::stand_down_sentence`'s to say, and it is the only reader
     /// allowed to put them side by side.
     fn stood_down(&self) -> bool;
+
+    /// ⛔⛔⛔ **WHERE THE STAND-DOWN ORDER CAME FROM**, or [`None`] if nobody wrote it down —
+    /// register item 835, and [`stood_down`](Self::stood_down)'s missing half.
+    ///
+    /// ⚠⚠ [`cancelled_by`](Self::cancelled_by)'s argument word for word: it is a FACT ABOUT THE
+    /// ORDER and never about the ending, and the handle is what remembers because the directory
+    /// forwards an order and does not know what became of it.
+    ///
+    /// ⚠ [`None`] means **nobody wrote it down**, which is not *a person* — see [`StoodDownBy`].
+    fn stood_down_by(&self) -> Option<StoodDownBy>;
 
     /// **WHO CANCELLED THIS RUN**, or [`None`] if nobody has — register item 596.
     ///
@@ -693,6 +786,11 @@ pub struct Orders {
     /// ⚠ `Mutex` and not an atomic, because the value is an enum rather than a bit and because
     /// nothing reads it on a hot path: it is asked once, when a run's answer is projected.
     cancelled_by: Mutex<Option<Canceller>>,
+    /// ⛔⛔⛔⛔⛔ **WHERE THE STAND-DOWN ORDER CAME FROM** — register item 835, and here rather than
+    /// shared with the worker for [`cancelled_by`](Self::cancelled_by)'s reason exactly: the driver
+    /// stands down the same way whoever asked, and handing this down would invite a decision to be
+    /// taken on it. It is a READER's fact, so it lives where the run's answer is assembled.
+    stood_down_by: Mutex<Option<StoodDownBy>>,
     /// **WHICH STANDING ORDERS THIS RUN'S PLUGIN ANSWERED THAT IT READS** — register items 539
     /// and 597, captured at submit because the plugin itself moves into the worker thread and is
     /// unreachable from here afterwards.
@@ -737,6 +835,7 @@ impl Orders {
             stand_down,
             hold,
             cancelled_by: Mutex::new(None),
+            stood_down_by: Mutex::new(None),
             honoured,
             id,
             announce,
@@ -762,7 +861,25 @@ impl Orders {
                 drop(said);
                 self.cancel.store(true, Ordering::Release);
             }
-            RunOrder::StandDown => self.stand_down.store(true, Ordering::Release),
+            RunOrder::StandDown(who) => {
+                // ⚠⚠⚠ WHO FIRST, FLAG SECOND — the arm above's rule and its reason, one order
+                // over: the worker can observe the flag on its very next poll, so an orderer
+                // written afterwards could be read as absent by a projection racing the run's own
+                // ending. That race is not hypothetical here — register item 835 is a run whose
+                // ending was read by another supervisor the moment it appeared.
+                //
+                // ⚠ THE FIRST WORD WINS, for `Cancel`'s reason: a stand-down is idempotent and
+                // one-way (`RunRegistry::stand_down`), so a second order changes nothing — and the
+                // ORDERER a reader needs is the one whose decision this was, not whoever repeated
+                // it. ⚠⚠ An order that names NOBODY must not erase a name already written, which
+                // `get_or_insert` gives for free and an assignment would have taken away.
+                let mut said = lock(&self.stood_down_by);
+                if let Some(who) = who {
+                    said.get_or_insert(who);
+                }
+                drop(said);
+                self.stand_down.store(true, Ordering::Release);
+            }
             RunOrder::Hold(held) => self.hold.store(held, Ordering::Release),
         }
         // ⚠⚠⚠ AFTER THE RECORD IS WRITTEN, NEVER BEFORE — the rule a run's ENDING already follows
@@ -782,6 +899,10 @@ impl Orders {
 
     fn cancelled_by(&self) -> Option<Canceller> {
         *lock(&self.cancelled_by)
+    }
+
+    fn stood_down_by(&self) -> Option<StoodDownBy> {
+        lock(&self.stood_down_by).clone()
     }
 
     /// ⚠ THE PLUGIN'S OWN ANSWER, replayed. Nothing here decides it: the list was taken from
@@ -855,6 +976,10 @@ impl RunHandle for ThreadRun {
 
     fn stood_down(&self) -> bool {
         self.orders.stood_down()
+    }
+
+    fn stood_down_by(&self) -> Option<StoodDownBy> {
+        self.orders.stood_down_by()
     }
 
     fn held(&self) -> bool {
@@ -957,6 +1082,10 @@ impl RunHandle for ProcessRun {
         self.orders.stood_down()
     }
 
+    fn stood_down_by(&self) -> Option<StoodDownBy> {
+        self.orders.stood_down_by()
+    }
+
     fn held(&self) -> bool {
         self.orders.held()
     }
@@ -1027,6 +1156,15 @@ pub struct EndedRun {
     /// [`Canceller::Shutdown`] — a daemon sweeping runs on its way out — and a reader must be able
     /// to tell *nobody decided this* from *nobody wrote it down*.
     cancelled_by: Option<Canceller>,
+    /// ⛔⛔⛔ **WHERE THE STAND-DOWN ORDER CAME FROM**, as the log recorded it — register item 835,
+    /// and the field above's *REPEATED, NEVER DEDUCED* applied to the order this type was already
+    /// remembering half of.
+    ///
+    /// ⚠⚠ It is the pair with [`stood_down`](Self::stood_down) and never a substitute for it: the
+    /// flag says an order was given, and this says who by. A restored run whose flag is `true` and
+    /// whose orderer is [`None`] is one the recording daemon did not write down — which is the
+    /// state register item 835 was filed on and must stay distinguishable from *nobody ordered it*.
+    stood_down_by: Option<StoodDownBy>,
     /// **THE PROCESS THE DEAD DAEMON HAD DRIVING IT**, as the log recorded it — register item 526,
     /// and the one field in here that may describe something still ALIVE.
     ///
@@ -1053,8 +1191,22 @@ impl EndedRun {
         Self {
             stood_down,
             cancelled_by,
+            stood_down_by: None,
             driver,
         }
+    }
+
+    /// **AND WHERE THAT STAND-DOWN CAME FROM** — register item 835.
+    ///
+    /// ⚠ A separate builder rather than a fifth parameter, and that is a decision rather than
+    /// convenience: `restored` is called from fixtures all over this workspace that have no orderer
+    /// to give, and widening it would put `None` at every one of them — the shape where a caller
+    /// who HAD the fact forgets to pass it reads exactly like a caller who never had one. Here the
+    /// only callers are the two that actually read a log.
+    #[must_use]
+    pub fn ordered_by(mut self, who: Option<StoodDownBy>) -> Self {
+        self.stood_down_by = who;
+        self
     }
 }
 
@@ -1075,6 +1227,15 @@ impl RunHandle for EndedRun {
 
     fn stood_down(&self) -> bool {
         self.stood_down
+    }
+
+    /// ⛔⛔⛔ **RESTORED, for the flag above's reason exactly** — register item 835. A run read out
+    /// of a dead daemon's log is precisely the run another supervisor meets: it is over, its line
+    /// says a person asked it to stand down, and *who* is the whole of what item 835 measured being
+    /// missing. Answering [`None`] here would put every restored run back in the state that had one
+    /// stopped run re-launched twice.
+    fn stood_down_by(&self) -> Option<StoodDownBy> {
+        self.stood_down_by.clone()
     }
 
     /// ⚠ ALWAYS `false`, and it is not the same shape as the order above it. A stand-down is
@@ -1436,6 +1597,14 @@ pub struct RunSummary {
     /// the order was given and NOT honoured, which is register item 594's whole finding.
     /// [`crate::plugins::stand_down_sentence`] is the one reader allowed to weigh the two together.
     pub stood_down: bool,
+    /// ⛔⛔⛔ **WHERE THAT ORDER CAME FROM** — [`RunHandle::stood_down_by`], register item 835, and
+    /// the field above's missing half.
+    ///
+    /// ⚠⚠ It is the ORDER's provenance and never the ending's, on [`stood_down`](Self::stood_down)'s
+    /// terms exactly. [`None`] beside a `true` flag means **nobody wrote it down**, and
+    /// [`crate::plugins::stand_down_sentence`] is the one reader allowed to say so — in words that
+    /// do not name a person nobody recorded.
+    pub stood_down_by: Option<StoodDownBy>,
     /// **WHETHER A PERSON IS HOLDING THIS RUN RIGHT NOW** — [`RunHandle::held`], register item 699.
     ///
     /// ⚠⚠⚠⚠⚠ **THE ROW COULD NOT CARRY THIS BECAUSE NOTHING HERE HELD IT**, and the driver that
@@ -2058,6 +2227,23 @@ pub struct PersistedRun {
     /// field with a default reads in both directions.
     #[serde(default)]
     pub stood_down: Option<bool>,
+    /// ⛔⛔⛔⛔⛔ **AND WHERE THAT ORDER CAME FROM** — register item 835, the field above's missing
+    /// half, and the one a restore needs MOST rather than least.
+    ///
+    /// A run is read after it ends, and the daemon that drove it is restarted between rounds
+    /// (item 606 measured thirteen live runs, every one restored). **The run another supervisor
+    /// meets is therefore always a restored one** — which is exactly the reading item 835 was filed
+    /// on: a closing line saying *a person* with no way to learn which person, and a stopped run
+    /// re-launched twice.
+    ///
+    /// ⚠⚠ [`None`] both for a log written before this field existed and for an order nobody wrote
+    /// down. The two read alike here and that is honest — neither is a claim about who — and
+    /// `crate::plugins::stand_down_sentence` renders both as **nobody wrote it down**, never as *a
+    /// person*.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move: an optional field with a default reads both ways.
+    #[serde(default)]
+    pub stood_down_by: Option<StoodDownBy>,
     /// ⚠⚠⚠⚠⚠ **WHO RAISED THE CANCEL THAT ENDED THIS RUN** — register item 596. [`None`] both for
     /// a log written before this field existed and for a run no cancel touched.
     ///
@@ -3132,7 +3318,7 @@ impl RunRegistry {
     /// afterwards, when the answer is the level this very call just wrote. So the lookup answers the
     /// record and each caller delivers — which is this file's own sentence one line up, *finding the
     /// run is the directory's job*, carried through to its end.
-    fn orderable(&self, id: RunId, order: RunOrder) -> Result<&RunRecord, Unordered> {
+    fn orderable(&self, id: RunId, order: &RunOrder) -> Result<&RunRecord, Unordered> {
         let Some(record) = self.runs.iter().find(|record| record.id == id) else {
             return Err(Unordered::NoSuchRun);
         };
@@ -3169,10 +3355,14 @@ impl RunRegistry {
     /// ⚠ IDEMPOTENT AND ONE-WAY. A second call changes nothing, and there is no un-ordering: a
     /// *stand down, no wait, carry on* racing a milestone would make a run's ending depend on which
     /// message arrived first.
-    pub fn stand_down(&self, id: RunId) -> Result<(), Unordered> {
-        self.orderable(id, RunOrder::StandDown)?
-            .run
-            .deliver(RunOrder::StandDown);
+    ///
+    /// ⛔⛔⛔ **`by` IS WHERE THE ORDER CAME FROM, ALREADY RESOLVED** — register item 835. The
+    /// caller points at a pane and the DAEMON reads the conversation off it, so what arrives here
+    /// is a fact rather than a claim; see [`StoodDownBy`]. [`None`] is *nobody wrote it down*, and
+    /// it must never be rendered as *a person*.
+    pub fn stand_down(&self, id: RunId, by: Option<StoodDownBy>) -> Result<(), Unordered> {
+        let order = RunOrder::StandDown(by);
+        self.orderable(id, &order)?.run.deliver(order);
         Ok(())
     }
 
@@ -3203,7 +3393,7 @@ impl RunRegistry {
     /// order takes the same lock, and a driver only ever LOADS the flag.
     pub fn hold(&self, id: RunId, held: bool) -> Result<Holding, Unordered> {
         let order = RunOrder::Hold(held);
-        let record = self.orderable(id, order)?;
+        let record = self.orderable(id, &order)?;
         let before = record.run.held();
         record.run.deliver(order);
         Ok(Holding::of(before, held))
@@ -3403,6 +3593,12 @@ impl RunRegistry {
                         // reader of such a log may see it. Writing `None` for *no order* would make
                         // this daemon's own silence indistinguishable from an older daemon's.
                         stood_down: Some(run.stood_down),
+                        // ⛔⛔⛔ AND WHO GAVE IT — register item 835, written beside the flag it is
+                        // the other half of. ⚠ NOT forced to `Some`, unlike the line above: this
+                        // one's `None` is a real answer (*nobody wrote down who*) rather than an
+                        // older daemon's silence, and the two are rendered the same way on purpose
+                        // — neither is a claim about a person.
+                        stood_down_by: run.stood_down_by.clone(),
                         // ⚠ ALWAYS `Some`, INCLUDING THE ZERO PAIR — the field above's argument.
                         // This image looked, so `made: 0` is a claim it may make; the `None` this
                         // field documents belongs to a log written before it existed.
@@ -3664,17 +3860,25 @@ impl RunRegistry {
                 // none. What comes back is the RECORD that somebody gave one, which is the only
                 // thing that can explain the ending a reader is looking at. An absent field reads
                 // `false` — a log written before this existed cannot be made to say a person spoke.
-                run: Box::new(EndedRun::restored(
-                    saved.stood_down.unwrap_or(false),
-                    // ⚠⚠⚠ ITEM 596. Without this the ONE canceller a person ever meets after a
-                    // restart would be unanswerable: `Shutdown` is raised by a daemon that then
-                    // exits, so the only daemon left to be asked is this one.
-                    saved.cancelled_by,
-                    // ⚠⚠⚠ ITEM 526: the process the dead daemon had driving it, which may still be
-                    // ALIVE — a driver outlives the daemon that spawned it (item 544's stage 1),
-                    // and the boot has to know before it starts a second one over the same pane.
-                    saved.driver,
-                )),
+                run: Box::new(
+                    EndedRun::restored(
+                        saved.stood_down.unwrap_or(false),
+                        // ⚠⚠⚠ ITEM 596. Without this the ONE canceller a person ever meets after a
+                        // restart would be unanswerable: `Shutdown` is raised by a daemon that then
+                        // exits, so the only daemon left to be asked is this one.
+                        saved.cancelled_by,
+                        // ⚠⚠⚠ ITEM 526: the process the dead daemon had driving it, which may still be
+                        // ALIVE — a driver outlives the daemon that spawned it (item 544's stage 1),
+                        // and the boot has to know before it starts a second one over the same pane.
+                        saved.driver,
+                    )
+                    // ⛔⛔⛔⛔⛔ AND WHO GAVE THE STAND-DOWN — register item 835. This is the crossing
+                    // that decides whether the item is paid at all: the run another supervisor reads is
+                    // a RESTORED one (item 606 measured thirteen live runs, every one restored), so an
+                    // orderer that died with its daemon would leave every reader in exactly the state
+                    // that had a stopped run re-launched twice.
+                    .ordered_by(saved.stood_down_by.clone()),
+                ),
                 progress: Arc::new(Mutex::new(Progress {
                     iterations: saved.iterations,
                     cost,
@@ -3858,6 +4062,11 @@ impl RunRegistry {
                 // sentence weighs the two against each other, and reading them a moment apart is
                 // this repository's *비교하는 두 값은 같은 순간에* rule at its cheapest.
                 stood_down: record.run.stood_down(),
+                // ⛔⛔⛔ AND WHO GAVE IT, ON THE SAME PASS — register item 835, for the line above's
+                // reason: the flag and the orderer are ONE fact read two ways, and the sentence
+                // that renders them weighs the pair. Read a moment apart, a row could say an order
+                // stands and name nobody, which is the state item 835 was filed on.
+                stood_down_by: record.run.stood_down_by(),
                 // ⚠ SAME PASS AGAIN — item 699. A hold read a moment later than the state would let
                 // a row say *running, and nobody is holding it* about a run that was held between
                 // the two reads, which is the one moment a person is watching for.
@@ -4848,6 +5057,109 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHO STOOD A RUN DOWN SURVIVES THE DAEMON THAT WAS TOLD** — register item 835,
+    /// and **the crossing that decides whether that item is paid at all.**
+    ///
+    /// # ⛔⛔⛔⛔ The run another supervisor reads is always a restored one
+    ///
+    /// Item 835 is another repository's watcher meeting a run it had not stopped, reading *"a
+    /// person asked this run to stand down"*, and re-launching it twice because *person* named
+    /// nobody it could ask. **That reader is looking at a run that is over** — and item 606
+    /// measured what that means here: thirteen live runs on two daemons, every one of them
+    /// restored, because a run is read after it ends and the daemon that drove it is restarted
+    /// between rounds. An orderer that died with its daemon would leave every reader in exactly
+    /// the state this item was filed on.
+    ///
+    /// ⚠⚠⚠ **MEASURED, ON THIS ROUND'S OWN RULE.** Writing `stood_down_by: None` at the persist
+    /// site was run against `sprag-host` and `sprag-gate` together on 2026-09-04: **the only red
+    /// was the standing one (register item 837)** — the wire gate drives the door, the sentence
+    /// gate drives the words, and the two lines between them were watched by nothing.
+    ///
+    /// ⚠⚠ **THROUGH THE FILE**, its neighbours' argument: a field `serde` never writes would still
+    /// satisfy an in-process round trip, and this value is a STRUCT whose `session` is the half a
+    /// reader actually goes to.
+    #[test]
+    fn who_stood_a_run_down_survives_the_daemon_that_was_told() {
+        const WATCHER: &str = "the-other-repositorys-watcher";
+
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            overridden: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(an_outcome()),
+                output: None,
+                uncommitted: None,
+            })),
+            run: Box::new(RecordingRun(Arc::clone(&log))),
+            progress: ProgressCell::default(),
+        });
+        registry
+            .stand_down(
+                id,
+                Some(StoodDownBy {
+                    pane: 12,
+                    session: Some(WATCHER.to_owned()),
+                }),
+            )
+            .expect("the run is in the directory");
+
+        // ⚠ THE PREMISE: the live registry really did learn it, or the restore below is carrying
+        // an absence and every assertion is about nothing.
+        let live = registry.snapshot();
+        assert_eq!(
+            live[0]
+                .stood_down_by
+                .as_ref()
+                .and_then(|who| who.session.as_deref()),
+            Some(WATCHER),
+            "⚠⚠⚠ THE PREMISE: the order's provenance must reach the LIVE row first: {:?}",
+            live[0].stood_down_by,
+        );
+
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+
+        let carried = successor.snapshot();
+        assert_eq!(
+            carried[0].stood_down_by,
+            Some(StoodDownBy {
+                pane: 12,
+                session: Some(WATCHER.to_owned()),
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 835: who stood this run down did not survive its daemon — and \
+             the reader this item is about is looking at a RESTORED run by construction (item 606: \
+             thirteen live runs, every one restored). A provenance that empties at the daemon \
+             boundary is one nobody will ever be holding when they need it, which is the state \
+             that had a stopped run re-launched twice. Got {:?} from {on_disk}",
+            carried[0].stood_down_by,
+        );
+
+        // ── AND THE SENTENCE A RESTORED RUN PUBLISHES NAMES THEM ──
+        //
+        // ⚠⚠ Asserted here rather than left to the sentence's own gate: this is the one place the
+        // RESTORED value and the renderer meet, and a provenance that crossed the file but never
+        // reached the words would be a fact that dies at the mouth.
+        let said = crate::plugins::stand_down_sentence(
+            &carried[0].state,
+            carried[0].stood_down_by.as_ref(),
+        );
+        assert!(
+            said.contains(WATCHER) && !said.contains("a person asked"),
+            "⛔⛔⛔⛔ AND THE RESTORED RUN'S OWN SENTENCE MUST NAME THEM. This is the sentence the \
+             next supervisor reads, and *a person* is what it read before: {said:?}",
+        );
+    }
+
     /// ⛔⛔⛔⛔ **THE ANSWER TO *WAS MY WORK KEPT* SURVIVES THE DAEMON THAT MEASURED IT** — register
     /// item 616, the residue item 604 left behind and named rather than hid.
     ///
@@ -4922,7 +5234,12 @@ mod tests {
         successor.restore(&read_back);
 
         let restored = successor.snapshot();
-        let said = crate::plugins::stand_down_sentence(&restored[0].state);
+        // ⚠ The ORDERER is this gate's neighbour's subject (register item 835); what is under test
+        // here is item 616's banked count surviving a restart, so it is left unrecorded.
+        let said = crate::plugins::stand_down_sentence(
+            &restored[0].state,
+            restored[0].stood_down_by.as_ref(),
+        );
         assert!(
             said.contains("3 turns"),
             "⛔⛔⛔⛔ ITEM 616: this run completed three turns and a restart lost the count, so the \
@@ -5213,6 +5530,7 @@ mod tests {
                 at: None,
                 document: None,
                 stood_down: None,
+                stood_down_by: None,
                 cancelled_by: None,
                 deliveries: None,
                 folds_by_reason: None,
@@ -5457,6 +5775,7 @@ mod tests {
             at: at.map(str::to_owned),
             document: document.map(str::to_owned),
             stood_down: None,
+            stood_down_by: None,
             cancelled_by: None,
             deliveries: None,
             folds_by_reason: None,
@@ -5566,6 +5885,7 @@ mod tests {
             at: None,
             document: document.map(str::to_owned),
             stood_down: None,
+            stood_down_by: None,
             cancelled_by: None,
             deliveries: None,
             folds_by_reason: None,
@@ -5665,6 +5985,7 @@ mod tests {
             at: None,
             document: document.map(str::to_owned),
             stood_down: None,
+            stood_down_by: None,
             cancelled_by: None,
             deliveries: None,
             folds_by_reason: None,
@@ -5772,7 +6093,20 @@ mod tests {
         fn stood_down(&self) -> bool {
             lock(&self.0)
                 .iter()
-                .any(|order| matches!(order, RunOrder::StandDown))
+                .any(|order| matches!(order, RunOrder::StandDown(_)))
+        }
+        // ⛔⛔⛔ AND WHO GAVE IT — register item 835, answered from the recorded ORDER for the
+        // reason above: what a driver outside this process has is the delivery, and a recorder
+        // holding a second copy would be agreeing with itself.
+        //
+        // ⚠ THE FIRST NAMED ONE, which is `Orders::deliver`'s own rule: a stand-down is idempotent,
+        // so the orderer a reader needs is whoever decided — not whoever repeated it — and a later
+        // order naming nobody must not erase a name already written.
+        fn stood_down_by(&self) -> Option<StoodDownBy> {
+            lock(&self.0).iter().find_map(|order| match order {
+                RunOrder::StandDown(who) => who.clone(),
+                _ => None,
+            })
         }
         // ⚠ THE LAST ONE IT WAS TOLD, where the stand-down above takes ANY — the difference is the
         // difference between the two orders. A hold can be taken back, so a recorder that answered
@@ -5925,14 +6259,14 @@ mod tests {
         let (registry, log) = a_directory_holding_a_run_that_is_not_a_thread();
 
         assert_eq!(
-            registry.stand_down(RunId(0)),
+            registry.stand_down(RunId(0), None),
             Ok(()),
             "the run is in the directory and its handle reads the order",
         );
         let told = heard(&log);
         assert_eq!(
             told,
-            vec![RunOrder::StandDown],
+            vec![RunOrder::StandDown(None)],
             "⛔⛔⛔⛔ REGISTER ITEM 544: a stand-down must be DELIVERED, and as itself. {told:?} \
              instead means the two orders collapsed — the run that banked its milestone and the \
              run that lost it become indistinguishable from here",
@@ -6030,7 +6364,7 @@ mod tests {
         );
 
         let (run, cancel, stand, hold) = build();
-        run.deliver(RunOrder::StandDown);
+        run.deliver(RunOrder::StandDown(None));
         assert_eq!(
             read(&[&cancel, &stand, &hold]),
             vec![false, true, false],
@@ -6091,6 +6425,7 @@ mod tests {
                 document: None,
                 // ⚠ A log with no such field: `None`, which restores as *no order was recorded*.
                 stood_down: None,
+                stood_down_by: None,
                 // ⚠ And no cancel was recorded either, which is what an interrupted run looks
                 // like: the daemon holding it went away without sweeping, so nobody raised one.
                 cancelled_by: None,
@@ -6130,7 +6465,7 @@ mod tests {
         // it a level to answer and this gate is about the `Err` arm, which the two share. What the
         // level says when there IS one is driven where a run has a driver.
         for (order, answer) in [
-            ("stand-down", registry.stand_down(RunId(4))),
+            ("stand-down", registry.stand_down(RunId(4), None)),
             ("hold", registry.hold(RunId(4), true).map(|_| ())),
         ] {
             assert_eq!(
