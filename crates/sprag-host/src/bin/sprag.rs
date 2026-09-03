@@ -5450,21 +5450,43 @@ const WAIT_FLAG: &str = "wait";
 /// than letting a caller read more out of it.
 const DRY_RUN_FLAG: &str = "dry-run";
 
+/// One word on `orchestrate`'s command line that belongs to THIS COMMAND rather than to the daemon.
+///
+/// # ⚠⚠ Everything a caller can learn about such a flag is HERE, and that is the point
+///
+/// `orchestrate`'s every other word is read off the published grammar, so these are the only ones
+/// this binary has to describe itself. Register item 864: when item 855 added the second of them,
+/// the collision check walked a table while `--help` spelled the two by hand — so the table could
+/// grow and the usage would not, which is item 855's own defect (a fact kept in a second place)
+/// reappearing inside its repair. The fields exist so that every consumer reads the same row.
+struct OwnFlag {
+    /// The flag as typed, without the leading dashes.
+    name: &'static str,
+    /// What it does, for `--help`. One line, no trailing full stop — the printer adds none either.
+    does: &'static str,
+    /// What a caller does INSTEAD when the daemon publishes an argument of this name, for the
+    /// refusal — see [`own_flag_collision`].
+    instead: &'static str,
+}
+
 /// The words on `orchestrate`'s command line that belong to THIS COMMAND rather than to the daemon.
 ///
 /// One table rather than one check per flag, because the property is about the NAMESPACE and not
 /// about any of them: every other word there is read off the published grammar, so a daemon that
-/// ever publishes an argument spelled like one of these makes two meanings out of one word. The
-/// second column is what the refusal offers instead — see [`own_flag_collision`].
-const OWN_FLAGS: &[(&str, &str)] = &[
-    (
-        WAIT_FLAG,
-        "parking until a run ends. Start the run without it and read `sprag runs`.",
-    ),
-    (
-        DRY_RUN_FLAG,
-        "checking a call without starting it. Start the run and read the refusal it prints.",
-    ),
+/// ever publishes an argument spelled like one of these makes two meanings out of one word.
+const OWN_FLAGS: &[OwnFlag] = &[
+    OwnFlag {
+        name: WAIT_FLAG,
+        does: "parks until the run ends and prints the outcome",
+        instead: "parking until a run ends. Start the run without it and read `sprag runs`.",
+    },
+    OwnFlag {
+        name: DRY_RUN_FLAG,
+        does: "answers whether THIS DAEMON TAKES THE CALL and starts nothing, so a launcher can \
+               ask before it launches instead of writing down which build it needs",
+        instead: "checking a call without starting it. Start the run and read the refusal it \
+                  prints.",
+    },
 ];
 
 /// How often [`orchestrate`] `--wait` re-reads the run's state.
@@ -5517,7 +5539,7 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
     let (selector, words) = sprag_rpc::selector_of(&forms);
 
     if wants_help {
-        print_orchestrate_usage(&forms, &selector);
+        print!("{}", orchestrate_usage(&forms, &selector, OWN_FLAGS));
         return Ok(());
     }
 
@@ -5901,12 +5923,13 @@ impl GrammarSurface {
 /// ⚠ It walks the TABLE and not a list written here, so a flag added to this command is checked by
 /// being added there — item 855 added the second one and this function did not change.
 fn own_flag_collision(forms: &[PublishedForm]) -> Option<String> {
-    OWN_FLAGS.iter().find_map(|(flag, instead)| {
+    OWN_FLAGS.iter().find_map(|own| {
         forms
             .iter()
             .flat_map(|form| form.args.iter())
-            .any(|arg| sprag_rpc::call::same_name(&arg.name, flag))
+            .any(|arg| sprag_rpc::call::same_name(&arg.name, own.name))
             .then(|| {
+                let (flag, instead) = (own.name, own.instead);
                 format!(
                     "orchestrate: this daemon publishes a run argument called {flag:?}, which is \
                      also this command's own flag for {instead}"
@@ -5915,16 +5938,62 @@ fn own_flag_collision(forms: &[PublishedForm]) -> Option<String> {
     })
 }
 
+/// What the first usage line says after the plugin and its arguments — one `[--name]` per row of
+/// [`OWN_FLAGS`], in table order.
+///
+/// ⚠ Built rather than spelled — register item 864. See [`own_flag_lines`].
+fn own_flag_summary(flags: &[OwnFlag]) -> String {
+    flags
+        .iter()
+        .map(|own| format!(" [--{}]", own.name))
+        .collect()
+}
+
+/// The usage paragraph describing this command's own flags — one line per row of [`OWN_FLAGS`].
+///
+/// # ⚠⚠ Built from the table, never spelled — register item 864
+///
+/// When item 855 added `--dry-run`, the collision check walked the table while the usage named the
+/// two by hand. The table could then gain a row the usage never mentioned, and a caller reading
+/// `--help` would not know the flag existed — which is item 855's own defect, a fact kept in a
+/// second place, reappearing inside 855's repair. Split out as a function for the reason
+/// [`own_flag_collision`] is one: it makes the claim a unit test rather than a captured stdout.
+///
+/// ⚠⚠ AND THE TABLE IS THE ARGUMENT, which is what makes the claim testable AT ALL. Reading
+/// `OWN_FLAGS` directly, a gate can only compare the usage against today's two rows — and a printer
+/// that spells those two by hand produces the very same string, so the mutation that matters
+/// (spelling them) stays GREEN. Handed a table, a test can serve a THIRD row no printer knows, and
+/// only a builder that walks it can answer. Measured 2026-09-03: the first shape of this gate
+/// passed its own mutation.
+fn own_flag_lines(flags: &[OwnFlag]) -> String {
+    flags
+        .iter()
+        .map(|own| format!("  --{} {}\n", own.name, own.does))
+        .collect()
+}
+
 /// One usage block per form, under the word that selects it — built from what the daemon answered.
-fn print_orchestrate_usage(forms: &[PublishedForm], selector: &Option<String>) {
-    println!("sprag orchestrate PLUGIN [--ARG VALUE]… [--{WAIT_FLAG}] [--{DRY_RUN_FLAG}]");
-    println!(
+///
+/// ⚠ Returns the text rather than printing it, so the claims about it are unit-testable — the
+/// caller does the one `print!`. `own` is [`OWN_FLAGS`] in every shipping call; it is a parameter
+/// for the reason [`own_flag_lines`] gives, and that reason is a measured one.
+fn orchestrate_usage(
+    forms: &[PublishedForm],
+    selector: &Option<String>,
+    own: &[OwnFlag],
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!(
+        "sprag orchestrate PLUGIN [--ARG VALUE]…{}\n",
+        own_flag_summary(own),
+    );
+    out.push_str(
         "\n  Start a bounded loop and print its run id. Every run is guardrail-bounded: it stops\n  \
          at its iteration ceiling or its cost ceiling, whichever binds first, and `sprag\n  \
-         cancel-run` stops it sooner. `--{WAIT_FLAG}` parks until it ends and prints the outcome.\n  \
-         `--{DRY_RUN_FLAG}` answers whether THIS DAEMON TAKES THE CALL and starts nothing, so a\n  \
-         launcher can ask before it launches instead of writing down which build it needs.\n"
+         cancel-run` stops it sooner.\n\n",
     );
+    out.push_str(&own_flag_lines(own));
+    out.push('\n');
     for form in forms {
         let word = selector
             .as_ref()
@@ -5937,13 +6006,14 @@ fn print_orchestrate_usage(forms: &[PublishedForm], selector: &Option<String>) {
             })
             .cloned()
             .unwrap_or_default();
-        println!("  {word}");
-        println!("    {}", form.usage());
+        let _ = writeln!(out, "  {word}");
+        let _ = writeln!(out, "    {}", form.usage());
     }
-    println!(
+    out.push_str(
         "\n  The forms above are what THIS daemon publishes (`sprag show-grammar run`), not a list\n  \
-         compiled into this binary. A value beginning with a dash needs --name=value."
+         compiled into this binary. A value beginning with a dash needs --name=value.\n",
     );
+    out
 }
 
 /// The usage a refusal prints under itself — the SELECTED form alone when the caller chose one,
@@ -12416,7 +12486,8 @@ mod tests {
             !OWN_FLAGS.is_empty(),
             "a table with no rows would pass every assertion below by iterating nothing",
         );
-        for (flag, instead) in OWN_FLAGS {
+        for own in OWN_FLAGS {
+            let (flag, instead) = (own.name, own.instead);
             // A doctored publication, declared as the wire declares one — no daemon serves it,
             // which is exactly why the branch needs a fixture rather than a run.
             let clashing = read(vec![ArgGrammar::open(flag, "int")].leak());
@@ -12434,6 +12505,109 @@ mod tests {
         // carries do not collide, so the check is silent and every flag reaches the fill.
         let real = read(REAL);
         assert!(own_flag_collision(std::slice::from_ref(&real)).is_none());
+    }
+
+    /// ⚠⚠ **THE USAGE DESCRIBES EVERY FLAG THIS COMMAND OWNS, AND IT IS BUILT FROM THE TABLE** —
+    /// register item 864.
+    ///
+    /// # What was measured, and why it is item 855's own defect
+    ///
+    /// Item 855 added `--dry-run` beside `--wait` and made the collision check walk a TABLE — and
+    /// then spelled both flags by hand in the usage. So `OWN_FLAGS` could gain a row that `--help`
+    /// never mentioned, and a caller reading the only self-description this binary offers would not
+    /// know the flag existed. That is a fact kept in a second place, which is exactly what item 855
+    /// was filed on, reappearing inside 855's repair.
+    ///
+    /// # Three claims, and the third is the one a hand-written usage fails
+    ///
+    /// * the SUMMARY carries one bracketed flag per row, and NO MORE — a hand-written extra is as
+    ///   much a second place as a missing one;
+    /// * the LINES are one per row, each naming its flag and saying what it does;
+    /// * **a table this binary has never seen still reaches the printed usage.**
+    ///
+    /// ⚠⚠ THE THIRD CLAIM IS SERVED A ROW THAT DOES NOT EXIST, and that is the whole design of this
+    /// gate. Its first shape compared the usage against `OWN_FLAGS` itself and PASSED its own
+    /// mutation (2026-09-03): a printer spelling today's two flags by hand produces character-for-
+    /// character the string the builders produce, so no assertion over two rows can tell them
+    /// apart. Only a THIRD row — which a hand-written line cannot contain and a walk over the
+    /// argument cannot miss — separates the two.
+    #[test]
+    fn the_orchestrate_usage_describes_every_flag_this_command_owns() {
+        const REQUIRED_ONLY: &[ArgGrammar] = &[
+            ArgGrammar::open("plugin", "string"),
+            ArgGrammar::open("pane", "int"),
+        ];
+        assert!(
+            !OWN_FLAGS.is_empty(),
+            "a table with no rows would pass every assertion below by iterating nothing",
+        );
+
+        // ── ① THE SUMMARY: one bracketed flag per row, and no more ──────────────────────────
+        let summary = own_flag_summary(OWN_FLAGS);
+        assert_eq!(
+            summary.matches("[--").count(),
+            OWN_FLAGS.len(),
+            "the first usage line offers exactly the table's rows: {summary:?}",
+        );
+
+        // ── ② THE LINES: one per row, each naming its flag and what it does ─────────────────
+        let lines = own_flag_lines(OWN_FLAGS);
+        assert_eq!(
+            lines.lines().count(),
+            OWN_FLAGS.len(),
+            "one line per row rather than a hand-written list: {lines:?}",
+        );
+        for own in OWN_FLAGS {
+            assert!(
+                summary.contains(&format!("[--{}]", own.name)),
+                "the summary offers --{}: {summary:?}",
+                own.name,
+            );
+            assert!(
+                lines.contains(own.name) && lines.contains(own.does),
+                "the paragraph says what --{} does: {lines:?}",
+                own.name,
+            );
+        }
+
+        // ── ③ A ROW NO PRINTER KNOWS REACHES THE USAGE ─────────────────────────────────────
+        //
+        // The doctored publication's arguments are all required, so nothing the DAEMON published
+        // can be mistaken for one of this command's own optional flags.
+        const INVENTED: &str = "a-flag-no-build-of-this-binary-has";
+        let doctored = &[
+            OwnFlag {
+                name: INVENTED,
+                does: "exists only in this test, and only a walk over the table can print it",
+                instead: "nothing — no daemon publishes this",
+            },
+            OwnFlag {
+                name: WAIT_FLAG,
+                does: "the shipping row beside it, so the walk is not the only thing that matches",
+                instead: "parking until a run ends.",
+            },
+        ];
+        let form = sprag_rpc::PublishedForm::read(
+            &CallForm::object(REQUIRED_ONLY).to_answer(),
+            "a doctored publication",
+        )
+        .expect("it reads");
+        let usage = orchestrate_usage(std::slice::from_ref(&form), &None, doctored);
+        assert!(
+            usage.contains(&own_flag_summary(doctored))
+                && usage.contains(&own_flag_lines(doctored)),
+            "⚠⚠ THE PRINTER SPELLS ITS OWN FLAGS INSTEAD OF WALKING THE TABLE: a row it was handed \
+             is missing from the usage a caller reads. {usage:?}",
+        );
+        assert!(
+            usage.contains(INVENTED),
+            "and the invented row is the proof, by name: {usage:?}",
+        );
+        assert!(
+            !usage.contains(DRY_RUN_FLAG),
+            "⚠ THE CONTROL: handed a table without it, the usage must not print --{DRY_RUN_FLAG} \
+             from somewhere else. {usage:?}",
+        );
     }
 
     #[test]
