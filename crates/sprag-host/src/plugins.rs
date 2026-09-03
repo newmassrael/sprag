@@ -9506,6 +9506,111 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND THE SPLIT REACHES THE ROW, WHERE THE ONLY READER ITEM 856 HAS WILL LOOK** —
+    /// register item 856(1), and **the third and fourth crossing this round's own rule found.**
+    ///
+    /// # ⛔⛔⛔⛔ Measured, and the answer was the same for a third time
+    ///
+    /// This round wrote down *do not measure a new value at its two ENDS — delete each publication
+    /// along the way*, after the driver→wire and the run-log crossings were each found watched by
+    /// nothing. Applying it once more, to `run_to_json`: deleting this publication on 2026-09-04,
+    /// against `sprag-host`, `sprag-gate` and `sprag-mcp` together, left **the standing red
+    /// (register item 837) and one unrelated load-sensitive gate** — and every gate this item had
+    /// just earned stayed green.
+    ///
+    /// ⚠⚠⚠ **AND THIS IS THE LAST TWO FEET OF THE JOURNEY.** The crossings already gated carry the
+    /// split from the driver to this daemon; this is where it becomes something a PERSON is shown.
+    /// A fact that reaches the wire and dies at the mouth is the failure this file names in five
+    /// places, and for item 856 it is fatal rather than untidy: the item's whole remaining debt is
+    /// *somebody reads the number and the axis splits or does not*, so a number that stops one
+    /// function short of the reader pays nothing at all.
+    ///
+    /// # ⚠⚠ Why the sentence is asserted off the ROW rather than beside it
+    ///
+    /// `folds_by_reason_sentence` reads the row's own JSON, so composing it here from the row this
+    /// function built is the only arrangement in which *what the row carries* and *what the mouth
+    /// says* cannot be two shapes that agree in a test and differ in production — the hole the
+    /// neighbouring crossing gates were written for.
+    #[test]
+    fn the_split_of_a_runs_folds_reaches_the_row_and_its_mouth() {
+        /// A row for a run whose progress carries `folds`.
+        fn row(folds: sprag_plugin::FoldsByReason) -> Value {
+            let progress = sprag_plugin::Progress {
+                folds_by_reason: folds,
+                ..sprag_plugin::Progress::default()
+            };
+            run_to_json(
+                &crate::runs::RunSummary {
+                    id: RunId(7),
+                    label: "ai_loop pane=3".to_owned(),
+                    loop_kind: None,
+                    opened_by: None,
+                    opened_by_session: None,
+                    overridden: None,
+                    state: RunState::Running,
+                    progress,
+                    reported: None,
+                    build: Some(crate::wire::BUILD.to_owned()),
+                    stood_down: false,
+                    held: false,
+                    cancelled_by: None,
+                    withheld: None,
+                    ended_driver: None,
+                    not_resumed: None,
+                    resumed: false,
+                },
+                None,
+                None,
+            )
+        }
+
+        let mut counted = sprag_plugin::FoldsByReason::NONE;
+        for _ in 0..3 {
+            counted.record(sprag_plugin::ReflectReason::Capacity, true);
+        }
+        // The CONTROL row — same prompt shape, a reason that is not about a full session, and it
+        // LANDED. Item 856's own refutation lives in this row and nowhere else.
+        for _ in 0..4 {
+            counted.record(sprag_plugin::ReflectReason::Budget, false);
+        }
+
+        // ── ① THE NUMBERS REACH THE ROW ──
+        let carried = row(counted);
+        assert_eq!(
+            carried[RUN_FOLDS_BY_REASON_KEY]["capacity"],
+            json!({"delivered": 3, "folded": 3}),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): the split stops one function short of the row, so no \
+             reader of a run can ask what its folding depended on. Deleting this publication was \
+             MEASURED to leave every gate this item had earned green: {carried}",
+        );
+
+        // ── ② AND THE MOUTH SAYS THEM, OFF THE ROW'S OWN JSON ──
+        let said = folds_by_reason_sentence(&carried)
+            .expect("a row carrying a split can be said back to a person");
+        assert!(
+            said.contains("capacity 3 of 3") && said.contains("budget 0 of 4"),
+            "⛔⛔⛔⛔ REGISTER ITEM 856(1): the row carries the split and the mouth cannot say it. \
+             The LANDING row is the half that matters: it is the only shape that can refute this \
+             item's axis, and an instrument that prints its confirmations and swallows its \
+             counter-examples is why `1/1` has stood: {said:?}",
+        );
+
+        // ── ③ AND A RUN THAT NEVER REFLECTED PUTS NO TABLE ON ITS ROW ──
+        //
+        // ⚠⚠ The key is ABSENT rather than six empty rows, and that is the opposite of the WIRE's
+        // decision one gate over — deliberately. On the wire an empty table is this image saying it
+        // counted; on the row it would be a comparison over nothing, sitting beside runs that have
+        // one. The row is where `is_empty` turns a population into silence.
+        let quiet = row(sprag_plugin::FoldsByReason::NONE);
+        assert!(
+            quiet.get(RUN_FOLDS_BY_REASON_KEY).is_none()
+                && folds_by_reason_sentence(&quiet).is_none(),
+            "⚠⚠⚠ A RUN THAT REFLECTED NOTHING PUBLISHES NO TABLE. Six `0 of 0` rows beside runs \
+             with real populations read as six reasons that never fold, which is rule 6 the other \
+             way up — the escape is not a pass, it is an invented row: {quiet}",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **A RUN THAT STEPS WAKES THE STREAM, SO NOBODY HAS TO POLL IT** — register item 706.
     ///
     /// # ⚠⚠⚠⚠⚠ What its absence cost, and why the lower bound below is the whole gate

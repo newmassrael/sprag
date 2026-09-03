@@ -12639,21 +12639,51 @@ mod tests {
             "⚠⚠⚠ THE CONTROL for the delivery pair: a run that delivered nothing must not talk \
              about prompts at all: {quiet}",
         );
+        // ⛔⛔⛔ AND THE SPLIT OF THOSE FOLDS IS ITS OWN CONTROL TOO — register item 856(1), for
+        // the delivery pair's reason exactly: it is a TABLE the mouth reads, not a sentence the
+        // host carried. A run that reflected nothing must say nothing about reflections.
+        assert!(
+            !quiet.contains("folds by why it reflected"),
+            "⚠⚠⚠ THE CONTROL for the split: a run that reflected nothing has no comparison to \
+             publish, and a table of empty rows beside runs with real ones is rule 6 the other way \
+             up — the escape is not a pass, it is an invented population: {quiet}",
+        );
 
         for (key, sentence) in clauses {
             run[*key] = Value::String((*sentence).to_owned());
         }
         run[sprag_host::plugins::RUN_DELIVERED_KEY] = serde_json::json!(14);
         run[sprag_host::plugins::RUN_FOLDED_KEY] = serde_json::json!(14);
+        // ⛔⛔⛔⛔ AND THE SPLIT OF THOSE FOLDS — register item 856(1). Deleting its clause from
+        // `render_run` was MEASURED on 2026-09-04 to leave every gate in `sprag-host` green apart
+        // from the standing one, which is why this arm exists: the item's whole remaining debt is
+        // *somebody reads the number*, so a table that stops at the row pays nothing.
+        //
+        // ⚠⚠ THE LANDING ROW IS IN THE FIXTURE ON PURPOSE. A run whose every reflection folded
+        // would let a mouth that printed only folds pass — and printing only folds is the defect,
+        // because item 856's own refutation is a reflection that LANDED.
+        run[sprag_host::plugins::RUN_FOLDS_BY_REASON_KEY] = serde_json::json!({
+            "capacity": {"delivered": 3, "folded": 3},
+            "budget": {"delivered": 4, "folded": 0},
+        });
         let said = render_run(&run);
         let lines: Vec<&str> = said.lines().collect();
 
         let delivered = sprag_host::plugins::delivery_sentence(&run)
             .expect("a run that delivered has a delivery sentence");
+        let split = sprag_host::plugins::folds_by_reason_sentence(&run)
+            .expect("a run that reflected has a split to say");
+        assert!(
+            split.contains("budget 0 of 4"),
+            "⚠⚠⚠ THE PREMISE OF THE ARM BELOW: the composed sentence must carry the row that \
+             LANDED, or *the mouth prints it* is a claim about a sentence that already dropped the \
+             only shape able to refute item 856: {split:?}",
+        );
         let expected: Vec<&str> = clauses
             .iter()
             .map(|(_, sentence)| *sentence)
             .chain(std::iter::once(delivered.as_str()))
+            .chain(std::iter::once(split.as_str()))
             .collect();
 
         for sentence in &expected {
