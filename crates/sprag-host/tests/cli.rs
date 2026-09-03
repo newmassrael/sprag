@@ -4897,6 +4897,121 @@ fn a_run_launched_from_a_pane_records_the_conversation_that_asked_for_it() {
     drop(guard);
 }
 
+/// ⛔⛔⛔⛔⛔ **BEFORE CLOSING A PANE A PERSON CAN ASK WHO IS LIVING IN IT** — register item 865's
+/// ⑸, at the verb that is this CLI's discovery step.
+///
+/// # ⚠⚠⚠⚠⚠ What the silence cost, and why it was not a wrong answer
+///
+/// Two panes were closed on 2026-09-03 after THREE checks: no live run, both inner agents
+/// `blocked`, both `(revived)`. Every one of those is about RUNS AND PANES. Two live Claude
+/// conversations died with the window, and the first sign was `No agent named 'mnemosyne-2b' is
+/// reachable` afterwards. **The daemon held each pane's conversation the whole time** — it is what
+/// `borne_by` is computed from — and this listing dropped it. The question was not answered
+/// wrongly; there was nowhere to ask it.
+///
+/// # ⛔⛔⛔⛔ The arm that matters is the pane NO RUN CLAIMS
+///
+/// `borne_by` already joins a pane to a run through this same string, so a build that spoke only
+/// when a run claimed the pane would satisfy *agent panes say who is in them* and leave the case
+/// that actually happened silent: those two panes had **no live run**, which was one of the three
+/// things checked before closing them. So this gate's subject is an agent pane with no run at all,
+/// and a shell beside it is the control.
+///
+/// ⚠⚠ **IT ASSERTS THE ID, NOT MERELY THAT SOMETHING IS THERE.** The names in a person's agent
+/// roster are labels this daemon has never heard of; the conversation id is the join between a row
+/// here and one of them. *This pane has an agent* would say the pane is not empty and leave a
+/// reader unable to find out whose it is — the half of that morning that hurt.
+#[test]
+fn a_pane_listing_says_which_conversation_is_living_in_each_pane() {
+    const OCCUPANT: &str = "5b7d0e44-0000-4000-8000-0000000008a5";
+
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-occupant-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    // ⚠ THE TRACKED DOUBLE, LINKED — register item 467, and under the daemon's own state directory
+    // so `DaemonGuard` takes it away (item 794's population). See the gate above for both reasons.
+    let dir = state.join("stand-in-agent");
+    std::fs::create_dir_all(&dir).expect("create the stand-in agent dir");
+    let bin = sprag_gate::doubles::Doubles::of(env!("CARGO_MANIFEST_DIR"))
+        .set("cli")
+        .link("claude", &dir.join("claude"));
+
+    // The session's birth pane is a SHELL — the control, and it is first so the claim below cannot
+    // be satisfied by a listing that prints the key on everything.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "house", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
+        }),
+    )
+    .expect("new_session answers");
+    // ...and an AGENT pane beside it, with NO RUN EVER ASKED FOR IT.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "house",
+            "path": mux_action_path(SPAWN_ACTION),
+            "args": {
+                "cmd": [bin.to_str().expect("a utf-8 path"), "--session-id", OCCUPANT],
+            },
+        }),
+    )
+    .expect("the agent pane is spawned");
+
+    let listed = sprag(&sock, &["panes", "-t", "house"]);
+    assert!(listed.ok, "the pane listing answers: {}", listed.stderr);
+    let rows: Vec<&str> = listed.stdout.lines().collect();
+    let occupied = rows
+        .iter()
+        .find(|row| row.contains("claude"))
+        .unwrap_or_else(|| panic!("the agent pane is listed: {rows:?}"));
+    let empty = rows
+        .iter()
+        .find(|row| !row.contains("claude"))
+        .unwrap_or_else(|| panic!("the shell pane is listed: {rows:?}"));
+
+    // ── THE CLAIM ───────────────────────────────────────────────────────────────────────────────
+    assert!(
+        occupied.contains(OCCUPANT),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 865 ⑸: a pane holding a live conversation must SAY WHICH ONE, \
+         and this pane belongs to no run — which is the state two panes were in when closing them \
+         killed two Claude sessions nobody knew were there. The daemon computes `borne_by` from \
+         this very string and then drops it. Row: {occupied}",
+    );
+    // ── AND THE CONTROL, WHICH IS WHAT MAKES THE CLAIM MEAN ANYTHING ────────────────────────────
+    assert!(
+        !empty.contains("session="),
+        "⚠⚠ A SHELL HOLDS NO CONVERSATION AND MUST SAY NOTHING. Absence is the claim on this \
+         listing — a key on every pane in the workspace is noise on the common path, and a build \
+         printing one unconditionally would pass the assertion above: {empty}",
+    );
+    assert_ne!(
+        occupied.contains("session="),
+        empty.contains("session="),
+        "⚠⚠⚠ THE TWO ROWS MUST DIFFER IN THIS. If they read the same, the listing is not \
+         distinguishing an occupied pane from an empty one — which is the whole act this exists \
+         for. Read {occupied} against {empty}",
+    );
+    drop(guard);
+}
+
 /// ⛔⛔⛔⛔⛔ **A DAEMON TOLD TO DRIVE ITS RUNS IN PROCESSES OF THEIR OWN DOES, AND ONE TOLD NOT TO
 /// DOES NOT** — [`sprag_host::options::RUN_DRIVER_PROCESS`]'s contract, in both directions.
 ///

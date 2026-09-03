@@ -102,7 +102,11 @@ use sprag_gate::sources::outside_strings;
 /// stand a fake agent binary in — and that one was folded under the first instead, so the gate
 /// costs this population one site rather than two and `DaemonGuard` takes both away together. The
 /// ratchet is what asked the question; the answer was to litter less, not to record more.
-const HARNESS_SITES_REGISTERED: usize = 162;
+///
+/// ⚠ AND BY ONE AGAIN THE SAME DAY: register item 865's ⑸ gate needs a daemon, so it needs a state
+/// root. Its stand-in agent went under that root from the start, on the line above's answer — the
+/// second time this ratchet's question was worth asking and the first time it was already answered.
+const HARNESS_SITES_REGISTERED: usize = 163;
 
 /// The tree this ratchet counts — through the one door, register item 809.
 ///

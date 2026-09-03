@@ -50,9 +50,10 @@ const DIAGNOSIS: &str = "why_not_serving";
 /// for its replacement. That is the ratchet doing exactly what it was built for — the number moved
 /// in the commit that moved the population, twice, and neither time by anybody remembering to.
 ///
-/// ⚠ AND BY ONE ON 2026-09-03: register item 871's gate spawns a daemon of its own, so it waits
-/// once. Third time the ratchet has named the change rather than anybody remembering to.
-const WAITS_REGISTERED: usize = 42;
+/// ⚠ AND BY ONE ON 2026-09-03, TWICE: register items 871 and 865's ⑸ each added a gate that spawns
+/// a daemon of its own, so each waits once. Third and fourth time the ratchet has named the change
+/// rather than anybody remembering to.
+const WAITS_REGISTERED: usize = 43;
 
 /// This gate's own source, which must SPELL the needle in order to hunt for it.
 ///

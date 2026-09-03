@@ -5207,6 +5207,34 @@ pub const PANE_REVIVED_KEY: &str = "revived";
 /// currently holding this run's `opened_by_session`* — so nothing new is being derived, only asked
 /// from the side that could not ask it.
 pub const PANE_BORNE_BY_KEY: &str = "borne_by";
+/// **WHICH CONVERSATION IS LIVING IN THIS PANE** — `Pane::agent_session`, or ABSENT for a pane that
+/// is not an agent's. Register item 865's ⑸.
+///
+/// # ⛔⛔⛔⛔⛔ The daemon held this and published a JOIN on it instead
+///
+/// [`PANE_BORNE_BY_KEY`] above is computed FROM this string and then the string is dropped, so the
+/// row could say *a run owns this pane* and could not say *somebody is in here*. Those come apart
+/// exactly when it matters: a pane no run claims still holds a live conversation, and that is the
+/// one this listing went silent about.
+///
+/// **What the silence cost, measured.** Closing two panes on 2026-09-03, three things were checked
+/// first — no live run, both inner agents `blocked`, both `(revived)` — and all three were about
+/// RUNS AND PANES. Two Claude sessions died with the window, and the only sign afterwards was
+/// `No agent named 'mnemosyne-2b' is reachable`. The daemon knew the conversation in each pane the
+/// whole time; nothing asked it, because there was nowhere to ask. ⚠ *"이 페인 안에 살아 있는
+/// 세션이 있는가"는 잴 생각조차 못 했다 — 그 화살표가 없기 때문이다."*
+///
+/// ⚠⚠ **AND IT IS CURRENT, NOT A BIRTH RECORD** — the property that makes it worth publishing.
+/// Measured against the live daemon: pane 807's value was the asking session's own id, digit for
+/// digit, and three agent panes carried one while four shells carried none. A loop that replaces
+/// its agent's session respawns the pane, and the identity is re-read from the new argv there.
+///
+/// ⚠ ABSENT rather than `null`, its siblings' presence-is-the-claim rule: a key on every shell in
+/// the workspace is noise on the common path, and the common path is most of this listing.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on items 492 and 494's measurement: an OPTIONAL key
+/// ADDED to an ANSWER leaves every existing client's requests well-formed and its parsing intact.
+pub const PANE_SESSION_KEY: &str = "agent_session";
 /// The member of a [`PANES_SLOT`] entry that is an ADDRESS: the pane's id, which is what a client
 /// puts back into [`pane_input_path`] to read or drive that pane.
 ///

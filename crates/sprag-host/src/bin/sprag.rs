@@ -4459,8 +4459,32 @@ fn pane_row(pane: &Value) -> String {
     } else {
         ""
     };
+    // ⛔⛔⛔⛔⛔ **AND WHO IS LIVING IN IT, WHICH IS WHAT A PERSON ABOUT TO CLOSE IT NEEDS** —
+    // register item 865's ⑸.
+    //
+    // # ⚠⚠⚠⚠⚠ The two markers above answer about the PANE; this answers about its occupant
+    //
+    // `(revived)` says how the pane was born and `(driven)` says whether a run holds it now, and
+    // both were checked — along with `sprag runs` — before two panes were closed on 2026-09-03.
+    // All three were about runs and panes. **Two live Claude conversations died with that window**,
+    // and the first sign was `No agent named 'mnemosyne-2b' is reachable` afterwards. The
+    // conversation was in the daemon's own pane record the entire time; this listing simply never
+    // said it, so the question was not answered wrongly — it could not be asked.
+    //
+    // ⚠⚠ IT IS THE ID AND NOT A COUNT, because the id is the JOIN: the names a person sees in
+    // their agent roster are labels the daemon has never heard of, and a conversation id is what
+    // ties a row here to one of them (a session's own scratchpad path carries it). A bare *this
+    // pane has an agent* would say the pane is not empty and leave a reader unable to find out
+    // whose it is, which is the half of that morning that actually hurt.
+    //
+    // ⚠ Absent for a shell, its neighbours' rule: a key on every pane in the workspace is noise on
+    // the common path, and the common path is most of this listing.
+    let session = pane[sprag_host::wire::PANE_SESSION_KEY]
+        .as_str()
+        .map_or_else(String::new, |id| format!("  session={id}"));
     format!(
-        "{id}: {cols}x{rows}  {command}{name}{title}{opened_by}{revived}{driven}{active}{exited}"
+        "{id}: {cols}x{rows}  \
+         {command}{name}{title}{opened_by}{session}{revived}{driven}{active}{exited}"
     )
 }
 

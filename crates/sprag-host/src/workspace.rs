@@ -3231,6 +3231,21 @@ impl WorkspaceExternal {
                         if let Some(run) = p.agent_session.as_deref().and_then(|s| borne.get(s)) {
                             entry[crate::wire::PANE_BORNE_BY_KEY] = serde_json::json!(run);
                         }
+                        // ⛔⛔⛔⛔⛔ **AND WHO IS LIVING IN IT** — register item 865's ⑸, and the
+                        // half the line above cannot reach because it is COMPUTED from this and
+                        // then throws it away.
+                        //
+                        // `borne_by` answers *a run owns this pane*. A pane no run claims still
+                        // holds a conversation, and that is the pane a person closes believing it
+                        // is empty: closing two of them cost two live Claude sessions, after three
+                        // checks that were all about runs and panes. The daemon had this string
+                        // throughout — see `PANE_SESSION_KEY` for the measurement.
+                        //
+                        // ⚠ Read off the pane rather than off `borne`, so a pane whose run has
+                        // ended still says somebody is in it — which is the whole case.
+                        if let Some(session) = p.agent_session.as_deref() {
+                            entry[crate::wire::PANE_SESSION_KEY] = serde_json::json!(session);
+                        }
                         entry
                     })
                     .collect();
