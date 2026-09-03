@@ -1901,6 +1901,105 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND A REPLY THAT REPORTS WHAT A COMMAND OF ITS OWN HAS JUST FINISHED IS NOT ONE
+    /// EITHER** — the READER's half of [`crate::outer`]'s SIXTH closing clause.
+    ///
+    /// # ⛔⛔⛔⛔ Why it is a sixth sample and not a copy of either neighbour
+    ///
+    /// Measured 2026-09-04 on a live independent check of this repository's own milestone, whole:
+    ///
+    /// ```text
+    /// The run I had in flight when I gave my verdict has now finished, and it confirms what I
+    /// reported rather than changing it: `sprag-plugin --lib` ended `563 passed; 2 failed`, and
+    /// the complete failure set across both packages under the three mutations is exactly the
+    /// three repaired gates plus the standing 837 baseline — no fourth gate anywhere caught any
+    /// of them.
+    /// ```
+    ///
+    /// The DEFERRAL sample judged nothing and promised a later turn. The CARRIED-OVER sample judged
+    /// and referred back to its own answer. **This one did what the prompt asked** — it did not
+    /// wait for its command, it answered, and the command landed afterwards — and then had nowhere
+    /// to put the result but a follow-up. The prompt's fix is a clause that closes that loop; this
+    /// is the reader's half, and neither is the whole claim.
+    ///
+    /// # ⭐⭐⭐⭐⭐ AND THIS SAMPLE HOLDS A DOOR THE OTHER FIVE COULD NOT
+    ///
+    /// The deferral sample's own doc had to WITHDRAW the claim that it guards the *take any `no`*
+    /// widening: `not the product` and `doesn't build` are not the WORD `no`, so with the mark
+    /// check disabled that test stays green. **This reply carries a bare lowercase `no`** — *no
+    /// fourth gate anywhere caught any of them* — standing as its own word, mid-sentence, in a
+    /// reply that is not a verdict.
+    ///
+    /// ⇒ So the widening this repository has feared since register item 741 is measurable here on
+    /// a REAL reply rather than an invented one: drop [`verdict_word`]'s mark and this checker's
+    /// *no* becomes a verdict, and the milestone is recorded **REJECTED by a checker whose whole
+    /// content confirmed it.** That is the banned repair at its most expensive, and it is now a
+    /// mutation away from red rather than an argument in a comment.
+    #[test]
+    fn a_reply_that_reports_a_landed_command_is_not_a_verdict() {
+        const LANDED: &str = "The run I had in flight when I gave my verdict has now finished, and \
+                              it confirms what I reported rather than changing it: `sprag-plugin \
+                              --lib` ended `563 passed; 2 failed`, and the complete failure set \
+                              across both packages under the three mutations is exactly the three \
+                              repaired gates plus the standing 837 baseline — no fourth gate \
+                              anywhere caught any of them.";
+        let asked = "Has the checkpoint been reached? Reply with YES or NO.";
+        let took = Duration::from_millis(1);
+
+        // ══ THE PREMISE: this sample really does carry a bare `no` ═════════════════════════════
+        //
+        // ⚠⚠⚠ Without it the ratchet below is a claim about a string that may have been edited
+        // into harmlessness — which is exactly how the deferral sample's version of this claim came
+        // to be false and had to be withdrawn.
+        assert!(
+            LANDED.split_whitespace().any(|word| word == "no"),
+            "⚠⚠⚠⚠⚠ THE PREMISE: this reply must contain the bare word `no`, or the mark ratchet \
+             below is guarding nothing: {LANDED:?}",
+        );
+
+        let unheard = verdict_in(LANDED, asked, took).expect_err(
+            "⛔⛔⛔⛔⛔ A REPLY WITH NO MARKED VERDICT MUST NOT COME BACK AS A JUDGEMENT — and \
+             this is the costliest sample there is for the repair item 741 banned: the reply's \
+             only verdict-shaped word is a lowercase `no` inside a sentence whose content \
+             CONFIRMS the milestone, so a reader that took it would record the checkpoint \
+             REJECTED by a checker that had accepted it",
+        );
+        let Unheard::NotAVerdict(line) = &unheard else {
+            panic!(
+                "⚠⚠⚠ IT IS THE *it answered and said no verdict* ARM: this checker ran, replied, \
+                 and had in fact judged — so `Unanswered`'s remedy (ask again) is wrong for it, \
+                 and asking again gets the same shape back. Got {unheard:?}",
+            );
+        };
+        assert!(
+            line.starts_with("The run I had in flight"),
+            "⚠⚠ and it carries the first LINE, which is what tells a person WHICH silence this \
+             was — *it reported a landing* reads nothing like *it deferred* and nothing like *it \
+             referred back*: {line:?}",
+        );
+        assert_eq!(
+            unheard.silence(),
+            Silence::Unreadable,
+            "⛔⛔⛔⛔ THE REMEDY THIS ROUTES TO IS THE WHOLE POINT: `Unreadable` means *fix the \
+             prompt or the program*, and the prompt is exactly what was fixed. Routed to \
+             `Unanswered` this would be re-asked of a checker that would file the same report \
+             again",
+        );
+
+        // ── THE CONTROL: the same prose with a marked verdict in front of it IS read ────────
+        let judged = format!("YES — {LANDED}");
+        let verdict = verdict_in(&judged, asked, took)
+            .expect("a marked verdict in front of the same prose is a judgement");
+        assert!(
+            verdict.holds,
+            "⚠⚠⚠ THE CONTROL: this must differ from the arm above in the MARK and in nothing \
+             else, or *unreadable* could be about the prose rather than about the missing word. \
+             ⚠⚠ AND IT MUST READ `YES` RATHER THAN THE `no` FURTHER IN — a reader that took the \
+             LAST verdict-shaped word would answer `false` here, on a reply that opens with the \
+             opposite",
+        );
+    }
+
     /// ⚠⚠⚠ **A STOPPED RUN GETS NO JUDGEMENT — AND THAT IS WHAT KEEPS `redirecting` OUT OF ITS
     /// REACH** — the half of R395's claim that lives one door over from `screening`.
     ///

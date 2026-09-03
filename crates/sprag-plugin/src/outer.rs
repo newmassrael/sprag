@@ -636,7 +636,11 @@ const HOW_TO_ANSWER: &str = "Now answer. YOUR REPLY MUST BEGIN WITH THE WORD YES
      nothing here remembers the one before it. JUDGE ON WHAT YOU HAVE ALREADY SEEN: if a command \
      you started has \
      not finished, do not wait for it — answer now from the evidence in front of you, and if that \
-     evidence was not enough, say so in your sentence. Then \
+     evidence was not enough, say so in your sentence. AND WHEN THAT COMMAND DOES LAND, ITS RESULT \
+     IS EVIDENCE FOR THIS ANSWER AND NOT A REPORT TO FILE: a reply whose subject is what a run of \
+     yours has now finished — \"the run I had in flight has finished\", \"it confirms what I \
+     reported\" — is thrown away exactly as a missing verdict is, however good the result was. Put \
+     the landing in your sentence, behind a YES or a NO that is this reply's first word. Then \
      give ONE short sentence saying why. If what you were shown is empty or does not let you \
      judge, say that in the sentence rather than guessing.\n";
 
@@ -20016,6 +20020,26 @@ mod tests {
              LESSON REPEATED. A checker whose answer has not moved, told only that referring back \
              is discarded, is left to work out that it must re-spell it; told to spell the word \
              again even when nothing changed, it is not: {HOW_TO_ANSWER:?}",
+        );
+        // ── ⛔⛔⛔⛔⛔ AND THE SIXTH: THE THIRD CLAUSE OPENS A LOOP AND NEVER CLOSES IT ───────
+        // Measured 2026-09-04 on a live independent check of this repository's own milestone. The
+        // whole reply was *"The run I had in flight when I gave my verdict has now finished, and
+        // it confirms what I reported rather than changing it: `sprag-plugin --lib` ended `563
+        // passed; 2 failed` …"* — a checker that did exactly what `ALREADY SEEN` asks (it did not
+        // wait; it answered, and the command landed afterwards) and then had nowhere to put the
+        // result but a follow-up.
+        //
+        // ⚠⚠⚠ NONE OF THE FIVE ABOVE REACHES IT, and each misses for its own reason: it is no
+        // preamble; `ONLY TURN` forbids PROMISING a later turn and this one is not promising, it is
+        // delivering; `ALREADY SEEN` is the clause it OBEYED; and `FIRST TURN` / `NOT CHANGED` name
+        // referring back to an ANSWER, where this refers back to a COMMAND. ⇒ A prompt that tells a
+        // checker to start something and not wait owes it a rule for the moment the thing lands.
+        assert!(
+            HOW_TO_ANSWER.contains("NOT A REPORT TO FILE"),
+            "⚠⚠⚠⚠⚠ THE PROMPT TELLS A CHECKER TO ANSWER WITHOUT WAITING AND SAYS NOTHING ABOUT \
+             WHAT THE LANDING IS WHEN IT ARRIVES, so *here is what my run found* is a shape it \
+             leaves open — and a checker took it, on a turn whose content CONFIRMED the milestone. \
+             A clause that opens a loop has to close it: {HOW_TO_ANSWER:?}",
         );
         // ⚠ The READER's half of this sample lives in `judge`, where `verdict_in` is — see
         // `a_reply_that_defers_instead_of_judging_is_not_a_verdict`. Two halves, two modules, and
