@@ -15193,6 +15193,194 @@ fn the_orchestrate_refusals_are_the_daemons_own_grammar() {
     );
 }
 
+/// 🎯🎯🎯🎯 **A LAUNCHER LEARNS THAT THIS DAEMON CANNOT TAKE ITS CALL, AND LEARNS IT WITHOUT
+/// STARTING ANYTHING** — register item 855.
+///
+/// # What was measured, and what it cost
+///
+/// The refusal above is exact and it is LATE: it comes out of the launch itself, so a caller who
+/// wanted the answer first had nowhere to ask for it. What the debt loop's `launch.sh` did instead
+/// was write the answer down — *"⛔ It requires a daemon at or after `98229d6`"* — and on
+/// 2026-09-03 that constant was satisfied by the running daemon while the launch it guarded was
+/// refused anyway, because the key it had grown (`--loop_kind`, item 848) landed one commit later.
+/// Every guard around it stayed green: `sprag doctor` says the daemon and the client AGREE on a
+/// build, which is a different question from whether that build TAKES THIS CALL. Two trees'
+/// watchers hand-assembled the `orchestrate` call that day.
+///
+/// # The four arms, and why each is needed
+///
+/// * **① the key this form does not carry** — the verdict refuses, and NAMES IT. Item 855's
+///   done-when ⑵ is exactly this: an answer that says *something is wrong* leaves a caller where
+///   the hand-written constant left them.
+/// * **② nothing was started** — the whole value is that the question is free. A check that
+///   launches to find out is the thing being replaced.
+/// * **③ the same call with that key removed** — the verdict says TAKEN, and STILL starts nothing.
+///   Without this arm ① passes against a `--dry-run` that refuses everything.
+/// * **④ THE MIDDLE, and it is one word wide** — the command line of ③ with `--dry-run` deleted
+///   and nothing else changed DOES start a run. Without it, ②'s `no runs` is equally true of a
+///   binary that cannot start a run at all, which is how a gate can be green at both ends with the
+///   claim missing in the middle (items 847, 848).
+#[test]
+fn a_launcher_is_told_this_daemon_cannot_take_its_call_before_any_run_exists() {
+    let (_guard, sock, pane) = daemon_with_one_pane("preflight");
+    let pane = pane.to_string();
+    // What `sprag runs` prints when the daemon holds none — the predicate for "nothing started".
+    const NONE_YET: &str = "no runs";
+    // A sentinel this pane never prints, so arm ④'s run is ended by its own one-second ceiling
+    // rather than by anything this test has to wait for.
+    const NEVER: &str = "A SENTINEL THIS PANE NEVER PRINTS";
+
+    // ── ① THE KEY THIS FORM DOES NOT CARRY ──────────────────────────────────────────────────
+    //
+    // `loop_kind` by name, because it is the word that actually broke: the running daemon's
+    // `ai_loop` form had not grown it yet, and no form of `orchestrator` has it at all.
+    let unknown = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "echo preflight",
+            "--sentinel",
+            NEVER,
+            "--loop_kind",
+            "debt",
+            "--dry-run",
+        ],
+    );
+    assert!(
+        !unknown.ok,
+        "a call this daemon cannot take is REFUSED by the check, not reported as fine: {}",
+        unknown.stdout,
+    );
+    assert!(
+        unknown.stderr.contains("--loop_kind is not an argument"),
+        "and the refusal names WHICH key, which is the whole difference between this and a \
+         hand-written build constant: {}",
+        unknown.stderr,
+    );
+
+    // ── ② AND NOTHING WAS STARTED ───────────────────────────────────────────────────────────
+    let after_refusal = sprag(&sock, &["runs", "-t", "work"]);
+    assert!(
+        after_refusal.stdout.contains(NONE_YET),
+        "the question cost nothing: no run exists after the refusal. {}",
+        after_refusal.stdout,
+    );
+
+    // ── ③ THE SAME CALL WITH THAT KEY REMOVED ───────────────────────────────────────────────
+    let takes = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "echo preflight",
+            "--sentinel",
+            NEVER,
+            "--max-seconds",
+            "1",
+            "--dry-run",
+        ],
+    );
+    assert!(
+        takes.ok,
+        "the call this daemon DOES take is not refused: {}",
+        takes.stderr,
+    );
+    assert!(
+        takes.stdout.contains("TAKES this call"),
+        "and the caller is told so in a sentence a launcher can branch on: {}",
+        takes.stdout,
+    );
+    let after_verdict = sprag(&sock, &["runs", "-t", "work"]);
+    assert!(
+        after_verdict.stdout.contains(NONE_YET),
+        "⚠ A TAKEN CALL STARTS NOTHING EITHER -- that is the arm that says --dry-run is a \
+         question and not a shortened launch. {}",
+        after_verdict.stdout,
+    );
+
+    // ── ④ THE MIDDLE: ONE WORD DELETED, AND A RUN EXISTS ────────────────────────────────────
+    let launched = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "echo preflight",
+            "--sentinel",
+            NEVER,
+            "--max-seconds",
+            "1",
+        ],
+    );
+    assert!(
+        launched.ok,
+        "the very same command line without --dry-run launches: {}",
+        launched.stderr,
+    );
+    let after_launch = sprag(&sock, &["runs", "-t", "work"]);
+    assert!(
+        !after_launch.stdout.contains(NONE_YET),
+        "⚠⚠ WITHOUT THIS ARM THE GATE ABOVE IS GREEN FOR A BINARY THAT CANNOT LAUNCH AT ALL. {}",
+        after_launch.stdout,
+    );
+}
+
+/// ⚠⚠ **THE TWO FLAGS THIS COMMAND OWNS CONTRADICT EACH OTHER, AND IT SAYS SO** — item 855.
+///
+/// `--wait` parks until a run ends; `--dry-run` starts none. A command line carrying both has no
+/// reading in which each word means what it says, and letting one quietly win is the shape item
+/// 852 was filed on: an instruction dropped with nothing printed. The refusal names both.
+#[test]
+fn parking_until_a_run_ends_and_starting_no_run_cannot_both_be_meant() {
+    let (_guard, sock, pane) = daemon_with_one_pane("contradiction");
+    let pane = pane.to_string();
+
+    let both = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "echo both",
+            "--sentinel",
+            "A SENTINEL THIS PANE NEVER PRINTS",
+            "--wait",
+            "--dry-run",
+        ],
+    );
+    assert!(!both.ok, "the contradiction is refused: {}", both.stdout);
+    assert!(
+        both.stderr.contains("--wait") && both.stderr.contains("--dry-run"),
+        "and the refusal names BOTH words rather than picking one: {}",
+        both.stderr,
+    );
+    let none = sprag(&sock, &["runs", "-t", "work"]);
+    assert!(
+        none.stdout.contains("no runs"),
+        "a refused contradiction starts nothing: {}",
+        none.stdout,
+    );
+}
+
 /// ⛔⛔⛔⛔ **`sprag hold-run` AND `sprag stand-down` STOP PROMISING A PERSON SOMETHING THEY WILL
 /// NOT GET** — register items 539 and 597, at the surface a person actually types.
 ///

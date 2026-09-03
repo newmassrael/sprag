@@ -5431,6 +5431,42 @@ fn print_grammar_arg(arg: &sprag_rpc::PublishedArg, indent: usize) {
 /// spelled the same — see there for why that is a refusal and not a rename.
 const WAIT_FLAG: &str = "wait";
 
+/// The CLI-only flag on `orchestrate` that answers whether THIS DAEMON TAKES THIS CALL, and starts
+/// nothing.
+///
+/// # 🎯 The question a caller could not ask without paying for the answer — register item 855
+///
+/// `orchestrate` builds its call from the grammar the daemon publishes, so a key that daemon does
+/// not carry is refused BY NAME (`--loop_kind is not an argument of this call`). That refusal is
+/// exact and it is late: it arrives from the launch itself, so a caller who wanted to know first
+/// had nowhere to ask. What a launcher did instead was WRITE THE ANSWER DOWN — the debt loop's
+/// `launch.sh` carried a comment saying which daemon commit its call needed — and on 2026-09-03
+/// that constant was a commit behind the truth while every guard around it stayed green. A
+/// measurement kept in a second place goes stale silently; this is the first place.
+///
+/// ⚠ What it answers is exactly the fill, and no more: the call FITS the published form. Whether
+/// the daemon then accepts the run (its pane is in the addressed window, its plugin is enabled) and
+/// whether the run converges are not questions a form can answer, and the verdict says so rather
+/// than letting a caller read more out of it.
+const DRY_RUN_FLAG: &str = "dry-run";
+
+/// The words on `orchestrate`'s command line that belong to THIS COMMAND rather than to the daemon.
+///
+/// One table rather than one check per flag, because the property is about the NAMESPACE and not
+/// about any of them: every other word there is read off the published grammar, so a daemon that
+/// ever publishes an argument spelled like one of these makes two meanings out of one word. The
+/// second column is what the refusal offers instead — see [`own_flag_collision`].
+const OWN_FLAGS: &[(&str, &str)] = &[
+    (
+        WAIT_FLAG,
+        "parking until a run ends. Start the run without it and read `sprag runs`.",
+    ),
+    (
+        DRY_RUN_FLAG,
+        "checking a call without starting it. Start the run and read the refusal it prints.",
+    ),
+];
+
 /// How often [`orchestrate`] `--wait` re-reads the run's state.
 ///
 /// A poll and not a subscription because a run's outcome is a LEVEL: the `runs` slot answers where
@@ -5438,7 +5474,8 @@ const WAIT_FLAG: &str = "wait";
 /// `agent_state` is a level for. A missed edge costs nothing here.
 const RUN_POLL: Duration = Duration::from_millis(120);
 
-/// `orchestrate PLUGIN [--ARG VALUE]… [--wait]`: start a BOUNDED loop and print its run id.
+/// `orchestrate PLUGIN [--ARG VALUE]… [--wait] [--dry-run]`: start a BOUNDED loop and print its run
+/// id — or, with `--dry-run`, say whether this daemon takes the call and start nothing.
 ///
 /// # This verb is the door the product's headline feature did not have
 ///
@@ -5484,12 +5521,13 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
         return Ok(());
     }
 
-    if let Some(collision) = wait_flag_collision(&forms) {
+    if let Some(collision) = own_flag_collision(&forms) {
         return Err(bad_input(&collision));
     }
 
     let mut flags = Vec::new();
     let mut wait = false;
+    let mut dry_run = false;
     let mut rest = args.into_iter().peekable();
     // The FIRST bare word is the plugin, under whatever name the publication says chooses a form.
     if let Some(selector) = &selector
@@ -5517,6 +5555,10 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
             wait = true;
             continue;
         }
+        if sprag_rpc::call::same_name(spelled, DRY_RUN_FLAG) {
+            dry_run = true;
+            continue;
+        }
         match rest.peek() {
             Some(value) if !value.starts_with("--") => {
                 flags.push(Flag::new(spelled, rest.next().expect("just peeked")));
@@ -5525,6 +5567,17 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
             // terms rather than this parser guessing which it was.
             _ => flags.push(Flag::bare(spelled)),
         }
+    }
+
+    // ⚠⚠ THE TWO CLI-OWN FLAGS CONTRADICT EACH OTHER, AND THAT IS SAID RATHER THAN RESOLVED.
+    // `--wait` parks until a run ends and `--dry-run` starts none, so a command line carrying both
+    // has no reading in which each word means what it says. Silently letting one win is the shape
+    // item 852 was filed on — a caller's instruction dropped with nothing printed.
+    if wait && dry_run {
+        return Err(bad_input(&format!(
+            "orchestrate: --{WAIT_FLAG} parks until a run ends and --{DRY_RUN_FLAG} starts none, \
+             so the two cannot both be meant. Check the call with --{DRY_RUN_FLAG}, then launch it."
+        )));
     }
 
     // ⚠⚠⚠⚠⚠ A PANE IS RESOLVED HERE, THROUGH THE DOOR EVERY OTHER PANE VERB USES — register item
@@ -5560,6 +5613,22 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
             usage_for(&forms, &flags, &selector, &words),
         ))
     })?;
+    // 🎯 THE ANSWER WITHOUT THE ACT — register item 855. Everything above this line is the check a
+    // launcher wanted and could not have: the grammar came off the socket, the pane resolved, and
+    // the fill said whether this daemon's `run` takes the words that were typed. Everything below
+    // it starts a loop. Returning here is therefore not a shortened launch, it is the launch's own
+    // verdict handed over before the launch — which is what makes a caller's hand-written "this
+    // needs a daemon at or after <commit>" unnecessary rather than merely wrong.
+    if dry_run {
+        println!("orchestrate --{DRY_RUN_FLAG}: this daemon TAKES this call. No run was started.");
+        println!("{}", usage_for(&forms, &flags, &selector, &words));
+        println!(
+            "  Answered: every name given is an argument of that form, every required one is \
+             present, and every value is of the declared type. NOT answered: whether the daemon \
+             accepts the run, and whether the run converges."
+        );
+        return Ok(());
+    }
     // ⚠⚠⚠⚠⚠ AND THE REQUEST SAYS WHICH WINDOW THE PANE WAS FOUND IN — register item 686, the
     // half item 542 left standing. Resolving session-wide answers WHICH pane; it does not carry
     // the answer to the daemon. `require_pane_in` is `PluginWorld::has_pane` — ONE window's pane
@@ -5819,36 +5888,42 @@ impl GrammarSurface {
 ///
 /// # ⚠ A REFUSAL, NOT A RENAME, and a free function rather than an `if` inside the verb
 ///
-/// `--wait` is this command's own and every other flag is the daemon's, so the day the wire
-/// publishes an argument of that name the two meanings collide silently — one would win and nobody
-/// would be told. Refusing is the only answer that does not require this binary to have guessed
-/// right about a daemon it did not compile with.
+/// [`OWN_FLAGS`] are this command's own and every other flag is the daemon's, so the day the wire
+/// publishes an argument of one of those names the two meanings collide silently — one would win
+/// and nobody would be told. Refusing is the only answer that does not require this binary to have
+/// guessed right about a daemon it did not compile with.
 ///
 /// It is a function because the branch is otherwise reachable only from a daemon this workspace
 /// cannot build: a test would have to serve a doctored grammar to drive one `if`. Narrowing the
 /// ROLE to "given these forms, is there a collision?" makes the claim a unit test — the move R334
 /// recorded when a rule about ORDER could not be faked through its trait.
-fn wait_flag_collision(forms: &[PublishedForm]) -> Option<String> {
-    forms
-        .iter()
-        .flat_map(|form| form.args.iter())
-        .any(|arg| sprag_rpc::call::same_name(&arg.name, WAIT_FLAG))
-        .then(|| {
-            format!(
-                "orchestrate: this daemon publishes a run argument called {WAIT_FLAG:?}, which is \
-                 also this command's own flag for parking until a run ends. Start the run without \
-                 --{WAIT_FLAG} and read `sprag runs`."
-            )
-        })
+///
+/// ⚠ It walks the TABLE and not a list written here, so a flag added to this command is checked by
+/// being added there — item 855 added the second one and this function did not change.
+fn own_flag_collision(forms: &[PublishedForm]) -> Option<String> {
+    OWN_FLAGS.iter().find_map(|(flag, instead)| {
+        forms
+            .iter()
+            .flat_map(|form| form.args.iter())
+            .any(|arg| sprag_rpc::call::same_name(&arg.name, flag))
+            .then(|| {
+                format!(
+                    "orchestrate: this daemon publishes a run argument called {flag:?}, which is \
+                     also this command's own flag for {instead}"
+                )
+            })
+    })
 }
 
 /// One usage block per form, under the word that selects it — built from what the daemon answered.
 fn print_orchestrate_usage(forms: &[PublishedForm], selector: &Option<String>) {
-    println!("sprag orchestrate PLUGIN [--ARG VALUE]… [--{WAIT_FLAG}]");
+    println!("sprag orchestrate PLUGIN [--ARG VALUE]… [--{WAIT_FLAG}] [--{DRY_RUN_FLAG}]");
     println!(
         "\n  Start a bounded loop and print its run id. Every run is guardrail-bounded: it stops\n  \
          at its iteration ceiling or its cost ceiling, whichever binds first, and `sprag\n  \
-         cancel-run` stops it sooner. `--{WAIT_FLAG}` parks until it ends and prints the outcome.\n"
+         cancel-run` stops it sooner. `--{WAIT_FLAG}` parks until it ends and prints the outcome.\n  \
+         `--{DRY_RUN_FLAG}` answers whether THIS DAEMON TAKES THE CALL and starts nothing, so a\n  \
+         launcher can ask before it launches instead of writing down which build it needs.\n"
     );
     for form in forms {
         let word = selector
@@ -12307,22 +12382,24 @@ mod tests {
         );
     }
 
-    /// ⚠⚠ **THE CLI'S OWN `--wait` AND THE DAEMON'S ARGUMENTS ARE ONE NAMESPACE, AND A COLLISION IS
+    /// ⚠⚠ **THE CLI'S OWN FLAGS AND THE DAEMON'S ARGUMENTS ARE ONE NAMESPACE, AND A COLLISION IS
     /// SAID RATHER THAN RESOLVED.**
     ///
-    /// Every other flag of `orchestrate` is the daemon's, read off its published grammar. `--wait`
-    /// is this command's. If a daemon ever publishes a run argument of that name the two meanings
-    /// collide, and a binary that picked one would be guessing about a daemon it did not compile
-    /// with — so it refuses and names the way round.
+    /// Every other flag of `orchestrate` is the daemon's, read off its published grammar.
+    /// [`OWN_FLAGS`] are this command's. If a daemon ever publishes a run argument of one of those
+    /// names the two meanings collide, and a binary that picked one would be guessing about a
+    /// daemon it did not compile with — so it refuses and names the way round.
     ///
     /// Driven by handing the check a doctored publication, which is the only way this branch is
     /// reachable: no daemon in this workspace publishes such an argument, and
     /// `the_orchestrate_refusals_are_the_daemons_own_grammar` shows the real one does not.
+    ///
+    /// ⚠ EVERY flag in the table, not the one that was there first — register item 855, which
+    /// added `--dry-run` beside `--wait`. A check that walks a table and a test that names one of
+    /// its rows is a gate that stops covering the day the table grows, which is the shape a great
+    /// many of this workspace's exemption arms had.
     #[test]
-    fn a_daemon_argument_that_collides_with_the_waiting_flag_is_refused() {
-        // Two doctored publications, declared as the wire declares one — no daemon serves
-        // either, which is exactly why the branch needs a fixture rather than a run.
-        const CLASHING: &[ArgGrammar] = &[ArgGrammar::open(WAIT_FLAG, "int")];
+    fn a_daemon_argument_that_collides_with_one_of_this_commands_own_flags_is_refused() {
         const REAL: &[ArgGrammar] = &[
             ArgGrammar::open("pane", "int"),
             ArgGrammar::open("stimulus", "string"),
@@ -12334,18 +12411,29 @@ mod tests {
             )
             .expect("it reads")
         };
-        let clashing = read(CLASHING);
-        let refusal = wait_flag_collision(std::slice::from_ref(&clashing))
-            .expect("a daemon publishing `wait` collides with this command's own flag");
+
         assert!(
-            refusal.contains(WAIT_FLAG) && refusal.contains("sprag runs"),
-            "{refusal}"
+            !OWN_FLAGS.is_empty(),
+            "a table with no rows would pass every assertion below by iterating nothing",
         );
+        for (flag, instead) in OWN_FLAGS {
+            // A doctored publication, declared as the wire declares one — no daemon serves it,
+            // which is exactly why the branch needs a fixture rather than a run.
+            let clashing = read(vec![ArgGrammar::open(flag, "int")].leak());
+            let refusal =
+                own_flag_collision(std::slice::from_ref(&clashing)).unwrap_or_else(|| {
+                    panic!("a daemon publishing {flag:?} collides with this command's own flag")
+                });
+            assert!(
+                refusal.contains(flag) && refusal.contains(instead),
+                "the refusal for {flag:?} must name it and say what to do instead: {refusal}",
+            );
+        }
 
         // THE CONTROL, and it is the case that actually ships: the arguments a real `run` form
         // carries do not collide, so the check is silent and every flag reaches the fill.
         let real = read(REAL);
-        assert!(wait_flag_collision(std::slice::from_ref(&real)).is_none());
+        assert!(own_flag_collision(std::slice::from_ref(&real)).is_none());
     }
 
     #[test]
