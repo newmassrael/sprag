@@ -37,7 +37,7 @@ use serde_json::json;
 use sprag_client::{BootSpec, WireHost};
 use sprag_host::HostClient;
 use sprag_host::mux_action_path;
-use sprag_host::wire::{NEW_WINDOW_ACTION, WindowRef};
+use sprag_host::wire::{NEW_WINDOW_ACTION, SELECT_WINDOW_ACTION, WindowRef};
 use sprag_rpc::{HostConn, HostEndpoint};
 
 /// How long the daemon gets to bind its socket before the test gives up on it.
@@ -312,5 +312,101 @@ fn a_tab_click_lands_on_a_window_this_client_never_opened() {
         after.iter().find(|w| w.current).map(|w| w.name.as_str()),
         Some(name.as_str()),
         "⛔⛔⛔⛔⛔ and the strip must follow: {after:?}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT THIS CLIENT IS LOOKING AT IS ITS OWN** — register item 860, and the last shape
+/// of the owner's report that no fixture had.
+///
+/// # ⚠⚠⚠⚠⚠ Why "the click did nothing" and "the click was undone" look identical to a person
+///
+/// The owner pressed tabs DOZENS of times. A click that never lands explains that; so does a click
+/// that lands and is pulled back a second later, and the two have opposite remedies. The owner's
+/// session is not quiet — a repayment loop is acting in it continuously, spawning panes, typing and
+/// reporting — so every fixture in this workspace differs from their machine in the same way:
+/// **nobody else is doing anything in it.**
+///
+/// Register item R346 settled that `current` in the `windows` slot means *the window I am on*,
+/// per client, rather than the session's landing. That is what makes a second party's work safe.
+/// It had never been driven with a second party.
+///
+/// REVERT-PROOF: make the `windows` slot mark the SESSION's current window instead of the scope's
+/// (the pre-R346 reading) and both assertions fail — the client jumps to wherever somebody else
+/// went, which is exactly what a person reads as *my tab click keeps getting undone*.
+#[test]
+fn another_partys_work_in_the_session_does_not_move_this_client() {
+    let (_daemon, sock) = spawn_daemon();
+    await_daemon(&sock);
+    let host = boot(&sock);
+    let session = host.current_session();
+    for _ in 0..2 {
+        let _born = host.new_window();
+    }
+
+    // This client parks itself on a window of its own choosing — the tab click, once.
+    let rows = host.windows();
+    let home = rows
+        .iter()
+        .find(|w| !w.current)
+        .expect("a window to park on");
+    let (home_id, home_name) = (home.id.expect("an identity to park by"), home.name.clone());
+    assert_eq!(
+        host.select_window(&WindowRef::Picked(home_id)).as_deref(),
+        Some(home_name.as_str()),
+        "the control: this client can park itself somewhere",
+    );
+
+    // ⚠⚠ SOMEBODY ELSE WORKS IN THE SAME SESSION. A second connection is what the repayment loop,
+    // the CLI and the MCP server all are to the owner's daemon.
+    let mut elsewhere = HostConn::connect(&sock, BOOT_WAIT).expect("a second connection");
+    let other = rows
+        .iter()
+        .find(|w| w.name != home_name)
+        .expect("a window that is not this client's")
+        .name
+        .clone();
+    elsewhere
+        .call(
+            "scene/invoke",
+            json!({
+                "session": session,
+                "path": mux_action_path(SELECT_WINDOW_ACTION),
+                "args": { "window": other },
+            }),
+        )
+        .expect("the other party selects a window of its own");
+
+    let after = host.windows();
+    assert_eq!(
+        after.iter().find(|w| w.current).map(|w| w.name.as_str()),
+        Some(home_name.as_str()),
+        "⛔⛔⛔⛔⛔ ANOTHER PARTY LOOKING ELSEWHERE MUST NOT MOVE THIS CLIENT. If it does, a person \
+         who clicks a tab in a busy session is pulled off it again within a second — which reads \
+         as *the tab does nothing* and is the other half of item 860's report: {after:?}",
+    );
+
+    // ⚠ AND THE SAME FOR A WINDOW BEING BORN, which selects itself for its CALLER. The owner's six
+    // windows were all opened this way, by a launcher that is not their client.
+    elsewhere
+        .call(
+            "scene/invoke",
+            json!({
+                "session": session,
+                "path": mux_action_path(NEW_WINDOW_ACTION),
+                "args": {},
+            }),
+        )
+        .expect("the other party opens a window");
+    let deadline = Instant::now() + BOOT_WAIT;
+    while host.windows().len() < 4 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let after = host.windows();
+    assert_eq!(
+        after.iter().find(|w| w.current).map(|w| w.name.as_str()),
+        Some(home_name.as_str()),
+        "⛔⛔⛔⛔⛔ AND A WINDOW SOMEBODY ELSE OPENED MUST NOT TAKE THIS CLIENT'S SCREEN — \
+         `new_window` selects what it makes, and if that selection reached every viewer the \
+         owner's screen would jump every time their loop opened one: {after:?}",
     );
 }
