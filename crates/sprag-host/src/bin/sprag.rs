@@ -5627,10 +5627,36 @@ const WAIT_FLAG: &str = "wait";
 /// that constant was a commit behind the truth while every guard around it stayed green. A
 /// measurement kept in a second place goes stale silently; this is the first place.
 ///
-/// ⚠ What it answers is exactly the fill, and no more: the call FITS the published form. Whether
-/// the daemon then accepts the run (its pane is in the addressed window, its plugin is enabled) and
-/// whether the run converges are not questions a form can answer, and the verdict says so rather
-/// than letting a caller read more out of it.
+/// # ⛔⛔⛔⛔⛔ AND IT ANSWERED ONLY THE FILL, WHILE SAYING IT WAS THE CHECK — register item 873
+///
+/// This doc used to end *"what it answers is exactly the fill, and no more"*, which was true and
+/// was the defect. Answering the fill means answering with the CLIENT, and a client cannot read
+/// this repository's loop-kind document — so a call the check reported taken was refused at launch
+/// with *"this run named neither `agent` nor `ready_when`, and this repository's loop-kind document
+/// authors no barrier either"* (wz `f8`, 2026-09-03). **A green check followed by a red launch is
+/// worse than no check**, because a launcher branches on it.
+///
+/// ⇒ The flag is now SENT, on the very call that would launch
+/// ([`PluginGrammar::DRY_RUN`](sprag_host::wire::PluginGrammar)), and the daemon stops one line
+/// above the spawn. There is no longer a set of checks the dry run runs and the launch does not, or
+/// the other way about, because there is no longer a second set — the two are one door.
+///
+/// ⚠ What is STILL unanswered, and the verdict says so: **whether the run converges.** That is not
+/// a fact about the call and no door can hold it.
+///
+/// ⚠⚠ The residue, stated rather than hidden: this now needs a ROUND TRIP where it used to need
+/// none, and against a daemon predating the key it is refused by name like any unknown word. Both
+/// are the price of the answer being the daemon's, which is the only way it can be right.
+///
+/// # ⚠⚠⚠⚠⚠ AND IT IS NO LONGER ONE OF [`OWN_FLAGS`], WHICH IS THE POINT
+///
+/// It was this command's own word while this command answered it. Now the daemon publishes
+/// `dry_run` as an argument of every run form, so claiming the same word here would be the exact
+/// collision [`own_flag_collision`] refuses — and that guard is what CAUGHT this change, failing
+/// the new gate before the rename was made. The word is the daemon's; this constant is only how
+/// this file spells it in its own sentences, and the value is read back from the BUILT CALL
+/// ([`sprag_host::plugins::RUN_DRY_RUN_KEY`]) so what the verdict describes and what the daemon
+/// was asked cannot come apart.
 const DRY_RUN_FLAG: &str = "dry-run";
 
 /// One word on `orchestrate`'s command line that belongs to THIS COMMAND rather than to the daemon.
@@ -5657,20 +5683,11 @@ struct OwnFlag {
 /// One table rather than one check per flag, because the property is about the NAMESPACE and not
 /// about any of them: every other word there is read off the published grammar, so a daemon that
 /// ever publishes an argument spelled like one of these makes two meanings out of one word.
-const OWN_FLAGS: &[OwnFlag] = &[
-    OwnFlag {
-        name: WAIT_FLAG,
-        does: "parks until the run ends and prints the outcome",
-        instead: "parking until a run ends. Start the run without it and read `sprag runs`.",
-    },
-    OwnFlag {
-        name: DRY_RUN_FLAG,
-        does: "answers whether THIS DAEMON TAKES THE CALL and starts nothing, so a launcher can \
-               ask before it launches instead of writing down which build it needs",
-        instead: "checking a call without starting it. Start the run and read the refusal it \
-                  prints.",
-    },
-];
+const OWN_FLAGS: &[OwnFlag] = &[OwnFlag {
+    name: WAIT_FLAG,
+    does: "parks until the run ends and prints the outcome",
+    instead: "parking until a run ends. Start the run without it and read `sprag runs`.",
+}];
 
 /// How often [`orchestrate`] `--wait` re-reads the run's state.
 ///
@@ -5732,7 +5749,6 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
 
     let mut flags = Vec::new();
     let mut wait = false;
-    let mut dry_run = false;
     let mut rest = args.into_iter().peekable();
     // The FIRST bare word is the plugin, under whatever name the publication says chooses a form.
     if let Some(selector) = &selector
@@ -5760,10 +5776,10 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
             wait = true;
             continue;
         }
-        if sprag_rpc::call::same_name(spelled, DRY_RUN_FLAG) {
-            dry_run = true;
-            continue;
-        }
+        // ⚠⚠⚠ `--dry-run` IS NOT INTERCEPTED HERE ANY MORE — register item 873. It is the daemon's
+        // argument now, so it falls through to the bare-flag arm below and is filled and typed like
+        // every other published word. Swallowing it here would make this parser the second place
+        // that decides what it means, which is the defect this item pays one layer up.
         match rest.peek() {
             Some(value) if !value.starts_with("--") => {
                 flags.push(Flag::new(spelled, rest.next().expect("just peeked")));
@@ -5772,17 +5788,6 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
             // terms rather than this parser guessing which it was.
             _ => flags.push(Flag::bare(spelled)),
         }
-    }
-
-    // ⚠⚠ THE TWO CLI-OWN FLAGS CONTRADICT EACH OTHER, AND THAT IS SAID RATHER THAN RESOLVED.
-    // `--wait` parks until a run ends and `--dry-run` starts none, so a command line carrying both
-    // has no reading in which each word means what it says. Silently letting one win is the shape
-    // item 852 was filed on — a caller's instruction dropped with nothing printed.
-    if wait && dry_run {
-        return Err(bad_input(&format!(
-            "orchestrate: --{WAIT_FLAG} parks until a run ends and --{DRY_RUN_FLAG} starts none, \
-             so the two cannot both be meant. Check the call with --{DRY_RUN_FLAG}, then launch it."
-        )));
     }
 
     // ⚠⚠⚠⚠⚠ A PANE IS RESOLVED HERE, THROUGH THE DOOR EVERY OTHER PANE VERB USES — register item
@@ -5845,21 +5850,32 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
             usage_for(&forms, &flags, &selector, &words),
         ))
     })?;
-    // 🎯 THE ANSWER WITHOUT THE ACT — register item 855. Everything above this line is the check a
-    // launcher wanted and could not have: the grammar came off the socket, the pane resolved, and
-    // the fill said whether this daemon's `run` takes the words that were typed. Everything below
-    // it starts a loop. Returning here is therefore not a shortened launch, it is the launch's own
-    // verdict handed over before the launch — which is what makes a caller's hand-written "this
-    // needs a daemon at or after <commit>" unnecessary rather than merely wrong.
-    if dry_run {
-        println!("orchestrate --{DRY_RUN_FLAG}: this daemon TAKES this call. No run was started.");
-        println!("{}", usage_for(&forms, &flags, &selector, &words));
-        println!(
-            "  Answered: every name given is an argument of that form, every required one is \
-             present, and every value is of the declared type. NOT answered: whether the daemon \
-             accepts the run, and whether the run converges."
-        );
-        return Ok(());
+
+    // ⚠⚠⚠⚠⚠ THE CHECK IS NOW A REQUEST, AND THIS IS WHERE THIS COMMAND LEARNS IT WAS ASKED FOR —
+    // register item 873. `--dry-run` used to be answered right here without anything being sent,
+    // which is precisely why it could only run the checks a CLIENT can run.
+    //
+    // ⚠⚠ Read off the BUILT CALL and not off a bool this parser set, so the fact this command
+    // renders and the fact the daemon acts on are ONE READING of one word. A local flag would be a
+    // second answer, and `--dry-run=false` is the input that tells them apart: the fill types it,
+    // and a parser counting occurrences would have called it a dry run.
+    let dry_run = call
+        .get(sprag_host::plugins::RUN_DRY_RUN_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    // ⚠⚠ THE TWO CONTRADICT EACH OTHER, AND THAT IS SAID RATHER THAN RESOLVED. `--wait` parks until
+    // a run ends and `--dry-run` starts none, so a command line carrying both has no reading in
+    // which each word means what it says. Silently letting one win is the shape item 852 was filed
+    // on — a caller's instruction dropped with nothing printed.
+    //
+    // ⚠ Asked AFTER the fill since item 873, because the fill is now what says whether this is a
+    // dry run at all.
+    if wait && dry_run {
+        return Err(bad_input(&format!(
+            "orchestrate: --{WAIT_FLAG} parks until a run ends and --{DRY_RUN_FLAG} starts none, \
+             so the two cannot both be meant. Check the call with --{DRY_RUN_FLAG}, then launch it."
+        )));
     }
     // ⚠⚠⚠⚠⚠ AND THE REQUEST SAYS WHICH WINDOW THE PANE WAS FOUND IN — register item 686, the
     // half item 542 left standing. Resolving session-wide answers WHICH pane; it does not carry
@@ -5882,6 +5898,27 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
         None => scoped_call(session.as_deref(), path, call),
     };
     let answer = invoke_action(&mut conn, request)?;
+    // 🎯 THE ANSWER WITHOUT THE ACT — register item 855, reached the long way since item 873.
+    // Getting here at all IS the verdict: the daemon ran every check a launch runs and refused
+    // nothing, and the only thing it did not do is spawn. That is why the caveat below is one
+    // clause shorter than it was — *whether the daemon accepts the run* is no longer unanswered,
+    // because this line is the daemon having accepted it.
+    //
+    // ⚠ The refusal road needs nothing here: `invoke_action` carries the daemon's own sentence up,
+    // so a dry run and a launch are refused in the SAME words. That identity is the gate's subject
+    // (`a_dry_run_refuses_everything_a_launch_does`) and it is a property of there being one door,
+    // not of anything printed here.
+    if dry_run {
+        println!("orchestrate --{DRY_RUN_FLAG}: this daemon TAKES this call. No run was started.");
+        println!("{}", usage_for(&forms, &flags, &selector, &words));
+        println!(
+            "  Answered: the daemon ran every check a launch runs — the form's own names, \
+             required arguments and types, and everything only it can judge (its plugin, its \
+             panes, and what this repository's loop-kind document authors). NOT answered: whether \
+             the run converges."
+        );
+        return Ok(());
+    }
     let id = answer
         .as_u64()
         .ok_or_else(|| bad_input("orchestrate: the daemon's answer was not a run id"))?;

@@ -2290,6 +2290,20 @@ fn argument_help(name: &str) -> &'static str {
              the peer that repository's document already names — so say it when the pane is running \
              something else, and a daemon whose kind authors none refuses rather than typing blind."
         }
+        // 🎯🎯🎯 THE ONE ARGUMENT ON EVERY RUN FORM AT ONCE, and the only one that decides whether
+        // this door ACTS rather than what it does — register item 873.
+        "dry_run" => {
+            "ASK WHETHER THIS DAEMON WOULD TAKE THIS CALL, AND START NOTHING (every form). The \
+             request travels the launch's own road and is stopped one line above the spawn, so \
+             everything that refuses a launch refuses this — the plugin, the panes, and whatever \
+             this daemon's own loop-kind document authors — and the refusal arrives in the same \
+             words the launch would have used. A taken call answers nothing rather than a run id, \
+             because there is no run to go looking for. ⚠ What it still cannot tell you is whether \
+             the run CONVERGES: that is not a fact about the call. ⚠⚠ It exists because the check \
+             used to be answered without a request being sent, so it ran only what a caller can \
+             judge and reported taken a call the launch then refused — branch on a check like that \
+             and you are worse off than with no check at all."
+        }
         _ => "See `sprag show-grammar run` for what this daemon says about this argument.",
     }
 }

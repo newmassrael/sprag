@@ -1185,8 +1185,29 @@ impl ScopeAsk {
 ///   (`sprag_host::plugins`' `ai_loop` arm) — and the words it takes are published by the type that
 ///   resolves them, so the list a client is shown and the list the door accepts cannot drift.
 ///
+/// * **45 — A CHECK THAT AN OLDER DAEMON WOULD ANSWER BY LAUNCHING.** Register item 873. All six
+///   `run` forms gain an OPTIONAL `dry_run` (`bool`): the daemon runs every check a launch runs and
+///   returns `null` instead of spawning, so *what refuses a check* and *what refuses a launch* stop
+///   being two lists. `orchestrate --dry-run` used to be answered by the CLI without a request
+///   being sent, which is why it ran only the checks a client can run and reported a call taken
+///   that the launch then refused.
+///
+///   ⚠⚠⚠⚠⚠ **AN OPTIONAL ADDED ARGUMENT THAT NEVERTHELESS OWES THE NUMBER, and the reason is the
+///   one items 492 and 494 named as the exemption's limit.** Their rule is that an added key is
+///   free **while nobody reads its absence as a promise**. This key's absence is read as a promise
+///   by the only party that matters: a client sending `dry_run: true` to a daemon predating it has
+///   said *start nothing*, and that daemon swallows the word and STARTS A LOOP, answering with an
+///   id the caller will read as a verdict. R371 and R373 raised the number for less — a run that
+///   never waited, a run that ended on the first keystroke — and this one is a run that should not
+///   exist.
+///
+///   ⚠⚠ **`sprag orchestrate` itself is safe across the skew and that is not enough.** It fills
+///   from the grammar the daemon publishes, so an older daemon refuses `--dry-run` by name and
+///   nothing starts. The handshake is for the callers that do not fill from a published form, and
+///   nothing else reaches them.
+///
 /// [`CLIENT_BUILD_PARAM`]: crate::CLIENT_BUILD_PARAM
-pub const WIRE_PROTOCOL: u32 = 44;
+pub const WIRE_PROTOCOL: u32 = 45;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
 /// this crate's build script as the commit it was compiled from (or `unknown`).

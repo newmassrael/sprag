@@ -399,7 +399,13 @@ pub(crate) mod grammar {
         // it runs under instead of inheriting one repository's. **A window starts no runs** — it
         // renders panes — so this pin moves for a twelfth cause it takes no part in. Twelve for
         // twelve, and the eighth is still the only one this surface authors.
-        44,
+        // 🎯🎯🎯 THE THIRTEENTH, and it is a word that decides whether a door ACTS: register item
+        // 873 put `dry_run` on all six run forms, so a launcher can ask *would you take this* down
+        // the launch's own road instead of down a shorter one that answered green while the launch
+        // answered red. **A window asks no launcher's question** — it has no run to check and no
+        // spawn to withhold — so this pin moves for a thirteenth cause it takes no part in.
+        // Thirteen for thirteen, and the eighth is still the only one this surface authors.
+        45,
         &[
             (
                 "the command palette",

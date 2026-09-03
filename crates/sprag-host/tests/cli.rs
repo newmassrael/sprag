@@ -5054,6 +5054,24 @@ fn a_conversation_can_ask_which_runs_it_is_on() {
         "the run never reported which pane it drives: {}",
         mine_of(driven).stdout,
     );
+    // ⛔⛔⛔⛔ AND THE SECOND RUN'S CLAIM IS A SECOND WAIT — register item 877, met while paying 873.
+    //
+    // The wait above is on `driven`, and every assertion below it is about `asker`: two runs were
+    // started, they publish `driving` INDEPENDENTLY, and the one this test then reads is not the
+    // one it waited for. So `BOTH ENDS` was being asserted against a listing that had had no reason
+    // to carry it yet — the comment above says the claim *"arrives a moment after the launch
+    // returns"*, and this read raced that moment on the OTHER run.
+    //
+    // ⚠ Measured 2026-09-03: green 3/3 alone and 2/4 once one more test shared the machine, always
+    // failing on `BOTH ENDS` with `run 1 orchestrator pane=0` listed and unclaimed. Load did not
+    // cause it; load is what stopped hiding it.
+    assert!(
+        wait_for(Duration::from_secs(10), || mine_of(asker)
+            .stdout
+            .contains("BOTH ENDS")),
+        "the run onto the asker's OWN pane never reported that it drives it: {}",
+        mine_of(asker).stdout,
+    );
 
     // ── ① THE ASKER'S OWN ANSWER ────────────────────────────────────────────────────────────────
     let asked = mine_of(asker);
@@ -16104,6 +16122,183 @@ fn a_launcher_is_told_this_daemon_cannot_take_its_call_before_any_run_exists() {
         !after_launch.stdout.contains(NONE_YET),
         "⚠⚠ WITHOUT THIS ARM THE GATE ABOVE IS GREEN FOR A BINARY THAT CANNOT LAUNCH AT ALL. {}",
         after_launch.stdout,
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **`--dry-run` REFUSES EXACTLY WHAT A LAUNCH REFUSES, IN THE SAME WORDS** — register
+/// item 873.
+///
+/// # ⛔⛔⛔⛔⛔ The check that was green while the launch was red
+///
+/// `a_launcher_is_told_this_daemon_cannot_take_its_call_before_any_run_exists` above pays item 855
+/// and every arm of it is about a call the CLIENT can judge — a key the published form does not
+/// carry. **It stayed green through this defect and could not have caught it**, because the dry run
+/// was answered without a request being sent: it ran the fill and nothing else. Measured by wz
+/// `f8` on 2026-09-03, one call, two answers:
+///
+/// ```text
+/// launch: the daemon takes this call; no run started by the check.   <- the dry run
+/// sprag: this run named neither `agent` nor `ready_when`, and this repository's
+///        loop-kind document authors no barrier either ...            <- the launch
+/// ```
+///
+/// ⇒ **A green check followed by a red launch is worse than no check**, because a launcher branches
+/// on it — which is why item 873 is critical rather than a wording bug.
+///
+/// # ⚠⚠⚠⚠ WHAT THIS HOLDS, AND WHY IT IS NOT *THE DRY RUN PASSES*
+///
+/// The item's own done-when ⑶ names the trap and item 864 is the round that fell into it: a gate
+/// that asserts *the check goes green* is satisfied by a check that judges nothing at all. So every
+/// arm here compares **the two roads against each other** — same command line, one word apart —
+/// and the refusal arms compare the daemon's SENTENCE and not merely the exit status. Two roads
+/// that both refuse for different reasons are still two roads.
+///
+/// # ⚠⚠⚠ Why the cases are refusals only the DAEMON can reach, and how that is enforced
+///
+/// A case the fill already refuses proves nothing: the old dry run refused those too, which is the
+/// whole of why it looked correct. So each case below must be **well-formed by the published
+/// grammar and refused by the daemon anyway**, and the control arm asserts exactly that — a
+/// refusal naming this binary's usage would mean the case never reached the seam and the arm is
+/// vacuous.
+///
+/// ⚠ **The MEASURED case is not the one driven here, and that is deliberate.** `f8` hit the barrier
+/// arm, and this repository cannot: its own kind document always authors a barrier, which is the
+/// fact `ai_loop_reference` records and the reason that arm has never been reachable from a gate in
+/// this tree. What is driven instead is `opened_by` naming a pane no daemon holds — a different
+/// sentence from the same side of the wire. The property is *the two roads agree*, and any
+/// daemon-only refusal exercises it; a case chosen because it reproduces one bug would stop
+/// covering the next one.
+#[test]
+fn a_dry_run_refuses_everything_a_launch_does() {
+    let (_guard, sock, pane) = daemon_with_one_pane("seam");
+    let pane = pane.to_string();
+    const NONE_YET: &str = "no runs";
+    const NEVER: &str = "A SENTINEL THIS PANE NEVER PRINTS";
+    // A pane id no daemon in this test holds, so `parse_opener` refuses it — and NOTHING on the
+    // client can know that, which is the whole reason this is the case.
+    const NO_SUCH_PANE: &str = "4242";
+    // What a refusal from THIS BINARY looks like. Its presence in a case's stderr means the call
+    // never reached the daemon, so the case is not testing the seam.
+    const A_CLIENT_REFUSAL: &str = "is not an argument";
+
+    // The one command line, built once, so *one word apart* is a fact about this test and not a
+    // claim about two hand-copied argument lists.
+    let call = |extra: &[&str]| -> Vec<String> {
+        let mut words: Vec<String> = [
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "echo seam",
+            "--sentinel",
+            NEVER,
+            "--max-seconds",
+            "1",
+        ]
+        .iter()
+        .map(|word| (*word).to_string())
+        .collect();
+        words.extend(extra.iter().map(|word| (*word).to_string()));
+        words
+    };
+    let run = |words: &[String]| {
+        let borrowed: Vec<&str> = words.iter().map(String::as_str).collect();
+        sprag(&sock, &borrowed)
+    };
+
+    // ══ ① THE SEAM: A CALL THE GRAMMAR TAKES AND THE DAEMON WILL NOT ═══════════════════════════
+    let refusing = call(&["--opened_by", NO_SUCH_PANE]);
+    let mut refusing_dry = refusing.clone();
+    refusing_dry.push("--dry-run".to_string());
+    let checked = run(&refusing_dry);
+    let launched = run(&refusing);
+
+    // ── THE CONTROL, FIRST: the case must actually reach the daemon ──
+    //
+    // ⚠⚠ Without this, a typo in the argument name would make BOTH roads refuse identically and
+    // every assertion below would pass while nothing had been sent — the vacuous-population shape
+    // rule 6 is about.
+    assert!(
+        !launched.stderr.contains(A_CLIENT_REFUSAL) && !checked.stderr.contains(A_CLIENT_REFUSAL),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 873: this case is refused by the CLIENT, so it never reaches the \
+         seam and proves nothing about it — the old dry run refused these too, which is exactly \
+         why it looked correct. The case must be well-formed by the published grammar and refused \
+         by the daemon anyway. check: {} launch: {}",
+        checked.stderr,
+        launched.stderr,
+    );
+    assert!(
+        !launched.ok,
+        "⚠ THE PREMISE OF THIS ARM: the launch must actually be refused, or there is no \
+         disagreement to detect. Said: {} {}",
+        launched.stdout, launched.stderr,
+    );
+
+    // ── AND THE CLAIM: the check gives that same refusal ──
+    assert!(
+        !checked.ok,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 873: --dry-run reported this call TAKEN and the very same \
+         command line was REFUSED at launch. That is the defect verbatim: a launcher branches on \
+         the check, and a green check in front of a red launch is worse than no check. \
+         check said: {} launch said: {}",
+        checked.stdout, launched.stderr,
+    );
+    assert_eq!(
+        checked.stderr, launched.stderr,
+        "⛔⛔⛔⛔ REGISTER ITEM 873: both roads refuse, but NOT FOR THE SAME REASON — so they are \
+         still two sets of checks and the next refusal one of them forgets will not show up here. \
+         The dry run is the launch's own door with the spawn left undone; the sentence must be the \
+         daemon's, unchanged.",
+    );
+
+    // ── AND IT STARTED NOTHING, which is the half `--dry-run` exists for ──
+    assert!(
+        run(&["runs".to_string(), "-t".to_string(), "work".to_string()])
+            .stdout
+            .contains(NONE_YET),
+        "a refused check costs nothing: no run exists after it",
+    );
+
+    // ══ ② THE OTHER DIRECTION, AND IT IS THE ONE ITEM 864 WOULD HAVE MISSED ════════════════════
+    //
+    // ⚠⚠⚠ A dry run that refused EVERYTHING would satisfy every assertion above. This arm is a
+    // call the daemon does take: the check must say so, still start nothing, and the same line
+    // without the one word must launch.
+    let taking = call(&[]);
+    let mut taking_dry = taking.clone();
+    taking_dry.push("--dry-run".to_string());
+    let verdict = run(&taking_dry);
+    assert!(
+        verdict.ok && verdict.stdout.contains("TAKES this call"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 873: a call the daemon DOES take was not reported taken, so the \
+         check now refuses more than the launch — the same defect mirrored, and the direction that \
+         makes callers stop trusting it. Said: {} {}",
+        verdict.stdout,
+        verdict.stderr,
+    );
+    assert!(
+        run(&["runs".to_string(), "-t".to_string(), "work".to_string()])
+            .stdout
+            .contains(NONE_YET),
+        "⚠ A TAKEN CALL STARTS NOTHING EITHER — that is what makes this a question and not a \
+         shortened launch",
+    );
+    let started = run(&taking);
+    assert!(
+        started.ok,
+        "⚠⚠ THE MIDDLE: the very same command line without --dry-run must launch, or every arm \
+         above is equally true of a binary that cannot start a run at all (items 847, 848). Said: \
+         {}",
+        started.stderr,
+    );
+    assert!(
+        !run(&["runs".to_string(), "-t".to_string(), "work".to_string()])
+            .stdout
+            .contains(NONE_YET),
+        "⚠⚠ and a run exists afterwards",
     );
 }
 

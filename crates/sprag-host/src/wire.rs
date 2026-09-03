@@ -1680,6 +1680,38 @@ impl PluginGrammar {
     /// to grow a notion of identity it does not have.
     const OPENED_BY: ArgGrammar = ArgGrammar::open("opened_by", "int").optional();
 
+    /// **ANSWER WHETHER THIS RUN WOULD BE TAKEN, AND START NOTHING** — register item 873.
+    ///
+    /// # ⛔⛔⛔⛔ The check that could not reach the checks it claimed to run
+    ///
+    /// `sprag orchestrate --dry-run` used to answer WITHOUT SENDING ANYTHING: it built the call
+    /// against this grammar and returned. So it ran the FORM checks — every name is an argument of
+    /// the form, every required one present, every value the declared type — and none of the
+    /// checks that need something only the daemon has. Measured (wz `f8`, 2026-09-03): a call the
+    /// dry run reported taken was refused at launch with *"this run named neither `agent` nor
+    /// `ready_when`, and this repository's loop-kind document authors no barrier either"*. That
+    /// refusal reads a KIND DOCUMENT, and no client holds one.
+    ///
+    /// ⇒ **A green check followed by a red launch is worse than no check**, which is why item 873
+    /// is critical rather than a wording bug.
+    ///
+    /// # ⚠⚠⚠ Why a flag on `run` and not a second action
+    ///
+    /// The defect is that the asking place and the answering place were different code. A
+    /// `run_check` action would be a THIRD place with the same job, and the two would drift on the
+    /// first refusal either forgot — items 855, 864 and this one are all that shape. Carried here,
+    /// the dry run IS the launch: same door, same request, same validation, and the only thing the
+    /// flag reaches is the spawn at the very bottom of `PluginsExternal::run`.
+    ///
+    /// ⚠ **No [`sprag_rpc::WIRE_PROTOCOL`] bump**, on items 492 and 494's rule as item 848 states
+    /// it: this is an OPTIONAL argument, so it WIDENS what is well-formed and every request a
+    /// client sent yesterday is still one today. Item 848 bumped because its key was REQUIRED and
+    /// narrowed the door. ⚠ The skew it does leave, stated rather than hidden: a client sending
+    /// this to a daemon that predates it is told the key is not an argument of the form — a
+    /// refusal, and about the DRY RUN, so nothing starts either way.
+    const DRY_RUN: ArgGrammar =
+        ArgGrammar::open(crate::plugins::RUN_DRY_RUN_KEY, "bool").optional();
+
     /// ⚠⚠ **EACH FORM'S `plugin` PUBLISHES ONLY THE WORD THAT SELECTS IT**, and that is what makes an
     /// alternation over a VALUE readable at all.
     ///
@@ -2057,6 +2089,7 @@ impl PluginGrammar {
         Self::AWAIT_PERSON,
         Self::HANDBACK_STILL,
         Self::OPENED_BY,
+        Self::DRY_RUN,
         Self::GUARDRAILS_BYTES,
     ]);
 
@@ -2075,6 +2108,7 @@ impl PluginGrammar {
         Self::AWAIT_PERSON,
         Self::HANDBACK_STILL,
         Self::OPENED_BY,
+        Self::DRY_RUN,
         Self::GUARDRAILS_BYTES,
     ]);
 
@@ -2093,6 +2127,7 @@ impl PluginGrammar {
         Self::AWAIT_PERSON,
         Self::HANDBACK_STILL,
         Self::OPENED_BY,
+        Self::DRY_RUN,
         Self::GUARDRAILS_BYTES,
     ]);
 
@@ -2113,6 +2148,7 @@ impl PluginGrammar {
         ArgGrammar::open("rows", "int").optional(),
         ArgGrammar::open("timeout_ms", "int").optional(),
         Self::OPENED_BY,
+        Self::DRY_RUN,
         Self::GUARDRAILS_TOKENS,
     ]);
 
@@ -2141,6 +2177,7 @@ impl PluginGrammar {
         ArgGrammar::open("pane", "int"),
         Self::MUST_ANSWER,
         Self::OPENED_BY,
+        Self::DRY_RUN,
         Self::GUARDRAILS_BYTES,
     ]);
 
@@ -2356,6 +2393,7 @@ impl PluginGrammar {
         // forms above would be advertising an argument those plugins swallow.
         Self::HOLD_WITHIN,
         Self::OPENED_BY,
+        Self::DRY_RUN,
         Self::GUARDRAILS_BYTES,
     ]);
 
@@ -9612,7 +9650,17 @@ mod tests {
         // ⚠ 44: re-stamped with every published ANSWER vocabulary unchanged. Register item 848's
         // `loop_kind` is a REQUEST word — a caller says it and nothing answers with it — so the
         // two request-side pins are the ones that moved and this one had nothing to walk.
-        44,
+        // ⚠ 45 — REGISTER ITEM 873: re-stamped with every published ANSWER vocabulary unchanged,
+        // and this one is worth reading twice because the answer DID change and not here.
+        // `dry_run` makes `run` answer `null` where it has only ever answered a run id, which is a
+        // new answer SHAPE. It is not a vocabulary: `null` is no word from a closed set, so there
+        // is nothing here for this pin to walk — an added ARM is what it exists to catch, and no
+        // set gained one.
+        // ⚠⚠ And the shape it did gain reaches NO older reader, which is why it is stated rather
+        // than pinned: the `null` is answered only to a request that CARRIED `dry_run`, so a
+        // caller that has never heard of the key cannot meet it. A widening a peer can only reach
+        // by opting in is not a widening of what any existing peer decodes.
+        45,
         &[
             "check:pane-isolation",
             "check:pane-admission",
@@ -10204,7 +10252,11 @@ mod tests {
             // pin walks, and it is the rare one that MOVED the number rather than riding R342's
             // rule. See the entry beside the `run` verb above for why a required argument breaks
             // that rule's own condition.
-            44,
+            // ⚠ 45: re-stamped with every published REQUEST vocabulary unchanged. Item 873's
+            // `dry_run` is a `bool` — its two values are the type's own and not a closed set this
+            // pin walks — so the SHAPE pin above is the one that saw it, and the number it moved
+            // is recorded there.
+            45,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -10540,7 +10592,31 @@ mod tests {
             // 🎯 44 — REGISTER ITEM 848: the `ai_loop` form gained `loop_kind:string`, REQUIRED,
             // and this pin is the one a caller's own call shape is built from. It is the third
             // required key that form has ever had, and the only one no kind document could answer.
-            44,
+            // 🎯 45 — REGISTER ITEM 873: ALL SIX run forms gained `dry_run:bool?`, and this pin
+            // went red by NAME before any number was touched, which is the fourth round running.
+            //
+            // ⚠⚠⚠⚠⚠ THE NUMBER RISES, ON R371's AND R373's GROUNDS AND MORE SHARPLY THAN EITHER.
+            // Their rule: an added OPTIONAL argument is free only while an older daemon swallowing
+            // it does nothing DIFFERENT — and it is owed the moment that daemon reports success
+            // for a run whose requested behaviour it never performed. Here the un-performed
+            // behaviour is NOT STARTING: a client sending `dry_run: true` to a daemon that predates
+            // this key has asked *tell me whether you would take this, and start nothing*, and gets
+            // A RUNNING LOOP and an id, with nothing said. R371's run merely never waited; this one
+            // exists. That the caller then reads the id as a check's verdict is the second half.
+            //
+            // ⚠⚠ It is owed EVEN THOUGH `sprag orchestrate` cannot reach it. That mouth fills from
+            // the grammar the daemon publishes, so an old daemon's forms refuse `--dry-run` by name
+            // and nothing starts — measured as the safe road. But this pin is about the WIRE, and
+            // the wire has callers that do not fill from a published form; the handshake is what
+            // reaches those, and it is the only thing that does.
+            //
+            // ⚠ Swallowing is not assumed here, it is what this round measured from the other side:
+            // `an_argument_the_daemon_constrains_publishes_what_it_admits` caught this very key
+            // being ignored when wrongly typed — `dry_run: "not-of-the-declared-type"` answered
+            // `Ok(Int(5))`, a STARTED RUN — which is exactly what an older daemon does with a key
+            // it has never heard of. The parse is now a refusal; the handshake is what covers the
+            // daemons that will never have the parse.
+            45,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -10603,12 +10679,12 @@ mod tests {
                 "sprag_workspace/sprag_mux/swap_pane[object]:pane:int? with:int",
                 "sprag_workspace/sprag_mux/zoom_pane[object]:pane:int? on:bool?",
                 "sprag_workspace/sprag_plugins/cancel[object]:id:int",
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string endpoint_a:array endpoint_b:array seed:string label_a:string? label_b:string? format_a:string? format_b:string? cols:int? rows:int? timeout_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_tokens:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string endpoint_a:array endpoint_b:array seed:string label_a:string? label_b:string? format_a:string? format_b:string? cols:int? rows:int? timeout_ms:int? opened_by:int? dry_run:bool? guardrails:object?{max_iterations:int?,max_seconds:int?,max_tokens:int?}",
                 // ⚠⚠⚠ THE FOUR ENTRIES THIS PIN WAS BORN FOR. `may_answer:array{…}` is a LIST of
                 // clauses on the `answer` form (required — the consent IS the call) and
                 // `may_answer:array?{…}` on the three that loop. At 28 all four read `object`, and
                 // NOTHING in this suite could see them change.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int may_answer:array{asked:string,answer:string} opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int may_answer:array{asked:string,answer:string} opened_by:int? dry_run:bool? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ R381: A WHOLE NEW FORM — the outer AI loop, as a run somebody can start. Its
                 // four brief keys are the only REQUIRED strings on this surface that are not a
                 // pane or a program: what the loop is for is not derivable from anything, and the
@@ -10673,16 +10749,16 @@ mod tests {
                 // that reads a hold at all — so publishing it on the other forms would advertise an
                 // argument they swallow, which is what `a_declared_argument_is_one_the_plugin_host_
                 // reads` exists to refuse.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int loop_kind:string north_star:string milestone:string reference:string? max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int loop_kind:string north_star:string milestone:string reference:string? max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? dry_run:bool? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two
                 // hand-written counts. An argument ADDED is the case its doc predicts: a client
                 // built against the old shape is unaffected, and an older DAEMON swallows the key
                 // and reports a run that will never wait, which is why the number rises.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int prompt:string eof:bool? shows_prompt:bool? timeout_ms:int? done_when:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int stimulus:string sentinel:string? done_when:string? turn_within_ms:int? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string src:int dst:int ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int prompt:string eof:bool? shows_prompt:bool? timeout_ms:int? done_when:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? dry_run:bool? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int stimulus:string sentinel:string? done_when:string? turn_within_ms:int? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? dry_run:bool? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string src:int dst:int ready_when:object?{match:string,marker:string} ready_timeout_ms:int? may_answer:array?{asked:string,answer:string} await_person_ms:int? handback_still_ms:int? opened_by:int? dry_run:bool? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠ ADDED, not moved: a NEW address with a shape of its own, so no existing call
                 // changed and `WIRE_PROTOCOL` stands. Identical in shape to `cancel` above it and
                 // opposite in meaning — a stand-down banks the turn in flight where a cancel loses
@@ -11185,7 +11261,11 @@ mod tests {
         // ⚠ 44 — REGISTER ITEM 848: re-stamped with the SURFACE unchanged. `loop_kind` is an
         // ARGUMENT on a form the `run` address already served, so no address was added, removed or
         // re-typed. The shape pin and the value-space pin are the two that saw it.
-        44,
+        // ⚠ 45 — REGISTER ITEM 873: re-stamped with the SURFACE unchanged, for 44's reason exactly.
+        // `dry_run` is an ARGUMENT on forms the `run` address already served; what it changes is
+        // whether that address SPAWNS, which is a meaning under a name that did not move — the
+        // case this pin's own message calls legitimate. The shape pin is the one that saw it.
+        45,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

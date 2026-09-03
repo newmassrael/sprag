@@ -156,6 +156,25 @@ const RUN_ID_KEY: &str = "id";
 /// The pane and window rows' `"opened_by"` are likewise a different fact — `Pane::opened_by` — that
 /// happens to share a spelling.
 pub const RUN_OPENED_BY_KEY: &str = "opened_by";
+/// The REQUEST key asking the door to **answer and start nothing** — register item 873.
+///
+/// # ⛔⛔⛔⛔ What it is for, in one measurement
+///
+/// `--dry-run` used to be answered by the CLI without a request being sent, so it ran the checks a
+/// client can run (the form's own names, required arguments, declared types) and none of the checks
+/// that read something only this daemon holds. A call it reported taken was refused at launch by
+/// `ai_loop_barrier`, which reads this repository's KIND DOCUMENT. With this key the dry run
+/// travels the SAME door as a launch and is stopped one line above the spawn — so *what refuses a
+/// launch* and *what refuses a check* are the same code rather than two lists that drift.
+///
+/// ⚠⚠ **IT IS READ LAST AND ACTED ON LAST, and that ordering is the whole property.** Every parse
+/// and every refusal in `PluginsExternal::run` happens first, unconditionally; this key only
+/// decides whether the run is then SPAWNED. A dry run that skipped a check to be quick would be
+/// the defect again, one layer in.
+///
+/// ⚠ Absent or `false` means launch, so a caller that has never heard of it is unaffected — the
+/// omit-rather-than-null shape [`RUN_OPENED_BY_KEY`] above uses, for the same reason.
+pub const RUN_DRY_RUN_KEY: &str = "dry_run";
 /// The answer key naming **WHICH CONVERSATION ASKED** for a run — absent when nothing recorded one,
 /// on `RUN_OPENED_BY_KEY`'s omit-rather-than-null terms.
 ///
@@ -1710,6 +1729,23 @@ impl PluginsExternal {
             overridden,
         } = parse_guardrails(map, plugin.cost_unit(), plugin.own_bounds())?;
         let opened_by = self.parse_opener(map)?;
+        // ⚠⚠⚠⚠⚠ READ HERE AND ACTED ON AT THE BOTTOM — register item 873, and the split is the
+        // whole of what makes it safe. READING is a validation and belongs with its neighbours: a
+        // value of the wrong type must be refused exactly as a malformed guardrail is. ACTING is
+        // the spawn, and that has to stay last (see below).
+        //
+        // ⛔⛔⛔⛔ IT WAS ONE `matches!` AT THE BOTTOM FOR ONE ROUND AND THAT WAS A BUG, caught by
+        // `an_argument_the_daemon_constrains_publishes_what_it_admits`: a pattern match treats
+        // *not the bool `true`* as *not a dry run*, so `dry_run: "true"` — a string, the shape a
+        // hand-built JSON caller reaches for first — STARTED A RUN for somebody who had asked for
+        // a check. Silently launching on a typo is the worst answer this door can give.
+        let dry_run = match map.get(RUN_DRY_RUN_KEY) {
+            // ⚠ Null is a caller DECLINING an optional argument, not a malformed one — the rule
+            // `an_optional_argument_of_a_run_may_be_declined_as_null` holds for every key here.
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(asked)) => *asked,
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
         // WHO is in that seat, asked of the daemon rather than taken from the request — see
         // `session_in`. This is what survives the daemon, so it is resolved while the pane is still
         // here to answer.
@@ -1722,6 +1758,25 @@ impl PluginsExternal {
             opened_by_session,
             overridden,
         };
+        // 🎯 THE ANSWER WITHOUT THE ACT, AND IT IS THE LAST LINE BEFORE THE ACT — register item
+        // 873. Everything above has already refused whatever a launch would refuse: the plugin was
+        // built (so the barrier, the pane and every word were resolved), the guardrails were sized,
+        // and the opener was validated against this daemon's panes. Returning HERE is therefore not
+        // a cheaper check that might miss something — it is the launch's own verdict, reached by
+        // the launch's own code, with only the spawn below it left undone.
+        //
+        // ⚠⚠⚠⚠⚠ **IT MUST STAY THE LAST THING.** The defect this pays (873) was a check that ran
+        // an EARLIER subset of the launch's checks and reported green; moving this read upward for
+        // any reason re-creates that defect inside the daemon, where no client can see it. Anything
+        // that can refuse belongs ABOVE this line — `a_dry_run_refuses_everything_a_launch_does`
+        // holds the two answers together over calls only this door can judge.
+        //
+        // ⚠ Null and not a run id, because there is no run: an id here would be a number naming
+        // nothing, and the one thing a caller must not do with a dry run's answer is go looking for
+        // what it started.
+        if dry_run {
+            return Ok(IntrospectValue::Null);
+        }
         // ⚠⚠⚠⚠⚠ THE FORK IS HERE AND NOT IN `spawn_run`, and the reason is what is still in hand:
         // the REQUEST MAP. A driver in another process builds its own plugin from it (one builder —
         // `plugin_from_request`), and `spawn_run` takes a plugin that is already built, so a fork
@@ -14232,10 +14287,17 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            76,
+            82,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⚠⚠⚠⚠⚠ THE NEWEST TWO ARE `reference` AND `agent` \
+             malformed rather than declined. ⚠⚠⚠⚠⚠ THE NEWEST IS `dry_run` ON ALL SIX FORMS \
+             (item 873), and declining it means LAUNCH — the only reading available, since a run \
+             the caller did not ask to be checked is a run they asked to be started. ⚠⚠ It is the \
+             one key here whose MISREAD is asymmetric, and that is why its parse is a match and \
+             not a truthiness test: reading a malformed value as *not a dry run* starts a loop for \
+             somebody who asked for a question, so a non-bool is `TypeMismatch` and only an absent \
+             or null one is a decline. THE OLD SENTENCE FOLLOWS. THE NEWEST TWO ARE `reference` \
+             AND `agent` \
              (item 738), and they are the SECOND and THIRD arguments on this whole surface ever to \
              move from REQUIRED to declinable — `max_turns` was the first, and its reason is \
              theirs: while a key is mandatory, no document can answer it, so a decision the \
@@ -14341,11 +14403,16 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            122,
-            "one probe per declared argument of every FORM, nesting included: TWENTY for an \
-             orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
-             TEN to answer a pane, THIRTY-TWO to run an AI loop, one to cancel, one to stand a run \
-             down, and TWO TO REPORT A RUN'S PROGRESS. \
+            128,
+            "one probe per declared argument of every FORM, nesting included: TWENTY-ONE for an \
+             orchestrator, EIGHTEEN for a pipe, TWENTY-TWO for an agent, seventeen for a dialogue, \
+             ELEVEN to answer a pane, THIRTY-THREE to run an AI loop, one to cancel, one to stand \
+             a run down, and TWO TO REPORT A RUN'S PROGRESS. \
+             🎯🎯🎯 THE NEWEST IS ONE ON EACH RUNNING FORM AT ONCE — `dry_run` (item 873), the \
+             only argument here that decides whether the door ACTS rather than what it does. Every \
+             count above rose by one for it, and that it is six and not one is the property: a \
+             check that covered some forms and not others would send a launcher back to guessing \
+             which. \
              🎯🎯🎯🎯🎯 THE NEWEST IS THE LOOP'S THIRTY-SECOND, `loop_kind` (item 848), and it is \
              the one argument on this whole surface that a DOCUMENT could not have answered: it \
              names WHICH document. While it did not exist the driver named this repository's own \
