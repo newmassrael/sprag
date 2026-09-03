@@ -2371,6 +2371,100 @@ fn the_window_ring_is_walked_by_the_daemon_over_the_real_socket() {
     let _ = std::fs::remove_file(&sock);
 }
 
+/// ⛔⛔⛔⛔⛔ **A WINDOW SELECTED BY IDENTITY, OVER THE REAL SOCKET** — register item 860, and the
+/// arm of this verb that had never crossed one.
+///
+/// # ⚠⚠⚠⚠⚠ What was measured, and why every neighbouring gate was green while a person was stuck
+///
+/// The owner pressed a window tab dozens of times and nothing happened. Item 852 made the click
+/// SAY when it does nothing; it did not make it work. Six causes were disproved by reading
+/// (`debt-open.md` item 860 carries the table), leaving one: the select is sent by IDENTITY and
+/// answers nothing.
+///
+/// **And the identity arm is exactly the one no gate drove.** The ring test above sends
+/// `{relative}` and `{window}`; `windows_in`'s helper sends `{window}`; `workspace`'s grammar pin
+/// lists `{window_id}` among the keys the action ADMITS but performs nothing. So the daemon's
+/// `SelectWindowAsk::At(WindowRef::Picked(_))` arm — the one every pointer surface in this
+/// repository uses, because a row painted in the past must not be addressed by a name that has
+/// since moved — reached production having been driven only in-process.
+///
+/// # ⚠⚠ It asserts the SLOT and not only the answer
+///
+/// The ring test states the rule: *"an action that ANSWERED a name without moving the session
+/// fails"*. Here that is the whole question — the owner's report is precisely a gesture that
+/// reported success while the session stayed put — so the second read is the assertion and the
+/// answer is the control.
+#[test]
+fn a_window_selected_by_identity_lands_over_the_real_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    for _ in 0..2 {
+        conn.call(
+            "scene/invoke",
+            json!({ "session": "0", "path": mux_action_path(NEW_WINDOW_ACTION), "args": {} }),
+        )
+        .expect("new_window answers");
+    }
+    // Three windows — "0", "1", "2" — and `new_window` selected the last, so the target below is
+    // NOT already current and a no-op cannot pass.
+    let rows: Value = conn
+        .call(
+            "scene/query",
+            json!({ "session": "0", "path": mux_action_path(WINDOWS_SLOT) }),
+        )
+        .expect("the windows slot answers");
+    let rows = rows.as_array().expect("a list of windows").clone();
+    assert_eq!(rows.len(), 3, "three windows to choose between: {rows:?}");
+    let target = rows
+        .iter()
+        .find(|w| w["current"] != json!(true))
+        .expect("a window this client is NOT on");
+    let (name, id) = (
+        target["name"]
+            .as_str()
+            .expect("a window row names itself")
+            .to_owned(),
+        target["id"].as_u64().expect(
+            "⚠ THE PREMISE: this daemon publishes an identity on every window row, which \
+                    is what makes a pointer surface able to address one at all",
+        ),
+    );
+
+    // THE GESTURE, exactly as `wtabs`'s tab click sends it: the identity the row was painted from.
+    let answered = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "session": "0",
+                "path": mux_action_path(SELECT_WINDOW_ACTION),
+                "args": { "window_id": id },
+            }),
+        )
+        .expect(
+            "⛔⛔⛔⛔⛔ a select addressed by IDENTITY must be performed, not refused — this is the \
+             address every pointer surface in this repository holds, because a row painted a \
+             moment ago must not be re-addressed by a name that may have moved since",
+        );
+    assert_eq!(
+        answered,
+        json!(name),
+        "⚠⚠⚠ and it answers the window it LANDED on, which the identity caller cannot know: it \
+         holds an id and paints a name, and `select_window`'s own doc says the answer is what a \
+         status line paints",
+    );
+    // ⚠⚠⚠⚠⚠ THE ASSERTION. An answer without a move is exactly the owner's report.
+    assert_eq!(
+        windows_in(&mut conn, "0").into_iter().find(|w| w.1),
+        Some((name.clone(), true)),
+        "⛔⛔⛔⛔⛔ THE SESSION MUST BE ON THE WINDOW THAT WAS ASKED FOR. A verb that answers a name \
+         and leaves the session where it was is the defect item 860 was filed on — a person \
+         clicking a tab, being told nothing, and staying where they were",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
 /// `move_window`'s ANSWER BYTES over a real socket — the shape a client parses, which the CLI's
 /// sentence test and the registry's order tests both leave unchecked (R309's finding on `close`,
 /// applied on the round that could have repeated it).

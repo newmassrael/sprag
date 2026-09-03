@@ -81,6 +81,10 @@ fn main() -> ExitCode {
             // the first confirmation because one leaked the palette's modal scope for good.
             check_a_confirmed_row_leaves_the_focus_stack_clean(&mut smoke, &mut report);
             check_a_window_closes_under_a_live_client(&mut smoke, &mut report);
+            // AFTER the check above, which leaves the strip holding more than one tab — this one
+            // needs a tab the client is NOT on, and making its own would test a window whose
+            // creation had just selected it.
+            check_a_tab_click_moves_a_live_client(&mut smoke, &mut report);
             // Needs the client ALIVE — it asks the client what its own last frame cost, so it cannot
             // join the log-reading check below the session kill.
             check_the_frames_report_their_settle_work(&mut smoke, &mut report);
@@ -847,6 +851,121 @@ fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Rep
     report.check(
         &format!("the closed window left the live client's strip ({shrunk:?})"),
         shrunk.is_ok_and(|tabs| tabs == before),
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **CLICKING A TAB MOVES A LIVE CLIENT** — register item 860, and the owner's own
+/// gesture, on a real GUI, through the real shell, against a real daemon.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a SMOKE and not a `cargo test`
+///
+/// The owner pressed a window tab dozens of times and the window did not change. Item 852 made the
+/// click say when it does nothing; it did not make it work. Item 860 then disproved eight causes,
+/// and every one of them was disproved by a test — because every LAYER has one:
+///
+/// | layer | its gate |
+/// |---|---|
+/// | the daemon's identity select | `sprag-host`'s `a_window_selected_by_identity_lands_over_the_real_socket` |
+/// | the wire client that sends it | `sprag-client`'s `a_tab_clicks_identity_select_moves_the_client_it_was_sent_from` |
+/// | the strip's paint-to-click map | `sprag-gui`'s `a_tab_click_selects_the_window_the_tab_was_painted_from` |
+///
+/// **Every one is green and the person is still stuck**, so what is left is the only thing none of
+/// them contains: a real shell routing a real activation through a real reducer into a real
+/// client. That is what this tool is, and it is why the check belongs here rather than beside the
+/// three above — the check above it states the same argument for the strip's own repaint.
+///
+/// # ⚠⚠ The assertion is the CHROME's claim, not the daemon's
+///
+/// `chrome_current_window` reads which tab says `selected`, which is what a person sees. A select
+/// the daemon performed and the strip never re-read is the owner's report exactly, and asking the
+/// host instead would answer with the very fact the client might have failed to adopt — the rule
+/// the check above states in its own words.
+fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report) {
+    let Ok(tabs) = smoke.tabs() else {
+        report.check(
+            "the client's painted tree answers a tab strip to click",
+            false,
+        );
+        return;
+    };
+    let Some(before) = smoke.chrome_current_window() else {
+        // ⚠ An absent claim is its own finding — see `chrome_current_window`. Without it there is
+        // nothing to compare a click against, and reporting THAT is more use than a bare failure.
+        report.check(
+            &format!("the strip says which window this client is on ({tabs:?})"),
+            false,
+        );
+        return;
+    };
+    // ⚠⚠⚠ EVERY TAB THE CLIENT IS NOT ON, IN TURN — not one of them.
+    //
+    // The owner's report was THREE different tabs (3, 4 and 5 of six) pressed dozens of times, and
+    // a check that pressed one would answer about one INDEX. The strip's per-tab externals are
+    // registered once at fixed tags `0..MAX_WINDOW_TABS` and only the live ones are painted, so
+    // "does tab i route" is a question with a different answer per `i` until something asks it of
+    // every `i`. This asks it of every `i`, which is also the shape the owner's gesture had.
+    let elsewhere: Vec<usize> = tabs
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| **name != before)
+        .map(|(i, _)| i)
+        .collect();
+    report.check(
+        &format!("the strip holds a tab this client is NOT on ({tabs:?}, on {before})"),
+        !elsewhere.is_empty(),
+    );
+    for at in elsewhere {
+        let want = tabs[at].clone();
+        let pressed = smoke
+            .invoke(
+                &format!("{TAB_TAG_PREFIX}{at}"),
+                "send",
+                json!("KeyboardActivate"),
+            )
+            .is_ok();
+        report.check(&format!("tab {at} ({want}) activates"), pressed);
+        if !pressed {
+            continue;
+        }
+        let moved = smoke.wait_for(|s| {
+            let now = s.chrome_current_window()?;
+            (now == want).then_some(now)
+        });
+        report.check(
+            &format!(
+                "⛔⛔⛔⛔⛔ clicking tab {at} moved the client onto {want} (strip {tabs:?}) — the \
+                 owner pressed tabs 3, 4 and 5 dozens of times and nothing happened, and every \
+                 per-layer gate was green while it did"
+            ),
+            moved.is_ok(),
+        );
+    }
+
+    // ⚠⚠⚠⚠⚠ AND IT LEAVES THE CLIENT WHERE IT FOUND IT — this file's standing discipline, and its
+    // first run here is what taught this check the rule: moving the client onto another window
+    // changes which PANES are painted, and the seven checks below it failed on a pane set they had
+    // not asked for. A check that proves a gesture works by leaving the gesture applied is a check
+    // that makes its neighbours assert about its leftovers.
+    let Some(home) = tabs.iter().position(|name| *name == before) else {
+        report.check(
+            &format!("the tab this client started on is still in the strip ({tabs:?})"),
+            false,
+        );
+        return;
+    };
+    let _ = smoke.invoke(
+        &format!("{TAB_TAG_PREFIX}{home}"),
+        "send",
+        json!("KeyboardActivate"),
+    );
+    report.check(
+        &format!("the tab check put the client back on {before}"),
+        smoke
+            .wait_for(|s| {
+                let now = s.chrome_current_window()?;
+                (now == before).then_some(now)
+            })
+            .is_ok(),
     );
 }
 
@@ -5986,6 +6105,11 @@ const MAX_VISIBLE_ROWS: usize = 10;
 /// The window strip's "+" (new window) button tag — the same gesture a user clicks, addressed
 /// symbolically because a synthesised pointer coordinate never lands headless.
 const NEW_WINDOW_TAG: &str = "sprag_gui.wnew";
+/// The per-tab button tag prefix — tab `i` is `{TAB_TAG_PREFIX}{i}`, addressed symbolically for
+/// [`NEW_WINDOW_TAG`]'s reason. Spelled here rather than imported because this binary does not
+/// share a module tree with `wtabs`; the strip's own `tab_tag` is the other speller, and
+/// `check_a_tab_click_moves_a_live_client` fails loudly if they ever disagree.
+const TAB_TAG_PREFIX: &str = "sprag_gui.wtab.";
 /// The environment variable a client reads to learn WHICH session to attach to — the one
 /// `sprag attach` sets, and the only route by which a launch can be told to join a NAMED session.
 const SESSION_ENV: &str = "SPRAG_GUI_SESSION";

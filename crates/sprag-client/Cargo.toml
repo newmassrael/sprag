@@ -54,3 +54,7 @@ serde_json = { workspace = true }
 # A daemon OLDER than this build: the skew gate boots a real client through a proxy that relays
 # every read and refuses every action, which is the only way to reach the acting path (R324).
 sprag-peer = { workspace = true }
+# Where a test may put a socket — item 794. `std::env::temp_dir()` answers this crate's own
+# directory inside the repository when `TMPDIR` is set-and-empty, which is litter `git status`
+# cannot see; `scratch_root()` is the one door that refuses instead.
+sprag-scratch = { workspace = true }
