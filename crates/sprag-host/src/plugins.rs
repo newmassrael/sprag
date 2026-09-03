@@ -5556,7 +5556,16 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
     for (reason, row) in folds.rows() {
         out.insert(
             reason.word().to_owned(),
-            json!({ "delivered": row.delivered, "folded": row.folded }),
+            // ⛔⛔⛔ THE TWO `unasked_*` KEYS ARE REGISTER ITEM 856(3), and they travel BESIDE the
+            // fold pair rather than inside it because they are a different population: the pair
+            // counts deliveries that arrived, and these count the questions that never became
+            // one. A reader that summed all four would be adding a denominator to its own rows.
+            json!({
+                "delivered": row.delivered,
+                "folded": row.folded,
+                "unasked_after_a_fold": row.unasked.after_a_fold,
+                "unasked_on_the_pane": row.unasked.on_the_pane,
+            }),
         );
     }
     Value::Object(out)
@@ -5575,10 +5584,26 @@ fn folds_by_reason_in(beside: &Value) -> Option<sprag_plugin::FoldsByReason> {
     let mut folds = sprag_plugin::FoldsByReason::NONE;
     for (word, row) in table {
         let reason = sprag_plugin::ReflectReason::named(word)?;
+        // ⛔⛔⛔⛔ **THE `unasked` PAIR IS REQUIRED, NOT DEFAULTED** — register item 856(3), on this
+        // function's own whole-or-nothing rule. A live driver that reports the fold pair and not
+        // this one has not counted the hardening events; filling in zeros would publish *this
+        // reason fired and nothing went unasked* about a run nobody asked that question of, which
+        // is the reassuring reading of an unmeasured value. The caller falls back to the daemon's
+        // own cell for such a report, which is a number somebody did count.
+        //
+        // ⚠ The DURABLE log is the other way round and deliberately so — see
+        // `crate::runs::PersistedFoldsUnder`: a stored row is a fact from another build, and a log
+        // written before this field existed is not a skew anyone can act on.
         folds.restore(
             reason,
-            small(row.get("delivered"))?,
-            small(row.get("folded"))?,
+            sprag_plugin::FoldsUnder {
+                delivered: small(row.get("delivered"))?,
+                folded: small(row.get("folded"))?,
+                unasked: sprag_plugin::Unasked {
+                    after_a_fold: small(row.get("unasked_after_a_fold"))?,
+                    on_the_pane: small(row.get("unasked_on_the_pane"))?,
+                },
+            },
         );
     }
     Some(folds)
@@ -6829,7 +6854,46 @@ pub fn folds_by_reason_sentence(run: &Value) -> Option<String> {
             let row = table.get(reason.word())?;
             let delivered = row.get("delivered")?.as_u64()?;
             let folded = row.get("folded")?.as_u64()?;
-            (delivered > 0).then(|| format!("{} {folded} of {delivered}", reason.word()))
+            // ⛔⛔⛔⛔⛔ **AND THE QUESTIONS THAT WERE NEVER ASKED, WHICH ARE NOT IN `delivered`** —
+            // register item 856(3). A refusal produces no witness, so it never entered the
+            // denominator beside it; a sentence that printed only the fold pair was reporting a
+            // reason as quiet on the strength of a population that could not hold the loud event.
+            //
+            // ⚠⚠⚠ **THE PAIR TOGETHER OR NEITHER, AND ABSENCE SAYS NOTHING RATHER THAN ZERO.** A
+            // row from a daemon that predates this field has not counted hardenings, and printing
+            // `0 unasked` for it would be the reassuring reading of an unmeasured value — the
+            // deduction this workspace forbids. Dropping the whole ROW would be worse still: its
+            // fold pair is a real measurement, and an older daemon would then publish no split at
+            // all rather than the half it can honestly stand behind.
+            let unasked = row
+                .get("unasked_after_a_fold")
+                .and_then(Value::as_u64)
+                .zip(row.get("unasked_on_the_pane").and_then(Value::as_u64));
+            let hardened = unasked.map_or(0, |(after, pane)| after + pane);
+            // ⛔⛔⛔ **A ROW WITH NO DELIVERIES BUT A HARDENING IS PRINTED** — this read
+            // `delivered > 0` alone, which is exactly how runs 191, 194 and 197 stayed invisible:
+            // the event that matters is the one that produced no delivery.
+            if delivered == 0 && hardened == 0 {
+                return None;
+            }
+            let mut said = format!("{} {folded} of {delivered} folded", reason.word());
+            if let Some((after_a_fold, on_the_pane)) = unasked {
+                // ⚠⚠ THE ZERO IS PRINTED TOO, on this function's own stated rule: item 856's
+                // refutation is a reflection that did NOT harden, so a sentence that mentioned
+                // only the hardenings would be an instrument that can confirm the axis and never
+                // refute it.
+                said.push_str(&format!(", {hardened} unasked"));
+                // ⚠ The BRANCH only where there is something to branch — register item 856(3)'s
+                // whole subject is that the two roads are different facts, and `0 after a fold, 0
+                // on the pane` is a split of nothing that would push the rows that HAVE one off
+                // the line.
+                if hardened > 0 {
+                    said.push_str(&format!(
+                        " ({after_a_fold} after a fold, {on_the_pane} with the prompt on the pane)"
+                    ));
+                }
+            }
+            Some(said)
         })
         .collect();
     if rows.is_empty() {
@@ -8596,7 +8660,17 @@ mod tests {
         // and answering a partial table for it would publish a comparison over a population this
         // image never saw — which is the one reading the split must never produce.
         let mut skewed = folds_by_reason_json(live);
-        skewed["a-reason-this-build-has-no-arm-for"] = json!({"delivered": 9, "folded": 9});
+        // ⚠⚠⚠⚠ **A COMPLETE ROW UNDER AN UNKNOWN WORD, and that is what makes this gate mean what
+        // it says.** Register item 856(3) made the `unasked` pair required, so a row missing it is
+        // refused too — and a fixture that left the pair out would still see `None` here while
+        // testing nothing about the WORD. The escape this gate exists to close would have been
+        // reopened by its own fixture going stale.
+        skewed["a-reason-this-build-has-no-arm-for"] = json!({
+            "delivered": 9,
+            "folded": 9,
+            "unasked_after_a_fold": 0,
+            "unasked_on_the_pane": 0,
+        });
         assert_eq!(
             folds_by_reason_in(&json!({ RUN_FOLDS_BY_REASON_KEY: skewed })),
             None,
@@ -9674,7 +9748,12 @@ mod tests {
         let carried = row(counted);
         assert_eq!(
             carried[RUN_FOLDS_BY_REASON_KEY]["capacity"],
-            json!({"delivered": 3, "folded": 3}),
+            json!({
+                "delivered": 3,
+                "folded": 3,
+                "unasked_after_a_fold": 0,
+                "unasked_on_the_pane": 0,
+            }),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): the split stops one function short of the row, so no \
              reader of a run can ask what its folding depended on. Deleting this publication was \
              MEASURED to leave every gate this item had earned green: {carried}",
@@ -9691,7 +9770,53 @@ mod tests {
              counter-examples is why `1/1` has stood: {said:?}",
         );
 
-        // ── ③ AND A RUN THAT NEVER REFLECTED PUTS NO TABLE ON ITS ROW ──
+        // ── ③ AND A RUN THAT HARDENED AND NEVER FOLDED REACHES THE ROW AND THE MOUTH ──
+        //
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 856(3), and **the crossing that decides whether the item is paid
+        // at all**: runs 194 and 197 are exactly this shape — one `prompt.unasked` and `folded: 0`
+        // for the whole run — and everything upstream of here could count them while the row and
+        // its mouth still published a table with no place to put them.
+        //
+        // ⚠⚠ Driven through `row()` and `folds_by_reason_sentence` and not through the type,
+        // because those two are the surfaces a person and an agent actually read. The counter
+        // being right is not the claim; the READING being available is.
+        let mut hardened = sprag_plugin::FoldsByReason::NONE;
+        hardened.record_unasked(
+            sprag_plugin::ReflectReason::Capacity,
+            sprag_plugin::UnaskedRoad::OnThePane,
+        );
+        let wedged = row(hardened);
+        assert_eq!(
+            wedged[RUN_FOLDS_BY_REASON_KEY]["capacity"],
+            json!({
+                "delivered": 0,
+                "folded": 0,
+                "unasked_after_a_fold": 0,
+                "unasked_on_the_pane": 1,
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(3): a run that hardened WITHOUT FOLDING has no row on its \
+             own table. Its whole reflection produced no delivery, so a table keyed on deliveries \
+             holds nothing — which is why the register's `0 of 2` and this repository's runs 194 \
+             and 197 never met: {wedged}",
+        );
+        let about = folds_by_reason_sentence(&wedged).unwrap_or_else(|| {
+            panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 856(3): a run whose only reflection event was a question \
+                 nobody asked says NOTHING about it. That is the silence run 197 died in — its \
+                 record named a fold that never happened, and the split that could have said so \
+                 answered as though the run had never reflected: {wedged}",
+            )
+        });
+        assert!(
+            about.contains(
+                "capacity 0 of 0 folded, 1 unasked (0 after a fold, 1 with the prompt on the pane)"
+            ),
+            "⛔⛔⛔⛔ AND IT SAYS WHICH ROAD. *1 unasked* alone would leave a reader unable to tell \
+             this run from one whose composer swallowed the paste, and the two remedies are \
+             opposite — go to the pane, or go to the agent's own record: {about:?}",
+        );
+
+        // ── ④ AND A RUN THAT NEVER REFLECTED PUTS NO TABLE ON ITS ROW ──
         //
         // ⚠⚠ The key is ABSENT rather than six empty rows, and that is the opposite of the WIRE's
         // decision one gate over — deliberately. On the wire an empty table is this image saying it
@@ -11304,6 +11429,18 @@ mod tests {
         for _ in 0..4 {
             counted.record(sprag_plugin::ReflectReason::Budget, false);
         }
+        // ⛔⛔⛔⛔⛔ **AND THE HARDENINGS, WHICH ARE IN NEITHER NUMBER ABOVE** — register item
+        // 856(3). `capacity` hardens once on EACH road; `budget` hardens on neither, which is the
+        // control. Two roads under one reason is what a crossing that summed them would destroy,
+        // and summing them is precisely the shape that made runs 194 and 197 unreadable.
+        counted.record_unasked(
+            sprag_plugin::ReflectReason::Capacity,
+            sprag_plugin::UnaskedRoad::AfterAFold,
+        );
+        counted.record_unasked(
+            sprag_plugin::ReflectReason::Capacity,
+            sprag_plugin::UnaskedRoad::OnThePane,
+        );
 
         // ── ① IT CROSSES, AND IT COMES BACK THE SAME TABLE ──
         let carried = progress_to_json(&progress(counted));
@@ -11330,6 +11467,22 @@ mod tests {
              is *a fact that reaches the wire and dies at the mouth* — the failure this file names \
              in five places. The LANDING row matters most: it is the only shape that can refute \
              this item's axis: {said:?}",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE HARDENINGS, TOLD APART — register item 856(3). A crossing that carried
+        // one number for both roads reads `2 unasked` here and passes the assertion above.
+        assert!(
+            said.contains("2 unasked (1 after a fold, 1 with the prompt on the pane)"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(3): the two roads to a question nobody asked arrived as \
+             one number, or did not arrive. They carry OPPOSITE remedies — a folded paste sends a \
+             reader to the agent's record, a prompt left in the composer sends them to the pane — \
+             and pooling them is register item 762's defect one surface later: {said:?}",
+        );
+        assert!(
+            said.contains("budget 0 of 4 folded, 0 unasked"),
+            "⚠⚠⚠⚠ AND THE CONTROL ROW SAYS ZERO RATHER THAN SAYING NOTHING. Item 856's stated \
+             refutation is a reflection that did NOT harden, so a sentence that printed hardenings \
+             only would be an instrument that can confirm the axis and never refute it — which is \
+             the defect this item pays: {said:?}",
         );
 
         // ── ③ AND A RUN THAT NEVER REFLECTED CROSSES A TABLE, NOT A SILENCE ──

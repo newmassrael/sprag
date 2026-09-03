@@ -12680,9 +12680,25 @@ mod tests {
         // ⚠⚠ THE LANDING ROW IS IN THE FIXTURE ON PURPOSE. A run whose every reflection folded
         // would let a mouth that printed only folds pass — and printing only folds is the defect,
         // because item 856's own refutation is a reflection that LANDED.
+        // ⛔⛔⛔⛔ AND THE HARDENINGS — register item 856(3). `capacity` hardens on the road with NO
+        // FOLD, which is the shape this repository's runs 191, 194 and 197 took (measured
+        // 2026-09-04: `folded: 0` for the whole run, and 197's own record names it as what killed
+        // it — 191 ended `failed` too but states no reason, so it is in the population and not
+        // attributed); `budget` hardens on neither, which is the control this item's own
+        // refutation lives in.
         run[sprag_host::plugins::RUN_FOLDS_BY_REASON_KEY] = serde_json::json!({
-            "capacity": {"delivered": 3, "folded": 3},
-            "budget": {"delivered": 4, "folded": 0},
+            "capacity": {
+                "delivered": 3,
+                "folded": 3,
+                "unasked_after_a_fold": 0,
+                "unasked_on_the_pane": 1,
+            },
+            "budget": {
+                "delivered": 4,
+                "folded": 0,
+                "unasked_after_a_fold": 0,
+                "unasked_on_the_pane": 0,
+            },
         });
         let said = render_run(&run);
         let lines: Vec<&str> = said.lines().collect();
@@ -12696,6 +12712,14 @@ mod tests {
             "⚠⚠⚠ THE PREMISE OF THE ARM BELOW: the composed sentence must carry the row that \
              LANDED, or *the mouth prints it* is a claim about a sentence that already dropped the \
              only shape able to refute item 856: {split:?}",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE HARDENING WITH ITS ROAD — register item 856(3). A person reading a run
+        // that stopped for them needs to know whether to walk to the pane or to the agent's own
+        // record, and *1 unasked* alone cannot tell them.
+        assert!(
+            split.contains("1 unasked (0 after a fold, 1 with the prompt on the pane)"),
+            "⚠⚠⚠⚠ THE PREMISE for item 856(3): the split a person reads must name the road the \
+             hardening took, or the two opposite remedies arrive as one number: {split:?}",
         );
         let expected: Vec<&str> = clauses
             .iter()

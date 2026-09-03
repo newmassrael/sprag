@@ -1461,6 +1461,72 @@ done"
     (workspace, pane)
 }
 
+/// ⛔⛔⛔⛔⛔ **A STAND-IN AGENT WHOSE COMPOSER TAKES THE REFLECTION AND NEVER ASKS IT** —
+/// register item 856(3), and the run shape this repository's own loop died in.
+///
+/// # ⛔⛔⛔⛔⛔ Runs 194 and 197 folded NOTHING and were still never asked
+///
+/// Measured 2026-09-04 against `sprag-loop.runs.json`: both raised `prompt.unasked` with
+/// `folded == 0` for the whole run, and 197 ended `failed` on it. Every other stand-in here answers
+/// every prompt it is given, so a run driven by one can only ever produce the FOLD road — and item
+/// 856's counter was denominated in folds, which is exactly how a run of this shape could not be
+/// counted by the instrument built to describe it.
+///
+/// ⚠⚠⚠ **ECHO IS LEFT ON, WHICH IS THE OPPOSITE OF EVERY OTHER PEER IN THIS FILE AND IS THE WHOLE
+/// FIXTURE.** [`standin_agent`]'s doc turns it off so that a wait ends on the peer's work rather
+/// than the kernel's — right for a peer whose prompt box is not the subject. Here the prompt box IS
+/// the subject: a run with `shows_the_prompt: true` refuses any delivery it cannot first READ BACK
+/// off the pane, so a peer that paints nothing produces *the prompt never got there* — the other
+/// refusal, with the opposite remedy. The line discipline's echo is what stands in for a composer
+/// painting what it was handed.
+///
+/// ⚠⚠ `-icanon` for the same reason it is not a detail: a canonical line discipline holds at most
+/// `MAX_CANON` bytes of an unread line (4096 on Linux) and the authored prompts approach it, so a
+/// peer that read in canonical mode would drop the tail of a long one and the gate would be
+/// measuring the kernel's buffer.
+///
+/// ⚠ AND IT WEDGES ONCE AND FOR GOOD. A composer holding a prompt is not a peer that answers the
+/// next one — `Delivered::Unsubmitted` is refused and never retried
+/// ([`crate::deliver::DEFAULT_SUBMIT_GRACE`]'s doc), so a fixture that recovered would be staging a
+/// run the product cannot have.
+pub(crate) fn standin_agent_wedging_on_its_reflection(
+    prompts_before_done: u32,
+) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let script = "\
+stty -icanon; printf 'AGENT-READY\\n'; n=0; s=0; wedged=0; \
+bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
+while read line; do \
+  case \"$line\" in *'MILESTONE_LABEL'*) wedged=1;; esac; \
+  [ $wedged -eq 0 ] || continue; \
+  case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
+  n=$((n+1)); \
+  if [ $n -ge TURNS_BEFORE_DONE ]; then printf 'MILESTONE REACHED\\n'; \
+  else printf 'ACK %s\\n' \"$n\"; fi; \
+  bump; \
+done"
+        .replace("STOP_QUESTION", STOP_QUESTION)
+        .replace("MILESTONE_LABEL", REFLECTION_MILESTONE_LABEL)
+        .replace("TURNS_BEFORE_DONE", &prompts_before_done.to_string());
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        AGENT_READY,
+    );
+    (workspace, pane)
+}
+
 /// 🎯🎯🎯🎯🎯 **A STAND-IN AGENT THAT NAMES A DIFFERENT CHECKPOINT EVERY TIME IT IS ASKED** — the
 /// peer register item 833(2)'s depth cap is measured against, and the one thing
 /// [`standin_agent_reflecting`] deliberately cannot do.
@@ -2911,6 +2977,54 @@ pub(crate) fn supervised_calling(
     workspace: &Arc<Mutex<Workspace>>,
     state: Arc<Mutex<AgentState>>,
 ) -> WorkspacePaneAccess {
+    supervised_told_by(
+        workspace,
+        state,
+        crate::access::Authority::Reported {
+            source: "test".to_string(),
+        },
+    )
+}
+
+/// ⛔⛔⛔⛔⛔ **[`supervised`], FOR A PEER WITH NO HOOK** — the supervision an UNHOOKED agent CLI
+/// gets, and the only one under which a delivery's submit can be refused at all.
+///
+/// # ⛔⛔⛔⛔⛔ Why a second authority had to exist before item 856(3) could be gated
+///
+/// [`crate::outer::OuterLoop`] chooses its submit contract from what it is facing:
+/// [`crate::deliver::SubmittedWhen::Took`] where the peer REPORTS, and
+/// [`crate::deliver::SubmittedWhen::Stirs`] where it does not. Every supervisor in this file
+/// answers [`crate::access::Authority::Reported`], and this fixture publishes no
+/// `asked` — so `Took` can never be satisfied here and **every** delivery on the painting road
+/// (`shows_the_prompt: true`) is refused, priming included. A run built on that dies before it
+/// reflects, which is why no gate in this crate had ever reached a REFLECTION whose prompt went
+/// unasked.
+///
+/// ⚠⚠ It is the HONEST authority for the peers here as well: a `/bin/sh` stand-in fires no
+/// `UserPromptSubmit` hook, so a fixture claiming a process inside the pane said this was already
+/// claiming more than its peer can do. What this one claims is what a screen rule could see — the
+/// peer's own counter — which is exactly what [`peer_seq`] reads.
+///
+/// ⚠ The state is `Idle` and not a caller's handle, on [`supervised`]'s own argument: a shell peer
+/// paints no working signal, so there is nothing here for a gate to turn.
+pub(crate) fn supervised_unhooked(workspace: &Arc<Mutex<Workspace>>) -> WorkspacePaneAccess {
+    supervised_told_by(
+        workspace,
+        Arc::new(Mutex::new(AgentState::Idle)),
+        crate::access::Authority::Scraped {
+            rule: Some("test".to_string()),
+        },
+    )
+}
+
+/// [`supervised_calling`] and [`supervised_unhooked`]'s one body — **who says so is the only
+/// difference**, and it is a parameter rather than a second copy so the seq machinery the two share
+/// cannot drift between them.
+fn supervised_told_by(
+    workspace: &Arc<Mutex<Workspace>>,
+    state: Arc<Mutex<AgentState>>,
+    authority: crate::access::Authority,
+) -> WorkspacePaneAccess {
     let source = {
         let workspace = Arc::clone(workspace);
         let high: SeqHighWater = Arc::default();
@@ -2929,9 +3043,7 @@ pub(crate) fn supervised_calling(
                 // agent, and a session still coming up must not be one.
                 agent: names_an_agent(&identified, id, &rows, showing == AgentState::Blocked)
                     .then(|| "claude".to_string()),
-                authority: crate::access::Authority::Reported {
-                    source: "test".to_string(),
-                },
+                authority: authority.clone(),
                 seq,
                 asked_seq: seq,
                 reports: 0,

@@ -9211,9 +9211,32 @@ mod tests {
         //
         // ⚠⚠ THE LANDING ROW IS IN THE FIXTURE ON PURPOSE: item 856's own refutation is a
         // reflection that LANDED, so a mouth printing only folds must fail here.
+        // ⛔⛔⛔⛔⛔ AND THE HARDENINGS — register item 856(3), and **this fixture was found short
+        // the moment they existed**, which is this gate's own recorded hazard arriving a second
+        // time: the population here is hand-written, so a number the daemon publishes and this
+        // list never learned about is invisible to the one gate whose NAME is *every fact a run
+        // publishes reaches the agent reading it*.
+        //
+        // ⚠⚠ `capacity` hardens on the road that involves NO FOLD, because that is the shape this
+        // repository's own runs took — 191, 194 and 197, measured 2026-09-04, `folded: 0` for the
+        // whole run. ⚠ Run 197 NAMES that as what killed it (*"the composer would not take this
+        // text the second time either"*); 191 also ended `failed` but its record states no reason,
+        // so it is counted in the population and NOT attributed. `budget` hardens on neither,
+        // which is the control: a mouth that printed hardenings only could confirm item 856's axis
+        // and never refute it.
         run[sprag_host::plugins::RUN_FOLDS_BY_REASON_KEY] = serde_json::json!({
-            "capacity": {"delivered": 3, "folded": 3},
-            "budget": {"delivered": 4, "folded": 0},
+            "capacity": {
+                "delivered": 3,
+                "folded": 3,
+                "unasked_after_a_fold": 0,
+                "unasked_on_the_pane": 1,
+            },
+            "budget": {
+                "delivered": 4,
+                "folded": 0,
+                "unasked_after_a_fold": 0,
+                "unasked_on_the_pane": 0,
+            },
         });
         let said = render_run(&run);
 
@@ -9226,6 +9249,17 @@ mod tests {
             "⚠⚠⚠ THE PREMISE: the composed sentence must carry the row that LANDED, or *the agent \
              is shown it* is a claim about a sentence that already dropped the only shape able to \
              refute item 856: {split:?}",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE HARDENING, ON THE ROAD WITH NO FOLD — register item 856(3). This is the
+        // reading the supervising agent needs and could not have: a run whose composer never
+        // folded anything and whose question was still never asked. Runs 191, 194 and 197 are that
+        // shape and two of them died in it.
+        assert!(
+            split.contains("1 unasked (0 after a fold, 1 with the prompt on the pane)"),
+            "⚠⚠⚠⚠ THE PREMISE for item 856(3): the split the agent is shown must name the road. \
+             *1 unasked* alone cannot tell a swallowed paste from a prompt sitting in a composer, \
+             and the two remedies are opposite — go to the agent's own record, or go to the pane: \
+             {split:?}",
         );
         for sentence in clauses
             .iter()

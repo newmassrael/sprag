@@ -2341,6 +2341,85 @@ pub struct FoldsUnder {
     pub delivered: u32,
     /// How many of [`delivered`](Self::delivered) the peer's composer folded away.
     pub folded: u32,
+    /// ⛔⛔⛔⛔⛔ **AND HOW MANY QUESTIONS WENT UNASKED UNDER THIS REASON** — register item
+    /// 856(3), and the population the two numbers above CANNOT contain.
+    ///
+    /// [`delivered`](Self::delivered) counts deliveries that produced a witness; a `prompt.unasked`
+    /// refusal produces none, so every hardening event was outside this row entirely. See
+    /// [`Unasked`], which is where the denominator moved to.
+    pub unasked: Unasked,
+}
+
+/// ⛔⛔⛔⛔⛔ **WHICH ROAD A QUESTION THAT WAS NEVER ASKED TOOK** — register item 856(3), and
+/// register item 762's split read one order further on.
+///
+/// The two roads carry OPPOSITE remedies, which is why this is a type and not a `bool`: a folded
+/// paste sends its reader to the agent's own record (*do not go to the pane, what is sitting there
+/// is a placeholder*), and a prompt left in the composer sends them to the pane (*go and look, the
+/// text is there*). `crate::plugin::Deliveries::unsubmitted`'s own doc is the rule — **two remedies
+/// must not be one number** — and this is that rule applied to the same pair one surface later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaskedRoad {
+    /// The composer swallowed the paste and the agent never named the question —
+    /// [`crate::deliver::Delivered::Unreported`].
+    AfterAFold,
+    /// The text arrived on the pane and the submit never became a question —
+    /// [`crate::deliver::Delivered::Unsubmitted`]. **No fold happened.**
+    OnThePane,
+}
+
+/// ⛔⛔⛔⛔⛔ **THE `prompt.unasked` EVENTS UNDER ONE REFLECT REASON, SPLIT BY WHETHER A FOLD
+/// PRODUCED THEM** — register item 856(3).
+///
+/// # ⛔⛔⛔⛔⛔ The denominator was the wrong number, and that is measured
+///
+/// Item 856's counter asked *did that fold harden into `PromptUnasked`* and reported `0 of 2` after
+/// a fix. Measured 2026-09-04 against this repository's own run log: **runs 191, 194 and 197 raised
+/// `prompt.unasked` with `folded == 0` for the whole run**, and 197's own record names that as what
+/// killed it. Those three are not a disagreement with the `0 of 2`; they are **outside its
+/// population by construction**, because a count whose denominator is folds cannot hold a run that
+/// never folded.
+///
+/// ⚠⚠⚠ **AND THE FOLD ROAD HAS NO OBSERVED MEMBERS HERE AT ALL.** Across the eleven runs in that
+/// log, `Deliveries::unreported` — the road where a composer swallowed the paste and the question
+/// then went unasked — is **zero on every one**, while this road fired four times (191, 194, 195,
+/// 197). The counter item 856 was reading is denominated in a population nothing has yet entered.
+///
+/// ⇒ **The population is the EVENT and the fold is its branch**, which is what these two fields
+/// are. A run that hardens without folding lands in [`on_the_pane`](Self::on_the_pane) and is
+/// finally countable.
+///
+/// # ⚠⚠ The distinction is not new here — it is the one this workspace already made and lost
+///
+/// Register item 762 wrote it on 2026-08-30: *`folded away` means the prompt is on no screen and
+/// the agent still received it; `PromptUnasked` means the agent never reported receiving it — and
+/// only the second spends a session replacement.* The product's COUNTERS were split then
+/// ([`crate::plugin::Deliveries::unsubmitted`] against `unreported`); the reason-split built for
+/// item 856(1) was not, and re-pooled them by leaving the event out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Unasked {
+    /// [`UnaskedRoad::AfterAFold`] — the fold hardened.
+    pub after_a_fold: u32,
+    /// [`UnaskedRoad::OnThePane`] — **it hardened with no fold at all**, which is the half nothing
+    /// could count.
+    pub on_the_pane: u32,
+}
+
+impl Unasked {
+    /// **THE DENOMINATOR** — every `prompt.unasked` under this reason, whichever road it took.
+    ///
+    /// ⚠ Spelled here rather than added up at each reader, so the two fields cannot come to be
+    /// summed one way in a sentence and another way in a gate.
+    #[must_use]
+    pub const fn total(&self) -> u32 {
+        self.after_a_fold.saturating_add(self.on_the_pane)
+    }
+
+    /// Whether this reason hardened at all.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
 }
 
 /// ⛔⛔⛔⛔⛔ **WHETHER A PROMPT FOLDS DEPENDS ON WHY THE LOOP WAS REFLECTING — THE SPLIT NOTHING
@@ -2399,6 +2478,10 @@ impl FoldsByReason {
         under: [FoldsUnder {
             delivered: 0,
             folded: 0,
+            unasked: Unasked {
+                after_a_fold: 0,
+                on_the_pane: 0,
+            },
         }; ReflectReason::ALL.len()],
     };
 
@@ -2424,6 +2507,28 @@ impl FoldsByReason {
         }
     }
 
+    /// **RECORD ONE QUESTION THAT WAS NEVER ASKED WHILE REFLECTING FOR `reason`**, and which road
+    /// it took — register item 856(3).
+    ///
+    /// ⚠⚠⚠ **SEPARATE FROM [`record`](Self::record), because the two count DIFFERENT
+    /// POPULATIONS.** `record` is handed a delivery that produced a witness; this one is handed a
+    /// refusal, which produces none — which is precisely why every hardening event was missing from
+    /// this table until now. A caller that routed a refusal through `record` would put it in the
+    /// `delivered` denominator and publish it as a prompt that arrived.
+    ///
+    /// ⚠ `road` is passed rather than re-derived, [`record`](Self::record)'s rule verbatim: the
+    /// caller has already classified this refusal through
+    /// [`crate::deliver::Delivered::refused`], and a second classification here would be a second
+    /// authority on which roads are folds.
+    pub fn record_unasked(&mut self, reason: ReflectReason, road: UnaskedRoad) {
+        let row = &mut self.under[Self::at(reason)].unasked;
+        let counter = match road {
+            UnaskedRoad::AfterAFold => &mut row.after_a_fold,
+            UnaskedRoad::OnThePane => &mut row.on_the_pane,
+        };
+        *counter = counter.saturating_add(1);
+    }
+
     /// **PUT A ROW BACK AS IT WAS WRITTEN DOWN** — for a host reading a run out of its durable log.
     ///
     /// ⚠⚠ Separate from [`record`](Self::record) rather than a loop over it, and the difference is
@@ -2431,8 +2536,13 @@ impl FoldsByReason {
     /// anything that could reach it twice would double a run's own count. This is a RESTORE of a
     /// number somebody already counted, so it assigns rather than adds — and a caller that used
     /// `record` for it would turn `3 of 3` into a run that reflected three times more than it did.
-    pub fn restore(&mut self, reason: ReflectReason, delivered: u32, folded: u32) {
-        self.under[Self::at(reason)] = FoldsUnder { delivered, folded };
+    ///
+    /// ⚠⚠⚠ **THE WHOLE ROW, NOT ITS NUMBERS ONE BY ONE** — register item 856(3) widened this from
+    /// `(delivered, folded)`, and it is a decision rather than tidying: four `u32` parameters in a
+    /// row are four chances for a caller to transpose two of them, and the compiler would say
+    /// nothing. A row that arrives as a row cannot be assembled in the wrong order.
+    pub fn restore(&mut self, reason: ReflectReason, row: FoldsUnder) {
+        self.under[Self::at(reason)] = row;
     }
 
     /// What `reason`'s row says.
@@ -2452,9 +2562,16 @@ impl FoldsByReason {
 
     /// Whether anything has been counted at all — a run that has never reflected, so the split has
     /// nothing to say rather than saying every reason is clean.
+    ///
+    /// ⛔⛔⛔ **A HARDENING COUNTS AS SOMETHING** — register item 856(3). This read `delivered == 0`
+    /// alone, and a reflection whose ONLY event was a question nobody was asked delivered nothing
+    /// by definition: the whole table would have answered *this run never reflected* about the one
+    /// run this instrument exists to describe.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.under.iter().all(|row| row.delivered == 0)
+        self.under
+            .iter()
+            .all(|row| row.delivered == 0 && row.unasked.is_empty())
     }
 }
 
@@ -11470,15 +11587,27 @@ impl OuterLoop {
             //
             // ⚠⚠ EXHAUSTIVE, for the same reason the classification above is: a refusal added
             // later with no counter would publish the tally of a run that had refused nothing.
-            match delivered {
+            // ⛔⛔⛔⛔⛔ **AND WHICH ROAD IT WAS, FOR THE SPLIT** — register item 856(3). The arms
+            // below already tell the two apart for the run's TOTALS; what they did not do is say so
+            // to `FoldsByReason`, and that omission is the whole of 856(3): the split's population
+            // was `record_delivery`'s witnesses, so every hardening event was outside the table.
+            //
+            // ⚠⚠ Named here rather than re-derived beside the recording, so the classification
+            // stays in the one exhaustive `match` that already owns it.
+            let road = match delivered {
                 Delivered::Unsubmitted { .. } => {
                     self.deliveries.unsubmitted = self.deliveries.unsubmitted.saturating_add(1);
+                    Some(crate::outer::UnaskedRoad::OnThePane)
                 }
                 Delivered::Unreported { .. } => {
                     self.deliveries.unreported = self.deliveries.unreported.saturating_add(1);
+                    Some(crate::outer::UnaskedRoad::AfterAFold)
                 }
                 // ⚠ `Unconfirmed` has no counter and that is register item 617's own decision: it
                 // is a prompt that never reached the pane at all, so it is in no denominator here.
+                // ⚠⚠ AND IT IS IN NO ROAD EITHER, on that same decision: a prompt that never
+                // arrived is not a question left somewhere, so neither remedy fits it and putting
+                // it under one would send a reader to a pane holding nothing.
                 // The five below are not refusals and cannot arrive.
                 Delivered::Unconfirmed { .. }
                 | Delivered::Confirmed { .. }
@@ -11486,7 +11615,18 @@ impl OuterLoop {
                 | Delivered::Reported { .. }
                 | Delivered::Released { .. }
                 | Delivered::Stopped { .. }
-                | Delivered::Unwitnessed { .. } => {}
+                | Delivered::Unwitnessed { .. } => None,
+            };
+            // ⚠⚠⚠ **THE REASON IS READ HERE, IN THE SAME PASS THE DELIVERY WAS MADE.** The arm
+            // that RAISES `prompt.unasked` runs after `pumping`, where this file's own comment
+            // warns the machine may already have left the state the pass opened in — so a reason
+            // read there could name a reflection this prompt was not asked under. Read at the
+            // delivery, it is the same reading `record_delivery` above just took for the fold.
+            //
+            // ⚠ `None` is the other half of the population, exactly as it is for the fold row: a
+            // refusal outside a reflection belongs to no row and is counted in `deliveries` above.
+            if let (Some(road), Some(reason)) = (road, self.reflecting_because()) {
+                self.folds.record_unasked(reason, road);
             }
             return Err(refusal);
         }
@@ -21453,13 +21593,18 @@ mod tests {
         // that had data would satisfy the membership assertion and destroy the comparison.
         for (reason, row) in only_one.rows() {
             let expected = match reason {
+                // ⚠ NOTHING WENT UNASKED in this fixture — every delivery produced a witness, so
+                // the item 856(3) pair is zero on every row and is asserted so rather than
+                // widened past: a row that stopped carrying it would go unnoticed here.
                 ReflectReason::Capacity => FoldsUnder {
                     delivered: 5,
                     folded: 5,
+                    unasked: Unasked::default(),
                 },
                 _ => FoldsUnder {
                     delivered: 0,
                     folded: 0,
+                    unasked: Unasked::default(),
                 },
             };
             assert_eq!(
@@ -21471,6 +21616,109 @@ mod tests {
                 reason.word(),
             );
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THAT HARDENED WITHOUT FOLDING IS IN THE TABLE** — register item 856(3),
+    /// and the population this instrument could not hold.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Two runs of this repository's own loop were outside the count by construction
+    ///
+    /// Item 856's counter asked *did that fold harden into `PromptUnasked`* and reported **0 of 2**
+    /// after a fix. Measured 2026-09-04 against `sprag-loop.runs.json`: runs **194** and **197**
+    /// raised `prompt.unasked` with `folded == 0` for the whole run, and 197 DIED of it. Those two
+    /// do not disagree with the `0 of 2` — **a denominator of folds cannot hold a run that never
+    /// folded**, so the instrument was structurally unable to count its own counter-examples.
+    ///
+    /// ⇒ The population is the EVENT and the fold is its branch. This gate drives the arm that was
+    /// impossible before ([`Unasked::on_the_pane`]) and the control beside it, because a table that
+    /// summed the two roads would satisfy any assertion about a total.
+    ///
+    /// # ⚠⚠⚠ [`FoldsByReason::is_empty`] is asserted here and it is not a detail
+    ///
+    /// It read `delivered == 0` alone, and a hardening produces NO delivery — so the whole table
+    /// answered *this run never reflected* about the one run the split exists to describe, and
+    /// every mouth downstream falls silent on that answer. A gate about the row alone would be
+    /// green while the row never reached anybody.
+    #[test]
+    fn a_run_that_hardened_without_folding_is_in_the_split() {
+        // ══ ① THE ARM: A REFLECTION THAT DELIVERED NOTHING AND HARDENED ONCE, WITH NO FOLD ══════
+        //
+        // ⚠ `record` is deliberately NOT called: this is runs 194 and 197's shape, where the whole
+        // run's fold count is zero. A fixture that folded once first would let a fold-denominated
+        // table pass.
+        let mut wedged = FoldsByReason::NONE;
+        wedged.record_unasked(ReflectReason::Capacity, UnaskedRoad::OnThePane);
+
+        assert!(
+            !wedged.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(3): a run whose only reflection event was a question \
+             nobody was asked reads as a run that never reflected, so every mouth downstream says \
+             nothing at all. `is_empty` read `delivered == 0`, and a hardening produces no \
+             delivery — which is how runs 194 and 197 were invisible while 197 died of it: \
+             {wedged:?}",
+        );
+        let row = wedged.under(ReflectReason::Capacity);
+        assert_eq!(
+            (row.delivered, row.folded, row.unasked.total()),
+            (0, 0, 1),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(3): the hardening must be counted where NEITHER fold \
+             number can hold it. A recording that reached `delivered` would publish it as a prompt \
+             that arrived, and one that reached `folded` would claim a fold this run never had — \
+             both are the pooling item 762 already forbade. Row: {row:?}",
+        );
+        assert_eq!(
+            (row.unasked.after_a_fold, row.unasked.on_the_pane),
+            (0, 1),
+            "⛔⛔⛔⛔ AND ON THE ROAD IT ACTUALLY TOOK. The two carry OPPOSITE remedies — a folded \
+             paste sends its reader to the agent's own record, a prompt left in the composer sends \
+             them to the pane — so a table that filed this under the fold road would send somebody \
+             to look for a placeholder that is not there. Row: {row:?}",
+        );
+
+        // ══ ② THE CONTROL: A FOLD THAT DID *NOT* HARDEN ═════════════════════════════════════════
+        //
+        // ⚠⚠⚠ This is the half that makes the split an instrument rather than a tally. Item 856's
+        // stated refutation is a reflection that did not harden, and a table where every fold
+        // implied a hardening could confirm the axis and never refute it — the exact defect the
+        // item pays. Same reason, so the two arms differ in ONE thing.
+        let mut landed = FoldsByReason::NONE;
+        landed.record(ReflectReason::Capacity, true);
+        let control = landed.under(ReflectReason::Capacity);
+        assert_eq!(
+            (control.delivered, control.folded, control.unasked.total()),
+            (1, 1, 0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(3): a fold that was asked anyway is being counted as a \
+             hardening. Then the split can never produce the counter-example item 856 says would \
+             end it, and `0 unasked` — the only refuting reading — becomes unreachable: \
+             {control:?}",
+        );
+
+        // ══ ③ AND THE TWO ROADS DO NOT SUM ══════════════════════════════════════════════════════
+        let mut both = FoldsByReason::NONE;
+        both.record_unasked(ReflectReason::Capacity, UnaskedRoad::AfterAFold);
+        both.record_unasked(ReflectReason::Capacity, UnaskedRoad::OnThePane);
+        both.record_unasked(ReflectReason::Capacity, UnaskedRoad::OnThePane);
+        assert_eq!(
+            both.under(ReflectReason::Capacity).unasked,
+            Unasked {
+                after_a_fold: 1,
+                on_the_pane: 2,
+            },
+            "⛔⛔⛔⛔ ONE COUNTER FOR BOTH ROADS IS THIS ITEM WITH A FIELD ADDED AND THE DEFECT \
+             INTACT — `3 unasked` cannot tell a run that folded from one that never did, which is \
+             the reading runs 194 and 197 were lost to: {both:?}",
+        );
+
+        // ══ ④ AND A REASON THAT DID NEITHER STAYS EMPTY ═════════════════════════════════════════
+        //
+        // ⚠ The neighbouring gate's hazard, one value over: a recording that leaked across rows
+        // would satisfy every assertion above and destroy the comparison between them.
+        assert_eq!(
+            both.under(ReflectReason::Budget).unasked,
+            Unasked::default(),
+            "⚠⚠⚠ a hardening was filed under a reason the loop was not reflecting for, so the \
+             comparison between rows is over invented populations: {both:?}",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **A REFLECTION WHOSE PROMPT *LANDED* IS RECORDED, WHICH IS THE ONLY THING THAT
@@ -21627,7 +21875,8 @@ mod tests {
             folds.under(ReflectReason::Capacity),
             FoldsUnder {
                 delivered: 0,
-                folded: 0
+                folded: 0,
+                unasked: Unasked::default(),
             },
             "⚠⚠⚠⚠⚠ A REASON THAT NEVER FIRED MUST HAVE NO POPULATION. This run's ceiling is \
              {ROOMY}, far above any reading, so `capacity` cannot have happened — a denominator \
@@ -21650,6 +21899,209 @@ mod tests {
              one of this run's deliveries, so rows summing past `made` means the two counters are \
              being written at two sites — the drift both their docs argue against. Split \
              {rows}/{folded}, total {deliveries:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REFLECTION WHOSE PROMPT WAS LEFT IN THE COMPOSER IS COUNTED UNDER ITS OWN
+    /// REASON** — register item 856(3), driven on a real pane.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The one line that FEEDS this whole split was ungated, and a mutation said so
+    ///
+    /// [`FoldsByReason::record_unasked`] has exactly one production caller — the refusal arm of
+    /// this file's delivery — and on 2026-09-04 that call was replaced with a discard and **every
+    /// test in this workspace stayed green**. Everything else item 856(3) built has a gate: the
+    /// type, the wire crossing, the durable log, the row, and both mouths. The line that puts a
+    /// REAL run's hardening into them had none, so the instrument would have shipped complete and
+    /// never once been fed — which is item 856's own shape, an instrument alive and unable to
+    /// compare anything.
+    ///
+    /// # ⚠⚠⚠ Why the row this leaves is precisely the one runs 194 and 197 could not have
+    ///
+    /// `Witnessed::of(Unsubmitted)` is `None`, so
+    /// [`record_delivery`](OuterLoop::record_delivery) returns before it touches a row: this
+    /// reflection contributes NOTHING to `delivered` or to `folded`. The row asserted below
+    /// therefore exists **only** because the hardening was recorded — which is the whole of the
+    /// item, since a table denominated in deliveries has no place to put a reflection that
+    /// produced none, and runs 194 and 197 (`folded: 0` for the whole run, 197 dead of it) are
+    /// exactly that shape.
+    ///
+    /// ⚠⚠ The reason driven is `budget`, its neighbour's choice and for its neighbour's reason: the
+    /// recording site is one line for every member of [`ReflectReason::ALL`], and `capacity` needs
+    /// a session near a ceiling no stand-in can be near. `capacity` is the CONTROL here and its row
+    /// must stay empty — a recording that leaked across rows would satisfy every claim below about
+    /// `budget` and destroy the comparison between them.
+    ///
+    /// ⚠ The peer is UNHOOKED ([`crate::testing::supervised_unhooked`]) and that is what makes the
+    /// run reach a reflection at all rather than dying at its priming prompt — see that fixture,
+    /// which carries the measurement.
+    #[test]
+    fn a_reflection_whose_prompt_was_never_asked_is_counted_under_its_own_reason() {
+        /// Above any reading, so `capacity` can never be what this run reflects for — the sibling
+        /// gate's ROOMY, and here it is what keeps the control row's emptiness meaningful.
+        const ROOMY: i64 = 800_000;
+        /// Enough passes to prime, work one turn and reach the reflection; a run that has not
+        /// refused by then has not staged what this gate is about.
+        const PASSES: usize = 60;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        // ⚠ NEVER says the done marker: a claimed milestone would end the run before the
+        // reflection this gate is about.
+        let (workspace, pane) = crate::testing::standin_agent_wedging_on_its_reflection(u32::MAX);
+        let access = crate::testing::supervised_unhooked(&workspace);
+        let mut loops = with_bound(
+            OuterLoop::new(
+                Arc::clone(&lua),
+                pane,
+                &AiLoopSpec {
+                    ready_when: Some(ReadyWhen::Settles("claude".to_string())),
+                    // ⛔⛔⛔⛔⛔ THE ROAD THE REFUSAL LIVES ON, and the reason no gate had reached
+                    // it: a run that does not read its prompt back off the pane returns before any
+                    // refusal can be classified, so every existing loop fixture drives `false` and
+                    // a build recording nothing here is green across all of them.
+                    shows_the_prompt: true,
+                    ..spec(None)
+                },
+            )
+            .expect("the document's datamodel must carry its four authored strings"),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "keep the stand-in answering".to_string(),
+                milestone: "reach it".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                working_rules: None,
+                unverified_rules: None,
+                context_ceiling: Some(ROOMY),
+                reflect_after_refusals: None,
+                reaim_max: None,
+                milestone_check: None,
+                successor_check: None,
+                reask_max: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                // ⚠ ON: one judged turn brings the run to `reflecting`, which is the delivery this
+                // gate is about — the same door its neighbour opens.
+                reflect_every: Some(1),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let refused = loop {
+            assert!(
+                walked.len() < PASSES,
+                "⚠⚠⚠⚠⚠ THE STAGING: this run must reach a refusal, or every claim below is about \
+                 a run that never happened. Walked {walked:?}",
+            );
+            match loops.pump(&access, &run) {
+                Ok(Pumped::Moved {
+                    from, raised, to, ..
+                }) => walked.push(format!("{from:?} --{raised:?}--> {to:?}")),
+                Ok(other) => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                Err(refused) => break refused,
+            }
+        };
+        let at = loops.state();
+        let folds = loops.folds_by_reason();
+        let deliveries = loops.deliveries();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        // ══ THE PREMISE, IN TWO HALVES: this refusal is a SUBMIT's, and it is the REFLECTION's ══
+        //
+        // ⚠⚠⚠⚠⚠ Without both, the row below is satisfied by a run that never reflected (nothing is
+        // recorded outside a reflection, so an empty table would agree with a build that records
+        // nothing) or by a run refused for a different reason entirely — a prompt that never
+        // reached the pane at all, which is deliberately in NO road.
+        assert!(
+            matches!(refused, PaneError::NeverSubmitted { .. }),
+            "⚠⚠⚠⚠⚠ THE STAGING: this peer must leave the prompt sitting in its composer, which is \
+             the refusal item 856(3) is about. A pane that never took the text is a different \
+             failure with the opposite remedy and belongs to no road. Got {refused:?}, walked \
+             {walked:?}",
+        );
+        assert_eq!(
+            at,
+            AiLoopState::Reflecting,
+            "⚠⚠⚠⚠⚠ THE PREMISE: the refusal must be the REFLECTION's prompt. A run refused at its \
+             priming prompt records nothing at all — correctly, since no reason was being reflected \
+             for — and would leave the whole table empty, which is also what a build that records \
+             nothing leaves. Walked {walked:?}",
+        );
+
+        // ══ ① THE HARDENING IS IN THE TABLE, ON A ROW NO DELIVERY COULD HAVE MADE ══════════════
+        assert_eq!(
+            folds.under(ReflectReason::Budget),
+            FoldsUnder {
+                delivered: 0,
+                folded: 0,
+                unasked: Unasked {
+                    after_a_fold: 0,
+                    on_the_pane: 1,
+                },
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(3): a reflection whose prompt was never asked left NO \
+             trace on the split. This delivery produced no witness, so `delivered` and `folded` \
+             cannot hold it and the row is a row only because the hardening was written down — \
+             which is the reading runs 194 and 197 were structurally invisible to. Split: \
+             {folds:?}, walked {walked:?}",
+        );
+
+        // ══ ② AND ON THE ROAD IT ACTUALLY TOOK, NOT THE OTHER ONE ══════════════════════════════
+        //
+        // ⚠⚠ The two carry OPPOSITE remedies — a folded paste sends its reader to the agent's own
+        // record, a prompt left in a composer sends them to the pane — so a build that filed this
+        // under the fold road would send somebody to look for a placeholder that is not there. The
+        // assertion above pins it; this one says WHY it is not a detail, and pins the total too so
+        // that a build summing the two roads cannot satisfy the pair.
+        assert_eq!(
+            folds.under(ReflectReason::Budget).unasked.total(),
+            deliveries.unsubmitted,
+            "⛔⛔⛔⛔ THE SPLIT MUST BE A SPLIT OF THE RUN'S OWN REFUSALS. This run refused once, \
+             on the pane road, and the row must carry that one and no more — a split that counted \
+             a hardening the total never saw is two counters written at two sites, which is the \
+             drift `record_delivery` and `Deliveries` both argue against. Split: {folds:?}, total \
+             {deliveries:?}",
+        );
+
+        // ══ ③ AND THE REASON THAT NEVER FIRED IS STILL EMPTY ═══════════════════════════════════
+        //
+        // ⚠⚠⚠ `capacity` is the reason item 856 is actually about and this run's ceiling is ROOMY,
+        // so it cannot have fired. A hardening filed there would be the comparison between rows
+        // being made over invented populations — and this row is the one every reader of item 856
+        // looks at first.
+        assert_eq!(
+            folds.under(ReflectReason::Capacity),
+            FoldsUnder::default(),
+            "⚠⚠⚠⚠⚠ A REASON THAT NEVER FIRED MUST HAVE NO POPULATION. This run's ceiling is \
+             {ROOMY}, far above any reading, so a hardening here means refusals are being filed \
+             under whatever row was last set: {folds:?}",
+        );
+
+        // ══ ④ AND THE RUN DELIVERED SOMETHING BEFORE IT WEDGED ═════════════════════════════════
+        //
+        // ⚠⚠⚠⚠ The control for the fixture itself. A peer that refused EVERY delivery would satisfy
+        // every claim above while staging a run that never worked at all — and it is one `stty`
+        // away, since this is the only peer in the crate whose composer paints. The prompts before
+        // the reflection must have LANDED, or the wedge is not a wedge.
+        assert!(
+            deliveries.made > 0,
+            "⚠⚠⚠⚠ THE FIXTURE'S OWN CONTROL: this peer must answer the prompts before the \
+             reflection, or the refusal under test is not *the composer took this one* but *this \
+             peer takes nothing*, and the two are different runs: {deliveries:?}, walked {walked:?}",
         );
     }
 

@@ -2469,6 +2469,20 @@ pub struct PersistedFoldsUnder {
     pub delivered: u32,
     /// [`sprag_plugin::FoldsUnder::folded`].
     pub folded: u32,
+    /// ⛔⛔⛔ [`sprag_plugin::Unasked::after_a_fold`] — register item 856(3).
+    ///
+    /// ⚠ `#[serde(default)]` and that is the OPPOSITE call from the live wire's
+    /// (`crate::plugins::folds_by_reason_in` refuses a report missing this key). A log written
+    /// before the field existed is a fact from another build and nobody can act on its absence; a
+    /// LIVE driver that omits it is a build skew, and answering zeros for that would publish a
+    /// comparison over a population this image never saw.
+    #[serde(default)]
+    pub unasked_after_a_fold: u32,
+    /// ⛔⛔⛔ [`sprag_plugin::Unasked::on_the_pane`] — register item 856(3), and the number the
+    /// whole item is about: a run that hardened WITHOUT folding is invisible without it, and runs
+    /// 194 and 197 are two such runs measured in this repository's own log.
+    #[serde(default)]
+    pub unasked_on_the_pane: u32,
 }
 
 impl From<sprag_plugin::FoldsByReason> for PersistedFoldsByReason {
@@ -2482,6 +2496,8 @@ impl From<sprag_plugin::FoldsByReason> for PersistedFoldsByReason {
                         PersistedFoldsUnder {
                             delivered: row.delivered,
                             folded: row.folded,
+                            unasked_after_a_fold: row.unasked.after_a_fold,
+                            unasked_on_the_pane: row.unasked.on_the_pane,
                         },
                     )
                 })
@@ -2500,7 +2516,22 @@ impl From<PersistedFoldsByReason> for sprag_plugin::FoldsByReason {
             let Some(reason) = sprag_plugin::ReflectReason::named(&word) else {
                 continue;
             };
-            live.restore(reason, row.delivered, row.folded);
+            live.restore(
+                reason,
+                sprag_plugin::FoldsUnder {
+                    delivered: row.delivered,
+                    folded: row.folded,
+                    // ⛔⛔⛔ REGISTER ITEM 856(3). This is the crossing that decides whether the
+                    // item is paid at all: item 606 measured thirteen live runs and every one was
+                    // RESTORED, so the split a person reads is always one that came out of this
+                    // file. A hardening that died with its daemon would leave the instrument
+                    // exactly as blind as it was.
+                    unasked: sprag_plugin::Unasked {
+                        after_a_fold: row.unasked_after_a_fold,
+                        on_the_pane: row.unasked_on_the_pane,
+                    },
+                },
+            );
         }
         live
     }
@@ -5009,6 +5040,19 @@ mod tests {
         for _ in 0..4 {
             folds.record(sprag_plugin::ReflectReason::Budget, false);
         }
+        // ⛔⛔⛔⛔⛔ **AND THE HARDENINGS, WHICH ARE IN NEITHER ROW ABOVE** — register item 856(3).
+        // `capacity` gets one of EACH road, so a restore that carried the pair as one number, or
+        // that put a hardening under the fold count, fails here rather than agreeing by
+        // coincidence. `budget` deliberately gets NONE, which is the control: a reason that
+        // reflected and never hardened is the shape item 856's axis can be refuted by.
+        folds.record_unasked(
+            sprag_plugin::ReflectReason::Capacity,
+            sprag_plugin::UnaskedRoad::AfterAFold,
+        );
+        folds.record_unasked(
+            sprag_plugin::ReflectReason::Capacity,
+            sprag_plugin::UnaskedRoad::OnThePane,
+        );
         lock(&progress).folds_by_reason = folds;
         registry.submit(NewRun {
             id,
@@ -5037,9 +5081,17 @@ mod tests {
             carried.under(sprag_plugin::ReflectReason::Capacity),
             sprag_plugin::FoldsUnder {
                 delivered: 3,
-                folded: 3
+                folded: 3,
+                // ⛔⛔⛔⛔⛔ REGISTER ITEM 856(3): the two roads, told apart, across the file. A
+                // restore that summed them would publish `2 unasked` and lose the only thing that
+                // distinguishes a run that folded from one that never did — which is the whole
+                // reading runs 194 and 197 were invisible to.
+                unasked: sprag_plugin::Unasked {
+                    after_a_fold: 1,
+                    on_the_pane: 1,
+                },
             },
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): the split did not survive its daemon, and item 606 \
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1) AND 856(3): the split did not survive its daemon, and item 606 \
              MEASURED that this is the crossing every reader takes — thirteen live runs, every one \
              restored, none carrying its delivery pair. An instrument that empties at the daemon \
              boundary can be consulted only while nobody is consulting it. Got {carried:?} from \
@@ -5049,11 +5101,61 @@ mod tests {
             carried.under(sprag_plugin::ReflectReason::Budget),
             sprag_plugin::FoldsUnder {
                 delivered: 4,
-                folded: 0
+                folded: 0,
+                // ⚠⚠ AND IT HARDENED NOTHING — register item 856(3)'s control. A restore that
+                // copied `capacity`'s hardenings across the table would satisfy the assertion
+                // above and destroy the comparison, which is this gate's own stated hazard.
+                unasked: sprag_plugin::Unasked::default(),
             },
             "⛔⛔⛔⛔ AND THE ROW THAT LANDED SURVIVED. A restore that kept the folds and dropped \
              this one leaves a table whose denominator is its numerator — the hand tally item \
              856(1) replaced, restored faithfully. Got {carried:?} from {on_disk}",
+        );
+
+        // ⛔⛔⛔⛔⛔ ── AND A LOG WRITTEN BEFORE THE PAIR EXISTED READS AS ZERO, NOT AS A REFUSAL ──
+        //
+        // Register item 856(3), and the OPPOSITE call from the live wire's
+        // (`crate::plugins::folds_by_reason_in` refuses a report missing these keys). A stored row
+        // is a fact from another build and its silence is nothing a reader can act on; a live
+        // driver's silence is a build skew. Driven through a real decode of a real older shape,
+        // because a `#[serde(default)]` that was dropped would leave every pre-existing run log
+        // unreadable — and this daemon restores from one on every boot.
+        // ⚠ Built by EDITING THE PARSED DOCUMENT rather than by string surgery on it: a `replace`
+        // over the text matched only the rows whose values happened to differ from the others, so
+        // the fixture stripped one row and left five — and the premise assertion below is what
+        // caught that. A shape this gate claims to be reading has to be built by construction.
+        let mut older: Value = serde_json::from_str(&on_disk).expect("the log just written parses");
+        for row in older["runs"][0][crate::plugins::RUN_FOLDS_BY_REASON_KEY]
+            .as_object_mut()
+            .expect("the run carries a split")
+            .values_mut()
+        {
+            let row = row.as_object_mut().expect("each reason carries a row");
+            row.remove("unasked_after_a_fold");
+            row.remove("unasked_on_the_pane");
+        }
+        let older = older.to_string();
+        assert!(
+            !older.contains("unasked_"),
+            "⚠ THE PREMISE: this fixture must actually strip the pair, or the decode below is \
+             reading the same document twice. Got {older}",
+        );
+        let old_log: RunLog = serde_json::from_str(&older).expect(
+            "⛔⛔⛔⛔ REGISTER ITEM 856(3): a run log written before the hardening pair existed \
+             must still decode. Every boot of this daemon restores from one.",
+        );
+        let mut before = RunRegistry::default();
+        before.restore(&old_log);
+        assert_eq!(
+            before.snapshot()[0]
+                .progress
+                .folds_by_reason
+                .under(sprag_plugin::ReflectReason::Capacity)
+                .unasked,
+            sprag_plugin::Unasked::default(),
+            "⚠⚠ and it reads as *nobody counted this*, which for a stored row is the same number \
+             as *nothing hardened* — the honest answer, since the build that wrote it could not \
+             have said otherwise",
         );
     }
 
