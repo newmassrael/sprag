@@ -34,6 +34,7 @@ use pinion_core::widgets::button::ButtonExternal;
 use pinion_core::{Color, Intent, Scene};
 
 use pinion_core::reactive::{Owner, Signal};
+use sprag_host::report::Report;
 
 use crate::command::Command;
 use crate::slotview::SlotView;
@@ -257,18 +258,31 @@ fn clickable(tag: String, label: &str, fill: Color, fg: Color) -> Scene {
 }
 
 /// Route a drained intent: if it is one of the window strip's button "click"s (a tab, the "+", or
-/// the "×"), run the corresponding window action against `slots` and report handled. Any other
-/// intent is left for the caller's own reducer arms.
-pub(crate) fn handle_window_intent(intent: &Intent, slots: &SlotView) -> bool {
-    let Some((who, event)) = intent.tag_str().rsplit_once('.') else {
-        return false;
-    };
+/// the "×"), run the corresponding window action against `slots` and answer WHAT IT DID. [`None`]
+/// for any other intent, which is left for the caller's own reducer arms.
+///
+/// # It answered `bool` until R852, and that is the defect this signature removes
+///
+/// `true` meant *this strip routed the intent*, and the caller — the only reducer that could say
+/// anything to anybody — read it as *this strip did something*. Those are different claims and the
+/// tab arm was making the wrong one: a click it could not address, and a click whose select landed
+/// nowhere, both returned `true` and left no trace on the screen or in the log. The owner pressed a
+/// tab **dozens of times** against exactly that.
+///
+/// [`Report`] is the vocabulary this client already answers a key, a palette row and a confirmed
+/// command in, so every arm here now states its outcome in the words a person reads — and the
+/// silent outcome has a NAME ([`Report::on_screen`]) that a reader can check against what the strip
+/// paints, rather than a bare `return true` nobody can disagree with.
+pub(crate) fn handle_window_intent(intent: &Intent, slots: &SlotView) -> Option<Report> {
+    let (who, event) = intent.tag_str().rsplit_once('.')?;
     if event != CLICK_EVENT {
-        return false;
+        return None;
     }
     if who == NEW_WINDOW_TAG {
-        slots.new_window();
-        return true;
+        // Creates AND selects, so the strip repainting one tab wider IS the answer — the same claim
+        // the palette's `New window` row makes.
+        let _born = slots.new_window();
+        return Some(Report::on_screen());
     }
     if who == CLOSE_WINDOW_TAG {
         // Close the CURRENT window (whichever tab is active) — but ASK first. This is the ONE action
@@ -287,37 +301,123 @@ pub(crate) fn handle_window_intent(intent: &Intent, slots: &SlotView) -> bool {
         // and a window that took the label in between is not the one the person agreed to kill; a
         // daemon that publishes no identity gets no kill from this button at all, which is the safe
         // direction for the least guarded surface in the client.
-        if let Some(current) = slots
+        let Some(current) = slots
             .windows()
             .into_iter()
             .find(|window| window.current && window.id.is_some())
-        {
-            crate::confirm::run_or_arm(
-                Command::KillWindow {
-                    window: current.id.expect("filtered to the rows that have one"),
-                    label: current.name,
-                },
-                None,
-                slots,
-            );
-        }
-        return true;
+        else {
+            // ⚠ THE SAME SILENCE THE TAB ARM HAD, on the same strip: a daemon that publishes no
+            // identity leaves this button with nothing to arm, and until R852 that was a `true`
+            // claiming the click had been dealt with. It is `no_window` and not `on_screen` because
+            // nothing appeared — the prompt this button exists to raise did not come up, and a
+            // person who pressed "×" and saw no question is owed the reason.
+            return Some(Report::no_window());
+        };
+        crate::confirm::run_or_arm(
+            Command::KillWindow {
+                window: current.id.expect("filtered to the rows that have one"),
+                label: current.name,
+            },
+            None,
+            slots,
+        );
+        // The prompt (or the command `run_or_arm` performed and reported through
+        // `crate::message::show` itself) is on screen; this arm has nothing to add over it.
+        return Some(Report::on_screen());
     }
     if let Some(idx) = tab_index(who) {
-        // Resolve the clicked tab's slot to the IDENTITY it was painted from and send THAT. A
-        // window that has gone selects nothing; a window that moved position or was renamed is
-        // still the one on the tab.
-        //
-        // There is no second hop and no name: the select ACTION takes a reference now, so the
-        // address a person pointed at is the address that crosses the wire. The first version of
-        // this fix resolved the identity back to a live NAME because the ask was shared with the
-        // keybinding vocabulary — a gap of one reducer call, which was still a gap.
-        if let Some(window) = painted_tabs().get().get(idx).copied().flatten() {
-            slots.select_window(&sprag_host::wire::WindowRef::Picked(window));
-        }
-        return true;
+        // Resolve the clicked tab's slot to the IDENTITY it was painted from and send THAT — a
+        // window that has gone selects nothing, and one that moved position or was renamed is still
+        // the one on the tab. See [`select_painted_tab`], which owns the address and the answer.
+        let outcome = select_painted_tab(idx, slots);
+        // The LOG half of R852's "say so". The intent's arrival was already logged by the shell —
+        // the owner's report was 29 `sprag_gui.wtab.N.click` lines with NOTHING after them — so what
+        // was missing is a line per click saying what became of it. One event, whose word is read
+        // off the SAME value the sentence is, so the log and the strip cannot come to disagree.
+        crate::diag::tab_click(idx, outcome.verdict());
+        return Some(outcome.report());
     }
-    false
+    None
+}
+
+/// WHAT A TAB CLICK DID — the one value both the person's sentence and the log line are read off.
+///
+/// # Why the two silent arms are TWO and not one
+///
+/// They have DIFFERENT PRESCRIPTIONS, which is the whole of R852's third condition. [`Unaddressed`]
+/// means the request never left this client, so the thing to look at is what the daemon publishes in
+/// its `windows` slot (or whether the strip was painted at all). [`Gone`] means the request left,
+/// arrived, and was refused, so the thing to look at is the window list — a race a person can lose
+/// honestly by clicking a tab after its window closed. A single "the click did nothing" would send
+/// a reader into the wrong process, which is exactly the state this item was opened in: the ledger
+/// could not say which of the two the owner had hit, because neither left a mark.
+///
+/// [`Unaddressed`]: TabOutcome::Unaddressed
+/// [`Gone`]: TabOutcome::Gone
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TabOutcome {
+    /// The tab resolved to an identity, the select was sent, and the host answered the window it
+    /// landed on.
+    Landed,
+    /// The slot this tab was painted from carries NO identity, so no select was sent at all — a
+    /// daemon that publishes no [`WindowInfo::id`](sprag_terminal::WindowInfo::id), or a strip whose
+    /// painter never ran. Offering no act is the right behaviour ([`painted_tabs`] states why);
+    /// offering it in silence was the defect.
+    Unaddressed,
+    /// The identity was sent and the host answered [`None`] — the window this tab was painted from
+    /// is no longer there. The answer has been available since R316 and this arm is what reads it.
+    Gone,
+}
+
+impl TabOutcome {
+    /// The sentence this outcome puts on the message strip.
+    ///
+    /// An exhaustive match with no catch-all, deliberately: a fourth outcome must be given words
+    /// here rather than inheriting a default, which is how a new silence would get in.
+    fn report(self) -> Report {
+        match self {
+            // The window changed under the person's eyes and the strip repainted, which is the
+            // answer. `on_screen` is a CLAIM a reader can check, not the old bare `return true`.
+            Self::Landed => Report::on_screen(),
+            Self::Unaddressed => Report::no_window(),
+            Self::Gone => Report::window_gone(),
+        }
+    }
+
+    /// The word the log line carries — a `&'static str` per arm, like
+    /// [`diag::redock_resolution`](crate::diag::redock_resolution)'s verdict.
+    ///
+    /// Read off the same value [`report`](Self::report) is, so the two halves of *"say so — to a
+    /// person or to the log"* cannot drift apart, and exhaustive for that method's reason.
+    const fn verdict(self) -> &'static str {
+        match self {
+            Self::Landed => "landed",
+            Self::Unaddressed => "unaddressed",
+            Self::Gone => "gone",
+        }
+    }
+}
+
+/// Resolve tab `idx` to the IDENTITY it was painted from, send THAT, and answer what became of it.
+///
+/// There is no second hop and no name: the select ACTION takes a reference, so the address a person
+/// pointed at is the address that crosses the wire. The first version of this fix resolved the
+/// identity back to a live NAME because the ask was shared with the keybinding vocabulary — a gap of
+/// one reducer call, which was still a gap.
+///
+/// Split out of the reducer arm so the CLASSIFICATION is a value a test can name, rather than a
+/// branch whose only trace was a `true` both halves of the failure also returned.
+fn select_painted_tab(idx: usize, slots: &SlotView) -> TabOutcome {
+    let Some(window) = painted_tabs().get().get(idx).copied().flatten() else {
+        return TabOutcome::Unaddressed;
+    };
+    // ⚠ THE ANSWER IS THE POINT. `SlotView::select_window` carries a `#[must_use]` of its own now,
+    // so this is also the shape `-D warnings` keeps: the previous line here dropped the landing and
+    // the lint on the TRAIT method could not see through the wrapper.
+    match slots.select_window(&sprag_host::wire::WindowRef::Picked(window)) {
+        Some(_) => TabOutcome::Landed,
+        None => TabOutcome::Gone,
+    }
 }
 
 /// The tab index a `{TAB_TAG_PREFIX}{i}` button tag names, or `None` for a non-tab tag.
@@ -418,16 +518,24 @@ mod tests {
             let _ = slots.kill_window(boot);
             assert_eq!(slots.windows().len(), 2, "the list really shifted");
             // ...and the current window is moved OFF the answer, or this test cannot fail.
-            slots.select_window(&sprag_host::wire::WindowRef::Named(second.clone()));
+            // The landing is discarded ON PURPOSE here and at the two other setup selects in this
+            // module: the assertion below re-reads the current window, which is the fact this
+            // arrangement is about. Written `let _ =` rather than left bare so the wrapper's
+            // `#[must_use]` still catches the drop that mattered.
+            let _ = slots.select_window(&sprag_host::wire::WindowRef::Named(second.clone()));
             assert_eq!(
                 current_name(slots),
                 second,
                 "the control: not on the answer yet"
             );
 
-            assert!(
-                handle_window_intent(&tab_click(2), slots),
-                "the click is handled"
+            let said = handle_window_intent(&tab_click(2), slots).expect("the click is handled");
+            assert_eq!(
+                said.says(),
+                None,
+                "a tab click that LANDED is the control for R852's sentences: the window changed \
+                 under the person's eyes, so there is nothing to say — and a strip that warned here \
+                 too would satisfy the two failure gates by warning always: {said:?}",
             );
             assert_eq!(
                 current_name(slots),
@@ -463,7 +571,7 @@ mod tests {
             let _ = view_window_strip(slots, &Theme::default());
 
             let _ = slots.kill_window(doomed);
-            slots.select_window(&sprag_host::wire::WindowRef::Named(boot.clone()));
+            let _ = slots.select_window(&sprag_host::wire::WindowRef::Named(boot.clone()));
             assert_eq!(
                 current_name(slots),
                 boot,
@@ -475,16 +583,140 @@ mod tests {
                 "a positional resolve of tab 1 WOULD find a window, or this cannot fail",
             );
 
-            assert!(
-                handle_window_intent(&tab_click(1), slots),
-                "the click is handled"
-            );
+            let said = handle_window_intent(&tab_click(1), slots).expect("the click is handled");
             assert_eq!(
                 current_name(slots),
                 boot,
                 "a tab for a window that is gone moves nobody",
             );
+            // R852's second half: moving nobody is right, and doing it in SILENCE was the defect.
+            assert_eq!(
+                said.says(),
+                Some("that window is gone"),
+                "⚠⚠⚠⚠⚠ the select was SENT and the host answered none — the answer \
+                 `HostClient::select_window` has carried since R316 — and the caller that painted \
+                 the row dropped it. REVERT-PROOF: put back \
+                 `slots.select_window(&…Picked(window));` with its answer discarded and this says \
+                 nothing: {said:?}",
+            );
         });
+    }
+
+    /// ⚠⚠⚠⚠⚠ **R852's OTHER half: a tab that carries NO ADDRESS says so too.**
+    ///
+    /// The owner pressed three tabs 29 times between them, the log recorded every
+    /// `sprag_gui.wtab.N.click` intent arriving, and after them there was nothing — no window
+    /// change, no error, no line. Two branches of ONE arm could produce that, and both answered
+    /// `true`: this one, where the painted slot holds no [`sprag_terminal::WindowId`] so no select
+    /// is ever sent, and `a_tab_whose_window_is_gone_says_so`, where one is sent and refused.
+    ///
+    /// # ⚠ The map is written through the PAINTER'S OWN door, and it has to be
+    ///
+    /// The in-process `Host` fills `id` on EVERY row — `Session::window_infos_marking` does it
+    /// unconditionally — so a daemon that publishes none is unreachable over it, which is also why
+    /// every live test in this file could pass while this branch was silent. The address-less slot
+    /// is therefore written with `painted_tabs().set`, the one call `view_window_strip` itself makes
+    /// (a `Vec<Option<WindowId>>`, absent exactly as the wire's absent `id` key arrives), rather
+    /// than by a second thirty-five-method `HostClient` fake beside `stabs`'s.
+    ///
+    /// The host under it is LIVE, so the claim is not only about words: a branch that sent a select
+    /// anyway would move the session, and the second assertion is what says it did not.
+    ///
+    /// REVERT-PROOF: answer `Report::on_screen()` for the unaddressed branch — the old `return true`
+    /// in the words this signature made available — and this fails with nothing said.
+    #[test]
+    fn a_tab_that_addresses_no_window_says_so() {
+        Owner::new().run(|| {
+            seed_live_host();
+            let slots = &use_terminal().slots;
+            let second = slots.new_window();
+            let _ = view_window_strip(slots, &Theme::default());
+            assert!(
+                painted_tabs().get().iter().all(Option::is_some),
+                "the control: over a live host every painted tab HAS an address, which is why the \
+                 next line is the only way to reach the branch this gate is about",
+            );
+
+            // A daemon that publishes no identity for the window on tab 1.
+            let mut painted = painted_tabs().get();
+            painted[1] = None;
+            painted_tabs().set(painted);
+            let before = current_name(slots);
+            assert_eq!(before, second, "the control: on the window tab 1 was painted from");
+
+            let said = handle_window_intent(&tab_click(1), slots).expect("the click is handled");
+            assert_eq!(
+                said.says(),
+                Some("no window to select here"),
+                "⚠⚠⚠⚠⚠ a tab click that could not be addressed must SAY so: offering no act is \
+                 right — `WindowInfo::id` is an Option because \"a client that needs an identity \
+                 offers no act rather than a wrong one\" — and offering it in SILENCE is what the \
+                 owner met as a tab that would not switch: {said:?}",
+            );
+            assert_eq!(
+                current_name(slots),
+                before,
+                "and it really sent nothing: an address-less tab must not fall back to a name or a \
+                 position, which is the stranger-selecting defect this strip's map exists to remove",
+            );
+        });
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE SPLIT — R852's third condition, and the one neither gate above can state.**
+    ///
+    /// The two silences have DIFFERENT PRESCRIPTIONS: `unaddressed` points at what the daemon
+    /// publishes in its `windows` slot, `gone` at a window that closed under a painted strip. The
+    /// ledger could not say which of the two the owner hit, and a fix that made both clicks warn
+    /// with ONE sentence would leave it exactly as unable to.
+    ///
+    /// So this fires the strip's two failures and requires the outcome to be TOLD APART, on both
+    /// halves of *"say so — to a person or to the log"*: the sentences differ, the log verdicts
+    /// differ, and neither is the silent [`Report::on_screen`] the landing case correctly is.
+    ///
+    /// REVERT-PROOF: give `TabOutcome::Unaddressed` the same `Report` as `Gone` (or the same
+    /// verdict word) and this fails — while both single-face gates above stay green.
+    #[test]
+    fn the_two_silent_tab_clicks_are_told_apart() {
+        let (unaddressed, gone, landed) = (
+            TabOutcome::Unaddressed,
+            TabOutcome::Gone,
+            TabOutcome::Landed,
+        );
+        // The PERSON's half.
+        let (a, b) = (unaddressed.report(), gone.report());
+        assert!(
+            a.says().is_some() && b.says().is_some(),
+            "both silent outcomes must speak: {a:?} / {b:?}",
+        );
+        assert_ne!(
+            a.says(),
+            b.says(),
+            "⚠⚠⚠⚠⚠ a click that never left the client and a click the host refused need DIFFERENT \
+             sentences — one sends a reader to the daemon's `windows` slot, the other to a window \
+             that closed, and one wording for both is the ledger's own \"⑴ 인지 ⑵ 인지는 아직 안 \
+             갈렸다\" reproduced in the product",
+        );
+        assert_eq!(
+            landed.report().says(),
+            None,
+            "the control: the LANDING says nothing, so this gate cannot be passed by warning always",
+        );
+        // The LOG's half, read off the same value.
+        let words = [
+            unaddressed.verdict(),
+            gone.verdict(),
+            landed.verdict(),
+            unaddressed.verdict(),
+        ];
+        assert_eq!(
+            words
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3,
+            "three outcomes, three verdict words, and the same outcome twice is the same word: \
+             {words:?}",
+        );
     }
 
     #[test]
@@ -550,7 +782,12 @@ mod tests {
                 tag: std::borrow::Cow::Owned(format!("{CLOSE_WINDOW_TAG}.{CLICK_EVENT}")),
                 payload: pinion_core::external::IntrospectValue::Null,
             };
-            assert!(handle_window_intent(&click, &terminal.slots));
+            let said = handle_window_intent(&click, &terminal.slots).expect("the click is handled");
+            assert_eq!(
+                said.says(),
+                None,
+                "the prompt IS the answer, so this arm has nothing to add over it: {said:?}",
+            );
 
             assert_eq!(
                 crate::terminal::use_terminal().slots.windows().len(),
@@ -655,7 +892,7 @@ mod tests {
                 .find(|(i, _)| *i != first)
                 .map(|(_, name)| name.clone())
                 .expect("a second window to move to");
-            slots.select_window(&sprag_host::wire::WindowRef::Named(other));
+            let _ = slots.select_window(&sprag_host::wire::WindowRef::Named(other));
 
             let moved = window_strip_access_nodes(slots)
                 .iter()

@@ -303,6 +303,18 @@ impl SlotView {
     /// The REFERENCE is the caller's, because this client has both kinds: a key carries a name out
     /// of a config file, a tab carries the identity it was painted from. See
     /// [`sprag_host::HostClient::select_window`].
+    ///
+    /// # The `#[must_use]` is the wrapper's own, and its absence was a live defect
+    ///
+    /// [`HostClient::select_window`] has carried one since
+    /// R316 — *"a select that did not land is the only way a client learns the name is not there"* —
+    /// but an attribute does not travel through a wrapper. This method is what every surface in this
+    /// client calls, so until it carried one of its own, `-D warnings` said nothing about a caller
+    /// that dropped the landing, and one did: the window tab strip, whose click therefore reported
+    /// `true` for a select that never landed. Two of the three callers were already reading the
+    /// answer; the lint is what stops the fourth from not.
+    #[must_use = "a select that did not land is the only way a caller learns the window is gone, \
+                  and a tab click that drops it is the silent click R852 removed"]
     pub(crate) fn select_window(&self, window: &sprag_host::wire::WindowRef) -> Option<String> {
         let landed = self.host.select_window(window);
         self.reseed_pane_focus();

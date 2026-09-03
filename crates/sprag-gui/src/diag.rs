@@ -133,3 +133,26 @@ pub(crate) fn redock_resolution(
         "redock_resolution",
     );
 }
+
+/// WHAT BECAME OF A WINDOW-TAB CLICK (R852) — the line that was missing when the owner
+/// pressed a tab dozens of times and nothing happened.
+///
+/// The shell already logged each intent ARRIVING (`shell: intent sprag_gui.wtab.3.click`),
+/// and the log's whole content after those 29 lines was nothing at all — which is why the
+/// report reached the ledger as *"the tab is not clickable"* when the truth was *"it was
+/// clicked and the click was dropped"*. This is the other end of that pair: one line per
+/// click, whatever became of it.
+///
+/// `verdict` is [`TabOutcome::verdict`](crate::wtabs)'s `&'static str` — `landed`,
+/// `unaddressed` (the tab carries no window identity, so nothing was sent) or `gone` (the
+/// identity was sent and the host answered none). The two failing words are SEPARATE
+/// because their prescriptions are: one points at what the daemon publishes, the other at
+/// a window that closed under the strip. Read off the same value the message strip's
+/// sentence is, so the log and the screen cannot disagree.
+///
+/// `debug!`, like [`dock_toggle`] and [`redock_resolution`]: a pointer gesture's verdict is
+/// what an operator debugging "I clicked and nothing happened" wants, without the full
+/// per-key trace.
+pub(crate) fn tab_click(tab: usize, verdict: &str) {
+    tracing::debug!(target: "sprag_gui::wtabs", tab, verdict, "tab_click");
+}

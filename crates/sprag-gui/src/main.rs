@@ -1054,7 +1054,14 @@ impl WidgetCore for TerminalViewer {
         // The window tab strip: a tab / "+" / "×" button click routes to a `SlotView` window
         // action (select / new / kill window). Handled first, like the context menu — these are
         // not pane tags, so the panel routing below would drop them.
-        if wtabs::handle_window_intent(intent, &use_terminal().slots) {
+        // ⚠ THE REPORT IS SHOWN (R852). This arm answered a `bool` and this reducer dropped it,
+        // which made "the strip routed the click" indistinguishable from "the strip did something"
+        // — the state the owner met as a tab that would not switch and a log that went quiet after
+        // the intent. `message::show` is the same door a key, a palette row and a confirmed command
+        // report through, so a click that did nothing now says so exactly as a key that did nothing
+        // does.
+        if let Some(report) = wtabs::handle_window_intent(intent, &use_terminal().slots) {
+            message::show(&report);
             return Vec::new();
         }
         // The session sidebar: a row / "+" button click routes to a `SlotView` session action

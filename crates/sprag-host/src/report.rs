@@ -461,6 +461,54 @@ impl Report {
         Self::at(Severity::Warn, "no pane here to act on".to_owned())
     }
 
+    /// A window act was pressed on a surface that carries no ADDRESS for a window — so nothing was
+    /// sent at all.
+    ///
+    /// # It is [`no_pane`](Self::no_pane)'s shape one container up, NOT
+    /// [`window_gone`](Self::window_gone)
+    ///
+    /// A pointer surface decides WHICH window at paint time and holds
+    /// [`WindowInfo::id`](sprag_terminal::WindowInfo::id) to act with later — an [`Option`], because
+    /// a daemon that publishes no identity must leave a client offering no act rather than a wrong
+    /// one. Offering none is correct; offering none **in silence** was the defect, because a person
+    /// clicking a tab that could not be addressed saw exactly what a person clicking a working tab
+    /// saw.
+    ///
+    /// The two are a PAIR whose PRESCRIPTIONS DIFFER, which is why they are two sentences and not
+    /// one: this one means the request never left the client (a daemon too old to publish the key,
+    /// or a strip that was never painted), while [`window_gone`](Self::window_gone) means it left,
+    /// arrived, and found nothing. One sentence for both would send a reader into the wrong process.
+    ///
+    /// It takes no argument for [`no_pane`](Self::no_pane)'s stated reason: a clicked tab has no
+    /// [`BoundAction`] to spell itself from, and the one noun in this sentence is in the
+    /// constructor's name, so no call site can pass the wrong one.
+    ///
+    /// No `#[must_use]` here and none is missing: [`Report`] carries one as a TYPE.
+    pub fn no_window() -> Self {
+        Self::at(Severity::Warn, "no window to select here".to_owned())
+    }
+
+    /// A window act was ADDRESSED, sent, and resolved to nothing — the window it named is gone.
+    ///
+    /// The far half of [`no_window`](Self::no_window): here the client held an address and used it,
+    /// and the host answered [`None`]. A row painted from a window list is a fact about the past, so
+    /// this is the normal outcome of a real race — a tab clicked after its window closed — and the
+    /// defect was never that it happens. It was that the answer
+    /// ([`HostClient::select_window`](crate::HostClient::select_window), which has said which window
+    /// it landed on since R316) was DROPPED by the one caller that painted the row.
+    ///
+    /// [`Severity::Warn`], the weight this module gives every refusal: a person whose click did
+    /// nothing needs telling, while it is not the kind that waits to be acknowledged.
+    ///
+    /// It says *that window* and not a name, deliberately: the act was addressed by IDENTITY, and a
+    /// name here would print a label read off a list at paint time to explain a landing that used a
+    /// different address — the confusion the identity address exists to remove.
+    ///
+    /// No `#[must_use]` here and none is missing: [`Report`] carries one as a TYPE.
+    pub fn window_gone() -> Self {
+        Self::at(Severity::Warn, "that window is gone".to_owned())
+    }
+
     /// What somebody ELSE asked this client to show — `sprag display-message`, arriving from the
     /// daemon rather than from this keyboard.
     ///
