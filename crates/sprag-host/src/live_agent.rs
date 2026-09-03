@@ -6011,6 +6011,12 @@ fn what_a_live_agent_does_with_a_submit_it_was_never_given() {
 /// is about a composer holding two prompts. Three agents cost three cold starts and buy three
 /// independent readings.
 ///
+/// ⚠ **THAT CONCATENATION IS THE PAINTED ROAD'S, AND ONLY IT — register item 830.** Measured
+/// 2026-09-03 by `what_a_second_write_into_a_composer_already_holding_one_does` below: a second
+/// write onto a composer that FOLDED the first one EXPANDS it instead. Either way the second
+/// reading is about a box the first write already touched, so one agent per reading stands — but
+/// the reason is *the box was touched*, not *the bytes doubled*.
+///
 /// ⚠ **NOTHING IS SUBMITTED.** The question is what the composer SHOWS, so no `Enter` is pressed
 /// and no turn is spent; each pane is dropped holding its prompt.
 #[test]
@@ -6210,6 +6216,219 @@ fn what_makes_a_live_agents_composer_fold_the_prompt_away() {
          text. The delivery MUST refuse rather than press over it — that refusal is what ended \
          three live runs at 0 iterations, and it is correct here. Got {delivered:?}",
     );
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT A SECOND WRITE INTO A COMPOSER THAT IS ALREADY HOLDING ONE DOES** — register
+/// item 830, and the one reading two of this workspace's own documents disagree about.
+///
+/// # ⛔⛔⛔⛔⛔ Two sentences, one day apart, both written as fact
+///
+/// | when | where | what it says a second write does |
+/// |---|---|---|
+/// | 08-18 | item 421, and the arm above this one | the peer **EXPANDS ITS OWN FOLD**: `deliver` came back `Confirmed { attempts: 2, written: 2477 }` = 2 x 1,238 + 1, the whole prompt painted and the agent already working, and the placeholder itself had said *"paste again to expand"* |
+/// | 08-19 | `deliver`'s prose, in two places | *"a second injection lands on the first one's text"* on the fold road, and [`Delivered::Unsubmitted`] is *"never retried — correctly, since the composer is holding the prompt and a second delivery would concatenate onto it"* |
+///
+/// **Neither was ever measured against the other, and the delivery path's retry policy rests on the
+/// second.** That is the whole of item 830's ⑵: until this is read off a live composer, nobody
+/// knows whether refusing to write again is right.
+///
+/// # ⚠⚠⚠ Why ONE agent per reading, and why nothing is submitted
+///
+/// The module's own rule, for the reason this gate is about: a composer that has taken a delivery
+/// cannot be emptied, so a second reading in the same pane would be about a box holding two
+/// prompts. **No `Enter` is pressed anywhere here** — the question is what the composer SHOWS for a
+/// second write, so no turn is spent and no agent is asked anything.
+///
+/// # ⚠⚠ Two roads, because `deliver` has two and gives them different words
+///
+/// A first write that FOLDS leaves `OnScreen::MovedWithoutIt` and, for a peer with no account,
+/// falls through to the next attempt — so the second write is a road the product actually travels.
+/// A first write that PAINTS leaves `OnScreen::Shown`, which is where [`Delivered::Unsubmitted`]
+/// comes from. The two sentences above are about those two roads, and reading only one of them
+/// would answer half of item 830.
+///
+/// # ⚠ This gate is THE reading, and it says so under its own rule
+///
+/// `every_claim_about_a_second_write_names_the_reading` requires every sentence in this workspace
+/// that says what a second write does to name
+/// `what_a_second_write_into_a_composer_already_holding_one_does` — this one. The instrument is in
+/// its own population deliberately: a checker exempt from its own rule is exactly the escape hatch
+/// rule 6 forbids, and naming itself is also how a person greps from a claim to the thing to run.
+#[test]
+#[ignore = "drives a LIVE agent CLI: needs credentials, spawns two, takes minutes"]
+fn what_a_second_write_into_a_composer_already_holding_one_does() {
+    /// The placeholder a folded paste paints, matched on its stable head.
+    const FOLD: &str = "[Pasted text";
+    /// How long to let the composer paint before reading it. ⚠ A clock rather than a predicate:
+    /// every outcome here is one this is trying to tell apart, so waiting for any of them would
+    /// decide the answer.
+    const PAINT_WITHIN: Duration = Duration::from_secs(3);
+
+    /// How many times a screen shows the text's own head, and how many placeholders stand on it.
+    fn shows(screen: &str, needle: &str) -> (usize, usize) {
+        (screen.matches(needle).count(), screen.matches(FOLD).count())
+    }
+
+    let began = Instant::now();
+    let run = RunContext::uncancellable();
+
+    // ⚠ ONE closure for both roads, so they differ ONLY in the bytes written. Two hand-written arms
+    // would be two instruments, which is this module's own rule.
+    let reading = |label: &str, text: &str, needle: &str| -> Reading830 {
+        let live = Live::start(label);
+        assert_eq!(
+            Readiness::new(
+                Some(ReadyWhen::Settles(live.agent.clone())),
+                Some(STARTUP_BOUND),
+                None,
+                Attended::NoOne,
+            )
+            .reached(&live.access, live.pane, &run)
+            .expect("the pane must stay readable"),
+            Reached::Yes,
+            "⚠ THE PREMISE OF EVERY READING: the composer must be up and at rest before anything \
+             is written into it, or this measures a swallowed write rather than a second one. {}",
+            live.tail(3),
+        );
+
+        let first = live
+            .access
+            .inject(live.pane, &KeyStroke::text(text))
+            .expect("the pane takes the bytes")
+            .bytes();
+        std::thread::sleep(PAINT_WITHIN);
+        let after_one = live.screen();
+        let (head_1, folds_1) = shows(&after_one, needle);
+        let expandable = after_one.contains("to expand");
+
+        // ══ THE SECOND WRITE — the identical bytes, exactly as `deliver`'s retry sends them ══
+        let second = live
+            .access
+            .inject(live.pane, &KeyStroke::text(text))
+            .expect("the pane takes the bytes")
+            .bytes();
+        std::thread::sleep(PAINT_WITHIN);
+        let after_two = live.screen();
+        let (head_2, folds_2) = shows(&after_two, needle);
+        let answer = format!(
+            "{first} bytes -> head x{head_1} placeholder x{folds_1} (says 'to expand': \
+             {expandable}); {second} more -> head x{head_2} placeholder x{folds_2}",
+        );
+        step(began, &format!("{label}: {answer}"));
+        Reading830 {
+            head_1,
+            folds_1,
+            head_2,
+            folds_2,
+            answer,
+            pane: live.tail(8),
+        }
+    };
+
+    // ── ROAD ONE: the first write FOLDS. Item 421's road, and `Delivered::Unreported`'s. ──
+    // The loop's own reflection prompt, in shape and in size: six lines, ~1,320 bytes.
+    let long = format!(
+        "North star: {}\nYou have been working toward: {}\nWhat this session has cost: {}\nStop \
+         and decide what comes next, from what you have just done.\nReply with exactly two lines \
+         and nothing else, the first opening NEXT MILESTONE: and the second NEXT REFERENCE:.\nIf \
+         the north star itself is fully reached, make the last line exactly: NORTH STAR REACHED",
+        "x".repeat(300),
+        "y".repeat(300),
+        "z".repeat(300),
+    );
+    let folded = reading("second-write-folded", &long, "North star:");
+
+    // ── ROAD TWO: the first write PAINTS. `Delivered::Unsubmitted`'s road, and the one whose
+    // no-retry rule the prose above is the whole argument for. ──
+    let short = "Reply with exactly the word SECONDWRITE830 and nothing else.";
+    let painted = reading("second-write-painted", short, "SECONDWRITE830");
+
+    println!(
+        "\n== ITEM 830 ⑵, MEASURED ==\n  a folded first write  : {}\n{}\n  \
+         a painted first write : {}\n{}\n",
+        folded.answer, folded.pane, painted.answer, painted.pane,
+    );
+
+    // ══ THE PREMISES, asserted rather than assumed: each road is only that road if the first
+    // write went the way it was sized to go. A build whose composer stops folding at 1,238 bytes
+    // turns road one into a second copy of road two, and every number below would then agree for
+    // a reason that has nothing to do with the question. ═══════════════════════════════════════
+    assert!(
+        folded.folds_1 >= 1 && folded.head_1 == 0,
+        "⚠ THE PREMISE OF ROAD ONE: the long write must have been FOLDED away — a placeholder up \
+         and not one character of the prompt readable. Got {}\n{}",
+        folded.answer,
+        folded.pane,
+    );
+    assert!(
+        painted.folds_1 == 0 && painted.head_1 == 1,
+        "⚠ THE PREMISE OF ROAD TWO: the short write must have been PAINTED — its own text on the \
+         screen once and no placeholder anywhere. Got {}\n{}",
+        painted.answer,
+        painted.pane,
+    );
+
+    // ══ ⛔⛔⛔⛔⛔ AND THE ANSWER, WHICH IS DIFFERENT ON THE TWO ROADS — register item 830's ⑵,
+    // measured 2026-09-03 against `claude` 2.1.259. ═══════════════════════════════════════════
+    //
+    // **A FOLDED first write is UN-FOLDED by the second**: the placeholder is gone, the prompt's
+    // own head is readable, and it is readable ONCE — the bytes did not double. That is item 421's
+    // 08-18 reading, alive on today's build, and it is what `deliver`'s fall-through on
+    // `OnScreen::MovedWithoutIt` is spending its spare attempts on.
+    assert!(
+        folded.folds_2 == 0 && folded.head_2 == 1,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 830's ⑵: a second write onto a FOLDED composer stopped \
+         un-folding it. Measured 2026-09-03 on `claude` 2.1.259 it expanded — placeholder gone, \
+         the prompt's head readable exactly once — and two sentences in `deliver` were corrected \
+         to say so. If this now doubles the text instead, `deliver`'s retry on the fold road is \
+         sending a peer twice what it was asked and the prose put back. Got {}\n{}",
+        folded.answer,
+        folded.pane,
+    );
+    // **A PAINTED first write is CONCATENATED onto by the second** — the text stands on the screen
+    // TWICE. This is `Delivered::Unsubmitted`'s road, and it is the FIRST measurement this
+    // workspace has of the sentence that answer's no-retry rule has always rested on.
+    assert!(
+        painted.folds_2 == 0 && painted.head_2 == 2,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 830's ⑵, THE OTHER HALF: a second write onto a composer that is \
+         PAINTING its prompt stopped concatenating. Measured 2026-09-03 on `claude` 2.1.259 the \
+         text stood on the screen twice, which is what makes `Delivered::Unsubmitted`'s refusal to \
+         retry correct. If it no longer doubles, that refusal is costing runs a recovery it could \
+         have had. Got {}\n{}",
+        painted.answer,
+        painted.pane,
+    );
+    // ⚠⚠⚠⚠ THE CONTROL, and the whole reason both roads are read in one gate: the two answers must
+    // DIFFER. One sentence covering both is exactly the defect item 830 registered — `deliver`
+    // carried the painted road's answer on the folded road's comment — and a gate that read only
+    // one road could never have caught it.
+    assert_ne!(
+        (folded.head_2, folded.folds_2),
+        (painted.head_2, painted.folds_2),
+        "⛔⛔ the two roads answered the SAME, so nothing here distinguishes a fold from a paint \
+         and one sentence would be right about both after all:\n  folded : {}\n  painted: {}",
+        folded.answer,
+        painted.answer,
+    );
+}
+
+/// What [`what_a_second_write_into_a_composer_already_holding_one_does`] reads off ONE composer:
+/// what the screen showed for the first write, and what it showed for the identical second one.
+///
+/// ⚠ A named struct rather than a tuple because the two roads are compared FIELD BY FIELD at the
+/// foot of that gate, and `.3` against `.3` is where a comparison of the wrong two numbers hides.
+struct Reading830 {
+    /// How many times the text's own head stood on the screen after the FIRST write.
+    head_1: usize,
+    /// How many fold placeholders stood on it after the first write.
+    folds_1: usize,
+    /// The same, after the second write of the identical bytes.
+    head_2: usize,
+    folds_2: usize,
+    /// Both readings as one line, for the walk and for every assertion message.
+    answer: String,
+    /// What that pane finally held.
+    pane: String,
 }
 
 /// [`one_turn`] against a pane that is not [`Live::pane`] — what a replacement needs.

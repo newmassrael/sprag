@@ -11254,6 +11254,12 @@ impl OuterLoop {
         // second delivery would concatenate onto it (and a second Enter, if the first one did land,
         // asks an empty question) — so what a supervisor does here is look at the pane, which is
         // exactly what `Delivered::Unconfirmed`'s remedy already is.
+        // ⭐ THE CONCATENATION IS MEASURED AND NOT ARGUED — register item 830, 2026-09-03 against
+        // `claude` 2.1.259, by
+        // `sprag_host::live_agent::what_a_second_write_into_a_composer_already_holding_one_does`:
+        // onto a composer PAINTING its prompt the text stands on the screen twice. ⚠ It is that
+        // road's answer and not the peer's — a composer that FOLDED the first write expands
+        // instead, which is `prompt.unasked`'s road and not this one.
         // ⚠⚠ The argument for counting it is the one the `shows_the_prompt` road above already
         // makes for recording `Unchecked`: *recording nothing here would leave it
         // indistinguishable from a pass that delivered nothing at all*. That call was made once and
@@ -16100,6 +16106,102 @@ mod tests {
              run dying: 110 folded, handed over for capacity four times, folded again seventeen \
              hours later and was ended for it",
             guarded[0],
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY PLACE THIS DOCUMENT RECITES THE WEDGE MEASUREMENT SAYS WHAT THAT
+    /// MEASUREMENT DID NOT REACH** — register item 830, raised by the owner reading the transcript
+    /// and saying *"이건 잘못된 조사 같은데"*.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The source hedged twice and the transcription kept neither hedge
+    ///
+    /// Register item 446 is where the wedge was measured, and it says, in its own words, that
+    /// **four live probes FAILED to reproduce** it and that **why a peer holds such a draft is
+    /// still unmeasured**. What reached `ai_loop.scxml` was the three observations with the word
+    /// `measured:` in front of them — a confidence the source had explicitly declined — and the
+    /// sentence is load-bearing: it is the argument for FAILING a run when a second question is not
+    /// taken, rather than trying anything else.
+    ///
+    /// ⚠⚠ **AND A SECOND HEDGE THE SOURCE COULD NOT HAVE KNOWN TO WRITE.** All three remedies 446
+    /// tried are KEYSTROKES — Enter, `Ctrl-C`, an interrupt — so its conclusion, *"a retry would
+    /// have recovered nothing"*, was never about retrying the WRITE. Item 830 measured that
+    /// separately (2026-09-03, `claude` 2.1.259,
+    /// `sprag_host::live_agent::what_a_second_write_into_a_composer_already_holding_one_does`): a
+    /// second write EXPANDS a composer that folded the first one and CONCATENATES onto one that
+    /// painted it. Neither answer is *nothing happens*.
+    ///
+    /// # ⚠⚠⚠ Why a gate and not a corrected sentence
+    ///
+    /// Because the sentence was ALREADY three sentences. The recital is in this document three
+    /// times — the `unasked_seen` datamodel, `priming`'s fail edge, and the region's
+    /// `prompt.unasked` — and correcting the one the register happened to name would leave two
+    /// readers landing on an unhedged copy. This is register item 797's shape: the prose and the
+    /// evidence drift apart, and what reaches a person is the prose.
+    ///
+    /// ⚠⚠ **THE POPULATION IS THE DOCUMENT'S OWN.** A recital is recognised by reciting — the three
+    /// keystrokes are what makes it that measurement rather than any other, so a block naming
+    /// `Ctrl-C` and a `draft` IS one, and a fourth written tomorrow joins by being written. No list
+    /// is kept here, which is this workspace's rule 6: an unclassified block is a RED, not a pass.
+    #[test]
+    fn every_recital_of_the_wedge_says_what_that_measurement_did_not_reach() {
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        /// What 446 could not do, and the half the `measured:` sentence dropped.
+        const NOT_REPRODUCED: &str = "could not reproduce";
+        /// What 446 never tried, and what item 830 measured in its place.
+        const NOT_REWRITTEN: &str = "never written again";
+
+        // ⚠⚠ A BLOCK AND NOT A LINE, the rule every document gate above this one follows: an
+        // author wraps a comment wherever the margin falls, so a needle that spans two lines is a
+        // needle a line-wise filter cannot see. Comments do not nest in XML, so splitting is exact.
+        let recitals: Vec<(usize, String)> = DOCUMENT
+            .split("<!--")
+            .skip(1)
+            .filter_map(|rest| rest.split_once("-->").map(|(body, _)| body))
+            .map(|body| body.split_whitespace().collect::<Vec<_>>().join(" "))
+            // The three keystrokes ARE the measurement; `draft` is what they were tried on. A block
+            // that says both is reciting item 446 and nothing else in this document does.
+            .filter(|body| body.contains("Ctrl-C") && body.contains("draft"))
+            .enumerate()
+            .collect();
+
+        // ⚠⚠⚠⚠ THE CONTROL, FIRST — every assertion below is vacuous over an empty population, and
+        // an extraction that quietly stops matching is how this gate would die green. Three is the
+        // count when item 830 was paid; the floor is under it so that DELETING a recital stays
+        // allowed and losing the extraction does not.
+        assert!(
+            recitals.len() >= 3,
+            "⛔⛔⛔⛔⛔ THE EXTRACTION HAS STOPPED FINDING THE RECITALS. Three comment blocks in \
+             this document recited item 446's hand measurement when item 830 was paid \
+             (2026-09-03) and this run found {}. A gate that matches nothing passes forever.",
+            recitals.len(),
+        );
+
+        let unhedged: Vec<String> = recitals
+            .iter()
+            .filter(|(_, body)| {
+                let said = body.to_lowercase();
+                !said.contains(NOT_REPRODUCED) || !said.contains(NOT_REWRITTEN)
+            })
+            .map(|(at, body)| {
+                format!(
+                    "recital #{at}: {}",
+                    body.chars().take(140).collect::<String>(),
+                )
+            })
+            .collect();
+        assert!(
+            unhedged.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 830: {} recital(s) of item 446's hand measurement do not say \
+             what it did not reach. Both halves are required and neither is decoration:\n  \
+             `{NOT_REPRODUCED}` — 446's four live probes FAILED to reproduce the wedge, so a \
+             reader of this document must not take one session's reading for a law about peers.\n  \
+             `{NOT_REWRITTEN}` — all three remedies 446 tried are KEYSTROKES, and writing the text \
+             again is a different act with a different answer (item 830, 2026-09-03: a second \
+             write expands a folded composer and concatenates onto a painted one).\n\
+             Without them this document says `measured:` about a confidence its own source \
+             declined, and that sentence is the argument for failing a run.\n\n  {}",
+            unhedged.len(),
+            unhedged.join("\n  "),
         );
     }
 

@@ -240,6 +240,15 @@ pub const DEFAULT_ATTEMPTS: u32 = 3;
 /// reported late is written off for good: the run counts it as never asked and cannot learn
 /// otherwise. Live runs were reporting up to 13 such prompts each.
 ///
+/// ⭐ **AND THAT `correctly` IS NOW MEASURED RATHER THAN ASSERTED — register item 830**, by
+/// `sprag_host::live_agent::what_a_second_write_into_a_composer_already_holding_one_does`. It stood
+/// for a fortnight as the argument for a policy without anybody having read a second write off a
+/// live composer. Measured 2026-09-03 against `claude` 2.1.259: onto a composer that is PAINTING
+/// its prompt — which is exactly this answer's road, `OnScreen::Shown` — a second write of the
+/// identical bytes leaves the text on the screen TWICE. The word survives its measurement. ⚠ It is
+/// the road's answer and not the peer's: onto a composer that FOLDED the first write the same peer
+/// EXPANDS instead, which is [`Delivered::Unreported`]'s road and a different rule.
+///
 /// ⚠ **The residue, stated**: five seconds bounds the hook PROCESS. When `claude` fires it after an
 /// Enter is not bounded from here at all, so this closes the leg sprag can see and no more. The
 /// design that removes the race rather than widening it — asking what the composer HOLDS, which is
@@ -700,6 +709,13 @@ pub enum Delivered {
     /// submit — *hand this pane to a person* — and it is not an error, because a peer that ignores
     /// a keystroke has broken no contract of the pane's.
     ///
+    /// ⭐ **THE CONCATENATION IS MEASURED — register item 830**, 2026-09-03 against `claude`
+    /// 2.1.259, by
+    /// `sprag_host::live_agent::what_a_second_write_into_a_composer_already_holding_one_does`: a
+    /// second write of the identical bytes onto a composer PAINTING its prompt leaves the text on
+    /// the screen twice. ⚠ That is THIS road's answer and not the peer's — the same peer EXPANDS a
+    /// composer that folded the first write, which is [`Unreported`](Self::Unreported)'s road.
+    ///
     /// `wanted` is the contract that went unsatisfied, carried for
     /// [`PaneError::NeverReady`]'s reason: the refusal built
     /// from this is a sentence somebody reads, and *"the pane did not repaint"* is false of the
@@ -738,11 +754,20 @@ pub enum Delivered {
     /// did not — so what is worth knowing is whether the peer's hooks are reporting at all, and
     /// what this run's session-replacement budget has left ([`crate::outer::Retyped`]).
     ///
-    /// ⚠ `attempts` is 1 by construction here and that is not a measurement of the peer: the fold
-    /// road returns out of the injection loop, so the two spare attempts
-    /// ([`DEFAULT_ATTEMPTS`]) are unreachable. A second injection would land on the first one's
-    /// text, which is why — but a reader who takes `attempts: 1` for *the pane was tried once and
-    /// refused once* is reading this module's control flow as a fact about the world.
+    /// ⚠ `attempts` is 1 by construction here and that is not a measurement of the peer: this road
+    /// PRESSES and returns, so the two spare attempts ([`DEFAULT_ATTEMPTS`]) are never reached — a
+    /// reader who takes `attempts: 1` for *the pane was tried once and refused once* is reading
+    /// this module's control flow as a fact about the world.
+    ///
+    /// ⛔⛔⛔⛔ **THE REASON THIS GAVE FOR THAT WAS FALSE — register item 830.** It said *"a second
+    /// injection would land on the first one's text, which is why"*. Measured 2026-09-03 against
+    /// `claude` 2.1.259: a second write of the identical bytes onto a folded composer **expands
+    /// it**, so a retry here would have been serviceable, not harmful. What actually forecloses it
+    /// is that the submit has ALREADY gone out by the time this word is chosen, and writing again
+    /// after a press lands in a box whose contents nobody can place. The concatenation sentence
+    /// belongs to [`Unsubmitted`](Self::Unsubmitted)'s road, where the composer is PAINTING the
+    /// prompt — measured in the same reading, and true there. Both halves are
+    /// `sprag_host::live_agent::what_a_second_write_into_a_composer_already_holding_one_does`.
     Unreported {
         /// How many injections carried the TEXT. Always 1 on this road — see the type's doc.
         attempts: u32,
@@ -1408,10 +1433,25 @@ pub fn deliver(
             // item 421, and the one road where a screen stops being able to refuse a delivery.
             //
             // A composer that FOLDS a long paste is displaying a placeholder where the text should
-            // be, so no needle can be found and no retry can help: a second injection lands on the
-            // first one's text. Where the caller's peer can NAME the question it received, the
-            // submit goes in and that account is the verdict — which is the evidence a screen was
-            // always standing in for, taken from the only party that read the bytes.
+            // be, so no needle can be found on it. Where the caller's peer can NAME the question it
+            // received, the submit goes in and that account is the verdict — which is the evidence
+            // a screen was always standing in for, taken from the only party that read the bytes.
+            //
+            // ⛔⛔⛔⛔⛔ **THIS USED TO SAY *"no retry can help: a second injection lands on the
+            // first one's text"*, AND THAT IS FALSE — register item 830.** Measured 2026-09-03
+            // against `claude` 2.1.259, and again on the second reading: a second write of the
+            // identical bytes onto a FOLDED composer **UN-FOLDS it** — the placeholder goes, the
+            // prompt's own head becomes readable, and it is readable ONCE rather than twice. The
+            // screen even says so while it is folded (*"paste again to expand"*). Item 421 had that
+            // reading on 08-18 (`Confirmed { attempts: 2, written: 2477 }`) and this sentence was
+            // written a day later without it, which is the whole of item 830.
+            //
+            // ⚠⚠ **THE CODE WAS ALREADY RIGHT AND ONLY THE SENTENCE WAS WRONG.** An unhooked peer
+            // falls through this guard to the next attempt, so the un-folding retry is the road
+            // this loop already travels; what the guard buys a HOOKED peer is not a retry it could
+            // not have, it is the stronger evidence — the account names the TEXT, and an expanded
+            // screen only shows it. The gate that holds the reading is
+            // `sprag_host::live_agent::what_a_second_write_into_a_composer_already_holding_one_does`.
             //
             // ⚠⚠ **AND ONLY THERE.** For every other contract this is `Nothing`'s road, unchanged:
             // an agent with no hooks reports no question ever, so a press over a screen that never
