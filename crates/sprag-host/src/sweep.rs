@@ -1191,7 +1191,18 @@ mod tests {
             base + DEFAULT_SETTLE,
             true,
         );
-        assert_eq!(settled.moved, 1);
+        assert_eq!(
+            (settled.moved, settled.jobs_changed),
+            (1, 0),
+            "⛔⛔⛔⛔⛔ **THE JOB COUNT IS ASSERTED BESIDE THE WAKE SINCE 2026-09-04, WHICH IS \
+             REGISTER ITEM 833(2)'s LESSON MEASURED HERE**: `jobs_changed`'s own doc says it is \
+             reported BESIDE `moved` rather than folded into it, because *a test asserting the job \
+             half must not have to infer it from a wake that an agent transition could equally \
+             have caused* — and setting `jobs_changed = moved` left EVERY test in this workspace \
+             green. This wake is an AGENT's, so the job half must read zero: two numbers that must \
+             not be one, with no fixture where they differ, is a twin nobody can see. Got \
+             {settled:?}",
+        );
         assert!(
             channels.revision("a").current() > before_a,
             "the session whose pane published is woken",
