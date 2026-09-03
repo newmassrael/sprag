@@ -941,6 +941,43 @@ fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report)
         );
     }
 
+    // ⛔⛔⛔⛔⛔ AND THE INSTRUMENT ITEM 852 PLANTED MUST ACTUALLY REACH THE LOG — register item 860.
+    //
+    // The whole plan for a tab that is stuck on somebody else's machine is: promote, press once,
+    // read `verdict=`. Every gate for that instrument so far drives the VALUE (`TabOutcome::verdict`
+    // and its three words); none had ever checked that a running client EMITS it, which depends on
+    // a `tracing` target and a level that no unit test can be wrong about and no unit test can
+    // confirm. A plan whose one step is unverified is a plan that fails on the day it is needed.
+    let log = smoke.gui_log();
+    let verdicts: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("tab_click"))
+        .collect();
+    report.check(
+        &format!(
+            "the clicks above each wrote a tab_click verdict a person can read \
+             ({} lines for {} clicks)",
+            verdicts.len(),
+            tabs.len().saturating_sub(1),
+        ),
+        !verdicts.is_empty(),
+    );
+    // ⚠ AND IT SAYS *landed*, which is the word that separates a working click from the two silent
+    // failures. A line that arrived saying `unaddressed` here would mean the strip's own map is
+    // empty — the reading this file exists to make possible.
+    //
+    // ⚠⚠ THE WORD, NOT `verdict=landed`: this subscriber COLOURS its fields, so the real bytes are
+    // `verdict\x1b[0m\x1b[2m=\x1b[0m"landed"` and the obvious substring never matches. The first
+    // draft of this check asserted it and went red against a product that was right — the same
+    // lesson this round already paid for once, written down where it happened.
+    report.check(
+        &format!("and every one of them says the click landed ({verdicts:?})"),
+        !verdicts.is_empty()
+            && verdicts.iter().all(|line| {
+                line.contains("landed") && !line.contains("unaddressed") && !line.contains("gone")
+            }),
+    );
+
     // ⚠⚠⚠⚠⚠ AND IT LEAVES THE CLIENT WHERE IT FOUND IT — this file's standing discipline, and its
     // first run here is what taught this check the rule: moving the client onto another window
     // changes which PANES are painted, and the seven checks below it failed on a pane set they had
@@ -6981,6 +7018,17 @@ fn spawn(
         .env("VK_ICD_FILENAMES", lavapipe_icd())
         .env("WGPU_BACKEND", "vulkan")
         .env("SPRAG_GUI_PANES", "1")
+        // ⛔⛔⛔⛔⛔ THE DIAGNOSTIC LEVEL THE PRODUCT'S OWN INSTRUMENTS ARE READ AT — register item
+        // 860. `crate::diag` defaults to `warn`, so every `debug!` this client emits is off unless
+        // asked for, and item 852's tab-click verdict is one of them. The whole plan for reading a
+        // stuck tab on a person's machine is `SPRAG_LOG=sprag_gui::wtabs=debug` and one click, and
+        // until this line no run had ever checked that the line COMES OUT — the unit gates drive
+        // the verdict WORD, which is a different claim from *it reaches a log*.
+        //
+        // ⚠ Scoped to the subsystems a check reads rather than `sprag_gui=debug`: a whole-client
+        // debug stream would bury the assertions below in per-key trace and make this file's log
+        // reads slower every round for nothing.
+        .env("SPRAG_LOG", "warn,sprag_gui::wtabs=debug")
         .stdout(std::process::Stdio::null())
         .stderr(log)
         .spawn()
