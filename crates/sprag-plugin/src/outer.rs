@@ -555,6 +555,30 @@ const SUCCESSOR_CHECK: &str = "successor_check";
 /// is item 741's and is unchanged. *Deferring* and *being unable to judge* are different facts, and
 /// only the first is what this measured.
 ///
+/// # ⛔⛔⛔⛔⛔ **AND THE FOURTH, 2026-09-03: THE SAME TENSE IN A WORDING THIS PROMPT DID NOT NAME**
+///
+/// A live independent check of this repository's own milestone answered, whole:
+///
+/// ```text
+/// I'll wait for the two suites to finish before reporting.
+/// ```
+///
+/// **The `ONLY TURN` sentence was already here and did not reach it.** What that sentence named
+/// were two forms — *"rerunning"*, *"I'll report when it lands"* — and this is a third; item 751's
+/// finding applies to its own repair, one turn on: a rule obeyed in spirit and missed in form has
+/// to name the form, and naming two forms of an open class leaves the class open.
+///
+/// ⇒ So the fix is not a third needle. **It says what to do INSTEAD**, which none of the three
+/// preceding clauses did: *judge on what you have ALREADY seen, and if a command you started has
+/// not finished, do not wait for it.* A checker told only that deferring is discarded is left with
+/// no move when it has started something; a checker told to answer from the evidence in front of
+/// it has one, and the honest *that was not enough* stays available in the sentence after.
+///
+/// ⚠ The residue, stated: this is still a prompt and a prompt is not a gate. The reader's half is
+/// unchanged and correct — that reply arrived as
+/// [`Unheard::NotAVerdict`](crate::judge::Unheard) and the round was recorded unverified, which is
+/// the honest outcome. What is bought here is that the next checker has an answer available.
+///
 /// ⚠ Spelled once, for [`MILESTONE_CHECK`]'s reason: the gate that holds this ordering compares the
 /// rendered question against THIS string, so the product and the gate cannot come to hold two
 /// different ideas of what the closing instruction is.
@@ -563,8 +587,11 @@ const HOW_TO_ANSWER: &str = "Now answer. YOUR REPLY MUST BEGIN WITH THE WORD YES
      of the checkpoint, or a phrase such as \"My verdict\" or \"Verdict:\": a reply this run \
      cannot find a verdict in is thrown away, and a verdict buried in a sentence is one it can \
      miss. THIS REPLY IS YOUR ONLY TURN: nothing here reads a later one, so a reply that promises \
-     to report back — \"rerunning\", \"I'll report when it lands\" — is thrown away exactly as a \
-     missing verdict is, and the round is recorded as unverified. Then \
+     to report back — \"rerunning\", \"I'll report when it lands\", \"I'll wait for the suites to \
+     finish before reporting\" — is thrown away exactly as a missing verdict is, and the round is \
+     recorded as unverified. JUDGE ON WHAT YOU HAVE ALREADY SEEN: if a command you started has \
+     not finished, do not wait for it — answer now from the evidence in front of you, and if that \
+     evidence was not enough, say so in your sentence. Then \
      give ONE short sentence saying why. If what you were shown is empty or does not let you \
      judge, say that in the sentence rather than guessing.\n";
 
@@ -19172,6 +19199,18 @@ mod tests {
             HOW_TO_ANSWER.contains("ONLY TURN"),
             "⚠⚠⚠⚠⚠ THE PROMPT SAYS WHAT AN ANSWER MUST LOOK LIKE AND NOT WHEN IT IS DUE, so \
              *later* is a shape it leaves open — and a checker took it: {HOW_TO_ANSWER:?}",
+        );
+        // ── ⛔⛔⛔⛔⛔ AND THE FOURTH: FORBIDDING A FORM IS NOT GIVING A MOVE ────────────────
+        // Measured 2026-09-03 on a live independent check of this repository's own milestone. The
+        // whole reply was *"I'll wait for the two suites to finish before reporting."* — the same
+        // tense as the sample above, in a wording the `ONLY TURN` sentence does not name. Naming
+        // forms of an open class cannot close it, so the prompt now says what to do INSTEAD.
+        assert!(
+            HOW_TO_ANSWER.contains("ALREADY SEEN"),
+            "⚠⚠⚠⚠⚠ THE PROMPT FORBIDS DEFERRING AND OFFERS NOTHING IN ITS PLACE. A checker that \
+             has started a command and been told only that waiting is discarded has no move left; \
+             one told to judge on what it has already seen has one, and *that was not enough* is \
+             still available in the sentence after: {HOW_TO_ANSWER:?}",
         );
         // ⚠ The READER's half of this sample lives in `judge`, where `verdict_in` is — see
         // `a_reply_that_defers_instead_of_judging_is_not_a_verdict`. Two halves, two modules, and
