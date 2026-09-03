@@ -42,14 +42,17 @@ const DIAGNOSIS: &str = "why_not_serving";
 /// would make the needle match nothing, and "every site carries the diagnosis" is trivially true of
 /// no sites at all — the vacuous green item 799 measured. The number is what refuses that.
 ///
-/// **41, measured 2026-09-01** (`grep -c` over the tree, comment lines excluded — the helper's own
+/// **42, measured 2026-09-03** (`grep -c` over the tree, comment lines excluded — the helper's own
 /// doc quotes the message and is not a site).
 ///
 /// ⚠ GREW BY TWO IN EACH OF TWO ROUNDS, and by the same shape both times: register items 774 and
 /// 815 each added a gate that reboots a daemon, so each waits once for the first daemon and again
 /// for its replacement. That is the ratchet doing exactly what it was built for — the number moved
 /// in the commit that moved the population, twice, and neither time by anybody remembering to.
-const WAITS_REGISTERED: usize = 41;
+///
+/// ⚠ AND BY ONE ON 2026-09-03: register item 871's gate spawns a daemon of its own, so it waits
+/// once. Third time the ratchet has named the change rather than anybody remembering to.
+const WAITS_REGISTERED: usize = 42;
 
 /// This gate's own source, which must SPELL the needle in order to hunt for it.
 ///

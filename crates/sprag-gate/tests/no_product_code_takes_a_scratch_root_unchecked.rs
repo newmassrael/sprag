@@ -97,7 +97,12 @@ use sprag_gate::sources::outside_strings;
 /// [`outside_strings`] keeps a line that ENDS inside a string as code — deliberately, in the
 /// direction of a red to read. The prose was rephrased rather than the filter widened; naming the
 /// call in words costs nothing and an exemption for "it was only a message" costs the gate.
-const HARNESS_SITES_REGISTERED: usize = 161;
+/// ⚠ AND BY ONE ON 2026-09-03: register item 871's gate spawns a daemon of its own, so it takes a
+/// state root like every other daemon gate here. It wanted a SECOND root as well — a directory to
+/// stand a fake agent binary in — and that one was folded under the first instead, so the gate
+/// costs this population one site rather than two and `DaemonGuard` takes both away together. The
+/// ratchet is what asked the question; the answer was to litter less, not to record more.
+const HARNESS_SITES_REGISTERED: usize = 162;
 
 /// The tree this ratchet counts — through the one door, register item 809.
 ///

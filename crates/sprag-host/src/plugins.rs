@@ -145,7 +145,17 @@ pub const CONSENT_ANSWER_KEY: &str = Consent::ANSWER_KEY;
 const RUN_ID_KEY: &str = "id";
 /// The answer key carrying the pane whose occupant asked for a run — absent for a run nobody
 /// claims, on [`sprag_terminal::Pane::opened_by`]'s terms.
-const RUN_OPENED_BY_KEY: &str = "opened_by";
+///
+/// ⚠ `pub` since register item 871, for [`RUN_ASKED_BY_KEY`]'s reason and then one more: it is a
+/// REQUEST key as well as an answer key, and `sprag orchestrate` now sends it — so the CLI reads
+/// this rather than re-spelling the string, which it had been doing at its run-row renderer.
+///
+/// ⚠⚠ `sprag-mcp`'s `OPENED_BY` is NOT a fourth copy to fold in. It names the key that surface
+/// REFUSES from an agent, and its constant carries that authority decision; sharing one definition
+/// would put a rule about who may send a key in the module that only says what the key is called.
+/// The pane and window rows' `"opened_by"` are likewise a different fact — `Pane::opened_by` — that
+/// happens to share a spelling.
+pub const RUN_OPENED_BY_KEY: &str = "opened_by";
 /// The answer key naming **WHICH CONVERSATION ASKED** for a run — absent when nothing recorded one,
 /// on `RUN_OPENED_BY_KEY`'s omit-rather-than-null terms.
 ///

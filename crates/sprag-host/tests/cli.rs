@@ -2016,7 +2016,17 @@ fn killing_a_session_releases_its_viewers_and_a_new_session_of_that_name_inherit
 /// ⚠ ONE definition rather than five, on this repository's own recorded rule: two copies of a rule
 /// drift, and five copies drifted into asserting something nobody meant.
 fn run_block_for(listed: &str, pane: u64) -> String {
-    let heading = format!("ai_loop pane={pane}");
+    run_block_of(listed, "ai_loop", pane)
+}
+
+/// The same block, for a run of any PLUGIN — [`run_block_for`]'s rule with the label's first word
+/// as an argument rather than baked in.
+///
+/// ⚠ The `ai_loop` in that name was not a property either: a gate for an `orchestrator` run went
+/// red here against a product whose row was correct, which is the same shape as the `ends_with`
+/// above one word over. One rule, two mouths, and neither spells the other's constant.
+fn run_block_of(listed: &str, plugin: &str, pane: u64) -> String {
+    let heading = format!("{plugin} pane={pane}");
     listed
         .split("\nrun ")
         .map(|chunk| chunk.trim_end().to_owned())
@@ -2026,7 +2036,7 @@ fn run_block_for(listed: &str, pane: u64) -> String {
                     .is_some_and(|(_, rest)| !rest.starts_with(|c: char| c.is_ascii_digit()))
             })
         })
-        .unwrap_or_else(|| panic!("no row for the loop on pane {pane}: {listed:?}"))
+        .unwrap_or_else(|| panic!("no row for the {plugin} on pane {pane}: {listed:?}"))
 }
 
 /// Poll `predicate` until it holds or `timeout` elapses. The CLI's per-client attachment reads
@@ -4652,6 +4662,237 @@ fn a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody() {
         "a run a SHELL asked for must claim no opener after a restart — there is no conversation to \
          match it to anybody, and inventing a seat would hand it to whoever boots in next: {:?}",
         listed.stdout,
+    );
+    drop(guard);
+}
+
+/// ⛔⛔⛔⛔⛔ **A RUN LAUNCHED FROM A SHELL RECORDS THE CONVERSATION THAT ASKED FOR IT** — register
+/// item 871, and the path that made `opened_by_session` reachable at all.
+///
+/// # ⚠⚠⚠⚠⚠ The predicate this exists for could not be true before it
+///
+/// Item 865 gave the run row a mouth for its asker; nothing filled it. Measured on the live loop
+/// daemon: **190 of 190 runs carried no conversation**, because `sprag orchestrate` — the binary
+/// every loop is launched from — sent no opener, and `session_in` derives the conversation FROM the
+/// opener. So this is register rule 5's question answered in code: *is there a path by which that
+/// count stops being zero?* ⚠ Do not carry the count; re-derive the predicate:
+/// `jq '[.runs[] | select(.opened_by_session != null)] | length'` over a daemon's `*.runs.json`.
+///
+/// # ⚠⚠⚠⚠ The pane has to be an AGENT's, or this gate proves the wrong half
+///
+/// `opened_by` is a pane and `opened_by_session` is a CONVERSATION, and every other pane fixture in
+/// this file runs `sh -c "exec cat"` — whose `Pane::agent_session` is `None`, so the second stays
+/// empty however well the first is filled (the gate above this one relies on exactly that). So this
+/// one spawns a stand-in named `claude` carrying `--session-id <uuid>`, which is the argv shape
+/// `hooks::launched_identity` reads a conversation out of, and asserts the conversation — not the
+/// seat — comes back on the row.
+///
+/// # ⚠⚠⚠ And the forging objection, as a predicate rather than an argument
+///
+/// The caller sends a PANE. The daemon reads the conversation off that pane itself. So the third
+/// arm here points `SPRAG_PANE` at a DIFFERENT pane and asserts the run records THAT pane's
+/// conversation — proving a caller cannot name one. That is what makes recording an opener from an
+/// unauthenticated shell safe in a way `sprag-mcp`'s stricter rule does not have to be relaxed for:
+/// the worst a wrong variable does is attribute a run to a real pane of this daemon.
+///
+/// ⚠⚠ **AND A STALE VARIABLE MUST NOT KILL THE RUN.** `$SPRAG_PANE` outlives the daemon that set it
+/// and the door REFUSES an opener naming no pane it holds, so forwarding one blindly would turn a
+/// working launch into a refusal. The fourth arm asserts the run still starts AND that the drop is
+/// said out loud — a silent drop is how this gap stayed invisible for 190 runs.
+#[test]
+fn a_run_launched_from_a_pane_records_the_conversation_that_asked_for_it() {
+    /// A pane no workspace in this test holds — minted from a counter that starts at zero, so this
+    /// is unreachable by construction rather than by luck.
+    const NO_SUCH_PANE: u64 = 900_003;
+    const ASKER: &str = "3f2c9a17-0000-4000-8000-00000000087a";
+    const A_STRANGER: &str = "3f2c9a17-0000-4000-8000-00000000087b";
+
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-asker-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    // ── A STAND-IN AGENT, named the way `launched_identity` reads one ───────────────────────────
+    //
+    // ⚠⚠ A TRACKED DOUBLE, LINKED — register item 467, exactly as `stub_ssh` does it: a program
+    // this gate WROTE could not be executed reliably, because the kernel refuses a file any process
+    // holds open for writing and this harness forks from threads.
+    //
+    // ⚠ UNDER THIS DAEMON'S OWN STATE DIRECTORY rather than a scratch root of its own, so
+    // `DaemonGuard` takes it away with everything else and item 794's harness population does not
+    // grow twice for one gate. The daemon reads a pane's ARGV for its identity, so where the
+    // program sits is nothing to the claim — only what it is CALLED.
+    let dir = state.join("stand-in-agent");
+    std::fs::create_dir_all(&dir).expect("create the stand-in agent dir");
+    let bin = sprag_gate::doubles::Doubles::of(env!("CARGO_MANIFEST_DIR"))
+        .set("cli")
+        .link("claude", &dir.join("claude"));
+
+    let argv = |identity: &str| {
+        json!([
+            bin.to_str().expect("a utf-8 path"),
+            "--session-id",
+            identity
+        ])
+    };
+    // ⚠⚠ BOTH PANES IN ONE SESSION, and that is not tidiness: the CLI resolves `$SPRAG_PANE`
+    // through `resolve_pane`, which is SESSION-SCOPED like every other pane verb's argument. An
+    // asker sitting in another SESSION is therefore dropped rather than sent — conservative (it
+    // loses a provenance, it never invents one), and stated here because the first form of this
+    // gate staged the third arm across two sessions and read that drop as a defect.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "asker", "cmd": argv(ASKER) },
+        }),
+    )
+    .expect("new_session answers");
+    let panes_now = |conn: &mut HostConn| -> Vec<u64> {
+        conn.call(
+            "scene/query",
+            json!({ "session": "asker", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|pane| pane["id"].as_u64())
+        .collect()
+    };
+    let mine = *panes_now(&mut conn).first().expect("the session's pane");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "asker",
+            "path": mux_action_path(SPAWN_ACTION),
+            "args": { "cmd": argv(A_STRANGER) },
+        }),
+    )
+    .expect("the second agent pane is spawned");
+    let theirs = *panes_now(&mut conn)
+        .iter()
+        .find(|id| **id != mine)
+        .expect("the second pane");
+
+    // A run this daemon will still be holding when its row is read.
+    let start = |pane: u64, env_pane: Option<&str>| -> CliRun {
+        let pane = pane.to_string();
+        let args = [
+            "orchestrate",
+            "-t",
+            "asker",
+            "orchestrator",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "x",
+            "--sentinel",
+            "A SENTINEL THIS PANE NEVER PRINTS",
+            "--max_iterations",
+            "100000",
+            "--max_seconds",
+            "3000",
+        ];
+        match env_pane {
+            Some(env_pane) => sprag_env(&sock, &args, &[(sprag_host::PANE_ENV_VAR, env_pane)]),
+            // ⚠ Through the same door, which already SCRUBS the runner's own `$SPRAG_PANE` (see
+            // `sprag_env`): the control needs a caller in no pane, and this suite is itself run
+            // from one.
+            None => sprag(&sock, &args),
+        }
+    };
+    /// The run id `orchestrate` echoed, so a listing with several runs on one pane can still be
+    /// read a row at a time — the arms below deliberately differ only in the environment.
+    fn started(run: &CliRun) -> u64 {
+        run.stdout
+            .split_whitespace()
+            .nth(1)
+            .and_then(|word| word.parse().ok())
+            .unwrap_or_else(|| panic!("orchestrate echoes `run <id> started`: {:?}", run.stdout))
+    }
+    let row_of = |listed: &str, id: u64| -> String {
+        let head = format!("run {id}  ");
+        format!("\n{listed}")
+            .split("\nrun ")
+            .map(|chunk| format!("run {}", chunk.trim_end()))
+            .find(|chunk| chunk.starts_with(&head))
+            .unwrap_or_else(|| panic!("no row for run {id}: {listed:?}"))
+    };
+
+    // ── ① THE CLAIM: launched from a pane, the run names that pane's CONVERSATION ───────────────
+    let launched = start(mine, Some(&mine.to_string()));
+    assert!(launched.ok, "the run is submitted: {}", launched.stderr);
+    let listed = sprag(&sock, &["runs", "-t", "asker"]).stdout;
+    let row = row_of(&listed, started(&launched));
+    assert!(
+        row.contains(ASKER),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 871: a run launched by `sprag orchestrate` from inside a pane \
+         must record the conversation sitting in that pane. Until this, EVERY run on the live \
+         daemon carried none — 190 of 190 — because this binary had no way to say who it was, and \
+         a promotion about to kill somebody's run had to find its owner by messaging sessions. \
+         Row: {row}",
+    );
+
+    // ── ② THE CONTROL: no variable, no owner — absence still means absence ──────────────────────
+    let anonymous = start(mine, None);
+    assert!(anonymous.ok, "the control run starts: {}", anonymous.stderr);
+    let listed = sprag(&sock, &["runs", "-t", "asker"]).stdout;
+    let control = row_of(&listed, started(&anonymous));
+    assert!(
+        !control.contains(A_STRANGER) && !control.contains(ASKER),
+        "⚠⚠ THE CONTROL: a caller outside any pane names nobody, and the row must say so rather \
+         than invent an owner. Without this arm a build that stamped a constant would pass ① : \
+         {control}",
+    );
+
+    // ── ③ THE FORGING ARM: the caller sends a PANE and the DAEMON answers the conversation ──────
+    //
+    // ⚠⚠ THE RUN'S OWN PANE IS `mine` AND THE VARIABLE SAYS `theirs`, so the two cannot be confused:
+    // a build that read the conversation off the run's pane instead of the opener would answer
+    // ASKER here and this arm would catch it.
+    let forged = start(mine, Some(&theirs.to_string()));
+    assert!(forged.ok, "the pointed run starts: {}", forged.stderr);
+    let listed = sprag(&sock, &["runs", "-t", "asker"]).stdout;
+    let pointed = row_of(&listed, started(&forged));
+    assert!(
+        pointed.contains(A_STRANGER) && !pointed.contains(ASKER),
+        "⛔⛔⛔ A CALLER MAY POINT, IT MAY NOT NAME. `SPRAG_PANE` said another pane, so the run \
+         records THAT pane's conversation — read off the pane by the daemon, never sent by the \
+         caller. This is the whole of why an unauthenticated shell may fill this key: the worst it \
+         can do is attribute a run to a real pane of this daemon. Row: {pointed}",
+    );
+
+    // ── ④ A STALE VARIABLE DOES NOT KILL THE RUN, AND SAYS SO ───────────────────────────────────
+    let stale = start(mine, Some(&NO_SUCH_PANE.to_string()));
+    assert!(
+        stale.ok,
+        "⛔⛔⛔⛔ A STALE `SPRAG_PANE` MUST NOT REFUSE THE LAUNCH. Ids restart with the daemon, so \
+         a surviving process holds a number nobody has — and the door refuses an opener naming no \
+         pane it holds. Forwarding one blindly turns every such caller's working launch into a \
+         refusal: {}",
+        stale.stderr,
+    );
+    assert!(
+        stale.stderr.contains(sprag_host::PANE_ENV_VAR) && stale.stderr.contains("no owner"),
+        "⚠⚠⚠ ...AND IT IS NOT SILENT. A quiet drop is how this gap looked like a per-run \
+         coincidence for 190 runs instead of a door with no mouth — the reader has to be told the \
+         variable was the reason: {}",
+        stale.stderr,
     );
     drop(guard);
 }

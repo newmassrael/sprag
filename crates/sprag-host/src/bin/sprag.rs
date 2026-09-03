@@ -3060,6 +3060,54 @@ struct PaneSite {
 /// [`unknown_pane_name_with`] so they refuse in
 /// one sentence. The ID half stays a number because that is what `sprag panes` prints and what the
 /// daemon's logs say.
+/// ⛔⛔⛔⛔⛔ **THE PANE THIS COMMAND IS BEING TYPED IN**, when the daemon still holds it — register
+/// item 871, and the reason a run launched from a shell can have an owner at all.
+///
+/// # ⚠⚠⚠⚠⚠ It repeats an identity, it does not assert one
+///
+/// `SPRAG_PANE` is written into a pane's environment BY THE HOST THAT SPAWNED IT. A process reading
+/// it is not claiming to be somebody; it is saying which seat it was put in.
+/// `PluginGrammar::OPENED_BY` already calls that key *"PROVENANCE and not authorisation"* and notes
+/// this wire has no authentication at all — so nothing here is being trusted that was not already.
+///
+/// **And the forging objection was measured rather than argued.** `sprag-mcp` refuses to let an
+/// agent set this key, on the grounds that it could then claim or cancel another pane's runs — the
+/// right rule for a MEDIATED surface, and it is untouched. It does not carry over to this binary:
+/// `send-keys` takes any pane id with no ownership check whatever, so a process that could forge
+/// `SPRAG_PANE` can already type into the pane it would be impersonating. Refusing to record an
+/// opener here protects nothing and costs every run its owner.
+///
+/// ⚠⚠ **AND A FORGER STILL CANNOT NAME A CONVERSATION.** The caller sends a PANE; the daemon reads
+/// `agent_session` off that pane itself (`PluginsExternal::session_in`) and records the answer. So
+/// the worst a wrong `SPRAG_PANE` can do is attribute a run to a real pane of this daemon — never
+/// invent an owner, and never write a name of the caller's choosing.
+///
+/// # ⚠⚠⚠ A stale variable must NOT kill the run
+///
+/// `$SPRAG_PANE` outlives the daemon that set it — ids restart with the process — and the door
+/// REFUSES a run whose opener names no pane it holds (`parse_opener`, deliberately, and its control
+/// is a gate). Forwarding one blindly would turn a working `orchestrate` into a refusal for every
+/// caller with a stale environment. So it is resolved first, through [`resolve_pane`] and not
+/// [`pane_ids`], because an asker may be sitting one window over (register item 689) and a
+/// current-window check would silently drop a good opener.
+///
+/// ⚠ Dropping it SAYS SO on stderr rather than quietly: a silent drop is how a whole product-wide
+/// gap looked like a per-run coincidence for 190 runs, which is the state this item was opened in.
+fn asking_pane(conn: &mut HostConn, session: Option<&str>) -> Option<u64> {
+    let raw = std::env::var(sprag_host::PANE_ENV_VAR).ok()?;
+    match resolve_pane(conn, session, &raw, "orchestrate") {
+        Ok(site) => Some(site.id),
+        Err(why) => {
+            eprintln!(
+                "orchestrate: ${} is {raw} and this daemon has no such pane ({why}), so this run \
+                 will record no owner",
+                sprag_host::PANE_ENV_VAR,
+            );
+            None
+        }
+    }
+}
+
 fn resolve_pane(
     conn: &mut HostConn,
     session: Option<&str>,
@@ -5629,6 +5677,33 @@ fn orchestrate(args: Vec<String>) -> io::Result<()> {
         }
     }
 
+    // ⛔⛔⛔⛔⛔ AND WHO IS ASKING — register item 871, the half item 865 could not reach.
+    //
+    // Item 865 gave the run row a mouth for its asker. This is the door that fills it: measured on
+    // the live loop daemon, **190 of 190 runs carried no conversation**, because this binary — the
+    // one every loop is launched from — had no way to say who it was. The MCP surface has stamped
+    // its own pane since it existed; a shell never could.
+    //
+    // ⚠⚠ THE VARIABLE IS THE DAEMON'S OWN STAMP. `SPRAG_PANE` is written into a pane's environment
+    // by the host that spawned it, so a process reading it is not asserting an identity, it is
+    // repeating one it was given — which is exactly what `PluginGrammar::OPENED_BY` calls the key:
+    // *"PROVENANCE and not authorisation"*. That doc also said absence means *"a run nobody claims
+    // — which is what a person starting one from a shell is"*, and that premise is what item 871
+    // measured false: the shells starting these runs are agents' panes, not people's.
+    //
+    // ⚠ A caller who named their own wins, on `identity_args`' rule: somebody who said which pane
+    // asked has said it, and a second answer would be this binary silently overriding theirs.
+    if !flags
+        .iter()
+        .any(|flag| sprag_rpc::call::same_name(&flag.name, sprag_host::plugins::RUN_OPENED_BY_KEY))
+        && let Some(mine) = asking_pane(&mut conn, session.as_deref())
+    {
+        flags.push(Flag::new(
+            sprag_host::plugins::RUN_OPENED_BY_KEY,
+            mine.to_string(),
+        ));
+    }
+
     let call = sprag_rpc::build_call(&forms, &flags).map_err(|error| {
         bad_input(&format!(
             "orchestrate: {error}\n{}",
@@ -6443,7 +6518,7 @@ fn render_why_it_ended(state: &Value) -> String {
 /// records that this repository's outer-loop watcher reads the STATUS as the line after the heading
 /// and the walk as the block's last line, so this must not become a detail line.
 fn render_who_asked(run: &Value) -> String {
-    let seat = run["opened_by"].as_u64();
+    let seat = run[sprag_host::plugins::RUN_OPENED_BY_KEY].as_u64();
     match run[sprag_host::plugins::RUN_ASKED_BY_KEY].as_str() {
         // The answer this row exists to give: a name somebody can be reached at.
         Some(session) => match seat {
@@ -10660,7 +10735,7 @@ mod tests {
                 row[sprag_host::plugins::RUN_ASKED_BY_KEY] = serde_json::json!(session);
             }
             if let Some(seat) = seat {
-                row["opened_by"] = serde_json::json!(seat);
+                row[sprag_host::plugins::RUN_OPENED_BY_KEY] = serde_json::json!(seat);
             }
             render_run(&row)
         };

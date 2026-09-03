@@ -1,0 +1,26 @@
+#!/bin/sh
+# A stand-in `claude` for register item 871's gate: a pane whose ARGV names a
+# conversation, which is the only thing that gives `Pane::agent_session` a value.
+#
+# ## What it has to be, and what it does not
+#
+# `hooks::launched_identity` reads the conversation out of the ARGV — the
+# program's basename picks the agent and `--session-id <uuid>` names the
+# conversation — so this file's CONTENTS are nothing to the claim. Its NAME is
+# everything: called anything else, the daemon reads no identity and the run
+# records no conversation, which is the state item 871 was opened in.
+#
+# So it only has to keep its pane alive while a run is submitted and its row is
+# read. `exec cat` does that, exactly as this suite's other long-lived panes do.
+#
+# ## Why it is a tracked file rather than one the gate writes
+#
+# Register item 467, `ssh` beside it verbatim: a file any process holds open for
+# writing cannot be executed, and this harness runs its cases on THREADS of one
+# process, so a sibling forking to spawn a program inherits the write handle
+# until its own exec. Item 465 measured that shape at 10 failures in 30 runs.
+# The gate links this file into the case's own directory instead.
+#
+# It needs no `tail.sh`: unlike `ssh`, nothing here varies per case.
+stty -echo 2>/dev/null
+exec cat
