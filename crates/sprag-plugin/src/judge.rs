@@ -1829,6 +1829,78 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND A REPLY THAT REFERS BACK TO A VERDICT IT ALREADY GAVE IS NOT ONE EITHER** —
+    /// the READER's half of [`crate::outer`]'s fifth closing clause.
+    ///
+    /// # ⛔⛔⛔⛔ Why it is a fifth sample and not a second copy of the one above
+    ///
+    /// Measured 2026-09-03 on a live independent check of this repository's own milestone, whole:
+    ///
+    /// ```text
+    /// The verdict stands, and the one qualification is now closed: the GUI stamp test
+    /// finished green.
+    /// ```
+    ///
+    /// The sample above DEFERS — it judged nothing and expects a later turn. **This one judged.**
+    /// It says what it concluded and even retires its own qualification; the only thing it does
+    /// not do is spell the word, because it believes it spelled it already. Reading the two as one
+    /// case would put the wrong remedy on it: *tell the checker not to wait* reaches nothing here.
+    ///
+    /// ⚠⚠ **AND IT IS THE CASE WHERE THROWING THE REPLY AWAY COSTS THE MOST, which is why the
+    /// prompt is the repair rather than the reader.** A deferral carries no answer to lose. This
+    /// one carries a considered YES — and the reader is right to refuse it anyway: a run that
+    /// inferred *stands* meant *yes* would be reconstructing a verdict from a word about a verdict,
+    /// which is [`verdict_in`]'s whole refusal. **A fabricated verdict is worse than a discarded
+    /// one**, and it is worse in this direction too.
+    ///
+    /// ⚠ The control is the same sentence with the word in front of it, so the arms differ in the
+    /// MARK and in nothing else — and it is `YES` here rather than `NO`, because this sample's own
+    /// meaning is agreement and a control that inverted it would be measuring two things.
+    #[test]
+    fn a_reply_that_stands_on_an_earlier_verdict_is_not_a_verdict() {
+        const CARRIED_OVER: &str = "The verdict stands, and the one qualification is now closed: \
+                                    the GUI stamp test finished green.";
+        let asked = "Has the checkpoint been reached? Reply with YES or NO.";
+        let took = Duration::from_millis(1);
+
+        let unheard = verdict_in(CARRIED_OVER, asked, took)
+            .expect_err("⛔ a reply that spells no verdict must not come back as a judgement");
+        let Unheard::NotAVerdict(line) = &unheard else {
+            panic!(
+                "⚠⚠⚠ IT IS THE *it answered and said no verdict* ARM: this checker ran, replied, \
+                 and had in fact judged — so `Unanswered`'s remedy (ask again) is wrong for it, \
+                 and asking again gets the same shape back. Got {unheard:?}",
+            );
+        };
+        assert!(
+            line.starts_with("The verdict stands"),
+            "⚠⚠ and it carries the first LINE, which is what tells a person WHICH silence this \
+             was — *it referred back* reads nothing like *it deferred*: {line:?}",
+        );
+        assert_eq!(
+            unheard.silence(),
+            Silence::Unreadable,
+            "⛔⛔⛔⛔ THE REMEDY THIS ROUTES TO IS THE WHOLE POINT: `Unreadable` means *fix the \
+             prompt or the program*, and the prompt is exactly what was fixed. Routed to \
+             `Unanswered` this would be re-asked of a checker that would answer *it stands* again",
+        );
+
+        // ── THE CONTROL: the same prose with a marked verdict in front of it IS read ────────
+        //
+        // ⚠⚠⚠ AND IT IS ALSO WHERE ITEM 741's BANNED REPAIR WOULD SHOW. The `expect_err` above is
+        // what refuses *turn an unreadable reply into a NO*, and this sample is the costliest
+        // place for that repair to be attempted: it AGREES, so a reader that manufactured a
+        // refusal here would record the milestone rejected by a checker that had accepted it.
+        let judged = format!("YES — {CARRIED_OVER}");
+        let verdict = verdict_in(&judged, asked, took)
+            .expect("a marked verdict in front of the same prose is a judgement");
+        assert!(
+            verdict.holds,
+            "⚠⚠⚠ THE CONTROL: this must differ from the arm above in the MARK and in nothing \
+             else, or *unreadable* could be about the prose rather than about the missing word",
+        );
+    }
+
     /// ⚠⚠⚠ **A STOPPED RUN GETS NO JUDGEMENT — AND THAT IS WHAT KEEPS `redirecting` OUT OF ITS
     /// REACH** — the half of R395's claim that lives one door over from `screening`.
     ///

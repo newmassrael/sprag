@@ -579,6 +579,45 @@ const SUCCESSOR_CHECK: &str = "successor_check";
 /// [`Unheard::NotAVerdict`](crate::judge::Unheard) and the round was recorded unverified, which is
 /// the honest outcome. What is bought here is that the next checker has an answer available.
 ///
+/// # ⛔⛔⛔⛔⛔ **AND THE FIFTH, 2026-09-03: THE SAME TENSE POINTED THE OTHER WAY**
+///
+/// A live independent check of this repository's own milestone answered, whole:
+///
+/// ```text
+/// The verdict stands, and the one qualification is now closed: the GUI stamp test
+/// finished green.
+/// ```
+///
+/// **It is not any of the four above, and reading it as one of them is how it would be missed
+/// again.** It is no preamble (item 751's `"My"`, `"Verdict:"` — the answer is not behind it, there
+/// is no answer at all) and it is no deferral: this checker judged, and said what it judged. What
+/// it did was **carry a verdict over from an exchange it believed it had already had** — *stands*,
+/// against a `NO` it thinks it withdrew.
+///
+/// ⚠⚠⚠⚠⚠ **AND THE `ONLY TURN` SENTENCE POINTS THE WRONG WAY TO REACH IT.** It says *nothing here
+/// reads a LATER one* — the whole clause is about the future, and a checker reading it carefully
+/// learns nothing about the past. The reply this measured is a checker that got that sentence
+/// right: it did not defer, it answered on this turn. It answered by REFERENCE.
+///
+/// ⇒ So the fifth clause says the turn is the first as well as the last, and — item 751's finding
+/// and the fourth clause's own repair both — it **gives the move** rather than only naming the
+/// form: *spell the word again even when your answer has not changed.* A checker told only that
+/// referring back is discarded still has to work out that an unchanged answer must be re-spelled;
+/// told that, it has nothing left to work out.
+///
+/// ⚠⚠ **WHY A CHECKER BELIEVES IT HAS A PRIOR TURN AT ALL, since the prompt cannot say it does
+/// not without the claim being true**: nothing here is a conversation, but the process answering
+/// may be — the same agent, in the same session, asked about the same milestone as the round went
+/// round. Its memory of the earlier answer is real; what is false is that anything on this side
+/// read it. That is why the clause is *nothing here READ an earlier one* and not *there was no
+/// earlier one*.
+///
+/// ⚠ The residue, stated: a prompt is not a gate, and this one cannot be. The reader's half is
+/// unchanged and correct — that reply arrived as
+/// [`Unheard::NotAVerdict`](crate::judge::Unheard), the round was recorded unverified, and the
+/// person was told to fix the prompt. This is that fix; what it buys is that the next checker with
+/// a standing answer knows it must re-spell it.
+///
 /// ⚠ Spelled once, for [`MILESTONE_CHECK`]'s reason: the gate that holds this ordering compares the
 /// rendered question against THIS string, so the product and the gate cannot come to hold two
 /// different ideas of what the closing instruction is.
@@ -589,7 +628,13 @@ const HOW_TO_ANSWER: &str = "Now answer. YOUR REPLY MUST BEGIN WITH THE WORD YES
      miss. THIS REPLY IS YOUR ONLY TURN: nothing here reads a later one, so a reply that promises \
      to report back — \"rerunning\", \"I'll report when it lands\", \"I'll wait for the suites to \
      finish before reporting\" — is thrown away exactly as a missing verdict is, and the round is \
-     recorded as unverified. JUDGE ON WHAT YOU HAVE ALREADY SEEN: if a command you started has \
+     recorded as unverified. IT IS ALSO YOUR FIRST TURN: nothing here read an earlier one, so a \
+     reply that carries an answer over from an exchange you believe you already had — \"the \
+     verdict stands\", \"as I said\", \"unchanged from my last answer\" — is thrown away the same \
+     way, however sound the answer it refers to was. SPELL THE WORD AGAIN EVEN WHEN YOUR ANSWER \
+     HAS NOT CHANGED: an answer that has not moved still has to begin with YES or NO, because \
+     nothing here remembers the one before it. JUDGE ON WHAT YOU HAVE ALREADY SEEN: if a command \
+     you started has \
      not finished, do not wait for it — answer now from the evidence in front of you, and if that \
      evidence was not enough, say so in your sentence. Then \
      give ONE short sentence saying why. If what you were shown is empty or does not let you \
@@ -19396,6 +19441,26 @@ mod tests {
              has started a command and been told only that waiting is discarded has no move left; \
              one told to judge on what it has already seen has one, and *that was not enough* is \
              still available in the sentence after: {HOW_TO_ANSWER:?}",
+        );
+        // ── ⛔⛔⛔⛔⛔ AND THE FIFTH: THE SAME TENSE, POINTED THE OTHER WAY ──────────────────
+        // Measured 2026-09-03 on a live independent check of this repository's own milestone. The
+        // whole reply was *"The verdict stands, and the one qualification is now closed: the GUI
+        // stamp test finished green."* — a checker that neither deferred nor put a preamble in
+        // front of an answer, but referred BACK to one it believed it had already given. Every
+        // clause above points forward; this is the one that points behind.
+        assert!(
+            HOW_TO_ANSWER.contains("FIRST TURN"),
+            "⚠⚠⚠⚠⚠ THE PROMPT SAYS NOTHING READS A LATER TURN AND IS SILENT ABOUT AN EARLIER \
+             ONE, so *the verdict stands* is a shape it leaves open — and a checker took it. The \
+             `ONLY TURN` clause does not reach this: that reply did not defer, it answered by \
+             REFERENCE: {HOW_TO_ANSWER:?}",
+        );
+        assert!(
+            HOW_TO_ANSWER.contains("NOT CHANGED"),
+            "⚠⚠⚠⚠⚠ AND NAMING THE FORM WITHOUT GIVING THE MOVE IS THE FOURTH CLAUSE'S OWN \
+             LESSON REPEATED. A checker whose answer has not moved, told only that referring back \
+             is discarded, is left to work out that it must re-spell it; told to spell the word \
+             again even when nothing changed, it is not: {HOW_TO_ANSWER:?}",
         );
         // ⚠ The READER's half of this sample lives in `judge`, where `verdict_in` is — see
         // `a_reply_that_defers_instead_of_judging_is_not_a_verdict`. Two halves, two modules, and
