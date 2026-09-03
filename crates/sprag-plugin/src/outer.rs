@@ -14249,11 +14249,18 @@ mod tests {
              not silence: {faced:?}",
         );
         assert_eq!(
-            held.unsubmitted, 1,
+            (held.unsubmitted, held.made),
+            (1, 0),
             "⛔⛔⛔ ITEM 617: this prompt is ON that pane — typed, painted, and sitting in a \
              composer nobody submitted — and the run's counters do not say so. That run is exactly \
              the one register item 591 built these counters for, and it publishes the numbers of a \
-             run that never sent anything: {held:?}",
+             run that never sent anything. ⛔⛔⛔⛔⛔ **AND `made` IS ASSERTED BESIDE IT SINCE \
+             2026-09-04, WHICH IS REGISTER ITEM 833(2)'s LESSON MEASURED HERE**: this field's own \
+             doc says in as many words that it is NOT PART OF `made`, and adding \
+             `deliveries.made += 1` to the arm that raises it left EVERY test in this workspace \
+             green. A count claimed to be outside a total, with no fixture where the two differ, \
+             is the same defect as a subset that is its total's twin — the direction is reversed \
+             and nothing watched either. Got {held:?}",
         );
 
         let (never_landed, missed, nothing_faced) = refused_by(PAINTS_NOTHING);
@@ -14274,11 +14281,15 @@ mod tests {
              same unsupervised pane, so both say so. Got {nothing_faced:?}",
         );
         assert_eq!(
-            missed.unsubmitted, 0,
+            (missed.unsubmitted, missed.made),
+            (0, 0),
             "⚠⚠⚠⚠⚠ THE CONTROL, AND IT IS THE WHOLE CLAIM: nothing was ever confirmed on this \
              pane, so there is no prompt for anybody to go and look at. A count that rose here \
              would be telling a person to search a screen the text never reached — the reassuring \
-             wrong answer, which is the direction this repository has paid for twice: {missed:?}",
+             wrong answer, which is the direction this repository has paid for twice. ⚠⚠ `made` is \
+             asserted here too so that the arm above cannot be satisfied by a build in which every \
+             refusal raises it: with both arms pinned, `made` separates the two roads exactly as \
+             `unsubmitted` does: {missed:?}",
         );
     }
 
@@ -14680,12 +14691,23 @@ mod tests {
              Got {walked:?}",
         );
         assert_eq!(
-            (counted.unreported, counted.unsubmitted, counted.made),
-            (1, 0, 0),
+            (
+                counted.unreported,
+                counted.unsubmitted,
+                counted.made,
+                counted.folded,
+            ),
+            (1, 0, 0, 0),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the counters put this on the wrong number. `unsubmitted` \
              means *the prompt is on that pane, go and look*; this prompt is on no pane, and \
              `Deliveries::unsubmitted`'s own doc forbids the merge in as many words — *counting \
-             them as one number would be counting two remedies as one*. Counted {counted:?}",
+             them as one number would be counting two remedies as one*. ⛔⛔⛔⛔⛔ **AND `folded` \
+             JOINED THIS TUPLE ON 2026-09-04, WHICH IS REGISTER ITEM 833(2)'s LESSON MEASURED \
+             HERE**: the field's own doc says *IT IS NOT `folded` EITHER, and the two are easy to \
+             mistake* — `folded` counts folds that RECOVERED and this counts the ones that did not \
+             — and raising `folded` in the arm that raises this left EVERY test in this workspace \
+             green. A tuple is only a separation for the numbers it names, and the one this gate \
+             left out was the one its own subject is easiest to confuse with. Counted {counted:?}",
         );
     }
 

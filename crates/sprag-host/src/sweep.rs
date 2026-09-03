@@ -1339,8 +1339,16 @@ mod tests {
         let cursor = channels.revision("a").current();
         let second = sweep_once(&reg, &agents, &jobs, &channels, &no_word(), base, true);
         assert_eq!(
-            second.jobs_changed, 1,
-            "the pass that sees the group move is the pass that reports it",
+            (second.jobs_changed, second.reporters_changed),
+            (1, 0),
+            "the pass that sees the group move is the pass that reports it. ⛔⛔⛔⛔⛔ **AND THE \
+             REPORTER COUNT IS ASSERTED BESIDE IT SINCE 2026-09-04, WHICH IS REGISTER ITEM \
+             833(2)'s LESSON MEASURED HERE**: `reporters_changed`'s own doc says it is counted \
+             BESIDE this one because *a gate asserting «this pass noticed the hook go quiet» must \
+             not have to infer it from a wake an ordinary verdict change would equally have \
+             caused* — and raising it in this arm too left EVERY test in this workspace green. Two \
+             numbers that must not be one, with no fixture where they differ, is a twin nobody can \
+             see. Got {second:?}",
         );
 
         let recorded = journal_events(&channels, "a", cursor);
