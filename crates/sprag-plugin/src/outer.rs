@@ -21394,6 +21394,85 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE TABLE CARRIES EVERY REASON, OR IT SEPARATES NOTHING** — register item
+    /// 856(1), and the one property the whole split rests on.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Shortening the table turns the instrument back into the thing it replaced
+    ///
+    /// The split exists because a `capacity`-only count **cannot separate an axis, only confirm
+    /// one**: `capacity 5 of 5` is equally the evidence for *a full session folds* and for *a
+    /// reflection's prompt folds*, and the second is live, because a reflection's prompt is the
+    /// longest this loop composes. The rows beside it are the CONTROL — same prompt shape, a
+    /// different reason for being there — and a table that published only the rows that fired
+    /// would hand a single-reason run exactly one row and nothing to compare it with.
+    ///
+    /// ⚠⚠⚠ **MEASURED 2026-09-04: filtering `rows()` to the populated ones left every gate in
+    /// `sprag-plugin`, `sprag-host`, `sprag-mcp` and `sprag-gate` green** but the standing red
+    /// (register item 837) — because every other fixture happens to have two populated rows. The
+    /// property the design is built on was the one thing nothing was watching.
+    ///
+    /// ⚠ Rule 6, at the population rather than at a value: `ReflectReason::ALL` is the authority,
+    /// so a seventh reason arrives with a row instead of falling out of a hand-kept list.
+    #[test]
+    fn the_split_of_a_runs_folds_publishes_every_reason_or_it_separates_nothing() {
+        // A run that reflected for exactly ONE reason — the shape whose table is most tempting to
+        // shorten, and the shape whose control group is most needed.
+        let mut only_one = FoldsByReason::NONE;
+        for _ in 0..5 {
+            only_one.record(ReflectReason::Capacity, true);
+        }
+
+        let published: Vec<ReflectReason> = only_one.rows().map(|(reason, _)| reason).collect();
+        assert_eq!(
+            published,
+            ReflectReason::ALL.to_vec(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): the split publishes fewer rows than there are \
+             reasons, so a run that reflected for one reason publishes ONE ROW — `capacity 5 of 5` \
+             and nothing to compare it with. That is the capacity-only counter this whole design \
+             exists to avoid: it is equally the evidence for *a full session folds* and for *a \
+             reflection's prompt folds*, and no reader can tell which. **Filtering this iterator \
+             was MEASURED on 2026-09-04 to leave every other gate in the workspace green**, \
+             because every fixture they use happens to have two populated rows. Got {published:?}",
+        );
+
+        // ── AND THE ORDER IS THE ENUM'S, so two runs' tables can be read side by side ──
+        //
+        // ⚠⚠ A comparison is the whole value here, and a comparison between two tables sorted
+        // differently is one a reader has to do by eye. `ReflectReason::ALL` is the only authority
+        // on the order, exactly as it is on the membership.
+        assert_eq!(
+            published.first().copied(),
+            ReflectReason::ALL.first().copied(),
+            "⚠⚠⚠ the rows must arrive in `ReflectReason::ALL`'s order, or two runs' tables are \
+             not comparable without sorting them first: {published:?}",
+        );
+
+        // ── AND THE EMPTY ROWS REALLY ARE EMPTY, never filled from a neighbour ──
+        //
+        // ⚠ The control for the claim above: a table that published six rows by COPYING the one
+        // that had data would satisfy the membership assertion and destroy the comparison.
+        for (reason, row) in only_one.rows() {
+            let expected = match reason {
+                ReflectReason::Capacity => FoldsUnder {
+                    delivered: 5,
+                    folded: 5,
+                },
+                _ => FoldsUnder {
+                    delivered: 0,
+                    folded: 0,
+                },
+            };
+            assert_eq!(
+                row,
+                expected,
+                "⛔⛔⛔⛔ REGISTER ITEM 856(1): `{}`'s row is not what this run counted. A row \
+                 filled from a neighbour is worse than a missing one — it invents a population, \
+                 and every comparison drawn against it is against a number nobody measured",
+                reason.word(),
+            );
+        }
+    }
+
     /// ⛔⛔⛔⛔⛔ **A REFLECTION WHOSE PROMPT *LANDED* IS RECORDED, WHICH IS THE ONLY THING THAT
     /// CAN REFUTE REGISTER ITEM 856** — the axis split, driven on a real pane.
     ///
@@ -21424,7 +21503,8 @@ mod tests {
     ///
     /// ⚠ The rows that never fired are asserted EMPTY, because *this reason never happened* and
     /// *this reason happened and never folded* are the two facts the whole split exists to keep
-    /// apart — collapsing them is how a denominator quietly disappears.
+    /// apart — collapsing them is how a denominator quietly disappears. That the TABLE carries
+    /// them at all is the gate above's claim.
     #[test]
     fn a_reflection_whose_prompt_landed_is_counted_under_its_own_reason() {
         /// Above any reading, so `capacity` can never be what moves this run — the sibling gates'
