@@ -1159,8 +1159,34 @@ impl ScopeAsk {
 ///   already in `Outcome::failure` and in the line's own `note`, and a third spelling is how two
 ///   copies of one fact come to differ.
 ///
+/// * **44 — A LOOP SAYS WHOSE DECISIONS IT RUNS UNDER, AND THE OLD SILENCE MEANT ONE
+///   REPOSITORY'S.** Register item 848. The `ai_loop` form gains a REQUIRED `loop_kind` argument
+///   carrying a `sprag_plugin::kind::LoopKind::KINDS` word (`debt`, `unclaimed`); there is no
+///   absent-means-something, which is the whole of the change.
+///
+///   ⚠⚠⚠⚠⚠ **THE ADDED-ARGUMENT RULE IS [`CLIENT_BUILD_PARAM`]'S, AND WHAT WAITS ON THE FACT IS
+///   WHICH DOCUMENT JUDGES THE RUN.** A kind names the checker that answers whether a run may
+///   re-aim itself onto work it found, and such a checker reads ONE tree's own record. While the
+///   driver hardcoded the only kind that existed, every run of a template other repositories copy
+///   was judged against THIS repository's record — and a proposal naming no item of a record is
+///   answered `NO`, so the silent default was not a stricter setting but a run refused its own
+///   work by a document that has never heard of it. A caller naming `unclaimed` to a daemon
+///   predating this key is answered `accepted` and gets exactly that, silently, having explicitly
+///   asked for the opposite; the handshake refusing that daemon is the honest failure.
+///
+///   ⚠⚠⚠⚠ **AND IT IS A REQUIRED KEY WHERE ITEMS 492 AND 494 ADDED OPTIONAL ONES FOR FREE.** Their
+///   measurement — *no release, no tag, so no daemon predating the key exists* — is about who can
+///   swallow it; this one also NARROWS what is well-formed, so a client that has never sent the
+///   key stops being able to start a loop at all. That is the intended effect (an unclassified run
+///   is a red rather than a pass) and it is exactly the kind of shape change this number exists to
+///   let both ends discover before a request is built.
+///
+///   ⚠⚠ **NO ANSWER WORD OR ADDRESS MOVED.** One argument, on one form, read in one place
+///   (`sprag_host::plugins`' `ai_loop` arm) — and the words it takes are published by the type that
+///   resolves them, so the list a client is shown and the list the door accepts cannot drift.
+///
 /// [`CLIENT_BUILD_PARAM`]: crate::CLIENT_BUILD_PARAM
-pub const WIRE_PROTOCOL: u32 = 43;
+pub const WIRE_PROTOCOL: u32 = 44;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
 /// this crate's build script as the commit it was compiled from (or `unknown`).

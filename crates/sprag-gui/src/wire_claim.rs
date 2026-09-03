@@ -394,7 +394,12 @@ pub(crate) mod grammar {
         // ROW consumes. **A window has no run row** — the palette, the prompt and the hyperlink
         // oracle are what it publishes — so this pin moves for an eleventh cause it takes no part
         // in. Eleven for eleven, and the eighth is still the only one this surface authors.
-        43,
+        // 🎯🎯🎯 THE TWELFTH, and it is an ARGUMENT on a plugin this window cannot start: register
+        // item 848 made `loop_kind` required on the `ai_loop` form, so a run says whose decisions
+        // it runs under instead of inheriting one repository's. **A window starts no runs** — it
+        // renders panes — so this pin moves for a twelfth cause it takes no part in. Twelve for
+        // twelve, and the eighth is still the only one this surface authors.
+        44,
         &[
             (
                 "the command palette",

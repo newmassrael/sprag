@@ -11874,6 +11874,9 @@ fn the_loops_own_plugin_is_built_from_a_request_over_a_world_that_is_a_socket() 
     let request = json!({
         "plugin": "ai_loop",
         "pane": pane.0,
+        // 🎯 REGISTER ITEM 848: the form requires it and there is no default, so a request built
+        // from the grammar names one. This repository's own kind, like every gate here.
+        "loop_kind": "debt",
         "agent": "claude",
         "north_star": "the door is what this gate is about",
         "milestone": "be built and stepped from outside the daemon",
@@ -11975,6 +11978,8 @@ fn a_saved_place_this_build_cannot_read_stops_the_driver_before_a_byte_is_typed(
     let request = json!({
         "plugin": "ai_loop",
         "pane": pane.0,
+        // 🎯 REGISTER ITEM 848, and see the request above.
+        "loop_kind": "debt",
         "agent": "claude",
         "north_star": "a run outlives the daemon that started it",
         "milestone": "be put back where the log said, without re-typing",

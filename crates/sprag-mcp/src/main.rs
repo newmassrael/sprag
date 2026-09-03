@@ -2208,6 +2208,18 @@ fn argument_help(name: &str) -> &'static str {
         // ⚠⚠ THE `ai_loop` FORM'S SIX. A loop is the one plugin here told what the work is FOR
         // rather than what to type, so its arguments describe a GOAL and each needs a sentence an
         // agent can act on — the three below are what the loop composes every prompt out of.
+        //
+        // 🎯 AND THE ONE THAT IS NOT ABOUT THE GOAL AT ALL — register item 848.
+        "loop_kind" => {
+            "WHOSE DECISIONS THIS RUN RUNS UNDER (ai_loop) — REQUIRED, with no default. A loop \
+             KIND is a document holding what a particular repository has decided in advance: its \
+             standing yesses, the rules it holds every turn to, and the CHECKER that says whether \
+             a run may re-aim itself onto work it finds. Such a checker reads that repository's \
+             own record, so naming somebody else's kind has this run judged by a document that has \
+             never heard of its work. Say `debt` only from this repository's own tree; say \
+             `unclaimed` for a run that should hold no decisions but the loop template's own and \
+             whatever you name on this call."
+        }
         "north_star" => {
             "WHERE THIS LOOP IS ULTIMATELY GOING (ai_loop) — one or two sentences, in your own \
              words, naming the outcome the whole run exists to reach. It is never rewritten and it \

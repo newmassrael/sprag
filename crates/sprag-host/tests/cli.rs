@@ -3874,6 +3874,10 @@ fn start_loop(conn: &mut HostConn, session: &str, pane: u64, star: &str) {
             "args": {
                 "plugin": "ai_loop",
                 "pane": pane,
+                // 🎯 REGISTER ITEM 848: which kind's decisions this run runs under. Required,
+                // with no default, so every caller names one — this repository's own here,
+                // because what this gate asserts about is this repository's decisions.
+                "loop_kind": "debt",
                 "agent": "claude",
                 "north_star": star,
                 "milestone": "still be running after the thing driving it was replaced",
@@ -4908,6 +4912,8 @@ fn a_daemon_restarted_under_a_live_loop_brings_that_loop_back_running() {
             "args": {
                 "plugin": "ai_loop",
                 "pane": peer,
+                // 🎯 REGISTER ITEM 848, and see the request above.
+                "loop_kind": "debt",
                 "agent": "claude",
                 "north_star": "a run outlives the daemon that started it",
                 "milestone": "come back running where the log said",
@@ -15286,6 +15292,10 @@ fn an_order_only_the_loop_reads_is_refused_at_the_command_a_person_types() {
             "work",
             "--pane",
             &pane,
+            // 🎯 REGISTER ITEM 848: which kind's decisions this run runs under. Required, with
+            // no default — this repository's own, because the gate is about its orders.
+            "--loop-kind",
+            "debt",
             "--north-star",
             "SPRAG-ORDERS-CONTROL",
             "--milestone",
@@ -15372,6 +15382,9 @@ fn a_resume_says_what_it_let_go_and_a_run_nobody_held_is_told_apart() {
             "work",
             "--pane",
             &pane,
+            // 🎯 REGISTER ITEM 848, and see the launch above.
+            "--loop-kind",
+            "debt",
             "--north-star",
             "SPRAG-HOLD-SENTENCE",
             "--milestone",
@@ -17843,6 +17856,8 @@ fn a_run_drives_its_pane_while_the_session_is_looking_at_another_window() {
             "args": {
                 "plugin": "ai_loop",
                 "pane": pane,
+                // 🎯 REGISTER ITEM 848, and see the request above.
+                "loop_kind": "debt",
                 "agent": "claude",
                 "north_star": "a run drives the pane it was given, wherever the person is looking",
                 "milestone": "get past readiness and inject while the session is elsewhere",

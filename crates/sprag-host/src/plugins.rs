@@ -634,6 +634,14 @@ pub const RUN_AT_KEY: &str = "at";
 /// too and is a separate authority on purpose (it publishes what a caller may say); what this ties
 /// together is the two places in THIS file that read it.
 pub const RUN_PANE_KEY: &str = "pane";
+/// 🎯🎯🎯🎯🎯 **WHOSE DECISIONS A LOOP RUN RUNS UNDER** — register item 848, and the one argument
+/// on the `ai_loop` form with no absent-means-something.
+///
+/// ⚠⚠ A constant because THREE parties spell it: the published grammar, this file's parse, and the
+/// gate that drives one through the other. The WORDS it may carry are
+/// [`LoopKind::KINDS`](sprag_plugin::kind::LoopKind::KINDS) and are published from there, so a
+/// client reading the vocabulary and the door admitting it cannot come apart.
+pub const LOOP_KIND_KEY: &str = "loop_kind";
 /// The answer key carrying **WHAT THE TREE A RUN WORKED IN WAS HOLDING WHEN IT ENDED** — bytes of
 /// `git diff HEAD`, register item 682's commit-contamination clause.
 ///
@@ -2212,12 +2220,22 @@ fn plugin_from_request(
             // nothing**: it reads one document and hands the values to another, which is the
             // whole of what the governing rule permits a driver to do with a decision.
             //
-            // ⚠⚠ WHICH KIND IS NOT A WIRE ARGUMENT YET, and that is scope rather than design.
-            // There is one kind, so naming it would be a key with one legal value — and adding
-            // an ARGUMENT is a wire bump. The day a second kind exists, that bump is what pays
-            // for it.
-            let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
-                .map_err(|why| refused(why.to_string()))?;
+            // 🎯🎯🎯🎯🎯 WHICH KIND, AND THE CALLER SAYS — register item 848, and the wire bump
+            // this comment used to promise. It read: *there is one kind, so naming it would be a
+            // key with one legal value — the day a second kind exists, that bump is what pays for
+            // it.* `unclaimed_loop.scxml` is that day, and `WIRE_PROTOCOL` 44 is that bump.
+            //
+            // ⛔⛔⛔⛔⛔ NO DEFAULT, AND THAT IS THE ITEM RATHER THAN STRICTNESS. A kind names the
+            // checker that decides whether a run may re-aim itself, and this repository's kind
+            // points that checker at this repository's record — so hardcoding it here had every
+            // run of a template other repositories copy judged against a record it is not about,
+            // and a proposal naming no item of a record is answered `NO`. `require_str` is what
+            // makes *nobody said* an answer this door will not invent.
+            let kind = sprag_plugin::kind::LoopKind::named(
+                require_str(map, LOOP_KIND_KEY)?,
+                Arc::clone(&script),
+            )
+            .map_err(|why| refused(why.to_string()))?;
             // ⚠⚠⚠⚠⚠ RESOLVED BY A FUNCTION THAT HANDS THE BRIEF BACK — register item 492. It
             // was a hundred inline lines here, and the eight fall-throughs to the kind document
             // inside it were held by NOTHING: `sprag_plugin`'s own gate had already measured
@@ -7888,6 +7906,11 @@ mod tests {
             "plugin": "ai_loop",
             "pane": pane.0,
             "agent": "claude",
+            // 🎯 REGISTER ITEM 848, and this fixture names it for the same reason a real caller
+            // must: there is no default. It is this repository's own kind because these gates
+            // assert about this repository's own decisions — the ones a run started under
+            // `unclaimed` would correctly not have.
+            LOOP_KIND_KEY: sprag_plugin::kind::LoopKind::DEBT,
             "north_star": "SPRAG-NORTH-STAR-CROSSED-THE-WIRE",
             "milestone": "say the marker",
             "reference": "this gate",
@@ -10718,8 +10741,22 @@ mod tests {
         );
     }
 
-    /// ⛔⛔⛔⛔⛔ **THE LAUNCH THAT STARTS THIS REPOSITORY'S DEBT LOOP IS FOUR ARGUMENTS** — register
-    /// item 738's last layer, and the sentence this workspace had been asserting in PROSE.
+    /// ⛔⛔⛔⛔⛔ **THE LAUNCH THAT STARTS THIS REPOSITORY'S DEBT LOOP IS FIVE ARGUMENTS** —
+    /// register item 738's last layer, and the sentence this workspace had been asserting in PROSE.
+    ///
+    /// # 🎯🎯🎯🎯🎯 The fifth is `loop_kind`, and it is NOT this item going backwards
+    ///
+    /// Register item 848 made *which kind* a required argument, so a launcher types one more word
+    /// than it did — and item 738's whole complaint is about words a launcher has to type. The two
+    /// do not collide, and the reason is the shape of what 738 moved: every key it retired had an
+    /// AUTHOR in `debt_loop.scxml`, and the fix was to let the document answer. **This one is the
+    /// single key no kind document can answer, because it is the question of WHICH DOCUMENT** — a
+    /// kind that named itself would be answering for callers who never chose it, which is exactly
+    /// the state 848 exists to end.
+    ///
+    /// ⚠⚠ So the pin below is still the item's own instrument. It says *this many words, and each
+    /// one has no author but the caller*; a sixth key that DOES have an author is the regression it
+    /// was written to catch, and it goes red here whichever number it moves.
     ///
     /// # ⚠⚠⚠⚠⚠ Why the four gates beside this one do not say it
     ///
@@ -10750,7 +10787,7 @@ mod tests {
     /// and a number in this file would be a second place it lives. What is pinned is the SIZE of
     /// what a launcher must know, which is the thing that was living in a session's memory.
     #[test]
-    fn the_launch_that_starts_this_repositorys_debt_loop_is_four_arguments() {
+    fn the_launch_that_starts_this_repositorys_debt_loop_is_five_arguments() {
         // ── HALF ONE: what a caller reading the published grammar has to fill in ────────────
         //
         // ⚠ In declared order, because that is the order a client reading `to_answer` meets them,
@@ -10764,12 +10801,15 @@ mod tests {
             .collect();
         assert_eq!(
             required,
-            vec!["plugin", "pane", "north_star", "milestone"],
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 738: the launch is no longer four arguments. Every key that \
+            vec!["plugin", "pane", LOOP_KIND_KEY, "north_star", "milestone"],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 738: the launch is no longer five arguments. Every key that \
              becomes required here is a value somebody has to type on every firing — and the place \
              they type it from is a memory that dies with their session, which is the whole of \
              what this item measured. A value with an author belongs in `debt_loop.scxml`; a key \
-             this form insists on has no author but the caller.",
+             this form insists on has no author but the caller. ⚠ `loop_kind` is the one key that \
+             CANNOT have an author there and is required anyway (item 848): it names which \
+             document to read, and a document that named itself would answer for callers who never \
+             chose it.",
         );
 
         // ── HALF TWO: and a request that fills in exactly those four builds a loop ──────────
@@ -10799,13 +10839,14 @@ mod tests {
             );
 
         // ⚠ BUILT FROM SCRATCH rather than stripped from `ai_loop_request`: the claim is *these \
-        // four and nothing else*, and a fixture the gates share is free to grow a key tomorrow —
+        // five and nothing else*, and a fixture the gates share is free to grow a key tomorrow —
         // which would leave this gate answering a different question with the same green.
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
         let pane = echoing_agent_pane(&workspace);
         let launch = json!({
             "plugin": "ai_loop",
             "pane": pane.0,
+            LOOP_KIND_KEY: sprag_plugin::kind::LoopKind::DEBT,
             "north_star": "SPRAG-NORTH-STAR-CROSSED-THE-WIRE",
             "milestone": "say the marker",
         });
@@ -10814,9 +10855,9 @@ mod tests {
         named.sort_unstable();
         assert_eq!(
             named,
-            vec!["milestone", "north_star", "pane", "plugin"],
+            vec![LOOP_KIND_KEY, "milestone", "north_star", "pane", "plugin"],
             "⚠⚠⚠⚠ THIS GATE IS VACUOUS IF THE LAUNCH NAMES ANYTHING ELSE: the question is what a \
-             caller has to send, and a request carrying a fifth key answers a different one",
+             caller has to send, and a request carrying a sixth key answers a different one",
         );
 
         let registry = Arc::new(Mutex::new(RunRegistry::default()));
@@ -10881,6 +10922,145 @@ mod tests {
             barrier,
             "⚠⚠⚠⚠ and the barrier the launcher spelled twice — `--match settles --marker claude` — \
              must be the one its author wrote beside what this peer prints when its service fails",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE KIND A RUN NAMES IS THE KIND THE DOOR OPENS, AND SAYING NOTHING IS
+    /// REFUSED** — register item 848, and the MIDDLE of its chain.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the two gates either side of this one are not enough
+    ///
+    /// The word travels **grammar → door → document**, and both ENDS were already held: the
+    /// published form pins `loop_kind` as required beside the launch's other four, and
+    /// `sprag_plugin`'s own gates pin that each word opens a document and that an unknown one is
+    /// refused by name. Neither of them reaches the LINE BETWEEN — `require_str(map,
+    /// LOOP_KIND_KEY)` handed to `LoopKind::named`. **A door that ignored the caller and named
+    /// this repository's kind for everybody would leave every one of those gates green**, which
+    /// is item 848 restored in full while its own instruments report success.
+    ///
+    /// ⚠⚠ This workspace has met that shape twice in two days (item 849): a gate at each end,
+    /// a hole in the middle, and a mutation walking straight through it. So what is asserted here
+    /// is a DIFFERENCE the caller's word alone produces — the same request twice, one word apart.
+    ///
+    /// # ⚠⚠⚠ Why the guardrails are the observable
+    ///
+    /// A kind's clauses are what a kind IS, and `own_bounds` is the one the door resolves into the
+    /// plugin itself rather than into a brief a gate has to rebuild. `debt_loop.scxml` authors
+    /// bounds; `unclaimed_loop.scxml` authors nothing at all, so the two answers differ by exactly
+    /// what the two documents differ by. The inequality is asserted too — comparing two empty sets
+    /// and calling it agreement is how a gate passes over a door that read nothing.
+    ///
+    /// ⚠ The unclaimed launch names `reference` and `agent` because an unclaimed run must: its
+    /// document authors neither, and the door refuses a loop with no starting point and no
+    /// barrier. That is the kind behaving correctly rather than a fixture working around it.
+    #[test]
+    fn the_kind_a_run_names_is_the_kind_the_door_opens() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // ⚠ ONE PANE PER LAUNCH: the door takes the pane, and a plugin built over a closed one is
+        // a different question than the one asked here.
+        let built = |named: &str, pane: PaneId| {
+            let launch = json!({
+                "plugin": "ai_loop",
+                "pane": pane.0,
+                LOOP_KIND_KEY: named,
+                "north_star": "SPRAG-WHICH-DOCUMENT-DECIDED-THIS",
+                "milestone": "be built under the kind the caller named",
+                // ⚠ What an unclaimed run has to bring, because its document brings none. The
+                // debt launch is handed them too, so the ONE difference between the two calls is
+                // the kind word — which is the whole of what this gate measures.
+                "reference": "register item 848",
+                "agent": "claude",
+            });
+            let map = launch.as_object().expect("an object");
+            let (plugin, label) = external.build_plugin(map).unwrap_or_else(|why| {
+                panic!(
+                    "⛔⛔⛔ ITEM 848: the door refused a launch naming {named:?}, a word its own \
+                     published grammar offers: {why:?}"
+                )
+            });
+            assert!(
+                matches!(plugin, PluginKind::AiLoop(..)),
+                "the control: {named:?} must build a LOOP or the comparison below is about \
+                 something else. Built {label:?}",
+            );
+            plugin.own_bounds()
+        };
+
+        let ours = built(
+            sprag_plugin::kind::LoopKind::DEBT,
+            echoing_agent_pane(&workspace),
+        );
+        let unclaimed = built(
+            sprag_plugin::kind::LoopKind::UNCLAIMED,
+            echoing_agent_pane(&workspace),
+        );
+
+        assert_ne!(
+            ours, unclaimed,
+            "⛔⛔⛔⛔⛔ ITEM 848: two launches one WORD apart built plugins bounded identically, so \
+             the door is not reading the kind the caller named. That is the state this item was \
+             filed on wearing an argument's clothes — every run judged by this repository's \
+             document, whoever asked for what",
+        );
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let mine = sprag_plugin::kind::LoopKind::debt(script)
+            .expect("this repository's kind document opens");
+        assert_eq!(
+            ours,
+            kind_guardrails(&mine, Cost::Bytes(DEFAULT_MAX_BYTES))
+                .expect("this repository's guardrail clause is readable"),
+            "⚠⚠⚠ and the word `debt` must reach THIS repository's document rather than merely \
+             something that is not the other one",
+        );
+        assert_eq!(
+            unclaimed,
+            AuthoredGuardrails::none(),
+            "⚠⚠ and `unclaimed` must reach a document that bounds nothing — a kind holding no \
+             decisions is the honest answer for a tree that has written none, and a run of it \
+             takes the caller's own arguments and this daemon's own defaults",
+        );
+
+        // ── AND SAYING NOTHING IS REFUSED, AT THE DOOR AND NOT ONLY IN THE GRAMMAR ──────────
+        //
+        // ⛔⛔⛔ The published form declares the key required and `PublishedForm::fill` refuses a
+        // call that omits it — but the door is a second reader, reached by every caller that does
+        // not build its request from the publication. `require_str` is what makes *nobody said* an
+        // answer this door will not invent, and a `unwrap_or(DEBT)` there would restore item 848
+        // in full for exactly the callers the grammar cannot reach.
+        let silent = json!({
+            "plugin": "ai_loop",
+            "pane": echoing_agent_pane(&workspace).0,
+            "north_star": "SPRAG-WHICH-DOCUMENT-DECIDED-THIS",
+            "milestone": "be refused for naming no kind",
+            "reference": "register item 848",
+            "agent": "claude",
+        });
+        // ⚠ `let … else` rather than `expect_err`, which would ask a plugin to be `Debug` for the
+        // sake of a message no green run prints.
+        let Err(why) = external.build_plugin(silent.as_object().expect("an object")) else {
+            panic!(
+                "⛔⛔⛔⛔⛔ ITEM 848: a launch naming no kind was ACCEPTED, so this door still \
+                 decides for a caller which document judges their work — which is the state the \
+                 item was filed on, and the one an unclassified run being a RED rather than a \
+                 pass exists to end"
+            )
+        };
+        assert!(
+            matches!(why, InvokeError::TypeMismatch),
+            "⚠ and it is refused as a malformed request rather than as a fact about the world: \
+             the key is missing, which the caller can fix by naming one. Got {why:?}",
         );
     }
 
@@ -13326,13 +13506,22 @@ mod tests {
     fn every_published_word_is_a_word_the_plugin_host_accepts() {
         assert_eq!(
             grammar_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            32,
+            34,
             "one call per published word: the ONE plugin word that selects each of the SIX forms, \
              the two reply formats on each of a dialogue's two endpoints, the readiness barrier's \
              FOUR `match` words on each of the four plugins that inject — the last two being \
              `runs` and `settles`, which ask the pane's terminal and its supervisor rather than \
              its screen — and `done_when`'s TWO words on EACH of the three forms that now take it. \
-             ⚠⚠⚠ THE SEVEN NEWEST ARE THE `ai_loop` FORM'S, and this gate caught the same argument \
+             🎯🎯🎯🎯🎯 THE NEWEST TWO ARE `loop_kind`'s `debt` AND `unclaimed` (item 848), and \
+             this gate is the one that makes the SECOND of them more than a name in a list: a kind \
+             word is only worth publishing if a caller can start a run under it, and `unclaimed` \
+             is the whole answer to *what does a tree that has written no kind of its own say*. \
+             Published and unservable, it would send such a caller back to the silent default this \
+             item exists to delete. ⚠⚠ Servable ALONE is the standard below and it is the right \
+             one here too — a kind holding no decisions brings nothing to the call, so a run under \
+             it is exactly the caller's own arguments. \
+             ⚠⚠⚠ THE SEVEN BEFORE THEM WERE THE `ai_loop` FORM'S, and this gate caught the same \
+             argument \
              a THIRD time on it: `agent` was published as declinable and read with `require_str`, \
              so a caller building the minimal call this grammar describes was answered \
              `TypeMismatch`. It was made required, and the two spellings agreed again. \
@@ -13517,12 +13706,21 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            121,
+            122,
             "one probe per declared argument of every FORM, nesting included: TWENTY for an \
              orchestrator, SEVENTEEN for a pipe, TWENTY-ONE for an agent, sixteen for a dialogue, \
-             TEN to answer a pane, THIRTY-ONE to run an AI loop, one to cancel, one to stand a run \
+             TEN to answer a pane, THIRTY-TWO to run an AI loop, one to cancel, one to stand a run \
              down, and TWO TO REPORT A RUN'S PROGRESS. \
-             ⚠⚠⚠⚠⚠ THE NEWEST TWO ARE `report_progress`'s `id` AND `progress` (item 650), and this \
+             🎯🎯🎯🎯🎯 THE NEWEST IS THE LOOP'S THIRTY-SECOND, `loop_kind` (item 848), and it is \
+             the one argument on this whole surface that a DOCUMENT could not have answered: it \
+             names WHICH document. While it did not exist the driver named this repository's own \
+             kind for every caller — so a run in any other tree was judged by a checker reading \
+             THIS repository's record, and a proposal naming no item of a record is answered `NO`. \
+             This gate is what keeps the key more than a declaration, on its predecessors' terms: \
+             a published argument the host does not READ is a key the surface swallows while the \
+             run reports `ok` — and here that swallowing is item 848 happening silently to a \
+             caller who explicitly asked for it not to. THE OLD SENTENCE FOLLOWS. \
+             ⚠⚠⚠⚠⚠ THE NEWEST TWO WERE `report_progress`'s `id` AND `progress` (item 650), and this \
              gate reaches them for a reason the verbs above it do not have: the only caller is a \
              DRIVER IN ANOTHER PROCESS, so a key this host declared and swallowed would be a \
              counter nobody could ever see move, reported `ok` by both sides. ⚠⚠ `progress` is \

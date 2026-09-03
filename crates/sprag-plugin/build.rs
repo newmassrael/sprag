@@ -42,6 +42,13 @@ const STATECHARTS: &[&str] = &[
     // SIBLING rather than a parent, because a driver cannot reach an `<invoke>`d child (measured;
     // see `probe.rs`). See `debt_loop.scxml`.
     "debt_loop",
+    // ⚠⚠⚠⚠⚠ THE KIND NOBODY HAS CLAIMED, and it is a MACHINE rather than a document for the
+    // reason register item 848 is about: while `debt_loop` was the only compiled kind, *which
+    // kind* could not be a run argument — a key with one legal value is not a choice — so the
+    // driver hardcoded it and every run of the template, in every tree, was judged by THIS
+    // repository's checker against THIS repository's record. A second kind is what makes the
+    // argument real, and this one holds no decisions at all. See `unclaimed_loop.scxml`.
+    "unclaimed_loop",
     // ⚠⚠ A PROBE, and it is in the shipped list on purpose: the question it asks is *does
     // `<invoke>` compile and run in THIS crate*, and a document compiled by some other harness
     // would answer about that harness. See `probe_parent.scxml`.

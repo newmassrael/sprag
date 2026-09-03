@@ -699,6 +699,12 @@ mod tests {
             // machine gains the variant and this gate asks for the road.
             ("orchestration", Road::Bare),
             ("session", Road::Bare),
+            // 🎯🎯🎯 THE KIND NOBODY HAS CLAIMED — register item 848, and it is ANNOUNCED here
+            // rather than absorbed, which is what this pin is for. It goes the same road as the
+            // kind beside it and for the same reason: a `<final>`-only document has nowhere a
+            // transition could live, so W3C SCXML 3.12.2 ignores an unmatched `error.execution`
+            // and the DOOR is what refuses a document whose start-up raised one.
+            ("unclaimed_loop", Road::Door),
         ];
 
         let found = driven();

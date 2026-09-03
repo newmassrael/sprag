@@ -47,6 +47,169 @@ use crate::consent::Consents;
 use crate::outer::{Counted, NotScreenable, OuterLoop};
 use crate::screen::ScreenRules;
 
+/// 🎯🎯🎯🎯🎯 **THE CLAUSES A KIND DOCUMENT MAY HOLD, AS ONE INTERFACE OVER ANY OF THEM** —
+/// register item 848.
+///
+/// # ⚠⚠⚠⚠⚠ Why this had to exist before *which kind* could be a run argument
+///
+/// Codegen emits a POLICY TYPE PER DOCUMENT, so a field typed `Engine<DebtLoopPolicy>` is a struct
+/// that can hold exactly one kind — and while [`LoopKind`] held that field, the driver could only
+/// ever construct that one. A wire key with one legal value is not a choice, which is why the
+/// construction site's own note said naming the kind was scope rather than design, and why the
+/// hardcoding survived: **there was nothing else to name.**
+///
+/// ⚠⚠ What that cost is not a missing feature. `successor_check` — the program that says whether a
+/// run may re-aim itself — is a KIND's clause, and this repository's kind points it at THIS
+/// repository's record. One hardcoded kind therefore meant a run in any other tree would be judged
+/// by a checker that has never heard of it, and refused, because a proposal naming no item of a
+/// record is a `NO`. Item 847 made *nobody classified this* audible; this makes it FALSE for a run
+/// that never asked for a classifier.
+///
+/// # ⚠⚠⚠ Why an interface over the generated accessors rather than a reader per clause
+///
+/// Half of [`LoopKind`]'s readers already go through the script session by id, and those are
+/// document-agnostic already. The other half moved to the GENERATED accessors on purpose
+/// (SCE PR-86's R-86.4, consumed 2026-08-20) — the codegen types the clause from the literal its
+/// author wrote, so a document that spells a number as a word stops compiling instead of reading
+/// back as a surprise. Giving that up to erase one type would trade a compile error for a run-time
+/// one, so what is erased is the ENGINE and not the typing: each policy implements this, and a
+/// method's body is still the accessor codegen wrote for that document.
+///
+/// ⚠⚠⚠ **A CLAUSE A DOCUMENT DOES NOT DECLARE HAS NO ACCESSOR, so its method answers [`None`] —
+/// and that is the one place an implementation can go stale against its document.** It is held by
+/// `a_kind_declares_exactly_what_its_readers_read`, which pins each document's declared ids: a
+/// clause added to a document whose implementation still answers `None` is a red there, naming the
+/// id and the file.
+pub(crate) trait KindDocument {
+    /// The script session the document's `<data>` were evaluated into, or [`None`] for a document
+    /// that opened none — which is [`NoKind::NoDatamodel`] at the door.
+    fn session_id(&self) -> Option<String>;
+    /// `closing_rules`, or [`None`] where this document does not declare it.
+    fn closing_rules(&self) -> Option<String>;
+    /// `working_rules`, or [`None`] where this document does not declare it.
+    fn working_rules(&self) -> Option<String>;
+    /// `unanswered_rule`, or [`None`] where this document does not declare it.
+    fn unanswered_rule(&self) -> Option<String>;
+    /// `unreadable_rule`, or [`None`] where this document does not declare it.
+    fn unreadable_rule(&self) -> Option<String>;
+    /// `unwell_rule`, or [`None`] where this document does not declare it.
+    fn unwell_rule(&self) -> Option<String>;
+    /// `reference`, or [`None`] where this document does not declare it.
+    fn reference(&self) -> Option<String>;
+    /// `works_in`, or [`None`] where this document does not declare it.
+    fn works_in(&self) -> Option<String>;
+    /// `stands_in`, or [`None`] where this document does not declare it.
+    fn stands_in(&self) -> Option<String>;
+    /// `keeps`, or [`None`] where this document does not declare it.
+    fn keeps(&self) -> Option<String>;
+    /// `hold_within_ms`, or [`None`] where this document does not declare it.
+    fn hold_within_ms(&self) -> Option<i64>;
+    /// `reflect_every`, or [`None`] where this document does not declare it.
+    fn reflect_every(&self) -> Option<i64>;
+    /// `context_ceiling`, or [`None`] where this document does not declare it.
+    fn context_ceiling(&self) -> Option<i64>;
+    /// `reflect_after_refusals`, or [`None`] where this document does not declare it.
+    fn reflect_after_refusals(&self) -> Option<i64>;
+}
+
+impl KindDocument for Engine<crate::sm::debt_loop::DebtLoopPolicy> {
+    fn session_id(&self) -> Option<String> {
+        self.policy().session_id.clone()
+    }
+    fn closing_rules(&self) -> Option<String> {
+        self.policy().closing_rules()
+    }
+    fn working_rules(&self) -> Option<String> {
+        self.policy().working_rules()
+    }
+    fn unanswered_rule(&self) -> Option<String> {
+        self.policy().unanswered_rule()
+    }
+    fn unreadable_rule(&self) -> Option<String> {
+        self.policy().unreadable_rule()
+    }
+    fn unwell_rule(&self) -> Option<String> {
+        self.policy().unwell_rule()
+    }
+    fn reference(&self) -> Option<String> {
+        self.policy().reference()
+    }
+    fn works_in(&self) -> Option<String> {
+        self.policy().works_in()
+    }
+    fn stands_in(&self) -> Option<String> {
+        self.policy().stands_in()
+    }
+    fn keeps(&self) -> Option<String> {
+        self.policy().keeps()
+    }
+    fn hold_within_ms(&self) -> Option<i64> {
+        self.policy().hold_within_ms()
+    }
+    fn reflect_every(&self) -> Option<i64> {
+        self.policy().reflect_every()
+    }
+    fn context_ceiling(&self) -> Option<i64> {
+        self.policy().context_ceiling()
+    }
+    fn reflect_after_refusals(&self) -> Option<i64> {
+        self.policy().reflect_after_refusals()
+    }
+}
+
+/// ⚠⚠⚠ **ELEVEN OF THESE FOURTEEN ANSWER `None` BECAUSE THE DOCUMENT DECLARES NOTHING**, which is
+/// the whole of what an unclaimed kind is — not a kind with cautious values, a kind with no values,
+/// so the template's own numbers and the caller's own arguments stand exactly as they would have.
+///
+/// ⚠⚠ Each `None` here is a fact about that file rather than a choice made in Rust, and
+/// `a_kind_declares_exactly_what_its_readers_read` is what keeps it one: the day that document
+/// declares a fourth id, the pin goes red naming it, and this implementation is what the red sends
+/// a reader to.
+impl KindDocument for Engine<crate::sm::unclaimed_loop::UnclaimedLoopPolicy> {
+    fn session_id(&self) -> Option<String> {
+        self.policy().session_id.clone()
+    }
+    fn closing_rules(&self) -> Option<String> {
+        None
+    }
+    fn working_rules(&self) -> Option<String> {
+        None
+    }
+    fn unanswered_rule(&self) -> Option<String> {
+        None
+    }
+    fn unreadable_rule(&self) -> Option<String> {
+        None
+    }
+    fn unwell_rule(&self) -> Option<String> {
+        None
+    }
+    fn reference(&self) -> Option<String> {
+        None
+    }
+    fn works_in(&self) -> Option<String> {
+        None
+    }
+    fn stands_in(&self) -> Option<String> {
+        None
+    }
+    fn keeps(&self) -> Option<String> {
+        None
+    }
+    fn hold_within_ms(&self) -> Option<i64> {
+        None
+    }
+    fn reflect_every(&self) -> Option<i64> {
+        None
+    }
+    fn context_ceiling(&self) -> Option<i64> {
+        None
+    }
+    fn reflect_after_refusals(&self) -> Option<i64> {
+        None
+    }
+}
+
 /// One loop kind's authored decisions, read off its own document.
 ///
 /// It holds the script SESSION rather than the values, for the reason `pump` re-reads the template
@@ -55,11 +218,14 @@ use crate::screen::ScreenRules;
 pub struct LoopKind {
     /// The engine is kept alive because the session id below is only meaningful while it is —
     /// dropping the machine closes the script session and every read after it answers nothing.
-    #[allow(
-        dead_code,
-        reason = "held to keep `session` valid; see the field's own note"
-    )]
-    machine: Engine<crate::sm::debt_loop::DebtLoopPolicy>,
+    ///
+    /// ⚠⚠⚠ **BEHIND [`KindDocument`] RATHER THAN TYPED TO ONE POLICY** — register item 848. While
+    /// this was `Engine<DebtLoopPolicy>` there was exactly one kind a run could be started under,
+    /// so *which kind* could not be an argument and the driver named this repository's own for
+    /// everybody.
+    machine: Box<dyn KindDocument + Send>,
+    /// WHICH kind this is, in the word a caller names it by — see [`LoopKind::named`].
+    named: &'static str,
     script: Arc<dyn IScriptEngine>,
     session: String,
 }
@@ -86,6 +252,13 @@ pub enum NoKind {
     /// [`NoDatamodel`](Self::NoDatamodel): that one says *this was built wrong* and a build fixes
     /// it; this one says *what you wrote did not evaluate* and the author fixes it.
     Faulted(crate::document::Faulted),
+    /// 🎯🎯🎯🎯🎯 **A RUN NAMED A KIND THIS BUILD HAS NO DOCUMENT FOR** — register item 848.
+    ///
+    /// ⚠⚠ It is a REFUSAL rather than a fall-through, and that is the item rather than a taste: the
+    /// state this replaced was a driver naming one kind for every caller, so *anything unrecognised
+    /// runs under this repository's* is exactly the escape hatch that made a checker pointed at
+    /// this repository's record the judge of everybody's work.
+    Unknown(String),
 }
 
 impl std::fmt::Display for NoKind {
@@ -94,6 +267,17 @@ impl std::fmt::Display for NoKind {
             Self::NoDatamodel => f.write_str(
                 "this loop kind's document opened no script session, so it holds no decisions — a \
                  kind must declare `datamodel=\"ecmascript\"`",
+            ),
+            Self::Unknown(named) => write!(
+                f,
+                "no loop kind of this build is called {named:?}, and a run cannot start under a \
+                 document nobody has. What this build holds: {}. ⚠ A kind is not a label — it names \
+                 the checker that decides whether a run may re-aim itself, and a checker reads one \
+                 tree's own record, so falling through to another kind's would have this run judged \
+                 by a document that has never heard of its work. Name {:?} for a run that should \
+                 hold no decisions but the template's and your own",
+                LoopKind::KINDS.join(", "),
+                LoopKind::UNCLAIMED,
             ),
             Self::Faulted(faulted) => write!(
                 f,
@@ -107,6 +291,56 @@ impl std::fmt::Display for NoKind {
 }
 
 impl LoopKind {
+    /// 🎯🎯🎯🎯🎯 **THE KIND WORD A CALLER NAMES `debt_loop.scxml` BY** — register item 848.
+    pub const DEBT: &'static str = "debt";
+
+    /// 🎯🎯🎯🎯🎯 **THE KIND WORD A CALLER NAMES `unclaimed_loop.scxml` BY** — the kind that holds
+    /// no decisions, for a run whose tree has not written one of its own.
+    pub const UNCLAIMED: &'static str = "unclaimed";
+
+    /// **EVERY KIND THIS BUILD CAN START A RUN UNDER**, in the words [`named`](Self::named) takes.
+    ///
+    /// ⚠⚠⚠ **PUBLISHED rather than private**, because the wire's own refusal has to say what the
+    /// legal answers ARE: a door that rejects a word without naming the alternatives sends a caller
+    /// to read the daemon's source, and item 848's whole complaint is about a choice nobody could
+    /// see. It is also what the argument's published grammar is built from, so the list a client is
+    /// shown and the list the door accepts cannot drift.
+    pub const KINDS: &'static [&'static str] = &[Self::DEBT, Self::UNCLAIMED];
+
+    /// 🎯🎯🎯🎯🎯 **THE KIND A RUN NAMED, RESOLVED TO ITS DOCUMENT** — register item 848, and the
+    /// only road a run should reach a kind by.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the absent argument used to mean, and why there is no default here
+    ///
+    /// There was one kind, so the driver named it: every run of the template, in every tree, ran
+    /// under THIS repository's document. That is not a strict default — a kind names the checker
+    /// that decides whether a run may re-aim itself, and this repository's checker reads this
+    /// repository's record, so a run elsewhere would be told *no* by a document that has never
+    /// heard of its work.
+    ///
+    /// ⛔ **SO AN UNKNOWN WORD IS A REFUSAL AND SO IS SILENCE**, and the caller's own door is where
+    /// the second one is answered — this function is never handed a *nothing*. A fall-through here
+    /// would be the escape hatch the whole item is about: *unclassified is a red, not a pass*.
+    ///
+    /// # Errors
+    ///
+    /// [`NoKind::Unknown`] for a word no document answers to, and [`NoKind::NoDatamodel`] /
+    /// [`NoKind::Faulted`] on the terms every kind's own construction states.
+    pub fn named(kind: &str, script: Arc<dyn IScriptEngine>) -> Result<Self, NoKind> {
+        match kind {
+            Self::DEBT => Self::debt(script),
+            Self::UNCLAIMED => Self::unclaimed(script),
+            _ => Err(NoKind::Unknown(kind.to_string())),
+        }
+    }
+
+    /// WHICH KIND THIS IS, in the word [`named`](Self::named) takes — what a run reports it started
+    /// under, so *which document decided this* is answerable from the run rather than from a build.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        self.named
+    }
+
     /// **THE DEBT-REPAYMENT KIND** — `debt_loop.scxml`, this repository's own.
     ///
     /// ⚠ The machine is initialised and never stepped. Its one state is final on entry: a kind is a
@@ -129,13 +363,39 @@ impl LoopKind {
             &crate::act::Serving::new(),
         )
         .map_err(NoKind::Faulted)?;
-        let session = machine
-            .policy()
-            .session_id
-            .clone()
-            .ok_or(NoKind::NoDatamodel)?;
+        Self::over(Box::new(machine), Self::DEBT, script)
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE KIND NOBODY HAS CLAIMED** — `unclaimed_loop.scxml`, and the second legal
+    /// answer that makes *which kind* a question at all (register item 848).
+    ///
+    /// ⚠⚠ It holds NO decisions, so a run started under it gets the template's own values and the
+    /// caller's own arguments and nothing else — in particular no checker, which is what makes item
+    /// 847's *nobody classified this* a true sentence about a real run instead of about a fixture.
+    ///
+    /// # Errors
+    ///
+    /// [`debt`](Self::debt)'s exactly, about this document.
+    pub fn unclaimed(script: Arc<dyn IScriptEngine>) -> Result<Self, NoKind> {
+        let machine = crate::document::opened(
+            crate::sm::unclaimed_loop::UnclaimedLoopPolicy::new(Arc::clone(&script)),
+            &crate::act::Serving::new(),
+        )
+        .map_err(NoKind::Faulted)?;
+        Self::over(Box::new(machine), Self::UNCLAIMED, script)
+    }
+
+    /// The half every kind's constructor shares: take the session the document evaluated its
+    /// clauses into, or refuse a document that opened none.
+    fn over(
+        machine: Box<dyn KindDocument + Send>,
+        named: &'static str,
+        script: Arc<dyn IScriptEngine>,
+    ) -> Result<Self, NoKind> {
+        let session = machine.session_id().ok_or(NoKind::NoDatamodel)?;
         Ok(Self {
             machine,
+            named,
             script,
             session,
         })
@@ -175,10 +435,7 @@ impl LoopKind {
         // ⚠ EMPTY READS AS NOTHING, which the generated accessor does not decide: the template
         // ships `''` for the slots a kind may fill, so *declared but empty* is *this document adds
         // nothing*. That polarity belongs to this reader, not to codegen.
-        self.machine
-            .policy()
-            .closing_rules()
-            .filter(|said| !said.is_empty())
+        self.machine.closing_rules().filter(|said| !said.is_empty())
     }
 
     /// **THE RULES EVERY SESSION OF THIS KIND WORKS UNDER**, or [`None`] for a kind that holds its
@@ -206,10 +463,7 @@ impl LoopKind {
         // ⚠ EMPTY READS AS NOTHING, on `closing_rules`' own polarity: the template ships `''` for
         // the slots a kind may fill, so *declared but empty* is *this document holds its runs to
         // nothing*.
-        self.machine
-            .policy()
-            .working_rules()
-            .filter(|said| !said.is_empty())
+        self.machine.working_rules().filter(|said| !said.is_empty())
     }
 
     /// ⛔⛔⛔⛔⛔ **WHAT THIS KIND DOES ABOUT A CHECKER THAT SAID NOTHING READABLE** — register item
@@ -233,7 +487,7 @@ impl LoopKind {
     /// [`NotScreenable`] when the document holds exactly one of the two, naming the empty one — a
     /// half-authored decision is the state this type exists to make unrepresentable.
     pub fn unverified_rules(&self) -> Result<Option<crate::outer::UnverifiedRules>, NotScreenable> {
-        let policy = self.machine.policy();
+        let policy = &self.machine;
         let unanswered = policy.unanswered_rule().filter(|said| !said.is_empty());
         let unreadable = policy.unreadable_rule().filter(|said| !said.is_empty());
         // ⚠⚠⚠ THE THIRD, REGISTER ITEM 752 — see [`crate::judge::Silence::Unwell`]. It joins the
@@ -280,10 +534,7 @@ impl LoopKind {
     /// has learnt nothing yet begins.
     #[must_use]
     pub fn reference(&self) -> Option<String> {
-        self.machine
-            .policy()
-            .reference()
-            .filter(|said| !said.is_empty())
+        self.machine.reference().filter(|said| !said.is_empty())
     }
 
     /// **WHAT MAKES A PANE READY FOR THIS KIND'S FIRST PROMPT**, or [`None`] for a kind that names
@@ -413,7 +664,7 @@ impl LoopKind {
     /// *hold this run and end it at once* is `cancel` spelled wrong.
     #[must_use]
     pub fn hold_within_ms(&self) -> Option<i64> {
-        self.machine.policy().hold_within_ms()
+        self.machine.hold_within_ms()
     }
 
     /// **WHERE A RUN OF THIS KIND WORKS**, or [`None`] for a kind that does not care where its
@@ -439,10 +690,7 @@ impl LoopKind {
     /// passes.
     #[must_use]
     pub fn works_in(&self) -> Option<String> {
-        self.machine
-            .policy()
-            .works_in()
-            .filter(|said| !said.is_empty())
+        self.machine.works_in().filter(|said| !said.is_empty())
     }
 
     /// **WHICH WINDOW A RUN OF THIS KIND STANDS IN**, or [`None`] for a kind that does not care
@@ -473,10 +721,7 @@ impl LoopKind {
     /// other repositories copy — and it means no check at all rather than a check that passes.
     #[must_use]
     pub fn stands_in(&self) -> Option<String> {
-        self.machine
-            .policy()
-            .stands_in()
-            .filter(|said| !said.is_empty())
+        self.machine.stands_in().filter(|said| !said.is_empty())
     }
 
     /// **WHICH DIMENSION A RUN OF THIS KIND MUST KEEP WHOLE**, or [`None`] for a kind that does not
@@ -507,10 +752,7 @@ impl LoopKind {
     /// all** rather than a check that passes.
     #[must_use]
     pub fn keeps(&self) -> Option<String> {
-        self.machine
-            .policy()
-            .keeps()
-            .filter(|said| !said.is_empty())
+        self.machine.keeps().filter(|said| !said.is_empty())
     }
 
     /// **HOW MANY TURNS A RUN OF THIS KIND MAY TAKE**, or [`None`] where this kind says nothing and
@@ -542,7 +784,7 @@ impl LoopKind {
     /// naming a cadence asks for a loop that runs for ever and never improves itself.
     #[must_use]
     pub fn reflect_every(&self) -> Option<i64> {
-        self.machine.policy().reflect_every()
+        self.machine.reflect_every()
     }
 
     /// **HOW MUCH A SESSION OF THIS KIND MAY HAVE READ** before the next milestone is taken in a
@@ -565,7 +807,7 @@ impl LoopKind {
     /// the word `never` beside it would be two spellings of one decision.
     #[must_use]
     pub fn context_ceiling(&self) -> Option<i64> {
-        self.machine.policy().context_ceiling()
+        self.machine.context_ceiling()
     }
 
     /// **HOW MANY TIMES IN A ROW A CHECK MAY REFUSE A RUN OF THIS KIND'S CLAIM** before it stops
@@ -595,7 +837,7 @@ impl LoopKind {
     /// has a spelling and a second one would be two ways to say the same thing.
     #[must_use]
     pub fn reflect_after_refusals(&self) -> Option<i64> {
-        self.machine.policy().reflect_after_refusals()
+        self.machine.reflect_after_refusals()
     }
 
     /// 🎯🎯🎯🎯🎯 **HOW FAR A RUN OF THIS KIND MAY RE-AIM ITSELF AWAY FROM THE CHECKPOINT IT WAS
@@ -1415,6 +1657,195 @@ mod tests {
             held > 0,
             "⚠⚠ zero is `cancel` spelled wrong and the door refuses it, so a document that meant \
              it has said something no run can obey: {held}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **EVERY WORD THIS BUILD PUBLISHES AS A KIND OPENS A DOCUMENT** — register item
+    /// 848, and the control on everything below it.
+    ///
+    /// [`LoopKind::KINDS`] is what the wire's grammar publishes and what a client is shown, and
+    /// [`LoopKind::named`] is what the door resolves. A word in one and not the other is an agent
+    /// building a call from the published vocabulary that this daemon then refuses — a defect this
+    /// workspace has already met once, at `done_when`'s `settles`.
+    #[test]
+    fn every_kind_word_this_build_publishes_is_one_a_run_can_start_under() {
+        assert!(
+            LoopKind::KINDS.len() >= 2,
+            "⛔⛔⛔ ITEM 848's OWN PREMISE: with one legal value, *which kind* is not a question a \
+             caller can answer — it is a key that can only be spelled one way, which is the \
+             hardcoded default wearing an argument's clothes",
+        );
+        for word in LoopKind::KINDS {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let kind = LoopKind::named(word, lua).unwrap_or_else(|why| {
+                panic!(
+                    "⛔ the grammar publishes {word:?} as a kind a caller may name, and the door \
+                     answers: {why}"
+                )
+            });
+            assert_eq!(
+                kind.name(),
+                *word,
+                "⚠⚠ a kind that reports a different word than the one it was asked for makes \
+                 *which document decided this* unanswerable from the run",
+            );
+        }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A WORD NO DOCUMENT ANSWERS TO IS REFUSED, AND THE REFUSAL NAMES THE
+    /// ALTERNATIVES** — register item 848's second clause.
+    ///
+    /// ⛔ The state this replaced was a driver that named one kind for every caller, so *anything
+    /// unrecognised runs under this repository's* is exactly the escape hatch the item is about:
+    /// **an unclassified run is a red rather than a pass.**
+    #[test]
+    fn a_kind_nobody_wrote_a_document_for_is_refused_by_name() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let why = LoopKind::named("feature", lua)
+            .err()
+            .expect("⛔⛔⛔ ITEM 848: a kind word this build has no document for must not resolve");
+        assert_eq!(why, NoKind::Unknown("feature".to_string()));
+        let said = why.to_string();
+        for word in LoopKind::KINDS {
+            assert!(
+                said.contains(word),
+                "⚠⚠ a door that rejects a word without naming the legal ones sends a caller to \
+                 read this daemon's source, which is the invisible choice item 848 is about. \
+                 Missing {word:?} from: {said}",
+            );
+        }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE UNCLAIMED KIND NAMES NO CHECKER, AND THAT IS THE CLAUSE ITEM 848 IS
+    /// ABOUT** — what makes item 847's *nobody classified this* a true sentence about a real run
+    /// rather than about a fixture.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the hardcoded kind did to a run in another tree
+    ///
+    /// `successor_check` is a PROGRAM, and this repository's kind points it at this repository's
+    /// own record by absolute path. A run elsewhere, judged by it, proposes work that names no item
+    /// of that record — and the checker's answer for that is `NO`. So the silent default was not a
+    /// stricter setting: it was a run refused its own work by a document that has never heard of
+    /// it. The unclaimed kind names no checker at all, which is the honest state for a tree that
+    /// has not written one.
+    ///
+    /// ⚠⚠ Both directions are asserted in one test on purpose: *this kind is empty* is only
+    /// meaningful beside *and the other one is not*, which is the vacuous-green shape this
+    /// workspace keeps meeting (item 799).
+    #[test]
+    fn the_unclaimed_kind_names_no_checker_where_this_repositorys_does() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let unclaimed = LoopKind::unclaimed(lua).expect("the unclaimed kind's document must open");
+        assert_eq!(
+            unclaimed.successor_check(),
+            None,
+            "⛔⛔⛔ ITEM 848: a kind that holds no decisions must hold no CHECKER, or a run that \
+             asked to be governed by nothing is governed by whatever this clause names",
+        );
+        let mine = debt().successor_check().expect(
+            "⚠⚠ the control: this repository's own kind DOES name one, or the assertion above is \
+             green because nothing anywhere names a checker",
+        );
+        assert!(
+            mine.contains("--admits"),
+            "⚠ the control's control — this repository's checker is the classifier item 839 built, \
+             and a kind naming some other program would make the comparison above meaningless: \
+             {mine}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AND IT HOLDS NOTHING ELSE EITHER** — register item 848, sweeping the class
+    /// rather than the instance above.
+    ///
+    /// A kind that answered *no checker* while quietly carrying this repository's standing yesses,
+    /// working rules, ceilings or window would be the same defect one clause over. Every reader
+    /// [`LoopKind`] has is asked, and the ones that can refuse are asked through their refusal.
+    #[test]
+    fn the_unclaimed_kind_decides_nothing_at_all() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = LoopKind::unclaimed(lua).expect("the unclaimed kind's document must open");
+        // ⚠ The three ids it DOES declare are declared EMPTY, and empty reads as *this document
+        // adds nothing* — the polarity every reader here already applies.
+        assert_eq!(
+            kind.consents().expect("an empty list is readable"),
+            None,
+            "⛔ a standing yes here would authorise every unclaimed run, for everybody",
+        );
+        assert_eq!(
+            kind.screen_rules().expect("an empty list is readable"),
+            None,
+            "⛔ a standing instruction here would be typed into the next author's agent",
+        );
+        assert_eq!(
+            kind.ready_when()
+                .expect("a document that names no barrier is readable"),
+            None,
+        );
+        assert_eq!(kind.closing_rules(), None);
+        assert_eq!(kind.working_rules(), None);
+        assert_eq!(
+            kind.unverified_rules()
+                .expect("a document that declares none of the three is not half-authored"),
+            None,
+        );
+        assert_eq!(kind.reference(), None);
+        assert_eq!(kind.milestone_check(), None);
+        assert_eq!(kind.reask_max(), None);
+        assert_eq!(kind.reaim_max(), None);
+        assert_eq!(kind.turn_budget(), None);
+        assert_eq!(kind.reflect_every(), None);
+        assert_eq!(kind.context_ceiling(), None);
+        assert_eq!(kind.reflect_after_refusals(), None);
+        assert_eq!(kind.hold_within_ms(), None);
+        assert_eq!(kind.service_outage(), None);
+        assert_eq!(kind.works_in(), None);
+        assert_eq!(kind.stands_in(), None);
+        assert_eq!(kind.keeps(), None);
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A KIND DECLARES EXACTLY WHAT ITS READERS READ** — register item 848, and the one
+    /// place a [`KindDocument`] implementation can go stale against its own document.
+    ///
+    /// Codegen emits an accessor per declared `<data>`, so a clause a document does not declare has
+    /// no accessor and its method is written `None` BY HAND. That hand-written `None` is a fact
+    /// about the file — until somebody adds the clause to the file and not to the implementation,
+    /// at which point the document says one thing and every run reads another, silently.
+    ///
+    /// ⚠⚠ So the declared ids are PINNED per document, read as text off the file an author edits.
+    /// A clause added anywhere goes red here naming the id, and the red's remedy is the
+    /// implementation beside it.
+    #[test]
+    fn a_kind_declares_exactly_what_its_readers_read() {
+        /// Every `<data id="…">` a document declares, in the order the file has them.
+        fn declared(document: &str) -> Vec<String> {
+            document
+                .match_indices("<data id=\"")
+                .filter_map(|(at, opener)| {
+                    document[at + opener.len()..]
+                        .split_once('"')
+                        .map(|(id, _)| id.to_string())
+                })
+                .collect()
+        }
+
+        let unclaimed = declared(include_str!("unclaimed_loop.scxml"));
+        assert_eq!(
+            unclaimed,
+            ["may_answer", "screen_rules", "judged_rules"],
+            "⛔⛔⛔⛔⛔ ITEM 848: `unclaimed_loop.scxml`'s clauses moved, and its `KindDocument` \
+             implementation answers `None` for every id it does not declare BY HAND. A clause \
+             added to that document with no reader beside it is a decision an author wrote and no \
+             run will ever read. Add the accessor to the implementation, then move this pin",
+        );
+        // ⚠ The control: the pin above is only meaningful while a document that DOES declare its
+        // clauses is read by the same needle. This repository's own kind is that document, and the
+        // count is what says the reader still sees what it used to.
+        let mine = declared(include_str!("debt_loop.scxml"));
+        assert_eq!(
+            mine.len(),
+            26,
+            "⚠⚠ the needle stopped seeing this repository's own kind, so the assertion above is \
+             green about a document nobody read: {mine:?}",
         );
     }
 }

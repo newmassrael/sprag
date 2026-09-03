@@ -77,6 +77,13 @@ pub(crate) mod sm {
         include!(concat!(env!("OUT_DIR"), "/debt_loop_sm.include.rs"));
     }
 
+    // ⚠⚠ THE KIND NOBODY HAS CLAIMED — the line above's sibling, and the reason it exists is that
+    // a kind with no second kind beside it cannot be NAMED by a caller. See `unclaimed_loop.scxml`.
+    pub(crate) mod unclaimed_loop {
+        #![allow(unused_imports)]
+        include!(concat!(env!("OUT_DIR"), "/unclaimed_loop_sm.include.rs"));
+    }
+
     // ⚠⚠⚠ THE `<invoke>` PROBE, and its MODULE NAMES ARE A CONTRACT rather than a preference: the
     // generated parent reaches its child as `super::probe_child_sm::ProbeChildPolicy`, so a
     // statechart that invokes another must be included under `<stem>_sm`. The three above are named

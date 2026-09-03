@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  THE LOOP KIND NO REPOSITORY HAS CLAIMED YET — a kind that decides NOTHING,
+  and exists so that *which kind* can be a run argument with more than one
+  legal answer.
+
+  ══════════════════════════════════════════════════════════════════════════
+
+  ⚠⚠⚠ WHAT THIS FILE IS FOR. `ai_loop.scxml` is a TEMPLATE, and beside it
+  stands one document per KIND holding the decisions the template must not
+  make. Until this file existed there was exactly ONE kind, which meant the
+  driver could hardcode it and no caller could name one — so every run of the
+  template, in every tree, ran under the one kind that exists, whoever its
+  author was and whatever work it was doing.
+
+  ⚠⚠⚠⚠⚠ AND A KIND IS NOT AN INERT LABEL. A kind names the checker that says
+  whether a run may re-aim itself, and such a checker reads ONE tree's own
+  record. A run of some other tree, judged by a checker pointed at a record it
+  is not about, is not a run with a stricter setting — it is a run being told
+  *no* by a document that has never heard of it. That is what one hardcoded
+  kind cost, and this file is half of what makes the kind nameable instead.
+
+  ⚠⚠⚠ WHAT THIS DOCUMENT DECIDES: NOTHING. Every clause a kind may hold is
+  either absent here or declared empty. It is the honest answer for an author
+  who has not yet written a kind of their own — such a run inherits the
+  template's own values, and it inherits nobody else's standing yesses,
+  working rules, checkers or ceilings.
+
+  ⚠⚠ SO A RUN OF THIS KIND IS UNCHECKED, AND SAYS SO. With no checker named,
+  nothing classifies what such a run proposes to work on next — the template
+  counts those adoptions and its own closing line reports them, which is the
+  point of naming this kind rather than falling through to somebody else's.
+
+  ⚠ IT IS NOT A PLACEHOLDER TO BE FILLED IN. An author who wants decisions
+  writes their OWN document beside this one and names that kind instead;
+  editing this file would put one author's decisions back into the file every
+  unclaimed run reads, which is the hazard the split exists to end.
+
+  ══════════════════════════════════════════════════════════════════════════
+
+  ⚠⚠ WHAT THIS FILE IS NOT. It is not a second topology, for the reason the
+  kind beside it gives at length: a KIND is a datamodel, and what separates one
+  from another is consents, standing instructions and prompt wording, never the
+  order of the states. The state is final on entry and nobody steps it.
+
+  ⚠⚠⚠ THE THREE IDS BELOW ARE DECLARED AND EMPTY RATHER THAN ABSENT, on the
+  rule the template is held to by
+  `a_template_names_nothing_of_this_repository_and_decides_nothing_for_the_next_one`:
+  deleting a declaration is the cheap way to make that gate green and it breaks
+  what the gate is for. Empty is a decision anybody can read; absent is a
+  question nobody asked.
+
+  ⚠⚠⚠⚠⚠ THIS DOCUMENT ANSWERS NO ERROR OF ITS OWN, and says so here rather
+  than leaving a reader to wonder — the reason is the one written out beside
+  its sibling: a `<final>`-only document has nowhere a transition could live,
+  W3C SCXML 3.12.2 then ignores an unmatched `error.execution`, and the answer
+  is therefore the door's. `document::opened` refuses a document whose start-up
+  raised an error nobody answered.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="unclaimed_loop"
+       datamodel="ecmascript"
+       initial="decided">
+
+  <datamodel>
+    <!--
+      ⚠⚠⚠ WHICH DIALOGS A RUN OF THIS KIND MAY ANSWER *YES* TO: NONE.
+
+      A clause here would be a standing yes authorising every unclaimed run, in
+      every tree, until somebody edited this file — and the people it would
+      authorise are people this author has never met. A caller who needs one
+      names it on their own run, where it authorises that run and no other.
+    -->
+    <data id="may_answer" expr="[]"/>
+
+    <!--
+      ⚠⚠⚠ WHAT A RUN OF THIS KIND IS REDIRECTED TO MID-FLIGHT: NOTHING.
+
+      A standing instruction is written in one author's own language and typed
+      into the next author's agent. It is the weakest of the three — the act's
+      first key is a refusal, so it can never grant anything — and it is empty
+      here because refusing on somebody's behalf is still deciding on their
+      behalf.
+    -->
+    <data id="screen_rules" expr="[]"/>
+
+    <!--
+      ⚠⚠⚠ WHICH BLOCKED TURNS GET A SECOND AGENT'S OPINION: NONE.
+
+      A criterion here is a standing judgement AND a paid model call per
+      blocked turn. A run that did not ask for a second agent must not acquire
+      one by naming a kind that had not thought about it.
+    -->
+    <data id="judged_rules" expr="[]"/>
+  </datamodel>
+
+  <!--
+    Nothing happens here. The datamodel above IS this document — three empty
+    lists and no fourth clause — and the driver reads it without ever stepping
+    the machine.
+  -->
+  <final id="decided"/>
+</scxml>

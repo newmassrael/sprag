@@ -2215,6 +2215,35 @@ impl PluginGrammar {
     pub const AI_LOOP_FORM: CallForm = CallForm::object(&[
         Self::selected_by(Self::AI_LOOP),
         ArgGrammar::open("pane", "int"),
+        // 🎯🎯🎯🎯🎯 WHICH KIND'S DECISIONS THIS RUN RUNS UNDER — register item 848, and the wire
+        // bump the construction site had been promising since the kind document split off. Its own
+        // note said *there is one kind, so naming it would be a key with one legal value — the day
+        // a second kind exists, that bump is what pays for it*, and `unclaimed_loop.scxml` is that
+        // day.
+        //
+        // ⛔⛔⛔⛔⛔ REQUIRED, AND THE ABSENT DEFAULT IS WHAT THIS KEY EXISTS TO DELETE. A kind names
+        // the checker that decides whether a run may re-aim itself onto something it found, and
+        // such a checker reads ONE tree's own record. While the driver hardcoded this repository's
+        // kind, every run of the template — in any tree, for any author — was judged against THIS
+        // repository's record, and a proposal naming no item of a record is answered `NO`. So the
+        // silent default was not a strict setting: it was a run being refused its own work by a
+        // document that has never heard of it. `unclaimed` is the honest answer for a caller who
+        // holds no decisions of their own; there is no answer for a caller who said nothing,
+        // because *unclassified is a red rather than a pass*.
+        //
+        // ⚠⚠⚠⚠⚠ AND THIS ONE EARNS THE `WIRE_PROTOCOL` NUMBER WHERE ITEMS 492 AND 494's DID NOT.
+        // Their measurement was *no release, no tag, so no daemon predating the key exists to
+        // swallow it*; the rule they were measuring against is `CLIENT_BUILD_PARAM`'s — an unknown
+        // argument is SWALLOWED, so the number moves when something WAITS ON THE FACT. What waits
+        // on this one is which document judges the run: a caller naming `unclaimed` to a daemon
+        // that predates this key is answered `accepted` and gets a run under this repository's
+        // kind, which is item 848 happening SILENTLY to somebody who explicitly asked for it not
+        // to. The handshake refusing that daemon outright is the honest failure.
+        ArgGrammar::one_of(
+            crate::plugins::LOOP_KIND_KEY,
+            "string",
+            sprag_plugin::kind::LoopKind::KINDS,
+        ),
         ArgGrammar::open("north_star", "string"),
         ArgGrammar::open("milestone", "string"),
         // ⚠⚠⚠⚠⚠ DECLINABLE SINCE ITEM 738, and for `max_turns`' reason at a string instead of a
@@ -9552,7 +9581,10 @@ mod tests {
         // `verdict:peer_gone` earned a number for.
         // ⚠ It is the first word here NO PLUGIN can produce: the driver composes it, which is
         // why the request-side pins above stayed green while this one went red.
-        43,
+        // ⚠ 44: re-stamped with every published ANSWER vocabulary unchanged. Register item 848's
+        // `loop_kind` is a REQUEST word — a caller says it and nothing answers with it — so the
+        // two request-side pins are the ones that moved and this one had nothing to walk.
+        44,
         &[
             "check:pane-isolation",
             "check:pane-admission",
@@ -10140,7 +10172,11 @@ mod tests {
             // ⚠ 43: re-stamped with every published REQUEST vocabulary unchanged. Register item
             // 680's `verdict:failed` is an ANSWER word — a journal line's, composed by the driver —
             // and nothing a caller may SAY moved. The value-space pin is the one that saw it.
-            43,
+            // 🎯 44 — REGISTER ITEM 848: `loop_kind=debt,unclaimed` is a request vocabulary this
+            // pin walks, and it is the rare one that MOVED the number rather than riding R342's
+            // rule. See the entry beside the `run` verb above for why a required argument breaks
+            // that rule's own condition.
+            44,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -10231,8 +10267,16 @@ mod tests {
                 // rule): a client that never heard of the word cannot send it, and one that sends
                 // it to an older daemon meets a vocabulary refusal at the door rather than a run
                 // that quietly does something else.
+                // 🎯🎯🎯🎯🎯 AND `loop_kind` IS THE NEWEST CLOSED VOCABULARY HERE — register item
+                // 848. It is the one that does NOT leave the number standing, and the reason is
+                // the rule's own condition rather than an exception to it: R342 lets a widened
+                // value space go free because *a client that never heard of the word cannot send
+                // it*, and this word arrived with a REQUIRED argument. A client that never heard
+                // of it sends nothing, an older daemon swallows the key from a client that has,
+                // and the run it starts is judged by a document the caller did not choose.
                 "sprag_workspace/sprag_plugins/run:done_when=exits,settles \
-                 format_a=text,claude_json format_b=text,claude_json plugin=agent plugin=ai_loop \
+                 format_a=text,claude_json format_b=text,claude_json loop_kind=debt,unclaimed \
+                 plugin=agent plugin=ai_loop \
                  plugin=answer plugin=dialogue plugin=orchestrator plugin=pipe",
                 // ⚠ A NEW ADDRESS WITH NO CLOSED VOCABULARY OF ITS OWN — it takes a run id and
                 // nothing an agent has to choose a word for. It appears here because the pin is over
@@ -10465,7 +10509,10 @@ mod tests {
             // ⚠ 43: re-stamped with every published argument shape unchanged. Register item 680
             // added a WORD to an answer's closed set and no form at all — there is nothing here for
             // this pin to walk.
-            43,
+            // 🎯 44 — REGISTER ITEM 848: the `ai_loop` form gained `loop_kind:string`, REQUIRED,
+            // and this pin is the one a caller's own call shape is built from. It is the third
+            // required key that form has ever had, and the only one no kind document could answer.
+            44,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -10598,7 +10645,7 @@ mod tests {
                 // that reads a hold at all — so publishing it on the other forms would advertise an
                 // argument they swallow, which is what `a_declared_argument_is_one_the_plugin_host_
                 // reads` exists to refuse.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int north_star:string milestone:string reference:string? max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int loop_kind:string north_star:string milestone:string reference:string? max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two
@@ -11107,7 +11154,10 @@ mod tests {
         // (`failed`) rides the journal object this wire has served since 27, at addresses that did
         // not move. This pin walks ADDRESSES — its named blind spot — and the value-space pin is
         // what went red by name first.
-        43,
+        // ⚠ 44 — REGISTER ITEM 848: re-stamped with the SURFACE unchanged. `loop_kind` is an
+        // ARGUMENT on a form the `run` address already served, so no address was added, removed or
+        // re-typed. The shape pin and the value-space pin are the two that saw it.
+        44,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

@@ -26112,7 +26112,15 @@ mod tests {
     /// the gate below forbids a template to hold. This says who a FILE is written for, which is
     /// authorship rather than anything a run does, and `build.rs`'s `STATECHARTS` is the same kind of
     /// decision in the same kind of place.
-    const TEMPLATES: &[&str] = &["ai_loop"];
+    ///
+    /// 🎯🎯🎯🎯🎯 **`unclaimed_loop` IS A TEMPLATE BY THE ONLY TEST THAT MATTERS HERE — WHOSE RUNS
+    /// READ IT** — register item 848. It is not copied the way `ai_loop` is; it is NAMED, by a
+    /// caller in any tree, and a run of it is then governed by whatever this file holds. That is
+    /// the same hazard word for word: a standing yes written here would authorise runs whose
+    /// authors this repository has never met, and a clause filled here would decide for them. So it
+    /// takes the same two checks, and the classification is about the DIRECTION a document's
+    /// decisions travel rather than about whether anybody copies the bytes.
+    const TEMPLATES: &[&str] = &["ai_loop", "unclaimed_loop"];
 
     /// This repository's OWN documents: the substrate (`orchestration` is the Driver's run
     /// lifecycle, `session` an endpoint's), what a run learned about its sessions
