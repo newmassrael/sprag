@@ -6642,8 +6642,39 @@ fn render_run(run: &Value) -> String {
             let output = state["output"]
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
+            // 🎯🎯🎯🎯🎯 AND WHAT HAPPENS NEXT — register item 827, in the same place and under the
+            // same constraint as the clauses above.
+            //
+            // ⛔⛔⛔ THE MEASUREMENT. Item 798 paid *the ending reaches a person* and said in its
+            // own body that it was not paying *what somebody then does about it*. On 2026-09-02 a
+            // sprag run ended at 08:10:18 and the next driver started **three hours forty-nine
+            // minutes** later, while two other repositories were re-launched inside three minutes.
+            // The ending was on a screen the whole time. What was missing was not reach — 798
+            // bought that — it was an answer to *and now what*, which lived in three of the six
+            // outcomes' DOC COMMENTS and nowhere a reader could ask.
+            //
+            // ⚠⚠ ASKED OF THE TYPE, never spelled here — `outcome_word`'s own rule, and the reason
+            // this clause is three lines rather than a `match` on words. `Disposition` walks
+            // `OutcomeState::EVERY_SHAPE`, so the classification lives in exactly one place; a
+            // second opinion in this binary is item 686's class and items 855 and 864's defect.
+            //
+            // ⚠⚠⚠ AND AN UNCLASSIFIED ENDING IS SAID, NOT SKIPPED. A word no disposition covers is
+            // a seventh outcome that reached the wire without anybody deciding what to do about it
+            // — which is precisely the state item 827 was filed on. Silence here would render that
+            // state as *nothing to do*, inventing the answer the item says must be recorded.
+            let disposition = outcome["state"].as_str().map_or_else(String::new, |word| {
+                sprag_plugin::driver::Disposition::of_outcome_word(word).map_or_else(
+                    || {
+                        format!(
+                            "\n  ⚠ NOTHING HAS CLASSIFIED what happens next after an ending \
+                             spelled {word:?}, so this row cannot tell you — register item 827"
+                        )
+                    },
+                    |next| format!("\n  {}", next.describe()),
+                )
+            });
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{order}{walk_to}{briefed}{prompts}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.

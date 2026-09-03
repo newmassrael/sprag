@@ -15340,6 +15340,98 @@ fn a_launcher_is_told_this_daemon_cannot_take_its_call_before_any_run_exists() {
     );
 }
 
+/// 🎯🎯🎯🎯🎯 **A FINISHED RUN'S ROW SAYS WHAT HAPPENS NEXT, AND TWO ENDINGS SAY DIFFERENT
+/// THINGS** — register item 827.
+///
+/// # What was measured, and what the missing sentence cost
+///
+/// Item 798 paid *the ending reaches a person*. Item 827 measured the half it deliberately left
+/// empty: on 2026-09-02 a sprag run ended at 08:10:18 and the next driver started **three hours
+/// forty-nine minutes** later, while two other repositories were re-launched inside three minutes.
+/// The ending was on a screen the whole time — reach was not what was missing.
+///
+/// What was missing is an answer to *and now what*, and it existed only as prose in three of the
+/// six outcomes' doc comments. `Disposition` moved it somewhere a caller can ask; this gate is
+/// whether the row a person actually reads carries it.
+///
+/// # ⚠⚠ ONE WORD APART, AND THE TWO ROWS MUST NOT SAY THE SAME THING
+///
+/// Both launches are the same command line but for the sentinel. One ending is `exhausted` and one
+/// is `converged`, and the whole claim is that a reader is told to do DIFFERENT things about them —
+/// the same brief again, versus a new brief. A gate that only checked each row mentions *something*
+/// would pass a build whose classification was constant, which is item 847's middle exactly.
+#[test]
+fn a_finished_runs_row_says_what_happens_next() {
+    let (_guard, sock, pane) = daemon_with_one_pane("disposition");
+    let pane = pane.to_string();
+    // The stimulus prints this, so a run watching for it CONVERGES and a run watching for
+    // something else runs out its clock. That word is the only difference between the two.
+    const PRINTED: &str = "SEEN-BY-THIS-GATE";
+    const NEVER: &str = "A SENTINEL THIS PANE NEVER PRINTS";
+    let launch = |sentinel: &str| {
+        sprag(
+            &sock,
+            &[
+                "orchestrate",
+                "orchestrator",
+                "-t",
+                "work",
+                "--pane",
+                &pane,
+                "--stimulus",
+                &format!("echo {PRINTED}"),
+                "--sentinel",
+                sentinel,
+                "--max-seconds",
+                "3",
+                "--wait",
+            ],
+        )
+    };
+
+    // ── ① THE CLOCK BOUND IT: the work is unfinished and no person is needed ────────────────
+    let ceilinged = launch(NEVER);
+    assert!(ceilinged.ok, "the run started: {}", ceilinged.stderr);
+    assert!(
+        ceilinged.stdout.contains("exhausted"),
+        "a sentinel this pane never prints leaves the clock to end it: {}",
+        ceilinged.stdout,
+    );
+    assert!(
+        ceilinged.stdout.contains("THE SAME WORK"),
+        "⛔ the row does not say what happens next after an ending — which is the whole of item \
+         827: {}",
+        ceilinged.stdout,
+    );
+
+    // ── ② IT DID WHAT IT WAS ASKED: anything next is a different brief ─────────────────────
+    let converged = launch(PRINTED);
+    assert!(converged.ok, "the run started: {}", converged.stderr);
+    assert!(
+        converged.stdout.contains("converged"),
+        "the pane prints this sentinel, so the run reaches its goal: {}",
+        converged.stdout,
+    );
+    assert!(
+        converged.stdout.contains("DIFFERENT WORK"),
+        "⛔ a converged run is not *nothing happens* — item 827 measured three of them followed by \
+         another run inside minutes, and this row is where that is said: {}",
+        converged.stdout,
+    );
+
+    // ── ③ AND THE TWO ROWS SAY DIFFERENT THINGS ────────────────────────────────────────────
+    //
+    // Without this, a build whose every ending answered the same would pass ① and ② by carrying
+    // both sentences on every row — green at both ends with the claim missing in the middle.
+    assert!(
+        !ceilinged.stdout.contains("DIFFERENT WORK") && !converged.stdout.contains("THE SAME WORK"),
+        "⚠⚠ THE TWO ENDINGS ARE CLASSIFIED THE SAME, so the row is decoration and not an answer.\n\
+         exhausted row: {}\nconverged row: {}",
+        ceilinged.stdout,
+        converged.stdout,
+    );
+}
+
 /// ⚠⚠ **THE TWO FLAGS THIS COMMAND OWNS CONTRADICT EACH OTHER, AND IT SAYS SO** — item 855.
 ///
 /// `--wait` parks until a run ends; `--dry-run` starts none. A command line carrying both has no

@@ -438,6 +438,168 @@ impl OutcomeState {
         "blocked",
         "taken_over",
     ];
+
+    /// ONE VALUE OF EVERY SHAPE this type has, so a walk can put a question to each of them.
+    ///
+    /// ⚠ Hand-built for the reason [`WIRE_WORDS`](Self::WIRE_WORDS) is hand-ordered — the variants
+    /// carry data — and held to that list by the gate beside this type, so a seventh outcome
+    /// escapes neither. What the carried values are does not matter to any walk that uses this:
+    /// every question asked of it here is answered by the VARIANT.
+    pub const EVERY_SHAPE: &'static [Self] = &[
+        Self::Converged,
+        Self::Exhausted(Ceiling::Iterations),
+        Self::Failed,
+        Self::Cancelled,
+        Self::Blocked(None),
+        Self::TakenOver(None),
+    ];
+
+    /// **WHAT SHOULD HAPPEN NEXT to a run that ended this way** — register item 827.
+    ///
+    /// # 🎯 The half item 798 named and left empty on purpose
+    ///
+    /// 798 paid *the ending reaches a person* and wrote down, in its own body, that it was not
+    /// paying *what somebody then does about it* — *"재발사도, 어떤 failed 가 재시도되어야 하나도"*.
+    /// Item 827 measured what that empty half costs: on 2026-09-02 a sprag run ended at 08:10:18
+    /// and the next driver started **three hours forty-nine minutes** later, while two other
+    /// repositories were re-launched inside three minutes. The ending was on a screen the whole
+    /// time.
+    ///
+    /// # ⛔⛔ It was already decided, IN PROSE, and prose is not a thing anybody can ask
+    ///
+    /// Read the variants above: [`Failed`](Self::Failed) *"wants something FIXED"*,
+    /// [`Blocked`](Self::Blocked) *"wants an ANSWER, and one that is not the run's to give"*,
+    /// [`TakenOver`](Self::TakenOver) *"wants NOTHING done"*. Three of the six had their answer
+    /// written in a doc comment where `loop-read.sh` — the reader item 798 built — could not reach
+    /// it, which is why that script says of itself that it *"does not classify a `failed` as
+    /// retryable"*. The other three had no answer written anywhere. This method is those six
+    /// sentences moved somewhere a caller can ask, and nothing more: it prescribes no mechanism and
+    /// starts nothing.
+    ///
+    /// # ⚠⚠ Why `Blocked` and `Failed` share one disposition when their doc comments differ
+    ///
+    /// A blocked run wants an answer and a failed one wants a fix — a real difference, and the
+    /// ending word already carries it. What this answers is the narrower question *what happens
+    /// next*, and for both the answer is A PERSON. [`Blind`](sprag_terminal::doctor::Blind)'s bar is the one
+    /// applied: an absence a reader would respond to identically belongs merged with its neighbour,
+    /// and nobody does anything differently between *go and answer it* and *go and fix it* at the
+    /// moment of deciding whether a machine may proceed alone.
+    #[must_use]
+    pub const fn disposition(&self) -> Disposition {
+        match self {
+            // The run did what it was asked. Whatever is next is DIFFERENT work — this brief is
+            // spent, and re-typing it would re-do a finished job.
+            Self::Converged => Disposition::NextWork,
+            // A ceiling bound, so the WORK is unfinished while nothing about the ending needs a
+            // person: the same brief, with more room. This is the one arm item 855's `launch.sh`
+            // was filed on — run 41 ended `exhausted (cost)` with its work uncommitted.
+            Self::Exhausted(_) => Disposition::SameWork,
+            // ⚠ `failed` is spelled *"this run's machine could not be driven on"*, and item 827
+            // measured three runs carrying that word where what was actually needed was a person.
+            // The word is not changed here — it is honest about what the machine saw — but what
+            // happens next is stated for what it is.
+            Self::Failed | Self::Blocked(_) => Disposition::Person,
+            // A person already decided this run should stop. Re-launching reverses them.
+            Self::Cancelled | Self::TakenOver(_) => Disposition::Nothing,
+        }
+    }
+}
+
+/// **WHAT HAPPENS NEXT to a run that has ended** — register item 827.
+///
+/// # ⚠⚠⚠ This is a CLASSIFICATION and not a mechanism
+///
+/// Item 827 is explicit that *"자동으로 다시 걸어라"* must not be assumed to be the answer, and that
+/// the split comes first: **결말별로 「되걸 것/둘 것」이 갈리고, 그 다음에 그것을 무엇이 집행하는지가
+/// 정해진다.** Nothing in this type starts, stops or schedules anything. It is the first half, and
+/// it exists so the second half has something to be built on other than a person's memory.
+///
+/// # ⚠⚠ Four arms, on [`Blind`](sprag_terminal::doctor::Blind)'s bar
+///
+/// Each is a different thing to do next. Two endings that a reader would act on identically belong
+/// merged, which is why six endings make four dispositions rather than six.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disposition {
+    /// The work this run was given is FINISHED. Anything next is different work and a new run.
+    ///
+    /// ⚠ NOT *nothing happens* — item 827's own measurement is that a converged run was followed
+    /// by another one three times on 2026-09-03, at 2m33s, 3m50s and 3m. What this says is that the
+    /// next run carries a DIFFERENT brief, which is why re-launching this one would be wrong.
+    NextWork,
+    /// The work is UNFINISHED and nothing about this ending needs a person: the same brief, again.
+    SameWork,
+    /// A PERSON is what happens next, and nothing else does until they have been.
+    Person,
+    /// NOTHING happens next — somebody already decided this run should stop.
+    Nothing,
+}
+
+impl Disposition {
+    /// Every disposition, so a walk over them needs no list somebody has to remember to extend.
+    ///
+    /// ⚠ A real `ALL` and not a hand-ordered one, because unlike [`OutcomeState`] these arms carry
+    /// nothing — the residue that type states does not reach here.
+    pub const ALL: [Self; 4] = [Self::NextWork, Self::SameWork, Self::Person, Self::Nothing];
+
+    /// This disposition's word — the ONE place the variant → name mapping lives.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::NextWork => "next_work",
+            Self::SameWork => "same_work",
+            Self::Person => "person",
+            Self::Nothing => "nothing",
+        }
+    }
+
+    /// **WHAT TO TELL WHOEVER READS THE ENDING**, in the words a run's row prints.
+    ///
+    /// ⚠ A sentence about what to DO, because that is the thing item 827 measured missing. A row
+    /// that named a disposition without saying what it means would move the lookup into the
+    /// reader's head, which is where the answer already was.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::NextWork => {
+                "what happens next: DIFFERENT WORK. This run finished what it was given, so a next \
+                 run carries a new brief — re-launching this one would re-do a finished job"
+            }
+            Self::SameWork => {
+                "what happens next: THE SAME WORK, with more room. A ceiling bound and the work is \
+                 unfinished; nothing about this ending needs a person"
+            }
+            Self::Person => {
+                "what happens next: A PERSON. Nothing else does until they have been — this ending \
+                 is not one a machine may proceed past on its own"
+            }
+            Self::Nothing => {
+                "what happens next: NOTHING. Somebody already decided this run should stop, and \
+                 re-launching it reverses them"
+            }
+        }
+    }
+
+    /// What happens next to a run recorded under `word`, or [`None`] when nothing has classified
+    /// that word.
+    ///
+    /// # ⚠⚠⚠ A run RESTORED from a previous daemon's log has only its word
+    ///
+    /// [`OutcomeState`]'s own doc states it: the carried detail does not survive, so any reader
+    /// downstream of the log — the host's renderer included — holds a string and not a variant.
+    /// This is the bridge, and it walks [`OutcomeState::EVERY_SHAPE`] rather than re-spelling the
+    /// mapping, so **the classification lives in exactly one place**. A second `match` on words
+    /// here is the defect items 855 and 864 were both filed on.
+    ///
+    /// ⚠ [`None`] is *nothing has classified this word*, which is a RED and not a pass: a caller
+    /// that treats an unclassified ending as *nothing to do* has invented the answer item 827 says
+    /// must be recorded. Say it is unclassified.
+    #[must_use]
+    pub fn of_outcome_word(word: &str) -> Option<Self> {
+        OutcomeState::EVERY_SHAPE
+            .iter()
+            .find(|outcome| outcome.wire_str() == word)
+            .map(OutcomeState::disposition)
+    }
 }
 
 sprag_vt::closed_set! {
@@ -1942,6 +2104,109 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), OutcomeState::WIRE_WORDS.len());
+    }
+
+    /// 🎯🎯🎯🎯🎯 **EVERY ENDING THIS WIRE PUBLISHES SAYS WHAT HAPPENS NEXT** — register item 827.
+    ///
+    /// # What was measured
+    ///
+    /// Item 798 paid *the ending reaches a person* and recorded, in its own body, that it was not
+    /// paying *what somebody then does about it*. Item 827 measured the bill: a sprag run ended
+    /// 2026-09-02 at 08:10:18 and the next driver started **three hours forty-nine minutes** later,
+    /// while two other repositories were re-launched inside three minutes.
+    ///
+    /// Three of the six endings had the answer written in a DOC COMMENT — `failed` *"wants
+    /// something FIXED"*, `blocked` *"wants an ANSWER"*, `taken_over` *"wants NOTHING done"* — and
+    /// the other three had it nowhere. A doc comment is not a thing `loop-read.sh` can ask, which
+    /// is why that script says of itself that it *"does not classify a `failed` as retryable"*.
+    ///
+    /// # Six claims, and ④ and ⑥ are the ones that stop this being decoration
+    ///
+    /// * ① [`EVERY_SHAPE`](OutcomeState::EVERY_SHAPE) IS the published list — no ending escapes
+    ///   the walk by being left out of the array the walk reads;
+    /// * ② every published word is classified — item 827's whole subject is an ending nobody
+    ///   decided about, so an unclassified one is RED and not a pass;
+    /// * ③ the word bridge and the type agree, because a restored run has only its word and a
+    ///   second `match` on words would be items 855 and 864's defect a third time;
+    /// * ④ **every disposition is REACHED by some ending** — an arm nothing produces is a
+    ///   distinction invented here rather than measured on the six;
+    /// * ⑤ the four say different things, which is the bar item 847 spent a round on;
+    /// * ⑥ **a word this vocabulary does not publish is NOT classified** — `interrupted` is a run
+    ///   that has not ended, and answering for it would be inventing the record item 827 asks to
+    ///   be kept.
+    #[test]
+    fn every_ending_this_wire_publishes_says_what_happens_next() {
+        // ── ① the walk reads the published list, not a subset of it ─────────────────────────
+        let walked: Vec<&'static str> = OutcomeState::EVERY_SHAPE
+            .iter()
+            .map(OutcomeState::wire_str)
+            .collect();
+        assert_eq!(
+            walked,
+            OutcomeState::WIRE_WORDS,
+            "⚠⚠ an ending missing from EVERY_SHAPE is one no walk can reach — including the walk \
+             that decides what happens next after it",
+        );
+
+        // ── ② every published ending is classified ──────────────────────────────────────────
+        for word in OutcomeState::WIRE_WORDS {
+            assert!(
+                Disposition::of_outcome_word(word).is_some(),
+                "⛔ {word:?} is an ending nobody has said what to do about, which is the state \
+                 item 827 was filed on",
+            );
+        }
+
+        // ── ③ one classification, asked two ways, answering the same ───────────────────────
+        for outcome in OutcomeState::EVERY_SHAPE {
+            assert_eq!(
+                Disposition::of_outcome_word(outcome.wire_str()),
+                Some(outcome.disposition()),
+                "the word bridge and the type disagree about {:?}, so the classification lives in \
+                 two places",
+                outcome.wire_str(),
+            );
+        }
+
+        // ── ④ every disposition is one some ending actually reaches ────────────────────────
+        for want in Disposition::ALL {
+            assert!(
+                OutcomeState::EVERY_SHAPE
+                    .iter()
+                    .any(|outcome| outcome.disposition() == want),
+                "⚠ no ending is {:?}, so that arm is a distinction this type invented rather than \
+                 one the six endings needed",
+                want.wire_str(),
+            );
+        }
+
+        // ── ⑤ the four say different things, in both spellings ─────────────────────────────
+        for spelling in [
+            Disposition::ALL.map(Disposition::wire_str),
+            Disposition::ALL.map(Disposition::describe),
+        ] {
+            let mut unique = spelling.to_vec();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                Disposition::ALL.len(),
+                "two dispositions saying the same thing are one disposition: {spelling:?}",
+            );
+        }
+
+        // ── ⑥ AND A WORD THIS SET DOES NOT PUBLISH IS NOT ANSWERED FOR ─────────────────────
+        //
+        // `interrupted` and `panicked` reach a run's row and are NOT outcomes: they say the run
+        // did not end, which is a different question from what to do about one that did.
+        for word in ["interrupted", "panicked", "running", ""] {
+            assert_eq!(
+                Disposition::of_outcome_word(word),
+                None,
+                "{word:?} is not an ending this vocabulary publishes, and answering for it would \
+                 invent the record item 827 asks to be kept",
+            );
+        }
     }
     use crate::access::{KeyStroke, PaneRow, Written};
     use crate::plugin::Step;
