@@ -33,9 +33,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pinion_core::QuitSink;
+use serde_json::json;
 use sprag_client::{BootSpec, WireHost};
 use sprag_host::HostClient;
-use sprag_host::wire::WindowRef;
+use sprag_host::mux_action_path;
+use sprag_host::wire::{NEW_WINDOW_ACTION, WindowRef};
 use sprag_rpc::{HostConn, HostEndpoint};
 
 /// How long the daemon gets to bind its socket before the test gives up on it.
@@ -212,5 +214,103 @@ fn a_tab_clicks_identity_select_moves_the_client_it_was_sent_from() {
         "⛔⛔⛔⛔⛔ THE TAB STRIP READS THIS LIST. A select that landed at the daemon and left this \
          client's own window mirror on the old window paints the old tab highlighted, which is \
          *the tab did nothing* to everybody looking at it: {after:?}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A TAB FOR A WINDOW THIS CLIENT DID NOT MAKE** — register item 860, and the ONE
+/// difference between every green fixture and the arrangement the owner is actually sitting in.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a different test and not the one above with more windows
+///
+/// The gate above makes its own windows, and so does `sprag-gui`'s smoke, and so does every
+/// window test in this workspace. **The owner made none of theirs.** All six of that session's
+/// windows were opened by the loop's launcher from other processes, so the client learned they
+/// exist through its POLL thread rather than as the answer to its own act — a different road into
+/// the same mirror (`store_windows` from the poll, against `refresh_view` on the UI thread), and
+/// the identity a tab is painted from is whatever arrived by it.
+///
+/// A row that reached the strip that way and carried no `id` would paint a tab that cannot be
+/// addressed and can only no-op, which is the owner's report exactly and is the one shape the
+/// disproof table in item 860 could not rule out by reading: the ledger checked what the DAEMON
+/// serves, and this checks what a client that was not asking ends up holding.
+///
+/// REVERT-PROOF: this fails the moment the poll's window list stops carrying identities, which no
+/// other test in this workspace would notice — they all read a list they asked for themselves.
+#[test]
+fn a_tab_click_lands_on_a_window_this_client_never_opened() {
+    let (_daemon, sock) = spawn_daemon();
+    await_daemon(&sock);
+    let host = boot(&sock);
+    // ⚠ The client's OWN name for where it is — `HostClient::current_session`, the same label its
+    // session rail paints. Asking it, rather than assuming the daemon's boot session, is what keeps
+    // the windows below in the session this client is actually looking at.
+    let session = host.current_session();
+
+    // ⚠ MADE FROM ANOTHER CONNECTION, which is the whole point: the client is not the caller, so
+    // everything it knows about these windows arrived on its own poll — the launcher's shape.
+    let mut elsewhere = HostConn::connect(&sock, BOOT_WAIT).expect("a second connection");
+    for _ in 0..2 {
+        elsewhere
+            .call(
+                "scene/invoke",
+                json!({
+                    "session": session,
+                    "path": mux_action_path(NEW_WINDOW_ACTION),
+                    "args": {},
+                }),
+            )
+            .expect("new_window answers on the second connection");
+    }
+
+    // The client has to NOTICE, on its own clock. A deadline rather than a sleep: what is being
+    // waited for is the poll adopting a list nobody handed it.
+    let deadline = Instant::now() + BOOT_WAIT;
+    let rows = loop {
+        let rows = host.windows();
+        if rows.len() == 3 || Instant::now() >= deadline {
+            break rows;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        rows.len(),
+        3,
+        "⚠ THE PREMISE: the client's own poll must adopt windows somebody else opened, or this \
+         gate is about nothing: {rows:?}",
+    );
+
+    // ⚠⚠ AND EVERY ONE OF THEM MUST CARRY AN ADDRESS. This is the assertion the disproof table in
+    // item 860 could only make of the DAEMON; here it is made of what a client actually holds.
+    let unaddressed: Vec<&str> = rows
+        .iter()
+        .filter(|w| w.id.is_none())
+        .map(|w| w.name.as_str())
+        .collect();
+    assert!(
+        unaddressed.is_empty(),
+        "⛔⛔⛔⛔⛔ A TAB IS PAINTED FROM THIS LIST AND CLICKED THROUGH ITS `id`. A row that \
+         arrived on the poll with none paints a tab that can only no-op — which is what the owner \
+         met, and what no other test in this workspace looks at: {unaddressed:?} of {rows:?}",
+    );
+
+    let target = rows
+        .iter()
+        .find(|w| !w.current)
+        .expect("a window this client is NOT on");
+    let (id, name) = (
+        target.id.expect("filtered to the rows that have one"),
+        target.name.clone(),
+    );
+    assert_eq!(
+        host.select_window(&WindowRef::Picked(id)).as_deref(),
+        Some(name.as_str()),
+        "a select addressed by an identity the POLL delivered must land exactly as one the client \
+         asked for itself does",
+    );
+    let after = host.windows();
+    assert_eq!(
+        after.iter().find(|w| w.current).map(|w| w.name.as_str()),
+        Some(name.as_str()),
+        "⛔⛔⛔⛔⛔ and the strip must follow: {after:?}",
     );
 }
