@@ -5790,6 +5790,15 @@ mod tests {
                 // no manifest claims and a manifest with no such rule (`codex`) both get, and what
                 // `SubmittedWhen::Released` refuses on rather than reading as *it let go*.
                 "holding": false,
+                // ⛔⛔⛔⛔⛔ AND WHAT THAT COMPOSER IS SHOWING — register item 889, the ROWS the
+                // boolean above is a lower bound on. ⚠⚠⚠ THE VALUE IS A DIALOG'S CHOICE LIST AND
+                // THAT IS THE READING RATHER THAN A DEFECT: a choice list marks its cursor with the
+                // same glyph a composer marks its input row with, and this reader takes the
+                // bottom-most one. It publishes rows and decides nothing — the caller that turns
+                // them into an answer (`SubmittedWhen::Emptied`) compares them against the text IT
+                // typed, and a delivery's own prompt is not on this screen. ⚠ The third answer,
+                // *nothing could say*, is the key's ABSENCE, exactly as it is for `holding`.
+                "composing": "❯ 1. Yes  2. No  ⏸ manual mode on · ? for shortcuts",
                 // ...and WHAT IT IS ASKING (R367). The whole object is asserted rather than the
                 // keys this round added, which is what makes it a ratchet: a key that appears here
                 // without a decision fails, and so does one that quietly leaves.

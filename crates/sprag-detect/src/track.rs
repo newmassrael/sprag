@@ -295,6 +295,26 @@ pub struct Tracker {
     /// authors no `Holding` rule. It is an absence of the instrument, never a reading of *not
     /// holding*, and a contract resting on it must refuse rather than read it as a no.
     holding: Option<bool>,
+    /// ⛔⛔⛔⛔⛔ **WHAT THAT COMPOSER IS SHOWING** — register item 889, and the reading the field
+    /// above is a LOWER BOUND on.
+    ///
+    /// # ⛔⛔⛔⛔ Why the boolean was not enough, measured on this repository's own runs
+    ///
+    /// [`holding`](Self::holding) is anchored to the placeholder an agent paints for a paste too
+    /// long to show inline, so a prompt SHORT enough to sit in the box as itself reads `false`.
+    /// That is stated as a bound where the rule is written, and item 889 measured what the bound
+    /// costs: over the 78 runs whose build carried both counters, **52 deliveries were refused
+    /// because the submit never became a question and not one of them was on the folded road**, so
+    /// the converging contract was armed only where nothing ever failed and fired **once**.
+    ///
+    /// The box's own rows can still be read; what cannot be read off them is a STATE, because the
+    /// agent paints its own suggested next prompt where input goes and a rule saying *any text
+    /// after the marker* would call a pane at rest `Holding`. So this publishes the rows and
+    /// decides nothing — a caller holding the text it typed is what turns them into an answer.
+    ///
+    /// ⚠ [`None`] is *nothing could say*: no composer marker on the screen at all. Never *the box
+    /// is empty*, which is the reading that would confirm a submit that never landed.
+    composing: Option<String>,
     /// Set when the pane's published answer has to be RE-DERIVED from the screen and nothing on the
     /// screen will say so — today, a release or a reporter that has gone mute.
     ///
@@ -556,8 +576,9 @@ impl Tracker {
             identity: None,
             reported: None,
             // Nothing has been looked at yet, which is the one reading that is never a claim about
-            // a composer — see the field.
+            // a composer — see the fields.
             holding: None,
+            composing: None,
             owes_look: false,
             // A pane nobody has reported for has no reporter to be mute, and this is the reading a
             // caller that never takes one leaves standing — so a host with no breadcrumbs anywhere
@@ -575,6 +596,17 @@ impl Tracker {
     #[must_use]
     pub const fn holding(&self) -> Option<bool> {
         self.holding
+    }
+
+    /// **WHAT THIS PANE'S COMPOSER IS SHOWING**, or [`None`] where no composer could be found —
+    /// see the field, and register item 889.
+    ///
+    /// ⚠ Beside [`holding`](Self::holding) rather than instead of it: one says a placeholder is
+    /// there, the other says what the rows say, and a folded paste is exactly the case where the
+    /// second cannot see the prompt because the agent replaced it.
+    #[must_use]
+    pub fn composing(&self) -> Option<&str> {
+        self.composing.as_deref()
     }
 
     /// The verdict currently published for this pane.
@@ -751,7 +783,7 @@ impl Tracker {
             // pane can now ANSWER a question about its composer while a hook is speaking for it —
             // the population `SubmittedWhen::Released` used to refuse on, which is every pane a
             // supervisor drives.
-            self.holding = self.composer(screen, title, rules);
+            (self.holding, self.composing) = self.composer(screen, title, rules);
             self.consider(candidate, now);
             return &self.published;
         }
@@ -760,29 +792,44 @@ impl Tracker {
         let candidate = self.evaluate(screen, title, rules.manifests());
         // ⚠ AFTER `evaluate`, not before it: that call is what identifies the pane, and a read
         // taken ahead of it would answer `None` for the first look at every pane there is.
-        self.holding = self.composer(screen, title, rules);
+        (self.holding, self.composing) = self.composer(screen, title, rules);
         self.consider(candidate, now);
         &self.published
     }
 
-    /// **WHAT THIS PANE'S COMPOSER IS HOLDING**, asked of the manifest that claims it — the read
-    /// behind [`holding`](Self::holding), and the only place it is taken.
+    /// **WHAT THIS PANE'S COMPOSER IS HOLDING, AND WHAT IT IS SHOWING** — the read behind
+    /// [`holding`](Self::holding) and [`composing`](Self::composing), and the only place either is
+    /// taken.
     ///
     /// ⚠⚠ BY THE REMEMBERED IDENTITY rather than by re-identifying, for [`Self::evaluate`]'s reason
     /// exactly: a second walk of the manifest list is a second identification free to disagree with
     /// the first, and on the reported road there is no first walk to disagree with — the memory is
     /// all there is. A pane nobody has ever identified answers [`None`], which is *nothing could
     /// say* and not *not holding*.
-    fn composer(&self, screen: &Screen, title: &str, rules: &Ruleset) -> Option<bool> {
-        self.identity
-            .as_deref()
-            .and_then(|name| {
-                rules
-                    .manifests()
-                    .iter()
-                    .find(|manifest| manifest.name == name)
-            })
-            .and_then(|manifest| manifest.holding(screen, title))
+    ///
+    /// ⚠⚠⚠ **BOTH FACTS OUT OF ONE LOOK** — register item 889, and `sprag_plugin`'s
+    /// `deliver::Submission::arm` states the same rule one crate over: two reads of one surface
+    /// inside one observation are two answers nothing keeps in step, and here they would date the
+    /// placeholder and the rows to different screens. So they leave together or not at all.
+    ///
+    /// ⚠ The ROWS are gated on identity too, and deliberately: `>` is a shell's continuation prompt
+    /// as readily as an agent's composer marker, and publishing a box for every pane that draws one
+    /// would put a claim about a composer on panes that have none.
+    fn composer(
+        &self,
+        screen: &Screen,
+        title: &str,
+        rules: &Ruleset,
+    ) -> (Option<bool>, Option<String>) {
+        let Some(manifest) = self.identity.as_deref().and_then(|name| {
+            rules
+                .manifests()
+                .iter()
+                .find(|manifest| manifest.name == name)
+        }) else {
+            return (None, None);
+        };
+        (manifest.holding(screen, title), crate::composer(screen))
     }
 
     /// Take a REPORT from a process inside the pane: publish `state` at once and hold the screen off

@@ -705,6 +705,7 @@ mod tests {
             fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
                 crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: sprag_detect::AgentState::Blocked,
                     agent: self.0.map(str::to_owned),
                     authority: crate::access::Authority::Scraped { rule: None },

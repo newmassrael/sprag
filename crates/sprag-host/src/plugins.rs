@@ -3479,6 +3479,11 @@ pub(crate) fn agent_state_source(
                 // submit contract that reads it requires: `Submission::arm` takes ONE observation
                 // and pulls both baselines out of it, because two reads could straddle a change.
                 holding: facts.holding,
+                // ⛔⛔⛔⛔⛔ AND WHAT IT IS SHOWING — register item 889. The boolean above sees only
+                // a FOLD placeholder, so a prompt short enough to sit inline reads `false` there;
+                // these are the rows that carry it, off the same `observe` call for the same
+                // one-observation reason.
+                composing: facts.composing,
                 // The REGISTRY's parse, not a second one taken here. It reads the same screen at the
                 // same instant, and having two sites derive it is how the run surface and the pane
                 // surface would come to disagree about what one pane is asking (R367 moved it).
@@ -11295,6 +11300,7 @@ mod tests {
                 "echoed": 0,
                 "account": 0,
                 "let_go": 0,
+                "emptied": 0,
                 "unchecked": 3,
                 "unasked": 1,
                 "unproven": 0,
@@ -11303,7 +11309,9 @@ mod tests {
              no reader of a run can ask how many of its prompts became a question — which is the \
              one number the run log, the reflection split and a per-priming row all failed to \
              hold. ⚠ THE EMPTY ROADS ARE PART OF THE CLAIM: rule 6, and two of the seven had no \
-             observed member anywhere when this was written: {carried}",
+             observed member anywhere when this was written. ⚠⚠ `emptied` IS THE EIGHTH, added by \
+             register item 889 — and this literal going red for it is the row arriving with a \
+             column rather than a road being dropped into a total nobody split: {carried}",
         );
 
         // ── ② AND THE MOUTH SAYS THEM, OFF THE ROW'S OWN JSON ──

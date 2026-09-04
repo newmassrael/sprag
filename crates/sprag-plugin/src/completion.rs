@@ -1147,6 +1147,7 @@ mod tests {
         let reported: Reported = Arc::new(Mutex::new(AgentObservation {
             state,
             holding: None,
+            composing: None,
             agent: Some("claude".to_string()),
             authority: Authority::Reported {
                 source: "test".to_string(),
@@ -1188,6 +1189,7 @@ mod tests {
         let reported: Reported = Arc::new(Mutex::new(AgentObservation {
             state,
             holding: None,
+            composing: None,
             agent: Some("claude".to_string()),
             authority: Authority::Scraped {
                 rule: Some("idle-glyph".to_string()),
@@ -2485,6 +2487,7 @@ mod tests {
             Arc::new(Mutex::new(Some(AgentObservation {
                 state: AgentState::Working,
                 holding: None,
+                composing: None,
                 agent: Some("claude".to_string()),
                 authority: Authority::Reported {
                     source: "test".to_string(),
@@ -2577,6 +2580,7 @@ mod tests {
         *seen.lock().expect("the reported mutex") = Some(AgentObservation {
             state: AgentState::Idle,
             holding: None,
+            composing: None,
             agent: Some("claude".to_string()),
             authority: Authority::Reported {
                 source: "test".to_string(),

@@ -12129,12 +12129,17 @@ impl OuterLoop {
                 // ⚠⚠ AND IT IS IN NO ROAD EITHER, on that same decision: a prompt that never
                 // arrived is not a question left somewhere, so neither remedy fits it and putting
                 // it under one would send a reader to a pane holding nothing.
-                // The five below are not refusals and cannot arrive.
+                // The six below are not refusals and cannot arrive. ⚠⚠ `Emptied` is among them
+                // since register item 889 and that is the whole repair: it is the answer the road
+                // above USED to give when the account did not come, and every one of this
+                // repository's 52 `unsubmitted` refusals was on it. A run reaching this arm with
+                // `Emptied` would be counting a delivery that landed.
                 Delivered::Unconfirmed { .. }
                 | Delivered::Confirmed { .. }
                 | Delivered::OnScreenOnly { .. }
                 | Delivered::Reported { .. }
                 | Delivered::Released { .. }
+                | Delivered::Emptied { .. }
                 | Delivered::Stopped { .. }
                 | Delivered::Unwitnessed { .. } => None,
             };
@@ -14386,6 +14391,7 @@ mod tests {
                 }
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: if submitted {
                         sprag_detect::AgentState::Working
                     } else {
@@ -14551,6 +14557,7 @@ mod tests {
                 let working = !matches!(peer, Peer::AtRest) || submitted;
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: if working {
                         sprag_detect::AgentState::Working
                     } else {
@@ -15055,6 +15062,7 @@ mod tests {
                 }
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: if submitted {
                         sprag_detect::AgentState::Working
                     } else {
@@ -15312,6 +15320,7 @@ mod tests {
                 }
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: if submitted {
                         sprag_detect::AgentState::Working
                     } else {
@@ -15507,6 +15516,12 @@ mod tests {
                     // out, which is the property `Released` reads: both readings are STABLE, so the
                     // contract converges where the account below merely expires.
                     holding: Some(!typed.is_empty() && !submitted),
+                    // ⚠⚠ AND THE BOX'S ROWS SAY NOTHING, deliberately — register item 889. This
+                    // peer FOLDS, so its composer paints a placeholder and never the prompt: a
+                    // fixture that published the text here would arm `Emptied` on the fold road and
+                    // this gate would stop being about `Released` at all. `standin_agent_wedging_
+                    // after` is where the painted road is staged.
+                    composing: None,
                     state: if submitted {
                         sprag_detect::AgentState::Working
                     } else {
@@ -15697,6 +15712,7 @@ mod tests {
             let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: sprag_detect::AgentState::Working,
                     agent: Some("claude".to_owned()),
                     // ⚠ REPORTED, because that is what a transcript path arrives on: the agent's
@@ -15808,6 +15824,7 @@ mod tests {
             let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: sprag_detect::AgentState::Working,
                     agent: Some("claude".to_owned()),
                     authority: crate::access::Authority::Reported {
@@ -15901,6 +15918,7 @@ mod tests {
         let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
             Some(crate::access::AgentObservation {
                 holding: None,
+                composing: None,
                 state: sprag_detect::AgentState::Working,
                 agent: Some("claude".to_owned()),
                 authority: crate::access::Authority::Reported {
@@ -15980,6 +15998,7 @@ mod tests {
         let source: crate::access::AgentStateSource = Arc::new(move |_id: PaneId| {
             Some(crate::access::AgentObservation {
                 holding: None,
+                composing: None,
                 state: sprag_detect::AgentState::Working,
                 agent: Some("claude".to_owned()),
                 authority: crate::access::Authority::Reported {
@@ -19903,6 +19922,7 @@ mod tests {
         fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
             crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
                 holding: None,
+                composing: None,
                 state: sprag_detect::AgentState::Idle,
                 agent: Some("claude".to_string()),
                 authority: crate::access::Authority::Reported {
@@ -23909,6 +23929,7 @@ mod tests {
                 *seq += 1;
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: sprag_detect::AgentState::Idle,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {
@@ -28362,6 +28383,7 @@ mod tests {
             Arc::new(move |_id: PaneId| {
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: sprag_detect::AgentState::Blocked,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {
@@ -29675,6 +29697,7 @@ mod tests {
             let seen: Arc<Mutex<crate::access::AgentObservation>> =
                 Arc::new(Mutex::new(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: sprag_detect::AgentState::Working,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {
@@ -29858,6 +29881,7 @@ mod tests {
         let seen: Arc<Mutex<crate::access::AgentObservation>> =
             Arc::new(Mutex::new(crate::access::AgentObservation {
                 holding: None,
+                composing: None,
                 state: sprag_detect::AgentState::Idle,
                 agent: Some("claude".to_string()),
                 authority: crate::access::Authority::Reported {
@@ -30034,6 +30058,7 @@ mod tests {
             let seen: Arc<Mutex<crate::access::AgentObservation>> =
                 Arc::new(Mutex::new(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: sprag_detect::AgentState::Working,
                     agent: Some("claude".to_string()),
                     // ⚠⚠ REPORTED, because only a reported pane can be silent — a scraped one
@@ -30333,6 +30358,7 @@ mod tests {
             let seen: Arc<Mutex<crate::access::AgentObservation>> =
                 Arc::new(Mutex::new(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: sprag_detect::AgentState::Working,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {

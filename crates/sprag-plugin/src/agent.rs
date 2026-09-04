@@ -250,11 +250,16 @@ impl Prompted {
                 | Delivered::Stopped { .. }
                 | Delivered::Unsubmitted { .. }
                 | Delivered::Unreported { .. }
+                | Delivered::Emptied { .. }
                 | Delivered::Unwitnessed { .. },
             ) => {
                 // ⚠ `Released` is NOT among them and the compiler is what said so: it is answered
                 // by the first arm, where a folded paste has no echo of its own to open a capture
                 // with (register item 762). Listing it here as well was unreachable.
+                // ⚠⚠ `Emptied` IS among them, and for `Unreported`'s reason rather than
+                // `Released`'s — register item 889: that road is reached only where the submit is
+                // held to `SubmittedWhen::Took`, and this adapter asks nothing of its submit. It is
+                // answered rather than left to a panic on the same terms as the three below.
                 // None of the five reaches a capture: the step returns before one is taken. ⚠ The
                 // last three cannot arise here at all while this adapter asks nothing of its submit
                 // (see `deliver_prompt`), and they are ANSWERED rather than left to a panic,
@@ -295,6 +300,9 @@ impl Prompted {
                 | Delivered::Unsubmitted { .. }
                 | Delivered::Unreported { .. }
                 | Delivered::Released { .. }
+                // ⚠ Register item 889: reachable only under `SubmittedWhen::Took`, which this
+                // adapter never asks — see the note in `echoed_by_the_terminal`.
+                | Delivered::Emptied { .. }
                 | Delivered::Unwitnessed { .. },
             ) => {
                 return None;
@@ -676,11 +684,17 @@ impl Agent {
             // prompt, so something WAS submitted, which is the whole of what this arm asks; that
             // the agent never named it is a weaker account and not a missing delivery, and the
             // caveat one function up is where that weakness is stated to a reader.
+            // ⚠⚠ `Emptied` JOINS THEM — register item 889. The composer stopped showing this
+            // delivery's own text, so something WAS submitted, which is the whole of what this arm
+            // asks. ⚠ Unreachable while this adapter asks nothing of its submit, and answered here
+            // rather than by a wildcard for the reason `echoed_by_the_terminal` states: the day it
+            // does ask is a one-line change, and this is the arm it should already be in.
             Prompted::Written { .. }
             | Prompted::Delivered(
                 Delivered::Confirmed { .. }
                 | Delivered::Reported { .. }
                 | Delivered::Released { .. }
+                | Delivered::Emptied { .. }
                 | Delivered::OnScreenOnly { .. },
             ) => {}
             // Nothing was submitted (`deliver` withholds the press when the text is demonstrably
@@ -1314,6 +1328,7 @@ mod tests {
                 Some(crate::access::AgentObservation {
                     state,
                     holding: None,
+                    composing: None,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {
                         source: "test".to_string(),

@@ -940,6 +940,7 @@ mod tests {
                 };
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state,
                     agent: Some("claude".to_string()),
                     authority: crate::access::Authority::Reported {
@@ -1136,6 +1137,7 @@ mod tests {
                     .is_some_and(|p| p.pty().echo_trail().contains("ping"));
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: if asking {
                         sprag_detect::AgentState::Blocked
                     } else {
@@ -2671,6 +2673,7 @@ mod tests {
         let access = bare.with_agent_state(Some(Arc::new(move |_id: PaneId| {
             Some(crate::access::AgentObservation {
                 holding: None,
+                composing: None,
                 state: sprag_detect::AgentState::Working,
                 agent: Some("claude".to_string()),
                 authority: crate::access::Authority::Reported {

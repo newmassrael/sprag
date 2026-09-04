@@ -1675,6 +1675,35 @@ pub struct AgentObservation {
     /// holding*, and a contract resting on it must refuse rather than read it as a no — which is
     /// [`crate::readiness::ReadyWhen::Runs`]' rule everywhere in this crate.
     pub holding: Option<bool>,
+    /// ⛔⛔⛔⛔⛔ **WHAT THAT COMPOSER IS SHOWING** — register item 889, and the reading
+    /// [`holding`](Self::holding) is a LOWER BOUND on.
+    ///
+    /// # ⛔⛔⛔⛔ The bound above was stated where it was written, and here is what it cost
+    ///
+    /// [`holding`](Self::holding) is anchored to the placeholder an agent paints for a paste too
+    /// long to show inline, and its own rule says so: a prompt short enough to sit in the box as
+    /// itself paints no placeholder and reads `false`. So
+    /// [`SubmittedWhen::Released`](crate::deliver::SubmittedWhen::Released) — the contract that
+    /// CONVERGES — could only ever be armed on the FOLDED road.
+    ///
+    /// Measured over this repository's own loop, on the 78 runs whose build carried both delivery
+    /// counters: **`folded` 592 with `unreported` 0, against `unsubmitted` 52.** Every refusal was
+    /// on the road where the prompt was PAINTED, the folded road refused nothing, and the
+    /// converging contract fired **once**. The property contract was armed exactly where it was
+    /// never needed.
+    ///
+    /// # ⚠⚠⚠ Rows, and never a verdict
+    ///
+    /// A rule reading *any text after the composer marker* would publish `Holding` for a pane at
+    /// rest, because an agent paints its own suggested next prompt where input goes — measured, and
+    /// `sprag_detect`'s own fixture for it. What makes these rows an answer is a caller that knows
+    /// what it typed: [`SubmittedWhen::Emptied`](crate::deliver::SubmittedWhen::Emptied) compares
+    /// them against its own text, which is a question the screen alone cannot be asked.
+    ///
+    /// ⚠ [`None`] is *nothing could say* — no composer marker on the screen, a pane no manifest
+    /// claims, or a daemon too old to send the key. It is never *the box is empty*, and a contract
+    /// resting on it must refuse rather than read the absence as a release.
+    pub composing: Option<String>,
     /// How many published CHANGES this pane's state has been through. Never decreases while the
     /// pane lives; compare it across two pulls to learn that something happened between them.
     pub seq: u64,

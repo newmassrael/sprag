@@ -391,7 +391,13 @@ pub enum SubmittedWhen {
     /// * **A composer holding a prompt too short to FOLD.** The state is read off the placeholder
     ///   an agent paints for a long paste; a short prompt sits in the composer as itself and the
     ///   pane reads `Idle`. Right for a supervisor, whose prompts are long enough to fold — which
-    ///   is how the fold was found — and wrong for a person typing a word.
+    ///   is how the fold was found — and wrong for a person typing a word. ⛔⛔⛔⛔⛔ **AND THAT
+    ///   BOUND IS WHERE THE FAILURES ACTUALLY WERE** — register item 889. Over the 78 runs of this
+    ///   repository's loop whose build carried both counters: `folded` 592 with `unreported` **0**,
+    ///   against `unsubmitted` **52**. Every refusal was on the PAINTED road, the folded road
+    ///   refused nothing, and this contract fired **once**. It is armed where nothing fails.
+    ///   [`Emptied`](Self::Emptied) is the same idea asked of the box's own ROWS, which is what a
+    ///   painted prompt leaves behind, and this kind is unchanged.
     /// * ⛔ **A pane no manifest claims, or one whose manifest authors no composer rule, or a
     ///   daemon too old to send the key.** All three arrive as an ABSENT reading, which is *nothing
     ///   could say* and never *not holding* — see [`crate::access::AgentObservation::holding`]. The
@@ -413,6 +419,51 @@ pub enum SubmittedWhen {
     /// contract's firings COUNTABLE in a live run, so *does it work* stops being a question anybody
     /// answers from a comment.
     Released {
+        /// How long to wait for that, after which the delivery answers
+        /// [`Delivered::Unsubmitted`].
+        within: Duration,
+    },
+    /// ⛔⛔⛔⛔⛔ **THE COMPOSER'S OWN ROWS NO LONGER CARRY THIS DELIVERY'S TEXT** — register item
+    /// 889, and [`Released`](Self::Released)'s twin for the prompt that was PAINTED rather than
+    /// folded.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a second converging contract and not a wider first one
+    ///
+    /// [`Released`](Self::Released) rests on a placeholder, and a placeholder is what an agent
+    /// paints INSTEAD of a prompt it could not show inline. A prompt short enough to sit in the box
+    /// as itself paints none, so that contract is unarmable on the painted road — which is the road
+    /// this repository's loop actually wedges on. Measured over the 78 runs whose build carried
+    /// both delivery counters: `unsubmitted` **52** against `unreported` **0**.
+    ///
+    /// Widening the placeholder rule to *any text after the composer marker* was the other repair
+    /// available and it is REFUTED, by this workspace's own capture: an agent paints its own
+    /// suggested next prompt where input goes, so that rule would call a pane at rest `Holding` —
+    /// a verdict published on sight, on a pane nobody typed at. What separates the two is knowing
+    /// what was typed, and a STATE cannot know that. **So the screen publishes rows and the
+    /// contract does the comparing**, which is why this kind exists beside the one above rather
+    /// than replacing it.
+    ///
+    /// # ⚠⚠ Both ends are required, exactly as they are for [`Released`](Self::Released)
+    ///
+    /// * **The box must have been showing this text when the submit went in.** *Not showing it now*
+    ///   is trivially true of a box that never had it, and of a box nobody could find. Either way
+    ///   the baseline is absent and the contract refuses at once rather than spending its window.
+    /// * **The pane must still be the same agent's**, so this is a claim about the peer the submit
+    ///   went to rather than about whatever is in the pane now.
+    ///
+    /// ⚠ No `seq` comparison, for [`Released`](Self::Released)' reason: what is asked is a PROPERTY
+    /// of the pane now, and requiring a published change would reinstate the event dependency both
+    /// of these kinds exist to drop.
+    ///
+    /// # ⚠⚠⚠ What it claims, and the one thing it does NOT
+    ///
+    /// It is weaker than [`Took`](Self::Took) by exactly the residue register item 223 records: a
+    /// composer that already held somebody else's text takes this delivery onto the end of it, and
+    /// what left the box is then a question this text is only PART of. `Took` compares the whole
+    /// question and refuses that; this says *a question carrying this text was asked*, which is
+    /// still more than [`Released`](Self::Released) can say and less than the account. It is armed
+    /// BESIDE `Took` and never instead of it, and the account wins wherever both could speak.
+    Emptied {
         /// How long to wait for that, after which the delivery answers
         /// [`Delivered::Unsubmitted`].
         within: Duration,
@@ -469,6 +520,7 @@ impl SubmittedWhen {
             Self::Repaints { within }
             | Self::Stirs { within }
             | Self::Released { within }
+            | Self::Emptied { within }
             | Self::Took { within } => Some(within),
         }
     }
@@ -493,6 +545,10 @@ impl SubmittedWhen {
             // that could not be armed reaches this sentence too, which is why it says what is still
             // true of the pane rather than claiming the wait was spent.
             Self::Released { .. } => "is still holding the prompt in its composer",
+            // ⚠ It names what is still ON the pane rather than what the composer is, because that
+            // is the reading this contract took: a box whose rows still carry this text. A pane
+            // that could not be armed reaches this sentence too — see `Released` above.
+            Self::Emptied { .. } => "is still showing the prompt in its composer",
             // ⚠ It names the QUESTION rather than the pane, because that is what went unanswered:
             // the peer may well have stirred, and what did not arrive is any account of having been
             // asked THIS. A caller reading *"did not stir"* here would go looking at the wrong end.
@@ -558,6 +614,19 @@ impl Delivery {
             // that show nothing. See `SubmittedWhen`.
             submitted_when: SubmittedWhen::Unchecked,
         }
+    }
+
+    /// **WHAT THIS DELIVERY LOOKS FOR ON A SCREEN** — [`confirm`](Self::confirm) where the caller
+    /// named one, and the whole text where it did not.
+    ///
+    /// ⚠ Named because TWO readers need it and the second arrived four rounds after the first:
+    /// [`deliver`] waits for it, and [`SubmittedWhen::Emptied`]'s baseline asks whether the
+    /// composer is still carrying it. Re-spelling `confirm.unwrap_or(text)` at the second site
+    /// would be a second answer to *what is this delivery's needle* — and the contract would then
+    /// be armed against something the wait never established was there.
+    #[must_use]
+    pub fn needle<'a>(&'a self, text: &'a str) -> &'a str {
+        self.confirm.as_deref().unwrap_or(text)
     }
 
     /// The defaults, but the submit is held to `contract` — see [`SubmittedWhen`].
@@ -698,6 +767,34 @@ pub enum Delivered {
     /// key. All of those keep the old answer, which is [`Unreported`](Self::Unreported): an absence
     /// of the instrument is not evidence that anything was asked.
     Released { attempts: u32, written: Written },
+    /// ⛔⛔⛔⛔⛔ **THE COMPOSER STOPPED SHOWING THE PROMPT AND NOBODY NAMED IT** — register item
+    /// 889, and [`Released`](Self::Released)'s twin on the road where the prompt was PAINTED.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The road this answer is for is the one that was actually failing
+    ///
+    /// [`Released`](Self::Released) serves the FOLDED road, and item 889 measured which road the
+    /// refusals are on. Over the 78 runs of this repository's loop whose build carried both
+    /// counters: `folded` 592 with `unreported` **0**, against `unsubmitted` **52**. Every refusal
+    /// was here, on the road where the screen showed the text — and this road had one channel, the
+    /// agent's account, which EXPIRES. Its silence became
+    /// [`Unsubmitted`](Self::Unsubmitted), which the driver answers by replacing a session that was
+    /// working on the question all along.
+    ///
+    /// # ⚠⚠⚠ What it claims and what it does not
+    ///
+    /// * **The box was showing THIS delivery's own text and is not any more**, so a question
+    ///   carrying it was asked.
+    /// * **Not which question, exactly.** A composer already holding somebody else's words submits
+    ///   this text appended to them — register item 223's residue, closed only by the account.
+    /// * **The text WAS on that screen**, which is the whole difference from
+    ///   [`Released`](Self::Released): [`is_on_screen`](Self::is_on_screen) is true here, this is
+    ///   no fold, and a run's fold budget must not be spent on it.
+    ///
+    /// ⚠ Unreachable where nothing can read a composer — a host with no supervisor, a pane whose
+    /// screen carries no composer marker, or a daemon too old to send the rows. All of those keep
+    /// the old answer, [`Unsubmitted`](Self::Unsubmitted): an absence of the instrument is not
+    /// evidence that anything was asked.
+    Emptied { attempts: u32, written: Written },
     /// Every attempt was written and none of them ever appeared. The bytes went to the pty; the
     /// program behind it did not show them.
     ///
@@ -860,12 +957,19 @@ impl Delivered {
     /// register item 762. It is `matches!`, so a new variant is false by default here, and for this
     /// one the default is the right answer rather than a lucky one: the screen moved WITHOUT the
     /// text, which is the whole meaning of the answer.
+    ///
+    /// ⚠⚠⚠⚠ **AND TRUE FOR [`Emptied`](Self::Emptied), WHICH IS WHAT SEPARATES IT FROM
+    /// [`Released`](Self::Released)** — register item 889. Both are a composer contract converging,
+    /// and only one of them is about a prompt a person could see: that road is reached through the
+    /// same read-back as `Confirmed`, so the text WAS on that screen. Answering false here would
+    /// file it as a fold, and a run's fold budget is what stops it for a person.
     #[must_use]
     pub const fn is_on_screen(self) -> bool {
         matches!(
             self,
             Self::Confirmed { .. }
                 | Self::OnScreenOnly { .. }
+                | Self::Emptied { .. }
                 | Self::Unsubmitted { .. }
                 | Self::Unwitnessed { .. }
         )
@@ -929,10 +1033,15 @@ impl Delivered {
             // peer that is working on it. `Stopped` and `Unwitnessed` are the run's own clock
             // rather than a fault of the pane, and each is answered elsewhere — see
             // [`asked_nothing`](Self::asked_nothing).
+            // ⚠⚠⚠⚠ `Emptied` joins them since register item 889, and by the same DECISION: the box
+            // stopped showing this delivery's own text, so a question carrying it was asked and a
+            // session replacement would throw away a peer that is working on it. That road is
+            // exactly where this repository's 52 refusals were, so this arm is the whole repair.
             Self::Confirmed { .. }
             | Self::OnScreenOnly { .. }
             | Self::Reported { .. }
             | Self::Released { .. }
+            | Self::Emptied { .. }
             | Self::Stopped { .. }
             | Self::Unwitnessed { .. } => None,
         }
@@ -963,6 +1072,7 @@ impl Delivered {
             | Self::OnScreenOnly { .. }
             | Self::Reported { .. }
             | Self::Released { .. }
+            | Self::Emptied { .. }
             | Self::Unconfirmed { .. }
             | Self::Unsubmitted { .. }
             | Self::Unreported { .. }
@@ -980,6 +1090,7 @@ impl Delivered {
             | Self::Unconfirmed { written, .. }
             | Self::Unsubmitted { written, .. }
             | Self::Released { written, .. }
+            | Self::Emptied { written, .. }
             | Self::Unreported { written, .. }
             | Self::Stopped { written, .. }
             | Self::Unwitnessed { written, .. } => written,
@@ -1054,6 +1165,19 @@ pub enum Witnessed {
     /// ⚠ It is still EVIDENCE OF A DELIVERY, which is what separates it from the refusals below: a
     /// prompt that left the composer is not a prompt a session replacement would rescue.
     LetGo,
+    /// ⛔⛔⛔⛔⛔ **THE COMPOSER STOPPED SHOWING THIS PROMPT AND NOBODY NAMED IT** —
+    /// [`Delivered::Emptied`], register item 889's road.
+    ///
+    /// [`LetGo`](Self::LetGo)'s twin on the PAINTED side, and it sits between that road and
+    /// [`Account`](Self::Account): the box was showing this delivery's own text and is not any
+    /// more, so a question carrying it was asked. What it cannot rule out is the composer having
+    /// held somebody else's words too, which is the residue only the agent's account closes.
+    ///
+    /// ⚠⚠ It is NOT a fold — the prompt WAS on that pane and a person sent there would have found
+    /// it — which is exactly why it needs a row of its own rather than joining `LetGo`: the two
+    /// answer [`folded_away`](Self::folded_away) differently, and a run's fold budget is spent on
+    /// that answer.
+    Emptied,
     /// Nothing was asked of the screen, because this peer paints nothing until its prompt is
     /// submitted — the caller's `shows_the_prompt` is false, so the bytes went in and the submit
     /// was pressed on trust.
@@ -1110,11 +1234,12 @@ impl Witnessed {
     /// reason and this workspace's rule 6: an eighth road must arrive with a ROW rather than
     /// falling out of a hand-written list into a total nobody split. A gate walks it against
     /// [`word`](Self::word) so the two cannot come apart.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Painted,
         Self::Echoed,
         Self::Account,
         Self::LetGo,
+        Self::Emptied,
         Self::Unchecked,
         Self::Unasked,
         Self::Unproven,
@@ -1134,6 +1259,7 @@ impl Witnessed {
             Self::Echoed => "echoed",
             Self::Account => "account",
             Self::LetGo => "let_go",
+            Self::Emptied => "emptied",
             Self::Unchecked => "unchecked",
             Self::Unasked => "unasked",
             Self::Unproven => "unproven",
@@ -1168,7 +1294,10 @@ impl Witnessed {
             // The program painted it and the submit satisfied what the caller asked of it; the
             // agent named the question; the composer let go of the paste. Three different proofs
             // of one fact, which is why they are one answer here and three rows in the table.
-            Self::Painted | Self::Account | Self::LetGo => Landing::Asked,
+            // ⚠ `Emptied` joins them since register item 889: the box was showing this delivery's
+            // own text and stopped, so a question carrying it was asked — the proof is the pane's
+            // rather than the peer's, which is what makes it a fourth road and not a fourth answer.
+            Self::Painted | Self::Account | Self::LetGo | Self::Emptied => Landing::Asked,
             // The terminal may be what painted it, the peer paints nothing at all, or the run
             // ended before the evidence could arrive. None of the three is about whether a
             // question was taken.
@@ -1196,6 +1325,10 @@ impl Witnessed {
             // than `Account` and it is evidence all the same: the prompt left the composer, so a
             // walk has something true to publish and the run has no wedged session to replace.
             Delivered::Released { .. } => Some(Self::LetGo),
+            // ⚠⚠ ITS TWIN ON THE PAINTED ROAD — register item 889. Same decision as the line above
+            // and a different road, because the prompt WAS on that screen: a reader sent to the
+            // pane while it sat there would have found it, and `folded_away` says so.
+            Delivered::Emptied { .. } => Some(Self::Emptied),
             Delivered::Stopped { .. } => Some(Self::Unasked),
             Delivered::Unwitnessed { .. } => Some(Self::Unproven),
             // ⚠ `Unreported` joins them for the same reason, register item 762: a folded paste the
@@ -1233,10 +1366,17 @@ impl Witnessed {
             Self::Account | Self::LetGo => true,
             // Every other road leaves the text somewhere a person can find it — painted by the
             // program, echoed by the terminal — or leaves nothing established at all, and neither
-            // is a fold.
-            Self::Painted | Self::Echoed | Self::Unchecked | Self::Unasked | Self::Unproven => {
-                false
-            }
+            // is a fold. ⛔⛔⛔ `Emptied` is on THIS side and the decision is register item 889's:
+            // that road's whole premise is that the box was SHOWING the prompt, so a person sent to
+            // that pane while it sat there would have found it. Filing it as a fold would spend the
+            // run's fold budget on a delivery that folded nothing, and that budget is what stops a
+            // run for a person.
+            Self::Painted
+            | Self::Echoed
+            | Self::Emptied
+            | Self::Unchecked
+            | Self::Unasked
+            | Self::Unproven => false,
         }
     }
 
@@ -1276,10 +1416,15 @@ impl Witnessed {
             // the weaker of two answers — see `Submission::landed`, where the account wins.
             Self::Account => false,
             // Not folds at all. ⚠ `folded_away` is what says so; this predicate is only ever read
-            // beside it.
-            Self::Painted | Self::Echoed | Self::Unchecked | Self::Unasked | Self::Unproven => {
-                false
-            }
+            // beside it. ⚠⚠ `Emptied` is here rather than beside `LetGo` although BOTH are a
+            // composer contract converging: this predicate splits the two FOLD roads by their
+            // evidence, and a road that never folded has no side of that split to be on.
+            Self::Painted
+            | Self::Echoed
+            | Self::Emptied
+            | Self::Unchecked
+            | Self::Unasked
+            | Self::Unproven => false,
         }
     }
 
@@ -1304,6 +1449,13 @@ impl Witnessed {
                  NOT replace this session: the prompt is not sitting in that box, and the peer has \
                  it. What is worth knowing is why the agent's hooks reported no question, which is \
                  the run's own journal and not the pane"
+            }
+            Self::Emptied => {
+                "the prompt was PAINTED in that composer and the box stopped showing it after the \
+                 Enter, so a question carrying this text was asked — but the agent never named it, \
+                 so whether anything else went with it is not known here. ⚠ Do NOT replace this \
+                 session: the prompt is not sitting in that box. What is worth knowing is why the \
+                 agent's hooks reported no question"
             }
             Self::Unchecked => {
                 "nothing was asked of the screen: this peer paints nothing before a submit, so the \
@@ -1519,7 +1671,7 @@ pub fn deliver(
     text: &str,
     spec: &Delivery,
 ) -> Result<Delivered, PaneError> {
-    let needle = spec.confirm.as_deref().unwrap_or(text);
+    let needle = spec.needle(text);
     let keys = KeyStroke::text(text);
     let mut written = 0_u64;
     let mut attempts = 0_u32;
@@ -1558,11 +1710,35 @@ pub fn deliver(
                 // rather than a byte appended to the same unread pty read as the prompt. Sent for
                 // BOTH on-screen answers — see `Delivered::OnScreenOnly`.
                 if !spec.then_press.is_empty() {
-                    // ⚠ NO SECOND WITNESS ON THIS ROAD — register item 762's is the fold's alone.
-                    // The text is ON the screen here, so the caller's own contract is answerable by
-                    // construction; arming a composer read beside it would buy a channel nothing
-                    // needs and pay a supervisor read for every ordinary delivery there is.
-                    match submit(panes, run, pane, text, spec, &mut written, None)? {
+                    // ⛔⛔⛔⛔⛔ **AND THE COMPOSER IS ARMED BESIDE THE ACCOUNT HERE TOO** — register
+                    // item 889, and this line is the whole of what that item changed.
+                    //
+                    // ⛔ WHAT STOOD HERE WAS MEASURED FALSE. It read: *"NO SECOND WITNESS ON THIS
+                    // ROAD — register item 762's is the fold's alone. The text is ON the screen
+                    // here, so the caller's own contract is answerable by construction; arming a
+                    // composer read beside it would buy a channel nothing needs and pay a
+                    // supervisor read for every ordinary delivery there is."* Every clause of it
+                    // was wrong in the same direction. The caller's contract on this road is
+                    // `Took`, which EXPIRES — *answerable by construction* is true of the screen
+                    // and not of the account — and over the 78 runs of this repository's loop whose
+                    // build carried both counters, `unsubmitted` was **52** against `unreported`
+                    // **0**: every refusal there is happens here, and the channel *nothing needs*
+                    // is the only converging one this road could have had.
+                    //
+                    // ⚠ It pays no read: `Took` already takes the `pane_agent_state` this is armed
+                    // out of, which is why the guard is the SAME one the fold road uses. A delivery
+                    // whose peer cannot report reaches neither.
+                    //
+                    // ⚠⚠ THE SAME WINDOW, for the fold road's reason: a second duration here would
+                    // be a bound nobody authored, and the caller sized this one for its peer.
+                    let also = matches!(spec.submitted_when, SubmittedWhen::Took { .. })
+                        .then(|| {
+                            spec.submitted_when
+                                .within()
+                                .map(|within| SubmittedWhen::Emptied { within })
+                        })
+                        .flatten();
+                    match submit(panes, run, pane, text, spec, &mut written, also)? {
                         Seen::No => {
                             return Ok(Delivered::Unsubmitted {
                                 attempts,
@@ -1579,12 +1755,24 @@ pub fn deliver(
                                 wanted: spec.submitted_when,
                             });
                         }
-                        // ⚠⚠ UNREACHABLE BY CONSTRUCTION, AND ANSWERED RATHER THAN IGNORED —
-                        // register item 762. `Seen::LetGo` is the second witness speaking, and this
-                        // road arms none (`also` is `None` four lines up). It is spelled out so
-                        // that a future caller which DOES arm one here has to decide what this road
-                        // means by it, rather than inheriting `Yes`'s answer by a wildcard.
-                        Seen::Yes | Seen::LetGo => {}
+                        // ⛔⛔⛔⛔⛔ **AND HERE IS THAT DECISION** — register item 889. What stood
+                        // here read *"UNREACHABLE BY CONSTRUCTION … spelled out so that a future
+                        // caller which DOES arm one here has to decide what this road means by it,
+                        // rather than inheriting `Yes`'s answer by a wildcard"*, and this is the
+                        // caller it was written for.
+                        //
+                        // What this road means by it: the composer was SHOWING this delivery's own
+                        // text and has stopped, so a question carrying it was asked — and the agent
+                        // never named it, which is the one thing `Confirmed` would claim and this
+                        // cannot. So it is its own answer rather than `Yes`'s: a run reading
+                        // `Confirmed` here would be told the peer's account arrived.
+                        Seen::LetGo => {
+                            return Ok(Delivered::Emptied {
+                                attempts,
+                                written: Written::of(written),
+                            });
+                        }
+                        Seen::Yes => {}
                     }
                 }
                 let written = Written::of(written);
@@ -1726,7 +1914,14 @@ fn submit(
     written: &mut u64,
     also: Option<SubmittedWhen>,
 ) -> Result<Seen, PaneError> {
-    let witness = Submission::arm(panes, pane, spec.submitted_when, also, text);
+    let witness = Submission::arm(
+        panes,
+        pane,
+        spec.submitted_when,
+        also,
+        text,
+        spec.needle(text),
+    );
     *written += panes.inject(pane, &spec.then_press)?.bytes();
     Ok(witness.await_landing(panes, run, pane))
 }
@@ -2002,6 +2197,24 @@ struct Submission {
     /// contract is satisfied by an ABSENCE — armed on a pane that was not holding, *it is not
     /// holding now* would be true before the submit was ever pressed.
     holding: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHOSE composer was SHOWING this delivery's own text as the submit went in** —
+    /// [`SubmittedWhen::Emptied`]'s baseline, register item 889.
+    ///
+    /// The agent's name and the needle the box was carrying, kept together because the contract
+    /// asks about both: *the same peer* and *not that text any more*. Splitting them would let a
+    /// pane whose agent changed under the delivery satisfy it by having a different composer.
+    ///
+    /// `None` where the box was not showing this text, as well as where no composer could be found
+    /// at all, and the two are deliberately the same answer — [`holding`](Self::holding)'s rule
+    /// exactly: a contract satisfied by an ABSENCE and armed on a box that never had the text would
+    /// answer yes to a submit that was never pressed.
+    ///
+    /// ⚠⚠ The NEEDLE and not the whole text, and that is not the compromise it looks like: the
+    /// needle is precisely the fragment [`await_text`] just proved is on this screen, so comparing
+    /// the box against anything else would be comparing it against something never established
+    /// there. The whole text is [`Took`](SubmittedWhen::Took)'s to compare, and it wins wherever
+    /// both can speak.
+    showing: Option<(String, String)>,
 }
 
 impl Submission {
@@ -2017,6 +2230,7 @@ impl Submission {
         wanted: SubmittedWhen,
         also: Option<SubmittedWhen>,
         text: &str,
+        needle: &str,
     ) -> Self {
         /// Whether either armed contract is one of the kinds `needs` names.
         fn either(
@@ -2044,6 +2258,7 @@ impl Submission {
                 kind,
                 SubmittedWhen::Stirs { .. }
                     | SubmittedWhen::Released { .. }
+                    | SubmittedWhen::Emptied { .. }
                     | SubmittedWhen::Took { .. }
             )
         })
@@ -2072,6 +2287,29 @@ impl Submission {
                 seen.as_ref()
                     .filter(|seen| seen.holding == Some(true))
                     .and_then(|seen| seen.agent.clone())
+            })
+            .flatten(),
+            // ⛔⛔⛔⛔⛔ AND WHOSE BOX WAS SHOWING THIS DELIVERY'S OWN TEXT — register item 889,
+            // and the same shape as `holding` above with the one difference that matters: the fact
+            // is not a verdict somebody published, it is ROWS, so the comparison happens here where
+            // the text is known. A screen rule could never make it, because an agent paints its own
+            // suggested next prompt where input goes and no state can tell that from a typed one.
+            //
+            // ⚠ `Some(false)`'s discipline, one layer in: `composing` of `None` is *nothing could
+            // say*, and `is_some_and` leaves the baseline unarmed for it rather than reading it as
+            // a box that was not showing anything.
+            showing: either(wanted, also, |kind| {
+                matches!(kind, SubmittedWhen::Emptied { .. })
+            })
+            .then(|| {
+                seen.as_ref()
+                    .filter(|seen| {
+                        seen.composing
+                            .as_deref()
+                            .is_some_and(|box_| squeezed(box_).contains(&squeezed(needle)))
+                    })
+                    .and_then(|seen| seen.agent.clone())
+                    .map(|agent| (agent, needle.to_owned()))
             })
             .flatten(),
             agent: seen.and_then(|seen| seen.agent.map(|agent| (agent, seen.seq))),
@@ -2182,6 +2420,31 @@ impl Submission {
                             // answering, which is the inversion every absence in this crate is
                             // written to avoid.
                             seen.agent.as_deref() == Some(addressed) && seen.holding == Some(false)
+                        }),
+                )
+            }
+            // ⚠⚠⚠ THE ABSENCE IS THE ANSWER HERE TOO — register item 889, and the baseline is not
+            // optional for the reason stated one arm up: `None` means the box was not showing this
+            // text when the submit went in, and *it is not showing it now* was already true.
+            SubmittedWhen::Emptied { .. } => {
+                let (addressed, needle) = self.showing.as_ref()?;
+                Some(
+                    panes
+                        .supervision()
+                        .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
+                        .is_some_and(|seen| {
+                            // ⚠ NO `seq` COMPARISON, for `Released`'s reason exactly: this is a
+                            // PROPERTY of the pane now, and asking for a published change as well
+                            // would put back the event dependency the kind exists to drop.
+                            // ⚠⚠ AND `is_some_and` ON THE ROWS, never `!= Some(carrying it)`: a
+                            // composer this build could not find is *nothing could say*, and
+                            // reading it as *the box let go* would confirm a submit off a screen
+                            // that had simply stopped being readable.
+                            seen.agent.as_deref() == Some(addressed.as_str())
+                                && seen
+                                    .composing
+                                    .as_deref()
+                                    .is_some_and(|box_| !squeezed(box_).contains(&squeezed(needle)))
                         }),
                 )
             }
@@ -2449,6 +2712,7 @@ mod tests {
             Some(crate::access::AgentObservation {
                 state: last.0,
                 holding: None,
+                composing: None,
                 agent: Some(
                     match (working, publishes) {
                         (true, Publishes::AsSomebodyElse) => "somebody-else",
@@ -3113,6 +3377,10 @@ mod tests {
                 } else {
                     self.composer.0
                 },
+                // ⚠ NOTHING COULD SAY, which is what every gate over this double meant by saying
+                // nothing about a composer's rows — register item 889, and `Composing::painting`
+                // is where those are staged.
+                composing: None,
                 agent: Some("claude".to_owned()),
                 authority: crate::access::Authority::Reported {
                     source: "hook:claude".to_owned(),
@@ -3207,6 +3475,27 @@ mod tests {
         /// Whether it is STILL holding once the submit has been injected. `true` is THE JAM: the
         /// keystroke went out and the prompt is sitting there.
         holding_after: bool,
+        /// ⛔⛔⛔⛔⛔ **WHAT THE BOX'S ROWS SAY, BEFORE THE SUBMIT AND AFTER IT** — register item
+        /// 889, and the staging [`SubmittedWhen::Emptied`] is measured over.
+        ///
+        /// [`None`] is *nothing could say*, which is what every gate written before this field
+        /// existed means by saying nothing about the rows — so their answers stay exactly as
+        /// measured, and a fixture has to OPT IN to arming the second composer contract.
+        ///
+        /// ⚠⚠ It is deliberately independent of [`holding_before`](Self::holding_before): the whole
+        /// population this contract is for is the pane whose box carries a prompt too short to
+        /// paint a placeholder, so `holding` is `false` there while these rows are full.
+        ///
+        /// ⛔⛔⛔⛔⛔ **AND THE SECOND HALF IS AN [`Option`] BECAUSE A MUTATION SAID SO.** With a
+        /// plain pair, *nothing could say* could only be staged from the START — and a fixture
+        /// blind from the start never arms the baseline, so the judging comparison is never
+        /// reached. Mutating *the box says it is not showing it* into *the box does not say it is
+        /// showing it* left every gate in this file GREEN, measured; it is the identical dead
+        /// control [`blind_after`](Self::blind_after) exists for one contract over. `Some(None)`
+        /// here is the reading going away AFTER the keystroke — a daemon that stopped answering,
+        /// a screen that stopped carrying a marker — and it is the only staging where reading the
+        /// absence as satisfied would confirm a submit that never landed.
+        box_rows: Option<(String, Option<String>)>,
         /// How many times the supervisor has been asked, so a gate can assert that a contract
         /// nothing could answer was refused AT ONCE rather than after its window.
         looks: Mutex<u32>,
@@ -3223,6 +3512,29 @@ mod tests {
                 blind_after: false,
                 holding_before: true,
                 holding_after: false,
+                box_rows: None,
+                looks: Mutex::new(0),
+            }
+        }
+
+        /// ⛔⛔⛔⛔⛔ **A PANE WHOSE COMPOSER PAINTED THE PROMPT AND THEN LET GO OF IT** — register
+        /// item 889, and the road [`releasing`](Self::releasing) cannot stage.
+        ///
+        /// The prompt is short enough to sit in the box as itself, so **no placeholder is painted
+        /// and `holding` is `false` at both ends** — which is exactly why
+        /// [`SubmittedWhen::Released`] is unarmable here and the whole reason this fixture is not
+        /// the one above with a flag flipped. The peer REPORTS (the population a supervisor drives,
+        /// and what promotes the submit contract to `Took`) and its hooks name no question, so the
+        /// account expires: without the second witness this delivery is `Unsubmitted`.
+        fn painting(text: &str) -> Self {
+            Self {
+                inner: Recorder::showing(text),
+                reported: true,
+                blind: false,
+                blind_after: false,
+                holding_before: false,
+                holding_after: false,
+                box_rows: Some((format!("❯ {text}"), Some("❯".to_owned()))),
                 looks: Mutex::new(0),
             }
         }
@@ -3306,6 +3618,20 @@ mod tests {
                 // repair: the fact lives in a slot the arbitration does not touch, so it survives
                 // a report standing over it.
                 holding: (!cannot_say).then_some(holding),
+                // ⛔⛔⛔⛔⛔ AND THE ROWS, register item 889 — staged only where a fixture asked
+                // for them, so every gate written before this field reads *nothing could say* and
+                // answers exactly as it was measured.
+                composing: (!cannot_say)
+                    .then(|| {
+                        self.box_rows.as_ref().and_then(|(before, after)| {
+                            if submitted {
+                                after.clone()
+                            } else {
+                                Some(before.clone())
+                            }
+                        })
+                    })
+                    .flatten(),
                 agent: Some("claude".to_owned()),
                 authority: if self.reported {
                     crate::access::Authority::Reported {
@@ -3597,6 +3923,178 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A PROMPT TOO SHORT TO FOLD IS JUDGED BY THE BOX AS WELL** — register item 889,
+    /// and the road every one of this repository's refusals was actually on.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the gate above could not have caught this
+    ///
+    /// Every fixture in the test before this one FOLDS: `holding` is `true` at the baseline,
+    /// because `AgentState::Holding` is read off the placeholder an agent paints for a paste too
+    /// long to show inline. A prompt that sits in the box AS ITSELF paints no placeholder, so
+    /// `holding` is `false` at both ends and [`SubmittedWhen::Released`] is unarmable — the bound
+    /// its own doc states.
+    ///
+    /// **And that is where the failures are.** Measured over the 78 runs of this repository's loop
+    /// whose build carried both delivery counters: `folded` 592 with `unreported` **0**, against
+    /// `unsubmitted` **52**. The folded road refused nothing; the painted road refused fifty-two
+    /// times with only the agent's account to wait on, and that account EXPIRES. So a run whose
+    /// peer simply reported late replaced a session that was working on the question.
+    ///
+    /// # ⚠⚠⚠ The staging, and each half of it is load-bearing
+    ///
+    /// * `holding` is **false at both ends** — no placeholder, so the neighbouring contract cannot
+    ///   carry this and a green here is this contract's own doing.
+    /// * `seq` is **frozen**, so [`SubmittedWhen::Stirs`] cannot carry it either.
+    /// * the agent **names no question**, so [`SubmittedWhen::Took`] — the primary, and what the
+    ///   product promotes to for a reporting peer — expires exactly as it does in the live runs.
+    ///
+    /// ⚠ The control is the second half: the box that is STILL showing the prompt after the Enter
+    /// is the jam this contract must not confirm, and it is the same fixture with one field moved.
+    #[test]
+    fn a_prompt_the_composer_painted_and_then_let_go_of_is_a_submit() {
+        const PAINTED: &str = "ORTHOGONAL-889";
+
+        let painting = Composing::painting(PAINTED);
+        let landed = painting.deliver_under(PAINTED, &asking_once());
+        assert!(
+            matches!(landed, Delivered::Emptied { .. }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: this composer PAINTED the prompt, the Enter went out, and \
+             the box stopped showing it — so a question carrying this text was asked. The agent \
+             never named it, which is the 3.5 % of turn prompts this loop wedges on, and before \
+             this contract the only answer available was `Unsubmitted`: the run then replaced a \
+             session that had the question all along. Got {landed:?}",
+        );
+        assert_eq!(
+            Witnessed::of(landed).map(Witnessed::landing),
+            Some(Landing::Asked),
+            "and the road it publishes must say a question was asked, or the run's landing count \
+             is still missing every delivery this contract saved",
+        );
+        assert!(
+            !Witnessed::of(landed).is_some_and(Witnessed::folded_away),
+            "⚠⚠ AND IT IS NOT A FOLD, which is the whole difference from `LetGo`: this prompt WAS \
+             on that pane, and filing it as a fold would spend the run's fold budget — the thing \
+             that stops a run for a person — on a delivery that folded nothing",
+        );
+
+        // ── AND THE STAGING IS WHAT THE FIXTURE CLAIMS, or the arm above proves nothing ──
+        //
+        // ⚠⚠⚠⚠⚠ A pane still publishing `holding: true` would be carried by `Released`, and a
+        // `seq` that moved would be carried by `Stirs`. Both are asserted rather than trusted,
+        // because a fixture that quietly grew either would turn this gate into a second measurement
+        // of a contract that already had one.
+        let seen = crate::access::PaneSupervision::pane_agent_state(&painting, PaneId(1))
+            .seen()
+            .expect("this double always answers");
+        assert_eq!(
+            (seen.holding, seen.seq, seen.asked.as_deref()),
+            (Some(false), 0, None),
+            "⛔⛔⛔ THE STAGING: no placeholder (so `Released` is unarmable), no published change \
+             (so `Stirs` cannot speak) and no account (so `Took` expires). If any of these moves, \
+             the arm above is green for a contract that is not the one under test: {seen:?}",
+        );
+
+        // ── AND A BOX THAT IS STILL SHOWING THE PROMPT IS A JAM, NOT A SUBMIT ──
+        //
+        // ⛔⛔⛔⛔ The mirror of the arm above and the reason this contract is not just *answer yes
+        // on the painted road*: the Enter went out, the prompt is sitting in that composer, and a
+        // run told the question landed would wait out a turn nobody started. This is the live state
+        // register item 446 was filed for, and it must still be `Unsubmitted`.
+        let jammed = Composing {
+            box_rows: Some((format!("❯ {PAINTED}"), Some(format!("❯ {PAINTED}")))),
+            ..Composing::painting(PAINTED)
+        };
+        let stuck = jammed.deliver_under(PAINTED, &asking_once());
+        assert!(
+            matches!(
+                stuck,
+                Delivered::Unsubmitted {
+                    wanted: SubmittedWhen::Took { .. },
+                    ..
+                },
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: the box is STILL showing this prompt after the Enter, so \
+             nothing was asked. A landing here means the contract stopped reading the rows and \
+             started answering yes to any painted delivery whose peer reports. Got {stuck:?}",
+        );
+
+        // ── AND *NOTHING COULD SAY* IS REFUSED RATHER THAN READ AS *THE BOX LET GO* ──
+        //
+        // ⛔⛔⛔⛔⛔ A pane whose screen carries no composer marker, or a daemon too old to send the
+        // rows, arrives as an ABSENT reading — and during a rollout that is the common case. Read
+        // as the satisfied side it would confirm a submit off an instrument that had merely stopped
+        // answering, which is the inversion every absence in this crate is written against.
+        //
+        // ⛔⛔⛔⛔⛔ **THE READING GOES AWAY *AFTER* THE KEYSTROKE, AND THAT IS THE WHOLE STAGING —
+        // MEASURED.** Written the obvious way — no rows at all, from the start — this arm was a
+        // DEAD CONTROL: the baseline is never armed, so the judging comparison is never reached,
+        // and mutating it from *the box says it is not showing it* to *the box does not say it is
+        // showing it* left every gate in this file green. It is the identical shape
+        // `Composing::blind_after` exists for one contract over, and it was found here the same
+        // way: by running the mutation.
+        let went_away = Composing {
+            box_rows: Some((format!("❯ {PAINTED}"), None)),
+            ..Composing::painting(PAINTED)
+        };
+        let unanswerable = went_away.deliver_under(PAINTED, &asking_once());
+        assert!(
+            matches!(
+                unanswerable,
+                Delivered::Unsubmitted {
+                    wanted: SubmittedWhen::Took { .. },
+                    ..
+                },
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: this box was showing the prompt when the Enter went in \
+             and nothing could read it afterwards, so where that prompt is now is unknown. A \
+             landing here reads *nobody could look* as *the box let go* and settles a submit on \
+             the disappearance of the instrument. Got {unanswerable:?}",
+        );
+
+        // ⚠ And the same for a box that could never be read at all — the arming half of the same
+        // absence, kept beside the arm above rather than instead of it: one shows the baseline
+        // refuses, the other shows the COMPARISON does.
+        let unreadable = Composing {
+            box_rows: None,
+            ..Composing::painting(PAINTED)
+        };
+        let never_read = unreadable.deliver_under(PAINTED, &asking_once());
+        assert!(
+            matches!(
+                never_read,
+                Delivered::Unsubmitted {
+                    wanted: SubmittedWhen::Took { .. },
+                    ..
+                },
+            ),
+            "⛔⛔⛔⛔ REGISTER ITEM 889: nothing here can say what that box is showing, so nothing \
+             it reports later is evidence about this keystroke. Got {never_read:?}",
+        );
+
+        // ── AND A BOX SHOWING SOMEBODY ELSE'S TEXT NEVER ARMS IT ──
+        //
+        // ⚠⚠⚠⚠⚠ *The box is not showing my text now* is trivially true of a box that never had it,
+        // and an agent PAINTS ITS OWN SUGGESTED NEXT PROMPT where input goes — a real screen this
+        // workspace has captured. Armed against that, this contract would confirm a submit that was
+        // never pressed, which is the failure `Released`'s baseline rule exists to prevent.
+        let somebody_else = Composing {
+            box_rows: Some(("❯ stop the loop".to_owned(), Some("❯".to_owned()))),
+            ..Composing::painting(PAINTED)
+        };
+        let never_armed = somebody_else.deliver_under(PAINTED, &asking_once());
+        assert!(
+            matches!(
+                never_armed,
+                Delivered::Unsubmitted {
+                    wanted: SubmittedWhen::Took { .. },
+                    ..
+                },
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: that box was never showing THIS delivery's text, so its \
+             emptying says nothing about this keystroke. Got {never_armed:?}",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **A COMPOSER BASELINE IS NEVER ARMED WITHOUT AN AGENT BASELINE** — register item
     /// 762, and the predicate that explains why one half of [`Submission::landed`]'s rule cannot be
     /// mutated red.
@@ -3614,6 +4112,10 @@ mod tests {
     /// and the rule up there stops being decoration.
     #[test]
     fn a_composer_baseline_is_never_armed_without_an_agent_baseline() {
+        /// The text this pane's box is both showing and being delivered — so `Emptied`'s baseline
+        /// would arm here if the identity were not what stops it.
+        const NAMELESS_BOX: &str = "ORTHOGONAL-762";
+
         /// A supervisor whose pane is holding a paste and whose observation names NOBODY — the one
         /// shape that could arm a composer baseline while leaving the agent one empty.
         struct Nameless;
@@ -3625,6 +4127,9 @@ mod tests {
                     // ⚠ THE COMPOSER SAYS YES and the identity says nothing, which is the pair
                     // this gate exists to hold apart.
                     holding: Some(true),
+                    // ⚠ AND SO DOES THE BOX — register item 889. The same pairing one contract
+                    // over: a reading that could arm `Emptied` while the identity says nothing.
+                    composing: Some(NAMELESS_BOX.to_owned()),
                     agent: None,
                     authority: crate::access::Authority::Scraped { rule: None },
                     seq: 0,
@@ -3669,31 +4174,43 @@ mod tests {
             }
         }
 
-        let watched = Watched(Recorder::showing("ORTHOGONAL-762"), Nameless);
-        let armed = Submission::arm(
-            &watched,
-            PaneId(1),
-            SubmittedWhen::Took {
+        let watched = Watched(Recorder::showing(NAMELESS_BOX), Nameless);
+        for second in [
+            SubmittedWhen::Released {
                 within: Duration::from_millis(1),
             },
-            Some(SubmittedWhen::Released {
+            SubmittedWhen::Emptied {
                 within: Duration::from_millis(1),
-            }),
-            "ORTHOGONAL-762",
-        );
-        assert!(
-            armed.agent.is_none(),
-            "the staging: this observation must name NOBODY, or the implication below is being \
-             checked on a pane that has an identity after all",
-        );
-        assert!(
-            armed.holding.is_none(),
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: an observation that names no agent must arm NO composer \
-             baseline, because a claim about *this peer's* composer needs to know which peer that \
-             is. It is also what makes `landed`'s untested half safe — the day this holds a value, \
-             `Never` taken off the primary contract alone starts abandoning waits the composer \
-             could have answered",
-        );
+            },
+        ] {
+            let armed = Submission::arm(
+                &watched,
+                PaneId(1),
+                SubmittedWhen::Took {
+                    within: Duration::from_millis(1),
+                },
+                Some(second),
+                NAMELESS_BOX,
+                NAMELESS_BOX,
+            );
+            assert!(
+                armed.agent.is_none(),
+                "the staging: this observation must name NOBODY, or the implication below is \
+                 being checked on a pane that has an identity after all",
+            );
+            assert!(
+                armed.holding.is_none() && armed.showing.is_none(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 762, AND 889 FOR THE SECOND BASELINE: an observation that \
+                 names no agent must arm NO composer baseline, because a claim about *this peer's* \
+                 composer needs to know which peer that is. It is also what makes `landed`'s \
+                 untested half safe — the day either of these holds a value, `Never` taken off the \
+                 primary contract alone starts abandoning waits the composer could have answered. \
+                 Second witness {second:?}, agent {:?} holding {:?} showing {:?}",
+                armed.agent,
+                armed.holding,
+                armed.showing,
+            );
+        }
     }
 
     /// ⛔⛔⛔⛔⛔ **A DELIVERY IS A REFUSAL EXACTLY WHERE IT WITNESSES NOTHING** — register item 762,
@@ -5358,6 +5875,7 @@ mod tests {
                 Some(crate::access::AgentObservation {
                     state: sprag_detect::AgentState::Working,
                     holding: None,
+                    composing: None,
                     agent: Some("claude".to_owned()),
                     authority: crate::access::Authority::Reported {
                         source: "test".to_owned(),

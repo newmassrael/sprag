@@ -2034,6 +2034,7 @@ mod tests {
                 let (state, agent) = reported.lock().unwrap().clone();
                 Some(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state,
                     agent,
                     authority: crate::access::Authority::Reported {
@@ -3080,6 +3081,7 @@ mod tests {
             fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
                 crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
                     holding: None,
+                    composing: None,
                     state: AgentState::Blocked,
                     agent: Some("claude".to_owned()),
                     // ⚠ The SCREEN-read authority, deliberately: the settle window is a property
@@ -4521,6 +4523,7 @@ mod tests {
         let source = Arc::new(|_id: PaneId| {
             Some(crate::access::AgentObservation {
                 holding: None,
+                composing: None,
                 state: AgentState::Blocked,
                 agent: Some("claude".to_string()),
                 authority: crate::access::Authority::Reported {
@@ -4600,6 +4603,7 @@ mod tests {
         let source = Arc::new(|_id: PaneId| {
             Some(crate::access::AgentObservation {
                 holding: None,
+                composing: None,
                 state: AgentState::Blocked,
                 agent: Some("claude".to_string()),
                 authority: crate::access::Authority::Reported {

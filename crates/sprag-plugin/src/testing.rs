@@ -508,6 +508,7 @@ pub(crate) fn peer_settling(script: String, settle: Duration) -> (WorkspacePaneA
                 let settling = seen.is_some_and(|at| at.elapsed() < settle);
                 Some(AgentObservation {
                     holding: None,
+                    composing: None,
                     state: if asking.is_some() || settling {
                         AgentState::Blocked
                     } else {
@@ -622,6 +623,7 @@ fn settling_peer(settle: Duration, publishes: bool) -> (WorkspacePaneAccess, Pan
             let since = *began.get_or_insert_with(std::time::Instant::now);
             Some(AgentObservation {
                 holding: None,
+                composing: None,
                 // ⚠⚠ THE ONLY MOVING PART, AND IT IS A CLOCK. Nothing the pane does changes this.
                 state: if since.elapsed() < settle {
                     AgentState::Blocked
@@ -2757,6 +2759,7 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
                 let settling = seen.is_some_and(|at| at.elapsed() < FIXTURE_SETTLE);
                 Some(AgentObservation {
                     holding: None,
+                    composing: None,
                     state: if asking.is_some() || settling {
                         AgentState::Blocked
                     } else {
@@ -2841,6 +2844,7 @@ impl DialogBetweenTheReads {
                     && !grace.swap(false, std::sync::atomic::Ordering::AcqRel);
                 Some(AgentObservation {
                     holding: None,
+                    composing: None,
                     state: if blocked {
                         AgentState::Blocked
                     } else {
@@ -2941,6 +2945,7 @@ impl AsksOnceItsTurnIsJudged {
                     let seq = latched(&high, id, &rows);
                     Some(AgentObservation {
                         holding: None,
+                        composing: None,
                         state: if blocked {
                             AgentState::Blocked
                         } else {
@@ -3092,6 +3097,7 @@ fn supervised_told_by(
             let showing = *state.lock().expect("the state this gate is holding");
             Some(crate::access::AgentObservation {
                 holding: None,
+                composing: None,
                 state: showing,
                 // ⚠⚠ ONLY ONCE THIS PANE HAS SHOWN SOMETHING A MANIFEST WOULD CLAIM IT BY — see
                 // [`names_an_agent`], and the same reason as its sibling above: `Settles` names an
@@ -3140,6 +3146,7 @@ pub(crate) fn supervised_writing(
             let seq = latched(&high, id, &rows);
             Some(crate::access::AgentObservation {
                 holding: None,
+                composing: None,
                 state: AgentState::Idle,
                 // ⚠ This one raises no dialog at all, so its whole evidence is the announcement —
                 // see [`names_an_agent`].

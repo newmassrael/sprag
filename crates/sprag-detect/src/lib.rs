@@ -636,7 +636,11 @@ fn bottom_lines(screen: &Screen, n: u16) -> String {
 /// `a_marked_line_and_an_unrelated_numbered_line_are_not_a_menu` is that difference, driven.
 #[cfg(test)]
 fn dialog_pattern() -> Regex {
-    Regex::new(r"(?m)^\s*[❯›>]\s+\d+\.[\s\S]*?^\s*\d+\.").expect("a literal pattern compiles")
+    Regex::new(&format!(
+        r"(?m)^\s*{}\s+\d+\.[\s\S]*?^\s*\d+\.",
+        marker_class()
+    ))
+    .expect("a literal pattern compiles")
 }
 
 /// The Braille Patterns block, which every frame of the spinner is drawn from.
@@ -725,9 +729,28 @@ pub const DIALOG_WINDOW: u16 = 12;
 ///
 /// ⚠ Its own constant rather than [`DIALOG_WINDOW`] although the two numbers agree today. That one
 /// is shared BECAUSE its readers must agree — a dialog rule and the fingerprint conjunction beside
-/// it have to be looking at the same screen. This one has a single reader and a different
-/// measurement behind it, so widening one must not silently widen the other.
-const COMPOSER_WINDOW: u16 = 12;
+/// it have to be looking at the same screen. This one has a different measurement behind it, so
+/// widening one must not silently widen the other.
+///
+/// ⚠⚠ PUBLIC since register item 889, for [`DIALOG_WINDOW`]'s reason exactly: [`composer`] reads
+/// the region this bounds, and a caller outside this crate must be able to ask in the same one
+/// rather than re-spelling a number nobody re-measured.
+pub const COMPOSER_WINDOW: u16 = 12;
+
+/// The glyphs an agent marks its COMPOSER's own row with — the anchor every reader of that row
+/// shares.
+///
+/// # ⛔⛔⛔ One spelling, because two would drift the day an agent changes its marker
+///
+/// `held_paste_pattern` builds a character class out of these to find a FOLD placeholder, and
+/// [`composer`] finds the same row to read what is IN it. Two literals would be two answers to
+/// *where does the composer begin*, and a fold reader and a content reader disagreeing about that
+/// is a defect neither could show on its own.
+///
+/// ⚠ Three glyphs and not one: `claude` paints `❯`, `codex` paints `›`, and `>` is the fallback a
+/// terminal that can draw neither is left with. All three are on real screens this module's
+/// fixtures were captured from.
+pub const COMPOSER_MARKERS: [char; 3] = ['❯', '›', '>'];
 
 /// The placeholder an agent's composer paints in place of a paste too long to show inline.
 ///
@@ -765,12 +788,98 @@ const COMPOSER_WINDOW: u16 = 12;
 /// long enough to fold, which is why the fold was discovered by one failing on it — and it is the
 /// wrong one for a person typing a word by hand.
 ///
-/// Anchored to the composer's own prompt marker (`❯`, and `›`/`>` for the agents and versions that
-/// spell it that way) rather than matched anywhere in the window, because THIS repository's agents
-/// discuss this placeholder in prose: an unanchored needle would fire on a pane whose agent was
-/// merely talking about one.
+/// Anchored to the composer's own prompt marker ([`COMPOSER_MARKERS`]) rather than matched anywhere
+/// in the window, because THIS repository's agents discuss this placeholder in prose: an unanchored
+/// needle would fire on a pane whose agent was merely talking about one.
+///
+/// ⚠ The class is BUILT from that constant rather than retyped — register item 889. The same three
+/// glyphs were spelled out here and again in the dialog pattern, and [`composer`] would have made a
+/// third copy of the one fact they share: where an agent's composer row begins.
 fn held_paste_pattern() -> Regex {
-    Regex::new(r"(?m)^\s*[❯›>]\s*\[Pasted text[^\]]*\]").expect("a literal pattern compiles")
+    Regex::new(&format!(
+        r"(?m)^\s*{}\s*\[Pasted text[^\]]*\]",
+        marker_class()
+    ))
+    .expect("a literal pattern compiles")
+}
+
+/// [`COMPOSER_MARKERS`] as a regex character class — the one place that translation happens.
+fn marker_class() -> String {
+    let inside: String = COMPOSER_MARKERS
+        .iter()
+        .map(|&ch| regex::escape(&ch.to_string()))
+        .collect();
+    format!("[{inside}]")
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT THE COMPOSER'S OWN ROWS SAY** — register item 889, and the reading that lets a
+/// prompt TOO SHORT TO FOLD be judged by something that converges.
+///
+/// # ⛔⛔⛔⛔⛔ Why the screen as a whole cannot answer this
+///
+/// A submitted message is STILL ON THE SCREEN — `claude` expands it into the transcript the moment
+/// it leaves the box, and the fixtures this is gated on are the same pane one Enter apart. So *is
+/// my text on this pane* has the same answer before and after the press, and it is the reason
+/// [`AgentState::Holding`] was anchored to a PLACEHOLDER: the placeholder is the composer's alone.
+///
+/// A prompt short enough to sit inline paints no placeholder, so that anchor cannot see it — the
+/// limit `held_paste_pattern` states about itself. What IS still true of a short prompt is that
+/// the composer's own rows carry it and the transcript's do not, and this function is the region
+/// that difference lives in: from the bottom-most row marked with a [`COMPOSER_MARKERS`] glyph,
+/// down. A caller holding the text it typed can then ask whether the box still has it.
+///
+/// # ⚠⚠⚠ It reads SHARES, not rows, and that is what makes the answer comparable
+///
+/// A terminal soft-wraps a long composer line across rows, and rejoining those rows with a newline
+/// would put a break through the middle of a word — so a needle that IS in the box would read as
+/// absent. `Screen::row_share_text` is the reading that undoes the terminal's wrapping and only the
+/// terminal's, which is the same one `pane_collapsed` is built from, so a needle findable there is
+/// findable here.
+///
+/// # ⛔⛔⛔⛔⛔ It has NO WINDOW, and [`COMPOSER_WINDOW`] is the measurement that says why
+///
+/// That constant bounds how far up a FOLD PLACEHOLDER may sit, and twelve was measured off a box
+/// holding one — three rows from the bottom, six with three lines typed under it. **A box holding a
+/// prompt INLINE is as tall as the prompt.** Measured on this module's own capture: 260 bytes over
+/// twelve lines puts the marker **fourteen** non-empty rows up, and the loop whose deliveries this
+/// serves sends prompts four times that size. A window sized for the placeholder stops finding the
+/// box exactly where the box is full, which is the population this reader exists for — so the bound
+/// is the visible screen, and any smaller number would be one nobody measured.
+///
+/// ⚠ The marker is taken from the BOTTOM up, which is what makes an unbounded scan safe: the
+/// composer is the lowest thing an agent paints above its footer, so a marker found further up is
+/// only ever reached when no composer is visible at all. The region then STARTS higher and contains
+/// the box, so a caller asking *has my text left the box* gets *not yet* — the direction that
+/// declines to claim a landing.
+///
+/// # ⚠⚠⚠ A DIALOG'S CURSOR IS THE SAME GLYPH, and the answer is right anyway
+///
+/// A choice list marks its selected option with the composer's own marker (this crate's
+/// `dialog_pattern` is built from the same constant), so on a blocked pane this returns the
+/// OPTIONS. Measured, on this
+/// workspace's own fixture. It is the reading rather than a defect, because this function publishes
+/// rows and decides nothing: a caller asking *is the text I typed still in that box* gets **no**,
+/// which is exactly right — an agent that put a dialog up did so while working on the question it
+/// was asked. What it must never do is invite a reader to take these rows as a STATE; that is
+/// [`AgentState::Holding`]'s job and it stays anchored to the placeholder.
+///
+/// # ⚠⚠ [`None`] is *nothing could say*, and never *the composer is empty*
+///
+/// No marker anywhere is a pane whose composer this cannot find — a program that is not one of
+/// these agents, a screen not yet painted, a modal that draws neither. A contract resting on this
+/// must refuse rather than read the absence as a release: *the box no longer holds my text* is
+/// trivially true of a box nobody located.
+#[must_use]
+pub fn composer(screen: &Screen) -> Option<String> {
+    (0..screen.rows())
+        .rev()
+        .map(|row| (row, screen.row_share_text(row)))
+        .find(|(_, text)| text.trim_start().starts_with(&COMPOSER_MARKERS[..]))
+        .map(|(row, _)| {
+            (row..screen.rows())
+                .map(|below| screen.row_share_text(below))
+                .collect()
+        })
 }
 
 /// The built-in manifest for Anthropic's `claude` CLI, derived from R249's measurements.
@@ -1513,6 +1622,108 @@ mod tests {
              known bound and not a passing grade — the twelve rows are right there on the \
              screen: {v:?}",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ROWS THE STATE CANNOT SEE ARE STILL READABLE, AND THE TRANSCRIPT'S ARE NOT
+    /// AMONG THEM** — register item 889, and the pair of screens that makes [`composer`] worth
+    /// having.
+    ///
+    /// The test above names the bound: a prompt short enough to sit inline is held with no
+    /// placeholder, so no STATE can be published for it. What this asks is the question a delivery
+    /// actually has — *is the text I typed still in that box* — and it is answerable on exactly the
+    /// screens the state is not.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The control is the whole of it, and it is not the same screen
+    ///
+    /// [`SUBMITTED_PASTE`] is a real capture of a pane one Enter after its prompt went in, and the
+    /// prompt's own words are STILL ON IT — expanded into the transcript, two rows of them. A
+    /// reader that asked *is my text on this pane* would answer yes there and would therefore never
+    /// be able to say a submit landed. Scoped to the composer's own rows, the same screen answers
+    /// no, and that difference is the only reason a converging contract can exist for a short
+    /// prompt at all.
+    ///
+    /// ⚠ [`SUGGESTED_NEXT_PROMPT`] is the third screen and it is a MISS of a different kind: the
+    /// box has a row nobody typed, so this reader must find it (there IS a composer) and a caller
+    /// comparing its own text must still get *no*. Reading the region and deciding the state are
+    /// different jobs, and this is what keeps them apart.
+    ///
+    /// ⛔⛔⛔⛔ **AND THE FIRST SCREEN IS WHY THIS READER TAKES NO WINDOW.** Written with
+    /// [`COMPOSER_WINDOW`] it FAILED here: the inline prompt's marker sits **fourteen** non-empty
+    /// rows from the bottom and that constant is twelve, because twelve was measured off a box
+    /// holding a PLACEHOLDER. The bound that fits a folded paste is the wrong bound for a box
+    /// holding the prompt itself, and this fixture is the measurement that says so.
+    #[test]
+    fn the_composers_own_rows_are_readable_when_no_placeholder_is_painted() {
+        let held = painted(HELD_INLINE_PROMPT);
+        assert!(
+            HELD_INLINE_PROMPT.len() - 1 > usize::from(COMPOSER_WINDOW),
+            "⛔⛔⛔ the marker on this capture sits further up than the placeholder window \
+             reaches, which is the whole reason `composer` takes no window. If this ever stops \
+             holding, the fixture has been shortened and the bound is no longer being measured",
+        );
+        let box_ = composer(held.screen()).expect("this screen has a composer marker");
+        assert!(
+            box_.contains("HOLDPROBE line one") && box_.contains("reply with the single word OK"),
+            "⚠⚠⚠ the composer is holding twelve rows of a prompt nobody submitted, and every one \
+             of them is below its marker. If this region cannot carry them, register item 889's \
+             contract has nothing to be armed against: {box_:?}",
+        );
+
+        let submitted = painted(SUBMITTED_PASTE);
+        let after = composer(submitted.screen()).expect("an empty composer is still a composer");
+        assert!(
+            !after.contains("HOLDPROBE"),
+            "⛔⛔⛔⛔⛔ THE PROMPT IS STILL ON THIS SCREEN — the agent expanded it into the \
+             transcript when it was submitted — and the whole point of scoping to the composer's \
+             own rows is that this answer is NO anyway. A region that reaches the transcript makes \
+             *the box let go* unobservable, which is the state this item found the product in: \
+             {after:?}",
+        );
+
+        let suggested = painted(SUGGESTED_NEXT_PROMPT);
+        let painted_row = composer(suggested.screen())
+            .expect("a composer showing the agent's own suggestion is still a composer");
+        assert!(
+            painted_row.contains("stop the loop") && !painted_row.contains("HOLDPROBE"),
+            "⚠⚠ this reader says what the box SHOWS and decides nothing about what the program \
+             HOLDS — a caller comparing its own text is what separates the two, and that is why \
+             widening `AgentState::Holding` was the wrong repair: {painted_row:?}",
+        );
+    }
+
+    /// ⛔⛔⛔ **NOTHING COULD SAY, AND IT MUST NOT READ AS *THE BOX IS EMPTY***.
+    ///
+    /// A screen with no composer marker is one this reader cannot locate a box on. It answers
+    /// [`None`], and a contract resting on it refuses — because *my text is no longer in the box*
+    /// is trivially true of a box nobody found, which is the inversion every absence in this
+    /// workspace is written to avoid.
+    #[test]
+    fn a_screen_with_no_composer_marker_says_nothing_rather_than_empty() {
+        let none = painted(&["waiting for the network", "  still waiting"]);
+        assert_eq!(
+            composer(none.screen()),
+            None,
+            "⚠⚠ a pane whose composer this cannot find is not a pane whose composer is empty",
+        );
+    }
+
+    /// ⛔⛔ **ONE SPELLING OF THE COMPOSER MARKER**, so the fold reader and the content reader
+    /// cannot come to disagree about where the box begins — register item 889.
+    #[test]
+    fn the_fold_pattern_and_the_composer_reader_share_one_marker() {
+        for marker in COMPOSER_MARKERS {
+            let row = format!("{marker} [Pasted text #1 +13 lines]");
+            assert!(
+                held_paste_pattern().is_match(&row),
+                "the fold pattern's class is built from `COMPOSER_MARKERS`, so every glyph in it \
+                 anchors a placeholder: {row:?}",
+            );
+            let screen = painted(&["above", &row, "  footer"]);
+            assert!(
+                composer(screen.screen()).is_some_and(|box_| box_.contains("Pasted text")),
+                "and the same glyph locates the box for the reader beside it: {row:?}",
+            );
+        }
     }
 
     /// ⛔⛔⛔⛔⛔ **A COMPOSER ROW THE PROGRAM DOES NOT HOLD IS NOT A HELD PROMPT** — and this is

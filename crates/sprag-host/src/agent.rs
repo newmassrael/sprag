@@ -133,6 +133,18 @@ pub struct AgentFacts {
     /// [`sprag_detect::Tracker::holding`]. [`None`] is *nothing could say* (no manifest claims this
     /// pane, or the one that does authors no `Holding` rule), never *not holding*.
     pub holding: Option<bool>,
+    /// ⛔⛔⛔⛔⛔ **WHAT THAT COMPOSER IS SHOWING** — register item 889, and the reading
+    /// [`holding`](Self::holding) is a lower bound on.
+    ///
+    /// The boolean above is anchored to the placeholder an agent paints for a paste too long to
+    /// show inline, so a prompt short enough to sit in the box as itself reads `false`. Item 889
+    /// measured the cost: over the 78 runs whose build carried both delivery counters, 52 were
+    /// refused because a submit never became a question and none of them was on the folded road.
+    ///
+    /// ⚠⚠ It carries ROWS and no verdict, because an agent paints its own suggested next prompt
+    /// where input goes — see [`sprag_detect::Tracker::composing`]. [`None`] is *nothing could
+    /// say*, never *the box is empty*.
+    pub composing: Option<String>,
     /// Increments on a published CHANGE, so a client tells "still blocked" from "blocked again"
     /// without diffing strings — `notification_seq`'s treatment.
     pub seq: u64,
@@ -416,6 +428,12 @@ pub fn verdict_json(facts: &AgentFacts) -> serde_json::Value {
     if let Some(holding) = facts.holding {
         value[crate::wire::AGENT_HOLDING_KEY] = serde_json::json!(holding);
     }
+    // AND WHAT THAT COMPOSER IS SHOWING — register item 889. ⚠ Same rule as the key above and for
+    // the same reason: the absence is *nothing could say*, and a contract that read it as *the box
+    // is empty* would confirm a submit that never landed.
+    if let Some(composing) = &facts.composing {
+        value[crate::wire::AGENT_COMPOSING_KEY] = serde_json::json!(composing);
+    }
     // WHO said so, for a verdict that was REPORTED rather than inferred — `rule`'s counterpart on
     // the other kind of evidence. A reported verdict carries no rule and a scraped one carries no
     // source, so a reader never has to guess which authority answered.
@@ -612,6 +630,13 @@ pub fn verdict_of(value: &serde_json::Value, sent: Sent) -> Verdict {
         // a boolean, and both are *nothing could say* — which is what `SubmittedWhen::Released`
         // refuses on rather than reading as *not holding*.
         holding: value[crate::wire::AGENT_HOLDING_KEY].as_bool(),
+        // ⚠⚠⚠ AND WHAT IT IS SHOWING — register item 889, and the hop that lets an out-of-process
+        // driver judge a prompt too short to fold. `as_str()` answers `None` for both an absent key
+        // and a value that is not a string, and both are *nothing could say* — which is what
+        // `SubmittedWhen::Emptied` refuses on rather than reading as *the box is empty*.
+        composing: value[crate::wire::AGENT_COMPOSING_KEY]
+            .as_str()
+            .map(str::to_owned),
         // ⚠ A MISSING counter reads as zero, which is this wire's own rule for it: the four are
         // always written, so an absent one is an older daemon — and *nothing has happened yet* is
         // the reading that makes a supervisor wait rather than conclude.
@@ -873,6 +898,9 @@ impl AgentRegistry {
             // reading is taken on every look including a reported pane's, and it is kept beside the
             // verdict rather than inside it so reading it never moves `seq`. Register item 762.
             holding: tracker.holding(),
+            // ⚠ AND THE ROWS FROM THE SAME LOOK — register item 889. The tracker takes both facts
+            // out of one screen read so they cannot date to different moments.
+            composing: tracker.composing().map(str::to_owned),
             seq: tracker.seq(),
             asked_seq: tracker.asked_seq(),
             said_seq: tracker.said_seq(),

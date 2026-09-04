@@ -2945,6 +2945,35 @@ pub const AGENT_MUTE_KEY: &str = "mute";
 ///   contract resting on it refuse — so a driver behaves exactly as it did before the key existed.
 pub const AGENT_HOLDING_KEY: &str = "holding";
 
+/// The published verdict's key saying **WHAT THAT COMPOSER IS SHOWING** — register item 889, and
+/// the rows [`AGENT_HOLDING_KEY`] is a lower bound on.
+///
+/// # ⛔⛔⛔⛔⛔ Why the boolean beside it was not enough, and what the gap cost
+///
+/// That key is anchored to the PLACEHOLDER an agent paints for a paste too long to show inline, so
+/// a prompt short enough to sit in the box as itself reads `false` there — stated as a bound where
+/// the rule is written, and measured as a cost here: over the 78 runs of this repository's loop
+/// whose build carried both delivery counters, **52 deliveries were refused because the submit
+/// never became a question and NOT ONE of them was on the folded road**. The converging contract
+/// was armed only where nothing ever failed, and fired once.
+///
+/// The box's rows can still be read; what cannot be read off them is a STATE, because an agent
+/// paints its own suggested next prompt where input goes. So this carries the rows and decides
+/// nothing — `sprag_plugin`'s `SubmittedWhen::Emptied` is the caller that turns them into an
+/// answer, by comparing them against the text IT typed.
+///
+/// ⚠ ABSENT is *nothing could say* — no composer marker on the screen, or a pane no manifest
+/// claims — and NEVER *the box is empty*, which is the reading that would confirm a submit that
+/// never landed. Written only where there is a reading, on [`AGENT_HOLDING_KEY`]'s rule.
+///
+/// # ⚠⚠⚠⚠ Why this earned NO [`WIRE_PROTOCOL`] bump, on [`AGENT_HOLDING_KEY`]'s standard
+///
+/// * **NEW daemon → OLD client.** An added answer key is absent-not-wrong to a reader that takes
+///   the keys it knows by name.
+/// * **OLD daemon → NEW client.** The key is absent, which is exactly what makes the contract
+///   resting on it refuse — so a driver behaves as it did before the key existed.
+pub const AGENT_COMPOSING_KEY: &str = "composing";
+
 /// The published verdict's key saying **WHETHER THIS VERDICT IS STILL WAITING TO CHANGE** — one of
 /// [`AGENT_SETTLING_NOTHING`] and [`AGENT_SETTLING_PENDING`], and register item 640's carriage.
 ///
