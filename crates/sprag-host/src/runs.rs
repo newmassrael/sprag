@@ -2785,6 +2785,122 @@ where
     reported.or(cell).map(Into::into)
 }
 
+/// ⛔⛔⛔⛔⛔ **A COUNTER A STORED RUN CARRIES** — register item 895, the closed set `counted`
+/// writes and [`PersistedRun::sampled`] answers about.
+///
+/// ⚠ `counted` is SPELLED rather than linked: it is crate-private and this type is public, so an
+/// intra-doc link to it is `private_intra_doc_links` under `-D warnings` — register item 365, met
+/// again here and refused by the commit hook before this sentence existed.
+///
+/// ⚠ A closed enum with an [`ALL`](Self::ALL) rather than a list at each reader, this workspace's
+/// rule for a vocabulary: a fifth counter added to [`PersistedRun`] and forgotten here is caught by
+/// `every_tally_this_record_carries_is_one_a_population_can_be_asked_about`, which derives the
+/// record's real counter columns from the TYPE and compares them with this array.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tally {
+    /// [`PersistedRun::deliveries`].
+    Deliveries,
+    /// [`PersistedRun::folds_by_reason`].
+    FoldsByReason,
+    /// [`PersistedRun::delivered_by_road`].
+    DeliveredByRoad,
+    /// [`PersistedRun::said_by_sentence`].
+    SaidBySentence,
+}
+
+impl Tally {
+    /// Every counter, in the order [`PersistedRun`] declares them.
+    pub const ALL: [Self; 4] = [
+        Self::Deliveries,
+        Self::FoldsByReason,
+        Self::DeliveredByRoad,
+        Self::SaidBySentence,
+    ];
+
+    /// **THE KEY IT IS STORED UNDER** — the serde field name, so a reader of the file and a reader
+    /// of this type name the same column.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Deliveries => "deliveries",
+            Self::FoldsByReason => "folds_by_reason",
+            Self::DeliveredByRoad => "delivered_by_road",
+            Self::SaidBySentence => "said_by_sentence",
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHETHER A STORED RUN IS IN A POPULATION** — register item 895, and the answer has
+/// THREE arms because two of them were one for as long as nobody wrote this down.
+///
+/// # ⛔⛔⛔⛔⛔ The disease: the predicate was retyped, per reader and per round
+///
+/// Nothing in this product answered *which runs may a rate be taken over*, so every asker wrote
+/// their own filter over the store file. Measured 2026-09-05, and each of these is a real reader:
+///
+/// * `crate::plugins::run_to_json` tested `made > 0 || unsubmitted > 0 || unreported > 0`, which is
+///   [`sprag_plugin::Deliveries::attempted`] re-spelled — the one thing that method's doc forbids.
+/// * Register item 856's baseline summed `made + folded`, which adds a sub-count to its container
+///   and misses both refusals.
+/// * Item 895's own first measurement summed every field.
+/// * Item 856's three rounds each picked a DIFFERENT commit to compare a row's `build` against
+///   (`4537385`, `21c7811`, `49f8333`) to decide whether the instrument existed yet.
+///
+/// ⇒ Two counts of the same population differed **8 against 10** across two askers, and both were
+/// right about their own predicate. **A number nobody can attach a predicate to is not a
+/// measurement**, and that is what this type ends.
+///
+/// # ⛔⛔⛔ Why the middle arm exists rather than being assigned to one of the other two
+///
+/// Register item 891 made *nobody counted* say so — as [`None`] on the column — but its own rule is
+/// that **a column's SHAPE is retroactive and its VALUES are not**: every row the store already
+/// held had been re-serialised with a zeroed table, so for those rows a zero means *counted and
+/// found none* AND *never counted* and the row cannot say which. Measured over the live loop's 220
+/// rows on 2026-09-05, after item 891 shipped:
+///
+/// ```text
+/// deliveries         counted 205  zeroed  15  unsaid 0
+/// folds_by_reason    counted  11  zeroed 209  unsaid 0
+/// delivered_by_road  counted  11  zeroed 209  unsaid 0
+/// said_by_sentence   counted  11  zeroed 209  unsaid 0
+/// ```
+///
+/// ⇒ **[`Unsaid`](Self::Unsaid) is zero everywhere and will stay zero for every row already
+/// written.** Folding [`Zeroed`](Self::Zeroed) into either neighbour would therefore decide 209 of
+/// 220 rows by fiat: into `Counted` it claims a sample from a build that may never have had the
+/// instrument, and into `Unsaid` it throws away every genuine zero. So it is its own answer, and
+/// this workspace's rule 6 applies — an unclassified row is stated, never quietly passed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sampled {
+    /// **A NUMBER**, so something was counting and this run is in the population.
+    Counted,
+    /// **PRESENT AND ALL ZERO.** *Counted nothing* for a row written by a build that had the
+    /// counter, and *never counted* for one written before item 891 — and the row cannot say
+    /// which. Never pooled with either neighbour; see the type.
+    Zeroed,
+    /// **ABSENT.** Nobody was counting, said out loud — register item 891, and available only from
+    /// that fix onward.
+    Unsaid,
+}
+
+impl Sampled {
+    /// Every answer, so a reader printing a partition cannot leave one out — this workspace's
+    /// rule 6, and [`Unsaid`](Self::Unsaid) is the arm that is zero for every row already stored
+    /// and would therefore be the one to go missing.
+    pub const ALL: [Self; 3] = [Self::Counted, Self::Zeroed, Self::Unsaid];
+
+    /// **THE WORD IT IS REPORTED UNDER**, so a quoted number carries the predicate that produced
+    /// it — the whole of register item 895.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Counted => "counted",
+            Self::Zeroed => "zeroed",
+            Self::Unsaid => "unsaid",
+        }
+    }
+}
+
 /// **THE STORED SHAPE OF [`sprag_plugin::Deliveries`]** — register item 606.
 ///
 /// # ⚠⚠⚠ Why this is not that type with derives on it
@@ -3222,6 +3338,43 @@ impl From<PersistedBriefing> for sprag_plugin::Briefing {
 }
 
 impl PersistedRun {
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS ROW IS IN `tally`'S POPULATION** — register item 895, and the ONE
+    /// place that question is answered.
+    ///
+    /// See [`Sampled`] for the three answers and for the four disagreeing predicates this
+    /// replaces. Asked of the STORED row rather than of a live cell on purpose: a rate over a
+    /// tally is taken across runs that have ENDED, which is the population item 606 measured is
+    /// always read out of a file after the daemon that drove it is gone.
+    ///
+    /// ⚠ Every arm goes through the tables' own `is_empty`, never through a sum written here —
+    /// [`sprag_plugin::Deliveries::attempted`]'s rule, and item 895's headline is what happens
+    /// when a reader re-spells it.
+    #[must_use]
+    pub fn sampled(&self, tally: Tally) -> Sampled {
+        let empty = match tally {
+            Tally::Deliveries => self
+                .deliveries
+                .map(|it| sprag_plugin::Deliveries::from(it).is_empty()),
+            Tally::FoldsByReason => self
+                .folds_by_reason
+                .clone()
+                .map(|it| sprag_plugin::FoldsByReason::from(it).is_empty()),
+            Tally::DeliveredByRoad => self
+                .delivered_by_road
+                .clone()
+                .map(|it| sprag_plugin::DeliveredByRoad::from(it).is_empty()),
+            Tally::SaidBySentence => self
+                .said_by_sentence
+                .clone()
+                .map(|it| sprag_plugin::SaidBySentence::from(it).is_empty()),
+        };
+        match empty {
+            None => Sampled::Unsaid,
+            Some(true) => Sampled::Zeroed,
+            Some(false) => Sampled::Counted,
+        }
+    }
+
     /// ⚠⚠⚠⚠⚠ **WHERE THIS RUN STOPPED, IF THAT WORD STILL MEANS ANYTHING HERE** — the recorded
     /// position, but only when it came from the documents THIS build compiled.
     ///
@@ -6759,6 +6912,157 @@ mod tests {
              over — a run this daemon never incremented gets a zero signed as its count — and it \
              belongs in `counted`. If it is a fact this image can read NOW, classify it in \
              `MAY_BE_FORCED` with the reason. Unclassified is RED, not a pass. Found {signed:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY TALLY THIS RECORD CARRIES IS ONE A POPULATION CAN BE ASKED ABOUT** —
+    /// register item 895, and the three shapes a quoted number has to be able to tell apart.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was green: four predicates for one question, and two of them wrong
+    ///
+    /// [`Sampled`]'s doc records the four; two of them are not merely different spellings but give
+    /// the WRONG answer on shapes this repository has already met and filed items over:
+    ///
+    /// | shape | `made + folded` (item 856's baseline) | `made > 0` | the truth |
+    /// |---|---|---|---|
+    /// | wedged: a prompt sat in a composer | *nothing typed* | *nothing typed* | it typed |
+    /// | swallowed: every prompt vanished | *nothing typed* | *nothing typed* | it typed |
+    ///
+    /// Those are items 617 and 762 — each filed because a reader answered *this run typed nothing*
+    /// about the one run that most needed the opposite said — and a population filter written the
+    /// same way puts both runs OUTSIDE the denominator. So this gate drives the two shapes through
+    /// the stored record and holds that both come back [`Sampled::Counted`].
+    ///
+    /// # ⚠⚠ And the third assertion is the one that covers the NEXT tally
+    ///
+    /// [`Tally::ALL`] is a hand-ordered array, which is the shape item 891 ⑶ warned about: fix one
+    /// key and the next lands in the same place. So the record's REAL counter columns are derived
+    /// from the type — write one row twice, once holding the tallies and once with them cleared
+    /// through the fields, and the keys whose value goes null are exactly theirs — and compared
+    /// with what this enum claims. A fifth counter added to [`PersistedRun`] and not named here is
+    /// red before anybody quotes a number over it.
+    #[test]
+    fn every_tally_this_record_carries_is_one_a_population_can_be_asked_about() {
+        /// A stored row carrying `deliveries` and nothing else counted.
+        fn stored(deliveries: Option<sprag_plugin::Deliveries>) -> PersistedRun {
+            let mut registry = RunRegistry::default();
+            let id = registry.reserve();
+            let progress = ProgressCell::default();
+            lock(&progress).deliveries = deliveries;
+            registry.submit(NewRun {
+                id,
+                label: "ai_loop pane=2".to_owned(),
+                plugin: crate::plugins::PluginName::AiLoop,
+                request: None,
+                opened_by: None,
+                opened_by_session: None,
+                tree: None,
+                overridden: None,
+                state: Arc::new(Mutex::new(RunState::Done {
+                    outcome: Box::new(an_outcome()),
+                    output: None,
+                    uncommitted: None,
+                })),
+                run: Box::new(EndedRun::restored(false, None, None)),
+                progress,
+            });
+            registry.persistable().runs.remove(0)
+        }
+
+        // ── The two shapes the wrong predicates get wrong, both filed as their own items ──────
+        let wedged = stored(Some(sprag_plugin::Deliveries {
+            made: 0,
+            folded: 0,
+            released: 0,
+            unsubmitted: 1,
+            unreported: 0,
+        }));
+        let swallowed = stored(Some(sprag_plugin::Deliveries {
+            made: 0,
+            folded: 0,
+            released: 0,
+            unsubmitted: 0,
+            unreported: 1,
+        }));
+        assert_eq!(
+            [
+                wedged.sampled(Tally::Deliveries),
+                swallowed.sampled(Tally::Deliveries),
+            ],
+            [Sampled::Counted, Sampled::Counted],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 895: a run whose prompt sat in a composer, or whose every \
+             prompt was swallowed, fell OUT of its own population. Both have `made == 0` by \
+             definition — items 617 and 762 — so a filter over `made`, or over `made + folded` \
+             (which is what this register's own baseline command wrote), puts the runs it most \
+             needs to count outside the denominator.",
+        );
+
+        // ── And the three arms are DISTINCT, driven through a real stored row each ────────────
+        let counted = stored(Some(sprag_plugin::Deliveries {
+            made: 3,
+            folded: 1,
+            released: 0,
+            unsubmitted: 0,
+            unreported: 0,
+        }));
+        let zeroed = stored(Some(sprag_plugin::Deliveries::NONE));
+        let unsaid = stored(None);
+        assert_eq!(
+            [
+                counted.sampled(Tally::Deliveries),
+                zeroed.sampled(Tally::Deliveries),
+                unsaid.sampled(Tally::Deliveries),
+            ],
+            [Sampled::Counted, Sampled::Zeroed, Sampled::Unsaid],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 895: the three answers are not three. `zeroed` folded into \
+             either neighbour decides 209 of the live store's 220 rows by fiat — into `counted` it \
+             claims a sample from a build that may never have had the counter, and into `unsaid` \
+             it throws away every genuine zero. Item 891's rule is that a column's shape is \
+             retroactive and its values are not, so the middle arm is permanent.",
+        );
+
+        // ── And no tally is missing from the vocabulary ───────────────────────────────────────
+        //
+        // ⚠ DERIVED, NOT NAMED — the rule `watching-zenoh` handed this register and the one item
+        // 891's gate above uses: take the population from the record's own structure, because a
+        // hand list is what goes stale.
+        //
+        // ⚠ THE ROW HAS TO HOLD ALL FOUR, or the difference below finds only the one this
+        // fixture bothered to fill and the gate passes while claiming a population of one. The
+        // first draft did exactly that and said so: `left: ["deliveries"]`.
+        let holding = {
+            let mut row = stored(Some(sprag_plugin::Deliveries::NONE));
+            row.folds_by_reason = Some(sprag_plugin::FoldsByReason::NONE.into());
+            row.delivered_by_road = Some(sprag_plugin::DeliveredByRoad::NONE.into());
+            row.said_by_sentence = Some(sprag_plugin::SaidBySentence::NONE.into());
+            row
+        };
+        let full = serde_json::to_value(holding.clone()).expect("a record serialises");
+        let cleared = {
+            let mut row = holding;
+            row.deliveries = None;
+            row.folds_by_reason = None;
+            row.delivered_by_road = None;
+            row.said_by_sentence = None;
+            serde_json::to_value(row).expect("and so does the cleared one")
+        };
+        let mut columns: Vec<&str> = full
+            .as_object()
+            .expect("a record is an object")
+            .iter()
+            .filter(|(name, held)| !held.is_null() && cleared[name].is_null())
+            .map(|(name, _)| name.as_str())
+            .collect();
+        columns.sort_unstable();
+        let mut claimed: Vec<&str> = Tally::ALL.map(Tally::word).to_vec();
+        claimed.sort_unstable();
+        assert_eq!(
+            columns, claimed,
+            "⛔⛔⛔⛔ REGISTER ITEM 895: `Tally::ALL` and the record's real counter columns have \
+             come apart. A counter nobody can ask a population question about is one whose rate \
+             gets taken with a fresh hand-written filter — which is this item — and item 891 ⑶ \
+             measured that a new key lands in the same place within half a day of the last one \
+             being fixed.",
         );
     }
 

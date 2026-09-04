@@ -579,6 +579,38 @@ impl Deliveries {
     pub const fn never_asked(self) -> u32 {
         self.unsubmitted.saturating_add(self.unreported)
     }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER ANYTHING WAS COUNTED AT ALL** — register item 895, and the one predicate
+    /// this struct was missing while its three neighbouring tables all had it
+    /// (`crate::outer::FoldsByReason::is_empty` and the two beside it).
+    ///
+    /// # ⛔⛔⛔⛔⛔ [`attempted`](Self::attempted)'s own doc forbade what every reader was doing
+    ///
+    /// That method exists because *two readers summing this differently is how one sentence and one
+    /// gate come to disagree about a run* — and with no `is_empty` beside it, each reader spelled
+    /// the emptiness test again instead. Measured 2026-09-05, three spellings of ONE question:
+    ///
+    /// | reader | what it wrote |
+    /// |---|---|
+    /// | `sprag_host::plugins::run_to_json` | `made > 0 \|\| unsubmitted > 0 \|\| unreported > 0` |
+    /// | register item 856's baseline (a round's `python3 -c`) | `made + folded` |
+    /// | register item 895's own first measurement | every field summed |
+    ///
+    /// The first is [`attempted`](Self::attempted) re-spelled, so it agrees by luck rather than by
+    /// construction. The second counts a SUB-COUNT into its container (`folded <= made`) and misses
+    /// the two refusals entirely, so a run whose every prompt was swallowed reads as *nothing was
+    /// ever typed* — the exact reading item 617 was filed to end. The third disagrees with both.
+    ///
+    /// ⇒ **A number quoted from any of them does not say which one produced it**, and that is
+    /// register item 895: the population predicate was retyped per reader and per round.
+    ///
+    /// ⚠ The condition is *did this run put a prompt anywhere*, never *was one asked* — item 617.
+    /// A WEDGED run has `made == 0` by definition, and a predicate over `made` alone answers *this
+    /// run typed nothing* about the one run that most needs the opposite said.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.attempted() == 0
+    }
 }
 
 /// **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, and the answer to

@@ -6632,7 +6632,14 @@ pub(crate) fn run_to_json(
     // swallowed by a composer has `made == 0` AND `unsubmitted == 0`, so without this clause the
     // one run this counter was built for publishes nothing at all — which is the exact shape item
     // 617 had to repair here for its own counter one line down.
-    if deliveries.made > 0 || deliveries.unsubmitted > 0 || deliveries.unreported > 0 {
+    //
+    // ⛔⛔⛔⛔⛔ **AND IT IS ASKED OF THE TYPE NOW** — register item 895. This line spelled the
+    // three-way test out, which is `Deliveries::attempted` re-spelled at a reader — the one thing
+    // that method's own doc forbids (*two readers summing this differently is how one sentence and
+    // one gate come to disagree about a run*). It agreed by luck; the register's own baseline
+    // command and its own first measurement of this store each wrote a DIFFERENT spelling, and a
+    // number quoted from any of them could not say which.
+    if !deliveries.is_empty() {
         entry[RUN_DELIVERED_KEY] = json!(deliveries.made);
         entry[RUN_FOLDED_KEY] = json!(deliveries.folded);
         // ⚠ AND THE THIRD OF THE TRIPLE — register item 617. Published beside its two neighbours
