@@ -12017,6 +12017,38 @@ mod tests {
              are exactly the ones whose ceiling was moved. No share may be computed from a \
              missing half: {lonely:?}",
         );
+
+        // ── ⑥ AND A ZERO CEILING IS SPELLED OUT, because it is a REAL AUTHORED ANSWER ──
+        //
+        // ⛔⛔⛔⛔⛔ THIS WORKSPACE'S RULE 6 — an escape hatch must not disable its own gate — and
+        // the arm is REACHABLE rather than defensive: `OuterLoop::context_ceiling` answers
+        // `authored_number`, which its own neighbour records as accepting a zero (*"`authored_number`
+        // accepts a zero, and a zero ceiling turns `hold` into a `cancel` that took the scenic
+        // route"*). So a caller or a document that arrives at `0` by arithmetic publishes `Some(0)`
+        // here, and the loop's guards (`context_ceiling > 0`) read it as UNBOUNDED.
+        //
+        // ⚠⚠ SO THE THREE ANSWERS MUST BE THREE SENTENCES, not two: *no ceiling was recorded*
+        // (nobody said), *no ceiling was authored* (somebody said none), and a bound. Folding the
+        // middle one into either neighbour is the collapse item 891 is filed for — and it is the
+        // expensive direction here, because a run under no ceiling replaces its session at EVERY
+        // reflection, which is the behaviour item 856's whole axis is about.
+        let unbounded = context_sentence(&reported_row(Some(0), Some(612_000)))
+            .expect("a row whose ceiling is an authored zero can be said back");
+        assert!(
+            unbounded.contains("no context ceiling was authored") && !unbounded.contains('%'),
+            "⛔⛔⛔ REGISTER ITEM 894, RULE 6: an authored `0` is the document's own *unbounded*, \
+             and a mouth that either stayed silent about it or divided by it would tell a reader \
+             the opposite of what the run did — it replaced its session on every single \
+             reflection: {unbounded:?}",
+        );
+        assert_ne!(
+            Some(unbounded.as_str()),
+            context_sentence(&reported_row(None, Some(612_000))).as_deref(),
+            "⛔⛔⛔⛔ AND *NOBODY RECORDED A CEILING* MUST NOT RENDER AS *NONE WAS AUTHORED*. The \
+             first is a log written before the column existed; the second is a run that really ran \
+             unbounded. One is a gap in this daemon's records and the other is a fact about the \
+             run, and only the second belongs in item 856's control group.",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **WHICH RUN A ROW IS ABOUT REACHES THE ROW, AND A PROGRAM CAN REFUSE A JOIN** —
