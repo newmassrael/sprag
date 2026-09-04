@@ -7152,6 +7152,19 @@ pub fn folds_by_reason_sentence(run: &Value) -> Option<String> {
     // ⚠⚠ WALKED IN `ReflectReason::ALL`'s ORDER and not the object's, so what a reader compares is
     // stable between two runs — and so a reason this build cannot spell simply does not appear,
     // rather than sorting itself into the middle of a comparison as an unexplained word.
+    //
+    // ⛔⛔⛔⛔⛔ **AND `ReflectReason::ALL` RATHER THAN `Occasion::ALL`, WHICH IS A DECISION AND NOT
+    // A LINE NOBODY UPDATED** — register item 856's widening. That table now carries the run's
+    // ORDINARY traffic in a row of its own, and this sentence deliberately does not print it. The
+    // comparison this sentence exists for holds the PROMPT SHAPE constant and varies only what put
+    // the loop there — every reflection composes the same kind of prompt — and the ordinary row is
+    // briefs and turn prompts, a different shape entirely. Printed beside `capacity` it would
+    // invite exactly the reading item 856 was filed about.
+    //
+    // ⚠⚠ So the row is for the ARITHMETIC and this sentence is for the COMPARISON. What reconciles
+    // the split with the run is `sprag_plugin::Deliveries`, which the run's own line already says,
+    // and the identity between them is gated in `sprag_plugin::outer`'s tests rather than read off
+    // this sentence by eye.
     let rows: Vec<String> = sprag_plugin::ReflectReason::ALL
         .into_iter()
         .filter_map(|reason| {
@@ -9710,6 +9723,21 @@ mod tests {
         for _ in 0..4 {
             live.record(sprag_plugin::ReflectReason::Budget.occasion(), false);
         }
+        // ⛔⛔⛔⛔⛔ **AND THE ORDINARY TRAFFIC, WITHOUT WHICH THIS GATE IS A DEAD CONTROL FOR IT** —
+        // register item 856's widening. The round trip below is a WHOLE-VALUE equality, so it looks
+        // like it covers every row — but a row left at zero on both sides compares equal however
+        // badly it is carried, and a fixture that never fills the new one would let
+        // `folds_by_reason_json` stop writing it and `folds_by_reason_in` stop reading it with
+        // nothing going red. Measured: this is the third staging in one day whose mutation stayed
+        // green because the fixture could not reach the line.
+        live.record(sprag_plugin::Occasion::Ordinary, true);
+        for _ in 0..5 {
+            live.record(sprag_plugin::Occasion::Ordinary, false);
+        }
+        live.record_unasked(
+            sprag_plugin::Occasion::Ordinary,
+            sprag_plugin::UnaskedRoad::OnThePane,
+        );
 
         // ══ ① THE WIRE ═════════════════════════════════════════════════════════════════════════
         let beside = json!({ RUN_FOLDS_BY_REASON_KEY: folds_by_reason_json(live) });
