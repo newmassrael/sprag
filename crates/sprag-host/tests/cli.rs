@@ -4448,6 +4448,7 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 ceiling: None,
                 output: None,
                 build: None,
+                which_run: None,
                 // ⛔ ITEM 740's RESIDUE, and the whole population this item is about: a boot ends
                 // every leftover driver whose pid it can NAME, so the one still running is the one
                 // whose record never carried a pid.

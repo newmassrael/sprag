@@ -237,6 +237,21 @@ pub const RUN_ASKED_BY_KEY: &str = "opened_by_session";
 /// ⚠ An added ANSWER key earns no `WIRE_PROTOCOL` bump (that constant's own rule at version 5:
 /// absent-not-wrong to an old reader), and no pin covers a slot's answer shape.
 pub const RUN_BUILD_KEY: &str = "build";
+/// ⛔⛔⛔⛔⛔ The answer key naming **WHICH RUN THIS IS** — register item 887, and the thing the
+/// run's NUMBER was being read as.
+///
+/// # ⛔⛔⛔⛔⛔ The number is an address and it is reissued
+///
+/// `RunRegistry::reserve`'s own doc said *"ids are monotonic and never reused"*. Measured false in
+/// this daemon's own state on 2026-09-04: `next_id` is raised on restore to `max(saved.id) + 1`,
+/// so a successor restoring a log that is missing rows starts issuing numbers a predecessor already
+/// spent — three at once, and each of the three has a `/run/user/1000/loop/run<N>.log` that was
+/// finished BEFORE the row now bearing its number began. Every table this repository builds about
+/// its own loop joins a log to a row by that number.
+///
+/// ⚠ Absent is **nothing recorded which run this was**, never *the same run* — see
+/// [`the_same_run`], which answers a third word for it rather than either of the other two.
+pub const RUN_WHICH_RUN_KEY: &str = "which_run";
 /// The answer key naming WHICH GUARDRAIL exhausted a run — absent unless one did.
 ///
 /// Its vocabulary is [`sprag_plugin::Ceiling`]'s own words, so the host never spells a variant and
@@ -5877,7 +5892,11 @@ fn progress_reported(reported: Value) -> Value {
 ///
 /// ⚠ Ask [`sprag_rpc::WIRE_PROTOCOL`]'s own doc rather than this paragraph if the question comes up
 /// again; this records the judgement taken for THIS change, not the rule.
-fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>) -> Value {
+pub(crate) fn run_to_json(
+    run: &RunSummary,
+    seat: Option<u64>,
+    blocked_now: Option<String>,
+) -> Value {
     let (cost, unit) = run
         .progress
         .cost
@@ -6031,6 +6050,13 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
     // date a dead daemon's work to its successor. See `crate::runs::RunSummary::build`.
     if let Some(build) = &run.build {
         entry[RUN_BUILD_KEY] = json!(build);
+    }
+    // ⛔⛔⛔⛔⛔ AND WHICH RUN THIS IS — register item 887, on the line above's omit-rather-than-null
+    // rule and for a reason of its own: absent means NOBODY MINTED A STAMP FOR THIS RUN, which is
+    // a run out of a log written before the field existed, and a reader that filled it in would be
+    // asserting an identity for a run whose identity is exactly what nobody recorded.
+    if let Some(which) = &run.which_run {
+        entry[RUN_WHICH_RUN_KEY] = json!(which.as_str());
     }
     // ⚠⚠⚠ AND WHAT BECAME OF A PERSON'S ORDER — register item 594, present only when somebody gave
     // one, which is `RUN_CEILING_KEY`'s presence-is-the-claim rule.
@@ -7013,6 +7039,66 @@ pub fn folds_by_reason_sentence(run: &Value) -> Option<String> {
     Some(format!("folds by why it reflected — {}", rows.join(" · "),))
 }
 
+/// ⛔⛔⛔⛔⛔ **WHETHER A ROW AND A RECORD ARE ABOUT THE SAME RUN** — register item 887, and the
+/// answer [`the_same_run`] gives.
+///
+/// # ⛔⛔⛔⛔⛔ Why there are three words and not two
+///
+/// A `bool` here would make `false` mean *this is a different run* and *nobody can say* at once,
+/// and those send a reader opposite ways: the first says **throw the join away**, the second says
+/// **the two may well be one run and this build cannot prove it**. Item 856 paid for exactly this
+/// collapse one instrument over — `made - folded` read as a landing count because two roads that
+/// mean opposite things had been summed — and the cheap version of that mistake here would be
+/// worse, because the reassuring reading (*same run*) is the one a joiner wants to be true.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SameRun {
+    /// **THE SAME RUN.** Both sides carry a stamp and the two stamps are equal.
+    Yes,
+    /// **NOT THE SAME RUN, AND THAT IS ESTABLISHED.** Both sides carry a stamp and they differ —
+    /// which is what a reissued number looks like from here. Throw the join away.
+    No,
+    /// ⚠⚠⚠ **NOTHING HERE CAN SAY.** One side or the other has no stamp: a row out of a log written
+    /// before the field existed, or a record whose writer never asked for one. It is NOT
+    /// [`Yes`](Self::Yes) — a joiner that treated it as one would be right about every run that
+    /// predates the fix and wrong about exactly the runs the fix was built for.
+    CannotSay,
+}
+
+/// ⛔⛔⛔⛔⛔ **IS THE RUN ON THIS ROW THE RUN THAT WROTE `claimed`?** — register item 887, and the
+/// one thing a program may do with a [`crate::runs::WhichRun`].
+///
+/// # ⛔⛔⛔⛔⛔ What it exists to refuse
+///
+/// Measured 2026-09-04 in this daemon's own state: rows 199, 200 and 202 each name a run that
+/// began AFTER the `/run/user/1000/loop/run<N>.log` bearing that number had already been finished
+/// by a different run. Every table this repository has built about its own loop — item 856's
+/// landing measurement included — joins a log to a row by that number, and a reissued number joins
+/// two runs into one **with no wrong line anywhere**: the arithmetic is clean, the population is
+/// not, and nothing goes red.
+///
+/// ⇒ So the join gets a predicate a PROGRAM can call, rather than a rule a person is asked to
+/// remember. `claimed` is whatever the other record carries — a log's own header line, a
+/// supervisor's note, a row read a day earlier — and it is compared for equality and for nothing
+/// else. See [`crate::runs::WhichRun::said`] for why a stamp is never parsed.
+///
+/// ⚠⚠ **IT TAKES THE ROW'S JSON AND NOT A TYPED RUN**, [`folds_by_reason_sentence`]'s argument
+/// verbatim: the caller holding a row is holding what a `runs` query answered, and a typed
+/// parameter would put the key-reading at every call site.
+#[must_use]
+pub fn the_same_run(row: &Value, claimed: &str) -> SameRun {
+    // ⚠ AN EMPTY CLAIM IS NOT A STAMP. A caller that read a missing header out of a log and passed
+    // the empty string through would otherwise get `No` — a confident answer about a comparison
+    // that never happened — where what is true is that one side said nothing.
+    if claimed.is_empty() {
+        return SameRun::CannotSay;
+    }
+    match row.get(RUN_WHICH_RUN_KEY).and_then(Value::as_str) {
+        Some(stamped) if stamped == claimed => SameRun::Yes,
+        Some(_) => SameRun::No,
+        None => SameRun::CannotSay,
+    }
+}
+
 /// ⛔⛔⛔⛔⛔ **HOW MANY OF THIS RUN'S PROMPTS BECAME A QUESTION, AND WHAT PROVED IT** — register
 /// item 856, and the sentence [`RUN_DELIVERED_BY_ROAD_KEY`] carries. [`None`] for a run that has
 /// delivered nothing.
@@ -7769,6 +7855,7 @@ mod tests {
             ceiling: None,
             output: None,
             build: None,
+            which_run: None,
             // ⛔ ITEM 740's RESIDUE, WHICH IS THE WHOLE POPULATION OF THIS ARM: a boot ends every
             // leftover driver whose pid it can name, so the driver still reporting is the one whose
             // record never carried a pid.
@@ -8303,6 +8390,7 @@ mod tests {
                 ceiling: None,
                 output: None,
                 build: None,
+                which_run: None,
                 driver: None,
                 driving: None,
                 opened_by_session: Some(RESUMED.to_owned()),
@@ -8491,6 +8579,7 @@ mod tests {
             ceiling: None,
             output: None,
             build: None,
+            which_run: None,
             driver: None,
             driving: None,
             opened_by_session: None,
@@ -8703,6 +8792,7 @@ mod tests {
                 ceiling: None,
                 output: None,
                 build: None,
+                which_run: None,
                 driver: None,
                 driving: None,
                 opened_by_session: None,
@@ -10119,6 +10209,7 @@ mod tests {
                     },
                     reported: None,
                     build: Some(crate::wire::BUILD.to_owned()),
+                    which_run: None,
                     stood_down: false,
                     stood_down_by: None,
                     held: false,
@@ -10202,6 +10293,7 @@ mod tests {
                 progress: sprag_plugin::Progress::default(),
                 reported: None,
                 build: Some(crate::wire::BUILD.to_owned()),
+                which_run: None,
                 stood_down: false,
                 stood_down_by: None,
                 held: false,
@@ -10268,6 +10360,7 @@ mod tests {
                     progress,
                     reported: None,
                     build: Some(crate::wire::BUILD.to_owned()),
+                    which_run: None,
                     stood_down: false,
                     stood_down_by: None,
                     held: false,
@@ -10380,6 +10473,108 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHICH RUN A ROW IS ABOUT REACHES THE ROW, AND A PROGRAM CAN REFUSE A JOIN** —
+    /// register item 887.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The number a joiner keys on names two runs
+    ///
+    /// Measured 2026-09-04 in this daemon's own store: rows 199, 200 and 202 each name a run that
+    /// began after the `/run/user/1000/loop/run<N>.log` bearing that number had already been
+    /// finished by a different run, because `RunRegistry::restore` sets `next_id` from the rows it
+    /// FINDS and a log that lost rows hands back numbers a predecessor spent. `crate::runs`'
+    /// `two_runs_under_one_number_are_still_told_apart` drives that collision through the real
+    /// registry; this gate is the last two feet — the stamp becoming something a reader holds.
+    ///
+    /// # ⚠⚠⚠ Why `CannotSay` is asserted to differ from BOTH answers and not merely from `Yes`
+    ///
+    /// A build that folded *nobody recorded it* into *not the same run* would be safe-looking and
+    /// wrong in the expensive direction: every run that predates the stamp would stop joining to
+    /// its own log, and a reader would conclude their records were about different runs when what
+    /// happened is that nobody wrote an identity down. The three words each send a reader somewhere
+    /// different, which is the whole reason there are three.
+    #[test]
+    fn which_run_a_row_is_about_reaches_the_row_and_a_program_can_refuse_a_join() {
+        /// A row for a run whose registry stamped it `which`.
+        fn row(which: Option<crate::runs::WhichRun>) -> Value {
+            run_to_json(
+                &crate::runs::RunSummary {
+                    id: RunId(199),
+                    label: "ai_loop pane=3".to_owned(),
+                    loop_kind: None,
+                    opened_by: None,
+                    opened_by_session: None,
+                    overridden: None,
+                    state: RunState::Running,
+                    progress: sprag_plugin::Progress::default(),
+                    reported: None,
+                    build: Some(crate::wire::BUILD.to_owned()),
+                    which_run: which,
+                    stood_down: false,
+                    stood_down_by: None,
+                    held: false,
+                    cancelled_by: None,
+                    withheld: None,
+                    ended_driver: None,
+                    not_resumed: None,
+                    resumed: false,
+                },
+                None,
+                None,
+            )
+        }
+
+        const MINE: &str = "1f4a-17e2c9d31bb40000-0.c7";
+        const THE_OTHER_RUN_WITH_THIS_NUMBER: &str = "2b91-17e2c81004f80000-0.c7";
+
+        // ── ① THE STAMP REACHES THE ROW ──
+        let carried = row(Some(crate::runs::WhichRun::said(MINE)));
+        assert_eq!(
+            carried[RUN_WHICH_RUN_KEY],
+            json!(MINE),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 887: the stamp stops one function short of the row, so every \
+             reader is back to the number — and the number names two runs. A join over it reads \
+             two runs as one with no wrong line anywhere: {carried}",
+        );
+
+        // ── ② AND A PROGRAM CAN REFUSE THE JOIN ──
+        assert_eq!(
+            the_same_run(&carried, MINE),
+            SameRun::Yes,
+            "⚠⚠⚠ THE CONTROL: a record carrying this row's own stamp must join, or the refusal \
+             below is a predicate that refuses everything: {carried}",
+        );
+        assert_eq!(
+            the_same_run(&carried, THE_OTHER_RUN_WITH_THIS_NUMBER),
+            SameRun::No,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 887: a record written by the OTHER run bearing this number \
+             joined cleanly. That is the defect, and a predicate that cannot refuse it leaves the \
+             refusal to whoever remembers to look: {carried}",
+        );
+
+        // ── ③ AND *NOBODY RECORDED IT* IS ITS OWN ANSWER, ON BOTH SIDES ──
+        let unstamped = row(None);
+        assert!(
+            unstamped.get(RUN_WHICH_RUN_KEY).is_none(),
+            "⚠⚠ a run nobody stamped publishes no key, `RUN_BUILD_KEY`'s omit-rather-than-null \
+             rule: {unstamped}",
+        );
+        assert_eq!(
+            the_same_run(&unstamped, MINE),
+            SameRun::CannotSay,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 887: a row with no stamp answered about an identity nobody \
+             minted. `Yes` here would join a record onto a run that never claimed it; `No` would \
+             tell a reader their two records are different runs when what happened is that nobody \
+             wrote an identity down: {unstamped}",
+        );
+        assert_eq!(
+            the_same_run(&carried, ""),
+            SameRun::CannotSay,
+            "⛔⛔⛔⛔ AND THE OTHER SIDE TOO. A caller that read a missing header out of a log and \
+             passed the empty string would otherwise get a confident `No` about a comparison that \
+             never happened",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE LANDING COUNT REACHES THE ROW AND ITS MOUTH** — register item 856, and the
     /// last two feet of the journey.
     ///
@@ -10414,6 +10609,7 @@ mod tests {
                     progress,
                     reported: None,
                     build: Some(crate::wire::BUILD.to_owned()),
+                    which_run: None,
                     stood_down: false,
                     stood_down_by: None,
                     held: false,
@@ -14963,6 +15159,7 @@ mod tests {
             },
             reported: None,
             build: Some(crate::wire::BUILD.to_owned()),
+            which_run: None,
             stood_down: false,
             stood_down_by: None,
             held: false,
@@ -17222,6 +17419,7 @@ mod tests {
                     ceiling: None,
                     output: None,
                     build: None,
+                    which_run: None,
                     driver: None,
                     driving: None,
                     opened_by_session: None,

@@ -1263,6 +1263,121 @@ impl RunHandle for EndedRun {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHICH RUN THIS IS, WHEN THE NUMBER CANNOT SAY** — register item 887.
+///
+/// # ⛔⛔⛔⛔⛔ `RunId` is an ADDRESS, and this repository had it written down as a name
+///
+/// [`RunRegistry::reserve`]'s own doc said *"ids are monotonic and never reused"*, and on
+/// 2026-09-04 that sentence was measured false in this daemon's own state. `next_id` is raised by
+/// [`restore`](RunRegistry::restore) to `max(saved.id) + 1`, so a successor that restores a log
+/// **missing some rows** starts issuing numbers a predecessor already spent. Measured, three of
+/// them at once:
+///
+/// | | the persisted row | `/run/user/1000/loop/run<N>.log` |
+/// | --- | --- | --- |
+/// | 199 | 3 iterations, `cancelled`, ended 09:01:10 | starts `04:29:51`, 19,073 B, last written 08:38 |
+/// | 200 | 3 iterations, `cancelled`, ended 08:58:09 | starts `04:53:27`, 4,858 B, last written 08:43 |
+/// | 202 | 3 iterations, `cancelled`, ended 08:59:14 | starts `08:31:33`, 259 B |
+///
+/// Each log was finished BEFORE the row that now bears its number began, and the runs the ledger
+/// had measured under 199 and 200 (`made: 24` and `made: 9`) have no row left at all.
+///
+/// # ⚠⚠⚠⚠⚠ Why the pair `(build, id)` is not the answer, measured rather than argued
+///
+/// The obvious cheap fix is to qualify the number with something the row already carries. All three
+/// reused rows above are build `cb991990bcbf` — **the same build**, from one daemon, and the
+/// predecessor that wrote two of those logs was `a7eaa889b195`. So `(build, id)` separates the log
+/// from the row in two of the three cases and NOT in the third, and a discriminator that works
+/// sometimes is worse than none: it reads as a check.
+///
+/// ⇒ So a value is MINTED, and its uniqueness is by construction rather than by hope: the process
+/// id (two daemons alive at once), the nanosecond the registry was made (one pid reused after the
+/// first process exited), a process-wide counter (two registries inside one process — every test
+/// file makes several), and the run's own number, which never repeats inside one registry.
+///
+/// ⚠ The minting type is described rather than LINKED: it is crate-private and this one is public,
+/// so an intra-doc link to it is `private_intra_doc_links` under `-D warnings` — item 365, met
+/// again. ⚠⚠ **The residue, stated rather than hidden**: a clock that went BACKWARDS across a
+/// reboot, onto a reused pid, at the same nanosecond, would collide and nothing here would detect
+/// it. What is claimed is *this does not repeat on a machine whose clock does not go backwards*,
+/// which is strictly stronger than the number's claim — and the number's was false in ordinary
+/// operation rather than in a corner.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WhichRun(String);
+
+impl WhichRun {
+    /// The stamp as a program compares it — the whole of it, never a prefix.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// A stamp read back out of a row, a log or a durable record.
+    ///
+    /// ⚠ It is not parsed and not validated, deliberately: this build is not the authority on what
+    /// a stamp a DIFFERENT build minted looks like, and a reader that refused an unfamiliar shape
+    /// would answer *not the same run* about a run it simply could not read. The one thing done
+    /// with a stamp is comparing it with another for equality.
+    #[must_use]
+    pub fn said(stamp: impl Into<String>) -> Self {
+        Self(stamp.into())
+    }
+}
+
+impl std::fmt::Display for WhichRun {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(&self.0)
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT ONE REGISTRY STAMPS ITS RUNS WITH** — register item 887, and the part of a
+/// [`WhichRun`] that is not the run's number.
+///
+/// # ⚠⚠⚠ The three parts, and what each one rules out
+///
+/// | part | what it separates |
+/// | --- | --- |
+/// | the process id | two daemons alive at once on this machine |
+/// | the instant this registry was made, in nanoseconds | one pid reused after the first process exited |
+/// | a counter, process-wide | two registries made inside one process in the same nanosecond (every test file does this) |
+///
+/// The run's own number completes it, and within ONE registry that number never repeats:
+/// `next_id` only ever increases, and [`RunRegistry::restore`] only raises it. **The reuse this
+/// exists for happens BETWEEN registries**, which is exactly what the three parts above tell apart.
+///
+/// # ⚠⚠ The residue, stated rather than hidden
+///
+/// A pid can be reused after its process exits, so the nanosecond is what separates those two
+/// registries — and a clock that went BACKWARDS across a reboot onto the same pid at the same
+/// nanosecond would collide. That is not impossible and nothing here detects it. What is claimed is
+/// *this value does not repeat by construction on a machine whose clock does not go backwards*,
+/// which is a strictly stronger claim than the number's, and the number's claim was false in
+/// ordinary operation rather than in a corner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Minting(String);
+
+impl Default for Minting {
+    fn default() -> Self {
+        /// Two registries in one process, in the same nanosecond. Every test file makes several.
+        static MADE: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        Self(format!(
+            "{:x}-{nanos:x}-{:x}",
+            std::process::id(),
+            MADE.fetch_add(1, Ordering::Relaxed),
+        ))
+    }
+}
+
+impl Minting {
+    /// The stamp this registry gives the run numbered `id`.
+    fn stamping(&self, id: RunId) -> WhichRun {
+        WhichRun(format!("{}.{:x}", self.0, id.0))
+    }
+}
+
 struct RunRecord {
     id: RunId,
     label: String,
@@ -1374,6 +1489,22 @@ struct RunRecord {
     /// build would date every restored run to whoever happened to read it — the exact wrong answer
     /// that decodes cleanly which this field exists to prevent.
     build: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHICH RUN THIS IS** — register item 887, and the answer [`id`](Self::id) was
+    /// being read as and cannot give. See [`WhichRun`] for the measurement.
+    ///
+    /// [`RunRegistry::submit`] stamps it, from this registry's own [`Minting`] and the run's
+    /// number; [`RunRegistry::restore`] carries a predecessor's verbatim and **never mints a new
+    /// one** — a restored run that was re-stamped here would be a different run every time the
+    /// daemon booted, which is the failure this exists to name, inverted.
+    ///
+    /// ⚠⚠ **[`None`] means *nothing recorded which run this was*, never *the same run*.** A log
+    /// written before this field existed carries no stamp, and a reader that filled one in would be
+    /// asserting an identity nobody minted — see [`crate::plugins::the_same_run`], which answers a
+    /// third word for it rather than guessing either of the other two.
+    ///
+    /// ⚠ It is not the caller's to say, [`build`](Self::build)'s argument verbatim: it is a fact
+    /// about the REGISTRY that admitted this run, so it is absent from [`NewRun`].
+    which_run: Option<WhichRun>,
     /// **HOW MANY PROGRESS REPORTS THIS RUN HAS TAKEN** — register item 671's watermark, and the
     /// only monotonic thing a driver in another process gives this daemon.
     ///
@@ -1590,6 +1721,13 @@ pub struct RunSummary {
     /// WHICH BUILD DROVE IT, or [`None`] when nothing recorded one — see `RunRecord::build` for
     /// why those are different answers and why a reader must not fill the second one in.
     pub build: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHICH RUN THIS IS** — register item 887, and the answer [`id`](Self::id) cannot
+    /// give because a successor daemon reissues numbers a predecessor already spent. See
+    /// [`WhichRun`] for the measurement, and [`crate::plugins::the_same_run`] for the one thing a
+    /// reader may do with it.
+    ///
+    /// [`None`] is *nothing recorded which run this was* and never *the same run*.
+    pub which_run: Option<WhichRun>,
     /// **WHETHER A PERSON ASKED THIS RUN TO STAND DOWN** — [`RunHandle::stood_down`], republished so
     /// a mouth can say what became of the ORDER and not only what became of the run.
     ///
@@ -2081,6 +2219,22 @@ pub struct PersistedRun {
     /// the same trade the wire's own *added answer key* rule declines.
     #[serde(default)]
     pub build: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHICH RUN THIS IS, WHEN THE NUMBER CANNOT SAY** — register item 887, and the
+    /// field whose absence let three of this daemon's own numbers name two runs each. See
+    /// [`WhichRun`] for the measurement.
+    ///
+    /// # ⛔⛔⛔⛔⛔ This file is where the reuse comes FROM, which is why the stamp has to be in it
+    ///
+    /// A successor sets `next_id` to `max(saved.id) + 1` **over the rows it finds here**, so a log
+    /// that is missing rows is a log that hands out numbers a predecessor already spent. The
+    /// numbers in this file are therefore the exact numbers that repeat, and a stamp that lived
+    /// only in memory would be gone on precisely the boot that needed it.
+    ///
+    /// ⚠⚠ [`None`] is *nobody wrote down which run this was* and never *the same run*. A log
+    /// written before this field existed carries none, and [`RUN_LOG_VERSION`] does not move for it
+    /// — [`build`](Self::build)'s argument, and the call items 606, 616, 762 and 856 each made.
+    #[serde(default)]
+    pub which_run: Option<String>,
     /// **WHICH PROCESS WAS DRIVING IT** — register item 526, [`RunHandle::driver_pid`]'s value put
     /// where a successor daemon can read it.
     ///
@@ -2881,6 +3035,10 @@ pub const RUN_LOG_VERSION: u32 = 1;
 pub struct RunRegistry {
     runs: Vec<RunRecord>,
     next_id: u64,
+    /// ⛔⛔⛔⛔⛔ **WHAT THIS REGISTRY STAMPS ITS RUNS WITH** — register item 887. Minted when the
+    /// registry is made and never afterwards, so every run it admits carries the same one and no
+    /// other registry's runs can.
+    born: Minting,
 }
 
 impl RunRegistry {
@@ -2922,8 +3080,24 @@ impl RunRegistry {
     /// lock twice with a window between them, in which another request's `submit` takes the id this
     /// one is about to announce under. Reserving is one lock and no window.
     ///
-    /// An id reserved and never submitted is simply skipped, which costs nothing: ids are monotonic
-    /// and never reused, so a gap in them means only that a run did not start.
+    /// An id reserved and never submitted is simply skipped: within ONE registry these are
+    /// monotonic, so a gap in them means only that a run did not start.
+    ///
+    /// # ⛔⛔⛔⛔⛔ **AND ACROSS REGISTRIES THEY ARE REUSED** — register item 887
+    ///
+    /// What stood here was *"ids are monotonic and never reused"*, and that sentence was measured
+    /// false in this daemon's own state on 2026-09-04. [`restore`](Self::restore) sets `next_id` to
+    /// `max(saved.id) + 1` **over the rows it finds**, so a successor restoring a log that is
+    /// MISSING rows begins issuing numbers a predecessor already spent. Three at once were
+    /// measured, each with a `/run/user/1000/loop/run<N>.log` finished before the row now bearing
+    /// its number began.
+    ///
+    /// ⚠⚠⚠ **THE HARDENING THAT WOULD NOT HELP, AND WHY IT IS NOT HERE.** Refusing an id some live
+    /// record already holds is easy and answers nothing: the rows that made the numbers collide
+    /// were **gone from the log**, so this registry cannot know they existed. A guard that catches
+    /// the case that never happens and misses the one that did reads as a check, which is worse
+    /// than no guard — the same argument [`WhichRun`] makes against qualifying the number with the
+    /// build. What identifies a run is [`WhichRun`]; this stays an ADDRESS.
     pub fn reserve(&mut self) -> RunId {
         let id = RunId(self.next_id);
         self.next_id += 1;
@@ -2951,6 +3125,13 @@ impl RunRegistry {
             // about to run is inside THIS image, so this image is the only honest answer, and it
             // is read from the constant the same binary published at `client/hello`.
             build: Some(crate::wire::BUILD.to_owned()),
+            // ⛔⛔⛔⛔⛔ AND WHICH RUN THIS IS — register item 887, stamped HERE for the line
+            // above's reason and one of its own: this is the one moment a run becomes a record, so
+            // it is the only moment at which a value can be given to that run and to no other.
+            // The number it is built from is spent by `reserve` and never spent twice by THIS
+            // registry; what the minting adds is everything that separates this registry from the
+            // predecessor whose numbers it is about to start reissuing.
+            which_run: Some(self.born.stamping(id)),
             // ⚠ A FRESH RUN HAS SAID NOTHING AND HAS LOST NOTHING — register item 671.
             reports: AtomicU64::new(0),
             revived_at: None,
@@ -3660,6 +3841,11 @@ impl RunRegistry {
                         output,
                         done_reason,
                         build: run.build.clone(),
+                        // ⛔⛔⛔⛔⛔ AND WHICH RUN IT IS — register item 887, and **the crossing
+                        // the whole item turns on**: the numbers a successor reissues are the ones
+                        // it read out of THIS file, so a stamp that stopped here would leave every
+                        // restored run identified by the one thing that repeats.
+                        which_run: run.which_run.as_ref().map(ToString::to_string),
                         // ⚠⚠⚠ ASKED OF THE HANDLE, NOT OF THE SNAPSHOT — register item 526. The
                         // snapshot is what a READER is told about a run, and where its driver lives
                         // is deliberately not part of that (`RUN_DRIVER_PROCESS`'s own promise is
@@ -4130,6 +4316,15 @@ impl RunRegistry {
                 // drove it. Stamping this daemon's here would date a dead daemon's work to its
                 // successor — which is precisely the confusion register item 438 was filed for.
                 build: saved.build.clone(),
+                // ⛔⛔⛔⛔⛔ AND SO IS THIS ONE, FOR THE LINE ABOVE'S REASON AT ITS SHARPEST —
+                // register item 887. Minting a fresh stamp here would give a restored run a new
+                // identity on every boot, so *the same run* and *a different run* would read alike
+                // to anybody comparing across a restart — and a restart is the only moment the
+                // number it is qualifying can go wrong.
+                //
+                // ⚠ [`None`] for a log written before the field existed, and it stays `None`: this
+                // daemon did not mint that run and has nothing true to say about which run it was.
+                which_run: saved.which_run.clone().map(WhichRun::said),
                 // ⚠⚠ NOT CARRIED OVER, AND THAT IS THE CORRECT ANSWER — register item 671. The
                 // count is *what THIS daemon has been told*, and it has been told nothing about a
                 // run it is reading out of a file; the watermark beside it is what THIS daemon has
@@ -4193,6 +4388,9 @@ impl RunRegistry {
                 // repository's *비교하는 두 값은 같은 순간에* rule broken at its cheapest.
                 reported: lock(&record.reported).clone(),
                 build: record.build.clone(),
+                // ⛔⛔⛔ AND WHICH RUN IT IS — register item 887, republished beside the build so a
+                // reader holding a row can say whether it is the run their own record is about.
+                which_run: record.which_run.clone(),
                 // ⚠ ASKED OF THE HANDLE, on the same pass that reads the state — item 594's
                 // sentence weighs the two against each other, and reading them a moment apart is
                 // this repository's *비교하는 두 값은 같은 순간에* rule at its cheapest.
@@ -5382,6 +5580,240 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **TWO RUNS UNDER ONE NUMBER ARE STILL TOLD APART** — register item 887, and the
+    /// fixture is the failure itself rather than a model of it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ `reserve`'s own doc said ids are never reused, and this daemon's state said no
+    ///
+    /// *"ids are monotonic and never reused, so a gap in them means only that a run did not start."*
+    /// [`RunRegistry::restore`] raises `next_id` to `max(saved.id) + 1` **over the rows it finds**,
+    /// so a successor restoring a log that is MISSING rows starts issuing numbers a predecessor
+    /// already spent. Measured 2026-09-04 in this repository's own store: rows 199, 200 and 202 each
+    /// name a run that began after the `/run/user/1000/loop/run<N>.log` bearing that number had
+    /// already been finished by a different run, and the two runs the ledger had measured under 199
+    /// and 200 have no row left at all.
+    ///
+    /// ⇒ **A number that names two runs joins them into one with no wrong line anywhere.** Every
+    /// table this repository builds about its own loop — item 856's landing measurement included —
+    /// joins a log to a row by that number.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The staging IS the defect, which is what this gate could not be written without
+    ///
+    /// The predecessor's row is dropped from the log before the successor restores it, because that
+    /// is what produces the collision: a successor that saw the row would never reissue its number.
+    /// A fixture that handed two registries the same id directly would be asserting about a state
+    /// this product cannot reach, and the assertion below opens by demanding the collision — a
+    /// build that fixed the reuse instead makes this gate fail LOUDLY rather than pass vacuously,
+    /// which is the correct outcome for a gate whose subject has been removed.
+    ///
+    /// ⚠ `(build, id)` is deliberately NOT the discriminator: all three reused rows measured were
+    /// the SAME build, and both registries here are this image. A qualifier that works sometimes
+    /// reads as a check and is worse than none.
+    #[test]
+    fn two_runs_under_one_number_are_still_told_apart() {
+        /// A registry holding one submitted run, and the run's stamp.
+        fn one_run(registry: &mut RunRegistry) -> (RunId, Option<WhichRun>) {
+            let id = registry.reserve();
+            registry.submit(NewRun {
+                id,
+                label: format!("ai_loop pane={}", id.0),
+                plugin: crate::plugins::PluginName::AiLoop,
+                request: None,
+                opened_by: None,
+                opened_by_session: None,
+                overridden: None,
+                state: Arc::new(Mutex::new(RunState::Done {
+                    outcome: Box::new(an_outcome()),
+                    output: None,
+                    uncommitted: None,
+                })),
+                run: Box::new(EndedRun::restored(false, None, None)),
+                progress: ProgressCell::default(),
+            });
+            let summary = registry
+                .snapshot()
+                .into_iter()
+                .find(|run| run.id == id)
+                .expect("the run just submitted is in the directory");
+            (id, summary.which_run)
+        }
+
+        // ══ ① THE PREDECESSOR RUNS, AND ITS LOG LOSES THE ROW ══════════════════════════════════
+        let mut predecessor = RunRegistry::default();
+        let (first, first_stamp) = one_run(&mut predecessor);
+        let mut lossy: Value =
+            serde_json::to_value(predecessor.persistable()).expect("the predecessor's log encodes");
+        // ⚠⚠⚠⚠⚠ **THIS LINE IS THE DEFECT AND NOT A CONVENIENCE.** A log that still holds the row
+        // makes the successor's `next_id` skip past it, and there is no collision to test. What was
+        // measured is a successor restoring a log that had lost rows — which is why the numbers it
+        // reissued were numbers a predecessor had spent.
+        lossy["runs"] = serde_json::json!([]);
+        let lossy: RunLog = serde_json::from_value(lossy).expect("and decodes");
+
+        // ══ ② THE SUCCESSOR REISSUES THE SAME NUMBER ═══════════════════════════════════════════
+        let mut successor = RunRegistry::default();
+        successor.restore(&lossy);
+        let (second, second_stamp) = one_run(&mut successor);
+
+        assert_eq!(
+            first, second,
+            "⚠⚠⚠⚠⚠ THE STAGING: this gate is about two runs under ONE number, and these two have \
+             different ones — so every assertion below is about a collision that did not happen. \
+             If the reuse itself has been fixed, DELETE this gate and say so; do not leave it \
+             passing on a premise that stopped being true",
+        );
+
+        // ══ THE INVARIANT ══════════════════════════════════════════════════════════════════════
+        let first_stamp = first_stamp.expect("a run this image admitted carries a stamp");
+        let second_stamp = second_stamp.expect("and so does the successor's");
+        assert_ne!(
+            first_stamp, second_stamp,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 887: two different runs bear one number AND one stamp, so \
+             nothing in this product can tell them apart. Every table that joins a run log to a \
+             row by its number then reads two runs as one, with no wrong line anywhere — the \
+             arithmetic stays clean and the population is wrong, which is the failure mode nothing \
+             goes red for. Both are {first_stamp}",
+        );
+
+        // ── AND A PROGRAM CAN REFUSE THE JOIN ──
+        let row = crate::plugins::run_to_json(
+            successor
+                .snapshot()
+                .first()
+                .expect("the successor holds its run"),
+            None,
+            None,
+        );
+        assert_eq!(
+            crate::plugins::the_same_run(&row, first_stamp.as_str()),
+            crate::plugins::SameRun::No,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 887: a record written by the FIRST run joins cleanly onto the \
+             SECOND run's row. That is the whole defect, and a predicate that cannot refuse it \
+             leaves the refusal to whoever remembers to look: {row}",
+        );
+        assert_eq!(
+            crate::plugins::the_same_run(&row, second_stamp.as_str()),
+            crate::plugins::SameRun::Yes,
+            "⚠⚠⚠ AND THE CONTROL: the row's OWN stamp must join. A predicate that refused \
+             everything would satisfy the assertion above and be useless: {row}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN'S STAMP SURVIVES THE DAEMON, AND IS NOT MINTED AGAIN** — register item 887,
+    /// and the crossing the whole item turns on.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The file is where the reuse comes FROM
+    ///
+    /// A successor sets `next_id` from the rows in this file, so the numbers in it are the exact
+    /// numbers that repeat — and a stamp that lived only in memory would be gone on precisely the
+    /// boot that needed it. Item 606's measurement is the other half: thirteen live runs on two
+    /// daemons, **every one restored**, because a run is read after it ends.
+    ///
+    /// # ⚠⚠⚠⚠⚠ And it must NOT be re-minted, which is the assertion a round trip alone would miss
+    ///
+    /// A restore that stamped the restoring registry's own minting would give a run a new identity
+    /// on every boot. Then *the same run seen twice* and *two runs under one number* would read
+    /// alike — and a restart is the only moment the number can go wrong in the first place, so the
+    /// re-minting build would be broken exactly where the fix is needed and green everywhere else.
+    #[test]
+    fn a_runs_stamp_survives_the_daemon_and_is_not_minted_again() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            overridden: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(an_outcome()),
+                output: None,
+                uncommitted: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress: ProgressCell::default(),
+        });
+        let minted = registry.snapshot()[0]
+            .which_run
+            .clone()
+            .expect("⚠⚠ THE PREMISE: a run this image admitted must carry a stamp");
+
+        // ⚠⚠ THROUGH THE FILE, the neighbouring gates' argument: a field `serde` never writes would
+        // still satisfy an in-process round trip.
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+
+        assert_eq!(
+            successor.snapshot()[0].which_run.as_ref(),
+            Some(&minted),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 887: the stamp did not cross the daemon, or the restore minted \
+             a fresh one. Either way the identity of a run changes when nobody touched the run — \
+             and a restart is the only moment its NUMBER can go wrong, so this is the one crossing \
+             the item cannot be paid without. Got {:?} from {on_disk}",
+            successor.snapshot()[0].which_run,
+        );
+        // ⚠⚠⚠ AND THE SUCCESSOR'S MINTING REALLY IS A DIFFERENT ONE, which is what makes the
+        // assertion above a claim rather than a coincidence: if two registries stamped alike, a
+        // restore that re-minted would pass it.
+        let fresh = successor.reserve();
+        successor.submit(NewRun {
+            id: fresh,
+            label: "ai_loop pane=3".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            overridden: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(an_outcome()),
+                output: None,
+                uncommitted: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress: ProgressCell::default(),
+        });
+        let born_here = successor
+            .snapshot()
+            .into_iter()
+            .find(|run| run.id == fresh)
+            .and_then(|run| run.which_run)
+            .expect("the successor's own run carries its own stamp");
+        assert_ne!(
+            born_here, minted,
+            "⚠⚠⚠⚠⚠ THE CONTROL: two registries must not stamp alike, or `the stamp survived` is a \
+             claim two identical values would satisfy however they were produced",
+        );
+
+        // ⛔⛔⛔⛔⛔ ── AND A LOG WRITTEN BEFORE THE STAMP EXISTED READS AS *NOBODY SAID* ──
+        //
+        // Never as *the same run*. Driven through a real decode of a real older shape, because a
+        // `#[serde(default)]` that was dropped would leave every pre-existing run log unreadable —
+        // and this daemon restores from one on every boot.
+        let mut older: Value = serde_json::from_str(&on_disk).expect("the log just written parses");
+        older["runs"][0]
+            .as_object_mut()
+            .expect("a run is an object")
+            .remove(crate::plugins::RUN_WHICH_RUN_KEY);
+        let older = older.to_string();
+        let old_log: RunLog = serde_json::from_str(&older).expect(
+            "⛔⛔⛔⛔ REGISTER ITEM 887: a run log written before the stamp existed must still \
+             decode. Every boot of this daemon restores from one.",
+        );
+        let mut before = RunRegistry::default();
+        before.restore(&old_log);
+        assert_eq!(
+            before.snapshot()[0].which_run,
+            None,
+            "⛔⛔⛔⛔ AND THE ABSENCE IS CARRIED RATHER THAN FILLED IN. A restore that stamped its \
+             own minting onto a run it did not mint would assert an identity for the one run whose \
+             identity nobody recorded — which reads as *a different run* to every later comparison",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **WHO STOOD A RUN DOWN SURVIVES THE DAEMON THAT WAS TOLD** — register item 835,
     /// and **the crossing that decides whether that item is paid at all.**
     ///
@@ -5849,6 +6281,7 @@ mod tests {
                 ceiling: None,
                 output: None,
                 build: None,
+                which_run: None,
                 driver: None,
                 driving: None,
                 opened_by_session: Some(A_CONVERSATION.to_owned()),
@@ -6095,6 +6528,7 @@ mod tests {
             ceiling: None,
             output: None,
             build: None,
+            which_run: None,
             driver: None,
             driving: None,
             opened_by_session: None,
@@ -6206,6 +6640,7 @@ mod tests {
             ceiling: None,
             output: None,
             build: None,
+            which_run: None,
             driver: None,
             driving: None,
             opened_by_session: None,
@@ -6307,6 +6742,7 @@ mod tests {
             ceiling: None,
             output: None,
             build: None,
+            which_run: None,
             driver: None,
             driving: None,
             opened_by_session: None,
@@ -6747,6 +7183,7 @@ mod tests {
                 ceiling: None,
                 output: None,
                 build: None,
+                which_run: None,
                 driver: None,
                 driving: None,
                 opened_by_session: None,

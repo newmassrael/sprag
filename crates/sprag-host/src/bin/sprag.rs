@@ -6899,6 +6899,27 @@ fn render_build(run: &Value) -> String {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHICH RUN THIS IS**, beside the number that cannot say — register item 887.
+///
+/// # ⛔⛔⛔⛔⛔ It is printed on the HEAD line because the head is what a watcher copies
+///
+/// The number in `run {id}` is what every reader of this product has been keying its records on —
+/// the loop's own watcher names its log file `run<N>.log`, and every table this repository has
+/// built about itself joins that file to a row by `N`. Measured 2026-09-04: three of this daemon's
+/// numbers name two runs each. So the thing that CAN identify the run has to arrive in the same
+/// glance as the thing that cannot, or a watcher goes on recording the number alone.
+///
+/// ⚠⚠ **AND ITS ABSENCE IS SAID OUT LOUD**, `render_build`'s call one field over: a run out of a
+/// log written before the stamp existed is not *the same run as whatever else bears this number*,
+/// it is nobody having recorded which run it was — and a silent omission here would read as the
+/// former to anyone comparing two rows.
+fn render_which_run(run: &Value) -> String {
+    match run[sprag_host::plugins::RUN_WHICH_RUN_KEY].as_str() {
+        Some(which) => format!("  [{which}]"),
+        None => "  [which run not recorded]".to_owned(),
+    }
+}
+
 /// ⛔⛔⛔⛔⛔ **WHY A RUN ENDED THE WAY IT DID**, for the two endings that are a bare word without it
 /// — register item 685, and register item 594's twin one word over.
 ///
@@ -7201,7 +7222,11 @@ fn render_run(run: &Value) -> String {
     // hours**, while four runs started in the same window made one each. Every one of the seven
     // rows said `running`.
     let resumed = resumed_clause(run, state);
-    let head = format!("run {id}  {label}{opener}{kind}{}\n", render_build(run));
+    let head = format!(
+        "run {id}  {label}{opener}{kind}{}{}\n",
+        render_build(run),
+        render_which_run(run),
+    );
     match state["status"].as_str() {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
@@ -11189,6 +11214,58 @@ mod tests {
                 "output": Value::Null,
             },
         })
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ROW SAYS WHICH RUN IT IS, BESIDE THE NUMBER THAT CANNOT** — register item
+    /// 887, at the mouth a watcher copies from.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the number was being read as
+    ///
+    /// The loop's own watcher names its log file `run<N>.log` and every table this repository has
+    /// built about itself joins that file to a row by `N`. Measured 2026-09-04 in this daemon's
+    /// state: rows 199, 200 and 202 each name a run that began after the log bearing that number
+    /// had already been finished by a different run — `RunRegistry::restore` sets `next_id` from
+    /// the rows it FINDS, so a log that lost rows reissues numbers a predecessor spent.
+    ///
+    /// ⇒ The thing that CAN identify the run has to arrive in the same glance as the thing that
+    /// cannot, or a watcher goes on recording the number alone.
+    ///
+    /// # ⚠⚠⚠ The absence is a SENTENCE and not an omission
+    ///
+    /// `render_build`'s call one field over, and here it decides more: a row out of a log written
+    /// before the stamp existed is not *the same run as whatever else bears this number*, it is
+    /// nobody having recorded which run it was. A silent omission would read as the former to
+    /// anyone comparing two rows, which is the reassuring reading of an unmeasured value.
+    #[test]
+    fn the_row_says_which_run_it_is_beside_the_number_that_cannot() {
+        const MINE: &str = "1f4a-17e2c9d31bb40000-0.c7";
+
+        let mut run = run_entry(&a_run_that_closed(None));
+        run[sprag_host::plugins::RUN_WHICH_RUN_KEY] = serde_json::json!(MINE);
+        let said = render_run(&run);
+        assert!(
+            said.contains(MINE),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 887: the daemon publishes which run this is and `sprag runs` \
+             does not print it, so a watcher keying its records on the number has nothing better \
+             offered — and that number names two runs. This is the exact failure `render_run`'s \
+             own comment warns about:\n{said}",
+        );
+        let head = said.lines().next().expect("a row has a heading");
+        assert!(
+            head.contains(MINE),
+            "⚠⚠⚠ AND ON THE HEAD LINE, where the number it qualifies is. A stamp printed further \
+             down is one a watcher copying `run {{id}}` never sees: {head:?}",
+        );
+
+        // ── AND A RUN NOBODY STAMPED SAYS SO ──
+        let unstamped = render_run(&run_entry(&a_run_that_closed(None)));
+        assert!(
+            unstamped.contains("which run not recorded"),
+            "⛔⛔⛔⛔ REGISTER ITEM 887: a row out of a log written before the stamp existed is \
+             SILENT about it, so it reads exactly like a row whose stamp happens to match. \
+             *Nobody recorded which run this was* is a third answer and the mouth must say \
+             it:\n{unstamped}",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **THE ROW A PERSON READS SAYS WHO ASKED FOR THE RUN, WHATEVER THE ANSWER IS** —

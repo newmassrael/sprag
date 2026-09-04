@@ -758,6 +758,7 @@ mod tests {
             output: None,
             done_reason: None,
             build: None,
+            which_run: None,
             driver: None,
             driving: None,
             opened_by_session: None,
