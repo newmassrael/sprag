@@ -2819,8 +2819,8 @@
     </send>
   </transition>
   <!-- ⚠ THREE STATES, ONE WORD, for a reason worth stating: what makes a
-       closing turn a REPORT is the `asks` on the sentence that opened it, not
-       which state is watching. -->
+       closing turn a REPORT is WHICH SENTENCE opened it — `sentence`, and what
+       that word asks for — not which state is watching. -->
   <transition event="pass"
               cond="In('working') || In('closing') || In('stopping')">
     <send type="x-sprag-host" event="pass.do">
@@ -2882,8 +2882,8 @@
   </transition>
   <!-- ⚠ NOT `watch`: a reflection is not judged, does not spend `max_turns`,
        cannot converge a run, and its answer is read back into the brief of the
-       session that replaces this one. `reflecting`'s own `asks='direction'`
-       makes the same distinction one layer over. -->
+       session that replaces this one. `reflecting`'s own
+       `sentence='reflection'` makes the same distinction one layer over. -->
   <transition event="pass" cond="In('reflecting')">
     <send type="x-sprag-host" event="pass.do">
       <param name="within" expr="ready_timeout_ms"/>
@@ -3585,10 +3585,16 @@
         keyed by this state (`Owed::on`, arm `Priming`). The state now says
         both facts itself, and the driver reads them off the act.
 
-        ⚠⚠ `asks='work'` AND NOT `'account'`, which is the whole reason the
-        argument exists: this sentence opens the run's FIRST turn. One that
-        asked for an account would take a report off a session that has not
-        been given anything to do yet.
+        ⚠⚠ `sentence='brief'` — a word that asks for WORK and not for an
+        account, which is the whole reason the argument exists: this sentence
+        opens the run's FIRST turn, and one that asked for an account would
+        take a report off a session that has not been given anything to do yet.
+
+        ⛔⛔⛔⛔⛔ AND IT IS ITS OWN WORD RATHER THAN `'turn'`, which is register
+        item 889 measured rather than argued: over this repository's whole loop
+        log the brief goes unasked at **0.23 %** and the turn prompt at
+        **3.48 %**, and while both declared `asks='work'` those two numbers
+        reached every reader as one row of 1.86 %.
 
         ⚠ THE ORDER IS THIS BLOCK'S OWN RULE, stated at its top: a send's
         arguments are evaluated when the send executes (W3C SCXML 6.2.3), so
@@ -3619,12 +3625,12 @@
       <if cond="entered_by == 'review'">
         <send type="x-sprag-host" event="prompt.say">
           <param name="text" expr="changed_prompt"/>
-          <param name="asks" expr="'work'"/>
+          <param name="sentence" expr="'rebrief'"/>
         </send>
       <else/>
         <send type="x-sprag-host" event="prompt.say">
           <param name="text" expr="start_prompt"/>
-          <param name="asks" expr="'work'"/>
+          <param name="sentence" expr="'brief'"/>
         </send>
       </if>
     </onentry>
@@ -4086,16 +4092,21 @@
         the block above this state says so: what it buys is *carry on with the
         turn you already have*, into a session nothing has re-briefed.
 
-        ⚠⚠⚠⚠ `asks='work'` IS THEREFORE ARGUED RATHER THAN COPIED FROM ITS
-        NEIGHBOURS. `asks` says what the sentence puts to the peer ASKS IT FOR,
-        not how long the sentence is: `account` would file the resumed turn as
-        this run's closing report, and `direction` would claim the loop is
-        asking where to go next when it is asking for nothing of the kind. What
-        `continue` asks for is the next piece of the job, which is `work`'s own
-        definition. ⚠ The residue, stated: `asks` does not distinguish a
-        composed question from a one-word nudge, and nothing reads it for that
-        — the only reader is the judgement that collects an account, and
-        neither of these is one.
+        ⚠⚠⚠⚠ `sentence='resume'` IS THEREFORE ARGUED RATHER THAN COPIED FROM
+        ITS NEIGHBOURS. The word asks for WORK, and that half is argued the same
+        way it always was: `account` would file the resumed turn as this run's
+        closing report, and `direction` would claim the loop is asking where to
+        go next when it is asking for nothing of the kind. What `continue` asks
+        for is the next piece of the job.
+
+        ⛔⛔⛔⛔⛔ AND THE RESIDUE THIS BLOCK USED TO STATE IS THE ONE REGISTER
+        ITEM 889 PAID. It read: *`asks` does not distinguish a composed question
+        from a one-word nudge, and nothing reads it for that.* This send is the
+        SHORTEST sentence in the document — `service_retry_text` is `continue` —
+        and it is put to the pane in the same state and under the same
+        `asks='work'` as a turn prompt of a thousand bytes, so no reading of a
+        run log could ever separate the two. Prompt size is the axis item 889 is
+        about; `resume` is the row that finally has it.
 
         ⚠⚠ IT IS ON THE EDGE THAT REACHES `working` AND NOT ON THE STATE,
         because `service.retry` has TWO destinations since this file gained a
@@ -4105,7 +4116,7 @@
       -->
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="service_retry_text"/>
-        <param name="asks" expr="'work'"/>
+        <param name="sentence" expr="'resume'"/>
       </send>
     </transition>
     <transition event="fail" target="failed"/>
@@ -4148,7 +4159,7 @@
     <transition event="resume" target="working">
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="turn_prompt"/>
-        <param name="asks" expr="'work'"/>
+        <param name="sentence" expr="'turn'"/>
       </send>
     </transition>
     <!--
@@ -4727,7 +4738,7 @@
       <assign location="reflect_reason" expr="'unreadable'"/>
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="turn_prompt"/>
-        <param name="asks" expr="'work'"/>
+        <param name="sentence" expr="'turn'"/>
       </send>
       <send type="x-sprag-host" event="arrival.note">
         <param name="note" expr="'judged'"/>
@@ -4736,7 +4747,7 @@
     <transition event="judge" target="working">
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="turn_prompt"/>
-        <param name="asks" expr="'work'"/>
+        <param name="sentence" expr="'turn'"/>
       </send>
       <send type="x-sprag-host" event="arrival.note">
         <param name="note" expr="'judged'"/>
@@ -4868,8 +4879,8 @@
         mint an event; what decided the sentence was a Rust table keyed by this
         state (`Owed::on`, arm `Disputing`). The state says it itself now.
 
-        ⚠⚠⚠⚠⚠ `asks='work'`, AND THIS STATE IS THE ONE WHERE THAT WORD DOES
-        SOMETHING RATHER THAN MERELY BEING TRUE. The block above already argues
+        ⚠⚠⚠⚠⚠ `sentence='dispute'` ASKS FOR WORK, AND THIS STATE IS THE ONE
+        WHERE THAT DOES SOMETHING RATHER THAN MERELY BEING TRUE. The block above already argues
         it in the other direction: `turn_prompt` is composed IN rather than
         replaced, so what goes to the peer is the ordinary turn the refusal
         bought, opened by the reason it was bought. The turn is then watched in
@@ -4890,7 +4901,7 @@
       -->
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="dispute_prompt"/>
-        <param name="asks" expr="'work'"/>
+        <param name="sentence" expr="'dispute'"/>
       </send>
     </onentry>
     <transition event="prompt.sent" target="working"/>
@@ -4975,14 +4986,20 @@
       <assign location="unverified_prompt"
               expr="unverified_opening + ' ' + unverified_said + '\n' + turn_prompt"/>
       <!--
-        ⚠⚠⚠⚠⚠ `asks='work'`, FOR `disputing`'s MEASURED REASON: the turn this
-        buys is watched in `working` by the arm that collects a run's ACCOUNT off
-        any turn whose question asked for one, so `account` here would publish an
-        unfinished run's next piece of work as its closing report.
+        ⚠⚠⚠⚠⚠ `sentence='uncertified'` ASKS FOR WORK, FOR `disputing`'s
+        MEASURED REASON: the turn this buys is watched in `working` by the arm
+        that collects a run's ACCOUNT off any turn whose question asked for one,
+        so a word asking for an account here would publish an unfinished run's
+        next piece of work as its closing report.
+
+        ⚠⚠ AND IT IS NOT `'dispute'`, though both follow a refused milestone: a
+        check that DISAGREED and a check that answered NOTHING are composed from
+        different parts and say different things, and one word for the two would
+        pool their rates the way `asks` pooled the brief with the turn prompt.
       -->
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="unverified_prompt"/>
-        <param name="asks" expr="'work'"/>
+        <param name="sentence" expr="'uncertified'"/>
       </send>
     </onentry>
     <transition event="prompt.sent" target="working"/>
@@ -5066,8 +5083,8 @@
         datamodel to discount the loop's own echo off the pane. The state says
         the first itself now, and what the host TYPED is what it discounts.
 
-        ⚠⚠⚠⚠⚠ `asks='direction'` IS A THIRD WORD, AND THE ARGUMENT FOR IT IS
-        THAT NEITHER OF THE OTHER TWO IS TRUE HERE.
+        ⚠⚠⚠⚠⚠ `sentence='reflection'` ASKS FOR A DIRECTION — A THIRD WORD, AND
+        THE ARGUMENT FOR IT IS THAT NEITHER OF THE OTHER TWO IS TRUE HERE.
 
         `work` is the ordinary turn: make progress on the milestone. This turn
         is not that, and this state's own comment above says so in this
@@ -5135,13 +5152,13 @@
         -->
         <send type="x-sprag-host" event="prompt.say">
           <param name="text" expr="reask_prompt"/>
-          <param name="asks" expr="'direction'"/>
+          <param name="sentence" expr="'reask'"/>
         </send>
       <else/>
         <assign location="reasked" expr="0"/>
         <send type="x-sprag-host" event="prompt.say">
           <param name="text" expr="reflect_prompt"/>
-          <param name="asks" expr="'direction'"/>
+          <param name="sentence" expr="'reflection'"/>
         </send>
       </if>
     </onentry>
@@ -5376,7 +5393,7 @@
       -->
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="turn_prompt"/>
-        <param name="asks" expr="'work'"/>
+        <param name="sentence" expr="'turn'"/>
       </send>
     </transition>
     <transition event="reflect.applied" target="reviewing">
@@ -5472,7 +5489,7 @@
       -->
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="turn_prompt"/>
-        <param name="asks" expr="'work'"/>
+        <param name="sentence" expr="'turn'"/>
       </send>
     </transition>
     <!--
@@ -6018,12 +6035,18 @@
         makes it an extensible identifier and this crate declares the one below
         to its build); `event` names the act; the `param`s are its arguments.
 
-        ⚠⚠⚠ `asks` IS THE HALF THAT RETIRED A TWENTY-EIGHT-ARM MATCH, and it is a
-        WORD rather than a flag on purpose: what a courtesy turn asks for is a
-        property of the QUESTION, and the run reads the answer back as the
+        ⚠⚠⚠ `sentence` IS THE HALF THAT RETIRED A TWENTY-EIGHT-ARM MATCH, and it
+        is a WORD rather than a flag on purpose: what a courtesy turn asks for is
+        a property of the QUESTION, and the run reads the answer back as the
         agent's account of itself. A run that asked for work would keep no such
         record. A word this host does not serve is REFUSED, which is what stands
         in for the compiler that used to keep the Rust table exhaustive.
+
+        ⛔⛔⛔ IT USED TO BE TWO WORDS — `asks='account'` beside this — and
+        register item 889 took the other one away. What a sentence asks for is a
+        function of WHICH sentence it is, so a document writing both could
+        declare a brief that asks for an account and nothing would refuse it.
+        `Sentence::asks` owns that fact now, at one site instead of fourteen.
 
         ⚠⚠ A LITERAL IS QUOTED INSIDE `expr`, because `expr` is an EXPRESSION in
         this document's datamodel and a bare `account` would be a variable
@@ -6031,7 +6054,7 @@
       -->
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="end_prompt"/>
-        <param name="asks" expr="'account'"/>
+        <param name="sentence" expr="'account'"/>
       </send>
     </onentry>
     <transition event="turn.done" target="converged"/>
@@ -6159,7 +6182,7 @@
       -->
       <send type="x-sprag-host" event="prompt.say">
         <param name="text" expr="stop_prompt"/>
-        <param name="asks" expr="'account'"/>
+        <param name="sentence" expr="'handover'"/>
       </send>
     </onentry>
     <transition event="turn.done" target="exhausted"/>

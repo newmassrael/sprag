@@ -771,6 +771,7 @@ mod tests {
             deliveries: None,
             folds_by_reason: None,
             delivered_by_road: None,
+            said_by_sentence: None,
             banked: None,
             cancelled_by: None,
             briefed: None,

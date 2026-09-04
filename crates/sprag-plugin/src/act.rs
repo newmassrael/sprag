@@ -28,7 +28,7 @@
 //! <onentry>
 //!   <send type="x-sprag-host" event="prompt.say">
 //!     <param name="text" expr="end_prompt"/>
-//!     <param name="asks" expr="'account'"/>
+//!     <param name="sentence" expr="'account'"/>
 //!   </send>
 //! </onentry>
 //! ```
@@ -87,8 +87,11 @@ const REFUSED: &str = "error.execution";
 pub enum Act {
     /// `prompt.say` — put a sentence to the run's peer, and open a turn with it.
     ///
-    /// Arguments: `text` (what to say) and `asks` (what the sentence is asking the peer for — see
-    /// [`Asks`]). Both are required, because a prompt with neither is not a prompt.
+    /// Arguments: `text` (what to say) and `sentence` (WHICH sentence it is, from the closed space
+    /// [`Sentence`] names). Both are required, because a prompt with neither is not a prompt.
+    ///
+    /// ⚠ What it asks the peer FOR is not a third argument: [`Sentence::asks`] derives it, so the
+    /// document cannot write a `brief` that asks for an account — register item 889.
     Say,
     /// `pass.do` — carry out what this pass of the driver is for.
     ///
@@ -213,20 +216,35 @@ impl Act {
     }
 }
 
-/// **WHAT A SENTENCE PUT TO THE PEER IS ASKING IT FOR** — [`Act::Say`]'s `asks` argument.
+/// **WHAT A SENTENCE PUT TO THE PEER IS ASKING IT FOR** — [`Sentence::asks`], and the fact the
+/// judgement reads to decide whether to collect an account off the turn a sentence opened.
 ///
 /// # ⚠⚠⚠ Why a WORD with a closed space, and not a boolean
 ///
-/// A boolean would answer *is this an account* and nothing else, and the next question the document
+/// A boolean would answer *is this an account* and nothing else, and the next question this driver
 /// wants to ask about a prompt would arrive as a second boolean beside it — two flags for one fact,
-/// which is the shape this register keeps paying for. A word names what the prompt IS, and a value
-/// outside this space is REFUSED rather than read as `false`.
+/// which is the shape this register keeps paying for. A word names what the prompt is FOR, and a
+/// value outside this space cannot be built at all.
 ///
 /// ⚠⚠⚠⚠⚠ **AND THE THIRD VALUE IS THAT ARGUMENT BEING USED RATHER THAN THE SPACE GROWING** —
 /// 2026-08-26, `reflecting`'s act. While the space held two words a reader could still take it for
 /// `asked_for_an_account`'s boolean under another spelling; [`Self::Direction`] is a question that
 /// is neither of the other two and could not have been expressed as one, which is what the comment
 /// above predicted the day the space was closed.
+///
+/// # ⛔⛔⛔⛔⛔ IT IS NO LONGER A DOCUMENT'S ARGUMENT, AND THAT IS REGISTER ITEM 889
+///
+/// `ai_loop.scxml` used to write this word at every `prompt.say`. It stopped, because the word is
+/// too COARSE to be the only thing a prompt says about itself: the brief and the turn prompt both
+/// ask for `work`, and over this repository's whole loop log they go unasked at 0.23 % and 3.48 %.
+/// The document now writes [`Sentence`], which is finer, and this is derived from it — so what a
+/// sentence asks for is stated once, on the word, instead of at fourteen sends that could each get
+/// it wrong.
+///
+/// ⚠⚠ **SO THERE IS NO `of(word)` HERE ANY MORE**, and its absence is a decision rather than an
+/// omission: a reader that parsed a word back into this space would be a door onto a road no
+/// document takes, and rule 5's shape — an input that can never arrive. [`Sentence::of`] is the
+/// door now, and this space is reached only through [`Sentence::asks`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Asks {
     /// `work` — the ordinary turn: do the next piece of the job.
@@ -266,7 +284,10 @@ impl Asks {
     /// Every value this argument may hold.
     pub const ALL: [Self; 3] = [Self::Work, Self::Account, Self::Direction];
 
-    /// The word a document writes for it.
+    /// The word for it — a name a person reads, and no longer one a document writes.
+    ///
+    /// ⚠ See this type's own doc: `ai_loop.scxml` stopped declaring `asks` at register item 889,
+    /// so nothing parses this back and there is deliberately no `of`.
     #[must_use]
     pub const fn named(self) -> &'static str {
         match self {
@@ -275,11 +296,185 @@ impl Asks {
             Self::Direction => "direction",
         }
     }
+}
 
-    /// What `word` asks for, or [`None`] for a word this space does not hold.
+/// ⛔⛔⛔⛔⛔ **WHICH SENTENCE THIS IS** — [`Act::Say`]'s `sentence` argument, and register item
+/// 889's counting half.
+///
+/// # ⛔⛔⛔⛔⛔ [`Asks`] WAS TRIED FIRST AND IT POOLS THE TWO ENDS OF THE ONE MEASURED AXIS
+///
+/// Register item 669 found that whether a prompt ever becomes a question depends on WHICH prompt
+/// the loop is sending, and the ratio is large. Measured 2026-09-04 over this repository's whole
+/// loop log — 197 files, 17,722 transitions — by the state the prompt was in flight in:
+///
+/// | the prompt in flight | put | never asked | rate |
+/// | --- | ---: | ---: | ---: |
+/// | the brief | 3,442 | 8 | **0.23 %** |
+/// | a reflection | 1,014 | 18 | 1.78 % |
+/// | the turn prompt | 3,390 | 118 | **3.48 %** |
+///
+/// ⇒ **fifteen-fold, against a named variable.** The register's own prescription for counting it
+/// in the product was [`Asks`], *the vocabulary is already there*. **It is not.** The same log,
+/// grouped by the word each of those prompts declares — the mapping read out of `ai_loop.scxml`
+/// rather than assumed:
+///
+/// | word | put | never asked | rate |
+/// | --- | ---: | ---: | ---: |
+/// | `work` | 6,880 | 128 | 1.86 % |
+/// | `direction` | 1,014 | 18 | 1.78 % |
+/// | `account` | 283 | 2 | 0.71 % |
+///
+/// ⇒ **2.63× across the whole space, and the 15× is gone** — because the brief and the turn prompt
+/// both ask for `work`, so the two ends of the axis land in one row and average each other out.
+/// `work` and `direction` then differ by 0.08 percentage points, which is a table saying *there is
+/// no axis here* about the sharpest axis this register has.
+///
+/// # ⚠⚠⚠⚠⚠ So it is a SECOND word, and [`Asks`] is DERIVED from it rather than declared beside it
+///
+/// The two questions are different and only one of them was being asked. [`Asks`] answers *what is
+/// to be done with the ANSWER* — its one reader is the judgement that decides whether to collect an
+/// account off the turn this sentence opens. This answers *which sentence went out*, which is what
+/// a rate is a rate OF.
+///
+/// ⚠⚠ **They are not independent, and that is why a document may not write both.** Every brief asks
+/// for work; every handover asks for an account. [`asks`](Self::asks) is that function, owned by
+/// this type — so a send declaring `brief` cannot also declare `account`, because there is nothing
+/// for it to declare. Two `<param>`s for one fact is the shape this crate pays for repeatedly, and
+/// the fix here costs the document a word rather than adding one.
+///
+/// # ⚠⚠⚠ Why the space is FINER than the states, and finer than the log can be
+///
+/// One word per sentence this loop composes, not one per reason to send one. `service_retry_text`
+/// is the string `continue` and `turn_prompt` runs to a thousand bytes; both are put to the pane
+/// while the machine is in `working`, so **no reading of the log can ever tell them apart** — the
+/// axis item 889 is about is prompt SIZE, and those two are its extremes inside one state and one
+/// [`Asks`] word. A row each is the whole reason the count belongs in the product.
+///
+/// ⚠⚠ Pooling is what this type exists to undo, so it does none of its own: rows can always be
+/// added up by a reader and a pooled row can never be taken apart, which is exactly what the second
+/// table above is a measurement of.
+///
+/// # ⚠⚠⚠⚠⚠ Rule 6: the space is CLOSED and a word outside it is REFUSED
+///
+/// [`Asks`]' rule verbatim, and it is what makes the count a population rather than a tally of the
+/// interesting cases: a send that declares nothing is refused where the machine can hear it, and a
+/// sentence nobody classified cannot reach a reader as one of the sentences somebody did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sentence {
+    /// `brief` — what the job IS, to a session that has not been told.
+    ///
+    /// ⚠ The longest sentence this loop composes, and the one measured at 0.23 % above.
+    Brief,
+    /// `rebrief` — the same job, to a session that already holds the repository.
+    ///
+    /// ⚠ Its own word rather than [`Brief`](Self::Brief)'s, because the document already computes
+    /// the distinction (`entered_by == 'review'`) and the two sentences differ by everything the
+    /// shorter one leaves out — which is the variable item 889 is about.
+    Rebrief,
+    /// `turn` — get on with the next piece of the work.
+    ///
+    /// ⚠ The sentence measured at 3.48 %, and the run's most frequent by a wide margin.
+    Turn,
+    /// `resume` — pick the work back up after this host's service came back.
+    ///
+    /// ⚠⚠ **THE SHORTEST SENTENCE IN THE DOCUMENT**: `service_retry_text` is `continue`. It shares
+    /// [`Turn`](Self::Turn)'s state and [`Asks::Work`], so it has never had a number of its own —
+    /// see the section above for why that is the point of this space rather than an accident of it.
+    Resume,
+    /// `dispute` — an independent check was shown the work and did not agree.
+    Dispute,
+    /// `uncertified` — an independent check was asked and no answer could be read from it, so
+    /// nothing outside the session has verified the claim.
+    ///
+    /// ⚠ Not one word with [`Dispute`](Self::Dispute): a refusal and a silence are different
+    /// sentences composed from different parts, and the document keeps them apart already.
+    Uncertified,
+    /// `reflection` — where should the work go next.
+    Reflection,
+    /// `reask` — the same question again, because what came back was not an answer.
+    Reask,
+    /// `account` — say what changed, what was verified and what is left open.
+    Account,
+    /// `handover` — the run has spent a ceiling; say where you got to for whoever picks it up.
+    ///
+    /// ⚠ Not [`Account`](Self::Account): that one is composed for a run that REACHED its ending,
+    /// this one carries the ceiling clause and asks a different question of a run that did not.
+    Handover,
+    /// `rule` — a standing instruction typed to get the peer past a dialog.
+    ///
+    /// ⚠⚠ **THE ONE WORD NO `<send>` WRITES**, and it is in the space for rule 6's reason: the
+    /// driver types a screen rule's own text at two places of its own, and a sentence with no word
+    /// would be a delivery counted under whichever sentence went before it. It is a row that a
+    /// reading of `ai_loop.scxml` alone cannot know is there.
+    Rule,
+}
+
+impl Sentence {
+    /// Every value this argument may hold.
+    pub const ALL: [Self; 11] = [
+        Self::Brief,
+        Self::Rebrief,
+        Self::Turn,
+        Self::Resume,
+        Self::Dispute,
+        Self::Uncertified,
+        Self::Reflection,
+        Self::Reask,
+        Self::Account,
+        Self::Handover,
+        Self::Rule,
+    ];
+
+    /// The word a document writes for it.
+    #[must_use]
+    pub const fn named(self) -> &'static str {
+        match self {
+            Self::Brief => "brief",
+            Self::Rebrief => "rebrief",
+            Self::Turn => "turn",
+            Self::Resume => "resume",
+            Self::Dispute => "dispute",
+            Self::Uncertified => "uncertified",
+            Self::Reflection => "reflection",
+            Self::Reask => "reask",
+            Self::Account => "account",
+            Self::Handover => "handover",
+            Self::Rule => "rule",
+        }
+    }
+
+    /// Which sentence `word` names, or [`None`] for a word this space does not hold.
     #[must_use]
     pub fn of(word: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|asks| asks.named() == word)
+        Self::ALL.into_iter().find(|it| it.named() == word)
+    }
+
+    /// **WHAT THIS SENTENCE ASKS THE PEER FOR** — [`Asks`], derived here and declared nowhere.
+    ///
+    /// ⚠⚠⚠ **THE DERIVATION IS THIS TYPE'S AND NOT A DOCUMENT'S**, which is the whole reason
+    /// `ai_loop.scxml` no longer carries an `asks` argument. The fact *a handover asks for an
+    /// account* is a fact about the WORD, true at every site that ever writes it, so a document
+    /// repeating it at fourteen sends is fourteen chances to disagree with itself — and the
+    /// disagreement would be silent, because both values parse.
+    ///
+    /// ⚠⚠ Exhaustive, so a twelfth sentence cannot be added without somebody saying what it asks
+    /// for: the same guard [`Asks`] had by being an argument of the one function that types.
+    #[must_use]
+    pub const fn asks(self) -> Asks {
+        match self {
+            // Every sentence that opens an ordinary turn. ⚠ `Rule` is here too — a redirect answers
+            // a dialog and tells the peer what to do instead, and no account is collected off it.
+            Self::Brief
+            | Self::Rebrief
+            | Self::Turn
+            | Self::Resume
+            | Self::Dispute
+            | Self::Uncertified
+            | Self::Rule => Asks::Work,
+            // ⚠ See [`Asks::Direction`] for why a reflection is neither of the other two.
+            Self::Reflection | Self::Reask => Asks::Direction,
+            Self::Account | Self::Handover => Asks::Account,
+        }
     }
 }
 
@@ -691,8 +886,11 @@ pub enum Asked {
     Say {
         /// The sentence to put to the peer, as the document composed it.
         text: String,
-        /// What that sentence is asking for.
-        asks: Asks,
+        /// ⛔⛔⛔ WHICH sentence it is — register item 889, and the axis a rate is a rate of.
+        ///
+        /// ⚠ What it asks the peer for is [`Sentence::asks`] and is not carried beside it: one
+        /// fact, one argument.
+        sentence: Sentence,
     },
     /// [`Act::Pass`] — carry this pass out.
     Pass {
@@ -1181,25 +1379,25 @@ fn read(named: &str, params: &Params) -> Result<Asked, Refused> {
     match act {
         Act::Say => {
             let text = argument(params, act, "text")?;
-            // ⚠⚠⚠⚠⚠ AN EMPTY SENTENCE IS NOT A SHORT ONE — see [`Refused::Empty`]. `asks` needs no
-            // such line: its space is closed, so `Asks::of("")` already answers [`None`] below and
-            // the refusal a reader gets there names the space it missed.
+            // ⚠⚠⚠⚠⚠ AN EMPTY SENTENCE IS NOT A SHORT ONE — see [`Refused::Empty`]. `sentence`
+            // needs no such line: its space is closed, so `Sentence::of("")` already answers
+            // [`None`] below and the refusal a reader gets there names the space it missed.
             if text.is_empty() {
                 return Err(Refused::Empty {
                     act,
                     argument: "text",
                 });
             }
-            let said = argument(params, act, "asks")?;
-            let Some(asks) = Asks::of(&said) else {
+            let said = argument(params, act, "sentence")?;
+            let Some(sentence) = Sentence::of(&said) else {
                 return Err(Refused::Unreadable {
                     act,
-                    argument: "asks",
+                    argument: "sentence",
                     said,
-                    holds: Asks::ALL.map(Asks::named).to_vec(),
+                    holds: Sentence::ALL.map(Sentence::named).to_vec(),
                 });
             };
-            Ok(Asked::Say { text, asks })
+            Ok(Asked::Say { text, sentence })
         }
         // ⚠⚠⚠ NO EMPTY CHECK OF ITS OWN, and that is the closed space doing the work `text`'s
         // needs a line for: `Does::of("")` already answers [`None`], so an argument that evaluated
@@ -1315,7 +1513,8 @@ mod tests {
     use sce_rust_runtime::{IScriptEngine, ScriptValue};
 
     use super::{
-        Accounts, Act, Asked, Asks, Does, Notes, Publishes, Refused, Serving, Signals, read,
+        Accounts, Act, Asked, Asks, Does, Notes, Publishes, Refused, Sentence, Serving, Signals,
+        read,
     };
     use crate::sm::probe_send_type_sm::ProbeSendTypePolicy;
 
@@ -1482,18 +1681,18 @@ mod tests {
             read(act.named(), &params)
         };
         let with = |pairs: &[(&str, &str)]| asking(Act::Say, pairs);
-        let asks_of = |read: Result<Asked, Refused>| match read.expect("a well-formed act") {
-            Asked::Say { asks, .. } => asks,
+        let said_by = |read: Result<Asked, Refused>| match read.expect("a well-formed act") {
+            Asked::Say { sentence, .. } => sentence,
             other => panic!("`prompt.say` is what was asked for: {other:?}"),
         };
 
         // ── THE STAGED CONTROL: the well-formed act, so every refusal below is about the breach ──
         assert_eq!(
-            asks_of(with(&[
+            said_by(with(&[
                 ("text", "where did you get to?"),
-                ("asks", "account")
+                ("sentence", "account")
             ])),
-            Asks::Account,
+            Sentence::Account,
             "⚠⚠⚠ THE CONTROL: the act this host serves, with the arguments the document writes, \
              must be READ — otherwise the refusals below are consistent with a host that refuses \
              everything",
@@ -1505,17 +1704,37 @@ mod tests {
         // this host would refuse, and it would look complete in the file that defines it.
         //
         // ⚠⚠⚠⚠⚠ WHAT IT CANNOT SEE, SAID HERE RATHER THAN LEFT TO BE ASSUMED: a variant DROPPED
-        // from `ALL` while the enum keeps it. `Asks::of` walks `ALL`, so the word stops being
+        // from `ALL` while the enum keeps it. `Sentence::of` walks `ALL`, so the word stops being
         // readable and this loop stops iterating it in the same edit — the assertion is blind to
         // exactly the mutation it reads as though it caught. **What catches that is the run**:
         // `outer::tests::a_reflection_is_told_what_to_say_and_what_it_asks_for_by_its_own_document`
-        // drives a document that writes `direction`, and a word the space no longer holds is
+        // drives a document that writes `reflection`, and a word the space no longer holds is
         // refused where the machine can hear it. Measured in both directions, 2026-08-26.
-        for asks in Asks::ALL {
+        for sentence in Sentence::ALL {
             assert_eq!(
-                asks_of(with(&[("text", "a sentence"), ("asks", asks.named())])),
-                asks,
-                "⚠⚠⚠⚠ `{}` is in `Asks::ALL` and this door does not read it back as itself",
+                said_by(with(&[
+                    ("text", "a sentence"),
+                    ("sentence", sentence.named())
+                ])),
+                sentence,
+                "⚠⚠⚠⚠ `{}` is in `Sentence::ALL` and this door does not read it back as itself",
+                sentence.named(),
+            );
+        }
+
+        // ⛔⛔⛔⛔⛔ AND WHAT EACH OF THOSE WORDS ASKS FOR IS REACHABLE, WHICH IS WHERE THE DELETED
+        // ARGUMENT WENT — register item 889. `Asks` is no longer written by any document, so the
+        // only thing that could keep its space honest is this derivation being total and every one
+        // of its answers being a word this space still holds.
+        for asks in Asks::ALL {
+            assert!(
+                Sentence::ALL
+                    .into_iter()
+                    .any(|sentence| sentence.asks() == asks),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 889: `{}` is in `Asks::ALL` and NO sentence asks for it. \
+                 The document stopped declaring `asks` when `Sentence::asks` took the fact over, \
+                 so a word no sentence reaches is a word nothing can ever produce — and its \
+                 readers would be dead code that still compiles",
                 asks.named(),
             );
         }
@@ -1738,14 +1957,15 @@ mod tests {
             with(&[("text", "carry on")]),
             Err(Refused::Missing {
                 act: Act::Say,
-                argument: "asks",
+                argument: "sentence",
             }),
-            "⚠⚠⚠⚠⚠ AN OMITTED `asks` MUST NOT DEFAULT. This is the exact shape the deleted \
-             exhaustive match caught for free: a state that asks for something and does not say \
-             what would collect no account and look identical to one asking for work.",
+            "⚠⚠⚠⚠⚠ AN OMITTED `sentence` MUST NOT DEFAULT. This is the exact shape the deleted \
+             exhaustive match caught for free: a state that says something and does not say WHICH \
+             sentence would collect no account and look identical to one asking for work — and \
+             since register item 889 it would also land in no row of the rate table.",
         );
         assert_eq!(
-            with(&[("asks", "account")]),
+            with(&[("sentence", "account")]),
             Err(Refused::Missing {
                 act: Act::Say,
                 argument: "text",
@@ -1754,7 +1974,7 @@ mod tests {
              Enter at a peer",
         );
         assert_eq!(
-            with(&[("text", ""), ("asks", "account")]),
+            with(&[("text", ""), ("sentence", "account")]),
             Err(Refused::Empty {
                 act: Act::Say,
                 argument: "text",
@@ -1767,12 +1987,12 @@ mod tests {
              refuses: it would send a reader looking for a `<param>` that is right there.",
         );
         assert_eq!(
-            with(&[("text", "carry on"), ("asks", "Account")]),
+            with(&[("text", "carry on"), ("sentence", "Account")]),
             Err(Refused::Unreadable {
                 act: Act::Say,
-                argument: "asks",
+                argument: "sentence",
                 said: "Account".to_owned(),
-                holds: Asks::ALL.map(Asks::named).to_vec(),
+                holds: Sentence::ALL.map(Sentence::named).to_vec(),
             }),
             "⚠⚠⚠ AND A WORD OUTSIDE THE SPACE IS REFUSED RATHER THAN READ AS THE OTHER ONE. A \
              capital is what a person writes; reading it as `work` would silently drop an account \
@@ -1806,7 +2026,10 @@ mod tests {
             event_name: Act::Say.named().to_owned(),
             params: [
                 ("text".to_owned(), vec![text.to_owned()]),
-                ("asks".to_owned(), vec![Asks::Work.named().to_owned()]),
+                (
+                    "sentence".to_owned(),
+                    vec![Sentence::Turn.named().to_owned()],
+                ),
             ]
             .into_iter()
             .collect(),
@@ -1856,7 +2079,7 @@ mod tests {
             carried,
             Asked::Say {
                 text: "the first question".to_owned(),
-                asks: Asks::Work,
+                sentence: Sentence::Turn,
             },
             "⚠⚠⚠⚠ THE SECOND MUST NOT HAVE OVERWRITTEN THE FIRST. An overwrite refuses the machine \
              and then performs the act it refused, which is worse than either answer alone.",

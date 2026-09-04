@@ -7076,6 +7076,16 @@ fn render_run(run: &Value) -> String {
     // them counting every fold and only some landings.
     let landed = sprag_host::plugins::delivered_by_road_sentence(run)
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⛔⛔⛔⛔⛔ AND WHICH OF THIS RUN'S PROMPTS WERE THE ONES THAT STUCK — register item 889, in
+    // the same place and under the same constraint as the three clauses above.
+    //
+    // ⚠ A FOURTH line, on the third's reason: `landed` says *how much of what this run typed
+    // arrived*, and this says *which prompt did not*. They are one number apart and two different
+    // acts — the first is a verdict on the run, the second is where to look next, and the measured
+    // answer is a fifteen-fold difference between the brief and the turn prompt that no total, no
+    // reflection split and no road table can express.
+    let stuck = sprag_host::plugins::said_by_sentence_sentence(run)
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     // ⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601, in
     // the same place and under the same constraint as the two clauses above.
     let verified = run[sprag_host::plugins::RUN_CHECKS_KEY]
@@ -7237,7 +7247,7 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -7318,7 +7328,7 @@ fn render_run(run: &Value) -> String {
                 )
             });
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -7368,7 +7378,7 @@ fn render_run(run: &Value) -> String {
         // had happened was a `kill-server`. **A fact that reaches the wire and dies at the mouth
         // somebody actually reads** is the sentence the `Reported` arm above already wrote down.
         _ => format!(
-            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{split}{landed}{verified}{canceller}\n",
+            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{split}{landed}{stuck}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("?"),
             render_why_it_ended(state),
         ),

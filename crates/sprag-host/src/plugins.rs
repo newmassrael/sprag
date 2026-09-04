@@ -626,6 +626,29 @@ pub const RUN_FOLDS_BY_REASON_KEY: &str = "folds_by_reason";
 /// ADDED KEY on an answer, which this surface's pin does not number — an older daemon omits it and
 /// the reader answers [`None`] rather than filling in a table nobody reported.
 pub const RUN_DELIVERED_BY_ROAD_KEY: &str = "delivered_by_road";
+/// ⛔⛔⛔⛔⛔ The answer key carrying **WHICH SENTENCE EVERY ONE OF A RUN'S PROMPTS WAS, AND HOW
+/// MANY OF EACH NEVER BECAME A QUESTION** — register item 889, and the only place *which prompt
+/// gets stuck* is published at all.
+///
+/// # ⛔⛔⛔⛔⛔ A fifteen-fold ratio that no key above can carry
+///
+/// Measured 2026-09-04 over this repository's whole loop log — 197 files, 17,722 transitions — the
+/// brief goes unasked at **0.23 %**, a reflection at 1.78 % and the turn prompt at **3.48 %**. None
+/// of the four keys above can say that: [`RUN_UNSUBMITTED_KEY`] and [`RUN_UNREPORTED_KEY`] are
+/// totals over a run, [`RUN_FOLDS_BY_REASON_KEY`] is denominated in reflections so the brief row is
+/// outside it by construction, and [`RUN_DELIVERED_BY_ROAD_KEY`] says what PROVED a delivery rather
+/// than what the delivery was. So the ratio came out of a walk's transition names — the file items
+/// 887 and 888 measured as unreliable.
+///
+/// ⚠⚠ **AND IT IS NOT A SPLIT BY `asks`**, which is what item 889 first prescribed: grouped by that
+/// three-word space the same log reads 1.86 % for `work` and 1.78 % for `direction`, because the
+/// brief and the turn prompt both ask for work and average each other out. See
+/// `sprag_plugin::Sentence`, which carries both tables.
+///
+/// ⚠ An OBJECT keyed by the sentence's word, [`RUN_FOLDS_BY_REASON_KEY`]'s shape and its reason. An
+/// ADDED KEY on an answer, which this surface's pin does not number — an older daemon omits it and
+/// the reader answers [`None`] rather than filling in a table nobody reported.
+pub const RUN_SAID_BY_SENTENCE_KEY: &str = "said_by_sentence";
 /// The answer key carrying **HOW MANY OF A RUN'S PROMPTS ARE SITTING IN A COMPOSER, TYPED AND NEVER
 /// ASKED** — register item 617, present beside [`RUN_DELIVERED_KEY`] and never alone.
 ///
@@ -5472,6 +5495,11 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         // which walks `Witnessed::ALL`, so an eighth road arrives with a row rather than being left
         // out of a hand-written list and pooled into a total nobody split.
         RUN_DELIVERED_BY_ROAD_KEY: delivered_by_road_json(progress.delivered_by_road),
+        // ⛔⛔⛔⛔⛔ AND WHICH SENTENCE EACH ONE WAS — register item 889, and the only key here from
+        // which *which prompt gets stuck* can be read. Composed from `SaidBySentence::rows`, which
+        // walks `Sentence::ALL`, so a twelfth sentence arrives with a row rather than being left
+        // out of a hand-written list and pooled into a rate nobody split.
+        RUN_SAID_BY_SENTENCE_KEY: said_by_sentence_json(progress.said_by_sentence),
         RUN_CHECKS_KEY: {
             "asked": progress.checks.asked,
             "silent": progress.checks.silent,
@@ -5577,6 +5605,11 @@ pub struct ReportedProgress {
     /// driver whose build knew no [`RUN_DELIVERED_BY_ROAD_KEY`], never for one that has delivered
     /// nothing: that run reports every road at zero, which is a population and not a silence.
     pub delivered_by_road: Option<sprag_plugin::DeliveredByRoad>,
+    /// ⛔⛔⛔⛔⛔ Which sentence each of those prompts was, and how many of each never became a
+    /// question — items 663 / 889. [`None`] for a driver whose build knew no
+    /// [`RUN_SAID_BY_SENTENCE_KEY`], never for one that has said nothing: that run reports every
+    /// sentence at `0 of 0`, which is a population and not a silence.
+    pub said_by_sentence: Option<sprag_plugin::SaidBySentence>,
     /// What it said its milestone checks came to — items 663 / 601. The TALLY; the sentence a
     /// reader gets is [`checks_sentence`]'s, composed here from this.
     pub checks: Option<sprag_plugin::Checks>,
@@ -5699,6 +5732,55 @@ fn delivered_by_road_in(beside: &Value) -> Option<sprag_plugin::DeliveredByRoad>
     Some(roads)
 }
 
+/// **THE SENTENCE TABLE AS IT CROSSES THE WIRE** — one entry per `sprag_plugin::Sentence` word,
+/// each an object rather than a bare count, because a numerator without its denominator is the one
+/// shape register item 889 exists to stop.
+///
+/// ⚠ Composed from `rows()` rather than from a list here, so `Sentence::ALL` stays the only
+/// authority on which sentences there are — this workspace's rule 6: a sentence nobody classified
+/// must not quietly leave the table, and the two with no observed member on most runs (`handover`,
+/// `rule`) are exactly the ones a surprise arrives on.
+fn said_by_sentence_json(said: sprag_plugin::SaidBySentence) -> Value {
+    let mut out = serde_json::Map::new();
+    for (sentence, row) in said.rows() {
+        out.insert(
+            sentence.named().to_owned(),
+            json!({
+                "sent": row.sent,
+                "unasked_after_a_fold": row.unasked.after_a_fold,
+                "unasked_on_the_pane": row.unasked.on_the_pane,
+            }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// The reverse of [`said_by_sentence_json`] — see [`ReportedProgress::said_by_sentence`].
+///
+/// ⚠⚠ **WHOLE OR NOTHING**, [`delivered_by_road_in`]'s rule and for the same reason one axis over:
+/// a sentence a live driver names and this build cannot spell is a BUILD SKEW, and a partial table
+/// would publish a comparison between rows over a population this image never saw — which, for a
+/// table whose whole value IS the comparison, is worse than no table. The DURABLE log is the other
+/// way round and deliberately so — see `crate::runs::PersistedSaidBySentence`.
+fn said_by_sentence_in(beside: &Value) -> Option<sprag_plugin::SaidBySentence> {
+    let table = beside.get(RUN_SAID_BY_SENTENCE_KEY)?.as_object()?;
+    let mut said = sprag_plugin::SaidBySentence::NONE;
+    for (word, row) in table {
+        let sentence = sprag_plugin::Sentence::of(word)?;
+        said.restore(
+            sentence,
+            sprag_plugin::SaidUnder {
+                sent: small(row.get("sent"))?,
+                unasked: sprag_plugin::Unasked {
+                    after_a_fold: small(row.get("unasked_after_a_fold"))?,
+                    on_the_pane: small(row.get("unasked_on_the_pane"))?,
+                },
+            },
+        );
+    }
+    Some(said)
+}
+
 /// Read a driver's progress report — see [`ReportedProgress`].
 #[must_use]
 pub fn progress_from_report(reported: &Value) -> ReportedProgress {
@@ -5740,6 +5822,11 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
     // stated reason and one of its own: the value is a DENOMINATOR, and a table read in halves is a
     // landing count over a population nobody reported.
     let delivered_by_road = delivered_by_road_in(beside);
+    // ⛔⛔⛔⛔⛔ AND WHICH SENTENCE EACH PROMPT WAS — register item 889, whole or nothing for the
+    // block's stated reason and the sharpest instance of it: every row here carries its own
+    // denominator, so a table read in halves would publish a rate over a population nobody
+    // reported, and the only thing this table is for is comparing those rates.
+    let said_by_sentence = said_by_sentence_in(beside);
     let checks = (|| {
         let tally = beside.get(RUN_CHECKS_KEY)?;
         Some(sprag_plugin::Checks {
@@ -5820,6 +5907,7 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
         deliveries,
         folds_by_reason,
         delivered_by_road,
+        said_by_sentence,
         checks,
         driving: beside
             .get(RUN_DRIVING_KEY)
@@ -6155,6 +6243,16 @@ pub(crate) fn run_to_json(
         .unwrap_or(run.progress.delivered_by_road);
     if !roads.is_empty() {
         entry[RUN_DELIVERED_BY_ROAD_KEY] = delivered_by_road_json(roads);
+    }
+    // ⛔⛔⛔⛔⛔ AND WHICH SENTENCE EACH PROMPT WAS — register item 889, on the two blocks above's
+    // terms: the report first, the cell as the fallback, and its own predicate because a run that
+    // typed nothing has no rate to publish and a table of eleven zero rows would be a comparison
+    // over nothing.
+    let sentences = reported
+        .said_by_sentence
+        .unwrap_or(run.progress.said_by_sentence);
+    if !sentences.is_empty() {
+        entry[RUN_SAID_BY_SENTENCE_KEY] = said_by_sentence_json(sentences);
     }
     // ⚠⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601,
     // beside the state for the two keys above's reason and absent when no claim was ever put to a
@@ -7176,6 +7274,61 @@ pub fn delivered_by_road_sentence(run: &Value) -> Option<String> {
     Some(format!("{said} — {}", roads.join(" · ")))
 }
 
+/// ⛔⛔⛔⛔⛔ **WHICH OF THIS RUN'S PROMPTS NEVER BECAME A QUESTION, BY WHICH SENTENCE IT WAS** —
+/// register item 889, and the sentence [`RUN_SAID_BY_SENTENCE_KEY`] carries. [`None`] for a run
+/// that has said nothing.
+///
+/// # ⛔⛔⛔⛔⛔ Why a sentence and not the eleven rows the row already carries
+///
+/// The fact a reader acts on is a COMPARISON: *this run's turn prompts stick and its brief does
+/// not*. Eleven pairs of numbers is that fact spelled in a shape nobody adds up, and the arithmetic
+/// they would do in their head is the arithmetic item 889 caught being done wrong — over a whole
+/// log, at the wrong grain, against the wrong denominator.
+///
+/// ⚠⚠⚠ **THE SENTENCES WITH NOTHING UNASKED ARE NOT PRINTED, AND THE DENOMINATOR STILL IS.** A row
+/// reading `0/27 turn` beside `2/3 brief` is the honest comparison; dropping the clean rows
+/// entirely would publish a list of failures with no scale, which is the exact defect
+/// `Deliveries::attempted` exists for. So a row is printed when it has a numerator, and the total
+/// sent is always said.
+///
+/// ⚠ Off the ROW's own JSON, [`delivered_by_road_sentence`]'s argument verbatim.
+#[must_use]
+pub fn said_by_sentence_sentence(run: &Value) -> Option<String> {
+    let table = run.get(RUN_SAID_BY_SENTENCE_KEY)?.as_object()?;
+    // ⚠⚠ WALKED IN `Sentence::ALL`'s ORDER and not the object's, `delivered_by_road_sentence`'s
+    // rule: a sentence this build cannot spell does not sort itself into the middle of a
+    // comparison.
+    let (mut sent, mut unasked) = (0_u64, 0_u64);
+    let mut stuck: Vec<String> = Vec::new();
+    for sentence in sprag_plugin::Sentence::ALL {
+        let Some(row) = table.get(sentence.named()) else {
+            // ⚠⚠⚠ A SENTENCE THE ROW DOES NOT CARRY IS NOT A ZERO. An older daemon wrote a table
+            // this build has a word for and it did not; reading the gap as `0 of 0` would publish
+            // *every prompt of this sentence was asked* on behalf of a writer that never said so,
+            // which is rule 6's reassuring reading of an unclassified value.
+            return None;
+        };
+        let put = row.get("sent").and_then(Value::as_u64)?;
+        let missed = row.get("unasked_after_a_fold").and_then(Value::as_u64)?
+            + row.get("unasked_on_the_pane").and_then(Value::as_u64)?;
+        sent += put;
+        unasked += missed;
+        if missed > 0 {
+            stuck.push(format!("{missed}/{put} {}", sentence.named()));
+        }
+    }
+    if sent == 0 {
+        return None;
+    }
+    if stuck.is_empty() {
+        return Some(format!("{sent} prompts, every one of them asked"));
+    }
+    Some(format!(
+        "{unasked} of {sent} prompts never became a question — {}",
+        stuck.join(" · ")
+    ))
+}
+
 /// What became of the prompts this run actually DELIVERED — [`delivery_sentence`]'s fold reading,
 /// lifted out so the wedged clause above can carry it too.
 ///
@@ -7884,6 +8037,7 @@ mod tests {
             deliveries: None,
             folds_by_reason: None,
             delivered_by_road: None,
+            said_by_sentence: None,
             banked: None,
             briefed: None,
             done_reason: None,
@@ -8422,6 +8576,7 @@ mod tests {
                 deliveries: None,
                 folds_by_reason: None,
                 delivered_by_road: None,
+                said_by_sentence: None,
                 // ⚠ And item 616's, for that reason exactly — absent reads as *nobody counted*,
                 // which is the honest answer for a log written before the column existed.
                 banked: None,
@@ -8605,6 +8760,7 @@ mod tests {
             deliveries: None,
             folds_by_reason: None,
             delivered_by_road: None,
+            said_by_sentence: None,
             banked: None,
             briefed: None,
             done_reason: None,
@@ -8818,6 +8974,7 @@ mod tests {
                 deliveries,
                 folds_by_reason: None,
                 delivered_by_road: None,
+                said_by_sentence: None,
                 banked: None,
                 briefed: None,
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
@@ -9472,6 +9629,119 @@ mod tests {
             None,
             "⚠⚠⚠ a run that typed nothing has no landing count to publish, and `0 of 0` on its \
              row would be a ratio over nothing",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHICH SENTENCE EACH PROMPT WAS SURVIVES THE WIRE, AND THE SENTENCE IT PRINTS
+    /// KEEPS THE COMPARISON** — register item 889, and the crossing *which prompt gets stuck* is
+    /// read across.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The pair this fixture stages is the pair `asks` cannot carry
+    ///
+    /// `brief` and `turn` declare the same `asks` word, and over this repository's whole loop log
+    /// they go unasked at **0.23 %** and **3.48 %**. The rows below are that shape: one clean, one
+    /// stuck, both `work`. A crossing that pooled them — or a mouth that printed only the stuck one
+    /// — would publish the 1.86 % that made the axis invisible in the first place.
+    ///
+    /// ⚠⚠⚠ The fixture leaves most rows empty on purpose: the empty ones must cross (rule 6 —
+    /// *this run never said one* and *this build had no word for it* must not read alike) and the
+    /// populated ones must keep their own denominators.
+    #[test]
+    fn which_sentence_each_prompt_was_survives_the_wire_and_keeps_its_denominator() {
+        let mut live = sprag_plugin::SaidBySentence::NONE;
+        // The brief, put once and asked — the row a rate needs as its control.
+        live.record(sprag_plugin::Sentence::Brief);
+        // And the turn prompt: twenty-six asked, two not, one on each road so neither can stand in
+        // for the other.
+        for _ in 0..26 {
+            live.record(sprag_plugin::Sentence::Turn);
+        }
+        live.record_unasked(
+            sprag_plugin::Sentence::Turn,
+            sprag_plugin::UnaskedRoad::OnThePane,
+        );
+        live.record_unasked(
+            sprag_plugin::Sentence::Turn,
+            sprag_plugin::UnaskedRoad::AfterAFold,
+        );
+
+        // ══ ① THE WIRE ═════════════════════════════════════════════════════════════════════════
+        let beside = json!({ RUN_SAID_BY_SENTENCE_KEY: said_by_sentence_json(live) });
+        assert_eq!(
+            said_by_sentence_in(&beside),
+            Some(live),
+            "⛔⛔⛔⛔ REGISTER ITEM 889: the sentence table does not survive its own round trip, so \
+             the rate a reader is shown is not the one the run produced",
+        );
+
+        // ── AND A SENTENCE THIS BUILD CANNOT SPELL REFUSES THE TABLE WHOLE ──
+        //
+        // ⚠⚠ Not dropped, `delivered_by_road_in`'s call one axis over and harder here: this
+        // table's whole value is the comparison BETWEEN its rows, so a partial one is not a
+        // smaller measurement, it is a different one.
+        let mut skewed = said_by_sentence_json(live);
+        skewed["a-sentence-this-build-has-no-word-for"] = json!({
+            "sent": 9,
+            "unasked_after_a_fold": 0,
+            "unasked_on_the_pane": 9,
+        });
+        assert_eq!(
+            said_by_sentence_in(&json!({ RUN_SAID_BY_SENTENCE_KEY: skewed })),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: a table carrying a sentence this build cannot spell was \
+             read anyway, so a comparison between rows is being published over a population that \
+             is missing one — and the missing row is the one that would have moved it",
+        );
+
+        // ══ ② THE MOUTH ════════════════════════════════════════════════════════════════════════
+        let said = said_by_sentence_sentence(&beside)
+            .expect("a run that said something has a rate to publish");
+        assert!(
+            said.contains("2 of 29 prompts never became a question"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: the sentence does not carry the run's own totals, so the \
+             rows under it are counts with no scale — which is exactly what `1 prompt was never \
+             asked` was before this item: {said:?}",
+        );
+        assert!(
+            said.contains("2/28 turn"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: the sentence that stuck is not named WITH ITS OWN \
+             DENOMINATOR, so a reader cannot compare it with the sentence beside it — and the \
+             comparison is the only thing this table is for: {said:?}",
+        );
+        assert!(
+            !said.contains("brief") && !said.contains("handover"),
+            "⛔⛔⛔⛔ A SENTENCE WITH NOTHING UNASKED IS NOT PRINTED AS A FAILURE, AND ONE THIS RUN \
+             NEVER SAID IS NOT PRINTED AT ALL. `0/1 brief` beside `2/27 turn` reads as two \
+             failures, and `0/0 handover` invites an absence of population to read as a clean \
+             bill — both halves of rule 6 in one line: {said:?}",
+        );
+
+        // ── AND A ROW MISSING A SENTENCE SAYS NOTHING, RATHER THAN CALLING IT `0 of 0` ──
+        //
+        // ⚠⚠⚠ An older daemon wrote a table this build has a word for and it did not. Reading the
+        // gap as zero would publish *every prompt of this sentence was asked* on behalf of a
+        // writer that never said so.
+        let mut gapped = said_by_sentence_json(live);
+        gapped
+            .as_object_mut()
+            .expect("the table is an object")
+            .remove(sprag_plugin::Sentence::Resume.named());
+        assert_eq!(
+            said_by_sentence_sentence(&json!({ RUN_SAID_BY_SENTENCE_KEY: gapped })),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: a table with a sentence missing was read as a table with \
+             a zero in it, so a rate is being printed over a population one row short",
+        );
+
+        // ── AND A RUN THAT SAID NOTHING SAYS NOTHING AT ALL ──
+        assert_eq!(
+            said_by_sentence_sentence(&json!({
+                RUN_SAID_BY_SENTENCE_KEY:
+                    said_by_sentence_json(sprag_plugin::SaidBySentence::NONE),
+            })),
+            None,
+            "⚠⚠⚠ a run that typed nothing has no rate to publish, and eleven `0 of 0` rows on its \
+             row would be a comparison over nothing",
         );
     }
 
@@ -12289,6 +12559,7 @@ mod tests {
                 deliveries: sprag_plugin::Deliveries::NONE,
                 folds_by_reason: sprag_plugin::FoldsByReason::NONE,
                 delivered_by_road: sprag_plugin::DeliveredByRoad::NONE,
+                said_by_sentence: sprag_plugin::SaidBySentence::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
@@ -12385,6 +12656,7 @@ mod tests {
                 deliveries: sprag_plugin::Deliveries::NONE,
                 folds_by_reason: folds,
                 delivered_by_road: sprag_plugin::DeliveredByRoad::NONE,
+                said_by_sentence: sprag_plugin::SaidBySentence::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
@@ -17549,6 +17821,7 @@ mod tests {
                     deliveries: None,
                     folds_by_reason: None,
                     delivered_by_road: None,
+                    said_by_sentence: None,
                     banked: None,
                     briefed: None,
                     // ⚠ Item 706's field, absent for the reason every field above it is.

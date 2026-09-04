@@ -1379,6 +1379,13 @@ impl Plugin for AiLoop {
         self.inner.delivered_by_road()
     }
 
+    /// ⚠ DELEGATED for `deliveries`' reason — register item 889. The same event split a fourth way,
+    /// recorded in the one act that witnessed it, so a tally at this layer could disagree with the
+    /// total it is a split of.
+    fn said_by_sentence(&self) -> crate::outer::SaidBySentence {
+        self.inner.said_by_sentence()
+    }
+
     /// ⚠ DELEGATED for `deliveries`' reason — register item 601. The driver that puts the claim to
     /// a checker is the only thing that sees what came back, so a tally at this layer would be a
     /// second authority on one fact.

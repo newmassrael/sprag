@@ -2463,6 +2463,18 @@ pub struct PersistedRun {
     /// items 606, 616, 762 and 856(1) each made.
     #[serde(default)]
     pub delivered_by_road: Option<PersistedDeliveredByRoad>,
+    /// ⛔⛔⛔⛔⛔ **WHICH SENTENCE EACH OF THIS RUN'S PROMPTS WAS, AND HOW MANY OF EACH NEVER BECAME
+    /// A QUESTION** — register item 889, and the only stored value from which *which prompt gets
+    /// stuck* can be read. See [`PersistedSaidBySentence`].
+    ///
+    /// [`None`] for a log written before this field existed, and it must NOT read as *every one of
+    /// this run's prompts was asked*: an absent table is one nobody wrote down. The distinction the
+    /// two fields above make, one axis over.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move — [`build`](Self::build)'s argument, and the same call
+    /// items 606, 616, 762, 856(1) and 856 each made.
+    #[serde(default)]
+    pub said_by_sentence: Option<PersistedSaidBySentence>,
     /// ⚠⚠⚠⚠⚠ **HOW MUCH OF ITS WORK WAS COMPLETE AND KEPT** — register item 616, the residue item
     /// 604 left. See [`PersistedBanked`] for why this crosses a restart where
     /// [`at`](Self::at) may not.
@@ -2768,6 +2780,101 @@ impl From<PersistedDeliveredByRoad> for sprag_plugin::DeliveredByRoad {
                 continue;
             };
             live.restore(road, count);
+        }
+        live
+    }
+}
+
+/// **THE STORED SHAPE OF [`sprag_plugin::SaidBySentence`]** — register item 889, on
+/// [`PersistedFoldsByReason`]'s terms exactly: `sprag-plugin` states a serde-free contract, so the
+/// host owns every mapping to a stored shape.
+///
+/// # ⛔⛔⛔⛔⛔ IT HAS TO CROSS A RESTART OR IT MEASURES NOTHING, AND THAT IS MEASURED
+///
+/// Item 606 asked two live daemons for their runs' delivery pairs and **thirteen answered with
+/// none** — every one restored. This table's whole purpose is a rate compared ACROSS RUNS, which is
+/// a reading taken off finished runs off a daemon that has been restarted since, so a split that
+/// died with its daemon would be an instrument whose readings are only available while nobody is
+/// reading. The 15× item 889 is about was measured over 197 run logs, not one.
+///
+/// ⚠ A map keyed by the sentence's WORD rather than an array, [`PersistedFoldsByReason`]'s call: an
+/// array is a promise about ORDER that two builds could disagree about in silence. A word this
+/// build cannot spell is DROPPED — a count restored under the wrong sentence is worse than one
+/// lost, and it would be worse here than anywhere, because this table's readings ARE the
+/// comparison between its rows.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedSaidBySentence {
+    /// One entry per sentence WORD.
+    ///
+    /// ⚠ Sentences with no prompts are written too: *this run never said one* and *this build had
+    /// no word for it* must not read alike, and the only thing that tells them apart is the row
+    /// being present and zero. Two of the eleven — `handover` and `rule` — are reached only by a
+    /// run that spends a ceiling or meets a dialog, so most runs write them as exactly that.
+    #[serde(flatten)]
+    pub of: std::collections::BTreeMap<String, PersistedSaidUnder>,
+}
+
+/// One row of [`PersistedSaidBySentence`] — [`sprag_plugin::SaidUnder`] as the log carries it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedSaidUnder {
+    /// [`sprag_plugin::SaidUnder::sent`] — the denominator, and never absent from a row that has a
+    /// numerator: see that field, and `sprag_plugin::Deliveries::attempted` for why a refusal is
+    /// inside it.
+    pub sent: u32,
+    /// [`sprag_plugin::Unasked::after_a_fold`] — the composer swallowed the paste and the peer
+    /// never named the question.
+    ///
+    /// ⚠ `#[serde(default)]` on [`PersistedFoldsUnder`]'s call, and the OPPOSITE of the live wire's
+    /// (`crate::plugins::said_by_sentence_in` refuses a report missing a key). A log written before
+    /// the field existed is a fact from another build; a LIVE driver that omits it is a build skew.
+    #[serde(default)]
+    pub unasked_after_a_fold: u32,
+    /// [`sprag_plugin::Unasked::on_the_pane`] — it hardened with no fold at all, which is the road
+    /// every observed `prompt.unasked` in this repository's log has taken.
+    #[serde(default)]
+    pub unasked_on_the_pane: u32,
+}
+
+impl From<sprag_plugin::SaidBySentence> for PersistedSaidBySentence {
+    fn from(live: sprag_plugin::SaidBySentence) -> Self {
+        Self {
+            of: live
+                .rows()
+                .map(|(sentence, row)| {
+                    (
+                        sentence.named().to_owned(),
+                        PersistedSaidUnder {
+                            sent: row.sent,
+                            unasked_after_a_fold: row.unasked.after_a_fold,
+                            unasked_on_the_pane: row.unasked.on_the_pane,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<PersistedSaidBySentence> for sprag_plugin::SaidBySentence {
+    fn from(stored: PersistedSaidBySentence) -> Self {
+        let mut live = Self::NONE;
+        for (word, row) in stored.of {
+            // ⚠ A word this build has no arm for is DROPPED, this type's stated decision:
+            // `Sentence::ALL` is the only authority on which sentences there are, and a count
+            // restored under the wrong sentence is worse than a count lost.
+            let Some(sentence) = sprag_plugin::Sentence::of(&word) else {
+                continue;
+            };
+            live.restore(
+                sentence,
+                sprag_plugin::SaidUnder {
+                    sent: row.sent,
+                    unasked: sprag_plugin::Unasked {
+                        after_a_fold: row.unasked_after_a_fold,
+                        on_the_pane: row.unasked_on_the_pane,
+                    },
+                },
+            );
         }
         live
     }
@@ -3934,6 +4041,17 @@ impl RunRegistry {
                                 .unwrap_or(run.progress.delivered_by_road)
                                 .into(),
                         ),
+                        // ⛔⛔⛔⛔⛔ AND WHICH SENTENCE EACH PROMPT WAS — register item 889, written
+                        // the way the three above are and for their reasons, with one of its own:
+                        // this column is the only place *which prompt gets stuck* is written down
+                        // at all, and the ratio it answers is taken ACROSS runs — 197 of them, in
+                        // the measurement that opened the item.
+                        said_by_sentence: Some(
+                            reported
+                                .said_by_sentence
+                                .unwrap_or(run.progress.said_by_sentence)
+                                .into(),
+                        ),
                         // ⚠⚠⚠⚠⚠ AND HOW MUCH OF THE WORK IS KEPT — register item 616. `None` here
                         // is the PLUGIN's own answer (*I count no completed work*) rather than
                         // this daemon's silence, which is why it is mapped through rather than
@@ -4262,6 +4380,19 @@ impl RunRegistry {
                         .delivered_by_road
                         .clone()
                         .map_or(sprag_plugin::DeliveredByRoad::NONE, Into::into),
+                    // ⛔⛔⛔⛔⛔ AND WHICH SENTENCE EACH PROMPT WAS IS RESTORED WITH THEM — register
+                    // item 889, on the three arguments above and for the sharpest instance of
+                    // them: the rate this table publishes is only meaningful compared across many
+                    // finished runs, and item 606 measured that every run anybody reads has been
+                    // restored. A table that stopped at the daemon boundary would leave the 15×
+                    // exactly where item 889 found it — in a person's reading of log files.
+                    //
+                    // ⚠ An older log reads as every sentence `0 of 0`, which publishes nothing at
+                    // all (`is_empty`) rather than *every prompt of this run was asked*.
+                    said_by_sentence: saved
+                        .said_by_sentence
+                        .clone()
+                        .map_or(sprag_plugin::SaidBySentence::NONE, Into::into),
                     // ⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, on the same argument.
                     checks: sprag_plugin::Checks::NONE,
                     // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS KEPT **IS** RESTORED — register item 616,
@@ -5451,12 +5582,18 @@ mod tests {
             row.remove("unasked_after_a_fold");
             row.remove("unasked_on_the_pane");
         }
-        let older = older.to_string();
+        // ⚠⚠ THE PREMISE IS ASKED OF THE FOLD TABLE AND NOT OF THE WHOLE DOCUMENT, which it used
+        // to be — register item 889. `said_by_sentence` carries the same two field names on its
+        // own rows, so a `!older.contains("unasked_")` over the file went red the day that table
+        // arrived, about a fixture that was stripping exactly what it claimed to. A premise has to
+        // name the thing it is a premise about.
+        let split = older["runs"][0][crate::plugins::RUN_FOLDS_BY_REASON_KEY].to_string();
         assert!(
-            !older.contains("unasked_"),
+            !split.contains("unasked_"),
             "⚠ THE PREMISE: this fixture must actually strip the pair, or the decode below is \
-             reading the same document twice. Got {older}",
+             reading the same document twice. Got {split}",
         );
+        let older = older.to_string();
         let old_log: RunLog = serde_json::from_str(&older).expect(
             "⛔⛔⛔⛔ REGISTER ITEM 856(3): a run log written before the hardening pair existed \
              must still decode. Every boot of this daemon restores from one.",
@@ -5577,6 +5714,122 @@ mod tests {
             before.snapshot()[0].progress.delivered_by_road.is_empty(),
             "⚠⚠ and it reads as *nobody counted this*, which publishes no sentence at all rather \
              than a clean bill — the honest answer for a build that could not have said otherwise",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND WHICH SENTENCE EACH PROMPT WAS SURVIVES THE DAEMON TOO** — register item
+    /// 889, on item 606's measurement and the crossing this table is ONLY ever read across.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The measurement that opened the item was 197 finished runs
+    ///
+    /// Item 606 asked two live daemons for their runs' delivery pairs and **thirteen answered with
+    /// none, every one restored**. That binds harder here than anywhere: item 889's fifteen-fold
+    /// ratio is not a fact about one run at all — it is a rate compared over a whole log of
+    /// finished ones — so a table that died with its daemon would leave the ratio exactly where the
+    /// item found it, in a person's `python3` heredoc over `/run/user/1000/loop/`.
+    ///
+    /// ⚠⚠ **THROUGH THE FILE**, its neighbour's argument, and for its neighbour's reason: the value
+    /// is a MAP behind `#[serde(flatten)]` whose entries are themselves objects, so both a dropped
+    /// row and a dropped FIELD are failures a comparison would never show.
+    ///
+    /// ⚠ The fixture stages the pair `asks` cannot carry — a clean `brief` and a stuck `turn`, two
+    /// sentences declaring one word — so a restore that pooled them fails here rather than agreeing
+    /// by coincidence.
+    #[test]
+    fn which_sentence_each_prompt_was_survives_the_daemon_that_counted_it() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let progress = ProgressCell::default();
+        let mut said = sprag_plugin::SaidBySentence::NONE;
+        said.record(sprag_plugin::Sentence::Brief);
+        for _ in 0..26 {
+            said.record(sprag_plugin::Sentence::Turn);
+        }
+        // ⚠⚠ ONE ON EACH ROAD — the two carry opposite remedies, so a restore that summed them
+        // would send a reader to a pane holding nothing.
+        said.record_unasked(
+            sprag_plugin::Sentence::Turn,
+            sprag_plugin::UnaskedRoad::OnThePane,
+        );
+        said.record_unasked(
+            sprag_plugin::Sentence::Turn,
+            sprag_plugin::UnaskedRoad::AfterAFold,
+        );
+        lock(&progress).said_by_sentence = said;
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            overridden: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(an_outcome()),
+                output: None,
+                uncommitted: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress,
+        });
+
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+
+        let carried = successor.snapshot()[0].progress.said_by_sentence;
+        assert_eq!(
+            carried, said,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: the sentence table did not survive its daemon, and item \
+             606 MEASURED that this is the crossing every reader takes — thirteen live runs, every \
+             one restored. The rate this item exists to create would be available only while \
+             nobody was reading it. Got {carried:?} from {on_disk}",
+        );
+        assert_eq!(
+            (
+                carried.of(sprag_plugin::Sentence::Brief),
+                carried.of(sprag_plugin::Sentence::Turn),
+            ),
+            (
+                sprag_plugin::SaidUnder {
+                    sent: 1,
+                    unasked: sprag_plugin::Unasked::default(),
+                },
+                sprag_plugin::SaidUnder {
+                    sent: 28,
+                    unasked: sprag_plugin::Unasked {
+                        after_a_fold: 1,
+                        on_the_pane: 1,
+                    },
+                },
+            ),
+            "⛔⛔⛔⛔ AND THE TWO SENTENCES THAT DECLARE ONE `asks` WORD COME BACK APART. A restore \
+             that pooled them would publish 2 of 29 about both — the 1.86 % that hid a fifteen-fold \
+             ratio for as long as `asks` was the only vocabulary. Got {carried:?} from {on_disk}",
+        );
+
+        // ⛔⛔⛔⛔⛔ ── AND A LOG WRITTEN BEFORE THE TABLE EXISTED READS AS EMPTY, NOT AS A REFUSAL ──
+        //
+        // The OPPOSITE call from the live wire's (`crate::plugins::said_by_sentence_in` refuses a
+        // report naming a sentence this build cannot spell), its neighbour's argument verbatim.
+        let mut older: Value = serde_json::from_str(&on_disk).expect("the log just written parses");
+        older["runs"][0]
+            .as_object_mut()
+            .expect("a run is an object")
+            .remove(crate::plugins::RUN_SAID_BY_SENTENCE_KEY);
+        let older = older.to_string();
+        let old_log: RunLog = serde_json::from_str(&older).expect(
+            "⛔⛔⛔⛔ REGISTER ITEM 889: a run log written before the sentence table existed must \
+             still decode. Every boot of this daemon restores from one.",
+        );
+        let mut before = RunRegistry::default();
+        before.restore(&old_log);
+        assert!(
+            before.snapshot()[0].progress.said_by_sentence.is_empty(),
+            "⚠⚠ and it reads as *nobody counted this*, which publishes no sentence at all rather \
+             than *every prompt of that run was asked* — the honest answer for a build that could \
+             not have said otherwise",
         );
     }
 
@@ -6293,6 +6546,7 @@ mod tests {
                 deliveries: None,
                 folds_by_reason: None,
                 delivered_by_road: None,
+                said_by_sentence: None,
                 // ⚠ `None` is what an OLDER LOG reads as, which is what these fixtures are about.
                 banked: None,
                 briefed: None,
@@ -6540,6 +6794,7 @@ mod tests {
             deliveries: None,
             folds_by_reason: None,
             delivered_by_road: None,
+            said_by_sentence: None,
             // ⚠ `None` is what an OLDER LOG reads as, which is what this fixture is about.
             banked: None,
             briefed: None,
@@ -6652,6 +6907,7 @@ mod tests {
             deliveries: None,
             folds_by_reason: None,
             delivered_by_road: None,
+            said_by_sentence: None,
             banked: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -6754,6 +7010,7 @@ mod tests {
             deliveries: None,
             folds_by_reason: None,
             delivered_by_road: None,
+            said_by_sentence: None,
             banked: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -7199,6 +7456,7 @@ mod tests {
                 deliveries: None,
                 folds_by_reason: None,
                 delivered_by_road: None,
+                said_by_sentence: None,
                 // ⚠ Nor how much it banked — item 616's field, absent for that field's reason.
                 banked: None,
                 briefed: None,

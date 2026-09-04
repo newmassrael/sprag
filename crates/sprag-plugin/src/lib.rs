@@ -220,7 +220,7 @@ pub use access::{
     PaneRow, PaneSupervision, PaneTerminalModes, ReporterVoice, RowTrail, Settling, Signalled,
     Supervised, WorkspacePaneAccess, Written,
 };
-pub use act::{Act, Asked, Asks, Does, Refused as ActRefused, Serving};
+pub use act::{Act, Asked, Asks, Does, Refused as ActRefused, Sentence, Serving};
 pub use agent::{Agent, AgentSpec};
 pub use ai_loop::{AiLoop, NotStarted};
 pub use answer::Answer;
@@ -241,7 +241,8 @@ pub use outer::{
     AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, Briefing, Counted,
     DeliveredByRoad, DoneReason, FoldsByReason, FoldsUnder, HOLD_TAKES_EFFECT, HOLD_WITHIN_KEY,
     INNER_SESSION_ENDS, LoopPlace, Made, NotResumed, NotScreenable, Noticed, OuterLoop, Pumped,
-    ReflectReason, Retyped, STAND_DOWN_TAKES_EFFECT, Unasked, UnaskedRoad, refusal_in_words,
+    ReflectReason, Retyped, STAND_DOWN_TAKES_EFFECT, SaidBySentence, SaidUnder, Unasked,
+    UnaskedRoad, refusal_in_words,
 };
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{

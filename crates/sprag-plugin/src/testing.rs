@@ -1527,6 +1527,61 @@ done"
     (workspace, pane)
 }
 
+/// ⛔⛔⛔⛔⛔ **A STAND-IN AGENT THAT ANSWERS `answers` PROMPTS AND THEN STOPS ANSWERING** —
+/// register item 889, and the peer no fixture in this module could stand in for.
+///
+/// # ⛔⛔⛔⛔⛔ Why wedging on the REFLECTION cannot show what item 889 is about
+///
+/// [`standin_agent_wedging_on_its_reflection`] stops when it sees the reflection's label, so the
+/// prompt that goes unasked is a reflection — and a reflection is the one sentence with an
+/// [`Asks`] word of its own. A table keyed on `asks` would tell that refusal apart from the brief
+/// perfectly well, so a gate built on that peer is GREEN for the very design item 889 measured as
+/// wrong.
+///
+/// **This peer wedges by COUNT instead.** With `answers = 1` the brief is answered and the turn
+/// prompt that follows it is not, which puts a landing and a refusal on two sentences that declare
+/// the SAME word — the exact pair the log measured at 0.23 % and 3.48 % and every `asks`-shaped
+/// instrument reads as one row of 1.86 %.
+///
+/// ⚠⚠ It keeps READING after it wedges rather than dying, which is what makes the refusal an
+/// `Unsubmitted` and not a `PeerGone`: the terminal still echoes the prompt, so the text is painted
+/// on the pane and the submit simply never becomes a question. A peer that exited would stage the
+/// opposite remedy — see `crate::plugin::Deliveries::unsubmitted`.
+///
+/// ⚠ `stty -icanon` and not `-echo`, [`standin_agent_wedging_on_its_reflection`]'s call: a driver
+/// asked to read its prompt back off the pane needs the pane to show it.
+pub(crate) fn standin_agent_wedging_after(answers: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let script = "\
+stty -icanon; printf 'AGENT-READY\\n'; n=0; s=0; \
+while read line; do \
+  case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
+  n=$((n+1)); \
+  [ $n -le ANSWERS ] || continue; \
+  printf 'ACK %s\\n' \"$n\"; s=$((s+1)); printf 'SEQ_MARKER %s\\n' \"$s\"; \
+done"
+        .replace("STOP_QUESTION", STOP_QUESTION)
+        .replace("SEQ_MARKER", SEQ_MARKER)
+        .replace("ANSWERS", &answers.to_string());
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        AGENT_READY,
+    );
+    (workspace, pane)
+}
+
 /// 🎯🎯🎯🎯🎯 **A STAND-IN AGENT THAT NAMES A DIFFERENT CHECKPOINT EVERY TIME IT IS ASKED** — the
 /// peer register item 833(2)'s depth cap is measured against, and the one thing
 /// [`standin_agent_reflecting`] deliberately cannot do.

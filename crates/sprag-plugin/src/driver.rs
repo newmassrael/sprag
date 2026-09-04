@@ -937,6 +937,9 @@ pub struct Driver {
     /// ⛔⛔⛔ **AND THE SPLIT OF THE SAME DELIVERIES BY WHAT PROVED EACH ONE** — register item 856,
     /// held and read exactly as the two above are, and never added to here for their reason.
     delivered_by_road: crate::outer::DeliveredByRoad,
+    /// ⛔⛔⛔ **AND THE SPLIT OF THE SAME PROMPTS BY WHICH SENTENCE EACH ONE WAS** — register item
+    /// 889, held and read exactly as the three above are, and never added to here for their reason.
+    said_by_sentence: crate::outer::SaidBySentence,
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS INDEPENDENT CHECKS CAME TO** — register item 601, held
     /// and read exactly as [`deliveries`](Self::deliveries) is, and never added to here.
     checks: Checks,
@@ -1118,6 +1121,18 @@ pub struct Progress {
     /// ⚠ [`crate::outer::DeliveredByRoad::NONE`] for a plugin that types no composed prompt —
     /// every road present and zero, which is a population and not *nothing landed*.
     pub delivered_by_road: crate::outer::DeliveredByRoad,
+    /// ⛔⛔⛔⛔⛔ **AND EVERY PROMPT, SPLIT BY WHICH SENTENCE IT WAS AND WHETHER IT WAS EVER ASKED**
+    /// — [`Plugin::said_by_sentence`], register item 889.
+    ///
+    /// The three fields above cannot answer *which prompt gets stuck*: one is a total, one is
+    /// denominated in reflections, and one says what proved a delivery rather than what it was.
+    /// Measured over this repository's whole loop log, the brief goes unasked at 0.23 % and the
+    /// turn prompt at 3.48 %, and until this field existed that ratio lived only in a walk's
+    /// transition names.
+    ///
+    /// ⚠ [`crate::outer::SaidBySentence::NONE`] for a plugin that composes no prompt — every
+    /// sentence present and zero, which is a population and not *nothing went unasked*.
+    pub said_by_sentence: crate::outer::SaidBySentence,
     /// ⚠⚠⚠⚠⚠ **WHICH PANE THIS RUN IS DRIVING RIGHT NOW** — [`Plugin::driving`], register item 540.
     ///
     /// # The fact that was published only as prose inside a name
@@ -1277,6 +1292,7 @@ impl Driver {
             deliveries: Deliveries::NONE,
             folds_by_reason: crate::outer::FoldsByReason::NONE,
             delivered_by_road: crate::outer::DeliveredByRoad::NONE,
+            said_by_sentence: crate::outer::SaidBySentence::NONE,
             checks: Checks::NONE,
             banked: None,
             briefed: None,
@@ -1341,6 +1357,7 @@ impl Driver {
             deliveries: self.deliveries,
             folds_by_reason: self.folds_by_reason,
             delivered_by_road: self.delivered_by_road,
+            said_by_sentence: self.said_by_sentence,
             checks: self.checks.clone(),
             banked: self.banked.clone(),
             briefed: self.briefed,
@@ -1697,6 +1714,12 @@ impl Driver {
                     // IS `deliveries.made`, and read a step apart the two would publish a
                     // denominator and a numerator taken from different moments of one run.
                     self.delivered_by_road = plugin.delivered_by_road();
+                    // ⛔⛔⛔ AND THE FOURTH SPLIT OF THE SAME EVENT — register item 889, in the same
+                    // breath as the three above for their reason and one of its own: this table's
+                    // totals ARE `deliveries.attempted` and `deliveries.never_asked`, and a gate
+                    // holds them equal — two of them read a step apart would fail that gate over a
+                    // run in which nothing was wrong.
+                    self.said_by_sentence = plugin.said_by_sentence();
                     // ⚠⚠⚠ AND WHAT ITS CHECKS CAME TO — register item 601, in the same breath as
                     // the two above for the same reason: three totals read at three moments are
                     // three facts about three moments, and a reader weighing a `converged` needs

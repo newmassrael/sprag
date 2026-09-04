@@ -1282,6 +1282,28 @@ pub trait Plugin {
         crate::outer::DeliveredByRoad::NONE
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND EVERY PROMPT, SPLIT BY WHICH SENTENCE IT WAS** — register item 889, and the
+    /// only place *which prompt gets stuck* is counted at all.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The three answers above cannot be asked that question
+    ///
+    /// [`deliveries`](Self::deliveries) is the run's total and splits by nothing.
+    /// [`folds_by_reason`](Self::folds_by_reason) is denominated in REFLECTIONS, so a brief that
+    /// went unasked is outside its population by construction.
+    /// [`delivered_by_road`](Self::delivered_by_road) says what PROVED a delivery, which is a fact
+    /// about the evidence rather than about the sentence. Measured over this repository's whole
+    /// loop log, the brief goes unasked at **0.23 %** and the turn prompt at **3.48 %** — a
+    /// fifteen-fold ratio that no instrument in this crate could publish.
+    ///
+    /// ⚠ The default is [`crate::outer::SaidBySentence::NONE`]: every sentence present and zero,
+    /// which is the honest answer for a plugin that composes no prompt of its own.
+    ///
+    /// ⚠⚠ Asked here for [`deliveries`](Self::deliveries)' reason exactly: a level with one call
+    /// site, never a per-[`Step`] delta that twenty-odd construction sites could each forget.
+    fn said_by_sentence(&self) -> crate::outer::SaidBySentence {
+        crate::outer::SaidBySentence::NONE
+    }
+
     /// ⚠⚠⚠⚠⚠ **WHAT BECAME OF THIS PLUGIN'S INDEPENDENT CHECKS** — register item 601, and
     /// [`deliveries`](Self::deliveries)' argument one fact over: asked here, at the one site a step
     /// completes, so it cannot be forgotten at any of the twenty-odd places a [`Step`] is built —

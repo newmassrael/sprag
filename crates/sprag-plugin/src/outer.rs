@@ -1846,8 +1846,11 @@ pub(crate) enum Owed {
     ///
     /// ⚠⚠⚠ **A NAME NOW, NOT A DEBT** — register item 470, stage 2, the third act to leave and the
     /// first that was not an ending. `Owed::on` no longer answers it: `priming` declares
-    /// `<send type="x-sprag-host" event="prompt.say">` with `<param name="asks" expr="'work'"/>`,
-    /// because the first sentence of a run opens a TURN. What is left is [`Self::variable`]'s side
+    /// `<send type="x-sprag-host" event="prompt.say">` with `<param name="sentence" expr="'brief'"/>`,
+    /// a word that asks for WORK because the first sentence of a run opens a TURN — and a word of
+    /// its own rather than `'turn'`, which is register item 889's measurement: the brief goes
+    /// unasked at 0.23 % and the turn prompt at 3.48 %, and one word for the two publishes 1.86 %
+    /// about both. What is left is [`Self::variable`]'s side
     /// — the door's check that the machine holds the authored strings at all.
     Start,
     /// The `turn_prompt` — another turn on the same session.
@@ -1874,9 +1877,9 @@ pub(crate) enum Owed {
     /// ⚠⚠⚠ **A NAME NOW, NOT A DEBT** — register item 470, stage 2, the fourth act to leave.
     /// `Owed::on` no longer answers it: `reflecting` declares
     /// `<send type="x-sprag-host" event="prompt.say">` with
-    /// `<param name="asks" expr="'direction'"/>`, because what a reflection asks for is neither
-    /// work nor an account — see [`crate::act::Asks::Direction`], which is the space's third word
-    /// and the first one that could not have been a boolean.
+    /// `<param name="sentence" expr="'reflection'"/>`, a word that asks for neither work nor an
+    /// account — see [`crate::act::Asks::Direction`], which is that space's third word and the
+    /// first one that could not have been a boolean.
     ///
     /// ⚠⚠ **AND IT WAS THE ONLY VARIANT WITH A SECOND READER, WHICH IS THE HALF STAGE 2 NAMED
     /// ITSELF AGAINST.** [`OuterLoop::proposed`] fetched this variable back out of the datamodel to
@@ -1890,14 +1893,15 @@ pub(crate) enum Owed {
     /// ⚠⚠⚠ **A NAME NOW, NOT A DEBT** — register item 470, stage 2, the fifth act to leave and the
     /// last `<onentry>` prompt in the document. `Owed::on` no longer answers it: `disputing`
     /// declares `<send type="x-sprag-host" event="prompt.say">` with
-    /// `<param name="asks" expr="'work'"/>`, which is the section below argued as an argument
-    /// rather than a comment — the turn a refusal buys is a WORKING turn, and it is watched by the
-    /// arm that collects an account off any turn whose question asked for one.
+    /// `<param name="sentence" expr="'dispute'"/>`, a word that asks for WORK — which is the
+    /// section below argued as an argument rather than a comment: the turn a refusal buys is a
+    /// WORKING turn, and it is watched by the arm that collects an account off any turn whose
+    /// question asked for one.
     ///
     /// ⚠⚠ **THIS IS THE STATE WHERE THAT WORD IS LOAD-BEARING TODAY.** Unlike `reflecting`, whose
     /// turn `Owed::on`'s caller watches in an arm of its own, `disputing` hands straight back to
-    /// `working` — so an `asks` of `account` here would publish the agent's next piece of WORK as
-    /// the run's closing report, on a run that had not finished.
+    /// `working` — so a sentence that asked for an account here would publish the agent's next
+    /// piece of WORK as the run's closing report, on a run that had not finished.
     ///
     /// # ⚠⚠⚠⚠⚠ Why this variant needed a STATE in the document before it could exist here
     ///
@@ -2053,7 +2057,9 @@ impl Owed {
     // Every prompt it once answered for is declared by the document itself, on the state entry or
     // the edge that owes it. The last thing it held was `service_retry_text` — **not a prompt**: the
     // word that ends an outage, *carry on with the turn you already have*. That is now
-    // `service_down`'s own edge to `working`, asking for `work`, which is what `continue` asks for.
+    // `service_down`'s own edge to `working`, declaring `sentence='resume'` — a word that asks for
+    // `work`, which is what `continue` asks for, and a row of its own because it is the SHORTEST
+    // sentence in the document sharing a state with the longest (register item 889).
     //
     // ⚠⚠⚠⚠ **AND `fallback` WENT WITH IT, TO THE DOCUMENT RATHER THAN NOWHERE.** This table stood
     // the file's own `continue` in when the word arrived empty, which meant the DRIVER held a second
@@ -2077,16 +2083,17 @@ impl Owed {
     // document's own topology, which is a second copy of the topology.
     //
     // The answer now travels ON the act: `closing` and `stopping` declare
-    // `<send type="x-sprag-host" event="prompt.say">` with `<param name="asks" expr="'account'"/>`,
-    // and [`OuterLoop::say`] records what the question in flight is asking for.
+    // `<send type="x-sprag-host" event="prompt.say">` with `<param name="sentence" expr="'account'"/>`
+    // and `'handover'`, and [`OuterLoop::say`] records WHICH SENTENCE is in flight — what it asks
+    // for is [`crate::act::Sentence::asks`], derived from the word rather than declared beside it.
     //
     // ⚠⚠⚠⚠ **WHAT THE DELETION COSTS, STATED RATHER THAN HIDDEN.** That match was EXHAUSTIVE on
     // purpose, and its own comment said why: *"a future state that asks its agent for something and
     // forgets to say so here would publish NOTHING and look exactly like a state whose turn was
     // work; a variant that no longer compiles is the only thing that catches it."* A document
     // cannot be made to fail to compile, so that guard is genuinely gone. What stands in its place
-    // is [`crate::act`]'s: `asks` is REQUIRED — an act that omits it is refused, not defaulted —
-    // and its value space is CLOSED, so a word nobody serves is refused too. Both refusals end the
+    // is [`crate::act`]'s: `sentence` is REQUIRED — an act that omits it is refused, not defaulted
+    // — and its value space is CLOSED, so a word nobody serves is refused too. Both refusals end the
     // run through the document's own `error.execution` edge rather than quietly.
 }
 
@@ -2732,6 +2739,190 @@ impl DeliveredByRoad {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.total() == 0
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **HOW MANY PROMPTS OF ONE SENTENCE A RUN PUT AT ITS PANE, AND HOW MANY OF THEM NEVER
+/// BECAME A QUESTION** — one row of [`SaidBySentence`], and register item 889.
+///
+/// ⚠ The denominator travels with the numerator, [`FoldsUnder`]'s rule and
+/// [`crate::plugin::Deliveries`]' before it: *one prompt was never asked* is a run in deep trouble
+/// at four prompts and the ordinary cost of business at sixty. Here it binds hardest of all,
+/// because the whole value of this table is a COMPARISON between rows and a row with no
+/// denominator cannot be compared with one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SaidUnder {
+    /// **HOW MANY PROMPTS OF THIS SENTENCE THIS RUN PUT AT ITS PANE, HOWEVER THEY ENDED** —
+    /// `crate::plugin::Deliveries::attempted` restricted to one sentence, and the same population:
+    /// every delivery that produced a witness, plus every refusal that did not.
+    ///
+    /// ⚠⚠ **A REFUSAL IS IN HERE, WHICH IS WHY [`unasked`](Self::unasked) IS A RATE AND NOT A
+    /// TALLY.** A prompt nobody was asked produced no witness, so a denominator of witnesses would
+    /// exclude its own numerator — and a run whose only prompt was refused would divide by zero.
+    /// See `crate::plugin::Deliveries::attempted`, whose doc carries the measurement.
+    pub sent: u32,
+    /// ⛔⛔⛔ **AND HOW MANY OF THEM NEVER BECAME A QUESTION**, split by which road the refusal took
+    /// — see [`Unasked`], whose two roads carry opposite remedies.
+    pub unasked: Unasked,
+}
+
+/// ⛔⛔⛔⛔⛔ **WHICH PROMPT GETS STUCK — THE SPLIT THE PRODUCT COULD NOT MAKE** — register item
+/// 889, and item 669's headline finding turned from a reading of log files into a row.
+///
+/// # ⛔⛔⛔⛔⛔ A fifteen-fold ratio that only a person with a `python3` heredoc could see
+///
+/// Measured 2026-09-04 over this repository's whole loop log — 197 files, 17,722 transitions —
+/// grouped by which prompt was in flight:
+///
+/// | the prompt | put | never asked | rate |
+/// | --- | ---: | ---: | ---: |
+/// | the brief | 3,442 | 8 | **0.23 %** |
+/// | a reflection | 1,014 | 18 | 1.78 % |
+/// | the turn prompt | 3,390 | 118 | **3.48 %** |
+///
+/// **Nothing in the product could say that.** The three instruments that existed are
+/// `crate::plugin::Deliveries` (the run's totals, splittable by nothing), [`FoldsByReason`]
+/// (denominated in reflections, so the brief row is outside it by construction) and
+/// [`DeliveredByRoad`] (what PROVED a delivery, which is not what the delivery was). So the table
+/// above came out of a walk's transition names — the same file items 887 and 888 measured as
+/// unreliable, on a join nobody could trust — and it is the sharpest axis this register has.
+///
+/// # ⛔⛔⛔⛔⛔ Why the rows are sentences and not [`crate::act::Asks`] words
+///
+/// Item 889's own prescription was `Asks`, on the ground that *the vocabulary is already there*.
+/// It is not, and the same log says so: grouped by the word each of those prompts declared, the
+/// spread across the whole space is **2.63×** and `work` reads 1.86 % — the brief and the turn
+/// prompt averaging each other out inside one row. See [`crate::act::Sentence`], which carries
+/// both tables and the argument.
+///
+/// # ⚠⚠⚠⚠⚠ Rule 6: a sentence with no sample still gets a row
+///
+/// The rows are [`crate::act::Sentence::ALL`], so a twelfth sentence arrives with a row rather than
+/// falling into a total nobody split, and a sentence nothing has produced reads as `0 of 0` — which
+/// is a POPULATION and not a silence. That is not a hypothetical here: `handover` is put to a pane
+/// only by a run that spends a ceiling, and `rule` only by one that met a dialog.
+///
+/// ⚠⚠ **IT IS TIED TO THE TOTALS BY A GATE AND NOT BY ARITHMETIC ANYBODY REMEMBERS** —
+/// [`DeliveredByRoad::total`]'s rule verbatim. [`sent`](Self::sent) must equal
+/// `crate::plugin::Deliveries::attempted` and [`unasked`](Self::unasked) must equal
+/// `crate::plugin::Deliveries::never_asked`; two counts of one event are what this file pays for
+/// repeatedly, and the answer is to make the disagreement a red.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SaidBySentence {
+    /// One row per [`crate::act::Sentence::ALL`], in that array's order.
+    ///
+    /// ⚠ Private, so the only way in and out is by SENTENCE — [`FoldsByReason`]'s rule exactly: an
+    /// index is a second spelling of the order this array happens to be in, and a caller that wrote
+    /// one would be free to disagree with `ALL` about which row is which.
+    of: [SaidUnder; crate::act::Sentence::ALL.len()],
+}
+
+impl SaidBySentence {
+    /// **NOTHING SAID YET** — every row zero, which is what a run that has typed nothing has
+    /// honestly counted.
+    pub const NONE: Self = Self {
+        of: [SaidUnder {
+            sent: 0,
+            unasked: Unasked {
+                after_a_fold: 0,
+                on_the_pane: 0,
+            },
+        }; crate::act::Sentence::ALL.len()],
+    };
+
+    /// Where `sentence`'s row lives — the one place an index is derived, so
+    /// [`crate::act::Sentence::ALL`] is the only authority on the order.
+    fn at(sentence: crate::act::Sentence) -> usize {
+        crate::act::Sentence::ALL
+            .iter()
+            .position(|it| *it == sentence)
+            .expect("Sentence::ALL is every word")
+    }
+
+    /// **RECORD ONE PROMPT OF `sentence` THAT PRODUCED A WITNESS** — the delivery half of the
+    /// denominator.
+    ///
+    /// ⚠ No classification happens here: the caller has already been handed a
+    /// [`crate::deliver::Witnessed`] and this table has no opinion about which roads are landings.
+    /// What it counts is that a prompt of this sentence went in.
+    pub fn record(&mut self, sentence: crate::act::Sentence) {
+        let row = &mut self.of[Self::at(sentence)];
+        row.sent = row.sent.saturating_add(1);
+    }
+
+    /// **RECORD ONE PROMPT OF `sentence` THAT NEVER BECAME A QUESTION**, and which road it took.
+    ///
+    /// ⚠⚠⚠ **IT RAISES THE DENOMINATOR TOO, AND THAT IS THE WHOLE DIFFERENCE FROM
+    /// [`FoldsByReason::record_unasked`].** There, a refusal is an event counted beside a
+    /// population of witnesses; here the population is *every prompt this sentence put at a pane*,
+    /// which is `crate::plugin::Deliveries::attempted` — refusals included, because a prompt that
+    /// was typed and refused is a prompt this sentence sent. Two calls at the one site would be two
+    /// chances to raise a numerator without its denominator, and a rate above one is a table nobody
+    /// can read.
+    ///
+    /// ⚠ `road` is passed rather than re-derived, [`DeliveredByRoad::record`]'s rule: the caller
+    /// has already classified this refusal through [`crate::deliver::Delivered::refused`], and a
+    /// second classification here would be a second authority on which roads are folds.
+    pub fn record_unasked(&mut self, sentence: crate::act::Sentence, road: UnaskedRoad) {
+        let row = &mut self.of[Self::at(sentence)];
+        row.sent = row.sent.saturating_add(1);
+        let counter = match road {
+            UnaskedRoad::AfterAFold => &mut row.unasked.after_a_fold,
+            UnaskedRoad::OnThePane => &mut row.unasked.on_the_pane,
+        };
+        *counter = counter.saturating_add(1);
+    }
+
+    /// **PUT A ROW BACK AS IT WAS WRITTEN DOWN** — for a host reading a run out of its durable log.
+    ///
+    /// ⚠⚠ Separate from the two above rather than a loop over them, [`FoldsByReason::restore`]'s
+    /// reason: those are the LIVE act, one prompt at a time, and this assigns a number somebody
+    /// already counted. A caller that used `record` for it would turn `3 of 3` into a run that said
+    /// three times more than it did.
+    pub fn restore(&mut self, sentence: crate::act::Sentence, row: SaidUnder) {
+        self.of[Self::at(sentence)] = row;
+    }
+
+    /// What `sentence`'s row says.
+    #[must_use]
+    pub fn of(&self, sentence: crate::act::Sentence) -> SaidUnder {
+        self.of[Self::at(sentence)]
+    }
+
+    /// Every row with its sentence, in [`crate::act::Sentence::ALL`]'s order — **including the
+    /// empty ones**, which is this type's whole rule 6 argument.
+    pub fn rows(&self) -> impl Iterator<Item = (crate::act::Sentence, SaidUnder)> + '_ {
+        crate::act::Sentence::ALL
+            .into_iter()
+            .map(|sentence| (sentence, self.of(sentence)))
+    }
+
+    /// **EVERY PROMPT THIS RUN PUT AT ITS PANE** — the denominator, spelled here rather than added
+    /// up at each reader ([`Unasked::total`]'s rule).
+    ///
+    /// ⚠⚠ It is the same population as `crate::plugin::Deliveries::attempted` and a gate says so.
+    #[must_use]
+    pub fn sent(&self) -> u32 {
+        self.of
+            .iter()
+            .fold(0, |sum, row| sum.saturating_add(row.sent))
+    }
+
+    /// **AND HOW MANY OF THEM NEVER BECAME A QUESTION** — the numerator, on the rule above.
+    ///
+    /// ⚠⚠ It is the same population as `crate::plugin::Deliveries::never_asked` and a gate says so.
+    #[must_use]
+    pub fn unasked(&self) -> u32 {
+        self.of
+            .iter()
+            .fold(0, |sum, row| sum.saturating_add(row.unasked.total()))
+    }
+
+    /// Whether anything has been counted at all — a run that has typed nothing, so the table has
+    /// nothing to say rather than saying every sentence landed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sent() == 0
     }
 }
 
@@ -5533,14 +5724,19 @@ pub struct OuterLoop {
     /// `<onentry>` writes into this while the engine is mid-macrostep; [`Self::advance`] reads it
     /// on the far side of the same `walk`, which is the first moment a pane is reachable again.
     serving: crate::act::Serving,
-    /// **WHAT THE QUESTION NOW IN FLIGHT IS ASKING THE PEER FOR**, or [`None`] before this run has
-    /// asked anything.
+    /// **WHICH SENTENCE IS NOW IN FLIGHT**, or [`None`] before this run has said anything.
     ///
     /// ⚠⚠⚠ It is written by [`Self::say`] and by nothing else, so *every* sentence this loop types
-    /// says what it was for — including the two that no `<onentry>` declares (a screen rule's
-    /// answer, a redirect). That is the property the deleted `Owed::asked_for_an_account` had by
-    /// being an exhaustive match, kept by making it an argument of the one function that types.
-    asks: Option<crate::act::Asks>,
+    /// says what it was — including the two that no `<onentry>` declares (a screen rule's answer, a
+    /// redirect, both [`crate::act::Sentence::Rule`]). That is the property the deleted
+    /// `Owed::asked_for_an_account` had by being an exhaustive match, kept by making it an argument
+    /// of the one function that types.
+    ///
+    /// ⛔⛔⛔ **IT USED TO HOLD [`crate::act::Asks`] AND THAT WAS TOO COARSE TO COUNT WITH** —
+    /// register item 889. What it asks for is still one call away ([`Self::asks`]); what a
+    /// three-word space could not say is WHICH prompt, and the rate of a prompt never becoming a
+    /// question differs fifteen-fold across sentences that all ask for `work`.
+    sentence: Option<crate::act::Sentence>,
     /// **WHAT THIS DOCUMENT SAYS ITS PEER PRINTS WHEN ITS SERVICE FAILS**, as the pass in force
     /// handed it over — or [`None`] where this pass was not given the act that carries it.
     ///
@@ -6024,6 +6220,17 @@ pub struct OuterLoop {
     ///
     /// ⚠ Written at the same ONE place as the two beside it, and in the same act, for their reason.
     roads: DeliveredByRoad,
+    /// ⛔⛔⛔⛔⛔ **AND WHICH SENTENCE EACH OF THOSE PROMPTS WAS, WITH HOW MANY OF EACH NEVER BECAME
+    /// A QUESTION** — register item 889, answered through
+    /// [`Plugin::said_by_sentence`](crate::Plugin).
+    ///
+    /// None of the three fields above can answer *which prompt gets stuck*: `deliveries` is the
+    /// run's total, `folds` is denominated in reflections, and `roads` says what proved a delivery
+    /// rather than what the delivery WAS. See [`SaidBySentence`] for the 15× this splits.
+    ///
+    /// ⚠ Written at the same ONE place as the three beside it, and in the same act, for their
+    /// reason.
+    said: SaidBySentence,
     /// ⚠⚠⚠⚠⚠ **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, answered
     /// through [`Plugin::checks`](crate::Plugin).
     ///
@@ -6209,8 +6416,8 @@ impl OuterLoop {
             },
             machine,
             serving,
-            // Nothing has been asked, so no question is in flight for anything to be asking for.
-            asks: None,
+            // Nothing has been said, so no sentence is in flight for anything to be asking for.
+            sentence: None,
             // ⚠ No pass has run, so the document has not said what an outage looks like yet — the
             // field's own rule, which is that this is the PASS's value and never a construction one.
             needles: None,
@@ -6258,6 +6465,7 @@ impl OuterLoop {
             deliveries: crate::plugin::Deliveries::NONE,
             folds: FoldsByReason::NONE,
             roads: DeliveredByRoad::NONE,
+            said: SaidBySentence::NONE,
             checks: crate::plugin::Checks::NONE,
         })
     }
@@ -8084,6 +8292,19 @@ impl OuterLoop {
         self.roads
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND EVERY PROMPT, SPLIT BY WHICH SENTENCE IT WAS AND WHETHER IT WAS EVER ASKED**
+    /// — register item 889, and what [`crate::Plugin::said_by_sentence`] answers for an `ai_loop`
+    /// run.
+    ///
+    /// ⚠ A LEVEL, for the three above's reason and one of its own: the axis is a RATIO between
+    /// rows, and a run's early sentences are gone from a bounded journal long before anybody reads
+    /// it — see [`SaidBySentence`] for the fifteen-fold this splits and for what it cost that no
+    /// instrument could.
+    #[must_use]
+    pub const fn said_by_sentence(&self) -> SaidBySentence {
+        self.said
+    }
+
     /// **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, and what
     /// [`crate::Plugin::checks`] answers for an `ai_loop` run.
     ///
@@ -8125,6 +8346,23 @@ impl OuterLoop {
             return;
         };
         self.deliveries.made = self.deliveries.made.saturating_add(1);
+        // ⛔⛔⛔⛔⛔ **AND WHICH SENTENCE IT WAS** — register item 889, in this same one act for the
+        // reason the paragraph below gives about the road: a denominator maintained anywhere else
+        // is free to disagree with the total it is inside.
+        //
+        // ⚠⚠⚠ **THE SENTENCE IN FLIGHT AND NOT AN ARGUMENT**, which is safe for exactly one reason
+        // and it is worth saying: [`Self::say`] writes that field before it types a byte and both
+        // callers of this function are inside it, downstream of that line. A parameter would be the
+        // honest shape if a third caller ever appeared, and what makes that visible rather than
+        // silent is [`SaidBySentence::sent`] being gated against `Deliveries::attempted`.
+        //
+        // ⚠⚠ [`None`] cannot happen here and is not filled in with a guess: a delivery that reached
+        // this line was typed by `say`, so the field is set. A row for *no sentence* would be a row
+        // no reader could act on, and rule 6's answer to an unclassifiable event is a RED, which is
+        // what the gate above gives.
+        if let Some(sentence) = self.sentence {
+            self.said.record(sentence);
+        }
         // ⛔⛔⛔⛔⛔ **AND WHICH ROAD THIS ONE ARRIVED ON** — register item 856, written in the same
         // act as the total it is inside, for the reason this function's doc gives about `folded`
         // below: a site that forgot the increment reads as *a run whose prompts were visible*
@@ -8796,8 +9034,9 @@ impl OuterLoop {
                         // read `Owed::asked_for_an_account(from)`: a match over all twenty-eight
                         // states of the document, in Rust, deciding a thing about a PROMPT from the
                         // name of the state a turn was taken in. Now `closing` and `stopping` say it
-                        // on the act they declare (`<param name="asks" expr="'account'"/>`) and this
-                        // reads what the sentence that opened the turn was for.
+                        // on the act they declare (`<param name="sentence" expr="'account'"/>` and
+                        // `'handover'`) and this reads what the sentence that opened the turn asks
+                        // for — [`crate::act::Sentence::asks`], which is a property of the word.
                         //
                         // ⚠⚠ IT IS THE QUESTION IN FLIGHT AND NOT THE STATE, which is a NARROWER
                         // claim and the right one: a turn is opened by a sentence, and the same
@@ -8810,7 +9049,7 @@ impl OuterLoop {
                         // ([`Session::asked`]). Naming a SLOT here was right for the two endings and
                         // wrong for a turn a screen rule had spoken into, and it was a second answer
                         // to a question something else already answers.
-                        if self.asks == Some(crate::act::Asks::Account) {
+                        if self.asks() == Some(crate::act::Asks::Account) {
                             self.reported = self.account(panes);
                         }
                         Raise::carrying(AiLoopEvent::TurnDone, self.costs_now(panes))
@@ -9224,12 +9463,13 @@ impl OuterLoop {
     /// redirect are typed through [`say`](Self::say) too, declared by no `<onentry>` at all, and
     /// one of them sent while the machine sits in `reflecting` is not a reflection question — the
     /// state test would have filed it under the reflection's reason. And a document that ever gave
-    /// `asks='direction'` to a second state would have its reflection dropped in silence.
+    /// a reflection's word to a second state would have its reflection dropped in silence.
     ///
-    /// ⇒ [`Asks::Direction`](crate::act::Asks::Direction) is the DOCUMENT's own word for this
-    /// prompt, sent on `reflecting`'s two `prompt.say` acts and on no other, and
-    /// [`asks`](Self::asks) is written by `say` for every sentence this loop types — which is the
-    /// property that makes it answerable here at all. This is the same move `judging` made when
+    /// ⇒ [`Asks::Direction`](crate::act::Asks::Direction) is what `reflecting`'s two `prompt.say`
+    /// acts ask for and no other act does — they declare `sentence='reflection'` and `'reask'`, and
+    /// [`crate::act::Sentence::asks`] maps both to it — and the sentence in flight is written by
+    /// `say` for every sentence this loop types, which is the property that makes it answerable
+    /// here at all. This is the same move `judging` made when
     /// three `from == AiLoopState::Judging` tests became `does == Does::Judge`: not the state
     /// respelled, but the fact the state was standing in for.
     ///
@@ -9241,10 +9481,21 @@ impl OuterLoop {
         // ⛔⛔⛔⛔⛔ WHAT THIS PROMPT IS, BEFORE THE WORD — register item 856(1). Read the other way
         // round it is the same expression with the defect intact, because the word is always
         // readable; the reason it is asked FIRST is that the word is the thing that lies.
-        if self.asks != Some(crate::act::Asks::Direction) {
+        if self.asks() != Some(crate::act::Asks::Direction) {
             return None;
         }
         ReflectReason::named(&self.text_of(REFLECT_REASON)?)
+    }
+
+    /// **WHAT THE QUESTION NOW IN FLIGHT IS ASKING THE PEER FOR**, or [`None`] before this run has
+    /// said anything.
+    ///
+    /// ⚠⚠⚠ **DERIVED FROM THE SENTENCE AND HELD NOWHERE** — register item 889. This was a field
+    /// once, written beside the sentence from an argument the document sent; two `<param>`s for one
+    /// fact is a disagreement waiting for a send that writes the wrong pair, and both would parse.
+    /// [`crate::act::Sentence::asks`] is the one authority, so the two cannot come apart.
+    fn asks(&self) -> Option<crate::act::Asks> {
+        self.sentence.map(crate::act::Sentence::asks)
     }
 
     /// **WHICH CEILING PUT THE MACHINE IN `stopping`** — the word its incoming transition assigned,
@@ -10405,9 +10656,11 @@ impl OuterLoop {
                 Ok(AiLoopEvent::RedirectDone.into())
             }
             Refused::Gone { bytes } => {
-                // ⚠ A REDIRECT ASKS FOR WORK. The dialog is answered and the peer is being told
-                // what to do instead — a turn, not a report — so no account is collected off it.
-                let spent = self.say(panes, run, rule.text(), crate::act::Asks::Work)?;
+                // ⚠ A REDIRECT IS A SCREEN RULE'S OWN TEXT, so it is that sentence and not a turn
+                // prompt — [`crate::act::Sentence::Rule`], which asks for WORK: the dialog is
+                // answered and the peer is being told what to do instead, a turn and not a report,
+                // so no account is collected off it.
+                let spent = self.say(panes, run, rule.text(), crate::act::Sentence::Rule)?;
                 self.noticed = Some(Noticed::Redirected(crate::judge::Redirected {
                     question,
                     rule: rule.name().to_owned(),
@@ -10498,9 +10751,10 @@ impl OuterLoop {
                 Ok(AiLoopEvent::ScreenMoot.into())
             }
             Refused::Gone { bytes } => {
-                // ⚠ A SCREEN RULE'S ANSWER ASKS FOR WORK — it is the standing instruction that got
-                // the peer past a dialog, and the turn it opens is the one the dialog interrupted.
-                let spent = self.say(panes, run, &said, crate::act::Asks::Work)?;
+                // ⚠ A SCREEN RULE'S ANSWER IS ITS OWN SENTENCE — [`crate::act::Sentence::Rule`],
+                // which asks for WORK: it is the standing instruction that got the peer past a
+                // dialog, and the turn it opens is the one the dialog interrupted.
+                let spent = self.say(panes, run, &said, crate::act::Sentence::Rule)?;
                 // ⚠⚠⚠ THE INSTRUCTION IS HANDED TO THE MACHINE, NOT ONLY TO THE PEER, and that is
                 // register item 148's answer. Said once, it reached the pane and nothing else; the
                 // document keeps it in `standing` so `priming` can compose it into every later
@@ -11591,7 +11845,8 @@ impl OuterLoop {
         // ⚠ THE SENTENCE SLOT AND ONLY IT: a pass act waiting in the other one belongs to the
         // question this driver asks at the START of a pass, and taking it here would carry out
         // somebody else's work. See `crate::act::Book`.
-        let Some(crate::act::Asked::Say { text, asks }) = self.serving.taken(crate::act::Act::Say)
+        let Some(crate::act::Asked::Say { text, sentence }) =
+            self.serving.taken(crate::act::Act::Say)
         else {
             return Ok((landed, 0));
         };
@@ -11607,7 +11862,7 @@ impl OuterLoop {
         // above: `peer.gone` is raised at the state the transition LANDED in, so every state a
         // prompt can be owed from needs that edge, and the walk reads `Idle --PeerGone--> PeerGone`
         // — the pass's own starting state, as every other line of the journal does.
-        let spent = self.say(panes, run, &text, asks)?;
+        let spent = self.say(panes, run, &text, sentence)?;
         Ok((landed, spent))
     }
 
@@ -11618,24 +11873,29 @@ impl OuterLoop {
     /// the stillness the turn was addressed TO — and the loop would judge a turn the agent had not
     /// started.
     ///
-    /// # ⚠⚠⚠⚠⚠ Why `asks` is an ARGUMENT and not something the caller sets afterwards
+    /// # ⚠⚠⚠⚠⚠ Why `sentence` is an ARGUMENT and not something the caller sets afterwards
     ///
-    /// Register item 470, stage 2. It says what the sentence is FOR, and the only reader is the
-    /// judgement that decides whether to collect an account off the turn it opens. Before this it
-    /// was derived out at that reader, from the state the turn was taken in, by an exhaustive match
-    /// over all twenty-eight states of the document — the second copy of the topology item 470 is
-    /// about.
+    /// Register item 470, stage 2. It says WHICH sentence this is, and what that sentence asks for
+    /// ([`crate::act::Sentence::asks`]) is read by the judgement that decides whether to collect an
+    /// account off the turn it opens. Before this it was derived out at that reader, from the state
+    /// the turn was taken in, by an exhaustive match over all twenty-eight states of the document —
+    /// the second copy of the topology item 470 is about.
     ///
     /// Making it a parameter is what keeps the guard the match gave for free: there are three
     /// places this loop types at its peer, and a fourth added later does not compile until somebody
-    /// has said what its sentence is asking for. A field assigned by the callers who remembered
-    /// would have been the same defect one layer over.
+    /// has said which sentence it is. A field assigned by the callers who remembered would have
+    /// been the same defect one layer over.
+    ///
+    /// ⛔⛔⛔ **AND IT CARRIES THE WORD RATHER THAN WHAT THE WORD ASKS FOR** — register item 889.
+    /// This parameter was [`crate::act::Asks`], which pools the brief with the turn prompt; the two
+    /// go unasked at 0.23 % and 3.48 %, so every rate this function could be made to publish about
+    /// them was one row reading 1.86 % about both.
     fn say(
         &mut self,
         panes: &dyn PaneAccess,
         run: &RunContext,
         text: &str,
-        asks: crate::act::Asks,
+        sentence: crate::act::Sentence,
     ) -> Result<u64, PaneError> {
         // ⚠⚠⚠⚠⚠ **BEFORE EVERYTHING, BECAUSE A TOOL CALL IN FLIGHT IS THE ONE CONDITION THAT MAKES
         // TYPING ITSELF WRONG** — register item 745. An agent inside one is not at rest, so the
@@ -11750,7 +12010,7 @@ impl OuterLoop {
         // ⚠ Recorded here rather than at any composition site, for [`Session::asked`]'s reason one
         // screen down: a screen rule's text is typed at the peer too and is in no prompt slot at
         // all, so this function is the only place every question passes through.
-        self.asks = Some(asks);
+        self.sentence = Some(sentence);
         self.done = Completion::new(self.done_when);
         self.done.begin(panes, self.driving.pane);
         // ⚠ A NEW TURN IS A NEW QUESTION — see [`Noticed`]. Cleared beside the two other things
@@ -11888,6 +12148,24 @@ impl OuterLoop {
             // refusal outside a reflection belongs to no row and is counted in `deliveries` above.
             if let (Some(road), Some(reason)) = (road, self.reflecting_because()) {
                 self.folds.record_unasked(reason, road);
+            }
+            // ⛔⛔⛔⛔⛔ **AND THE SAME REFUSAL AGAINST THE SENTENCE THAT WAS BEING SAID** — register
+            // item 889, and the row the two above cannot be: the fold table's population is
+            // REFLECTIONS, so a brief that went unasked is outside it by construction, and this
+            // run's totals cannot be split by anything.
+            //
+            // ⚠⚠⚠ **THIS RECORDS THE DENOMINATOR TOO**, which is why it is one call and not two.
+            // `Deliveries::attempted` is `made + unsubmitted + unreported` — a refusal IS a prompt
+            // this sentence put at a pane — so a row whose numerator moved without its denominator
+            // would publish a rate above one. `record_unasked` raises both, and
+            // [`SaidBySentence::sent`] against `Deliveries::attempted` is the gate.
+            //
+            // ⚠⚠ **NO `reflecting_because` GUARD, WHICH IS THE DIFFERENCE FROM THE ROW ABOVE.**
+            // Every prompt this loop types is some sentence, so this table has no *belongs to no
+            // row* half — that gap is what put items 856(3) and 889 in the register in the first
+            // place, and a table with one is a table that measures the interesting cases.
+            if let (Some(road), Some(sentence)) = (road, self.sentence) {
+                self.said.record_unasked(sentence, road);
             }
             return Err(refusal);
         }
@@ -19168,7 +19446,7 @@ mod tests {
                 &access,
                 &run,
                 &authored.turn.clone(),
-                crate::act::Asks::Work,
+                crate::act::Sentence::Turn,
             )
             .expect("the parrot takes the next prompt");
         assert!(
@@ -22721,6 +22999,35 @@ mod tests {
                  road table, so `landed` is a numerator over a denominator it is not inside. \
                  Roads {roads:?}, walked {walked:?}",
             );
+            // ══ AND THE SAME TIE FOR THE SENTENCE TABLE ════════════════════════════════════════
+            //
+            // ⛔⛔⛔⛔⛔ REGISTER ITEM 889. The tie above is against `made`, which EXCLUDES the
+            // refusals; this one is against `attempted`, which is `made + unsubmitted +
+            // unreported` — because a prompt that was typed and never asked is a prompt this
+            // sentence sent, and a denominator that dropped it would be a rate whose own numerator
+            // is outside it.
+            let said = loops.said_by_sentence();
+            assert_eq!(
+                said.sent(),
+                deliveries.attempted(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 889: this run has put {} prompts at its pane and the \
+                 sentence table accounts for {}. A prompt missing from it is a prompt in no row, \
+                 so every rate this table publishes is over a population that is not the run's. \
+                 Said {said:?}, deliveries {deliveries:?}, walked {walked:?}",
+                deliveries.attempted(),
+                said.sent(),
+            );
+            assert_eq!(
+                said.unasked(),
+                deliveries.never_asked(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 889: the run says {} of its prompts never became a \
+                 question and the sentence table says {}. The split and the total are two \
+                 authorities on one event, and the whole value of the split is that it can be \
+                 compared with the runs beside it. Said {said:?}, deliveries {deliveries:?}, \
+                 walked {walked:?}",
+                deliveries.never_asked(),
+                said.unasked(),
+            );
         }
         let roads = loops.delivered_by_road();
         let deliveries = loops.deliveries();
@@ -22969,6 +23276,296 @@ mod tests {
             "⚠⚠⚠⚠ THE FIXTURE'S OWN CONTROL: this peer must answer the prompts before the \
              reflection, or the refusal under test is not *the composer took this one* but *this \
              peer takes nothing*, and the two are different runs: {deliveries:?}, walked {walked:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **TWO SENTENCES THAT ASK FOR THE SAME THING ARE TOLD APART, WHICH IS THE WHOLE OF
+    /// REGISTER ITEM 889's COUNTING HALF** — driven on a real pane.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The register prescribed `asks`, and the log says `asks` cannot do it
+    ///
+    /// Item 669 measured that whether a prompt becomes a question depends on WHICH prompt it is.
+    /// Over this repository's whole loop log — 197 files, 17,722 transitions — the brief goes
+    /// unasked at **0.23 %** and the turn prompt at **3.48 %**, fifteen-fold. Item 889's own
+    /// prescription for counting that in the product was [`crate::act::Asks`], *the vocabulary is
+    /// already there*; grouped by that space the same log reads **1.86 %** for `work` and 1.78 %
+    /// for `direction`, because the two ends of the axis are both `work` and average each other
+    /// out. **A three-word space cannot carry this table**, and the assertion below is what says
+    /// so in the build rather than in a register entry.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this peer and not [`crate::testing::standin_agent_wedging_on_its_reflection`]
+    ///
+    /// That one wedges on the reflection, whose word is `direction` — so an `asks`-keyed table
+    /// would tell it apart from the brief perfectly, and the gate would be green about the design
+    /// the measurement refutes. This peer wedges by COUNT: the brief is answered and the turn
+    /// prompt after it is not, so the landing and the refusal sit on two sentences declaring one
+    /// word. Re-key the table on `asks` and the two rows below become one.
+    ///
+    /// ⚠⚠ The final assertion is the mutation's own name: it asserts that the two sentences DO
+    /// share an `Asks` word, so the gate cannot be satisfied by a build that quietly gave them
+    /// different ones — the separation being tested has to come from the sentence and from
+    /// nothing else.
+    #[test]
+    fn a_prompt_that_was_never_asked_is_counted_under_the_sentence_it_was() {
+        /// Above any reading, so no `capacity` reflection can send a third kind of prompt.
+        const ROOMY: i64 = 800_000;
+        /// Enough passes to prime, be judged, and reach the turn prompt this peer will not answer.
+        const PASSES: usize = 60;
+        /// The peer answers the brief and nothing after it.
+        const ANSWERS: u32 = 1;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = crate::testing::standin_agent_wedging_after(ANSWERS);
+        let access = crate::testing::supervised_unhooked(&workspace);
+        let mut loops = with_bound(
+            OuterLoop::new(
+                Arc::clone(&lua),
+                pane,
+                &AiLoopSpec {
+                    ready_when: Some(ReadyWhen::Settles("claude".to_string())),
+                    // ⛔ THE ROAD THE REFUSAL LIVES ON — its sibling gate's line: a run that does
+                    // not read its prompt back off the pane returns before any refusal can be
+                    // classified.
+                    shows_the_prompt: true,
+                    ..spec(None)
+                },
+            )
+            .expect("the document's datamodel must carry its four authored strings"),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "keep the stand-in answering".to_string(),
+                milestone: "reach it".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                working_rules: None,
+                unverified_rules: None,
+                context_ceiling: Some(ROOMY),
+                reflect_after_refusals: None,
+                reaim_max: None,
+                milestone_check: None,
+                successor_check: None,
+                reask_max: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                // ⚠⚠ OFF, WHICH IS THE OPPOSITE OF THE SIBLING GATE'S `Some(1)` AND IS THE POINT:
+                // the prompt after the brief has to be a TURN. A reflection here would put the
+                // refusal on `direction` and hand the win back to the design being refuted.
+                reflect_every: Some(99),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let refused = loop {
+            assert!(
+                walked.len() < PASSES,
+                "⚠⚠⚠⚠⚠ THE STAGING: this run must reach a refusal, or every claim below is about \
+                 a run that never happened. Walked {walked:?}",
+            );
+            match loops.pump(&access, &run) {
+                Ok(Pumped::Moved {
+                    from, raised, to, ..
+                }) => walked.push(format!("{from:?} --{raised:?}--> {to:?}")),
+                Ok(other) => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                Err(refused) => break refused,
+            }
+        };
+        let said = loops.said_by_sentence();
+        let deliveries = loops.deliveries();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        // ══ THE PREMISE: the refusal is a SUBMIT's, and the run got past its brief ═════════════
+        assert!(
+            matches!(refused, PaneError::NeverSubmitted { .. }),
+            "⚠⚠⚠⚠⚠ THE STAGING: this peer must leave the prompt sitting in its composer. A pane \
+             that never took the text is a different failure and belongs to no road. Got \
+             {refused:?}, walked {walked:?}",
+        );
+
+        // ══ ① THE BRIEF LANDED AND THE TURN PROMPT DID NOT, ON TWO ROWS ════════════════════════
+        assert_eq!(
+            said.of(crate::act::Sentence::Brief),
+            SaidUnder {
+                sent: 1,
+                unasked: Unasked::default(),
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: this run's brief was put once and answered, and the \
+             table must say exactly that. A brief carrying a refusal here is the pooling this item \
+             is about, arriving as a row rather than as a ratio. Said {said:?}, deliveries \
+             {deliveries:?}, walked {walked:?}",
+        );
+        assert_eq!(
+            said.of(crate::act::Sentence::Turn),
+            SaidUnder {
+                sent: 1,
+                unasked: Unasked {
+                    after_a_fold: 0,
+                    on_the_pane: 1,
+                },
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: the turn prompt this peer refused is counted NOWHERE, or \
+             on the wrong road. It produced no witness, so `Deliveries` alone cannot say which \
+             prompt it was — this row is the only place the answer exists. Said {said:?}, \
+             deliveries {deliveries:?}, walked {walked:?}",
+        );
+
+        // ══ ② AND THE TWO ROWS ARE ONE ROW UNDER `asks`, WHICH IS THE MUTATION THIS NAMES ══════
+        assert_eq!(
+            crate::act::Sentence::Brief.asks(),
+            crate::act::Sentence::Turn.asks(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889, THE CONTROL FOR THE PAIR ABOVE: these two sentences must \
+             declare the SAME `asks` word, or the separation just asserted could have come from \
+             that word and this gate would be green about a table keyed on it. Measured over 197 \
+             run logs, an `asks`-keyed table reads 1.86 % for `work` where the two rows above are \
+             0 % and 100 %.",
+        );
+
+        // ══ ③ THE TIE TO THE RUN'S OWN TOTALS ══════════════════════════════════════════════════
+        assert_eq!(
+            (said.sent(), said.unasked()),
+            (deliveries.attempted(), deliveries.never_asked()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: the split and the totals are two authorities on one run. \
+             Said {said:?}, deliveries {deliveries:?}, walked {walked:?}",
+        );
+
+        // ══ ④ AND EVERY SENTENCE HAS A ROW, INCLUDING THE ONES THIS RUN NEVER SAID ═════════════
+        //
+        // ⛔ Rule 6. `handover` is reached only by a run that spends a ceiling and `rule` only by
+        // one that meets a dialog, so a hand-written list of the interesting sentences would have
+        // left both out — and they are the ones a surprise arrives on.
+        assert_eq!(
+            said.rows().count(),
+            crate::act::Sentence::ALL.len(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: the table publishes fewer rows than there are sentences, \
+             so a prompt of a sentence nobody listed is counted nowhere and reads as a run that \
+             never said it. Said {said:?}",
+        );
+        assert_eq!(
+            said.of(crate::act::Sentence::Handover),
+            SaidUnder::default(),
+            "⚠⚠⚠⚠ A SENTENCE THIS RUN NEVER SAID MUST HAVE NO POPULATION. This run spent no \
+             ceiling, so a count here means prompts are being filed under whatever row was last \
+             set — which would make every comparison between rows a comparison of invented \
+             populations. Said {said:?}, walked {walked:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY PROMPT THE DOCUMENT SENDS DECLARES A SENTENCE THIS BUILD HAS A ROW FOR,
+    /// AND EVERY ROW IS REACHABLE** — register item 889, asked of the source rather than of a
+    /// list.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A `match` cannot make a document write a word, and `ALL` cannot see a gap
+    ///
+    /// [`crate::act::Sentence::asks`] is exhaustive, so a twelfth variant does not compile until
+    /// somebody says what it asks for — and that guard says NOTHING about whether any `<send>`
+    /// ever writes the word, or whether a send writes one the space does not hold. Both are
+    /// silent failures with opposite shapes: a word no send writes is a row that can only ever
+    /// read zero (rule 5 — a count with no path to a non-zero value), and a send whose word this
+    /// build cannot spell is a run refused at `error.execution` on the entry that composes its
+    /// prompt, which is the one moment a run has already spent its turn.
+    ///
+    /// ⚠⚠ **SET COMPARISON AND NOT A COUNT.** Fourteen sends against eleven words is true of the
+    /// right file and of several wrong ones; what is asserted is which words are on each side.
+    ///
+    /// ⚠ [`crate::act::Sentence::Rule`] is the one word deliberately outside the document — the
+    /// driver types a screen rule's own text at two sites of its own — and it is NAMED here rather
+    /// than skipped, so *the document does not write it* is a decision this gate holds rather than
+    /// a hole it steps over.
+    #[test]
+    fn every_prompt_this_document_sends_names_a_sentence_this_build_can_count() {
+        /// The authority on which prompts there are and what each one calls itself.
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        /// The one sentence no `<send>` writes, and why — see this gate's doc.
+        const TYPED_BY_THE_DRIVER: [crate::act::Sentence; 1] = [crate::act::Sentence::Rule];
+
+        // Every `<param name="sentence" expr="'…'"/>` the document carries, in document order.
+        let written: Vec<&str> = DOCUMENT
+            .match_indices("<param name=\"sentence\" expr=\"'")
+            .filter_map(|(at, needle)| {
+                let rest = &DOCUMENT[at + needle.len()..];
+                rest.find('\'').map(|end| &rest[..end])
+            })
+            .collect();
+
+        // ── THE CONTROL: the scan found the sends at all ──
+        //
+        // ⚠⚠⚠ Without it every claim below is about an empty list, and an empty list satisfies
+        // *no word is unreadable* perfectly. The number is the document's own: fourteen
+        // `prompt.say` sends, each with exactly one of these params.
+        let sends = DOCUMENT.matches("event=\"prompt.say\"").count();
+        assert!(
+            written.len() >= sends && sends > 0,
+            "⚠⚠⚠⚠⚠ THE CONTROL: the document declares {sends} `prompt.say` sends and this scan \
+             found {} sentence words. A send with no word is refused at run time on the entry that \
+             composes its prompt — a run that has already spent its turn — and a scan that found \
+             nothing would make every assertion below vacuous. Found {written:?}",
+            written.len(),
+        );
+
+        // ── ① NOTHING THE DOCUMENT WRITES IS OUTSIDE THE SPACE ──
+        let unreadable: Vec<&str> = written
+            .iter()
+            .copied()
+            .filter(|word| crate::act::Sentence::of(word).is_none())
+            .collect();
+        assert!(
+            unreadable.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: `ai_loop.scxml` sends {unreadable:?}, and this build has \
+             no row for it. `crate::act::read` refuses the act, the document takes its \
+             `error.execution` edge, and the run dies at the moment it composed a prompt — with \
+             nothing in any table to say which prompt it was. The space holds {:?}",
+            crate::act::Sentence::ALL.map(crate::act::Sentence::named),
+        );
+
+        // ── ② AND NOTHING IN THE SPACE IS UNREACHABLE ──
+        //
+        // ⛔⛔⛔ Rule 5, applied to a row: a count with no path to a non-zero value is a row that
+        // can only ever confirm. Every word is either written by a send or named above as one the
+        // DRIVER types, and there is no third answer.
+        let unwritten: Vec<&str> = crate::act::Sentence::ALL
+            .into_iter()
+            .filter(|sentence| {
+                !TYPED_BY_THE_DRIVER.contains(sentence) && !written.contains(&sentence.named())
+            })
+            .map(crate::act::Sentence::named)
+            .collect();
+        assert!(
+            unwritten.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: {unwritten:?} is in `Sentence::ALL` and NO `<send>` \
+             writes it, so its row can only ever read `0 of 0` — a population with no path to a \
+             sample, which is rule 5's shape. Either the document lost a send, or the word is one \
+             the driver types and belongs in `TYPED_BY_THE_DRIVER` with its reason.",
+        );
+
+        // ── ③ AND THE ONE WORD NAMED AS THE DRIVER'S IS NOT SECRETLY IN THE DOCUMENT ──
+        //
+        // ⚠⚠ The exemption above must not be able to hide a real send. If the document ever writes
+        // `rule`, the list stops being *the words no send writes* and becomes an escape hatch — and
+        // a reader of assertion ② would be told a word is the driver's when it is not.
+        let both: Vec<&str> = TYPED_BY_THE_DRIVER
+            .into_iter()
+            .map(crate::act::Sentence::named)
+            .filter(|word| written.contains(word))
+            .collect();
+        assert!(
+            both.is_empty(),
+            "⛔⛔⛔⛔ REGISTER ITEM 889: {both:?} is named here as a sentence only the driver types \
+             and the document sends it too. The exemption is then hiding a real send, which is the \
+             shape rule 6 refuses: an unclassified value passing as a classified one.",
         );
     }
 
@@ -26553,7 +27150,8 @@ mod tests {
         // ⚠⚠⚠ THE CONTROL AT THE START: a run that has asked nothing has no question in flight, so
         // an `Account` read later cannot be a value that was simply always there.
         assert_eq!(
-            loops.asks, None,
+            loops.asks(),
+            None,
             "⚠⚠ a loop in `idle` has put no sentence to anybody",
         );
 
@@ -26600,7 +27198,7 @@ mod tests {
                     from, raised, to, ..
                 } => {
                     walked.push((from, raised, to));
-                    asked.push((to, loops.driving.asked.clone(), loops.asks));
+                    asked.push((to, loops.driving.asked.clone(), loops.asks()));
                 }
                 Pumped::Unbuilt(state) => {
                     panic!("this run reached {state:?}, which no driver serves. Walked {walked:?}")
@@ -26735,7 +27333,8 @@ mod tests {
         // value that was simply always sitting there — which is exactly what a hard-coded argument
         // would look like.
         assert_eq!(
-            loops.asks, None,
+            loops.asks(),
+            None,
             "⚠⚠ a loop in `idle` has put no sentence to anybody",
         );
 
@@ -26782,7 +27381,7 @@ mod tests {
                     from, raised, to, ..
                 } => {
                     walked.push((from, raised, to));
-                    asked.push((to, loops.driving.asked.clone(), loops.asks));
+                    asked.push((to, loops.driving.asked.clone(), loops.asks()));
                 }
                 Pumped::Unbuilt(state) => {
                     panic!("this run reached {state:?}, which no driver serves. Walked {walked:?}")
@@ -26928,7 +27527,8 @@ mod tests {
         // be a value that was simply always sitting there — which is what a hard-coded argument
         // would look like.
         assert_eq!(
-            loops.asks, None,
+            loops.asks(),
+            None,
             "⚠⚠ a loop in `idle` has put no sentence to anybody",
         );
 
@@ -26979,7 +27579,7 @@ mod tests {
                     from, raised, to, ..
                 } => {
                     walked.push((from, raised, to));
-                    asked.push((to, loops.driving.asked.clone(), loops.asks));
+                    asked.push((to, loops.driving.asked.clone(), loops.asks()));
                 }
                 Pumped::Unbuilt(state) => {
                     panic!("this run reached {state:?}, which no driver serves. Walked {walked:?}")
@@ -27168,7 +27768,8 @@ mod tests {
         // ⚠⚠⚠ THE CONTROL AT THE START: nothing has been asked, so a `Work` read later cannot be a
         // value that was simply always sitting there.
         assert_eq!(
-            loops.asks, None,
+            loops.asks(),
+            None,
             "⚠⚠ a loop in `idle` has put no sentence to anybody",
         );
 
@@ -27218,7 +27819,7 @@ mod tests {
                     asked.push((
                         to,
                         loops.driving.asked.clone(),
-                        loops.asks,
+                        loops.asks(),
                         loops.reported.is_some(),
                     ));
                 }
@@ -27432,7 +28033,7 @@ mod tests {
                     asked.push((
                         to,
                         loops.driving.asked.clone(),
-                        loops.asks,
+                        loops.asks(),
                         loops.reported.is_some(),
                     ));
                 }
