@@ -237,6 +237,29 @@ pub const RUN_ASKED_BY_KEY: &str = "opened_by_session";
 /// ⚠ An added ANSWER key earns no `WIRE_PROTOCOL` bump (that constant's own rule at version 5:
 /// absent-not-wrong to an old reader), and no pin covers a slot's answer shape.
 pub const RUN_BUILD_KEY: &str = "build";
+/// ⛔⛔⛔⛔⛔ The answer key naming **WHICH WORKING TREE A RUN WAS FOR** — register item 890.
+///
+/// # ⛔⛔⛔⛔⛔ One daemon drives three repositories and a finished run named none of them
+///
+/// [`RUN_BUILD_KEY`] above says which CODE drove a run. This says which TREE it drove it in, and
+/// until it existed nothing did. Measured 2026-09-04 over this daemon's own store: **209 rows, 3
+/// carrying a `request`** — the three that had not finished — and the repository appeared nowhere
+/// else. `crate::runs::PersistedRun::request` drops the map for a finished run, correctly and for a
+/// stated reason, so **206 rows could not say which repository they belonged to**; and the live
+/// three named one only inside the PROSE of their `north_star`, with two of them sharing
+/// `loop_kind: unclaimed`.
+///
+/// ⇒ Every per-repository reading this register builds — item 872(3)'s delay table above all —
+/// stood on a fact nothing recorded. A watcher trying to attribute this daemon's runs 194–198 to
+/// their trees could not: the only surviving evidence was the live drivers' command lines, and
+/// those drivers had exited.
+///
+/// ⚠⚠ **ABSENT IS *NOBODY RECORDED WHICH TREE*, NEVER *THIS RUN HAD NONE*** — the omit-rather-than-
+/// null rule [`RUN_BUILD_KEY`] states, and here the flattering misreading is worse than a blank: a
+/// reader who filled it in would attribute the run to whichever repository they were standing in.
+///
+/// ⚠ An added ANSWER key earns no `WIRE_PROTOCOL` bump — that constant's own rule at version 5.
+pub const RUN_TREE_KEY: &str = "tree";
 /// ⛔⛔⛔⛔⛔ The answer key naming **WHICH RUN THIS IS** — register item 887, and the thing the
 /// run's NUMBER was being read as.
 ///
@@ -2680,6 +2703,14 @@ impl PluginsExternal {
         // rule saying which tree a relay's ending is about, so it answers `None` and the run's
         // record says *cannot say* rather than picking one.
         let tree = pane_named(request).and_then(|pane| self.pane_start_dir(pane));
+        // ⛔⛔⛔⛔⛔ **AND THE SAME PATH IS RECORDED ON THE RUN** — register item 890. It was
+        // resolved here, handed to the driver to read what the tree holds at the end, and then
+        // dropped: measured 2026-09-04, **206 of this daemon's 209 rows could not say which of its
+        // three repositories they were for**, because the only thing that named one was the
+        // `request` map and that is written for resumable runs alone.
+        let named_tree = tree
+            .as_deref()
+            .map(|path| path.to_string_lossy().into_owned());
         let (state, run) = self.drive_on_a_thread(id, &progress, plugin, guardrails, tree);
         lock(&self.runs).submit(crate::runs::NewRun {
             id,
@@ -2693,6 +2724,7 @@ impl PluginsExternal {
             request: Some(request.clone()),
             opened_by,
             opened_by_session,
+            tree: named_tree,
             state,
             run,
             progress,
@@ -2916,6 +2948,13 @@ impl PluginsExternal {
             request: Some(handed.clone()),
             opened_by,
             opened_by_session,
+            // ⛔⛔⛔⛔⛔ AND WHICH TREE IT IS FOR — register item 890, the same expression
+            // `drive_in_a_process` already hands its collector so a run's ending can say what the
+            // tree holds. Resolved from the request's own pane, so an out-of-process run is named
+            // by the same fact an in-process one is.
+            tree: pane_named(&handed)
+                .and_then(|pane| self.pane_start_dir(pane))
+                .map(|path| path.to_string_lossy().into_owned()),
             state,
             run,
             // ⚠⚠⚠ AN EMPTY CELL, AND IT STAYS EMPTY — see `RunRecord::reported`. This run's counters
@@ -6146,6 +6185,14 @@ pub(crate) fn run_to_json(
     if let Some(which) = &run.which_run {
         entry[RUN_WHICH_RUN_KEY] = json!(which.as_str());
     }
+    // ⛔⛔⛔⛔⛔ AND WHICH WORKING TREE IT WAS FOR — register item 890, on the same
+    // omit-rather-than-null rule and for the sharpest reason of the three: absent means NOBODY
+    // RECORDED WHICH TREE, and a reader that filled it in would be attributing a run to whichever
+    // repository they happened to be standing in. **One daemon drives three**, and measured
+    // 2026-09-04 exactly 3 of its 209 rows could name one — the three that had not finished.
+    if let Some(tree) = &run.tree {
+        entry[RUN_TREE_KEY] = json!(tree);
+    }
     // ⚠⚠⚠ AND WHAT BECAME OF A PERSON'S ORDER — register item 594, present only when somebody gave
     // one, which is `RUN_CEILING_KEY`'s presence-is-the-claim rule.
     //
@@ -8029,6 +8076,7 @@ mod tests {
             driver: None,
             driving: Some(4),
             opened_by_session: None,
+            tree: None,
             at: None,
             document: Some(document.to_owned()),
             stood_down: None,
@@ -8548,6 +8596,10 @@ mod tests {
                 // ⚠ An older log records no request either — item 543. This fixture's run is
                 // therefore one nobody could put back, which is what every log held before it.
                 request: None,
+                // ⚠ AND NO TREE — register item 890. An older log records none, and this fixture
+                // is that log: the column must read as *nobody wrote it down* rather than as a
+                // repository this reader picked.
+                tree: None,
                 iterations: 1,
                 cost: None,
                 unit: None,
@@ -8752,6 +8804,7 @@ mod tests {
             driver: None,
             driving: None,
             opened_by_session: None,
+            tree: None,
             at: None,
             document: None,
             stood_down: None,
@@ -8885,6 +8938,209 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A RUN'S ROW NAMES THE REPOSITORY IT WAS DRIVEN IN** — register item 890, and the
+    /// PRODUCER's own gate.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The door resolved this path twice and recorded it never
+    ///
+    /// `build_plugin` reads `world.pane_start_dir(pane)` to refuse a pane standing outside the tree
+    /// its kind works in (item 738, layer 4), and `drive_on_a_thread` is handed the same path to
+    /// read what the tree holds when the run ends (item 682). **Computed twice, used twice, written
+    /// down never.** Measured 2026-09-04 on this daemon's own store: 209 rows, and the repository
+    /// appeared only inside the `request` map of the **3** that had not finished.
+    ///
+    /// # ⚠⚠⚠ Why the PRODUCER needs a gate of its own, measured the hard way today
+    ///
+    /// Register item 856(3)'s round put gates on seven surfaces a value passes THROUGH and none on
+    /// the one call that puts it in — and replacing that call with a discard left the whole
+    /// workspace green. The durable crossing is gated in `runs.rs`; this is the door, which is the
+    /// crossing that would otherwise ship an instrument nobody ever feeds.
+    ///
+    /// # ⛔⛔⛔⛔⛔ TWO TREES, WHICH IS THE ITEM'S OWN DONE-WHEN AND NOT AN EMBELLISHMENT
+    ///
+    /// *한 저장소짜리 픽스처에서는 미상과 정답이 같은 값이다.* A single-tree fixture is passed by a
+    /// door that records the daemon's own cwd, or the first pane's answer, or a literal — and every
+    /// one of those attributes all three of this daemon's loops to one repository, which is the
+    /// state being repaired. So two panes stand in two trees and the claim is that each run keeps
+    /// **its own**.
+    #[test]
+    fn a_runs_row_names_the_repository_it_was_driven_in() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let mine = a_tree_to_stand_in();
+        let another = another_tree_to_stand_in();
+        assert_ne!(
+            mine, another,
+            "⚠ THE FIXTURE'S OWN PREMISE: two trees, or this gate is the single-tree one it \
+             replaces",
+        );
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let started_in = |external: &mut PluginsExternal, tree: &std::path::Path| -> u64 {
+            let pane = echoing_agent_pane_in(&workspace, tree);
+            let started = external
+                .invoke(
+                    RUN_ACTION,
+                    IntrospectValue::Json(json!({
+                        "plugin": "orchestrator",
+                        "pane": pane.0,
+                        "stimulus": "ping",
+                        "sentinel": "ping",
+                        "guardrails": { "max_iterations": 1, "max_seconds": 5 },
+                    })),
+                )
+                .expect("⚠ THE CONTROL: a run over a pane standing in a tree must start");
+            let IntrospectValue::Int(id) = started else {
+                panic!("a run answers its id: {started:?}");
+            };
+            u64::try_from(id).expect("a run id is not negative")
+        };
+        let ours = started_in(&mut external, &mine);
+        let theirs = started_in(&mut external, &another);
+
+        // ══ ① EACH ROW SAYS ITS OWN TREE ═══════════════════════════════════════════════════════
+        let listed = read_runs(&external);
+        let row_of = |id: u64| -> Value {
+            listed
+                .iter()
+                .find(|row| row["id"].as_u64() == Some(id))
+                .unwrap_or_else(|| panic!("the fixture's own run {id} is listed: {listed:?}"))
+                .clone()
+        };
+        for (id, tree) in [(ours, &mine), (theirs, &another)] {
+            let row = row_of(id);
+            assert_eq!(
+                row.get(RUN_TREE_KEY).and_then(Value::as_str),
+                Some(tree.to_string_lossy().as_ref()),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 890: the run's row does not name the repository it is \
+                 being driven in. The door resolved that path to refuse a pane standing anywhere \
+                 else and then dropped it, which is why 209 of this daemon's 211 rows could name \
+                 no tree. Row: {row:?}",
+            );
+        }
+        assert_ne!(
+            row_of(ours).get(RUN_TREE_KEY),
+            row_of(theirs).get(RUN_TREE_KEY),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 890's DONE-WHEN: two runs over panes standing in DIFFERENT \
+             repositories were recorded against the same one, so the door is writing a constant \
+             rather than each run's own tree",
+        );
+
+        // ══ ② AND THE RECORD HOLDS IT, NOT ONLY THE SLOT ═══════════════════════════════════════
+        //
+        // ⚠⚠ The slot is what a client reads; the RECORD is what the durable log is written from
+        // (`RunRegistry::persistable`). A build that composed this at the mouth would pass ① and
+        // leave every finished run in the log unattributable — which is the state being repaired.
+        let recorded: Vec<Option<String>> = lock(&registry)
+            .snapshot()
+            .into_iter()
+            .map(|run| run.tree)
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![
+                Some(mine.to_string_lossy().into_owned()),
+                Some(another.to_string_lossy().into_owned()),
+            ],
+            "⛔⛔⛔⛔ REGISTER ITEM 890: the ROW says the tree and the RECORD does not, so the log \
+             this daemon writes will not carry it",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND SO DOES A RUN DRIVEN IN A PROCESS OF ITS OWN** — register item 890, at the
+    /// second door.
+    ///
+    /// # ⛔⛔⛔⛔⛔ There are TWO producers and one of them is the one the daemon actually uses
+    ///
+    /// [`PluginsExternal::spawn_driven_run`] is the arm taken when a driver is a process
+    /// (`crate::options::RUN_DRIVER_PROCESS`), and it is the arm the loop daemon in this repository
+    /// runs under — every row of the 211 measured on 2026-09-04 came through it. A column gated
+    /// only on the in-process door would therefore be green in the test suite and empty in the one
+    /// store anybody reads, which is precisely the shape item 856(3) paid for: gates on the
+    /// surfaces a value passes through and none on the call that puts it in.
+    ///
+    /// ⚠ Two trees here for [`a_runs_row_names_the_repository_it_was_driven_in`]'s reason, which is
+    /// the item's own Done-when: with one, a door writing a constant is indistinguishable from a
+    /// door writing the truth.
+    ///
+    /// ⚠⚠ The child is `cat` — a stand-in that reports nothing and ends when its stdin closes. What
+    /// this gate measures happens at SUBMIT, before any driver has said a word, so a real driver
+    /// would add a process and no evidence.
+    ///
+    /// ⚠⚠⚠ **AND THE PLUGIN IS `orchestrator` RATHER THAN `ai_loop`, WHICH IS THIS FIXTURE'S OWN
+    /// HONESTY.** The fork between the two producers happens BEFORE any plugin is dispatched
+    /// (`crate::options::RUN_DRIVER_PROCESS`'s arm), and the path this gate is about is resolved
+    /// from the request's pane by code no plugin sees — so the road is the same road for either
+    /// kind. What `ai_loop` would add is item 754's clause: a run of that kind must stand in a
+    /// window belonging to its own tree, so two panes in two trees cannot share one pool and the
+    /// fixture would be measuring THAT refusal instead of this column. Measured here — the first
+    /// build of this gate was refused by exactly that sentence.
+    #[test]
+    fn a_run_driven_in_another_process_still_names_its_repository() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let mine = a_tree_to_stand_in();
+        let another = another_tree_to_stand_in();
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .driving_out_of_process(Arc::new(|_: RunId, _: &Map<String, Value>| {
+            std::process::Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+        }));
+
+        let started_in = |external: &mut PluginsExternal, tree: &std::path::Path| {
+            let pane = echoing_agent_pane_in(&workspace, tree);
+            external
+                .invoke(
+                    RUN_ACTION,
+                    IntrospectValue::Json(json!({
+                        "plugin": "orchestrator",
+                        "pane": pane.0,
+                        "stimulus": "ping",
+                        "sentinel": "ping",
+                        "guardrails": { "max_iterations": 1, "max_seconds": 5 },
+                    })),
+                )
+                .expect("⚠ THE CONTROL: a run whose driver is a process must start");
+        };
+        started_in(&mut external, &mine);
+        started_in(&mut external, &another);
+
+        let recorded: Vec<Option<String>> = lock(&registry)
+            .snapshot()
+            .into_iter()
+            .map(|run| run.tree)
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![
+                Some(mine.to_string_lossy().into_owned()),
+                Some(another.to_string_lossy().into_owned()),
+            ],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 890: a run whose driver is a PROCESS records no repository — \
+             and that is the arm this daemon actually drives its loops with, so the column would be \
+             green here and empty in the only store anybody reads",
+        );
+    }
+
     /// Poll `query("runs")` until run `id` has DELIVERED a prompt, and answer its entry.
     ///
     /// ⚠⚠⚠ **THE BOUNDARY THIS WATCHES IS THE READINESS BARRIER**, which nothing publishes
@@ -8966,6 +9222,7 @@ mod tests {
                 driver: None,
                 driving: None,
                 opened_by_session: None,
+                tree: None,
                 at: None,
                 document: None,
                 stood_down: None,
@@ -10588,6 +10845,7 @@ mod tests {
                     loop_kind: None,
                     opened_by: None,
                     opened_by_session: None,
+                    tree: None,
                     // ⚠ Not what this gate measures — item 853. Its own gates drive the key.
                     overridden: None,
                     state,
@@ -10676,6 +10934,7 @@ mod tests {
                 loop_kind: None,
                 opened_by: None,
                 opened_by_session: None,
+                tree: None,
                 overridden: None,
                 state: RunState::Panicked(why.to_owned()),
                 progress: sprag_plugin::Progress::default(),
@@ -10743,6 +11002,7 @@ mod tests {
                     loop_kind: None,
                     opened_by: None,
                     opened_by_session: None,
+                    tree: None,
                     overridden: None,
                     state: RunState::Running,
                     progress,
@@ -10891,6 +11151,7 @@ mod tests {
                     loop_kind: None,
                     opened_by: None,
                     opened_by_session: None,
+                    tree: None,
                     overridden: None,
                     state: RunState::Running,
                     progress: sprag_plugin::Progress::default(),
@@ -10992,6 +11253,7 @@ mod tests {
                     loop_kind: None,
                     opened_by: None,
                     opened_by_session: None,
+                    tree: None,
                     overridden: None,
                     state: RunState::Running,
                     progress,
@@ -14027,6 +14289,13 @@ mod tests {
 
     /// A SECOND tree, so *this repository* and *somebody else's* are two directories rather than
     /// one used twice — register item 754.
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND REGISTER ITEM 890 NEEDS THE SAME THING FOR A DIFFERENT REASON**: one daemon
+    /// drives three repositories, so a gate asking *which one was this run for* is answered
+    /// identically by a truthful build and by one writing a constant unless the fixture holds runs
+    /// of at least TWO — *한 저장소짜리 픽스처에서는 미상과 정답이 같은 값이다*, which is that
+    /// item's own Done-when. Item 754 needed two trees to express *somebody else's*; item 890 needs
+    /// two to express *told apart*. One directory serves both.
     fn another_tree_to_stand_in() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("sprag-other-tree-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a second tree for a neighbour to stand in");
@@ -15540,6 +15809,7 @@ mod tests {
             loop_kind: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: RunState::Running,
             progress: sprag_plugin::Progress {
@@ -17813,6 +18083,7 @@ mod tests {
                     driver: None,
                     driving: None,
                     opened_by_session: None,
+                    tree: None,
                     at: None,
                     document: document.map(str::to_owned),
                     stood_down: None,
@@ -18289,6 +18560,7 @@ mod tests {
                 request: None,
                 opened_by: None,
                 opened_by_session: None,
+                tree: None,
                 overridden: None,
                 state: Arc::new(Mutex::new(RunState::Running)),
                 run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
@@ -18653,6 +18925,7 @@ mod tests {
                 request: None,
                 opened_by: None,
                 opened_by_session: None,
+                tree: None,
                 overridden: None,
                 state: Arc::new(Mutex::new(RunState::Running)),
                 run: Box::new(crate::runs::EndedRun::restored(false, None, None)),

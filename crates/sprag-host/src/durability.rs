@@ -763,6 +763,7 @@ mod tests {
             driving: None,
             opened_by_session: None,
             request: None,
+            tree: None,
             at: None,
             place: None,
             document: None,

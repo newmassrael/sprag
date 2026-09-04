@@ -1440,6 +1440,33 @@ struct RunRecord {
     /// by construction rather than by a rule. Restoring and replacing want opposite answers here,
     /// exactly as they do one layer down where the host chooses between `argv` and `agent_session`.
     opened_by_session: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHICH WORKING TREE THIS RUN IS FOR** — register item 890, and the fact this
+    /// daemon resolved at the door and then threw away.
+    ///
+    /// # ⛔⛔⛔⛔⛔ One daemon drives several repositories and nothing said which was which
+    ///
+    /// Measured 2026-09-04 on this daemon's own store: **209 rows, and 3 carry a `request`** — the
+    /// three that had not finished. Everything a reader could use to name a repository lived in
+    /// that map, so a finished run named none, and the map is dropped on purpose
+    /// ([`PersistedRun::request`] holds the argument: a brief is a person's prose and keeping it
+    /// for the life of a log that can never use it is the wrong trade).
+    ///
+    /// ⇒ ⛔ **Even the live rows named no repository as a FIELD.** Their `request` carried
+    /// `plugin`, `pane`, `loop_kind`, `north_star`, `milestone`, `reference`, `agent` — and the
+    /// repository only inside the PROSE of `north_star`. Two of the three live runs were
+    /// `loop_kind: unclaimed`, so not even the kind told them apart.
+    ///
+    /// # ⚠⚠⚠ Why this is small and the request is not
+    ///
+    /// One path. It is the fact `crate::plugins` already resolves at the door to refuse a pane
+    /// standing outside the tree its kind works in (register item 738, layer 4) and again to read
+    /// what the tree holds at the end (item 682) — computed twice, used twice, recorded never. So
+    /// this keeps the ONE thing a later reader needs and none of the prose.
+    ///
+    /// ⚠⚠ [`None`] is *nobody recorded which tree*, never *this run had none*. A run restored from
+    /// a log written before this field existed answers [`None`] and must read as the first —
+    /// register item 891's lesson one key over, and this workspace's rule 6.
+    tree: Option<String>,
     state: Arc<Mutex<RunState>>,
     /// **THE RUN ITSELF, AS THIS DIRECTORY KNOWS IT** — a [`RunHandle`], which is deliberately not a
     /// thread. See that trait for the fusion it exists to unpick (register item 544); the three
@@ -1728,6 +1755,14 @@ pub struct RunSummary {
     ///
     /// [`None`] is *nothing recorded which run this was* and never *the same run*.
     pub which_run: Option<WhichRun>,
+    /// ⛔⛔⛔⛔⛔ **WHICH WORKING TREE THIS RUN WAS FOR** — `RunRecord::tree`, register item 890.
+    ///
+    /// The field above says which RUN this is and [`build`](Self::build) says which CODE drove it.
+    /// This says WHERE, which one daemon driving three repositories had recorded nowhere: measured
+    /// 2026-09-04, 3 of 209 rows could name a repository and all three were unfinished.
+    ///
+    /// ⚠ [`None`] is *nobody recorded which tree* and never *this run had none*.
+    pub tree: Option<String>,
     /// **WHETHER A PERSON ASKED THIS RUN TO STAND DOWN** — [`RunHandle::stood_down`], republished so
     /// a mouth can say what became of the ORDER and not only what became of the run.
     ///
@@ -1858,6 +1893,13 @@ pub struct NewRun {
     /// (which is the layer holding the workspace) rather than looked up here. See
     /// `RunRecord::opened_by_session`.
     pub opened_by_session: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHICH WORKING TREE THIS RUN IS FOR** — register item 890, resolved by the caller
+    /// because that is the layer holding the workspace. See `RunRecord::tree`.
+    ///
+    /// ⚠ [`None`] for a run whose pane names no directory this daemon can read, and for a plugin
+    /// that drives no pane of its own. It must never be filled in with a guess: *nobody recorded
+    /// which tree* and *this run had none* are different facts and only the first one is true here.
+    pub tree: Option<String>,
     /// Where the worker writes its terminal state.
     pub state: Arc<Mutex<RunState>>,
     /// **THE RUN ITSELF** — a [`RunHandle`], and deliberately not a thread plus three flags. A
@@ -2542,6 +2584,27 @@ pub struct PersistedRun {
     /// existed simply describes runs nobody can resume.
     #[serde(default)]
     pub request: Option<serde_json::Map<String, serde_json::Value>>,
+    /// ⛔⛔⛔⛔⛔ **WHICH WORKING TREE THIS RUN WAS FOR** — register item 890, and the one column
+    /// here that a FINISHED run keeps.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Written for every run, which is the whole difference from [`request`](Self::request)
+    ///
+    /// That field is written only for a run that could be put back, and its own doc gives the
+    /// reason: a brief is a person's prose and keeping it for the life of a log that can never use
+    /// it is the wrong trade. **That argument is right and this field exists because of it** — the
+    /// repository is one path, it is the fact every later reading needs, and it is the only part
+    /// of the request anybody was ever mining. Measured 2026-09-04: 209 rows, 3 with a request,
+    /// **206 that could not say which of this daemon's three repositories they belonged to**.
+    ///
+    /// ⚠⚠ So the pair rule [`resumable_request`](Self::resumable_request) reads does NOT apply
+    /// here: no `!finished` guard, no `place` guard. A run that ended an hour ago is exactly the
+    /// run a reader is trying to attribute.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move — [`build`](Self::build)'s argument, and the same call
+    /// items 606, 616, 762, 856 and 889 each made. A log written before this existed answers
+    /// [`None`], which reads as *nobody recorded which tree* and never as *this run had none*.
+    #[serde(default)]
+    pub tree: Option<String>,
 }
 
 /// **THE STORED SHAPE OF [`sprag_plugin::Deliveries`]** — register item 606.
@@ -3221,6 +3284,10 @@ impl RunRegistry {
             request: run.request,
             opened_by: run.opened_by,
             opened_by_session: run.opened_by_session,
+            // ⛔⛔⛔ AND WHICH TREE IT IS FOR — register item 890. Taken from the caller, which is
+            // the layer that resolved it to refuse a pane standing in the wrong place; this
+            // directory has no workspace to ask and must not guess one.
+            tree: run.tree,
             state: run.state,
             run: run.run,
             progress: run.progress,
@@ -4100,6 +4167,13 @@ impl RunRegistry {
                         request: (!finished && place.is_some())
                             .then(|| record.request.clone())
                             .flatten(),
+                        // ⛔⛔⛔⛔⛔ AND WHICH TREE IT WAS FOR, WITH NO GUARD AT ALL — register
+                        // item 890, and the line above is what it is a reaction to. That one
+                        // writes the request only for a resumable run, correctly; this daemon
+                        // drives three repositories, so the effect was that **206 of 209 rows
+                        // could not say which one they belonged to** — every finished run, which
+                        // is every run anybody reads. One path is not a person's prose.
+                        tree: record.tree.clone(),
                     }
                 })
                 .collect(),
@@ -4272,6 +4346,16 @@ impl RunRegistry {
                 // `crate::plugins` re-derives the seat from that at read time.
                 opened_by: None,
                 opened_by_session: saved.opened_by_session.clone(),
+                // ⛔⛔⛔⛔⛔ AND THE TREE COMES BACK — register item 890, and it is the seat's
+                // OPPOSITE: a pane id is this daemon's answer and does not survive, but the
+                // directory a run worked in is a fact about the world that does. Item 606 measured
+                // that every run anybody reads has been restored, so a tree that stopped here
+                // would name a repository only while nobody was asking.
+                //
+                // ⚠ An older log answers `None`, which is *nobody recorded which tree* — never
+                // *this run had none*, and never a guess re-derived from a pane that has since
+                // been reused (register item 887's shape, one field over).
+                tree: saved.tree.clone(),
                 state: Arc::new(Mutex::new(state)),
                 // ⚠⚠⚠ A RESTORED RUN HAS NO DRIVER, AND THAT IS NOW SAID BY A TYPE — see
                 // `EndedRun`. Three fresh `AtomicBool`s used to sit here, each with a comment
@@ -4522,6 +4606,10 @@ impl RunRegistry {
                 // ⛔⛔⛔ AND WHICH RUN IT IS — register item 887, republished beside the build so a
                 // reader holding a row can say whether it is the run their own record is about.
                 which_run: record.which_run.clone(),
+                // ⛔⛔⛔ AND WHICH TREE IT WAS FOR — register item 890, beside the two above for
+                // their reason: a reader holding a row asks *whose run is this* in three senses
+                // (which run, which code, which repository) and only two of them could be answered.
+                tree: record.tree.clone(),
                 // ⚠ ASKED OF THE HANDLE, on the same pass that reads the state — item 594's
                 // sentence weighs the two against each other, and reading them a moment apart is
                 // this repository's *비교하는 두 값은 같은 순간에* rule at its cheapest.
@@ -4824,6 +4912,7 @@ mod tests {
                 request: None,
                 opened_by: Some(7),
                 opened_by_session: None,
+                tree: None,
                 // ⚠ NOR WHICH AUTHORS ITS BOUNDS CAME FROM — item 853. These fixtures submit
                 // without parsing a request, so *nobody answered* is the only honest value; the
                 // gates that drive the answer are `parse_guardrails`'s own, in `plugins`.
@@ -5058,6 +5147,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Running)),
             run: Box::new(ThreadRun::new(
@@ -5403,6 +5493,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
@@ -5509,6 +5600,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
@@ -5659,6 +5751,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
@@ -5763,6 +5856,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
@@ -5833,6 +5927,174 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A FINISHED RUN STILL SAYS WHICH REPOSITORY IT WAS FOR** — register item 890, and
+    /// the one column here that does NOT wait for a run to be resumable.
+    ///
+    /// # ⛔⛔⛔⛔⛔ One daemon, three repositories, and 209 of 211 rows could name none
+    ///
+    /// Measured 2026-09-04 on this daemon's own store: 211 rows, **2 carrying a `request`** — the
+    /// two that had not finished — and the repository lived nowhere else. [`PersistedRun::request`]
+    /// drops the map for a finished run, correctly and for a stated reason (*a brief is a person's
+    /// prose*), so the effect was that **every run anybody reads named no tree**. A watcher
+    /// attributing runs 194–198 could not: the only surviving evidence was the live drivers'
+    /// command lines and those drivers had exited.
+    ///
+    /// # ⚠⚠⚠ The FINISHED arm is the whole gate, and it is why this is not `request`'s test
+    ///
+    /// A run that is still going was never the problem. So the fixture ends its runs before
+    /// persisting: a build that reused `request`'s `!finished && place.is_some()` guard passes
+    /// every other assertion here and fails this one.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND THE POPULATION IS TWO REPOSITORIES, WHICH IS THE ITEM'S OWN DONE-WHEN
+    ///
+    /// *한 저장소짜리 픽스처에서는 미상과 정답이 같은 값이다.* One tree in, and a build that wrote
+    /// a constant — the daemon's cwd, the first row's answer, the string this fixture happens to
+    /// use — is green, while every run of every repository is still attributed to one. So two
+    /// finished runs go in, in different trees, and the claim is that each keeps **its own** across
+    /// the file. A third run records none, because *nobody wrote it down* is the answer 209 of the
+    /// 211 measured rows have and it must not read as either tree.
+    #[test]
+    fn a_finished_run_still_says_which_repository_it_was_for() {
+        /// One of the three trees this daemon drives — an absolute path, as `pane_start_dir` answers.
+        const MINE: &str = "/home/coin/sprag";
+        /// And another, so *unknown* and *right* are not the same value here.
+        const ANOTHER: &str = "/home/coin/watching-zenoh";
+
+        let mut registry = RunRegistry::default();
+        let finished_in = |registry: &mut RunRegistry, tree: Option<&str>| -> RunId {
+            let id = registry.reserve();
+            registry.submit(NewRun {
+                id,
+                label: format!("ai_loop pane={}", id.0),
+                plugin: crate::plugins::PluginName::AiLoop,
+                // ⚠⚠ NO REQUEST, WHICH IS THE POINT. The map is what used to carry the repository,
+                // and a finished run has none — so a build that answered out of it would answer
+                // nothing here, exactly as the store measured.
+                request: None,
+                opened_by: None,
+                opened_by_session: None,
+                tree: tree.map(str::to_owned),
+                overridden: None,
+                // ⛔ FINISHED, and that is the arm: `request`'s guard would drop the column here.
+                state: Arc::new(Mutex::new(RunState::Done {
+                    outcome: Box::new(an_outcome()),
+                    output: None,
+                    uncommitted: None,
+                })),
+                run: Box::new(EndedRun::restored(false, None, None)),
+                progress: ProgressCell::default(),
+            });
+            id
+        };
+        let mine = finished_in(&mut registry, Some(MINE));
+        let another = finished_in(&mut registry, Some(ANOTHER));
+        let unrecorded = finished_in(&mut registry, None);
+
+        /// The tree a named run answers, out of a registry — by ID and never by position, so the
+        /// gate keeps meaning what it says if the order these are held in ever changes.
+        fn tree_of(registry: &RunRegistry, id: RunId) -> Option<String> {
+            registry
+                .snapshot()
+                .into_iter()
+                .find(|run| run.id == id)
+                .unwrap_or_else(|| panic!("the fixture's own run {id:?} is in the registry"))
+                .tree
+        }
+
+        // ══ ① EACH LIVE ROW SAYS ITS OWN ═══════════════════════════════════════════════════════
+        for (id, tree) in [(mine, MINE), (another, ANOTHER)] {
+            assert_eq!(
+                tree_of(&registry, id).as_deref(),
+                Some(tree),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 890: the run's own summary cannot say which repository it \
+                 was for, so nothing downstream can either",
+            );
+        }
+        assert_eq!(
+            tree_of(&registry, unrecorded),
+            None,
+            "⚠⚠ AND THE RUN NOBODY RECORDED A TREE FOR MUST NOT BORROW A NEIGHBOUR'S — this is 209 \
+             of the 211 measured rows, and a build filling it in attributes them all to one tree",
+        );
+
+        // ══ ② THEY CROSS THE DAEMON, STILL TOLD APART ══════════════════════════════════════════
+        //
+        // ⚠⚠ THROUGH THE FILE, its neighbours' argument: item 606 measured that every run anybody
+        // reads has been restored, so a tree that stopped at the daemon boundary would name a
+        // repository only while nobody was asking.
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        for tree in [MINE, ANOTHER] {
+            assert!(
+                on_disk.contains(tree),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 890: the durable log of a FINISHED run does not carry its \
+                 tree. That is the exact shape the store was measured in — 2 of 211 rows able to \
+                 name a repository, and both unfinished. Wanted {tree}, got {on_disk}",
+            );
+        }
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+        for (id, tree) in [(mine, MINE), (another, ANOTHER)] {
+            assert_eq!(
+                tree_of(&successor, id).as_deref(),
+                Some(tree),
+                "⛔⛔⛔⛔ REGISTER ITEM 890: the tree did not survive the daemon that recorded it — \
+                 and the restore path is what the experiment of 2026-09-04 16:5x measured as the \
+                 thing that empties this column, not the ending and not the kill",
+            );
+        }
+        assert_ne!(
+            tree_of(&successor, mine),
+            tree_of(&successor, another),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 890's DONE-WHEN: two runs driven in DIFFERENT repositories \
+             come back from the log naming the same one, so the column is carrying something other \
+             than each run's own tree — which leaves the daemon's three loops exactly as \
+             inseparable as they were",
+        );
+        assert_eq!(
+            tree_of(&successor, unrecorded),
+            None,
+            "⚠⚠ AND THE UNRECORDED RUN STILL SAYS SO ACROSS THE FILE",
+        );
+
+        // ══ ③ AND A LOG WRITTEN BEFORE THE COLUMN READS AS *NOBODY RECORDED*, NOT AS A TREE ════
+        //
+        // ⛔⛔⛔ Rule 6, and register item 891's lesson one key over: the flattering misreading
+        // here is worse than a blank, because a reader who filled it in would attribute the run to
+        // whichever repository they happened to be standing in.
+        let mut older: Value = serde_json::from_str(&on_disk).expect("the log just written parses");
+        for run in older["runs"]
+            .as_array_mut()
+            .expect("a log holds an array of runs")
+        {
+            run.as_object_mut()
+                .expect("a run is an object")
+                .remove("tree");
+        }
+        let older = older.to_string();
+        for tree in [MINE, ANOTHER] {
+            assert!(
+                !older.contains(tree),
+                "⚠ THE PREMISE: this fixture must actually strip the column, or the decode below \
+                 is reading the same document twice. Got {older}",
+            );
+        }
+        let old_log: RunLog = serde_json::from_str(&older).expect(
+            "⛔⛔⛔⛔ REGISTER ITEM 890: a run log written before this column existed must still \
+             decode. Every boot of this daemon restores from one.",
+        );
+        let mut before = RunRegistry::default();
+        before.restore(&old_log);
+        for id in [mine, another, unrecorded] {
+            assert_eq!(
+                tree_of(&before, id),
+                None,
+                "⚠⚠ and it reads as *nobody recorded which tree*, which is the honest answer for a \
+                 build that could not have said otherwise — never a repository this reader invented",
+            );
+        }
+    }
+
     /// ⛔⛔⛔⛔⛔ **TWO RUNS UNDER ONE NUMBER ARE STILL TOLD APART** — register item 887, and the
     /// fixture is the failure itself rather than a model of it.
     ///
@@ -5874,6 +6136,7 @@ mod tests {
                 request: None,
                 opened_by: None,
                 opened_by_session: None,
+                tree: None,
                 overridden: None,
                 state: Arc::new(Mutex::new(RunState::Done {
                     outcome: Box::new(an_outcome()),
@@ -5979,6 +6242,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
@@ -6020,6 +6284,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
@@ -6102,6 +6367,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
@@ -6213,6 +6479,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(sprag_plugin::Outcome {
@@ -6347,6 +6614,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(ended),
@@ -6427,6 +6695,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(sprag_plugin::Outcome {
@@ -6538,6 +6807,7 @@ mod tests {
                 driver: None,
                 driving: None,
                 opened_by_session: Some(A_CONVERSATION.to_owned()),
+                tree: None,
                 at: None,
                 document: None,
                 stood_down: None,
@@ -6786,6 +7056,7 @@ mod tests {
             driver: None,
             driving: None,
             opened_by_session: None,
+            tree: None,
             at: at.map(str::to_owned),
             document: document.map(str::to_owned),
             stood_down: None,
@@ -6899,6 +7170,7 @@ mod tests {
             driver: None,
             driving: None,
             opened_by_session: None,
+            tree: None,
             at: None,
             document: document.map(str::to_owned),
             stood_down: None,
@@ -7002,6 +7274,7 @@ mod tests {
             driver: None,
             driving: None,
             opened_by_session: None,
+            tree: None,
             at: None,
             document: document.map(str::to_owned),
             stood_down: None,
@@ -7200,6 +7473,7 @@ mod tests {
             request: None,
             opened_by: None,
             opened_by_session: None,
+            tree: None,
             overridden: None,
             state: Arc::new(Mutex::new(RunState::Running)),
             run: Box::new(RecordingRun(Arc::clone(&log))),
@@ -7444,6 +7718,7 @@ mod tests {
                 driver: None,
                 driving: None,
                 opened_by_session: None,
+                tree: None,
                 at: None,
                 document: None,
                 // ⚠ A log with no such field: `None`, which restores as *no order was recorded*.
@@ -7570,6 +7845,7 @@ mod tests {
                 request: Some(asked.clone()),
                 opened_by: None,
                 opened_by_session: None,
+                tree: None,
                 overridden: None,
                 state: Arc::new(Mutex::new(if ended {
                     RunState::Reported(Box::new(serde_json::json!({ "state": "converged" })))

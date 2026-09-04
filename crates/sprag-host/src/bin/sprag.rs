@@ -6942,6 +6942,38 @@ fn render_which_run(run: &Value) -> String {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHICH REPOSITORY THIS RUN WAS FOR** — register item 890, and the third thing the head
+/// line has to say now that one daemon drives several.
+///
+/// # ⛔⛔⛔⛔⛔ 206 of 209 rows could not answer it
+///
+/// [`render_build`] says which CODE drove a run and [`render_which_run`] says which RUN it was.
+/// Neither says WHERE, and nothing did: measured 2026-09-04 on this daemon's own store, the
+/// repository appeared only inside the `request` map, which
+/// `sprag_host::runs::PersistedRun::request` drops for a finished run — correctly, and for a
+/// stated reason. **So every run anybody reads named none of the three trees this daemon drives.**
+/// A watcher attributing runs 194–198 could not, because the only surviving evidence was the live
+/// drivers' command lines and those drivers had exited.
+///
+/// ⚠⚠ **ABSENT IS SAID OUT LOUD**, both neighbours' rule and here the one that matters most: a
+/// silent omission would be read as *this run is mine*, by whoever is standing in a repository at
+/// the time. Nobody recording it is a different fact and gets different words.
+///
+/// ⚠ THE HEAD LINE, beside the other two, for [`render_which_run`]'s measured reason: the thing a
+/// watcher copies is the head, so an identity that arrives anywhere else is an identity that
+/// arrives after the record has been written.
+///
+/// ⛔⛔⛔⛔⛔ **AND BEFORE THE STAMP RATHER THAN AFTER IT** — see the call in [`render_run`], which
+/// carries the measurement. The repayment skill's `watch.sh` reads item 887's stamp with a pattern
+/// anchored at the end of the line, so a clause appended past it blinds that reader without
+/// changing a single character it can see.
+fn render_tree(run: &Value) -> String {
+    match run[sprag_host::plugins::RUN_TREE_KEY].as_str() {
+        Some(tree) => format!("  in {tree}"),
+        None => "  (tree not recorded)".to_owned(),
+    }
+}
+
 /// ⛔⛔⛔⛔⛔ **WHY A RUN ENDED THE WAY IT DID**, for the two endings that are a bare word without it
 /// — register item 685, and register item 594's twin one word over.
 ///
@@ -7255,8 +7287,25 @@ fn render_run(run: &Value) -> String {
     // rows said `running`.
     let resumed = resumed_clause(run, state);
     let head = format!(
-        "run {id}  {label}{opener}{kind}{}{}\n",
+        "run {id}  {label}{opener}{kind}{}{}{}\n",
         render_build(run),
+        // ⛔⛔⛔⛔⛔ AND WHICH REPOSITORY — register item 890, on `render_which_run`'s measured
+        // constraint: the repayment skill's `watch.sh` anchors on `^run <N> ` as a PREFIX and takes
+        // a run's status from the line after the heading, so a clause inside the heading moves
+        // neither.
+        //
+        // ⛔⛔⛔⛔⛔ **BEFORE THE STAMP AND NEVER AFTER IT, AND THAT ORDER IS LOAD-BEARING.** The
+        // first build of this clause appended it at the end with a comment claiming that reader's
+        // pattern *"still takes the stamp — this clause carries no brackets"*. It does not. The
+        // expression is `sed -n 's/.*\[\([^][]*\)\]$/\1/p'` — **anchored at `$`** — so a head line
+        // ending in anything but `]` yields NOTHING, the watcher falls back to *which run not
+        // recorded*, and item 887's whole point (a watcher can tell a reissued number from its own
+        // run) is silently off. Measured by running that exact expression over both orders:
+        // stamp-last answers `1f4a-…`, tree-last answers the empty string.
+        //
+        // ⇒ ⭐ The rule this is an instance of: a clause added to a line other readers parse is
+        // safe at the END only if nothing else is anchored there. Here something was.
+        render_tree(run),
         render_which_run(run),
     );
     match state["status"].as_str() {
@@ -11300,6 +11349,122 @@ mod tests {
              SILENT about it, so it reads exactly like a row whose stamp happens to match. \
              *Nobody recorded which run this was* is a third answer and the mouth must say \
              it:\n{unstamped}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ROW A PERSON READS SAYS WHICH REPOSITORY THE RUN WAS FOR** — register item
+    /// 890, at the mouth a watcher copies from.
+    ///
+    /// # ⛔⛔⛔⛔⛔ One daemon drives three trees and this row named none of them
+    ///
+    /// Measured 2026-09-04 on this daemon's own store: **211 rows, 2 carrying a `request`** — the
+    /// two still running — and the repository appeared nowhere else, so **209 rows could not say
+    /// which of three repositories they belonged to**. Even the live two named one only inside the
+    /// PROSE of their `north_star`.
+    ///
+    /// # ⚠⚠⚠ THE POPULATION IS TWO REPOSITORIES, WHICH IS THE ITEM'S OWN DONE-WHEN
+    ///
+    /// A fixture holding one tree cannot fail: *unknown* and *right* are the same value there, and
+    /// a renderer printing a fixed string — the daemon's cwd, the first row's tree, anything —
+    /// passes it. So two rows go in and the gate asserts each says **its own**, which is the
+    /// question a watcher attributing a daemon's runs actually asks.
+    ///
+    /// ⚠ Position asserted rather than described, [`render_run`]'s constraint: the outer-loop
+    /// watcher takes a run's STATUS from the line after the heading, so this clause belongs ON the
+    /// heading and nowhere below it.
+    #[test]
+    fn the_row_a_person_reads_says_which_repository_the_run_was_for() {
+        const MINE: &str = "/home/coin/sprag";
+        const ANOTHER: &str = "/home/coin/watching-zenoh";
+
+        let in_tree = |tree: Option<&str>| -> String {
+            let mut row = run_entry(&a_run_that_closed(None));
+            if let Some(tree) = tree {
+                row[sprag_host::plugins::RUN_TREE_KEY] = serde_json::json!(tree);
+            }
+            render_run(&row)
+        };
+
+        // ══ ① EACH ROW NAMES ITS OWN TREE, ON THE HEAD LINE ════════════════════════════════════
+        let mine = in_tree(Some(MINE));
+        let another = in_tree(Some(ANOTHER));
+        for (tree, row) in [(MINE, &mine), (ANOTHER, &another)] {
+            let head = row.lines().next().expect("a row has a heading");
+            assert!(
+                head.contains(tree),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 890: the daemon publishes which repository this run was \
+                 for and `sprag runs` does not print it on the head line, so a watcher copying \
+                 `run {{id}}` attributes the run to whichever tree they are standing in. Wanted \
+                 {tree}: {head:?}",
+            );
+        }
+
+        // ══ ② AND THE TWO ROWS DIFFER ══════════════════════════════════════════════════════════
+        //
+        // ⛔⛔⛔ THE ITEM'S OWN DONE-WHEN: *한 저장소짜리 픽스처에서는 미상과 정답이 같은 값이다*.
+        // A renderer answering one fixed sentence satisfies ① for a single-tree population and
+        // leaves every run of every repository attributed to one — which is the state being
+        // repaired, not a repair of it.
+        assert_ne!(
+            mine.lines().next(),
+            another.lines().next(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 890: two runs driven in DIFFERENT repositories render the \
+             same head line, so the mouth is printing something other than the run's own tree. \
+             That is exactly the failure the column exists to end.\n{mine}\n{another}",
+        );
+
+        // ══ ③ AND A RUN NOBODY RECORDED A TREE FOR SAYS SO ═════════════════════════════════════
+        //
+        // ⚠⚠ Rule 6, and the sharpest case of it in this file: silence here reads as *this run is
+        // mine* to whoever is standing in a repository at the time, which is the reassuring
+        // reading of an unmeasured value. 209 of 211 rows are this arm today.
+        let unrecorded = in_tree(None);
+        assert!(
+            unrecorded.contains("tree not recorded"),
+            "⛔⛔⛔⛔ REGISTER ITEM 890: a row out of a log written before the column existed is \
+             SILENT about its repository, so it reads exactly like a row whose tree happens to be \
+             the reader's. *Nobody recorded which tree* is a third answer and the mouth must say \
+             it:\n{unrecorded}",
+        );
+        assert!(
+            !unrecorded.contains(MINE) && !unrecorded.contains(ANOTHER),
+            "⚠⚠ AND IT NAMES NO TREE AT ALL: an absence filled in with a guess is worse than a \
+             blank, because a reader acts on it:\n{unrecorded}",
+        );
+
+        // ══ ④ AND IT DID NOT PUSH ITEM 887's STAMP OFF THE END OF THE LINE ═════════════════════
+        //
+        // ⛔⛔⛔⛔⛔ **THE FIRST BUILD OF THIS CLAUSE DID EXACTLY THAT**, with a comment asserting it
+        // had not. The repayment skill's `watch.sh` reads the stamp as
+        // `sed -n 's/.*\[\([^][]*\)\]$/\1/p'` — **anchored at the end of the line** — so a head line
+        // ending in a tree path yields the empty string, the watcher records *which run not
+        // recorded*, and item 887's claim (a watcher can tell a reissued number from its own run)
+        // is off with nothing to show for it. Measured by running that expression over both orders.
+        //
+        // ⚠⚠ Asserted as *the head ends with the bracketed stamp*, which is that reader's pattern
+        // reduced to what it actually requires — and it is asserted with BOTH clauses present,
+        // because either alone leaves the other free to move.
+        const STAMP: &str = "1f4a-17e2c9d31bb40000-0.c7";
+        let mut both = run_entry(&a_run_that_closed(None));
+        both[sprag_host::plugins::RUN_TREE_KEY] = serde_json::json!(MINE);
+        both[sprag_host::plugins::RUN_WHICH_RUN_KEY] = serde_json::json!(STAMP);
+        let head = render_run(&both)
+            .lines()
+            .next()
+            .expect("a row has a heading")
+            .to_owned();
+        assert!(
+            head.contains(MINE),
+            "⚠ THE PREMISE: this arm needs BOTH clauses on the head, or it is measuring the stamp \
+             alone: {head:?}",
+        );
+        assert!(
+            head.ends_with(&format!("[{STAMP}]")),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 890 BROKE REGISTER ITEM 887's READER: the head line no longer \
+             ENDS with the bracketed stamp, and the repayment skill's watcher extracts it with a \
+             pattern anchored there. It will read *which run not recorded* for every run, so a \
+             reissued number stops being detectable — silently, because the stamp is still printed \
+             and still looks right to a person. Put this item's clause BEFORE the stamp: {head:?}",
         );
     }
 

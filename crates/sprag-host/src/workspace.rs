@@ -4372,6 +4372,8 @@ mod tests {
             overridden: None,
             opened_by: None,
             opened_by_session: None,
+            // ⚠ Register item 890's column, absent for the reason its sibling fixture states.
+            tree: None,
             state: Arc::clone(&state),
             // ⚠ Nobody stood it down and nobody cancelled it: this arm is about a run that is
             // RUNNING, and the handle is a stand-in only because the gate above needs no driver.
@@ -4646,6 +4648,10 @@ mod tests {
             // ⚠ THE WHOLE VARIABLE. It is the one name that survives a restart, and matching it is
             // what makes pane 0's answer about ownership rather than about a seat number.
             opened_by_session: Some(ASKED.to_owned()),
+            // ⚠ This gate is about ownership and not about a tree — register item 890's column
+            // reads as *nobody recorded which tree*, which is what a fixture driving no pane of a
+            // repository honestly is.
+            tree: None,
             state: Arc::new(Mutex::new(crate::runs::RunState::Running)),
             run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
             progress: sprag_plugin::ProgressCell::default(),

@@ -4436,6 +4436,9 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                         .cloned()
                         .expect("an object"),
                 ),
+                // ⚠ AND NO TREE — register item 890. A predecessor's log carries none, which is
+                // what this fixture is: the column reads as *nobody recorded which tree*.
+                tree: None,
                 iterations: 12,
                 cost: None,
                 unit: None,
