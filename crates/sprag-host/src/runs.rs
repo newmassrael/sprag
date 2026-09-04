@@ -2418,6 +2418,30 @@ pub struct PersistedRun {
     /// claim a session had read nothing on behalf of a run nobody measured.
     #[serde(default)]
     pub context_high_water: Option<i64>,
+    /// 🎯🎯🎯🎯🎯 **AND WHICH OF ITS NUMBERS WERE NOT ITS DOCUMENT'S** — register item 859, and the
+    /// word that says an EXPERIMENT is an experiment.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a log without it makes item 856 unmeasurable
+    ///
+    /// Item 856's measurement is a fold RATE over a population of runs, and its two experiment arms
+    /// were launched by moving `context_ceiling` off the document's number. Its own entry states
+    /// the consequence: *an experiment nobody is told about does not go unnoticed, it contaminates
+    /// the denominator it was run in.* [`crate::plugins::Overridden`] was built so a moved run
+    /// would say so — and measured 2026-09-05, **220 of 220 stored rows carry no such word**,
+    /// because the answer lived only on the live record and this struct is what reaches the disk.
+    /// Arms 214, 215 and 216 had to be told apart from the ordinary runs by a human note.
+    ///
+    /// ⚠⚠ The WORDS and not the type, for [`PersistedRun`]'s own reason one field over: a durable
+    /// format is a host concern, and `Overridden` holds `&'static str`s that only a build which
+    /// compiled them can name. [`crate::plugins::Overridden::restored`] resolves them back against
+    /// the three authorities that publish them, and refuses a word this build cannot spell.
+    ///
+    /// ⚠ [`None`] is *nobody answered* — a log from before this field, a run whose plugin has no
+    /// document that authors any number, or one restored from a log this build cannot read.
+    /// `Some([])` is the affirmative and the healthy launch: **its document set every number it
+    /// authored.** The two must not be folded together, which is `Overridden::joined`'s whole rule.
+    #[serde(default)]
+    pub overridden: Option<Vec<String>>,
     /// ⚠⚠⚠⚠⚠ **THE WHOLE PLACE THE MACHINE WAS IN** — `sprag_plugin::LoopPlace::in_words`, the
     /// active configuration led by the current state, in the document's own names. [`None`] for a
     /// run whose plugin walks no statechart, one that never took a step, or a log written before
@@ -4126,6 +4150,15 @@ impl RunRegistry {
                         context_high_water: reported
                             .context_high_water
                             .or(run.progress.context_high_water),
+                        // 🎯🎯🎯🎯🎯 AND WHICH OF ITS NUMBERS THE CALLER TOOK — register item 859,
+                        // and the third fact in a row to have been readable only while the run was
+                        // alive. ⚠ NOT `reported…or(cell)` like the pair above: this is not a
+                        // number the machine resolves as it goes but the answer the DOOR gave when
+                        // the run was submitted, and a driver has no business reporting it. Its
+                        // level never moves, which is `RunRecord::overridden`'s own doc.
+                        overridden: run.overridden.as_ref().map(|took| {
+                            took.taken().iter().map(|word| (*word).to_owned()).collect()
+                        }),
                         // ⚠⚠⚠ ALWAYS `Some`, INCLUDING `false` — item 594. This image DID look, so
                         // `Some(false)` is a claim it is entitled to make; the `None` this field
                         // documents belongs to a log written before the field existed, and only a
@@ -4631,12 +4664,21 @@ impl RunRegistry {
                 // back can now say whether there was nothing to put back or whether a promotion
                 // took the documents out from under all of it.
                 withheld: saved.withheld(),
-                // ⚠⚠ AND A PREDECESSOR'S LOG DOES NOT RECORD WHICH AUTHORS A RUN WAS SUBMITTED
-                // UNDER — register item 853, and [`None`] here is that absence rather than the
-                // claim *its document set every bound*. The log holds the REQUEST, so the answer is
-                // re-derivable, and a restored run's row omitting it is the residue this item's
-                // entry states and item 859 carries.
-                overridden: None,
+                // 🎯🎯🎯🎯🎯 AND WHICH AUTHORS ITS NUMBERS CAME FROM, WHICH THE LOG NOW HOLDS —
+                // register item 859, closing the residue item 853's entry stated and this line
+                // used to BE. It read `None`, on the ground that the answer was re-derivable from
+                // the request; measured 2026-09-05, no ended run keeps a request either, so the
+                // fact was not re-derivable, it was gone — 220 of 220 rows.
+                //
+                // ⛔⛔⛔ ONE AUTHOR AND NOT TWO, which item 859's own done-when spells out: the log
+                // answers, so `PluginsExternal::put_back` must NOT re-parse the request for it.
+                // Two parties answering one question is the disease item 853 was filed to cure,
+                // and a restore that re-derived would disagree with the log the moment a caller's
+                // spelling and this build's resolver did.
+                overridden: saved
+                    .overridden
+                    .as_deref()
+                    .and_then(crate::plugins::Overridden::restored),
                 // ⚠⚠ AND NOTHING HAS BEEN ENDED YET — register item 740. This reads the log; the
                 // boot that acts on it (`put_back_inherited_runs`) is a later call with the socket
                 // in hand, and this field is its answer rather than the file's. A record that
@@ -5283,6 +5325,118 @@ mod tests {
              alone — publishes *nobody said* about every run this daemon starts, because the cell \
              beside such a run never moves. That is not a defensive nicety about an unusual \
              driver: it is the DEFAULT driver, and item 856's whole axis is this pair.",
+        );
+
+        released.store(true, Ordering::Release);
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AND WHICH OF ITS NUMBERS WERE NOT ITS DOCUMENT'S CROSSES THE RESTART** —
+    /// register item 859(1), the third fact in this struct that was readable only while a run
+    /// lived, and the one that says an EXPERIMENT is an experiment.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Four answers, and folding any two of them loses item 856's denominator
+    ///
+    /// A word list that came back is *the caller took these*; `Some([])` is *its document authored
+    /// numbers and the caller took none*, which is the healthy launch and the affirmative
+    /// [`crate::plugins::Overridden`] exists to make readable; [`None`] is *nobody answered*. The
+    /// fourth is a log naming a word THIS BUILD CANNOT SPELL, which must refuse the whole answer
+    /// rather than come back one word shorter — a shorter list is not a weaker claim here, it
+    /// names a different set of flags for somebody to go and delete.
+    ///
+    /// ⚠⚠ **THE RESTORE IS THE CLAIM, NOT THE ROW**, its two neighbours' rule: item 856's fold
+    /// rate is computed over runs that have ENDED, and every one of those has crossed a restart.
+    /// Measured 2026-09-05, **220 of 220 stored rows carried no such word**, so the two runs that
+    /// moved a ceiling were told apart from the seventeen ordinary ones by a human note — which is
+    /// exactly the contamination item 856's entry says an unannounced experiment causes.
+    #[test]
+    fn a_restored_run_says_which_of_its_numbers_were_not_its_documents() {
+        let saved: RunLog = serde_json::from_str(
+            r#"{"version":1,"runs":[
+                {"id":7,"label":"ai_loop pane=3","iterations":2,"cost":null,"unit":null,
+                 "finished":false,"outcome":null,"ceiling":null,"output":null,
+                 "overridden":["context_ceiling","max_seconds"]},
+                {"id":8,"label":"ai_loop pane=4","iterations":2,"cost":null,"unit":null,
+                 "finished":false,"outcome":null,"ceiling":null,"output":null,
+                 "overridden":[]},
+                {"id":9,"label":"ai_loop pane=5","iterations":2,"cost":null,"unit":null,
+                 "finished":false,"outcome":null,"ceiling":null,"output":null},
+                {"id":10,"label":"ai_loop pane=6","iterations":2,"cost":null,"unit":null,
+                 "finished":false,"outcome":null,"ceiling":null,"output":null,
+                 "overridden":["max_reflections"]}]}"#,
+        )
+        .expect("a log naming taken numbers parses, and so does one that names none");
+        let mut successor = RunRegistry::default();
+        successor.restore(&saved);
+        // ⚠ Read back through `persistable`, its neighbours' rule: a value that came out of the
+        // log and did not go back into it is lost at the NEXT restart, and this fact's defect was
+        // reaching a live row and dying at every hop after it.
+        let took: Vec<Option<Vec<String>>> = successor
+            .persistable()
+            .runs
+            .iter()
+            .map(|run| run.overridden.clone())
+            .collect();
+        assert_eq!(
+            took,
+            vec![
+                Some(vec!["context_ceiling".to_owned(), "max_seconds".to_owned()]),
+                Some(Vec::new()),
+                None,
+                None,
+            ],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 859(1): which of a run's numbers came from its caller must \
+             cross the restart, and the four answers must stay four. `Some([])` collapsing to \
+             `None` would tell a reader *nobody answered* about the healthy launch this key was \
+             built to make readable; a foreign word surviving would have this daemon republish \
+             vocabulary it never compiled, and one dropped WORD would name a smaller set of flags \
+             than the run was started with. Item 856's denominator is runs, and an experiment that \
+             cannot say it is one contaminates the population it ran in: {took:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND A LIVE RUN'S ANSWER REACHES THE LOG AT ALL** — register item 859(1), and
+    /// **a separate gate rather than a clause on the one above, for the reason item 894 measured.**
+    ///
+    /// The gate above restores from a log and reads it back, so it watches the restart and nothing
+    /// before it. The hop it cannot see is a value ENTERING the log, and that is the hop at which
+    /// `context_ceiling` was broken from the day it was published — its own item's round-trip gate
+    /// stayed green while 218 of 218 rows carried nothing. A fact gated only where it comes OUT of
+    /// a log is a fact no run ever puts IN.
+    ///
+    /// ⚠⚠ The answer is taken from the SUBMIT and not from a driver's report, which is
+    /// `RunRecord::overridden`'s own doc: it is decided once, at the door, and a level that never
+    /// moves must not be reported by a party that could disagree with the door.
+    #[test]
+    fn a_run_whose_caller_took_a_number_says_so_in_the_log() {
+        let released = Arc::new(AtomicBool::new(false));
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let mut submitted = a_worker_that_will_not_come_back(id, &released);
+        submitted.overridden = crate::plugins::Overridden::restored(&[
+            "context_ceiling".to_owned(),
+            "max_bytes".to_owned(),
+        ]);
+        assert!(
+            submitted.overridden.is_some(),
+            "⚠⚠ the fixture must actually carry an answer, or this gate drives the absence and \
+             passes with the recording site deleted — the dead control item 856 met three times",
+        );
+        registry.submit(submitted);
+
+        let kept = registry
+            .persistable()
+            .runs
+            .iter()
+            .find(|run| run.id == id.0)
+            .and_then(|run| run.overridden.clone());
+        assert_eq!(
+            kept,
+            Some(vec!["context_ceiling".to_owned(), "max_bytes".to_owned()]),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 859(1): a run submitted with numbers its caller took must \
+             say so in the DURABLE log and not only on the live row. Measured 2026-09-05, 220 of \
+             220 stored rows carried no such word while `sprag runs` published it for live ones — \
+             the same shape item 894 found one field over, where a value reached every reader \
+             except the one computing item 856's rate over ended runs.",
         );
 
         released.store(true, Ordering::Release);
@@ -7061,6 +7215,8 @@ mod tests {
                 document: None,
                 context_ceiling: None,
                 context_high_water: None,
+                // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
+                overridden: None,
                 stood_down: None,
                 stood_down_by: None,
                 cancelled_by: None,
@@ -7312,6 +7468,8 @@ mod tests {
             document: document.map(str::to_owned),
             context_ceiling: None,
             context_high_water: None,
+            // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
+            overridden: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -7409,6 +7567,8 @@ mod tests {
             // ⚠ The PLACE is what this gate reads, and `resumable_place` answers without one —
             // the pair rule lives at `resumable_request`, which has its own gate.
             request: None,
+            // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
+            overridden: None,
             iterations: 12,
             cost: None,
             unit: None,
@@ -7515,6 +7675,8 @@ mod tests {
             id: 9,
             label: "a loop that was interrupted mid-turn".to_string(),
             request,
+            // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
+            overridden: None,
             iterations: 12,
             cost: None,
             unit: None,
@@ -7980,6 +8142,8 @@ mod tests {
                 document: None,
                 context_ceiling: None,
                 context_high_water: None,
+                // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
+                overridden: None,
                 // ⚠ A log with no such field: `None`, which restores as *no order was recorded*.
                 stood_down: None,
                 stood_down_by: None,

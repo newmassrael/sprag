@@ -7172,6 +7172,19 @@ fn render_run(run: &Value) -> String {
     // needs to be able to tell them apart.
     let fullness = sprag_host::plugins::context_sentence(run)
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // 🎯🎯🎯🎯🎯 AND WHICH OF ITS NUMBERS WERE NOT ITS DOCUMENT'S — register item 859(2), in the
+    // same place and under the same constraint as the clauses above.
+    //
+    // ⛔⛔⛔ WHY IT IS HERE AND NOT LEFT TO THE JSON: this key has been on the row since item 853
+    // and this renderer never printed it, so a person could learn it existed only by reading the
+    // wire or the source. Item 856's arms were told apart from its baseline by a human note for
+    // exactly that reason — the answer was published where only a program would find it.
+    //
+    // ⚠ It rides beside `fullness` deliberately: `context_ceiling` is one of the numbers a caller
+    // can take, so a reader who has just been told a run's ceiling needs the next line to say
+    // whether that ceiling was the document's at all.
+    let authors = sprag_host::plugins::overridden_sentence(run)
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     // ⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601, in
     // the same place and under the same constraint as the two clauses above.
     let verified = run[sprag_host::plugins::RUN_CHECKS_KEY]
@@ -7350,7 +7363,7 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{fullness}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{fullness}{authors}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -7431,7 +7444,7 @@ fn render_run(run: &Value) -> String {
                 )
             });
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{fullness}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{fullness}{authors}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -7484,7 +7497,7 @@ fn render_run(run: &Value) -> String {
         // had happened was a `kill-server`. **A fact that reaches the wire and dies at the mouth
         // somebody actually reads** is the sentence the `Reported` arm above already wrote down.
         _ => format!(
-            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{split}{landed}{stuck}{fullness}{verified}{canceller}\n",
+            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{split}{landed}{stuck}{fullness}{authors}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("?"),
             render_why_it_ended(state),
         ),
@@ -11729,6 +11742,63 @@ mod tests {
              these columns existed must stay SILENT. A `0 %` printed for silence reads as a run \
              that never used its window, which is the reassuring reading of an unmeasured \
              value:\n{silent}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE ROW A PERSON READS SAYS WHICH OF THE RUN'S NUMBERS WERE NOT ITS
+    /// DOCUMENT'S** — register item 859(2), at the mouth that is not an agent's.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The key has been on the row since item 853 and this mouth never printed it
+    ///
+    /// Measured 2026-09-05: `render_run` interpolated nine clauses about a run and `overridden`
+    /// was in none of them, so the only way a person learned the answer existed was to read the
+    /// JSON or this source. That is item 859(2) word for word — *one path by which a person knows
+    /// the key is there before they go looking at a row* — and it is what made item 856's two
+    /// experiment arms tellable from its seventeen ordinary runs only by a human note.
+    ///
+    /// # ⛔⛔⛔ THREE rows, because the third is the one a list cannot carry
+    ///
+    /// A run whose caller took numbers, one whose caller took none, and one whose document
+    /// authored none. The middle is the AFFIRMATIVE — *this run obeyed its own document* — and a
+    /// renderer that printed nothing for it would make it indistinguishable from the third, which
+    /// is `Overridden::joined`'s whole rule arriving at a reader.
+    #[test]
+    fn the_row_a_person_reads_says_which_of_its_numbers_were_not_its_documents() {
+        let with = |took: Option<Vec<&str>>| -> String {
+            let mut row = run_entry(&a_run_that_closed(None));
+            if let Some(took) = took {
+                row[sprag_host::plugins::RUN_OVERRIDDEN_KEY] = serde_json::json!(took);
+            }
+            render_run(&row)
+        };
+
+        // ══ ① THE ROW NAMES WHAT THE CALLER TOOK ═══════════════════════════════════════════════
+        let taken = with(Some(vec!["context_ceiling", "max_seconds"]));
+        assert!(
+            taken.contains("context_ceiling") && taken.contains("max_seconds"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 859(2): the daemon has published which numbers a caller took \
+             since item 853 and `sprag runs` prints none of them, so a person auditing a run \
+             cannot see that its ceiling was never its document's. Item 856's arms were separated \
+             from its baseline by hand for exactly this: {taken:?}",
+        );
+
+        // ══ ② AND THE HEALTHY LAUNCH IS SAID OUT LOUD ══════════════════════════════════════════
+        let clean = with(Some(Vec::new()));
+        let unauthored = with(None);
+        assert!(
+            clean.contains("its own document's"),
+            "⛔⛔⛔⛔ REGISTER ITEM 859(2): an EMPTY list is the affirmative — *this run ran under \
+             every number its own document set* — and it is the reading item 853 was filed \
+             because nobody could get. A renderer silent about it publishes the healthy launch as \
+             nothing: {clean:?}",
+        );
+        assert_ne!(
+            clean, unauthored,
+            "⛔⛔⛔⛔⛔ RULE 6: *its document authored numbers and the caller took none* and *its \
+             document authored none* must not render alike. The first is a claim about this run's \
+             obedience and the second is a claim about its plugin, and a reader who cannot tell \
+             them apart will read the second as the first — which is how a run spending under \
+             somebody else's numbers reads as compliant:\n{clean}\n{unauthored}",
         );
     }
 

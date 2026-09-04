@@ -769,6 +769,9 @@ mod tests {
             document: None,
             context_ceiling: None,
             context_high_water: None,
+            // ⚠ NOR WHICH OF ITS NUMBERS ITS CALLER TOOK — item 859. This fixture writes a log
+            // rather than answering a door, and *nobody answered* is the only honest value.
+            overridden: None,
             stood_down: None,
             stood_down_by: None,
             deliveries: None,

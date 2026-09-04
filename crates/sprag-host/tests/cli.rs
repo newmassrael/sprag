@@ -4463,6 +4463,9 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 document: Some("0000000000000000".to_owned()),
                 context_ceiling: None,
                 context_high_water: None,
+                // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. This fixture writes a log; the
+                // gates that drive the answer are in `runs`, on the submit and on the restore.
+                overridden: None,
                 stood_down: None,
                 stood_down_by: None,
                 cancelled_by: None,

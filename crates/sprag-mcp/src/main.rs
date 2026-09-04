@@ -2872,12 +2872,22 @@ fn render_run(run: &Value) -> String {
     // reached only a person's terminal would be aimed away from the party that acts.
     let fullness = sprag_host::plugins::context_sentence(run)
         .map_or_else(String::new, |said| format!(" {said}."));
+    // 🎯🎯🎯🎯🎯 AND WHICH OF ITS NUMBERS WERE NOT ITS DOCUMENT'S — register item 859(2), on the
+    // clause above's argument and for the party that can act on it.
+    //
+    // ⛔⛔⛔ THE SECOND MOUTH IS ITS OWN HOP, which register item 894 measured the hard way: a
+    // mutation deleting the clause from the person's renderer left every gate green except that
+    // renderer's own, and the same deletion here is caught by nothing else either. The remedy
+    // this clause changes is the one the clause above offers — *widen the ceiling this run is
+    // judged by* is not available to an agent whose run's ceiling was never the document's.
+    let authors = sprag_host::plugins::overridden_sentence(run)
+        .map_or_else(String::new, |said| format!(" {said}."));
     match state["status"].as_str() {
         // The counters, for the reason the person's renderer prints them: an agent that polls a
         // long run and sees the same numbers twice has learned it is stuck, and `still running`
         // could not say that. It also lets an agent see spend BEFORE the budget is gone.
         Some("running") => format!(
-            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}{order}{prompts}{split}{fullness}{verified}{canceller}\n{}",
+            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}{order}{prompts}{split}{fullness}{authors}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -2890,7 +2900,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  What it captured:\n{text}\n"));
             format!(
-                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{order}{prompts}{split}{fullness}{verified}{canceller}{}{}\n{}{reply}",
+                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{order}{prompts}{split}{fullness}{authors}{verified}{canceller}{}{}\n{}{reply}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING, because the three have three different remedies and an agent
                 // told only `exhausted` has to guess which one to change. It is also the fact an
@@ -2925,7 +2935,7 @@ fn render_run(run: &Value) -> String {
         // under a standing order left a reader a bare word and no way to learn that what was asked
         // for had never happened.
         _ => format!(
-            "Run {id} ({label}): {}.{withheld}{not_resumed}{order}{prompts}{split}{fullness}{verified}{canceller}\n",
+            "Run {id} ({label}): {}.{withheld}{not_resumed}{order}{prompts}{split}{fullness}{authors}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("in an unknown state"),
         ),
     }
@@ -9272,6 +9282,16 @@ mod tests {
         // exactly this pair, and a supervisor reads `list_runs` and decides without asking.
         run[sprag_host::plugins::RUN_CONTEXT_HIGH_WATER_KEY] = serde_json::json!(612_000);
         run[sprag_host::plugins::RUN_CONTEXT_CEILING_KEY] = serde_json::json!(800_000);
+        // 🎯🎯🎯🎯🎯 AND WHICH OF THOSE NUMBERS WERE NOT THE DOCUMENT'S — register item 859(2),
+        // and **the FOURTH time this list has been found short by the hazard it records above.**
+        // The key has been on the row since item 853 and neither mouth ever printed it.
+        //
+        // ⚠⚠⚠ IT DECIDES ONE OF THE TWO REMEDIES THE CLAUSE ABOVE OFFERS. *Widen the ceiling this
+        // run is judged by* is not an available act for a run whose ceiling was never its
+        // document's — the number is already the caller's, and a supervisor that widened it again
+        // would be arguing with itself rather than with a document.
+        run[sprag_host::plugins::RUN_OVERRIDDEN_KEY] =
+            serde_json::json!(["context_ceiling", "max_seconds"]);
         let said = render_run(&run);
 
         let fullness = sprag_host::plugins::context_sentence(&run)
@@ -9304,12 +9324,23 @@ mod tests {
              and the two remedies are opposite — go to the agent's own record, or go to the pane: \
              {split:?}",
         );
+        // 🎯 AND THE AUTHORS OF ITS NUMBERS — register item 859(2), composed off the row's own
+        // JSON so *what the row carries* and *what the mouth says* cannot be two shapes that agree
+        // in a gate and differ in production.
+        let authors = sprag_host::plugins::overridden_sentence(&run)
+            .expect("a run whose caller took numbers has authors to name");
+        assert!(
+            authors.contains("context_ceiling"),
+            "⚠⚠⚠ THE PREMISE for item 859(2): the composed sentence must NAME the numbers, \
+             because the act it leads to is deleting a named flag from a launcher: {authors:?}",
+        );
         for sentence in clauses
             .iter()
             .map(|(_, sentence)| *sentence)
             .chain(std::iter::once(delivered.as_str()))
             .chain(std::iter::once(split.as_str()))
             .chain(std::iter::once(fullness.as_str()))
+            .chain(std::iter::once(authors.as_str()))
         {
             assert!(
                 said.contains(sentence),

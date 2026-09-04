@@ -3988,8 +3988,8 @@ impl AuthoredGuardrails {
     fn overridden_by(self, g: &Map<String, Value>) -> Option<Overridden> {
         let pairs: [(bool, &'static str); 3] = [
             (self.max_cost.is_some(), COST_BOUND_KEYS[0]),
-            (self.max_iterations.is_some(), "max_iterations"),
-            (self.max_duration.is_some(), "max_seconds"),
+            (self.max_iterations.is_some(), BOUND_WORDS[0]),
+            (self.max_duration.is_some(), BOUND_WORDS[1]),
         ];
         // ⚠ The cost bound is TWO spellings of one field (`max_bytes` xor `max_tokens`), so the
         // caller's is whichever it named — `parse_max_cost` refuses both at once, which is what
@@ -4020,6 +4020,14 @@ impl AuthoredGuardrails {
 /// The two spellings of the ONE cost bound, in the order a report names them — see
 /// [`parse_max_cost`], which refuses a caller that gives both.
 const COST_BOUND_KEYS: [&str; 2] = ["max_bytes", "max_tokens"];
+
+/// The bounds that are ONE spelling each, in [`AuthoredGuardrails::overridden_by`]'s order.
+///
+/// ⚠⚠ Named rather than written inline, and the reason is register item 859: a durable log has to
+/// resolve these words back and a second list to resolve them against is the *one value, two homes*
+/// shape [`Overridden`]'s own doc names. [`Overridden::every_word`] reads THIS array, so a fourth
+/// bound is publishable and restorable in the same edit or in neither.
+const BOUND_WORDS: [&str; 2] = ["max_iterations", "max_seconds"];
 
 /// 🎯🎯🎯🎯🎯 **WHICH BOUNDS A CALLER TOOK FROM THE DOCUMENT THAT AUTHORED THEM** — register item
 /// 853. Empty when it took none, which is the healthy launch and the thing worth being able to read
@@ -4060,6 +4068,49 @@ impl Overridden {
         &self.0
     }
 
+    /// **EVERY WORD THIS BUILD CAN PUBLISH HERE**, derived from the three authorities that publish
+    /// them rather than restated — register item 859.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why it is derived and not a list
+    ///
+    /// A durable log holds these as text and a boot has to turn text back into the `&'static str`s
+    /// this type is made of, so a resolver is unavoidable. A resolver with its OWN list is the
+    /// *one question, two answers* shape items 855, 864 and this type's own `joined` each paid
+    /// for: the ninth word would be publishable and unreadable, and the run that took it would
+    /// come back from the log saying nobody took anything. Reading `COST_BOUND_KEYS`,
+    /// `BOUND_WORDS` and `AuthoredNumber::ALL` makes that arrangement impossible to build.
+    pub fn every_word() -> impl Iterator<Item = &'static str> {
+        COST_BOUND_KEYS.into_iter().chain(BOUND_WORDS).chain(
+            AuthoredNumber::ALL
+                .into_iter()
+                .map(AuthoredNumber::wire_key),
+        )
+    }
+
+    /// **PUT ONE BACK AS A DURABLE LOG WROTE IT** — register item 859, and the hop at which this
+    /// answer used to die.
+    ///
+    /// # ⛔⛔⛔ Why an unknown word refuses the WHOLE answer
+    ///
+    /// Keeping the words that resolve would publish a SHORTER list than the run was started with,
+    /// and a shorter list here is not a smaller claim — it names a different set of flags for
+    /// somebody to go and delete. Rule 6 at the population: a word this build cannot spell is not
+    /// classified, and unclassified is a refusal rather than a pass.
+    ///
+    /// ⚠⚠ **THE RESIDUE, STATED**: the refusal comes back as [`None`], which a row renders exactly
+    /// like *nobody answered*. That is a log THIS build cannot read rather than a run nobody asked
+    /// about, and the two are one value here. It is the same choice `PersistedRun::resumable_place`
+    /// makes for a foreign document, made for the same reason — this daemon must not republish
+    /// vocabulary it did not compile — and it is why the gate below drives a foreign word.
+    #[must_use]
+    pub fn restored(words: &[String]) -> Option<Self> {
+        words
+            .iter()
+            .map(|word| Self::every_word().find(|known| *known == word))
+            .collect::<Option<Vec<&'static str>>>()
+            .map(Self)
+    }
+
     /// ⛔⛔⛔⛔⛔ **JOIN THE SECOND CLASS INTO THE SAME ANSWER** — register item 856(1b).
     ///
     /// # ⚠⚠⚠ One list, because *which of this run's numbers are not its document's* is ONE question
@@ -4087,6 +4138,41 @@ impl Overridden {
             }
         }
     }
+}
+
+/// **WHICH OF A RUN'S NUMBERS WERE NOT ITS DOCUMENT'S, AS A PERSON READS IT**, or [`None`] for a
+/// run whose document authored none — register item 859(2), and [`RUN_OVERRIDDEN_KEY`]'s mouth.
+///
+/// # ⛔⛔⛔⛔⛔ Why a sentence when the row already carries the list
+///
+/// The list is for a watcher's filter, which is what [`RUN_OVERRIDDEN_KEY`]'s own doc argues. The
+/// person who needs this reads `sprag runs`, and measured 2026-09-05 that renderer printed nine
+/// clauses about a run and **never this one** — so the only way to learn the key exists was to
+/// read the JSON or this source. Item 859(2) is exactly that clause: *one path by which a person
+/// knows the key is there before they go looking at a row.*
+///
+/// ⚠⚠ **AND THE AFFIRMATIVE IS SAID OUT LOUD, WHICH IS THE HALF A LIST CANNOT CARRY.** An empty
+/// list rendered as nothing is indistinguishable from a run whose document authored no number, and
+/// those are opposite facts: the first is *this run obeyed its own document* — the healthy launch
+/// item 853 was filed because nobody could see — and the second is *there was nothing to obey*.
+/// [`delivery_sentence`]'s rule one key over: the fact a reader acts on is a COMPARISON.
+#[must_use]
+pub fn overridden_sentence(run: &Value) -> Option<String> {
+    let took: Vec<&str> = run
+        .get(RUN_OVERRIDDEN_KEY)?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    Some(if took.is_empty() {
+        "every number it ran under is its own document's".to_owned()
+    } else {
+        format!(
+            "its caller set {} of its numbers, not its document: {}",
+            took.len(),
+            took.join(", ")
+        )
+    })
 }
 
 /// What [`parse_guardrails`] answers: a run's RESOLVED bounds, and which of them stopped being its
@@ -8640,6 +8726,8 @@ mod tests {
             document: Some(document.to_owned()),
             context_ceiling: None,
             context_high_water: None,
+            // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
+            overridden: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -9179,6 +9267,8 @@ mod tests {
                 document: None,
                 context_ceiling: None,
                 context_high_water: None,
+                // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
+                overridden: None,
                 // ⚠ `None` and not `Some(false)` — this fixture IS a log written by an older
                 // daemon, so the honest value is *nobody recorded whether an order was given*.
                 stood_down: None,
@@ -9372,6 +9462,8 @@ mod tests {
             document: None,
             context_ceiling: None,
             context_high_water: None,
+            // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
+            overridden: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -9792,6 +9884,8 @@ mod tests {
                 document: None,
                 context_ceiling: None,
                 context_high_water: None,
+                // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
+                overridden: None,
                 stood_down: None,
                 stood_down_by: None,
                 cancelled_by: None,
@@ -19271,6 +19365,9 @@ mod tests {
                     document: document.map(str::to_owned),
                     context_ceiling: None,
                     context_high_water: None,
+                    // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859: a log fixture answers no
+                    // door. The gates that DRIVE the answer are `runs`'s own, on the submit.
+                    overridden: None,
                     stood_down: None,
                     stood_down_by: None,
                     cancelled_by: None,
