@@ -8990,14 +8990,64 @@ impl OuterLoop {
         })
     }
 
-    /// **WHY THE MACHINE IS IN `reflecting`** — the word its incoming transition assigned, read
-    /// back through the closed vocabulary that renders it.
+    /// **WHY THE QUESTION NOW IN FLIGHT IS A REFLECTION** — the word `reflect_reason` holds, read
+    /// back through the closed vocabulary that renders it, and [`None`] **for a prompt that is not
+    /// asking the agent for a direction at all**.
     ///
-    /// [`None`] for a datamodel that has stopped answering, and — unreachably, by the document
-    /// gate — for a word this driver has no arm for. ⚠ Not a failure either way: the cost is a
-    /// journal line that says less, where `Noticed::Undrivable` would end a run that is otherwise
-    /// going perfectly well over a fact nobody has yet acted on.
+    /// # ⛔⛔⛔⛔⛔ The word outlives the reflection, and this reader used to be outside it
+    ///
+    /// `ai_loop.scxml` never clears `reflect_reason`, and says so in its own comment — *"an edge
+    /// that assigns none reports the PREVIOUS reflection's cause"*. That is a rule about EDGES and
+    /// it is load-bearing there: the guard in `reviewing` reads `reflect_reason == 'milestone'`
+    /// one state after the reflection ended, so a document that blanked the slot on exit would
+    /// take that guard out from under itself. **The word is meant to survive its reflection.**
+    ///
+    /// ⇒ So something else has to say *this prompt is that reflection's*, and until 2026-09-04
+    /// nothing did. This sentence claimed *why the machine is reflecting* while answering *what the
+    /// last reflection was for*, and [`FoldsByReason`] — the split register item 856 reads for its
+    /// own refutation — files a delivery by whatever this answers. Measured on a real pane by
+    /// `a_prompt_asked_while_the_loop_is_not_reflecting_belongs_to_no_row`: a run reflected once
+    /// for `budget`, was replaced, and **the priming prompt of the brand-new session landed in the
+    /// `budget` row**, which then read `0 of 2`.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND THE LEAK POINTED THE ONE WAY THAT MATTERS.** Item 856's axis is *a FULL session
+    /// folds*, its refutation is *one such reflection whose prompt LANDS*, and what the stale word
+    /// swept in was a replaced session's first prompt — the emptiest moment a run has, and the
+    /// place this register already measures 7/7 landings. A `capacity` row fed that way fills with
+    /// landings from fresh sessions and publishes them as capacity reflections that did not fold:
+    /// **an instrument biased toward its own refutation**, which is the `capacity`-only tally that
+    /// could only ever confirm, with the sign flipped.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the PROMPT is asked and not the STATE, which is where this fix first went
+    ///
+    /// The obvious repair is `state() == Reflecting`, and it was written that way first. Register
+    /// item 470 refused it where the round could see the refusal — *the only Rust that may name a
+    /// state of this document is the readers in `EXEMPT_READERS`* — and the refusal was right for a
+    /// reason beyond the rule: a state test asks WHERE THE MACHINE IS, and what this needs to know
+    /// is WHAT THIS PROMPT IS. Those come apart in both directions. A screen rule's answer and a
+    /// redirect are typed through [`say`](Self::say) too, declared by no `<onentry>` at all, and
+    /// one of them sent while the machine sits in `reflecting` is not a reflection question — the
+    /// state test would have filed it under the reflection's reason. And a document that ever gave
+    /// `asks='direction'` to a second state would have its reflection dropped in silence.
+    ///
+    /// ⇒ [`Asks::Direction`](crate::act::Asks::Direction) is the DOCUMENT's own word for this
+    /// prompt, sent on `reflecting`'s two `prompt.say` acts and on no other, and
+    /// [`asks`](Self::asks) is written by `say` for every sentence this loop types — which is the
+    /// property that makes it answerable here at all. This is the same move `judging` made when
+    /// three `from == AiLoopState::Judging` tests became `does == Does::Judge`: not the state
+    /// respelled, but the fact the state was standing in for.
+    ///
+    /// ⚠ [`None`] also for a datamodel that has stopped answering, and — unreachably, by the
+    /// document gate — for a word this driver has no arm for. Not a failure in any of the cases:
+    /// the cost is a journal line that says less, where `Noticed::Undrivable` would end a run that
+    /// is otherwise going perfectly well over a fact nobody has yet acted on.
     fn reflecting_because(&self) -> Option<ReflectReason> {
+        // ⛔⛔⛔⛔⛔ WHAT THIS PROMPT IS, BEFORE THE WORD — register item 856(1). Read the other way
+        // round it is the same expression with the defect intact, because the word is always
+        // readable; the reason it is asked FIRST is that the word is the thing that lies.
+        if self.asks != Some(crate::act::Asks::Direction) {
+            return None;
+        }
         ReflectReason::named(&self.text_of(REFLECT_REASON)?)
     }
 
@@ -22160,6 +22210,185 @@ mod tests {
              one of this run's deliveries, so rows summing past `made` means the two counters are \
              being written at two sites — the drift both their docs argue against. Split \
              {rows}/{folded}, total {deliveries:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PROMPT ASKED WHILE THE LOOP IS NOT REFLECTING BELONGS TO NO ROW** — register
+    /// item 856(1), and the one thing the split's whole comparison stands on.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The refutation item 856 waits for could be manufactured out of ordinary traffic
+    ///
+    /// Item 856's stated refutation is *one `capacity` reflection whose prompt LANDS*, and
+    /// [`FoldsByReason`] exists so that landing has somewhere to be written down. What decides
+    /// which row a delivery goes to is `OuterLoop::reflecting_because`, whose own doc says **why
+    /// the machine is in `reflecting`** — and it read a datamodel word that `ai_loop.scxml` never
+    /// clears. The document says so in its own comment: *"`reflect_reason` is not cleared on
+    /// entry, so an edge that assigns none reports the PREVIOUS reflection's cause"*. That is a
+    /// statement about EDGES and it is load-bearing for the walk; read by a driver from OUTSIDE
+    /// the state, the same word says a run is still reflecting for a reason it left states ago.
+    ///
+    /// ⇒ So every prompt after a run's first reflection — the priming prompt of a replaced
+    /// session, every ordinary `working` turn — was filed under that reflection's reason. A run
+    /// that reflected once for `capacity` and then worked forty turns publishes
+    /// `capacity 1 of 41 folded`, and a reader of item 856 would take those forty landings for the
+    /// counter-example the item says ends it. **They are not capacity reflections at all**: they
+    /// are the run's ordinary traffic, asked at whatever fullness the session happened to be at,
+    /// which is exactly the pooling [`FoldsByReason`]'s own doc says the split exists to avoid.
+    ///
+    /// # ⚠⚠⚠ Why the invariant is per PASS and not a count at the end
+    ///
+    /// A closing assertion would have to know how many prompts one reflection delivers, and that
+    /// is a second model of this document kept out here. `pump` walks first and acts in the state
+    /// it arrived in — its neighbour gate measures exactly that — so the honest claim needs no
+    /// model at all: **a pass that did not arrive in `reflecting` must leave the table as it found
+    /// it.** Whole-value equality rather than a chosen field, because a row carries four numbers
+    /// and a leak into any of them is the same defect.
+    ///
+    /// ⚠⚠ **THE PASS IS THE STAGING HERE AND NOT THE PREDICATE UNDER TEST**, which is worth
+    /// separating because they were the same thing for one afternoon. The repair first written was
+    /// `state() == Reflecting`, and register item 470 refused it: the driver may not key on a state
+    /// name. What `reflecting_because` asks now is what the PROMPT is —
+    /// [`Asks::Direction`](crate::act::Asks::Direction), the word `reflecting`'s own `prompt.say`
+    /// sends and no other state's does. This gate is unchanged by that and is the reason it could
+    /// be changed at all: it never named the predicate, only the traffic, so it holds a build that
+    /// asks the state and a build that asks the prompt to the same account.
+    ///
+    /// ⚠ The staging counts the passes that delivered OUTSIDE a reflection AFTER one had already
+    /// happened, and asserts there were some: before the first reflection the word is `''` and
+    /// [`ReflectReason::named`] answers [`None`], so a run that never reflected is green whatever
+    /// the build does with the word.
+    #[test]
+    fn a_prompt_asked_while_the_loop_is_not_reflecting_belongs_to_no_row() {
+        /// Above any reading, so `capacity` can never be what moves this run — the sibling gates'
+        /// ROOMY, and here it also keeps the reason that DID fire unambiguous.
+        const ROOMY: i64 = 800_000;
+        /// Enough passes to prime, work, reflect, and then go back to work — the last leg is the
+        /// one this gate is about, so it is well past its neighbours' bound.
+        const PASSES: usize = 80;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item 794.
+        let nowhere = sprag_scratch::scratch_root()
+            .join(format!("sprag-folds-outside-{}", std::process::id()))
+            .join("no-record-was-ever-written.jsonl");
+        let access = crate::testing::supervised_writing(&workspace, &nowhere);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "keep the stand-in answering".to_string(),
+                milestone: "reach it".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                working_rules: None,
+                unverified_rules: None,
+                context_ceiling: Some(ROOMY),
+                reflect_after_refusals: None,
+                reaim_max: None,
+                milestone_check: None,
+                successor_check: None,
+                reask_max: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                // ⚠ ON: one judged turn brings the run to `reflecting`, which is the reflection
+                // this gate then walks PAST — its neighbours stop there.
+                reflect_every: Some(1),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let mut reflected = false;
+        let mut outside_deliveries = 0_u32;
+        while walked.len() < PASSES {
+            let before = loops.folds_by_reason();
+            let made_before = loops.deliveries().made;
+            let Ok(moved) = loops.pump(&access, &run) else {
+                break;
+            };
+            let Pumped::Moved {
+                from, raised, to, ..
+            } = moved
+            else {
+                break;
+            };
+            walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+            let after = loops.folds_by_reason();
+            let delivered_here = loops.deliveries().made > made_before;
+            if to == AiLoopState::Reflecting {
+                reflected = true;
+                continue;
+            }
+            if reflected && delivered_here {
+                outside_deliveries += 1;
+            }
+            // ══ THE INVARIANT ══════════════════════════════════════════════════════════════════
+            assert_eq!(
+                after, before,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): this pass arrived in {to:?} and moved a row of \
+                 the reflection split. Nothing was reflecting, so the delivery it made is the \
+                 run's ORDINARY traffic being filed under whatever reason last entered \
+                 `reflect_reason` — and the row that collects it is the one item 856 reads for its \
+                 counter-example. A `capacity` row fed this way publishes landings that are not \
+                 capacity reflections at all, which is the pooling the split exists to avoid. \
+                 Before {before:?}, after {after:?}, walked {walked:?}",
+            );
+        }
+        let folds = loops.folds_by_reason();
+        let deliveries = loops.deliveries();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        // ══ THE STAGING, IN TWO HALVES ═════════════════════════════════════════════════════════
+        //
+        // ⚠⚠⚠⚠⚠ Without both, the invariant above is vacuous: before a run's first reflection the
+        // datamodel word is `''` and no build files anything anywhere, so a run that never
+        // reflected — or one that reflected and then never delivered again — is green whatever the
+        // reading does.
+        assert!(
+            reflected,
+            "⚠⚠⚠⚠⚠ THE STAGING: this run must reach `reflecting` at least once, or the word this \
+             gate is about was never written and the invariant holds trivially. Walked {walked:?}",
+        );
+        assert!(
+            outside_deliveries > 0,
+            "⚠⚠⚠⚠⚠ THE STAGING: this run must ask at least one prompt OUTSIDE a reflection after \
+             one has happened — the priming prompt of a replaced session, or an ordinary working \
+             turn. With none, nothing has been offered to the wrong row and the invariant is about \
+             a run that did not happen. Walked {walked:?}, deliveries {deliveries:?}",
+        );
+
+        // ══ AND THE ROWS THAT DID FILL ARE STILL A PROPER PART OF THE RUN ══════════════════════
+        //
+        // ⚠⚠ The control for the repair's other direction: a build that answered the reason `None`
+        // everywhere would satisfy every claim above with an EMPTY table, and the split would be
+        // an instrument that records nothing. Something must be in it, and not everything.
+        let rows: u32 = folds
+            .rows()
+            .map(|(_, row)| row.delivered + row.unasked.total())
+            .sum();
+        assert!(
+            rows > 0 && rows < deliveries.made,
+            "⛔⛔⛔⛔ THE SPLIT MUST BE A PROPER PART OF THE RUN. Zero rows is a build that reads \
+             the reason as `None` everywhere — the invariant above satisfied by recording nothing \
+             — and rows equal to this run's every delivery is the leak itself. Rows {rows}, total \
+             {deliveries:?}, split {folds:?}, walked {walked:?}",
         );
     }
 
