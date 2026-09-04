@@ -78,6 +78,7 @@ pub mod pane;
 pub mod pane_address;
 pub mod plugins;
 pub mod project;
+pub mod promotion;
 pub mod prompt;
 // The pane surface this daemon SERVES, read from outside its process — the seam a run driver needs
 // in order to live somewhere else (register item 544).
