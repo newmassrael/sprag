@@ -1868,6 +1868,12 @@ impl PluginsExternal {
             bounds: guardrails,
             overridden,
         } = parse_guardrails(map, plugin.cost_unit(), plugin.own_bounds())?;
+        // ⛔⛔⛔⛔⛔ AND THE REST OF THE CLASS, INTO THE SAME ANSWER — register item 856(1b). The
+        // guardrail triple is not the whole of *which of this run's numbers are not its
+        // document's*: `max_turns`, `reflect_every`, `context_ceiling` and
+        // `reflect_after_refusals` travel the identical three-step fall-through and were reported
+        // by nothing. See `Overridden::joined` for why this is one list and not a second key.
+        let overridden = Overridden::joined(overridden, plugin.own_numbers().taken_by(map));
         let opened_by = self.parse_opener(map, RUN_OPENED_BY_KEY)?;
         // ⚠⚠⚠⚠⚠ READ HERE AND ACTED ON AT THE BOTTOM — register item 873, and the split is the
         // whole of what makes it safe. READING is a validation and belongs with its neighbours: a
@@ -2662,7 +2668,22 @@ fn plugin_from_request(
             let label = format!("ai_loop pane={}", pane.0);
             let loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
                 .map_err(|why| refused(ai_loop_refusal(&why)))?;
-            Ok((PluginKind::AiLoop(Box::new(loops), authored), label))
+            // ⚠⚠ WHICH OF THE NON-GUARDRAIL NUMBERS THIS KIND AUTHORED — register item 856(1b),
+            // read HERE for `authored`'s reason exactly: the kind is open, and `run` resolves the
+            // caller's side one call later with the kind long dropped. ⚠ The order is
+            // `AuthoredNumber::ALL`'s and is derived from it, never re-spelled.
+            let numbers = AuthoredNumbers {
+                of: AuthoredNumber::ALL.map(|number| match number {
+                    AuthoredNumber::MaxTurns => kind.turn_budget().is_some(),
+                    AuthoredNumber::ReflectEvery => kind.reflect_every().is_some(),
+                    AuthoredNumber::ContextCeiling => kind.context_ceiling().is_some(),
+                    AuthoredNumber::ReflectAfterRefusals => kind.reflect_after_refusals().is_some(),
+                }),
+            };
+            Ok((
+                PluginKind::AiLoop(Box::new(loops), authored, numbers),
+                label,
+            ))
         }
     }
 }
@@ -3762,7 +3783,16 @@ enum PluginKind {
     // `parse_guardrails` runs one call later, with the plugin in hand and the kind long dropped.
     // Re-opening the document there would be a SECOND read of one author's clause, which is what
     // `LoopKind`'s own doc says a kind must never become — so what travels is the answer.
-    AiLoop(Box<sprag_plugin::AiLoop>, AuthoredGuardrails),
+    //
+    // ⚠⚠ AND THE FOUR NUMBERS BESIDE THEM — register item 856(1b), carried for the same reason and
+    // by the same road. See `AuthoredNumbers`: they are the rest of the class the bounds are one
+    // half of, and a run whose `context_ceiling` came from a launcher rather than from its document
+    // said nothing about it until they travelled too.
+    AiLoop(
+        Box<sprag_plugin::AiLoop>,
+        AuthoredGuardrails,
+        AuthoredNumbers,
+    ),
 }
 
 /// **THE THREE GUARDRAILS A PLUGIN'S OWN DOCUMENT NAMED**, each [`None`] where it named nothing —
@@ -3784,6 +3814,111 @@ struct AuthoredGuardrails {
     max_iterations: Option<u32>,
     max_cost: Option<Cost>,
     max_duration: Option<Duration>,
+}
+
+/// ⛔⛔⛔⛔⛔ **AN AUTHORED NUMBER A CALLER MAY REPLACE THAT IS NOT A GUARDRAIL** — register item
+/// 856(1b), and the half of [`Overridden`]'s own question that its first spelling could not reach.
+///
+/// # ⛔⛔⛔⛔⛔ Four numbers with the same road and none of the reporting
+///
+/// [`Overridden`] was built over the caller's `guardrails` object, and its argument is general:
+/// *the run said nothing about which of its two authors it was obeying*. That is true of every
+/// number with the three-step fall-through, and `ai_loop_brief` resolves **four more of them** the
+/// same way — the caller's number, then this repository's kind document, then the template's. They
+/// were outside the report for no reason anybody wrote down, so a run whose `context_ceiling` came
+/// from a launcher rather than from `debt_loop.scxml` looked exactly like one that did not.
+///
+/// # ⚠⚠⚠ Why that mattered enough to be an item's blocker
+///
+/// Register item 856 needs to MOVE `context_ceiling` to shift when a session's composer starts
+/// folding, and its ledger recorded that as blocked — *a caller overriding it is the act item 853
+/// forbade*. Item 853 forbade nothing: it is *report rather than refuse*, in [`Overridden`]'s own
+/// words, and its subject is the guardrail triple, which this number is not one of. What the
+/// premise was really pointing at is this gap — with no report, an experimental run is
+/// indistinguishable from an ordinary one, **and item 856's whole measurement is a fold RATE over
+/// a population of runs.** An unreported experiment does not just go unnoticed; it contaminates
+/// the denominator of the item it was run for.
+///
+/// ⚠ `reaim_max` is deliberately NOT here: item 833(2) is the owner's decision that a caller may
+/// not name it at all, so it has no wire key to take and nothing to report about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthoredNumber {
+    /// `max_turns` — how many turns a run may spend.
+    MaxTurns,
+    /// `reflect_every` — how often it stops to decide what is next.
+    ReflectEvery,
+    /// `context_ceiling` — how much read context the peer may reach before the loop treats the
+    /// session as full. **The number item 856(1b) needs to move.**
+    ContextCeiling,
+    /// `reflect_after_refusals` — how many refusals in a row send it to reflect.
+    ReflectAfterRefusals,
+}
+
+impl AuthoredNumber {
+    /// Every one, so a walk needs no list somebody has to remember to extend.
+    const ALL: [Self; 4] = [
+        Self::MaxTurns,
+        Self::ReflectEvery,
+        Self::ContextCeiling,
+        Self::ReflectAfterRefusals,
+    ];
+
+    /// The caller's key for it — the ONE place the variant → wire name mapping lives, and the same
+    /// spelling [`crate::wire::PluginGrammar`] advertises.
+    const fn wire_key(self) -> &'static str {
+        match self {
+            Self::MaxTurns => "max_turns",
+            Self::ReflectEvery => "reflect_every",
+            Self::ContextCeiling => "context_ceiling",
+            Self::ReflectAfterRefusals => "reflect_after_refusals",
+        }
+    }
+}
+
+/// **WHICH OF [`AuthoredNumber`]'S THIS RUN'S KIND DOCUMENT AUTHORED** — the middle step, kept
+/// separate from the resolved value for [`AuthoredGuardrails`]'s reason exactly: *the document said
+/// nothing about this one* has to survive, and a zero sitting where a document's silence belongs is
+/// how item 492's ceiling read as authored on every run while nothing carried it.
+///
+/// ⚠ Read at build time and CARRIED, like [`AuthoredGuardrails`] beside it: the kind document is
+/// opened once per run, and re-opening it here would be a second read of one author's clause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+struct AuthoredNumbers {
+    /// One flag per [`AuthoredNumber::ALL`], in that array's order.
+    ///
+    /// ⚠ Private, and only reachable by walking `ALL` — `SaidBySentence::of`'s rule: an index is a
+    /// second spelling of an order that array already owns.
+    of: [bool; AuthoredNumber::ALL.len()],
+}
+
+impl AuthoredNumbers {
+    /// What a plugin with no document of its own to read answers — every number the caller's or
+    /// this daemon's, which is what every plugin but the loop says.
+    const fn none() -> Self {
+        Self {
+            of: [false; AuthoredNumber::ALL.len()],
+        }
+    }
+
+    /// **WHICH OF THEM THE CALLER NAMED FOR ITSELF**, and whether the document authored any at all.
+    ///
+    /// ⚠⚠ Asked of the caller's TOP-LEVEL map and with the same [`declined`] predicate
+    /// [`AuthoredGuardrails::overridden_by`] uses on the `guardrails` object — one reading of *did
+    /// the caller name this*, so the two classes cannot come to disagree about what naming is.
+    fn taken_by(self, map: &Map<String, Value>) -> (bool, Vec<&'static str>) {
+        let mut authored_any = false;
+        let mut taken = Vec::new();
+        for (at, number) in AuthoredNumber::ALL.into_iter().enumerate() {
+            if !self.of.get(at).copied().unwrap_or(false) {
+                continue;
+            }
+            authored_any = true;
+            if !declined(map, number.wire_key()) {
+                taken.push(number.wire_key());
+            }
+        }
+        (authored_any, taken)
+    }
 }
 
 impl AuthoredGuardrails {
@@ -3875,11 +4010,39 @@ const COST_BOUND_KEYS: [&str; 2] = ["max_bytes", "max_tokens"];
 pub struct Overridden(Vec<&'static str>);
 
 impl Overridden {
-    /// The bounds the caller took, in the order this daemon resolves them. Empty is the claim
-    /// *this run's document set every bound it has*.
+    /// The numbers the caller took, in the order this daemon resolves them. Empty is the claim
+    /// *this run's document set every number it authored*.
     #[must_use]
     pub fn taken(&self) -> &[&'static str] {
         &self.0
+    }
+
+    /// ⛔⛔⛔⛔⛔ **JOIN THE SECOND CLASS INTO THE SAME ANSWER** — register item 856(1b).
+    ///
+    /// # ⚠⚠⚠ One list, because *which of this run's numbers are not its document's* is ONE question
+    ///
+    /// The guardrail triple and [`AuthoredNumber`]'s four are resolved in different places — one in
+    /// [`parse_guardrails`], one where the kind document is read — and publishing them as two keys
+    /// would make a watcher's filter ask twice and a future third class ask three times. Worse, it
+    /// is the *one value, two homes* shape items 855 and 864 each paid for: two answers to one
+    /// question drift, and the drift here reads as *your document's number is in force* about a run
+    /// spending under somebody else's.
+    ///
+    /// ⚠⚠ **[`None`] MEANS THE DOCUMENT AUTHORED NOTHING IN EITHER CLASS**, which is why this is a
+    /// join and not a concatenation: a document that authors no guardrail but does author
+    /// `context_ceiling` has something to report, and the guardrail half alone would have said
+    /// *nobody said* about it. The empty list stays the affirmative — *it authored some and the
+    /// caller took none* — which is what [`RUN_OVERRIDDEN_KEY`] calls the point rather than padding.
+    fn joined(bounds: Option<Self>, numbers: (bool, Vec<&'static str>)) -> Option<Self> {
+        let (authored_any, mut taken) = numbers;
+        match (bounds, authored_any) {
+            (None, false) => None,
+            (None, true) => Some(Self(taken)),
+            (Some(Self(mut had)), _) => {
+                had.append(&mut taken);
+                Some(Self(had))
+            }
+        }
     }
 }
 
@@ -3931,7 +4094,7 @@ impl PluginKind {
             PluginKind::Agent(agent) => agent,
             PluginKind::Dialogue(dialogue) => dialogue.as_mut(),
             PluginKind::Answer(answer) => answer,
-            PluginKind::AiLoop(loops, _) => loops.as_mut(),
+            PluginKind::AiLoop(loops, ..) => loops.as_mut(),
         }
     }
 
@@ -4011,7 +4174,26 @@ impl PluginKind {
             // ⚠ READ AT BUILD TIME AND CARRIED, not read again here: the kind document is opened
             // once per run in `build_plugin`, and re-opening it would be a second read of one
             // author's clause — the thing `LoopKind`'s own doc says a kind must never become.
-            PluginKind::AiLoop(_, authored) => *authored,
+            PluginKind::AiLoop(_, authored, _) => *authored,
+        }
+    }
+
+    /// **THE NUMBERS THIS PLUGIN'S OWN DOCUMENT NAMED THAT ARE NOT GUARDRAILS** — register item
+    /// 856(1b), and [`own_bounds`](Self::own_bounds)'s sibling in every respect: read once where
+    /// the kind document is opened, carried, and answered by every plugin so the join stays in one
+    /// place rather than becoming a loop-shaped branch at the door.
+    ///
+    /// ⚠ [`AuthoredNumbers::none`] is what a plugin with no document to read says — the same claim
+    /// `own_bounds` makes with [`AuthoredGuardrails::none`], and for the same reason: *this run has
+    /// one author* is a fact, not a gap.
+    fn own_numbers(&self) -> AuthoredNumbers {
+        match self {
+            PluginKind::Orchestrator(_)
+            | PluginKind::Pipe(_)
+            | PluginKind::Agent(_)
+            | PluginKind::Answer(_)
+            | PluginKind::Dialogue(_) => AuthoredNumbers::none(),
+            PluginKind::AiLoop(_, _, numbers) => *numbers,
         }
     }
 }
@@ -11934,7 +12116,7 @@ mod tests {
         let (built, _label) = external
             .build_plugin(asked.as_object().expect("an object"))
             .expect("a plain ai_loop request is well-formed");
-        let PluginKind::AiLoop(loops, _) = built else {
+        let PluginKind::AiLoop(loops, ..) = built else {
             panic!("the control: an `ai_loop` request builds an ai_loop");
         };
 
@@ -11990,7 +12172,7 @@ mod tests {
         let (built, _label) = external
             .build_plugin(asked.as_object().expect("an object"))
             .expect("a run that names no consents is well-formed");
-        let PluginKind::AiLoop(loops, _) = built else {
+        let PluginKind::AiLoop(loops, ..) = built else {
             panic!("the control: an `ai_loop` request builds an ai_loop");
         };
         let carried = loops
@@ -12027,7 +12209,7 @@ mod tests {
         let (built, _label) = external
             .build_plugin(named.as_object().expect("an object"))
             .expect("a run that names its own consents is well-formed");
-        let PluginKind::AiLoop(loops, _) = built else {
+        let PluginKind::AiLoop(loops, ..) = built else {
             panic!("the control: an `ai_loop` request builds an ai_loop");
         };
         let carried = loops
@@ -18361,11 +18543,17 @@ mod tests {
         };
 
         // THE HEALTHY LAUNCH: the `guardrails` key removed, so every bound is the document's.
+        //
+        // ⛔⛔⛔⛔⛔ AND `max_turns` REMOVED WITH IT — register item 856(1b), and this line is that
+        // item's finding landing on this file's own fixture. `ai_loop_request` names `max_turns: 3`
+        // on every request it builds, and `debt_loop.scxml` authors that number (`'never'`), so
+        // this arm's *every bound is the document's* was NOT true of the request it sent. Nothing
+        // said so while the report covered only the guardrail object; widening it to the rest of
+        // the class made the fixture's own override visible on the first run.
         let mut clean = ai_loop_request(echoing_agent_pane(&workspace), json!({}));
-        clean
-            .as_object_mut()
-            .expect("an object")
-            .remove("guardrails");
+        let object = clean.as_object_mut().expect("an object");
+        object.remove("guardrails");
+        object.remove("max_turns");
         let clean = start(&mut external, clean);
         // AND THE ONE THAT FILED THE ITEM: the launch skill's three flags.
         let taken = start(
@@ -18381,7 +18569,12 @@ mod tests {
         let (clean, taken) = (row_of(&mut external, clean), row_of(&mut external, taken));
         assert_eq!(
             taken[RUN_OVERRIDDEN_KEY],
-            json!(["max_bytes", "max_iterations", "max_seconds"]),
+            // ⚠⚠ `max_turns` IS IN THIS LIST AND IT IS THE FIXTURE'S OWN — register item 856(1b).
+            // The request carries `max_turns: 3` and this repository's kind document authors that
+            // number, so the row names it beside the three guardrails. That is the report doing
+            // its job on a caller nobody suspected, and pruning it from this expectation to keep
+            // the old shape would be deleting the finding.
+            json!(["max_bytes", "max_iterations", "max_seconds", "max_turns"]),
             "⛔⛔⛔⛔⛔ THE ROW IS WHERE A PERSON MEETS THE RUN, and on 2026-09-03 it said nothing \
              while a loop spent against ceilings 47, 20 and 4 times its document's: {taken:?}",
         );
@@ -18397,6 +18590,165 @@ mod tests {
             "⚠⚠⚠ THE CONTROL: two launches differing in one thing must not produce the same row — \
              a constant published on every row would satisfy either assertion above alone",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A ROW SAYS WHEN THE CEILING THE LOOP FOLDS ON IS NOT ITS DOCUMENT'S** — register
+    /// item 856(1b), and the clause that stood recorded as *the owner's* on a premise that was
+    /// false.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The premise, and what measuring it found
+    ///
+    /// Item 856's ledger said its remaining clause was blocked: to move `context_ceiling` and shift
+    /// when a session's composer starts folding, *the document would have to hand the number out
+    /// for an experiment, because a caller overriding it is the act item 853 forbade.* Item 853
+    /// forbade nothing. Its own type says so — [`Overridden`]'s doc argues **report rather than
+    /// refuse**, on the ground that *a caller who has read the document and wants a wider ceiling
+    /// for one run is exactly who the per-field fall-through is for* — and its subject is the
+    /// `guardrails` object, which `context_ceiling` is not in. The road was open the whole time.
+    ///
+    /// What the premise WAS pointing at is real and is this gate: with no report, an experimental
+    /// run is indistinguishable from an ordinary one. Item 856's measurement is a fold RATE over a
+    /// population of runs, so an unreported experiment does not merely go unnoticed — **it lands in
+    /// the denominator of the item it was run for.**
+    ///
+    /// # ⚠⚠ Why the row and not a flag on the experiment
+    ///
+    /// Whatever moves the ceiling — this session, a launcher, a future harness — the run it starts
+    /// says so, which is the argument the gate above makes for the guardrail triple word for word.
+    /// A marker the experimenter has to remember to pass is the *copy of somebody's memory*
+    /// `own_bounds` was built to replace.
+    ///
+    /// REVERT-PROOF: drop the `Overridden::joined` call in `run`, and the first assertion fails.
+    #[test]
+    fn a_row_says_when_the_ceiling_the_loop_folds_on_is_not_its_documents() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let start = |external: &mut PluginsExternal, request: Value| -> i64 {
+            let started = external
+                .invoke(RUN_ACTION, IntrospectValue::Json(request))
+                .expect("a well-formed ai_loop run");
+            let IntrospectValue::Int(id) = started else {
+                panic!("a run answers its id: {started:?}");
+            };
+            id
+        };
+
+        // ── ① THE CONTROL: THIS REPOSITORY'S DOCUMENT AUTHORS THE NUMBER ───────────────────
+        //
+        // ⚠ Asked of the document through the same reader the door uses. Without it every arm
+        // below is about a number nobody set, and would pass on a document that authored none.
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = sprag_plugin::kind::LoopKind::debt(script)
+            .expect("this repository's kind document opens");
+        assert!(
+            kind.context_ceiling().is_some() && kind.reflect_every().is_some(),
+            "⚠ THE CONTROL: this repository's loop document must author the ceiling item 856 needs \
+             to move, and a second number beside it for the per-field arm — otherwise the arms \
+             below measure nothing",
+        );
+
+        // ── ② THE EXPERIMENT ITEM 856(1b) NEEDS, AND THE ROW NAMES IT ──────────────────────
+        let moved = start(
+            &mut external,
+            ai_loop_request(
+                echoing_agent_pane(&workspace),
+                json!({ "context_ceiling": 42 }),
+            ),
+        );
+        // ── ③ AND A RUN THAT TOOK NOTHING AT ALL, as the control the `[]` needs ────────────
+        let mut untouched = ai_loop_request(echoing_agent_pane(&workspace), json!({}));
+        let object = untouched.as_object_mut().expect("an object");
+        object.remove("guardrails");
+        object.remove("max_turns");
+        let untouched = start(&mut external, untouched);
+
+        let (moved, untouched) = (
+            row_of(&mut external, moved),
+            row_of(&mut external, untouched),
+        );
+        let named = |row: &Value| -> Vec<String> {
+            row[RUN_OVERRIDDEN_KEY]
+                .as_array()
+                .expect("the row publishes the list, even empty")
+                .iter()
+                .map(|key| key.as_str().expect("a key is a string").to_owned())
+                .collect()
+        };
+        assert!(
+            named(&moved).contains(&"context_ceiling".to_owned()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1b): a run whose fold ceiling came from its CALLER says \
+             nothing about it, so an experiment that moves the number is indistinguishable from an \
+             ordinary run — and item 856's fold rate is measured over exactly that population. \
+             The row said: {:?}",
+            moved[RUN_OVERRIDDEN_KEY],
+        );
+        assert_eq!(
+            named(&untouched),
+            Vec::<String>::new(),
+            "⚠⚠⚠⚠⚠ and a run that took NOTHING must still say so affirmatively — the `[]` is what \
+             separates *this ran under its own document* from *nothing answered*, which is item \
+             853's own load-bearing claim and rule 6 one register over: {:?}",
+            untouched[RUN_OVERRIDDEN_KEY],
+        );
+
+        // ── ④ PER FIELD, or a reader told to delete one flag goes hunting for three ────────
+        assert!(
+            !named(&moved).contains(&"reflect_every".to_owned()),
+            "⚠⚠⚠ REGISTER ITEM 856(1b): the report must be per FIELD exactly as the fall-through \
+             resolves per field. This document authors `reflect_every` and this caller never named \
+             it, so naming it here would send somebody to delete a flag that is not there: {:?}",
+            moved[RUN_OVERRIDDEN_KEY],
+        );
+
+        // ── ⑤ THE JOIN: A DOCUMENT WITH NO GUARDRAIL BUT AN AUTHORED NUMBER HAS SOMETHING ──
+        //
+        // ⛔ `None` is *nobody answered*. Composing the two classes by concatenating the taken
+        // lists would keep the guardrail half's `None` and publish *nobody answered* about a
+        // document that authored a number and had it taken.
+        assert_eq!(
+            Overridden::joined(None, (true, vec!["context_ceiling"]))
+                .as_ref()
+                .map(Overridden::taken),
+            Some(&["context_ceiling"] as &[&str]),
+            "⛔⛔⛔⛔ REGISTER ITEM 856(1b): a document that authors no GUARDRAIL but does author a \
+             number must still report — a plugin's two classes are one question",
+        );
+        assert_eq!(
+            Overridden::joined(None, (false, Vec::new())),
+            None,
+            "⚠⚠ and a document that authored nothing in EITHER class answers nothing at all: an \
+             `[]` there would claim a document set numbers it never set",
+        );
+
+        // ── ⑥ AND THE TWO CLASSES DO NOT OVERLAP, asked of the publication ────────────────
+        //
+        // ⚠⚠ One key answered by both halves would be one question with two answers — the *one
+        // value, two homes* shape items 855 and 864 each paid for, arriving inside a single list
+        // where it would read as a duplicate nobody could explain.
+        let guardrail_keys: Vec<&str> =
+            crate::wire::PluginGrammar::guardrail_fields(Cost::Bytes(0).unit())
+                .iter()
+                .map(|arg| arg.name)
+                .collect();
+        for number in AuthoredNumber::ALL {
+            assert!(
+                !guardrail_keys.contains(&number.wire_key()),
+                "⛔⛔⛔ REGISTER ITEM 856(1b): `{}` is answered by BOTH the guardrail half and the \
+                 number half, so one caller key would appear twice in one list and the two halves \
+                 would be free to disagree about it. Guardrail keys: {guardrail_keys:?}",
+                number.wire_key(),
+            );
+        }
     }
 
     /// ⛔⛔⛔⛔⛔ **A RUN A DEAD DAEMON LEFT BEHIND COMES BACK ON A DRIVER OF THIS ONE'S** — register
