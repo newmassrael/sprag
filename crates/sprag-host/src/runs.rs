@@ -2730,6 +2730,61 @@ pub struct PersistedRun {
     pub tree: Option<String>,
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT A COUNTER COLUMN IS WORTH WHEN NOBODY WAS COUNTING** — register item 891, and
+/// the ONE decision every counter on [`PersistedRun`] is written through.
+///
+/// # ⛔⛔⛔⛔⛔ The absence this laundered, measured
+///
+/// Four of this struct's columns are TALLIES — [`deliveries`](PersistedRun::deliveries) and the
+/// three splits beside it — and each was written `Some(report.unwrap_or(cell))`, on the argument
+/// that *this image looked, so a zero is a claim it may make*. That argument is true of a flag this
+/// image can read now ([`stood_down`](PersistedRun::stood_down) is written that way still) and
+/// false of a tally, because a tally had to be INCREMENTED WHILE THE RUN RAN. A run this daemon
+/// inherited already finished was never incremented by anything here, and its cell holds the zeros
+/// `RunRegistry::restore` puts there for a log that had no such column — so the round trip
+/// `None` → `…::NONE` → `Some(zeros)` **signed a predecessor's silence as this image's count**.
+///
+/// Measured 2026-09-05 over the live loop's store, and the store re-serialises every row through
+/// the current struct on every save, so the laundering reaches rows from builds that had no such
+/// concept at all:
+///
+/// ```text
+/// python3 -c "
+/// import json
+/// rows=json.load(open('~/.local/share/sprag-loop/state/sprag/sprag-loop.runs.json'))['runs']
+/// f=lambda t: sum(x for v in t.values() if isinstance(v,dict) for x in v.values())
+/// print(len(rows), sum(1 for r in rows if r.get('folds_by_reason') is not None),
+///       sum(1 for r in rows if f(r['folds_by_reason'])>0))"
+/// ```
+/// ⇒ **220 rows, 220 with a table, 11 with a number** — and row `id 0`, build `52459b9ebf78` from
+/// 2026-08-26, carries six rows of four zeros for a concept its build did not have. So *nobody
+/// counted* and *counted nothing* were the same shape on 209 rows, and the number register item
+/// 856's done-when is judged by — **how many runs have a sample** — read 220 instead of 11.
+///
+/// # ⚠⚠ Why this is a function and not four `.map(Into::into)` calls
+///
+/// Item 891's third clause is *every answer key at once, because fixing one key leaves the next one
+/// to land in the same place* — and it had already come true once, half a day after it was written,
+/// when item 856 added an `ordinary` row that restored as a zero. So the four are written through
+/// ONE named decision, and `a_tally_nobody_kept_is_not_a_tally_of_none` reads this module's own
+/// source to hold that a fifth tally cannot reach [`PersistedRun`] any other way.
+///
+/// ⚠ The report is preferred over the cell — register item 663, for the reason each field states:
+/// an out-of-process run's cell never moves, so reading the cell first would record `0 of 0` about
+/// a run that had filled somebody's pane.
+///
+/// ⚠⚠ **THE RESIDUE, STATED**: this repairs nothing already written. A row whose stored table is
+/// zeros restores as `Some(zeros)` and is re-written as `Some(zeros)` for ever — item 891's own
+/// rule that a column's SHAPE is retroactive and its VALUES are not, which
+/// [`ended_at`](PersistedRun::ended_at) pays in the same coin for its 154 rows. What this stops is
+/// the next 209.
+fn counted<Live, Stored>(reported: Option<Live>, cell: Option<Live>) -> Option<Stored>
+where
+    Stored: From<Live>,
+{
+    reported.or(cell).map(Into::into)
+}
+
 /// **THE STORED SHAPE OF [`sprag_plugin::Deliveries`]** — register item 606.
 ///
 /// # ⚠⚠⚠ Why this is not that type with derives on it
@@ -4244,9 +4299,8 @@ impl RunRegistry {
                         // older daemon's silence, and the two are rendered the same way on purpose
                         // — neither is a claim about a person.
                         stood_down_by: run.stood_down_by.clone(),
-                        // ⚠ ALWAYS `Some`, INCLUDING THE ZERO PAIR — the field above's argument.
-                        // This image looked, so `made: 0` is a claim it may make; the `None` this
-                        // field documents belongs to a log written before it existed.
+                        // ⛔⛔⛔⛔⛔ **WRITTEN DOWN BY WHOEVER COUNTED IT, AND BY NOBODY ELSE** —
+                        // register item 891, and this line used to read `Some(…unwrap_or(cell))`.
                         //
                         // ⚠⚠⚠ AND THE REPORT IS PREFERRED HERE TOO — register item 663. This is
                         // the column item 606 was filed for, and for a run driven in another
@@ -4254,42 +4308,31 @@ impl RunRegistry {
                         // said `0 of 0` about a run that had filled somebody's pane, on exactly
                         // the runs anybody reads (a run is read after it ends, when its daemon is
                         // already gone).
-                        deliveries: Some(
-                            reported
-                                .deliveries
-                                .unwrap_or(run.progress.deliveries)
-                                .into(),
-                        ),
+                        deliveries: counted(reported.deliveries, run.progress.deliveries),
                         // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1), written
-                        // the way the pair above is and for its reasons: always `Some` (this image
-                        // looked, so every row is a claim it may make), and the REPORT is preferred
-                        // over the cell because an out-of-process run's cell is zeros for ever.
-                        folds_by_reason: Some(
-                            reported
-                                .folds_by_reason
-                                .unwrap_or(run.progress.folds_by_reason)
-                                .into(),
+                        // through [`counted`] the way the pair above is and for its reasons, and
+                        // this is the column register item 891 was OPENED over: 220 of 220 stored
+                        // rows carried a table and 11 of them carried a number.
+                        folds_by_reason: counted(
+                            reported.folds_by_reason,
+                            run.progress.folds_by_reason,
                         ),
                         // ⛔⛔⛔⛔⛔ AND WHAT PROVED EACH DELIVERY — register item 856, written the
                         // way the two above are and for their reasons. This is the column a LANDING
                         // is read from, and it is read off a finished run whose daemon has since
                         // been restarted, which is what item 606 measured.
-                        delivered_by_road: Some(
-                            reported
-                                .delivered_by_road
-                                .unwrap_or(run.progress.delivered_by_road)
-                                .into(),
+                        delivered_by_road: counted(
+                            reported.delivered_by_road,
+                            run.progress.delivered_by_road,
                         ),
                         // ⛔⛔⛔⛔⛔ AND WHICH SENTENCE EACH PROMPT WAS — register item 889, written
                         // the way the three above are and for their reasons, with one of its own:
                         // this column is the only place *which prompt gets stuck* is written down
                         // at all, and the ratio it answers is taken ACROSS runs — 197 of them, in
                         // the measurement that opened the item.
-                        said_by_sentence: Some(
-                            reported
-                                .said_by_sentence
-                                .unwrap_or(run.progress.said_by_sentence)
-                                .into(),
+                        said_by_sentence: counted(
+                            reported.said_by_sentence,
+                            run.progress.said_by_sentence,
                         ),
                         // ⚠⚠⚠⚠⚠ AND HOW MUCH OF THE WORK IS KEPT — register item 616. `None` here
                         // is the PLUGIN's own answer (*I count no completed work*) rather than
@@ -4618,9 +4661,13 @@ impl RunRegistry {
                     // many prompts a finished run typed is a fact about what already happened, and
                     // it is the only thing that explains a pane that looks empty. An older log
                     // still reads as `NONE`, which claims nothing.
-                    deliveries: saved
-                        .deliveries
-                        .map_or(sprag_plugin::Deliveries::NONE, Into::into),
+                    //
+                    // ⛔⛔⛔⛔⛔ **AND `NONE` IS NOT WHAT AN OLDER LOG READS AS ANY MORE** —
+                    // register item 891. `map_or(…::NONE, …)` was this hop's half of the
+                    // laundering: it turned *the file had no column* into a table of zeros, and
+                    // [`counted`] then signed those zeros on the way back out. `map` keeps the
+                    // absence, and every reader of the cell already had an arm for it.
+                    deliveries: saved.deliveries.map(Into::into),
                     // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS IS RESTORED WITH IT — register item
                     // 856(1), on `deliveries`' argument exactly and for the reason item 606
                     // MEASURED: the runs anybody reads are restored ones, so a split that stopped
@@ -4630,10 +4677,8 @@ impl RunRegistry {
                     // all (`is_empty`) rather than a clean bill. That is the honest reading of a
                     // file whose writer could not count this, and it is the same shape the pair
                     // above takes.
-                    folds_by_reason: saved
-                        .folds_by_reason
-                        .clone()
-                        .map_or(sprag_plugin::FoldsByReason::NONE, Into::into),
+                    // ⛔⛔⛔ AND ITS ABSENCE IS KEPT ON `deliveries`' TERMS — register item 891.
+                    folds_by_reason: saved.folds_by_reason.clone().map(Into::into),
                     // ⛔⛔⛔⛔⛔ AND WHAT PROVED EACH DELIVERY IS RESTORED WITH THEM — register item
                     // 856, on the two arguments above and for the sharpest instance of them: a
                     // LANDING is only ever read off a finished run, and item 606 measured that
@@ -4642,10 +4687,8 @@ impl RunRegistry {
                     //
                     // ⚠ An older log reads as every road `0`, which publishes nothing at all
                     // (`is_empty`) rather than *this run landed none*.
-                    delivered_by_road: saved
-                        .delivered_by_road
-                        .clone()
-                        .map_or(sprag_plugin::DeliveredByRoad::NONE, Into::into),
+                    // ⛔⛔⛔ AND ITS ABSENCE IS KEPT ON `deliveries`' TERMS — register item 891.
+                    delivered_by_road: saved.delivered_by_road.clone().map(Into::into),
                     // ⛔⛔⛔⛔⛔ AND WHICH SENTENCE EACH PROMPT WAS IS RESTORED WITH THEM — register
                     // item 889, on the three arguments above and for the sharpest instance of
                     // them: the rate this table publishes is only meaningful compared across many
@@ -4655,10 +4698,8 @@ impl RunRegistry {
                     //
                     // ⚠ An older log reads as every sentence `0 of 0`, which publishes nothing at
                     // all (`is_empty`) rather than *every prompt of this run was asked*.
-                    said_by_sentence: saved
-                        .said_by_sentence
-                        .clone()
-                        .map_or(sprag_plugin::SaidBySentence::NONE, Into::into),
+                    // ⛔⛔⛔ AND ITS ABSENCE IS KEPT ON `deliveries`' TERMS — register item 891.
+                    said_by_sentence: saved.said_by_sentence.clone().map(Into::into),
                     // ⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, on the same argument.
                     checks: sprag_plugin::Checks::NONE,
                     // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS KEPT **IS** RESTORED — register item 616,
@@ -5911,7 +5952,7 @@ mod tests {
         let mut registry = RunRegistry::default();
         let id = registry.reserve();
         let progress = ProgressCell::default();
-        lock(&progress).deliveries = sprag_plugin::Deliveries {
+        lock(&progress).deliveries = Some(sprag_plugin::Deliveries {
             made: 14,
             folded: 3,
             // ⚠ THE THIRD COUNT TRAVELS TOO — register item 617, and it is set to a value distinct
@@ -5931,7 +5972,7 @@ mod tests {
             // answer that reads as a real diagnosis (*every fold was the composer, so that peer's
             // hooks report nothing*).
             released: 2,
-        };
+        });
         registry.submit(NewRun {
             id,
             label: "ai_loop pane=2".to_owned(),
@@ -5960,7 +6001,10 @@ mod tests {
         successor.restore(&read_back);
 
         let restored = successor.snapshot();
-        let carried = restored[0].progress.deliveries;
+        let carried = restored[0].progress.deliveries.expect(
+            "⛔ REGISTER ITEM 891: a stored table came back as *nobody counted*, which is the \
+             absence this cell learned to say and NOT what a log holding a table means",
+        );
         assert_eq!(
             (
                 carried.made,
@@ -6051,7 +6095,7 @@ mod tests {
             sprag_plugin::Occasion::Ordinary,
             sprag_plugin::UnaskedRoad::OnThePane,
         );
-        lock(&progress).folds_by_reason = folds;
+        lock(&progress).folds_by_reason = Some(folds);
         registry.submit(NewRun {
             id,
             label: "ai_loop pane=2".to_owned(),
@@ -6075,7 +6119,10 @@ mod tests {
         let mut successor = RunRegistry::default();
         successor.restore(&read_back);
 
-        let carried = successor.snapshot()[0].progress.folds_by_reason;
+        let carried = successor.snapshot()[0].progress.folds_by_reason.expect(
+            "⛔ REGISTER ITEM 891: a stored split came back as *nobody counted* — the absence \
+             belongs to a log with no such column, never to one holding a table",
+        );
         assert_eq!(
             carried.under(sprag_plugin::ReflectReason::Capacity.occasion()),
             sprag_plugin::FoldsUnder {
@@ -6172,12 +6219,20 @@ mod tests {
             before.snapshot()[0]
                 .progress
                 .folds_by_reason
+                .expect(
+                    "⚠ THE OUTER TABLE IS PRESENT IN THIS FIXTURE — register item 891. What is \
+                     stripped is the pair INSIDE each row, so the cell must still say *something \
+                     counted*; a `None` here would mean the fixture stripped the column instead \
+                     and the assertion below would be about the wrong absence"
+                )
                 .under(sprag_plugin::ReflectReason::Capacity.occasion())
                 .unasked,
             sprag_plugin::Unasked::default(),
             "⚠⚠ and it reads as *nobody counted this*, which for a stored row is the same number \
              as *nothing hardened* — the honest answer, since the build that wrote it could not \
-             have said otherwise",
+             have said otherwise. ⚠⚠⚠ THAT IS THE INNER AXIS AND IT IS DELIBERATE (see the \
+             comment above): register item 891 is about the TABLE's own absence, which this cell \
+             now says with `None`, and it does not reach the pair inside a row a build did write",
         );
     }
 
@@ -6219,7 +6274,7 @@ mod tests {
             roads.record(sprag_plugin::Witnessed::Unchecked);
         }
         roads.record(sprag_plugin::Witnessed::Unasked);
-        lock(&progress).delivered_by_road = roads;
+        lock(&progress).delivered_by_road = Some(roads);
         registry.submit(NewRun {
             id,
             label: "ai_loop pane=2".to_owned(),
@@ -6243,7 +6298,10 @@ mod tests {
         let mut successor = RunRegistry::default();
         successor.restore(&read_back);
 
-        let carried = successor.snapshot()[0].progress.delivered_by_road;
+        let carried = successor.snapshot()[0].progress.delivered_by_road.expect(
+            "⛔ REGISTER ITEM 891: a stored road table came back as *nobody counted* — the \
+             absence belongs to a log with no such column, never to one holding a table",
+        );
         assert_eq!(
             carried, roads,
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the road table did not survive its daemon, and item 606 \
@@ -6279,10 +6337,17 @@ mod tests {
         );
         let mut before = RunRegistry::default();
         before.restore(&old_log);
+        // ⛔⛔⛔⛔⛔ **`None` AND NOT A TABLE OF ZEROS** — register item 891, and this assertion is
+        // where that item's headline was written down as a PASS. It used to read `is_empty()`,
+        // and its own message said *it reads as nobody counted this* about a value that was a
+        // table of zeros — indistinguishable from a run that counted and found none. The two are
+        // now different values, and this is the gate that says so.
         assert!(
-            before.snapshot()[0].progress.delivered_by_road.is_empty(),
-            "⚠⚠ and it reads as *nobody counted this*, which publishes no sentence at all rather \
-             than a clean bill — the honest answer for a build that could not have said otherwise",
+            before.snapshot()[0].progress.delivered_by_road.is_none(),
+            "⛔⛔⛔ REGISTER ITEM 891: a log with no road column restored as a TABLE, so *nobody \
+             counted* and *counted nothing* are one value again. Measured over the live store \
+             before this was fixed: 220 rows carried a table and 11 carried a number, and the \
+             row from 2026-08-26 carried six rows of zeros for a concept its build never had",
         );
     }
 
@@ -6324,7 +6389,7 @@ mod tests {
             sprag_plugin::Sentence::Turn,
             sprag_plugin::UnaskedRoad::AfterAFold,
         );
-        lock(&progress).said_by_sentence = said;
+        lock(&progress).said_by_sentence = Some(said);
         registry.submit(NewRun {
             id,
             label: "ai_loop pane=2".to_owned(),
@@ -6348,7 +6413,10 @@ mod tests {
         let mut successor = RunRegistry::default();
         successor.restore(&read_back);
 
-        let carried = successor.snapshot()[0].progress.said_by_sentence;
+        let carried = successor.snapshot()[0].progress.said_by_sentence.expect(
+            "⛔ REGISTER ITEM 891: a stored sentence table came back as *nobody counted* — the \
+             absence belongs to a log with no such column, never to one holding a table",
+        );
         assert_eq!(
             carried, said,
             "⛔⛔⛔⛔⛔ REGISTER ITEM 889: the sentence table did not survive its daemon, and item \
@@ -6395,11 +6463,302 @@ mod tests {
         );
         let mut before = RunRegistry::default();
         before.restore(&old_log);
+        // ⛔⛔⛔⛔⛔ **`None` AND NOT A TABLE OF ZEROS** — register item 891, its road-table
+        // neighbour's argument verbatim: this read `is_empty()` while its message claimed to be
+        // reading *nobody counted this*, and a table of eleven zero rows is what a run that
+        // counted and asked everything also has.
         assert!(
-            before.snapshot()[0].progress.said_by_sentence.is_empty(),
-            "⚠⚠ and it reads as *nobody counted this*, which publishes no sentence at all rather \
-             than *every prompt of that run was asked* — the honest answer for a build that could \
-             not have said otherwise",
+            before.snapshot()[0].progress.said_by_sentence.is_none(),
+            "⛔⛔⛔ REGISTER ITEM 891: a log with no sentence column restored as a TABLE, so \
+             *nobody counted* and *every prompt was asked* are one value again",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A TALLY NOBODY KEPT IS NOT A TALLY OF NONE** — register item 891, and the three
+    /// hops one fact has to be asked at.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was green, and the shape of the laundering
+    ///
+    /// Four columns here are TALLIES, and each was written `Some(report.unwrap_or(cell))` on the
+    /// argument *this image looked, so a zero is a claim it may make*. A tally is not a flag: it
+    /// had to be INCREMENTED WHILE THE RUN RAN, and a run this daemon inherited already finished
+    /// was incremented by nothing here. The restore filled its cell with `…::NONE` for a log that
+    /// had no such column, and the next save signed those zeros — so
+    /// `None` → `NONE` → `Some(zeros)` turned a predecessor's SILENCE into this image's COUNT, and
+    /// the store re-serialises every row on every save, so it reached rows whose build had no such
+    /// concept.
+    ///
+    /// Measured 2026-09-05 over the live loop's store: **220 rows, 220 carrying a
+    /// `folds_by_reason` table, 11 carrying a number**, and row `id 0` (build `52459b9ebf78`,
+    /// 2026-08-26) carrying six rows of four zeros. The number register item 856's done-when is
+    /// judged by — *how many runs have a sample* — therefore read 220 instead of 11.
+    ///
+    /// # ⚠⚠⚠ THREE HOPS, because a round-trip gate cannot see the hop the value ENTERS on
+    ///
+    /// This session learnt that twice (items 889 and 894): a gate over the restore hop alone stays
+    /// green while the producer publishes nothing, and one over the producer alone stays green
+    /// while the log drops it. So:
+    ///
+    /// | hop | asked here |
+    /// |---|---|
+    /// | file → cell | a log with no column restores as [`None`], never as a zeroed table |
+    /// | cell → file | that [`None`] is written back OUT as absent, never re-signed |
+    /// | cell → row | the wire carries `null` for it, so no reader meets a zero either |
+    ///
+    /// # ⛔⛔⛔ AND THE FOURTH ASSERTION IS THE ONE THAT COVERS THE NEXT COLUMN
+    ///
+    /// Item 891's third clause is *answer this for every answer key at once, because fixing one
+    /// key leaves the next to land in the same place* — and it had already come true once, half a
+    /// day after it was written, when item 856 added an `ordinary` row that restored as a zero. So
+    /// the last assertion reads THIS MODULE'S OWN SOURCE and holds that
+    /// [`RunRegistry::persistable`] writes no field of [`PersistedRun`] as an unconditional `Some`
+    /// except the ones classified below. A fifth tally cannot reach the log any other way without
+    /// going red first.
+    #[test]
+    fn a_tally_nobody_kept_is_not_a_tally_of_none() {
+        // ── HOP 1 and 2: a log with no counter column at all, restored and written back ───────
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let progress = ProgressCell::default();
+        {
+            let mut moving = lock(&progress);
+            moving.deliveries = Some(sprag_plugin::Deliveries {
+                made: 9,
+                folded: 2,
+                released: 1,
+                unsubmitted: 3,
+                unreported: 4,
+            });
+            let mut folds = sprag_plugin::FoldsByReason::NONE;
+            folds.record(sprag_plugin::ReflectReason::Capacity.occasion(), true);
+            moving.folds_by_reason = Some(folds);
+            let mut roads = sprag_plugin::DeliveredByRoad::NONE;
+            roads.record(sprag_plugin::Witnessed::Painted);
+            moving.delivered_by_road = Some(roads);
+            let mut said = sprag_plugin::SaidBySentence::NONE;
+            said.record(sprag_plugin::Sentence::Brief);
+            moving.said_by_sentence = Some(said);
+        }
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            tree: None,
+            overridden: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(an_outcome()),
+                output: None,
+                uncommitted: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress,
+        });
+        let written = serde_json::to_string(&registry.persistable())
+            .expect("a run log serialises to its own file");
+
+        // ⛔⛔⛔⛔⛔ **AND THE FOUR COLUMNS ARE DERIVED, NOT NAMED** — the rule `watching-zenoh`
+        // handed this register: take the population out of the PUBLISHER'S STRUCTURE rather than
+        // out of a list somebody typed, because the list is what goes stale. A durable key is not
+        // the wire key either (`deliveries` against `delivered`), so a hand list would be two
+        // vocabularies deep. Write the same row twice — once holding the tallies and once with
+        // them cleared through the TYPE — and the keys whose value goes null are exactly theirs.
+        let full: Value = serde_json::from_str(&written).expect("the log just written parses");
+        let mut cleared = registry.persistable();
+        {
+            let row = &mut cleared.runs[0];
+            row.deliveries = None;
+            row.folds_by_reason = None;
+            row.delivered_by_road = None;
+            row.said_by_sentence = None;
+        }
+        let bare = serde_json::to_value(&cleared).expect("and so does the cleared one");
+        let keys: Vec<String> = full["runs"][0]
+            .as_object()
+            .expect("a run is an object")
+            .iter()
+            .filter(|(name, held)| !held.is_null() && bare["runs"][0][name].is_null())
+            .map(|(name, _)| name.clone())
+            .collect();
+        assert_eq!(
+            keys.len(),
+            4,
+            "⚠ THE PREMISE: exactly the four tallies must go null when the TYPE's four tally \
+             fields are cleared, or this gate is reading a population it did not derive. Got \
+             {keys:?} from {written}",
+        );
+
+        // ⚠ THE FIXTURE IS BUILT BY EDITING THE PARSED DOCUMENT — the lesson item 856(3)'s own
+        // fixture paid for: a `replace` over the text matched only the rows whose values happened
+        // to differ, so the shape the gate claimed to read was not the shape it built.
+        let mut older = full.clone();
+        {
+            let row = older["runs"][0]
+                .as_object_mut()
+                .expect("a run is an object");
+            for key in &keys {
+                assert!(
+                    row.remove(key).is_some(),
+                    "⚠ THE PREMISE: this daemon must have written `{key}`, or what follows is a \
+                     statement about a column that was never there. Wrote {written}",
+                );
+            }
+        }
+        let older = older.to_string();
+        let old_log: RunLog = serde_json::from_str(&older).expect(
+            "⛔⛔⛔⛔ a run log written before any of the four tallies existed must still decode — \
+             every boot of this daemon restores from one",
+        );
+        let mut before = RunRegistry::default();
+        before.restore(&old_log);
+
+        let cell = &before.snapshot()[0].progress;
+        assert_eq!(
+            (
+                cell.deliveries.is_none(),
+                cell.folds_by_reason.is_none(),
+                cell.delivered_by_road.is_none(),
+                cell.said_by_sentence.is_none(),
+            ),
+            (true, true, true, true),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 891, HOP 1: a log with no counter column restored as a table \
+             of zeros, so *nobody was counting* and *counted and found none* are one value in the \
+             cell. Got {cell:?} from {older}",
+        );
+
+        // ⚠⚠ ASKED OF THE TYPE AND NOT OF THE KEYS — the four fields are what the persist site
+        // writes, and a gate reading names would pass a build that renamed one. The derived key
+        // list above is for BUILDING the older shape; this is for judging what came out of it.
+        let again = before.persistable();
+        let row = &again.runs[0];
+        assert_eq!(
+            (
+                row.deliveries.is_none(),
+                row.folds_by_reason.is_none(),
+                row.delivered_by_road.is_none(),
+                row.said_by_sentence.is_none(),
+            ),
+            (true, true, true, true),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 891, HOP 2: the absence went IN and a count came OUT — a run \
+             this image never incremented had zeros signed as its own. This is the round trip \
+             that put a zeroed table on 209 of the live store's 220 rows, including one from a \
+             build with no such concept. Got {row:?}",
+        );
+
+        // ── HOP 3 and HOP 4: and no READER meets a zero either, at EITHER mouth ─────────────
+        //
+        // ⚠⚠ SEPARATE HOPS AND NOT A COROLLARY — items 889 and 894 both found a wire outside
+        // their gate while the durable round trip was green, and the first draft of THIS gate
+        // asked `run_to_json` for a key only `progress_to_json` publishes, so a mutation that
+        // stamped zeros on silence came back GREEN. There are two mouths and they answer
+        // differently by design (item 663): the report block is UNCONDITIONAL, so an absent count
+        // crosses it as `null`; the row publishes each key only once there is something to say,
+        // so an absent count leaves no key at all.
+        let wire_keys = [
+            crate::plugins::RUN_DELIVERED_KEY,
+            crate::plugins::RUN_FOLDED_KEY,
+            crate::plugins::RUN_RELEASED_KEY,
+            crate::plugins::RUN_UNSUBMITTED_KEY,
+            crate::plugins::RUN_UNREPORTED_KEY,
+            crate::plugins::RUN_FOLDS_BY_REASON_KEY,
+            crate::plugins::RUN_DELIVERED_BY_ROAD_KEY,
+            crate::plugins::RUN_SAID_BY_SENTENCE_KEY,
+        ];
+        let reported = crate::plugins::progress_to_json(&before.snapshot()[0].progress);
+        let beside = &reported[crate::plugins::REPORTED_BESIDE_KEY];
+        assert!(
+            beside.is_object(),
+            "⚠ THE PREMISE: the report block is unconditional (item 663), so it must be here or \
+             the loop below is vacuous — which is exactly how this gate's first draft passed a \
+             mutation that stamped zeros on silence. Got {reported}",
+        );
+        for key in wire_keys {
+            assert!(
+                beside[key].is_null(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 891, HOP 3: the report crossed `{key}` as a number for a \
+                 run nobody counted. `progress_from_report` reads this block, so a zero here is \
+                 a count the host will believe and write down. Got {beside}",
+            );
+        }
+        let published = crate::plugins::run_to_json(&before.snapshot()[0], None, None);
+        for key in wire_keys {
+            assert!(
+                published.get(key).is_none(),
+                "⛔⛔⛔⛔ REGISTER ITEM 891, HOP 4: the ROW published `{key}` for a run nobody \
+                 counted. A reader cannot tell that from a run that counted and found none, and \
+                 item 815's clause reads the ABSENCE of this key as its evidence. Got {published}",
+            );
+        }
+
+        // ── AND THE RATCHET: the next tally cannot arrive the old way ────────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ **THE NEEDLES ARE SYNTHESISED AT RUN TIME** so this gate is not its own
+        // counter-example — item 872 built the same kind of ratchet three times before it stopped
+        // matching its own source. Nothing below appears in this file as a literal.
+        let source = include_str!("runs.rs");
+        let opener = format!("{}{}", "PersistedRun", " {");
+        let producer = format!("{} {}", "pub fn", "persistable");
+        let at = source
+            .find(&producer)
+            .expect("⚠ THE PREMISE: this module produces the durable log in a named function");
+        let body = &source[at..];
+        let literal = body
+            .find(&opener)
+            .expect("⚠ THE PREMISE: that function builds the record by naming its fields");
+        // ⚠ BRACE-MATCHED RATHER THAN LINE-COUNTED — register item 892's rule. A positional
+        // window is a second authority on where the literal ends, and the day somebody adds a
+        // field the window is silently reading somebody else's code.
+        let block = {
+            let from = &body[literal + opener.len() - 1..];
+            let mut depth = 0usize;
+            let mut end = from.len();
+            for (offset, byte) in from.bytes().enumerate() {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = offset;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            &from[..end]
+        };
+        let forced = format!("{}{}", ": Some", "(");
+        let signed: Vec<&str> = block
+            .match_indices(&forced)
+            .map(|(offset, _)| {
+                block[..offset]
+                    .rsplit(|it: char| !(it.is_alphanumeric() || it == '_'))
+                    .next()
+                    .unwrap_or_default()
+            })
+            .collect();
+        // ⛔⛔⛔⛔⛔ **THE CLASSIFIED LIST, AND ADDING TO IT IS A CLAIM** — this workspace's rule
+        // 6: an unclassified field is RED and never a pass. A name belongs here only when its
+        // value is something THIS IMAGE CAN READ NOW rather than something it had to count while
+        // the run ran, which is exactly the distinction item 891 turns on.
+        //
+        // ⚠ `stood_down` qualifies: it is a flag on the record in front of us, so `Some(false)` is
+        // a claim this image is entitled to make and its `None` belongs to an older log. A TALLY
+        // never qualifies — route it through [`counted`].
+        const MAY_BE_FORCED: [&str; 1] = ["stood_down"];
+        let unclassified: Vec<&&str> = signed
+            .iter()
+            .filter(|name| !MAY_BE_FORCED.contains(name))
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 891 ⑶: {unclassified:?} reach the durable log as an \
+             unconditional `Some`. If it is a TALLY, that is the laundering this item was filed \
+             over — a run this daemon never incremented gets a zero signed as its count — and it \
+             belongs in `counted`. If it is a fact this image can read NOW, classify it in \
+             `MAY_BE_FORCED` with the reason. Unclassified is RED, not a pass. Found {signed:?}",
         );
     }
 

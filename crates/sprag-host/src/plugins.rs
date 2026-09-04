@@ -5832,29 +5832,36 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
     // this driver saying it has delivered nothing, which is a fact and not a silence. The row's
     // own presence rules (a triple published only once something was typed, a sentence only once a
     // claim was checked) stay where they are — they are about what a READER should be shown.
+    //
+    // ⛔⛔⛔⛔⛔ **AND `null` IS A THIRD ANSWER THE KEYS NOW CARRY** — register item 891. Every
+    // counter below is `Option` on the cell, so an absent count crosses as `null` rather than as a
+    // zero: `folds_by_reason_in` and its neighbours already answer [`None`] for a key that is not
+    // an object, and `deliveries_in`'s whole-or-nothing `?` already answers [`None`] for a `null`
+    // number. So the reading a driver's silence has always had is exactly the reading a cell with
+    // nothing in it gets, and neither is a count.
     answer[REPORTED_BESIDE_KEY] = json!({
-        RUN_DELIVERED_KEY: progress.deliveries.made,
-        RUN_FOLDED_KEY: progress.deliveries.folded,
+        RUN_DELIVERED_KEY: progress.deliveries.map(|it| it.made),
+        RUN_FOLDED_KEY: progress.deliveries.map(|it| it.folded),
         // ⛔⛔⛔ AND WHICH WITNESS CLOSED THOSE FOLDS — register item 669. Beside the total it is
         // inside, never instead of it: a driver that sent this and not `folded` would be publishing
         // a sub-count with no container.
-        RUN_RELEASED_KEY: progress.deliveries.released,
-        RUN_UNSUBMITTED_KEY: progress.deliveries.unsubmitted,
-        RUN_UNREPORTED_KEY: progress.deliveries.unreported,
+        RUN_RELEASED_KEY: progress.deliveries.map(|it| it.released),
+        RUN_UNSUBMITTED_KEY: progress.deliveries.map(|it| it.unsubmitted),
+        RUN_UNREPORTED_KEY: progress.deliveries.map(|it| it.unreported),
         // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1). Composed from
         // `FoldsByReason::rows`, which walks `ReflectReason::ALL`, so a seventh reason arrives here
         // with a row rather than being silently left out of a hand-written list.
-        RUN_FOLDS_BY_REASON_KEY: folds_by_reason_json(progress.folds_by_reason),
+        RUN_FOLDS_BY_REASON_KEY: progress.folds_by_reason.map(folds_by_reason_json),
         // ⛔⛔⛔⛔⛔ AND WHAT PROVED EACH OF THOSE DELIVERIES — register item 856, and the only key
         // here from which a LANDING count can be read. Composed from `DeliveredByRoad::rows`,
         // which walks `Witnessed::ALL`, so an eighth road arrives with a row rather than being left
         // out of a hand-written list and pooled into a total nobody split.
-        RUN_DELIVERED_BY_ROAD_KEY: delivered_by_road_json(progress.delivered_by_road),
+        RUN_DELIVERED_BY_ROAD_KEY: progress.delivered_by_road.map(delivered_by_road_json),
         // ⛔⛔⛔⛔⛔ AND WHICH SENTENCE EACH ONE WAS — register item 889, and the only key here from
         // which *which prompt gets stuck* can be read. Composed from `SaidBySentence::rows`, which
         // walks `Sentence::ALL`, so a twelfth sentence arrives with a row rather than being left
         // out of a hand-written list and pooled into a rate nobody split.
-        RUN_SAID_BY_SENTENCE_KEY: said_by_sentence_json(progress.said_by_sentence),
+        RUN_SAID_BY_SENTENCE_KEY: progress.said_by_sentence.map(said_by_sentence_json),
         RUN_CHECKS_KEY: {
             "asked": progress.checks.asked,
             "silent": progress.checks.silent,
@@ -6612,7 +6619,15 @@ pub(crate) fn run_to_json(
     // ⚠⚠⚠⚠ THE REPORT FIRST — register item 663. For a run driven in another process the cell is
     // all zeros for ever, so reading it first published *nothing was ever typed* about a run that
     // had filled somebody's pane.
-    let deliveries = reported.deliveries.unwrap_or(run.progress.deliveries);
+    //
+    // ⚠⚠ AND THE FALLBACK IS `or`, NOT `unwrap_or` — register item 891. A cell with nothing in it
+    // is not a zero to fall back ON, and the predicate below reads `Deliveries::NONE` and *nobody
+    // counted* the same way only because both publish nothing; the difference is kept HERE so the
+    // one reader that needs it (the durable log's writer) can still see it.
+    let deliveries = reported
+        .deliveries
+        .or(run.progress.deliveries)
+        .unwrap_or(sprag_plugin::Deliveries::NONE);
     // ⚠⚠⚠ `unreported` JOINS THE PREDICATE — register item 762. A run whose every prompt was
     // swallowed by a composer has `made == 0` AND `unsubmitted == 0`, so without this clause the
     // one run this counter was built for publishes nothing at all — which is the exact shape item
@@ -6636,10 +6651,10 @@ pub(crate) fn run_to_json(
     // prompts and reflect none, and a table of six empty rows on that row would be a comparison
     // over nothing. ⚠ THE REPORT FIRST, for the triple's stated reason — an out-of-process run's
     // cell is zeros for ever.
-    let folds = reported
-        .folds_by_reason
-        .unwrap_or(run.progress.folds_by_reason);
-    if !folds.is_empty() {
+    //
+    // ⚠⚠ `or` RATHER THAN `unwrap_or` — register item 891, the reason `deliveries` above gives.
+    let folds = reported.folds_by_reason.or(run.progress.folds_by_reason);
+    if let Some(folds) = folds.filter(|it| !it.is_empty()) {
         entry[RUN_FOLDS_BY_REASON_KEY] = folds_by_reason_json(folds);
     }
     // ⛔⛔⛔⛔⛔ AND WHAT PROVED EACH DELIVERY — register item 856, on the line above's terms: the
@@ -6647,20 +6662,20 @@ pub(crate) fn run_to_json(
     // run's deliveries rather than its reflections. ⚠ A row with `made > 0` and no table here is an
     // older driver, which is what `is_empty` on a table of zeros says and a filled-in zero would
     // not.
+    // ⚠⚠ `or` RATHER THAN `unwrap_or` — register item 891, the reason `deliveries` above gives.
     let roads = reported
         .delivered_by_road
-        .unwrap_or(run.progress.delivered_by_road);
-    if !roads.is_empty() {
+        .or(run.progress.delivered_by_road);
+    if let Some(roads) = roads.filter(|it| !it.is_empty()) {
         entry[RUN_DELIVERED_BY_ROAD_KEY] = delivered_by_road_json(roads);
     }
     // ⛔⛔⛔⛔⛔ AND WHICH SENTENCE EACH PROMPT WAS — register item 889, on the two blocks above's
     // terms: the report first, the cell as the fallback, and its own predicate because a run that
     // typed nothing has no rate to publish and a table of eleven zero rows would be a comparison
     // over nothing.
-    let sentences = reported
-        .said_by_sentence
-        .unwrap_or(run.progress.said_by_sentence);
-    if !sentences.is_empty() {
+    // ⚠⚠ `or` RATHER THAN `unwrap_or` — register item 891, the reason `deliveries` above gives.
+    let sentences = reported.said_by_sentence.or(run.progress.said_by_sentence);
+    if let Some(sentences) = sentences.filter(|it| !it.is_empty()) {
         entry[RUN_SAID_BY_SENTENCE_KEY] = said_by_sentence_json(sentences);
     }
     // ⚠⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601,
@@ -11864,7 +11879,7 @@ mod tests {
         /// A row for a run whose progress carries `folds`.
         fn row(folds: sprag_plugin::FoldsByReason) -> Value {
             let progress = sprag_plugin::Progress {
-                folds_by_reason: folds,
+                folds_by_reason: Some(folds),
                 ..sprag_plugin::Progress::default()
             };
             run_to_json(
@@ -12280,7 +12295,7 @@ mod tests {
         /// A row for a run whose progress carries `roads`.
         fn row(roads: sprag_plugin::DeliveredByRoad) -> Value {
             let progress = sprag_plugin::Progress {
-                delivered_by_road: roads,
+                delivered_by_road: Some(roads),
                 ..sprag_plugin::Progress::default()
             };
             run_to_json(
@@ -13860,10 +13875,10 @@ mod tests {
                 // beside the row that reads it.
                 unadmitted: None,
                 waiting: None,
-                deliveries: sprag_plugin::Deliveries::NONE,
-                folds_by_reason: sprag_plugin::FoldsByReason::NONE,
-                delivered_by_road: sprag_plugin::DeliveredByRoad::NONE,
-                said_by_sentence: sprag_plugin::SaidBySentence::NONE,
+                deliveries: Some(sprag_plugin::Deliveries::NONE),
+                folds_by_reason: Some(sprag_plugin::FoldsByReason::NONE),
+                delivered_by_road: Some(sprag_plugin::DeliveredByRoad::NONE),
+                said_by_sentence: Some(sprag_plugin::SaidBySentence::NONE),
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
@@ -14035,10 +14050,10 @@ mod tests {
                 unchecked: None,
                 unadmitted: None,
                 waiting: None,
-                deliveries: sprag_plugin::Deliveries::NONE,
-                folds_by_reason: folds,
-                delivered_by_road: sprag_plugin::DeliveredByRoad::NONE,
-                said_by_sentence: sprag_plugin::SaidBySentence::NONE,
+                deliveries: Some(sprag_plugin::Deliveries::NONE),
+                folds_by_reason: Some(folds),
+                delivered_by_road: Some(sprag_plugin::DeliveredByRoad::NONE),
+                said_by_sentence: Some(sprag_plugin::SaidBySentence::NONE),
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
@@ -14143,7 +14158,7 @@ mod tests {
         /// A progress cell as a driver really hands one over, carrying `roads`.
         fn progress(roads: sprag_plugin::DeliveredByRoad) -> sprag_plugin::Progress {
             sprag_plugin::Progress {
-                delivered_by_road: roads,
+                delivered_by_road: Some(roads),
                 ..sprag_plugin::Progress::default()
             }
         }
@@ -20003,7 +20018,7 @@ mod tests {
                             note: Some("A-STEP-THIS-DRIVER-TOOK".to_owned()),
                             walked: Vec::new(),
                         }],
-                        deliveries: sprag_plugin::Deliveries {
+                        deliveries: Some(sprag_plugin::Deliveries {
                             made: 5,
                             folded: 2,
                             unsubmitted: 1,
@@ -20016,7 +20031,7 @@ mod tests {
                             // own container, and that answer reads as a real diagnosis (*every
                             // fold was the composer's, so this peer's hooks report nothing*).
                             released: 1,
-                        },
+                        }),
                         checks: sprag_plugin::Checks {
                             asked: 3,
                             silent: 2,
@@ -20200,13 +20215,13 @@ mod tests {
         let cell = sprag_plugin::ProgressCell::default();
         {
             let mut moving = lock(&cell);
-            moving.deliveries = sprag_plugin::Deliveries {
+            moving.deliveries = Some(sprag_plugin::Deliveries {
                 made: 7,
                 folded: 0,
                 released: 0,
                 unsubmitted: 0,
                 unreported: 0,
-            };
+            });
             moving.driving = Some(pane);
             moving.banked = Some(sprag_plugin::Banked {
                 completed: 6,

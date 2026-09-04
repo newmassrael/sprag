@@ -1381,7 +1381,27 @@ pub struct Progress {
     ///
     /// ⚠ [`Deliveries::NONE`] for a plugin that delivers no composed prompt, which is three of the
     /// four bundled ones; see that constant for why the absence is a claim rather than a default.
-    pub deliveries: Deliveries,
+    ///
+    /// # ⛔⛔⛔⛔⛔ And [`None`] is the OTHER absence — register item 891, and the whole argument
+    /// for the four counter cells below lives here
+    ///
+    /// `Some(Deliveries::NONE)` is *something was counting and there was nothing to count*.
+    /// [`None`] is *nothing was counting*, and until item 891 this cell had no way to say the
+    /// second — a host that read a predecessor's log with no such column filled the cell with
+    /// zeros, and the next log it wrote signed those zeros as a count of its own.
+    ///
+    /// **Measured 2026-09-05** over the live loop's store: `folds_by_reason` was present and
+    /// non-null on **220 of 220** rows and only **11** of them held a non-zero table, and row `id
+    /// 0` — build `52459b9ebf78`, a build with no such concept — carried a full table of zeros. So
+    /// *nobody counted* and *counted nothing* were one shape on 209 rows, and the number item
+    /// 856's done-when is judged by (*how many runs have a sample*) was wrong by two orders of
+    /// magnitude in the direction that reassures.
+    ///
+    /// ⚠ A DRIVER NEVER WRITES [`None`] HERE: it asked its plugin, so whatever came back is a
+    /// claim, and [`inherited`](Self::inherited) is what says whose claim it is while the run is
+    /// live. The arm exists for `sprag_host::runs::RunRegistry::restore`, which is the one writer
+    /// that can have nothing — and for the persist site that must not launder its nothing.
+    pub deliveries: Option<Deliveries>,
     /// ⛔⛔⛔⛔⛔ **THOSE SAME FOLDS, SPLIT BY WHY THE LOOP WAS REFLECTING** —
     /// [`Plugin::folds_by_reason`], register item 856(1).
     ///
@@ -1393,7 +1413,10 @@ pub struct Progress {
     ///
     /// ⚠ [`crate::outer::FoldsByReason::NONE`] for every plugin that does not reflect — every row
     /// `0 of 0`, which is *no reason ever fired* and not *nothing folded*.
-    pub folds_by_reason: crate::outer::FoldsByReason,
+    ///
+    /// ⚠⚠ AND [`None`] ON [`deliveries`](Self::deliveries)'S TERMS — register item 891. This is
+    /// the cell whose laundered zeros that item was filed over.
+    pub folds_by_reason: Option<crate::outer::FoldsByReason>,
     /// ⛔⛔⛔⛔⛔ **AND EVERY DELIVERY, SPLIT BY WHAT PROVED IT ARRIVED** —
     /// [`Plugin::delivered_by_road`], register item 856.
     ///
@@ -1406,7 +1429,9 @@ pub struct Progress {
     ///
     /// ⚠ [`crate::outer::DeliveredByRoad::NONE`] for a plugin that types no composed prompt —
     /// every road present and zero, which is a population and not *nothing landed*.
-    pub delivered_by_road: crate::outer::DeliveredByRoad,
+    ///
+    /// ⚠⚠ AND [`None`] ON [`deliveries`](Self::deliveries)'S TERMS — register item 891.
+    pub delivered_by_road: Option<crate::outer::DeliveredByRoad>,
     /// ⛔⛔⛔⛔⛔ **AND EVERY PROMPT, SPLIT BY WHICH SENTENCE IT WAS AND WHETHER IT WAS EVER ASKED**
     /// — [`Plugin::said_by_sentence`], register item 889.
     ///
@@ -1418,7 +1443,9 @@ pub struct Progress {
     ///
     /// ⚠ [`crate::outer::SaidBySentence::NONE`] for a plugin that composes no prompt — every
     /// sentence present and zero, which is a population and not *nothing went unasked*.
-    pub said_by_sentence: crate::outer::SaidBySentence,
+    ///
+    /// ⚠⚠ AND [`None`] ON [`deliveries`](Self::deliveries)'S TERMS — register item 891.
+    pub said_by_sentence: Option<crate::outer::SaidBySentence>,
     /// ⚠⚠⚠⚠⚠ **WHICH PANE THIS RUN IS DRIVING RIGHT NOW** — [`Plugin::driving`], register item 540.
     ///
     /// # The fact that was published only as prose inside a name
@@ -1657,10 +1684,15 @@ impl Driver {
             at: self.at,
             waiting: self.waiting.clone(),
             place: self.place.clone(),
-            deliveries: self.deliveries,
-            folds_by_reason: self.folds_by_reason,
-            delivered_by_road: self.delivered_by_road,
-            said_by_sentence: self.said_by_sentence,
+            // ⛔⛔⛔⛔⛔ **`Some` FOR ALL FOUR, AND THE `Some` IS THE CLAIM** — register item 891.
+            // This driver asked its plugin for each of these a moment ago
+            // (`Driver::step`'s four `plugin.…()` calls), so a zero table here is *it counted and
+            // there was nothing*, which is a fact. Only a restore can have nothing to say, and the
+            // whole of item 891 is that its nothing must not arrive here wearing this shape.
+            deliveries: Some(self.deliveries),
+            folds_by_reason: Some(self.folds_by_reason),
+            delivered_by_road: Some(self.delivered_by_road),
+            said_by_sentence: Some(self.said_by_sentence),
             checks: self.checks.clone(),
             banked: self.banked.clone(),
             briefed: self.briefed,
@@ -3234,7 +3266,8 @@ mod tests {
             .last()
             .expect("⚠⚠ THE PREMISE: a run that took steps must have published at least once");
         assert_eq!(
-            last.delivered_by_road, counted,
+            last.delivered_by_road,
+            Some(counted),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the plugin counted what proved each of its deliveries \
              and the driver forwarded none of it. This is the FIRST crossing — everything \
              downstream of it would carry a table of zeros while every gate it has stayed green, \
@@ -3243,11 +3276,11 @@ mod tests {
         );
         assert_eq!(
             (
-                last.delivered_by_road.landed(),
-                last.delivered_by_road.unproven(),
-                last.delivered_by_road.not_asked(),
+                last.delivered_by_road.map(|it| it.landed()),
+                last.delivered_by_road.map(|it| it.unproven()),
+                last.delivered_by_road.map(|it| it.not_asked()),
             ),
-            (5, 3, 2),
+            (Some(5), Some(3), Some(2)),
             "⚠⚠⚠ AND THE THREE ANSWERS ARRIVE APART. `made - folded` reads 10 of 10 for this \
              plugin, and five of those never became a question: {last:?}",
         );
@@ -3386,13 +3419,13 @@ mod tests {
         // The cell as a restore hands it over: a predecessor's counters, marked as such.
         let cell: ProgressCell = Arc::new(Mutex::new(Progress {
             iterations: 7,
-            deliveries: Deliveries {
+            deliveries: Some(Deliveries {
                 made: 3,
                 folded: 0,
                 released: 0,
                 unsubmitted: 0,
                 unreported: 0,
-            },
+            }),
             inherited: true,
             ..Progress::default()
         }));
