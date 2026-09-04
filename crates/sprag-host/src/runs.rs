@@ -2766,13 +2766,19 @@ impl From<PersistedFoldsByReason> for sprag_plugin::FoldsByReason {
         let mut live = Self::NONE;
         for (word, row) in stored.under {
             // ⚠ A word this build has no arm for is DROPPED, which is this type's stated decision:
-            // a count restored under the wrong axis is worse than a count lost, and `ReflectReason`
-            // is the only authority on which words there are.
-            let Some(reason) = sprag_plugin::ReflectReason::named(&word) else {
+            // a count restored under the wrong axis is worse than a count lost, and `Occasion` is
+            // the only authority on which words there are.
+            //
+            // ⚠⚠ `Occasion` and not `ReflectReason` since register item 856's widening — the key
+            // space is every reason PLUS the ordinary traffic. A log written by a build that has
+            // the wider space and restored by one that does not drops the new row, which is this
+            // rule working: the identity that row exists for is a claim only a build that counts
+            // it can make.
+            let Some(occasion) = sprag_plugin::Occasion::named(&word) else {
                 continue;
             };
             live.restore(
-                reason,
+                occasion,
                 sprag_plugin::FoldsUnder {
                     delivered: row.delivered,
                     folded: row.folded,
@@ -5570,14 +5576,14 @@ mod tests {
         let progress = ProgressCell::default();
         let mut folds = sprag_plugin::FoldsByReason::NONE;
         for _ in 0..3 {
-            folds.record(sprag_plugin::ReflectReason::Capacity, true);
+            folds.record(sprag_plugin::ReflectReason::Capacity.occasion(), true);
         }
         // ⚠⚠ THE CONTROL ROW, and the one that must not be lost: same prompt shape, a different
         // reason, and it LANDED. It is the only shape that can refute item 856's axis, so a
         // restore that kept only the folds would leave the register unable to be contradicted —
         // which is the state this item exists to end.
         for _ in 0..4 {
-            folds.record(sprag_plugin::ReflectReason::Budget, false);
+            folds.record(sprag_plugin::ReflectReason::Budget.occasion(), false);
         }
         // ⛔⛔⛔⛔⛔ **AND THE HARDENINGS, WHICH ARE IN NEITHER ROW ABOVE** — register item 856(3).
         // `capacity` gets one of EACH road, so a restore that carried the pair as one number, or
@@ -5585,11 +5591,22 @@ mod tests {
         // coincidence. `budget` deliberately gets NONE, which is the control: a reason that
         // reflected and never hardened is the shape item 856's axis can be refuted by.
         folds.record_unasked(
-            sprag_plugin::ReflectReason::Capacity,
+            sprag_plugin::ReflectReason::Capacity.occasion(),
             sprag_plugin::UnaskedRoad::AfterAFold,
         );
         folds.record_unasked(
-            sprag_plugin::ReflectReason::Capacity,
+            sprag_plugin::ReflectReason::Capacity.occasion(),
+            sprag_plugin::UnaskedRoad::OnThePane,
+        );
+        // ⛔⛔⛔⛔⛔ **AND THE ORDINARY TRAFFIC, WHICH IS THE ROW A PERSON ACTUALLY READS AGAINST** —
+        // register item 856's widening. It exists so the split can be reconciled with the run's
+        // totals, and item 606 measured that the split anybody reads is ALWAYS a restored one —
+        // thirteen live runs, every one restored. A row that died with its daemon would leave the
+        // identity checkable only on a run nobody looks at.
+        folds.record(sprag_plugin::Occasion::Ordinary, true);
+        folds.record(sprag_plugin::Occasion::Ordinary, false);
+        folds.record_unasked(
+            sprag_plugin::Occasion::Ordinary,
             sprag_plugin::UnaskedRoad::OnThePane,
         );
         lock(&progress).folds_by_reason = folds;
@@ -5618,7 +5635,7 @@ mod tests {
 
         let carried = successor.snapshot()[0].progress.folds_by_reason;
         assert_eq!(
-            carried.under(sprag_plugin::ReflectReason::Capacity),
+            carried.under(sprag_plugin::ReflectReason::Capacity.occasion()),
             sprag_plugin::FoldsUnder {
                 delivered: 3,
                 folded: 3,
@@ -5638,7 +5655,7 @@ mod tests {
              {on_disk}",
         );
         assert_eq!(
-            carried.under(sprag_plugin::ReflectReason::Budget),
+            carried.under(sprag_plugin::ReflectReason::Budget.occasion()),
             sprag_plugin::FoldsUnder {
                 delivered: 4,
                 folded: 0,
@@ -5650,6 +5667,23 @@ mod tests {
             "⛔⛔⛔⛔ AND THE ROW THAT LANDED SURVIVED. A restore that kept the folds and dropped \
              this one leaves a table whose denominator is its numerator — the hand tally item \
              856(1) replaced, restored faithfully. Got {carried:?} from {on_disk}",
+        );
+        assert_eq!(
+            carried.under(sprag_plugin::Occasion::Ordinary),
+            sprag_plugin::FoldsUnder {
+                delivered: 2,
+                folded: 1,
+                unasked: sprag_plugin::Unasked {
+                    after_a_fold: 0,
+                    on_the_pane: 1,
+                },
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856's WIDENING, ACROSS THE DAEMON: the ordinary row is what \
+             makes this table reconcilable with the run's own totals, and item 606 measured that \
+             every split a person reads came out of this file. Dropped here, the identity holds \
+             only on a live run nobody is looking at, and the difference between the split and the \
+             totals goes back to being a number that explains itself to nobody. Got {carried:?} \
+             from {on_disk}",
         );
 
         // ⛔⛔⛔⛔⛔ ── AND A LOG WRITTEN BEFORE THE PAIR EXISTED READS AS ZERO, NOT AS A REFUSAL ──
@@ -5696,7 +5730,7 @@ mod tests {
             before.snapshot()[0]
                 .progress
                 .folds_by_reason
-                .under(sprag_plugin::ReflectReason::Capacity)
+                .under(sprag_plugin::ReflectReason::Capacity.occasion())
                 .unasked,
             sprag_plugin::Unasked::default(),
             "⚠⚠ and it reads as *nobody counted this*, which for a stored row is the same number \

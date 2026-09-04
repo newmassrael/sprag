@@ -5720,7 +5720,10 @@ fn folds_by_reason_in(beside: &Value) -> Option<sprag_plugin::FoldsByReason> {
     let table = beside.get(RUN_FOLDS_BY_REASON_KEY)?.as_object()?;
     let mut folds = sprag_plugin::FoldsByReason::NONE;
     for (word, row) in table {
-        let reason = sprag_plugin::ReflectReason::named(word)?;
+        // ⚠ `Occasion` and not `ReflectReason` since register item 856's widening: the key space is
+        // every reason PLUS the ordinary traffic, and a reader that still asked the narrower
+        // vocabulary would fail the whole read the day a peer reports the row this table gained.
+        let occasion = sprag_plugin::Occasion::named(word)?;
         // ⛔⛔⛔⛔ **THE `unasked` PAIR IS REQUIRED, NOT DEFAULTED** — register item 856(3), on this
         // function's own whole-or-nothing rule. A live driver that reports the fold pair and not
         // this one has not counted the hardening events; filling in zeros would publish *this
@@ -5732,7 +5735,7 @@ fn folds_by_reason_in(beside: &Value) -> Option<sprag_plugin::FoldsByReason> {
         // `crate::runs::PersistedFoldsUnder`: a stored row is a fact from another build, and a log
         // written before this field existed is not a skew anyone can act on.
         folds.restore(
-            reason,
+            occasion,
             sprag_plugin::FoldsUnder {
                 delivered: small(row.get("delivered"))?,
                 folded: small(row.get("folded"))?,
@@ -9699,13 +9702,13 @@ mod tests {
         let mut live = sprag_plugin::FoldsByReason::NONE;
         // Three capacity reflections, all folded — the shape the register has recorded by hand.
         for _ in 0..3 {
-            live.record(sprag_plugin::ReflectReason::Capacity, true);
+            live.record(sprag_plugin::ReflectReason::Capacity.occasion(), true);
         }
         // ⚠⚠⚠ AND FOUR BUDGET REFLECTIONS THAT LANDED, which is the CONTROL the axis needs: the
         // prompt is the same shape either way, so a row that folds beside a row that does not is
         // the comparison item 856 has never had.
         for _ in 0..4 {
-            live.record(sprag_plugin::ReflectReason::Budget, false);
+            live.record(sprag_plugin::ReflectReason::Budget.occasion(), false);
         }
 
         // ══ ① THE WIRE ═════════════════════════════════════════════════════════════════════════
@@ -11030,12 +11033,12 @@ mod tests {
 
         let mut counted = sprag_plugin::FoldsByReason::NONE;
         for _ in 0..3 {
-            counted.record(sprag_plugin::ReflectReason::Capacity, true);
+            counted.record(sprag_plugin::ReflectReason::Capacity.occasion(), true);
         }
         // The CONTROL row — same prompt shape, a reason that is not about a full session, and it
         // LANDED. Item 856's own refutation lives in this row and nowhere else.
         for _ in 0..4 {
-            counted.record(sprag_plugin::ReflectReason::Budget, false);
+            counted.record(sprag_plugin::ReflectReason::Budget.occasion(), false);
         }
 
         // ── ① THE NUMBERS REACH THE ROW ──
@@ -11076,7 +11079,7 @@ mod tests {
         // being right is not the claim; the READING being available is.
         let mut hardened = sprag_plugin::FoldsByReason::NONE;
         hardened.record_unasked(
-            sprag_plugin::ReflectReason::Capacity,
+            sprag_plugin::ReflectReason::Capacity.occasion(),
             sprag_plugin::UnaskedRoad::OnThePane,
         );
         let wedged = row(hardened);
@@ -12937,23 +12940,23 @@ mod tests {
 
         let mut counted = sprag_plugin::FoldsByReason::NONE;
         for _ in 0..3 {
-            counted.record(sprag_plugin::ReflectReason::Capacity, true);
+            counted.record(sprag_plugin::ReflectReason::Capacity.occasion(), true);
         }
         // The CONTROL row: same prompt shape, different reason, and it landed — the comparison the
         // whole split exists to make possible.
         for _ in 0..4 {
-            counted.record(sprag_plugin::ReflectReason::Budget, false);
+            counted.record(sprag_plugin::ReflectReason::Budget.occasion(), false);
         }
         // ⛔⛔⛔⛔⛔ **AND THE HARDENINGS, WHICH ARE IN NEITHER NUMBER ABOVE** — register item
         // 856(3). `capacity` hardens once on EACH road; `budget` hardens on neither, which is the
         // control. Two roads under one reason is what a crossing that summed them would destroy,
         // and summing them is precisely the shape that made runs 194 and 197 unreadable.
         counted.record_unasked(
-            sprag_plugin::ReflectReason::Capacity,
+            sprag_plugin::ReflectReason::Capacity.occasion(),
             sprag_plugin::UnaskedRoad::AfterAFold,
         );
         counted.record_unasked(
-            sprag_plugin::ReflectReason::Capacity,
+            sprag_plugin::ReflectReason::Capacity.occasion(),
             sprag_plugin::UnaskedRoad::OnThePane,
         );
 

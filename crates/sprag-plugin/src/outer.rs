@@ -2287,6 +2287,16 @@ impl ReflectReason {
         Self::ALL.into_iter().find(|reason| reason.word() == word)
     }
 
+    /// **WHAT A PROMPT ASKED UNDER THIS REASON WAS ASKED UNDER**, as [`Occasion`] spells it.
+    ///
+    /// ⚠ Here rather than at each call site so *a reason is one occasion among more* is stated in
+    /// one place. A caller assembling `Occasion::Reflecting(reason)` by hand is a caller free to
+    /// assemble `Occasion::Ordinary` for a reflection, and nothing would say so.
+    #[must_use]
+    pub const fn occasion(self) -> Occasion {
+        Occasion::Reflecting(self)
+    }
+
     /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
     /// word, so a caller that needs to match gets it from [`word`](Self::word).
     #[must_use]
@@ -2469,21 +2479,111 @@ impl Unasked {
 ///
 /// # ⚠⚠⚠ Rule 6: an added reason cannot go uncounted
 ///
-/// The rows are [`ReflectReason::ALL`], so a seventh reason arrives with a row rather than falling
+/// The rows are [`Occasion::ALL`], so a seventh reason arrives with a row rather than falling
 /// into a default nobody reads. The register's own rule — *unclassified is RED, not a pass* — is
 /// what a hand-maintained list of interesting reasons would have broken on the first addition.
+///
+/// # ⛔⛔⛔⛔⛔ And the population is TOTAL since 2026-09-04, which is what makes it checkable
+///
+/// The rows used to be [`ReflectReason::ALL`] alone, and a delivery made while the loop was NOT
+/// reflecting belonged to none of them. That was defended in this file's own words — *"`None` is
+/// not a gap, it is the other half of the population … what they are counted in is `deliveries`,
+/// so nothing is lost"* — and the second clause is the one that was false. Nothing was lost, and
+/// nothing could be CHECKED: `Deliveries::folded` minus the sum of these rows was a number no
+/// artefact named, so **a row that silently missed an increment reads exactly like a delivery that
+/// was outside the population.** Measured over the twelve runs whose build carries this table:
+/// `deliveries.folded` **10** against a row sum of **8**, and the two runs holding that difference
+/// look, from the rows alone, indistinguishable from two runs whose recording was broken.
+///
+/// [`Occasion::Ordinary`] closes it. Every delivery now has exactly one row, so
+/// `Deliveries::made == Σ rows.delivered` and `Deliveries::folded == Σ rows.folded` are ARITHMETIC
+/// and a gate holds them — see
+/// `outer::tests::every_delivery_this_run_made_lands_in_exactly_one_row_of_the_split`.
+///
+/// ⚠⚠ It is a row and not a scalar for [`FoldsUnder`]'s reason: a bare *folds outside* count would
+/// carry no denominator, and *this run asked nothing outside a reflection* would be the same number
+/// as *it asked forty and none folded* — the collapse this whole table exists to end.
+/// ⛔⛔⛔⛔⛔ **WHAT THIS RUN WAS DOING WHEN IT ASKED A PROMPT** — [`FoldsByReason`]'s key, and the
+/// widening that made that table's population TOTAL.
+///
+/// # ⛔⛔⛔⛔ A word for the absence, because the absence is most of the traffic
+///
+/// [`ReflectReason`] is the DOCUMENT's vocabulary: it is parsed out of the machine's own
+/// `reflect_reason` slot, and a member invented here would be a word no document can write. So the
+/// arm that says *the loop was not reflecting* is spelled outside that enum rather than inside it —
+/// the shape `Reaim::Never` and `Unattended::Never` already use one crate over, where an absence
+/// that a reader must ACT on is a value and never a `None`.
+///
+/// ⚠⚠⚠ [`ALL`](Self::ALL) is DERIVED from [`ReflectReason::ALL`] rather than listed, which is what
+/// makes rule 6 hold without a ratchet watching a hand-written array: a seventh reason arrives in
+/// this key space, in this table's rows, on the wire and in the restore, with nobody editing any of
+/// them. The neighbouring `crate::deliver::Witnessed::ALL` needs a source-reading gate for exactly
+/// the property this gets from its construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Occasion {
+    /// The loop was REFLECTING, and this is what put it there.
+    Reflecting(ReflectReason),
+    /// **THE LOOP WAS NOT REFLECTING** — the run's ordinary traffic: its opening brief, its turn
+    /// prompts, its account at the end.
+    ///
+    /// ⚠ Not a lesser row. It is the biggest one in every run that works, and its whole job is to
+    /// be the difference between the split and the total — so that difference stops being a number
+    /// a reader has to explain and becomes one a gate can check.
+    Ordinary,
+}
+
+impl Occasion {
+    /// **EVERY OCCASION A PROMPT MAY BE ASKED UNDER**, the reflecting ones in
+    /// [`ReflectReason::ALL`]'s order and [`Ordinary`](Self::Ordinary) last.
+    ///
+    /// ⚠⚠ Built from that array in a `const` block rather than spelled out, so the two cannot come
+    /// apart. `Ordinary` is last because it is the one member that is not the document's, and a
+    /// reader scanning a row table should meet the document's vocabulary first.
+    pub const ALL: [Self; ReflectReason::ALL.len() + 1] = {
+        let mut all = [Self::Ordinary; ReflectReason::ALL.len() + 1];
+        let mut at = 0;
+        while at < ReflectReason::ALL.len() {
+            all[at] = Self::Reflecting(ReflectReason::ALL[at]);
+            at += 1;
+        }
+        all
+    };
+
+    /// **THE KEY THIS ROW IS PUBLISHED UNDER** — one word, for the wire and the durable log.
+    ///
+    /// ⚠ A reflecting occasion answers its REASON's word, unchanged, so every row this table has
+    /// ever published keeps the key it had. Only the new arm brings a new word.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Reflecting(reason) => reason.word(),
+            // ⚠⚠ Not `none` and not the empty string: both read as *this build had no answer*,
+            // which is the reading `crate::plugin::Counted` and every absence in this workspace is
+            // written to keep apart from a stated one. This row is a CLAIM about deliveries that
+            // were made while nothing was being reflected on.
+            Self::Ordinary => "ordinary",
+        }
+    }
+
+    /// The occasion named by `word`, or [`None`] for a word outside the closed set.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|it| it.word() == word)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FoldsByReason {
-    /// One row per [`ReflectReason::ALL`], in that array's order.
+    /// One row per [`Occasion::ALL`], in that array's order.
     ///
     /// ⚠ Private, so the only way in and out is by REASON — an index is a second spelling of the
     /// order this array happens to be in, and a caller that wrote one would be free to disagree
     /// with `ALL` about which row is which.
-    under: [FoldsUnder; ReflectReason::ALL.len()],
+    under: [FoldsUnder; Occasion::ALL.len()],
 }
 
 impl FoldsByReason {
-    /// **NOTHING REFLECTED YET** — every row zero, which is what a run that has not reflected has
+    /// **NOTHING DELIVERED YET** — every row zero, which is what a run that has typed nothing has
     /// honestly counted.
     pub const NONE: Self = Self {
         under: [FoldsUnder {
@@ -2493,25 +2593,29 @@ impl FoldsByReason {
                 after_a_fold: 0,
                 on_the_pane: 0,
             },
-        }; ReflectReason::ALL.len()],
+        }; Occasion::ALL.len()],
     };
 
-    /// Where `reason`'s row lives — the one place an index is derived, so [`ReflectReason::ALL`] is
+    /// Where `occasion`'s row lives — the one place an index is derived, so [`Occasion::ALL`] is
     /// the only authority on the order.
-    fn at(reason: ReflectReason) -> usize {
-        ReflectReason::ALL
+    fn at(occasion: Occasion) -> usize {
+        Occasion::ALL
             .iter()
-            .position(|it| *it == reason)
-            .expect("ReflectReason::ALL is every arm")
+            .position(|it| *it == occasion)
+            .expect("Occasion::ALL is every arm")
     }
 
-    /// **RECORD ONE DELIVERY MADE WHILE REFLECTING FOR `reason`**, and whether its paste folded.
+    /// **RECORD ONE DELIVERY MADE UNDER `occasion`**, and whether its paste folded.
     ///
     /// ⚠ `folded` is passed rather than re-derived: the caller has already classified this delivery
     /// through [`crate::deliver::Witnessed::folded_away`], and a second classification here would be
     /// a second authority on which roads are folds — the defect this file pays for repeatedly.
-    pub fn record(&mut self, reason: ReflectReason, folded: bool) {
-        let row = &mut self.under[Self::at(reason)];
+    ///
+    /// ⚠⚠ It takes an [`Occasion`] and not an `Option<ReflectReason>`, which is the whole of the
+    /// widening: an `Option` invites a caller to skip the call, and a skipped call is exactly the
+    /// missing increment this table could not tell from a delivery outside its population.
+    pub fn record(&mut self, occasion: Occasion, folded: bool) {
+        let row = &mut self.under[Self::at(occasion)];
         row.delivered = row.delivered.saturating_add(1);
         if folded {
             row.folded = row.folded.saturating_add(1);
@@ -2531,8 +2635,8 @@ impl FoldsByReason {
     /// caller has already classified this refusal through
     /// [`crate::deliver::Delivered::refused`], and a second classification here would be a second
     /// authority on which roads are folds.
-    pub fn record_unasked(&mut self, reason: ReflectReason, road: UnaskedRoad) {
-        let row = &mut self.under[Self::at(reason)].unasked;
+    pub fn record_unasked(&mut self, occasion: Occasion, road: UnaskedRoad) {
+        let row = &mut self.under[Self::at(occasion)].unasked;
         let counter = match road {
             UnaskedRoad::AfterAFold => &mut row.after_a_fold,
             UnaskedRoad::OnThePane => &mut row.on_the_pane,
@@ -2552,27 +2656,27 @@ impl FoldsByReason {
     /// `(delivered, folded)`, and it is a decision rather than tidying: four `u32` parameters in a
     /// row are four chances for a caller to transpose two of them, and the compiler would say
     /// nothing. A row that arrives as a row cannot be assembled in the wrong order.
-    pub fn restore(&mut self, reason: ReflectReason, row: FoldsUnder) {
-        self.under[Self::at(reason)] = row;
+    pub fn restore(&mut self, occasion: Occasion, row: FoldsUnder) {
+        self.under[Self::at(occasion)] = row;
     }
 
-    /// What `reason`'s row says.
+    /// What `occasion`'s row says.
     #[must_use]
-    pub fn under(&self, reason: ReflectReason) -> FoldsUnder {
-        self.under[Self::at(reason)]
+    pub fn under(&self, occasion: Occasion) -> FoldsUnder {
+        self.under[Self::at(occasion)]
     }
 
-    /// Every row with its reason, in [`ReflectReason::ALL`]'s order — **including the empty ones**,
-    /// because a reason that never fired and a reason that fired and never folded are different
+    /// Every row with its occasion, in [`Occasion::ALL`]'s order — **including the empty ones**,
+    /// because an occasion that never arose and one that arose and never folded are different
     /// facts and a reader has to be able to tell them apart.
-    pub fn rows(&self) -> impl Iterator<Item = (ReflectReason, FoldsUnder)> + '_ {
-        ReflectReason::ALL
+    pub fn rows(&self) -> impl Iterator<Item = (Occasion, FoldsUnder)> + '_ {
+        Occasion::ALL
             .into_iter()
-            .map(|reason| (reason, self.under(reason)))
+            .map(|occasion| (occasion, self.under(occasion)))
     }
 
-    /// Whether anything has been counted at all — a run that has never reflected, so the split has
-    /// nothing to say rather than saying every reason is clean.
+    /// Whether anything has been counted at all — a run that has typed nothing, so the split has
+    /// nothing to say rather than saying every occasion is clean.
     ///
     /// ⛔⛔⛔ **A HARDENING COUNTS AS SOMETHING** — register item 856(3). This read `delivered == 0`
     /// alone, and a reflection whose ONLY event was a question nobody was asked delivered nothing
@@ -8431,15 +8535,19 @@ impl OuterLoop {
         // reason under which nothing was ever asked, which is how a denominator quietly shrinks
         // until a ratio says what somebody hoped.
         //
-        // ⚠⚠ **`None` IS NOT A GAP, IT IS THE OTHER HALF OF THE POPULATION.** A prompt asked while
-        // the machine is NOT reflecting belongs to no row — `working`'s prompts are the run's
-        // ordinary traffic and pooling them into a reflection's denominator is exactly the blurring
-        // register item 856 warns about. What they are counted in is `deliveries` above, which is
-        // every delivery this run made, so nothing is lost and the two readings answer different
-        // questions.
-        if let Some(reason) = self.reflecting_because() {
-            self.folds.record(reason, folded);
-        }
+        // ⚠⚠ **A PROMPT ASKED OUTSIDE A REFLECTION IS THE OTHER HALF OF THE POPULATION, AND IT NOW
+        // HAS A ROW.** `working`'s prompts are the run's ordinary traffic, and pooling them into a
+        // reflection's denominator is exactly the blurring register item 856 warns about — so they
+        // go to `Occasion::Ordinary`, which is beside those rows and never added to them.
+        //
+        // ⛔⛔⛔⛔⛔ **THIS WAS AN `if let` THAT SKIPPED, AND THE SKIP IS WHAT 856 CAME BACK FOR.**
+        // The sentence here read *"what they are counted in is `deliveries` above … so nothing is
+        // lost"*, and nothing WAS lost — nothing could be CHECKED. `deliveries.folded` minus the
+        // sum of these rows was a number no artefact named, so a site that stopped recording read
+        // exactly like a run whose deliveries were outside the population. Measured over the twelve
+        // runs whose build carries this table: total 10, row sum 8, and the difference explains
+        // itself to nobody. Recording every delivery makes both an identity a gate holds.
+        self.folds.record(self.occasion(), folded);
     }
 
     /// **HOW MANY CALLS THE DOCUMENT COUNTS A STANDING INSTRUCTION HAVING TURNED DOWN** — its own
@@ -9477,6 +9585,17 @@ impl OuterLoop {
     /// document gate — for a word this driver has no arm for. Not a failure in any of the cases:
     /// the cost is a journal line that says less, where `Noticed::Undrivable` would end a run that
     /// is otherwise going perfectly well over a fact nobody has yet acted on.
+    /// **WHAT THIS RUN IS DOING AS THE PROMPT IN FLIGHT GOES OUT** — [`FoldsByReason`]'s key, and
+    /// [`reflecting_because`](Self::reflecting_because) with its absence given a name.
+    ///
+    /// ⚠ A total function, which is the point: every delivery has exactly one occasion, so the
+    /// split's rows sum to the run's totals and a missing increment cannot hide as *outside the
+    /// population*. See [`Occasion::Ordinary`].
+    fn occasion(&self) -> Occasion {
+        self.reflecting_because()
+            .map_or(Occasion::Ordinary, ReflectReason::occasion)
+    }
+
     fn reflecting_because(&self) -> Option<ReflectReason> {
         // ⛔⛔⛔⛔⛔ WHAT THIS PROMPT IS, BEFORE THE WORD — register item 856(1). Read the other way
         // round it is the same expression with the defect intact, because the word is always
@@ -12151,8 +12270,14 @@ impl OuterLoop {
             //
             // ⚠ `None` is the other half of the population, exactly as it is for the fold row: a
             // refusal outside a reflection belongs to no row and is counted in `deliveries` above.
-            if let (Some(road), Some(reason)) = (road, self.reflecting_because()) {
-                self.folds.record_unasked(reason, road);
+            // ⚠⚠ AND THE OCCASION IS TOTAL SINCE 2026-09-04 — register item 856. This read
+            // `(road, self.reflecting_because())` and DROPPED a refusal the loop was not reflecting
+            // under, which left the split's `unasked` half with the same unverifiable gap the
+            // `folded` half had. Both halves move together because they share this row: a row whose
+            // `delivered` counts the ordinary traffic and whose `unasked` silently did not would be
+            // a rate over the wrong denominator, which is the disease this table is for.
+            if let Some(road) = road {
+                self.folds.record_unasked(self.occasion(), road);
             }
             // ⛔⛔⛔⛔⛔ **AND THE SAME REFUSAL AGAINST THE SENTENCE THAT WAS BEING SAID** — register
             // item 889, and the row the two above cannot be: the fold table's population is
@@ -22356,21 +22481,22 @@ mod tests {
     /// (register item 837) — because every other fixture happens to have two populated rows. The
     /// property the design is built on was the one thing nothing was watching.
     ///
-    /// ⚠ Rule 6, at the population rather than at a value: `ReflectReason::ALL` is the authority,
-    /// so a seventh reason arrives with a row instead of falling out of a hand-kept list.
+    /// ⚠ Rule 6, at the population rather than at a value: [`Occasion::ALL`] is the authority, so a
+    /// seventh reason arrives with a row instead of falling out of a hand-kept list — and since
+    /// that array is BUILT from `ReflectReason::ALL`, the two cannot come apart either.
     #[test]
     fn the_split_of_a_runs_folds_publishes_every_reason_or_it_separates_nothing() {
         // A run that reflected for exactly ONE reason — the shape whose table is most tempting to
         // shorten, and the shape whose control group is most needed.
         let mut only_one = FoldsByReason::NONE;
         for _ in 0..5 {
-            only_one.record(ReflectReason::Capacity, true);
+            only_one.record(ReflectReason::Capacity.occasion(), true);
         }
 
-        let published: Vec<ReflectReason> = only_one.rows().map(|(reason, _)| reason).collect();
+        let published: Vec<Occasion> = only_one.rows().map(|(occasion, _)| occasion).collect();
         assert_eq!(
             published,
-            ReflectReason::ALL.to_vec(),
+            Occasion::ALL.to_vec(),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): the split publishes fewer rows than there are \
              reasons, so a run that reflected for one reason publishes ONE ROW — `capacity 5 of 5` \
              and nothing to compare it with. That is the capacity-only counter this whole design \
@@ -22387,25 +22513,37 @@ mod tests {
         // on the order, exactly as it is on the membership.
         assert_eq!(
             published.first().copied(),
-            ReflectReason::ALL.first().copied(),
-            "⚠⚠⚠ the rows must arrive in `ReflectReason::ALL`'s order, or two runs' tables are \
+            Occasion::ALL.first().copied(),
+            "⚠⚠⚠ the rows must arrive in `Occasion::ALL`'s order, or two runs' tables are \
              not comparable without sorting them first: {published:?}",
+        );
+        assert_eq!(
+            published.last().copied(),
+            Some(Occasion::Ordinary),
+            "⚠⚠ AND THE ORDINARY ROW IS LAST — register item 856's widening. It is the one member \
+             that is not the document's vocabulary, and a reader scanning this table meets the \
+             reasons first: {published:?}",
         );
 
         // ── AND THE EMPTY ROWS REALLY ARE EMPTY, never filled from a neighbour ──
         //
         // ⚠ The control for the claim above: a table that published six rows by COPYING the one
         // that had data would satisfy the membership assertion and destroy the comparison.
-        for (reason, row) in only_one.rows() {
-            let expected = match reason {
+        for (occasion, row) in only_one.rows() {
+            let expected = match occasion {
                 // ⚠ NOTHING WENT UNASKED in this fixture — every delivery produced a witness, so
                 // the item 856(3) pair is zero on every row and is asserted so rather than
                 // widened past: a row that stopped carrying it would go unnoticed here.
-                ReflectReason::Capacity => FoldsUnder {
+                Occasion::Reflecting(ReflectReason::Capacity) => FoldsUnder {
                     delivered: 5,
                     folded: 5,
                     unasked: Unasked::default(),
                 },
+                // ⚠⚠ AND `Ordinary` IS AMONG THE EMPTY ONES HERE, which is the fixture being
+                // honest rather than an oversight: this run reflected five times and asked nothing
+                // outside a reflection, so its ordinary row is a stated zero — see
+                // `a_delivery_asked_outside_a_reflection_is_counted_under_the_ordinary_row` for
+                // the shape that fills it.
                 _ => FoldsUnder {
                     delivered: 0,
                     folded: 0,
@@ -22418,9 +22556,133 @@ mod tests {
                 "⛔⛔⛔⛔ REGISTER ITEM 856(1): `{}`'s row is not what this run counted. A row \
                  filled from a neighbour is worse than a missing one — it invents a population, \
                  and every comparison drawn against it is against a number nobody measured",
-                reason.word(),
+                occasion.word(),
             );
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A DELIVERY ASKED OUTSIDE A REFLECTION HAS A ROW, AND IT IS NOT A REASON'S** —
+    /// register item 856's widening, at the smallest scale it can be asked.
+    ///
+    /// # ⛔⛔⛔⛔ What the absence of this row cost, measured
+    ///
+    /// The table's key used to be [`ReflectReason`] alone, so a prompt the loop was not reflecting
+    /// under was recorded NOWHERE — defended in this file as *"nothing is lost, they are counted in
+    /// `deliveries`"*. Nothing was lost and nothing could be CHECKED: over the twelve runs of this
+    /// repository whose build carried the table, `deliveries.folded` was **10** against a row sum
+    /// of **8**, and no artefact anywhere said whether those two folds were ordinary traffic or a
+    /// counter that had stopped being written.
+    ///
+    /// # ⚠⚠⚠ Both halves of the row, because they share a denominator
+    ///
+    /// The refusal counters moved with the fold counters — the two call sites shared the guard that
+    /// skipped. A row whose `delivered` counted the ordinary traffic while its `unasked` silently
+    /// did not would publish a rate over the wrong denominator, which is the disease this whole
+    /// table exists to end.
+    /// ⛔⛔⛔⛔⛔ **EVERY OCCASION HAS ITS OWN WORD, AND THAT WORD FINDS IT AGAIN** — register item
+    /// 856's widening, and the gate a MUTATION asked for.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The collision is silent in both directions, and it was measured
+    ///
+    /// [`Occasion::Ordinary`]'s word was given `budget`'s spelling as a mutation and **every gate
+    /// in this file stayed green**. Nothing else looks: the membership gate asserts which arms
+    /// exist and in what order, the identity gates sum rows without naming them, and the restore
+    /// gate reads back a table the same build wrote. What breaks is the WIRE and the durable log,
+    /// where a row is keyed by its word — `named` walks [`Occasion::ALL`] and returns the FIRST
+    /// match, so a restored run would file its whole ordinary traffic under a reflection's row and
+    /// publish a `budget` population that never happened.
+    ///
+    /// ⚠⚠ It asks the round trip and not just the distinctness, because those are two failures: a
+    /// duplicate word makes `named` answer the wrong arm, and a word `named` cannot find at all
+    /// makes the row vanish on restore. The second is what a typo in either direction produces.
+    #[test]
+    fn every_occasion_has_its_own_word_and_that_word_finds_it_again() {
+        let words: std::collections::BTreeSet<&str> =
+            Occasion::ALL.iter().map(|it| it.word()).collect();
+        assert_eq!(
+            words.len(),
+            Occasion::ALL.len(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: two occasions share a word, so the row keyed by it on the \
+             wire and in the durable log is ONE row for two populations — and `Occasion::named` \
+             returns whichever comes first, which silently files a run's ordinary traffic under a \
+             reflection that never happened. Words {words:?}, occasions {:?}",
+            Occasion::ALL,
+        );
+        for occasion in Occasion::ALL {
+            assert_eq!(
+                Occasion::named(occasion.word()),
+                Some(occasion),
+                "⛔⛔⛔⛔ a row written under `{}` cannot be read back as the occasion that wrote \
+                 it, so it is dropped on every restore — and item 606 measured that a restore is \
+                 the crossing every reader of this table takes",
+                occasion.word(),
+            );
+        }
+        assert_eq!(
+            Occasion::named("no-such-occasion"),
+            None,
+            "⚠⚠ and a word outside the closed set is refused rather than guessed: a count restored \
+             under the wrong row is worse than a count lost, which is this table's stated rule",
+        );
+    }
+
+    #[test]
+    fn a_delivery_asked_outside_a_reflection_is_counted_under_the_ordinary_row() {
+        let mut folds = FoldsByReason::NONE;
+        folds.record(Occasion::Ordinary, true);
+        folds.record(Occasion::Ordinary, false);
+        folds.record(ReflectReason::Capacity.occasion(), false);
+        folds.record_unasked(Occasion::Ordinary, UnaskedRoad::OnThePane);
+        folds.record_unasked(ReflectReason::Capacity.occasion(), UnaskedRoad::AfterAFold);
+
+        assert_eq!(
+            folds.under(Occasion::Ordinary),
+            FoldsUnder {
+                delivered: 2,
+                folded: 1,
+                unasked: Unasked {
+                    after_a_fold: 0,
+                    on_the_pane: 1,
+                },
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the run's ordinary traffic must land in its own row, with \
+             its own denominator. Dropped, the split cannot be reconciled with the run's totals and \
+             a counter that stops being written is indistinguishable from a prompt the table was \
+             never meant to count: {folds:?}",
+        );
+        assert_eq!(
+            folds.under(ReflectReason::Capacity.occasion()),
+            FoldsUnder {
+                delivered: 1,
+                folded: 0,
+                unasked: Unasked {
+                    after_a_fold: 1,
+                    on_the_pane: 0,
+                },
+            },
+            "⚠⚠⚠ AND THE REFLECTION'S ROW IS UNTOUCHED BY IT, which is the whole point of a row \
+             rather than a wider denominator: the comparison BETWEEN rows is the instrument, and \
+             an ordinary prompt pooled into `capacity` is the counter-example item 856 reads. \
+             Got {folds:?}",
+        );
+
+        // ── AND THE SPLIT SUMS TO WHAT WAS PUT IN IT ──────────────────────────────────────────
+        //
+        // ⚠⚠ The identity the widening exists for, asked here on numbers a reader can count by
+        // hand; `a_prompt_asked_while_the_loop_is_not_reflecting_belongs_to_no_row` asks it of a
+        // real run against that run's own totals.
+        let summed =
+            |pick: fn(&FoldsUnder) -> u32| -> u32 { folds.rows().map(|(_, row)| pick(&row)).sum() };
+        assert_eq!(
+            (
+                summed(|row| row.delivered),
+                summed(|row| row.folded),
+                summed(|row| row.unasked.total()),
+            ),
+            (3, 1, 2),
+            "⛔⛔⛔ every delivery and every refusal put into this table must be findable in \
+             exactly one of its rows: {folds:?}",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **A RUN THAT HARDENED WITHOUT FOLDING IS IN THE TABLE** — register item 856(3),
@@ -22452,7 +22714,7 @@ mod tests {
         // run's fold count is zero. A fixture that folded once first would let a fold-denominated
         // table pass.
         let mut wedged = FoldsByReason::NONE;
-        wedged.record_unasked(ReflectReason::Capacity, UnaskedRoad::OnThePane);
+        wedged.record_unasked(ReflectReason::Capacity.occasion(), UnaskedRoad::OnThePane);
 
         assert!(
             !wedged.is_empty(),
@@ -22462,7 +22724,7 @@ mod tests {
              delivery — which is how runs 194 and 197 were invisible while 197 died of it: \
              {wedged:?}",
         );
-        let row = wedged.under(ReflectReason::Capacity);
+        let row = wedged.under(ReflectReason::Capacity.occasion());
         assert_eq!(
             (row.delivered, row.folded, row.unasked.total()),
             (0, 0, 1),
@@ -22487,8 +22749,8 @@ mod tests {
         // implied a hardening could confirm the axis and never refute it — the exact defect the
         // item pays. Same reason, so the two arms differ in ONE thing.
         let mut landed = FoldsByReason::NONE;
-        landed.record(ReflectReason::Capacity, true);
-        let control = landed.under(ReflectReason::Capacity);
+        landed.record(ReflectReason::Capacity.occasion(), true);
+        let control = landed.under(ReflectReason::Capacity.occasion());
         assert_eq!(
             (control.delivered, control.folded, control.unasked.total()),
             (1, 1, 0),
@@ -22500,11 +22762,11 @@ mod tests {
 
         // ══ ③ AND THE TWO ROADS DO NOT SUM ══════════════════════════════════════════════════════
         let mut both = FoldsByReason::NONE;
-        both.record_unasked(ReflectReason::Capacity, UnaskedRoad::AfterAFold);
-        both.record_unasked(ReflectReason::Capacity, UnaskedRoad::OnThePane);
-        both.record_unasked(ReflectReason::Capacity, UnaskedRoad::OnThePane);
+        both.record_unasked(ReflectReason::Capacity.occasion(), UnaskedRoad::AfterAFold);
+        both.record_unasked(ReflectReason::Capacity.occasion(), UnaskedRoad::OnThePane);
+        both.record_unasked(ReflectReason::Capacity.occasion(), UnaskedRoad::OnThePane);
         assert_eq!(
-            both.under(ReflectReason::Capacity).unasked,
+            both.under(ReflectReason::Capacity.occasion()).unasked,
             Unasked {
                 after_a_fold: 1,
                 on_the_pane: 2,
@@ -22519,7 +22781,7 @@ mod tests {
         // ⚠ The neighbouring gate's hazard, one value over: a recording that leaked across rows
         // would satisfy every assertion above and destroy the comparison between them.
         assert_eq!(
-            both.under(ReflectReason::Budget).unasked,
+            both.under(ReflectReason::Budget.occasion()).unasked,
             Unasked::default(),
             "⚠⚠⚠ a hardening was filed under a reason the loop was not reflecting for, so the \
              comparison between rows is over invented populations: {both:?}",
@@ -22654,7 +22916,7 @@ mod tests {
         );
 
         // ══ ① THE COUNTER-EXAMPLE IS RECORDABLE — the whole of what item 856(1) was missing ════
-        let budget = folds.under(ReflectReason::Budget);
+        let budget = folds.under(ReflectReason::Budget.occasion());
         assert!(
             budget.delivered > 0,
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): a reflection was asked and its delivery reached no \
@@ -22677,7 +22939,7 @@ mod tests {
         // the two would read alike to anybody comparing rows, which is the comparison the split
         // was built for.
         assert_eq!(
-            folds.under(ReflectReason::Capacity),
+            folds.under(ReflectReason::Capacity.occasion()),
             FoldsUnder {
                 delivered: 0,
                 folded: 0,
@@ -22832,8 +23094,25 @@ mod tests {
                 outside_deliveries += 1;
             }
             // ══ THE INVARIANT ══════════════════════════════════════════════════════════════════
+            //
+            // ⛔⛔⛔⛔⛔ **IT ASKS THE REFLECTING ROWS AND NOT THE WHOLE TABLE, AND THAT IS NOT A
+            // WEAKENING** — register item 856's widening. This compared the table WHOLE, which was
+            // right while an ordinary prompt was filed nowhere; it now has a row of its own
+            // (`Occasion::Ordinary`), so a whole-table comparison would be red for the repair
+            // working. What this gate was built to catch is unchanged and is asserted here
+            // verbatim: an ordinary prompt must not reach a REFLECTION's row. The claim it used to
+            // make about the rest of the table — that nothing else moved either — is now made
+            // arithmetically at the end of this gate, and by more than this pass could see.
+            let reflecting = |folds: &FoldsByReason| {
+                folds
+                    .rows()
+                    .filter(|(occasion, _)| *occasion != Occasion::Ordinary)
+                    .map(|(_, row)| row)
+                    .collect::<Vec<_>>()
+            };
             assert_eq!(
-                after, before,
+                reflecting(&after),
+                reflecting(&before),
                 "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): this pass arrived in {to:?} and moved a row of \
                  the reflection split. Nothing was reflecting, so the delivery it made is the \
                  run's ORDINARY traffic being filed under whatever reason last entered \
@@ -22873,16 +23152,53 @@ mod tests {
         // ⚠⚠ The control for the repair's other direction: a build that answered the reason `None`
         // everywhere would satisfy every claim above with an EMPTY table, and the split would be
         // an instrument that records nothing. Something must be in it, and not everything.
-        let rows: u32 = folds
+        let reflected_rows: u32 = folds
             .rows()
+            .filter(|(occasion, _)| *occasion != Occasion::Ordinary)
             .map(|(_, row)| row.delivered + row.unasked.total())
             .sum();
         assert!(
-            rows > 0 && rows < deliveries.made,
-            "⛔⛔⛔⛔ THE SPLIT MUST BE A PROPER PART OF THE RUN. Zero rows is a build that reads \
-             the reason as `None` everywhere — the invariant above satisfied by recording nothing \
-             — and rows equal to this run's every delivery is the leak itself. Rows {rows}, total \
-             {deliveries:?}, split {folds:?}, walked {walked:?}",
+            reflected_rows > 0 && reflected_rows < deliveries.made,
+            "⛔⛔⛔⛔ THE REFLECTION ROWS MUST BE A PROPER PART OF THE RUN. Zero is a build that \
+             reads the reason as `None` everywhere — the invariant above satisfied by recording \
+             nothing — and a figure equal to this run's every delivery is the leak itself. \
+             Reflecting rows {reflected_rows}, total {deliveries:?}, split {folds:?}, walked \
+             {walked:?}",
+        );
+
+        // ══ AND THE TABLE IS NOW THE WHOLE RUN, WHICH IS WHAT MAKES THE LINE ABOVE CHECKABLE ════
+        //
+        // ⛔⛔⛔⛔⛔ **REGISTER ITEM 856's WIDENING, ASSERTED WHERE THE RUN IS REAL.** Before
+        // `Occasion::Ordinary` the difference between this run's totals and the sum of these rows
+        // was a number no artefact named — so a row that silently stopped being written read
+        // exactly like a delivery outside the population, and the gate above could only ever say
+        // *not in a reflection's row*. Measured over the twelve runs whose build carried the
+        // narrower table: `deliveries.folded` 10 against a row sum of 8, with nothing to say
+        // whether those two were ordinary traffic or a broken counter.
+        //
+        // ⚠⚠ FOUR IDENTITIES AND NOT ONE, because the rows carry four numbers and a leak into any
+        // of them is the same defect: the delivered denominator, the folds inside it, and the two
+        // refusal roads, each against the total this driver keeps beside them.
+        let summed =
+            |pick: fn(&FoldsUnder) -> u32| -> u32 { folds.rows().map(|(_, row)| pick(&row)).sum() };
+        assert_eq!(
+            (
+                summed(|row| row.delivered),
+                summed(|row| row.folded),
+                summed(|row| row.unasked.on_the_pane),
+                summed(|row| row.unasked.after_a_fold),
+            ),
+            (
+                deliveries.made,
+                deliveries.folded,
+                deliveries.unsubmitted,
+                deliveries.unreported,
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: every delivery and every refusal this run made must land \
+             in exactly one row of the split, so the table sums to the run's own totals. A \
+             mismatch is a delivery recorded in one place and not the other, and until this held \
+             there was no reading that could tell that from a prompt the table was never meant to \
+             count. Split {folds:?}, totals {deliveries:?}, walked {walked:?}",
         );
     }
 
@@ -23238,7 +23554,7 @@ mod tests {
 
         // ══ ① THE HARDENING IS IN THE TABLE, ON A ROW NO DELIVERY COULD HAVE MADE ══════════════
         assert_eq!(
-            folds.under(ReflectReason::Budget),
+            folds.under(ReflectReason::Budget.occasion()),
             FoldsUnder {
                 delivered: 0,
                 folded: 0,
@@ -23262,7 +23578,10 @@ mod tests {
         // assertion above pins it; this one says WHY it is not a detail, and pins the total too so
         // that a build summing the two roads cannot satisfy the pair.
         assert_eq!(
-            folds.under(ReflectReason::Budget).unasked.total(),
+            folds
+                .under(ReflectReason::Budget.occasion())
+                .unasked
+                .total(),
             deliveries.unsubmitted,
             "⛔⛔⛔⛔ THE SPLIT MUST BE A SPLIT OF THE RUN'S OWN REFUSALS. This run refused once, \
              on the pane road, and the row must carry that one and no more — a split that counted \
@@ -23278,7 +23597,7 @@ mod tests {
         // being made over invented populations — and this row is the one every reader of item 856
         // looks at first.
         assert_eq!(
-            folds.under(ReflectReason::Capacity),
+            folds.under(ReflectReason::Capacity.occasion()),
             FoldsUnder::default(),
             "⚠⚠⚠⚠⚠ A REASON THAT NEVER FIRED MUST HAVE NO POPULATION. This run's ceiling is \
              {ROOMY}, far above any reading, so a hardening here means refusals are being filed \
@@ -23404,6 +23723,7 @@ mod tests {
         };
         let said = loops.said_by_sentence();
         let deliveries = loops.deliveries();
+        let folds = loops.folds_by_reason();
         for live in access.pane_ids() {
             access.lifecycle().expect("lifecycle").close(live);
         }
@@ -23481,6 +23801,49 @@ mod tests {
              ceiling, so a count here means prompts are being filed under whatever row was last \
              set — which would make every comparison between rows a comparison of invented \
              populations. Said {said:?}, walked {walked:?}",
+        );
+
+        // ══ ⑤ AND THE FOLD SPLIT TIES TO THOSE TOTALS TOO — REGISTER ITEM 856's WIDENING ═══════
+        //
+        // ⛔⛔⛔⛔⛔ **THIS RUN IS WHERE THE REFUSAL HALF OF THAT WIDENING IS LIVE, AND A MUTATION
+        // IS WHAT SAID SO.** The widening's own gate
+        // (`a_prompt_asked_while_the_loop_is_not_reflecting_belongs_to_no_row`) drives a run whose
+        // deliveries all land, so restoring the old `if let` skip on the REFUSAL call site left it
+        // GREEN — both sides of its identity were zero. It is the same dead control this workspace
+        // met one contract over the same day: a staging that cannot reach the line being mutated.
+        //
+        // Here the turn prompt is REFUSED and the loop is not reflecting when it happens, so the
+        // ordinary row is the only place that refusal can be, and the identity below is the only
+        // thing that says it arrived.
+        let summed =
+            |pick: fn(&FoldsUnder) -> u32| -> u32 { folds.rows().map(|(_, row)| pick(&row)).sum() };
+        assert_eq!(
+            (
+                summed(|row| row.delivered),
+                summed(|row| row.folded),
+                summed(|row| row.unasked.on_the_pane),
+                summed(|row| row.unasked.after_a_fold),
+            ),
+            (
+                deliveries.made,
+                deliveries.folded,
+                deliveries.unsubmitted,
+                deliveries.unreported,
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: this run's refusal happened outside a reflection, so it \
+             belongs to the ordinary row — and a build that drops it publishes a split whose \
+             hardening count is short by exactly the events a reader most wants. Split {folds:?}, \
+             totals {deliveries:?}, walked {walked:?}",
+        );
+        assert_eq!(
+            folds.under(Occasion::Ordinary).unasked,
+            Unasked {
+                after_a_fold: 0,
+                on_the_pane: 1,
+            },
+            "⚠⚠⚠ AND IT IS THE ORDINARY ROW THAT HOLDS IT, not a reflection's: this peer refused a \
+             TURN prompt, and filing that under whatever reason last entered `reflect_reason` is \
+             the pooling register item 856 exists to end. Split {folds:?}, walked {walked:?}",
         );
     }
 
