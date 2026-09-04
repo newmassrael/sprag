@@ -8880,6 +8880,140 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AN ANSWER LONGER THAN THE PANE IS WIDE CROSSES WHOLE** — register item 866 ⑴,
+    /// and the 90 % of every reflection that was being thrown away in silence.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was green, and what it cost
+    ///
+    /// `OuterLoop::proposed` read the pane's ROWS — and a row is the WIDTH's answer, not the
+    /// agent's. Measured over another repository's run 181, the three answers taken apart:
+    ///
+    /// | | cells |
+    /// |---|---:|
+    /// | the agent WROTE `NEXT MILESTONE:` (3×) | 762 · 792 · 671 |
+    /// | what was DELIVERED as the milestone | **161** |
+    /// | the agent WROTE `NEXT REFERENCE:` | 1966 |
+    /// | what was DELIVERED as the carry | **160** |
+    ///
+    /// The pty was 163 wide and the answer body is indented two, so 161 is the first rendered row
+    /// and nothing after it — cut mid-word. **What survived was the debt's slug; what was thrown
+    /// away was the order to do it in, the reproduction steps and why that verb.** And
+    /// `ReflectApplied` published SUCCESS every time, so the loop's own instrument gave a green
+    /// light to a value it had truncated.
+    ///
+    /// ⇒ The repair was already in the product and its doc names this caller:
+    /// `PaneAccess::pane_full_lines` is *the LOGICAL LINES THE CHILD WROTE — one entry per line
+    /// however the width broke it*, and says **anything that matches a marker is asking about
+    /// CONTENT** because *the width belongs to whichever client attached*.
+    ///
+    /// # ⚠⚠ WHY THE ANSWER IS LONG AND THE PANE IS THE ORDINARY ONE
+    ///
+    /// Item 866 wrote the trap into its own done-when: ⛔ *폭을 넓혀 초록으로 만들지 마라* — the same
+    /// trap item 837 is standing red over. So the variable moved here is the ANSWER, not the width:
+    /// the fixture keeps its ordinary 80 columns and each answer is over 140 cells, which is two
+    /// rendered rows and one logical line.
+    ///
+    /// ⛔ A first draft drove it at **40** columns and the run never reached a replacement at all —
+    /// at that width the loop's own markers break, which is register item 788's defect and not
+    /// this one. **A gate has to stage ITS hazard and no other**, so the narrow-pane version was
+    /// abandoned rather than debugged into a second subject.
+    ///
+    /// ⚠ The count is asserted in CELLS as well as by content, because the register's own
+    /// measurement had to be redone in cells — a char bound would have predicted `131 == 92` and a
+    /// byte bound `161 == 201`, and neither held.
+    #[test]
+    fn a_reflection_longer_than_the_pane_is_wide_crosses_whole() {
+        /// Over 200 cells, so at 40 columns it takes six rendered rows — and every clause after
+        /// the first row is the part item 866 measured as lost.
+        /// ⚠ NO APOSTROPHE: the fixture interpolates this into a single-quoted `sh` script, and
+        /// the first draft of this gate died on `ledger's` with an unterminated quoted string.
+        const NEXT: &str = "pay the third open item, and do it in this order: re-measure the \
+                            numbers in the register first, then build the gate, then mutate it, \
+                            because a gate nobody has seen go red is only prose";
+        /// And the carry, longer again: item 866 measured this side losing four and a half of the
+        /// five lessons a session had bought by driving.
+        const READ_NEXT: &str = "the register entry for it, and the two commands in its measured \
+                                 section, because the second one is the only place the denominator \
+                                 is written down and the first disagrees with it";
+
+        // ⚠⚠ THE ORDINARY WIDTH, and the ANSWER is what is long — see the doc for why the narrow
+        // version was abandoned rather than debugged.
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(1, NEXT, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+
+        let run = RunContext::uncancellable();
+        let mut replaced = None;
+        let mut steps = 0;
+        while replaced.is_none() && steps < 60 {
+            steps += 1;
+            let before = loops.state();
+            loops
+                .step(&access, &run)
+                .expect("every step of a reached milestone must be readable");
+            if loops.state() == AiLoopState::Priming && before == AiLoopState::Resuming {
+                replaced = Some(());
+            }
+            if matches!(
+                loops.state(),
+                AiLoopState::Converged
+                    | AiLoopState::Exhausted
+                    | AiLoopState::Failed
+                    | AiLoopState::Cancelled
+                    | AiLoopState::Blocked
+            ) {
+                break;
+            }
+        }
+        let authored = loops.authored().expect("the datamodel still answers");
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        assert!(
+            replaced.is_some(),
+            "⚠ THE PREMISE: the run has to reach a replacement, or nothing here has read an \
+             answer at all",
+        );
+        assert!(
+            authored.start.contains(NEXT),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 866: the milestone arrived CUT. `proposed` read a screen ROW, \
+             which is the WIDTH's answer and not the agent's — measured over another repository's \
+             run 181 at 671–792 cells written and 161 delivered, every reflection, while \
+             `ReflectApplied` published success. What is lost is the ORDER, the reproduction and \
+             the why. ⛔ The repair is `pane_full_lines`, never a wider pane. Briefed with: {:?}",
+            authored.start,
+        );
+        assert!(
+            authored.start.contains(READ_NEXT),
+            "⛔⛔⛔⛔ AND THE CARRY TOO, which item 866 measured as the WORSE half — 1966 cells \
+             written, 160 delivered, four and a half of five lessons gone. Briefed with: {:?}",
+            authored.start,
+        );
+
+        // ⚠⚠⚠ AND THE WIDTH IS ASSERTED, because this register's own first reading of the same
+        // defect was in chars and in bytes and BOTH predicted the wrong bound (a char bound wanted
+        // `131 == 92`, a byte bound `161 == 201`). A `contains` alone would also pass a build that
+        // had widened something, which is the move item 866's done-when forbids.
+        //
+        // ⚠ These two constants are ASCII, so a cell is a char here and `len()` is the cell count —
+        // stated rather than assumed, because the register's measurement is in cells and a Korean
+        // answer would make the two differ.
+        assert!(
+            NEXT.is_ascii() && READ_NEXT.is_ascii(),
+            "⚠ THE PREMISE for the count below: cells and chars only agree while this is ASCII",
+        );
+        assert!(
+            NEXT.len() > 80 && READ_NEXT.len() > 80,
+            "⚠ THE PREMISE: each answer must be WIDER than this fixture's 80 columns, or a \
+             row-reading build passes by accident and this gate is about nothing. {} and {} \
+             cell(s)",
+            NEXT.len(),
+            READ_NEXT.len(),
+        );
+    }
+
     /// ⚠⚠⚠ **AND A RUN WHOSE AGENT HAS NOTHING FURTHER STILL ENDS** — the other half of
     /// [`a_reached_milestone_asks_what_is_next`], and the one that stands between this feature and a
     /// livelock.

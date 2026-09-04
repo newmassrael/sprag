@@ -11477,11 +11477,43 @@ impl OuterLoop {
         if label.trim().is_empty() {
             return None;
         }
-        self.driving
+        // ⛔⛔⛔⛔⛔ **FRESHNESS IS ASKED OF THE ROWS AND CONTENT OF THE LOGICAL LINES** — register
+        // item 866, and this used to be one read of the rows for both.
+        //
+        // A screen row is the WIDTH's answer. `PaneAccess::pane_full_lines`' own doc names this
+        // exact caller — *anything that publishes a model's words, MATCHES A MARKER or relays to a
+        // peer is asking about CONTENT* — and says why: the width belongs to whichever client
+        // attached, so a rendered read makes a run's milestone depend on somebody else's window.
+        //
+        // Measured over another repository's run 181, three answers taken apart: the agent WROTE
+        // 762, 792 and 671 cells of `NEXT MILESTONE:` and 1966 of `NEXT REFERENCE:`; what was
+        // stored and delivered was **161** and **160** cells — the first rendered row and nothing
+        // after it, cut mid-word. The pty was 163 wide. So a reflection's *what, in what order and
+        // why* was thrown away every time while `ReflectApplied` published success.
+        //
+        // ⚠ THE TWO READS ARE NOT INTERCHANGEABLE AND THAT IS WHY BOTH ARE HERE:
+        //
+        // * a FRESH ROW is what says an answer arrived AT ALL. Reading content alone would hand
+        //   back the PREVIOUS reflection's line whenever this one produced nothing, and the run
+        //   would adopt a checkpoint the agent never repeated.
+        // * a LOGICAL LINE is what says what the answer WAS. Reading rows alone is item 866.
+        //
+        // ⚠ Both keep `rfind` and the echo discount, for the reasons above.
+        let arrived = self
+            .driving
             .judged
             .fresh(panes, self.driving.pane)
             .iter()
             .filter_map(|row| opens_with(row, &label))
+            .any(|said| !said.is_empty() && !echoes(asked, &label, &said));
+        if !arrived {
+            return None;
+        }
+        panes
+            .pane_full_lines(self.driving.pane)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|line| opens_with(line, &label))
             .rfind(|said| !said.is_empty() && !echoes(asked, &label, said))
     }
 
