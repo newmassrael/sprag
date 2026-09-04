@@ -7066,6 +7066,137 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A FINISHED RUN STILL NAMES THE CONVERSATION THAT OPENED IT** — register item
+    /// 893 ⑵, and the arm every existing gate for this column leaves out.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was green, and why the FINISHED arm is the whole gate
+    ///
+    /// `the_run_a_shutdown_left_behind_comes_back_interrupted_and_keeps_the_conversation_that_asked`
+    /// drives this column across a restore already — of a run that is **still going**
+    /// ([`RunState::Interrupted`], `finished == false`). Item 893's population is the opposite
+    /// one: it is *which finished run is owed a next launch and by whom*, and a finished run is
+    /// where this column becomes the ONLY evidence, because [`request`](PersistedRun::request)
+    /// drops its map once a run ends — item 890 was filed after that guard erased the tree for
+    /// **209 of 211 rows** and its own gate's doc says the same thing in as many words: *the
+    /// FINISHED arm is the whole gate, and it is why this is not `request`'s test.*
+    ///
+    /// So the plausible defect is not exotic: it is this column acquiring `request`'s
+    /// `!finished` guard, which no gate in this file would have noticed.
+    ///
+    /// # 📊 What the live store says, which is why this is ⑵ and not ⑴
+    ///
+    /// Item 893 was opened on `named == 0` over 74 owed runs. Re-measured 2026-09-05 through the
+    /// product's own disposition table:
+    ///
+    /// ```text
+    /// 220 rows · ended 202 · {a_person: 90, this_runs_opener: 77, nobody: 35}
+    /// owed 77 · named 1 ⇒ [214]
+    /// ```
+    ///
+    /// ⇒ **Run 214 is finished, is owed to its own opener, carries NO `request`, and names its
+    /// conversation anyway** — so the column already crosses the restore in production and item
+    /// 893's cause was *nobody was filling it* (item 871's half), not *the restore drops it*. What
+    /// was never true is that anything held it there.
+    ///
+    /// # ⚠⚠ TWO ASKERS, because one is a fixture a constant passes
+    ///
+    /// Item 890's rule, learnt on the same file: *한 저장소짜리 픽스처에서는 미상과 정답이 같은
+    /// 값이다.* One asker in, and a build that wrote a constant — the first row's answer, the
+    /// daemon's own session — is green while every run is attributed to one conversation. And a
+    /// third run asks nothing, so *absent* stays a real answer rather than becoming unreachable.
+    #[test]
+    fn a_finished_run_still_names_the_conversation_that_opened_it() {
+        /// A run that has ENDED, opened by `asker`.
+        fn ended(registry: &mut RunRegistry, asker: Option<&str>) -> RunId {
+            let id = registry.reserve();
+            registry.submit(NewRun {
+                id,
+                label: "ai_loop pane=2".to_owned(),
+                plugin: crate::plugins::PluginName::AiLoop,
+                request: None,
+                opened_by: None,
+                opened_by_session: asker.map(str::to_owned),
+                tree: None,
+                overridden: None,
+                state: Arc::new(Mutex::new(RunState::Done {
+                    outcome: Box::new(an_outcome()),
+                    output: None,
+                    uncommitted: None,
+                })),
+                run: Box::new(EndedRun::restored(false, None, None)),
+                progress: ProgressCell::default(),
+            });
+            id
+        }
+
+        const ONE: &str = "a-conversation-that-asked";
+        const OTHER: &str = "a-different-conversation";
+        let mut registry = RunRegistry::default();
+        let first = ended(&mut registry, Some(ONE));
+        let second = ended(&mut registry, Some(OTHER));
+        let nobody = ended(&mut registry, None);
+
+        // ⚠ THROUGH THE FILE, never through the struct — a `#[serde(skip)]` or a guard that fires
+        // only on the way out is invisible to a round trip that stays in memory.
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        assert!(
+            read_back.runs.iter().all(|run| run.finished),
+            "⚠ THE PREMISE: every row here must be FINISHED, or this gate is a second copy of the \
+             interrupted-arm one it exists beside. Got {on_disk}",
+        );
+
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+        let restored = successor.snapshot();
+        let asker_of = |id: RunId| {
+            restored
+                .iter()
+                .find(|run| run.id == id)
+                .map(|run| run.opened_by_session.clone())
+        };
+        assert_eq!(
+            [asker_of(first), asker_of(second), asker_of(nobody)],
+            [
+                Some(Some(ONE.to_owned())),
+                Some(Some(OTHER.to_owned())),
+                Some(None),
+            ],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 893 ⑵: a FINISHED run lost the conversation that opened it \
+             across a restore, so the 77 runs this register says are owed a next launch are owed \
+             to nobody it can name. `request` is dropped for a finished run — item 890 — which \
+             makes this column the only evidence there is, and the plausible defect is exactly \
+             that guard arriving here. Restored: {restored:?}",
+        );
+
+        // ── AND THE ROW SAYS IT, which is a hop of its own ───────────────────────────────────
+        //
+        // ⚠⚠ SEPARATE FROM THE ROUND TRIP — items 889, 894 and 891 each found a wire outside
+        // their gate while the durable crossing was green. A reader asking *whose run is this*
+        // reads the ROW, so a column that survives the file and never reaches the row is a fact
+        // nobody can act on.
+        let row = |id: RunId| {
+            let run = restored
+                .iter()
+                .find(|run| run.id == id)
+                .expect("the run came back");
+            crate::plugins::run_to_json(run, None, None)[crate::plugins::RUN_ASKED_BY_KEY].clone()
+        };
+        assert_eq!(
+            [row(first), row(second), row(nobody)],
+            [
+                serde_json::json!(ONE),
+                serde_json::json!(OTHER),
+                serde_json::Value::Null,
+            ],
+            "⛔⛔⛔⛔ REGISTER ITEM 893 ⑵, the row hop: a finished run's row did not name its \
+             conversation, or named the same one twice. Item 865 was opened after a promotion had \
+             to find a run's owner by messaging three sessions while this string sat unread — and \
+             the third row is the control: *nobody asked* must stay an absence rather than \
+             becoming a value nothing can produce.",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **A FINISHED RUN STILL SAYS WHICH REPOSITORY IT WAS FOR** — register item 890, and
     /// the one column here that does NOT wait for a run to be resumable.
     ///
