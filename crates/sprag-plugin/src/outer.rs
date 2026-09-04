@@ -21982,6 +21982,135 @@ mod tests {
     /// everything passes the assertion above for free. The same peer, told a word of its own and
     /// then the marker, must converge — which is what says the discount discriminates rather than
     /// declines. R399's own lesson, one round on: a negative control needs a peer, not an argument.
+    /// ⛔⛔⛔⛔⛔ **EVERY MARKER MATCH SAYS WHICH SURFACE FED IT** — register item 866 ⑵, and the
+    /// only thing that stops the read this round repaired from being written again.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The product said it in two places and the caller did the opposite anyway
+    ///
+    /// This is not a rule invented here. Both surfaces already carry it:
+    ///
+    /// * `PaneAccess::pane_full_lines` — *anything that publishes a model's words, **MATCHES A
+    ///   MARKER** or relays to a peer is asking about CONTENT … the width belongs to whichever
+    ///   client attached*;
+    /// * `sprag_host::remote_access`'s override of it — *a driver that took the rendering would
+    ///   have **every marker it matches** decided by whichever display client is attached, which is
+    ///   exactly the defect stage 1b's pair exists to prevent.*
+    ///
+    /// [`OuterLoop::proposed`] is the one caller in this crate that matches a marker, and until
+    /// 2026-09-05 it read the RENDERED rows. Two docs naming the defect, one caller committing it,
+    /// and nothing measuring the gap — which is this workspace's rule 10 exactly: **prose nobody
+    /// measures**, in a file that writes very good prose.
+    ///
+    /// # ⚠⚠ WHY A RATCHET RATHER THAN A RUNTIME MESSAGE
+    ///
+    /// Item 866's ⑵ asks the loop to SAY SO when an answer is truncated. After ⑴ the milestone and
+    /// the carry are no longer truncated, so what is left to guard is the READ — and a runtime
+    /// message about a value that now arrives whole would announce nothing while the way back to
+    /// the defect stayed open. ⛔ This does not close ⑵: a channel that says *this answer wrapped*
+    /// is still owed, and the register records why it was not cheap here (`Noticed` carries
+    /// refusals and questions, not observations, so it needed plumbing of its own).
+    ///
+    /// # ⚠ The population is CLOSED at two, and a third is RED
+    ///
+    /// `opens_with` is the marker matcher. It has exactly two call sites and each answers a
+    /// different question — rows for FRESHNESS (*did an answer arrive at all*), logical lines for
+    /// CONTENT (*what was it*) — so a third is an unclassified read, which this workspace's rule 6
+    /// makes a red rather than a pass.
+    ///
+    /// ⚠ Needles are synthesised at run time so this test is not its own counter-example — item
+    /// 872 built the same kind of ratchet three times before it stopped matching its own source.
+    #[test]
+    fn every_marker_match_says_which_surface_fed_it() {
+        let source = include_str!("outer.rs");
+        let matcher = format!("{}{}", "opens_with", "(");
+        let producer = format!("{} {}", "fn", "proposed");
+
+        // ⚠ BRACE-MATCHED from the function that owns both reads — item 892's rule. A positional
+        // window is a second authority on where a body ends.
+        let at = source
+            .find(&producer)
+            .expect("⚠ THE PREMISE: this crate reads a reflection's answer in a named function");
+        let body = {
+            let from = &source[at..];
+            let open = from.find('{').expect("a function has a body");
+            let mut depth = 0usize;
+            let mut end = from.len();
+            for (offset, byte) in from[open..].bytes().enumerate() {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = open + offset;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            &from[open..end]
+        };
+
+        // ── ONE, THE WHOLE FILE HAS NO MARKER MATCH OUTSIDE THAT FUNCTION ───────────────────
+        //
+        // ⚠ THE DEFINITION IS NOT A CALL, and the first draft of this counted it: the matcher's
+        // own `fn` line carries the needle. So a match whose preceding token is `fn` is skipped,
+        // which is the difference between *who may ask this question* and *who does*.
+        //
+        // ⛔⛔⛔ AND THE SECOND DRAFT COUNTED ITS OWN COMMENT — a prose line here spelled the
+        // needle out and the ratchet found three where the file has two. That is item 872's rule,
+        // met a third time in one session: **a gate must not write the string it counts.**
+        let calls = |text: &str| -> usize {
+            text.match_indices(&matcher)
+                .filter(|(offset, _)| {
+                    !text[..*offset]
+                        .trim_end()
+                        .ends_with(&format!("{}{}", "f", "n"))
+                })
+                .count()
+        };
+        let everywhere = calls(source);
+        let inside = calls(body);
+        assert_eq!(
+            (inside, everywhere - inside),
+            (2, 0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 866 ⑵: the marker matches are no longer the two this round \
+             classified. Each one decides whether a run's milestone comes from the AGENT or from \
+             whichever display client happened to be attached — `pane_full_lines`' own doc says \
+             so, and `proposed` did the opposite for as long as nothing counted. A new one is \
+             unclassified until it names its surface here (rule 6), and one OUTSIDE this function \
+             is a second reader of the same question",
+        );
+
+        // ── TWO, AND EACH IS FED BY THE SURFACE ITS QUESTION NEEDS ─────────────────────────
+        //
+        // ⚠ The nearest preceding surface call is the one that feeds it: both reads are single
+        // chained expressions, so the surface and its matcher are in one statement.
+        let rows = format!("{}{}", "fresh", "(panes");
+        let content = format!("{}{}", "pane_full_lines", "(");
+        let fed: Vec<&str> = body
+            .match_indices(&matcher)
+            .map(|(offset, _)| {
+                let before = &body[..offset];
+                match (before.rfind(&rows), before.rfind(&content)) {
+                    (Some(r), Some(c)) if c > r => "content",
+                    (Some(_), _) => "rows",
+                    (None, Some(_)) => "content",
+                    (None, None) => "nothing",
+                }
+            })
+            .collect();
+        assert_eq!(
+            fed,
+            vec!["rows", "content"],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 866: a marker match is fed by the wrong surface. The FIRST \
+             asks *did an answer arrive at all*, which only a fresh ROW can say; the SECOND asks \
+             *what was it*, which only the LOGICAL LINES can say. Measured over another \
+             repository's run 181, reading rows for the second delivered 161 cells of a 762-cell \
+             answer — every reflection, while `ReflectApplied` published success",
+        );
+    }
+
     #[test]
     fn a_composer_that_re_wraps_the_question_onto_the_marker_is_not_an_agent_saying_it() {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
