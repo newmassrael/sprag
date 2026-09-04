@@ -6835,7 +6835,11 @@ mod tests {
                  a count the host will believe and write down. Got {beside}",
             );
         }
-        let published = crate::plugins::run_to_json(&before.snapshot()[0], None, None);
+        let published = crate::plugins::run_to_json(
+            &before.snapshot()[0],
+            None,
+            crate::plugins::LiveLook::default(),
+        );
         for key in wire_keys {
             assert!(
                 published.get(key).is_none(),
@@ -7180,7 +7184,9 @@ mod tests {
                 .iter()
                 .find(|run| run.id == id)
                 .expect("the run came back");
-            crate::plugins::run_to_json(run, None, None)[crate::plugins::RUN_ASKED_BY_KEY].clone()
+            crate::plugins::run_to_json(run, None, crate::plugins::LiveLook::default())
+                [crate::plugins::RUN_ASKED_BY_KEY]
+                .clone()
         };
         assert_eq!(
             [row(first), row(second), row(nobody)],
@@ -7468,7 +7474,7 @@ mod tests {
                 .first()
                 .expect("the successor holds its run"),
             None,
-            None,
+            crate::plugins::LiveLook::default(),
         );
         assert_eq!(
             crate::plugins::the_same_run(&row, first_stamp.as_str()),

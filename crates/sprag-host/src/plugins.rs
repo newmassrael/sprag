@@ -817,6 +817,43 @@ pub const RUN_DRIVING_KEY: &str = "driving";
 /// ⚠ Absent means nobody is waited on, which is the ordinary state of a run and the reading every
 /// presence-is-the-claim key here takes.
 pub const RUN_WAITING_KEY: &str = "waiting";
+/// ⛔⛔⛔⛔⛔ **WHETHER THE PANE THIS RUN IS DRIVING CAME BACK FROM A RESTORE** — register item 869,
+/// and the fact a promotion MAKES rather than merely meets.
+///
+/// # ⛔⛔⛔⛔⛔ What a restored agent pane is, and why no row said so
+///
+/// A daemon restart re-runs an allowlisted agent's argv with a resume of the conversation the pane
+/// was in (`crate::durability::restore_command`'s `session`), which is right for a person coming
+/// back to their own terminal and wrong for the inner pane of a loop: session replacement is the
+/// only way that loop sheds context, and a pane restored into its old conversation starts each
+/// round already full of a previous one.
+///
+/// **Measured across four promotions, exception 0** (2026-09-03 15:1x and 21:2x, 2026-09-04 08:53
+/// and 16:5x): every inner pane in every repository came back carrying `--resume`, and the fourth
+/// of those promotions restored **no run at all** — so this is independent of whether runs return.
+/// The discriminator is `--session-id` for a fresh pane against `--resume` for a restored one.
+///
+/// ⚠⚠⚠ **IT IS NOT [`RUN_INHERITED_KEY`]**, which is one word away and a different sentence. That
+/// one says *this RUN came out of a predecessor's log and no driver has stepped it since*; this
+/// says *the PANE this run types at was brought back by a restore*. The two are independent: a run
+/// this daemon started fresh can be driving a pane a restore revived, and a run put back by the
+/// boot can be driving a pane somebody opened by hand.
+///
+/// ⚠⚠ **IT IS A LIVE LOOK AND NOT A STAMP**, on [`sprag_terminal::Pane`]'s own terms:
+/// `Pane::revived` is a fact of THIS daemon's boot and is deliberately not snapshotted, so a value
+/// written into the run once would go on claiming a restore across a restart that had made it true
+/// again anyway. It is read where [`RUN_WAITING_KEY`] is read, at the moment somebody looks.
+///
+/// ⚠⚠ It lives INSIDE the state object, on that key's stated guard: only `RunState::Running`
+/// builds the object this reaches, so the claim *the pane this run is driving right now* is true by
+/// construction rather than by a condition somebody has to keep writing.
+///
+/// ⚠ Absent means *no such pane*, which covers a run driving nothing, a pane a person opened, and a
+/// revived pane holding no conversation at all — presence is the claim, this surface's rule.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_INHERITED_KEY`]'s argument unchanged: an added
+/// answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_REVIVED_PANE_KEY: &str = "revived_pane";
 /// **WHERE A RUN'S MACHINE WAS, WRITTEN INTO THE REQUEST A DAEMON HANDS A DRIVER** — register item
 /// 543's fourth brick, and the one key on that map a CLIENT may not set.
 ///
@@ -3656,18 +3693,7 @@ impl PluginsExternal {
     /// ⚠ [`None`] when there is no clock, no driven pane, or nothing agent-shaped in it — an
     /// absence of a claim, which is what every presence-is-the-claim key on this row means.
     fn blocked_now(&self, run: &crate::runs::RunSummary) -> Option<String> {
-        if !matches!(run.state, RunState::Running) {
-            return None;
-        }
-        // ⚠ THE DRIVER'S REPORT FIRST, then the local cell — the precedence every other key on the
-        // row keeps, so *which pane this run is driving* has one answer here and there.
-        let pane = run
-            .reported
-            .as_ref()
-            .map(progress_from_report)
-            .unwrap_or_default()
-            .driving
-            .or(run.progress.driving)?;
+        let pane = self.driven_pane(run)?;
         let agents = self.agents.as_ref()?;
         let seen = agent_state_source(
             Arc::clone(&self.workspace),
@@ -3682,6 +3708,74 @@ impl PluginsExternal {
                 pane.0
             )
         })
+    }
+
+    /// ⛔⛔⛔⛔⛔ **DID A RESTORE GIVE THIS RUN'S PANE ITS AGENT** — register item 869, and
+    /// [`blocked_now`](Self::blocked_now)'s sibling: a second thing the daemon can see at the moment
+    /// the row is read and the plugin structurally cannot.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the loop cannot answer this about itself
+    ///
+    /// The pane's `revived` bit is a fact of the daemon's BOOT, recorded at the pane's birth by
+    /// `Workspace::spawn_restored`. A plugin sees a conversation, not how that conversation got
+    /// into the pane — so the run in a restored pane and the run in a fresh one publish byte-
+    /// identical progress, which is exactly what four promotions measured.
+    ///
+    /// ⚠⚠⚠ **BOTH HALVES, OR THE SENTENCE IS FALSE FOR A SHELL.** A restore also brings back plain
+    /// shells, and `revived` is true of every one of them. What makes the claim *this pane holds a
+    /// conversation from before the restart* true is the pane ALSO carrying an
+    /// [`agent_session`](sprag_terminal::Pane::agent_session) — which is the name
+    /// `restore_command` resumed and `spawn_restored` read back off the reborn launch. A pane with
+    /// one and not the other is a restore that fell back to a shell, and it has nothing to inherit.
+    ///
+    /// ⚠⚠ **SCOPED TO THIS WORKSPACE**, exactly as [`seat_of`](Self::seat_of) is and for its
+    /// reason: a pane in some other scope is not something this reader can be answered about. The
+    /// loop this item was filed over splits its inner pane off its outer one, so the two are in one
+    /// window by construction.
+    ///
+    /// ⚠ [`None`] when no pane is driven, the pane is gone, it was not revived, or nothing
+    /// agent-shaped is in it — an absence of a claim, which is what every presence-is-the-claim key
+    /// on this row means.
+    fn revived_pane_now(&self, run: &crate::runs::RunSummary) -> Option<String> {
+        let pane = self.driven_pane(run)?;
+        let held = lock(&self.workspace);
+        let held = held.pane(pane)?;
+        // ⚠ The conversation is named in the sentence rather than left to a second lookup: it is
+        // what a person greps the transcript directory by, and it is the one string that proves the
+        // pane is holding somebody else's history rather than merely being old.
+        let session = held.agent_session()?.to_owned();
+        held.revived().then(|| {
+            format!(
+                "⚠ the pane this run is driving ({}) came back from a restore, so the agent in it \
+                 is still in conversation {session} — the one it held before the daemon restarted, \
+                 not one this run started. Its context is older than this run and a further restart \
+                 resumes it again. Kill that pane and open a fresh one.",
+                pane.0
+            )
+        })
+    }
+
+    /// **WHICH PANE THIS RUN IS DRIVING RIGHT NOW**, or [`None`] for a run that is not running or
+    /// has had no pane vouched for.
+    ///
+    /// ⚠⚠ ONE ANSWER FOR EVERY LIVE LOOK ON THE ROW. Both [`blocked_now`](Self::blocked_now) and
+    /// [`revived_pane_now`](Self::revived_pane_now) ask about *the pane this run is driving*, and
+    /// two spellings of that question is how a row comes to say two things about two panes while
+    /// naming one.
+    ///
+    /// ⚠ THE DRIVER'S REPORT FIRST, then the local cell — the precedence every other key on the row
+    /// keeps. For a run driven in another process the cell never moves (register item 662), so
+    /// reading it first would answer about a pane the run has left.
+    fn driven_pane(&self, run: &crate::runs::RunSummary) -> Option<PaneId> {
+        if !matches!(run.state, RunState::Running) {
+            return None;
+        }
+        run.reported
+            .as_ref()
+            .map(progress_from_report)
+            .unwrap_or_default()
+            .driving
+            .or(run.progress.driving)
     }
 
     fn read(&self, path: &str) -> Option<IntrospectValue> {
@@ -3706,7 +3800,14 @@ impl PluginsExternal {
                                 .as_deref()
                                 .and_then(|session| self.seat_of(session))
                         });
-                        run_to_json(run, seat, self.blocked_now(run))
+                        run_to_json(
+                            run,
+                            seat,
+                            LiveLook {
+                                blocked_now: self.blocked_now(run),
+                                revived_pane: self.revived_pane_now(run),
+                            },
+                        )
                     })
                     .collect();
                 Some(IntrospectValue::Json(Value::Array(entries)))
@@ -6361,6 +6462,32 @@ fn progress_reported(reported: Value) -> Value {
     state
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT THE DAEMON COULD SEE THAT THE RUN CANNOT SAY** — the live looks a `running` row
+/// carries beside its plugin's own account, gathered into one value.
+///
+/// # Why they travel together rather than one argument beside the next
+///
+/// Every member here is `Option<String>`, resolved by the caller because each one needs the
+/// workspace, and answered about ONE subject: *the pane this run is driving right now*
+/// (`PluginsExternal::driven_pane`). Passed positionally they would be interchangeable at every
+/// call site and silently swappable at any of them — a row saying *blocked* where it meant
+/// *restored* is a defect no type would catch. Naming them makes each call site say which look it
+/// is providing, and gives the next look somewhere to go that is not a fifth positional argument.
+///
+/// ⚠ [`Default`] is *nobody looked*, which is what every caller that has no workspace to look with
+/// must say — never *the daemon looked and saw nothing*. Both render as an absent key, and the
+/// difference is real only to the caller: presence is the claim, so a look that was never taken
+/// makes none.
+#[derive(Default)]
+pub(crate) struct LiveLook {
+    /// Whether the agent this run is driving is blocked on a person right now, as a sentence —
+    /// `PluginsExternal::blocked_now`, published as [`RUN_WAITING_KEY`].
+    pub(crate) blocked_now: Option<String>,
+    /// Whether the pane this run is driving came back from a restore, as a sentence —
+    /// `PluginsExternal::revived_pane_now`, published as [`RUN_REVIVED_PANE_KEY`].
+    pub(crate) revived_pane: Option<String>,
+}
+
 /// Render one run as JSON for `query("runs")`.
 ///
 /// `seat` is the pane to publish as `opened_by`, already resolved by the caller: `run.opened_by`
@@ -6388,11 +6515,15 @@ fn progress_reported(reported: Value) -> Value {
 ///
 /// ⚠ Ask [`sprag_rpc::WIRE_PROTOCOL`]'s own doc rather than this paragraph if the question comes up
 /// again; this records the judgement taken for THIS change, not the rule.
-pub(crate) fn run_to_json(
-    run: &RunSummary,
-    seat: Option<u64>,
-    blocked_now: Option<String>,
-) -> Value {
+///
+/// `look` is what the DAEMON saw about this run at the moment the row was drawn, gathered by the
+/// caller for the reason `seat` is — the looks need the workspace, and this function has no
+/// business holding it. See [`LiveLook`].
+pub(crate) fn run_to_json(run: &RunSummary, seat: Option<u64>, look: LiveLook) -> Value {
+    let LiveLook {
+        blocked_now,
+        revived_pane,
+    } = look;
     let (cost, unit) = run
         .progress
         .cost
@@ -6437,6 +6568,17 @@ pub(crate) fn run_to_json(
             // over (that one prefers the driver's report; this one prefers the live look).
             if let Some(said) = blocked_now {
                 going[RUN_WAITING_KEY] = json!(said);
+            }
+            // ⛔⛔⛔⛔⛔ AND HOW THE PANE IT IS TYPING AT WAS BORN — register item 869, the look
+            // above's sibling and in the same place for the same reason: a fact of THIS daemon's
+            // boot, which no plugin has a moment at which to notice.
+            //
+            // ⚠⚠ A SECOND KEY AND NOT A SECOND SENTENCE IN THE FIRST. `waiting` is *nothing will
+            // move until somebody comes*; this is *what is moving is moving in last week's
+            // conversation*. Both can be true at once, and folding them would make a person answer
+            // the blocked agent and never learn the pane was the wrong one to answer in.
+            if let Some(said) = revived_pane {
+                going[RUN_REVIVED_PANE_KEY] = json!(said);
             }
             going
         }
@@ -10921,6 +11063,87 @@ mod tests {
             .expect("spawn the resumed agent")
     }
 
+    /// A program BASENAMED `claude`, linked rather than copied — register item 467's `ETXTBSY`
+    /// window, and `linked_as`'s own stated case. `cat` stands in: what these fixtures are about is
+    /// how a pane was BORN and which conversation its launch names, and a real agent would answer
+    /// both identically while costing a model call.
+    fn a_claude_stand_in() -> std::path::PathBuf {
+        // ⚠ Register item 794: the scratch root comes from `sprag_scratch`, never from a bare
+        // `std::env::temp_dir()`, or a set-and-empty `TMPDIR` puts this link inside the repository.
+        let dir = sprag_scratch::scratch_root().join(format!("sprag-869-{}", std::process::id()));
+        sprag_gate::doubles::linked_as(std::path::Path::new("/bin/cat"), &dir.join("claude"))
+    }
+
+    /// The launch a RESTORE rebuilds for a pane that was in `session` — the product's own
+    /// [`crate::restore_command`], allowlist and all, so the `--resume` under test is the one the
+    /// daemon appends rather than one this fixture spells.
+    ///
+    /// ⚠ An argv the allowlist refuses comes back a plain SHELL and takes no resume, which is that
+    /// function's own rule and the second control below: a restore revives shells too, and a shell
+    /// has no conversation to have inherited.
+    fn a_restored_launch(argv: &[String], session: &str) -> crate::durability::Restored {
+        crate::restore_command(
+            argv,
+            None,
+            &["claude".to_owned()].into_iter().collect(),
+            Some(session),
+        )
+    }
+
+    /// Perform that birth through the door a RESTORE uses — `Workspace::spawn_restored`, the only
+    /// one that sets [`sprag_terminal::Pane::revived`].
+    ///
+    /// ⚠⚠⚠ **NOTHING HERE WRITES `agent_session`.** `spawn_restored` reads it back off the BUILT
+    /// command through the daemon's own identity source, which the caller installs — so a fixture
+    /// that set the field by hand would go green over a restore that had stopped resuming. That is
+    /// item 619's rule, and it is why the stand-in has to be basenamed `claude`.
+    fn spawn_as_restored(
+        workspace: &Arc<Mutex<Workspace>>,
+        id: PaneId,
+        rebuilt: crate::durability::Restored,
+    ) -> PaneId {
+        lock(workspace)
+            .spawn_restored(sprag_terminal::PaneRebirth {
+                id,
+                command: rebuilt.command,
+                label: rebuilt.label,
+                replacement_argv: rebuilt.replacement_argv,
+                start_dir: None,
+                size: (80, 24),
+                hooks: sprag_terminal::PaneBirthHooks::default(),
+                history: Vec::new(),
+            })
+            .expect("the restored pane spawns");
+        id
+    }
+
+    /// A RUNNING run driving `pane`, put into `registry` through its own door.
+    ///
+    /// ⚠ `driving` is the whole of what the row's live looks read, and it is set on the CELL rather
+    /// than on a request, because that is where a driver reports it and where every reader of a
+    /// running row goes first.
+    fn a_run_driving(registry: &Arc<Mutex<RunRegistry>>, pane: PaneId) -> u64 {
+        let id = lock(registry).reserve();
+        lock(registry).submit(crate::runs::NewRun {
+            id,
+            label: format!("ai_loop pane={}", pane.0),
+            plugin: PluginName::AiLoop,
+            request: None,
+            overridden: None,
+            opened_by: None,
+            opened_by_session: None,
+            tree: None,
+            state: Arc::new(Mutex::new(RunState::Running)),
+            run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
+            progress: Arc::new(Mutex::new(sprag_plugin::Progress {
+                at: Some("working"),
+                driving: Some(pane),
+                ..sprag_plugin::Progress::default()
+            })),
+        });
+        id.0
+    }
+
     /// **A DIRECTORY THAT IS A TREE**, for a fixture whose pane a loop will be built over —
     /// register item 738, layer 4.
     ///
@@ -11763,7 +11986,7 @@ mod tests {
                 // ⚠ NO LIVE LOOK HERE. This gate is about the PLUGIN's sentence reaching the row;
                 // the daemon's own look is a different fact with a fixture of its own
                 // (`a_run_whose_agent_is_blocked_says_so_while_its_machine_is_still_working`).
-                None,
+                LiveLook::default(),
             )
         };
 
@@ -11845,7 +12068,7 @@ mod tests {
                 resumed: false,
             },
             None,
-            None,
+            LiveLook::default(),
         );
         assert_eq!(
             row["state"][RUN_ERROR_KEY],
@@ -11913,7 +12136,7 @@ mod tests {
                     resumed: false,
                 },
                 None,
-                None,
+                LiveLook::default(),
             )
         }
 
@@ -12076,7 +12299,7 @@ mod tests {
                     resumed: false,
                 },
                 None,
-                None,
+                LiveLook::default(),
             )
         }
 
@@ -12227,7 +12450,7 @@ mod tests {
                     resumed: false,
                 },
                 None,
-                None,
+                LiveLook::default(),
             )
         }
 
@@ -12329,7 +12552,7 @@ mod tests {
                     resumed: false,
                 },
                 None,
-                None,
+                LiveLook::default(),
             )
         }
 
@@ -12740,10 +12963,11 @@ mod tests {
              run: {:?}",
             // ⚠ The run's own record, because a screen that is missing the prompt cannot say WHY:
             // a refused barrier and a machine that never left `idle` look identical from here.
-            lock(&registry)
-                .snapshot()
-                .first()
-                .map(|run| run_to_json(run, run.opened_by, None)),
+            lock(&registry).snapshot().first().map(|run| run_to_json(
+                run,
+                run.opened_by,
+                LiveLook::default()
+            )),
         );
 
         assert!(
@@ -13164,7 +13388,7 @@ mod tests {
                 .snapshot()
                 .iter()
                 .find(|run| run.id.0 == id)
-                .map(|run| run_to_json(run, run.opened_by, None))
+                .map(|run| run_to_json(run, run.opened_by, LiveLook::default()))
                 .expect("the run this call started is in the registry's snapshot")
         };
         // ⚠⚠⚠ THE STAGING CONTROL, asked before every reading below. An `EndedRun` answers `false`
@@ -16978,7 +17202,14 @@ mod tests {
              sentence here the gate would be measuring the arm that already worked",
         );
 
-        let row = run_to_json(&run, None, external.blocked_now(&run));
+        let row = run_to_json(
+            &run,
+            None,
+            LiveLook {
+                blocked_now: external.blocked_now(&run),
+                ..LiveLook::default()
+            },
+        );
         let said = row["state"][RUN_WAITING_KEY].as_str().unwrap_or_default();
         assert!(
             said.contains(&format!("pane {}", pane.0)),
@@ -17027,7 +17258,14 @@ mod tests {
             },
             ..run
         };
-        let quiet_row = run_to_json(&quiet_run, None, quiet_external.blocked_now(&quiet_run));
+        let quiet_row = run_to_json(
+            &quiet_run,
+            None,
+            LiveLook {
+                blocked_now: quiet_external.blocked_now(&quiet_run),
+                ..LiveLook::default()
+            },
+        );
         assert_eq!(
             quiet_row["state"][RUN_WAITING_KEY],
             Value::Null,
@@ -17039,6 +17277,195 @@ mod tests {
         for (held, id) in [(&workspace, pane), (&quiet_workspace, quiet_pane)] {
             assert!(
                 lock(held).close(id).is_some(),
+                "the panes this gate opened were there to close",
+            );
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN'S ROW SAYS THE PANE IT IS TYPING AT CAME BACK FROM A RESTORE** — register
+    /// item 869, done-when ⑵, through `query("runs")` and not through the composer under it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What a promotion does that no rule was standing on
+    ///
+    /// A daemon restart re-runs an allowlisted agent's argv with a resume of the conversation the
+    /// pane was in. For a person's terminal that is right. For the inner pane of a debt loop it is
+    /// the one thing that must not happen: replacing its session is how that loop sheds context,
+    /// and a pane restored into last night's conversation starts every round already full of one.
+    /// **Measured over four promotions across three repositories, exception 0** — and the fourth
+    /// restored NO run at all, so this is independent of whether runs come back.
+    ///
+    /// The skill already carried the rule (*if the pane carries `--resume`, kill it and open a
+    /// fresh one*) — under *before using a pane*. A promotion does not USE a pane, it MAKES one, so
+    /// nothing on the path ever asked. Hence a product answer rather than a fifth line of advice.
+    ///
+    /// # ⚠⚠⚠⚠ THREE PANES, AND THE TWO CONTROLS ARE WHAT MAKE IT A CLAIM ABOUT THE BIRTH
+    ///
+    /// * the SUBJECT — a `claude` pane `spawn_restored` brought back, resuming a conversation;
+    /// * a control born through `spawn` from **the same rebuilt launch**, so the argv, the program
+    ///   and the shape of the conversation are identical and the ONLY difference is which door
+    ///   performed the birth — which is exactly what `revived` means. Without it the key could pass
+    ///   by answering *is this an agent* a second time;
+    /// * a control the restore refused to re-run, which comes back a plain shell holding no
+    ///   conversation. Without it the key could pass by answering *was this pane revived* alone,
+    ///   and every shell in a restored daemon would carry a warning about inheriting a chat.
+    #[test]
+    fn a_run_whose_pane_a_restore_revived_says_so_and_two_that_look_like_it_do_not() {
+        const RESTORED: &str = "d0342e8f-477d-435a-b355-0683b6b88481";
+        const FRESHLY_OPENED: &str = "6fcad2c0-aeb6-4730-b535-37d36ed4dfd8";
+
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        // ⚠ THE DAEMON'S OWN READER, not a closure this fixture wrote: `Pane::agent_session` is
+        // filled by asking this of the BUILT command, so a gate with its own rule would be proving
+        // that ITS rule reaches a row — R383, and item 619's fixture makes the same choice.
+        lock(&workspace).set_pane_identity_source(crate::host::pane_identity_source());
+        let agent = a_claude_stand_in();
+        let agent_argv = vec![agent.to_string_lossy().into_owned()];
+
+        // ⚠⚠ THE SAME LAUNCH, THROUGH THE OTHER DOOR. `spawn` is what a person's split and a loop's
+        // replacement both use, and it leaves `revived` false.
+        //
+        // ⚠ FIRST, because `spawn_restored` reserves its caller's id against reuse by pushing the
+        // pool's counter past it — so a mint taken afterwards lands on the next restored id and two
+        // panes share a number. The first draft of this fixture did exactly that and the premise
+        // below is what said so.
+        let opened = {
+            let rebuilt = a_restored_launch(&agent_argv, FRESHLY_OPENED);
+            lock(&workspace)
+                .spawn(rebuilt.command, rebuilt.label, 80, 24)
+                .expect("the freshly opened pane spawns")
+        };
+        let revived = spawn_as_restored(
+            &workspace,
+            PaneId(9001),
+            a_restored_launch(&agent_argv, RESTORED),
+        );
+        // ⚠ `/bin/sh` is not on the allowlist, so the restore falls back to a plain shell and
+        // appends no resume — `restore_command`'s own rule, staged by using it.
+        let shell = spawn_as_restored(
+            &workspace,
+            PaneId(9002),
+            a_restored_launch(&["/bin/sh".to_owned()], RESTORED),
+        );
+        assert_eq!(
+            [opened, revived, shell]
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3,
+            "⚠⚠⚠ THREE PANES AND THREE IDS: two fixtures sharing a number would make one row's \
+             answer the other's, which is how the first draft of this gate went red — got \
+             {opened:?} {revived:?} {shell:?}",
+        );
+
+        // ── THE PREMISES, or every arm below is vacuous in the quietest way ────────────────────
+        {
+            let held = lock(&workspace);
+            let of = |id: PaneId| {
+                let pane = held.pane(id).expect("the fixture's own pane is there");
+                (pane.revived(), pane.agent_session().map(str::to_owned))
+            };
+            assert_eq!(
+                of(revived),
+                (true, Some(RESTORED.to_owned())),
+                "⛔⛔⛔⛔⛔ THE SUBJECT: the restore must have produced a REVIVED pane that RESUMED \
+                 its conversation. If either half is missing the gate below is asking about \
+                 nothing — and the half that goes quiet first is the resume, because it is the one \
+                 the product derives",
+            );
+            assert_eq!(
+                of(opened),
+                (false, Some(FRESHLY_OPENED.to_owned())),
+                "⚠⚠⚠ THE FIRST CONTROL: the same launch through `spawn` must hold a conversation \
+                 and NOT be revived, or it is not a control for the birth — it is a second subject",
+            );
+            assert_eq!(
+                of(shell),
+                (true, None),
+                "⚠⚠⚠ THE SECOND CONTROL: a restore the allowlist refused must come back REVIVED \
+                 and holding no conversation. A `Some` here would mean `restore_command` had \
+                 handed a shell an argument meant for an agent",
+            );
+        }
+
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let on_revived = a_run_driving(&registry, revived);
+        let on_opened = a_run_driving(&registry, opened);
+        let on_shell = a_run_driving(&registry, shell);
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // ⚠⚠⚠⚠⚠ THROUGH THE SLOT, which is the crossing a gate on the composer cannot see. Item
+        // 856(3)'s round put gates on seven surfaces a value passes THROUGH and none on the call
+        // that puts it in, and replacing that call with a discard left the workspace green.
+        let listed = read_runs(&external);
+        let row_of = |id: u64| -> Value {
+            listed
+                .iter()
+                .find(|row| row["id"].as_u64() == Some(id))
+                .unwrap_or_else(|| panic!("the fixture's own run {id} is listed: {listed:?}"))
+                .clone()
+        };
+
+        // ── ① THE HEADLINE ────────────────────────────────────────────────────────────────────
+        let said = row_of(on_revived)["state"][RUN_REVIVED_PANE_KEY]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            said.contains(&format!("({})", revived.0)) && said.contains(RESTORED),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 869: this run is typing into a pane the daemon brought back \
+             resuming conversation {RESTORED}, and its row does not say so. Four promotions made \
+             exactly this state in every repository and the person who found out did it by reading \
+             `ps`. The row must name the PANE (so a person knows which one to kill) and the \
+             CONVERSATION (so they can tell it from the one they started). Got: {said:?}",
+        );
+
+        // ── ② AND NEITHER LOOK-ALIKE CLAIMS IT ────────────────────────────────────────────────
+        for (id, why) in [
+            (
+                on_opened,
+                "⚠⚠⚠⚠⚠ THE BIRTH IS THE VARIABLE: this pane runs the same program under the same \
+                 resume and a person opened it, so a build that answered *does this pane hold a \
+                 conversation* passes arm ① and fails here",
+            ),
+            (
+                on_shell,
+                "⚠⚠⚠⚠⚠ AND SO IS THE CONVERSATION: this pane WAS revived, and it came back a \
+                 shell with nothing to inherit. A build that answered *was this pane revived* \
+                 alone passes arm ① and puts a warning on every shell in a restored daemon",
+            ),
+        ] {
+            let row = row_of(id);
+            assert_eq!(
+                row["state"][RUN_REVIVED_PANE_KEY],
+                Value::Null,
+                "{why}. Row: {row:?}",
+            );
+        }
+
+        // ── ③ AND IT IS NOT THE KEY ONE WORD AWAY ─────────────────────────────────────────────
+        //
+        // ⚠⚠ `inherited` on this row already means *this RUN came out of a predecessor's log*.
+        // These runs were submitted by this daemon, so a build that reached for that word instead
+        // of adding one would be answered here — and would have made every restored run look like
+        // a restored pane and every restored pane like a stale count.
+        assert_eq!(
+            row_of(on_revived)[RUN_INHERITED_KEY],
+            Value::Null,
+            "⚠⚠⚠ two facts, two keys: a run this daemon started that happens to be driving a \
+             revived pane has inherited no counters from anybody",
+        );
+
+        for id in [revived, opened, shell] {
+            assert!(
+                lock(&workspace).close(id).is_some(),
                 "the panes this gate opened were there to close",
             );
         }
@@ -18262,7 +18689,7 @@ mod tests {
                     .find(|run| run.id.0 == id)
                     // The seat as the record itself names it: this helper watches runs THIS
                     // registry issued, so there is no inherited conversation to re-derive from.
-                    .map(|run| run_to_json(run, run.opened_by, None))
+                    .map(|run| run_to_json(run, run.opened_by, LiveLook::default()))
             };
             if let Some(entry) = &entry
                 && entry["state"]["status"] != json!("running")

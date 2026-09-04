@@ -7337,6 +7337,27 @@ fn render_run(run: &Value) -> String {
     // hours**, while four runs started in the same window made one each. Every one of the seven
     // rows said `running`.
     let resumed = resumed_clause(run, state);
+    // ⛔⛔⛔⛔⛔ **AND WHETHER THE PANE IT IS TYPING AT CAME BACK FROM A RESTORE** — register item
+    // 869, and `waiting`'s neighbour on the STATUS LINE for `waiting`'s own measured reason: the
+    // repayment skill's post-promotion check is `sprag runs | grep -E '^run ' -A1`, which is the
+    // heading and the one line after it. A clause printed under the status would be invisible to
+    // the exact reading this item exists to serve.
+    //
+    // ⚠⚠⚠⚠⚠ **AND THE CHECK IT REPAIRS IS A PROMOTION'S, WHICH IS WHY IT COULD NOT BE A RULE.**
+    // The skill already said *if the pane carries `--resume`, kill it and open a fresh one* — in
+    // its section 3a, *before using a pane*. A promotion does not USE a pane, it MAKES one, so that
+    // rule was never on the path: measured over four promotions, every inner pane in every
+    // repository came back resumed and nothing anybody typed afterwards asked.
+    //
+    // ⚠ The daemon's sentence verbatim, `waiting`'s rule: which panes were revived is the host's
+    // answer, and a second opinion composed here would be a client re-deciding a fact only the
+    // daemon's boot can know.
+    //
+    // ⚠ Read off `state`, where only a `running` row can carry it — the same structural guard
+    // `waiting` above relies on, so the renderer needs no status test of its own.
+    let revived_pane = state[sprag_host::plugins::RUN_REVIVED_PANE_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!(" · {said}"));
     let head = format!(
         "run {id}  {label}{opener}{kind}{}{}{}\n",
         render_build(run),
@@ -7363,7 +7384,7 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{fullness}{authors}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{revived_pane}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{fullness}{authors}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -12253,6 +12274,93 @@ mod tests {
             "⚠⚠ a finished run that never reported a pane is history rather than a question, and a \
              clause on every such row would train a reader to skip the line that matters — the \
              argument `render_answered`'s own gate makes one clause over: {finished}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN TYPING INTO A RESTORED PANE SAYS SO ON THE LINE THE POST-PROMOTION CHECK
+    /// READS** — register item 869, done-when ⑵.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the placement is the whole assertion and not a detail of it
+    ///
+    /// The item is a PROMOTION defect: a restart brings an agent pane back with a resume of the
+    /// conversation it was in, and the loop in that pane can no longer shed context, because
+    /// replacing its session is how it sheds and the pane it replaces from is already somebody
+    /// else's history. Measured over four promotions and three repositories, exception 0.
+    ///
+    /// The check that would have caught it is four commands, and the one that reads runs is
+    /// `sprag runs | grep -E '^run ' -A1` — **the heading and exactly one line after it.** So a
+    /// clause under the status is a clause that repairs nothing for the reader this item is about,
+    /// which is the same constraint items 755 and 774 each measured at this mouth. Hence the second
+    /// arm, and hence it is an assertion rather than a comment.
+    #[test]
+    fn a_run_driving_a_restored_pane_says_so_where_the_promotion_check_looks() {
+        /// The daemon's own sentence, as `revived_pane_now` composes it. The renderer carries it
+        /// verbatim, so the fixture is what the wire holds and not a phrasing this file invented.
+        const SAID: &str = "⚠ the pane this run is driving (54) came back from a restore";
+
+        fn restored_run(revived: Option<&str>) -> Value {
+            let mut run = serde_json::json!({
+                "id": 18,
+                "label": "ai_loop pane=54",
+                "state": {
+                    "status": "running",
+                    "iterations": 12,
+                    "cost": 0,
+                    "unit": "steps",
+                },
+                sprag_host::plugins::RUN_JOURNAL_KEY: [{
+                    "iteration": 1,
+                    "cost": 245,
+                    "unit": "bytes",
+                    "verdict": "continue",
+                    "note": "Idle --Start--> Priming",
+                }],
+            });
+            if let Some(said) = revived {
+                run["state"][sprag_host::plugins::RUN_REVIVED_PANE_KEY] = serde_json::json!(said);
+            }
+            run
+        }
+
+        // ── ① THE HEADLINE: the row carries the daemon's sentence ──
+        let said = render_run(&restored_run(Some(SAID)));
+        assert!(
+            said.contains(SAID),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 869: the daemon can see that this run's pane was revived and \
+             `sprag runs` prints nothing about it, so the fact dies at the mouth a person reads — \
+             the failure this file has now recorded six times. Got: {said}",
+        );
+
+        // ── ② AND ON THE STATUS LINE, WHICH IS THE ONLY LINE THE CHECK SEES ──
+        let lines: Vec<&str> = said.lines().collect();
+        assert!(
+            lines[1].contains(SAID),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 869: the post-promotion check is `grep -E '^run ' -A1`, so a \
+             clause anywhere but the line after the heading is one the person doing that check \
+             never sees. This is `waiting`'s placement argument on the row this item is about, and \
+             a clause that merely appears somewhere in the block would satisfy arm ① alone. \
+             Line 2 was: {:?}",
+            lines[1],
+        );
+
+        // ── ③ THE CONTROL: a pane nobody revived says nothing ──
+        //
+        // ⚠⚠ Without this the gate passes on a build that prints the clause unconditionally, which
+        // would put a restore warning on every healthy loop in the daemon — and a warning that is
+        // always there is one nobody reads on the round it is true.
+        let fresh = render_run(&restored_run(None));
+        assert!(
+            !fresh.contains("came back from a restore"),
+            "⚠⚠⚠⚠⚠ presence is the claim: a run whose pane the daemon did not revive must carry \
+             no such clause, or the four healthy loops on this daemon each get a warning about a \
+             restore that did not happen. Got: {fresh}",
+        );
+
+        // ── ④ AND A RUN THAT HAS STOPPED SAYS NOTHING, on `walk_to`'s argument one gate over ──
+        let finished = render_run(&run_entry(&a_run_that_closed(None)));
+        assert!(
+            !finished.contains("came back from a restore"),
+            "⚠⚠ a finished run's pane is history rather than a question: {finished}",
         );
     }
 
