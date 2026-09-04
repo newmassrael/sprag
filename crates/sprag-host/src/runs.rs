@@ -2232,15 +2232,81 @@ pub struct PersistedRun {
     /// 801 started.
     #[serde(default)]
     pub moved_at: Option<u64>,
-    /// **WHEN IT ENDED** — unix seconds, register item 801, part ⑴.
+    /// ⛔⛔⛔⛔⛔ **WHEN A LOG FIRST SAID IT HAD FINISHED** — unix seconds, register items 801 ⑴
+    /// and **888**, and the headline is the item: this said *WHEN IT ENDED* for three days while
+    /// meaning the sentence below it.
     ///
     /// Stamped once, on the first log in which [`finished`](Self::finished) is true, and carried
-    /// unchanged after that: an ending is a moment, so a value that moved would be a second
-    /// ending. ⚠ [`None`] carries [`moved_at`](Self::moved_at)'s meaning exactly — *nobody
-    /// recorded it* — which is why a finished run out of an older log does not read as one that
-    /// ended at the epoch.
+    /// unchanged after that: a recording is a moment, so a value that moved would be a second one.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why that is not the run's ending, measured
+    ///
+    /// ```text
+    /// python3 -c "
+    /// import json,collections,datetime
+    /// rows=json.load(open('~/.local/share/sprag-loop/state/sprag/sprag-loop.runs.json'))['runs']
+    /// c=collections.Counter(r.get('ended_at') for r in rows)
+    /// print(len(rows), [(datetime.datetime.fromtimestamp(t).strftime('%m-%d %H:%M:%S') if t else None, n)
+    ///                   for t,n in c.most_common(2)])"
+    /// ```
+    /// ⇒ **220 rows, 154 of them dated `09-02 21:43:55`** — one second. Their outcomes are real and
+    /// varied (61 `failed`, 36 `converged`, 27 `cancelled`, 17 `exhausted`, 13 `blocked`) and their
+    /// builds are a dozen different ones, so they are not one event: **they are every run that had
+    /// already finished when the first daemon carrying this column wrote its first log.** The
+    /// column shipped in `8bbedf1` at 09-01 16:51 and the daemon holding it started a day later,
+    /// and `stamp_run_times`'s `(true, None) => now` arm cannot tell *it just ended* from *it ended
+    /// before anybody was writing this down*.
+    ///
+    /// ⚠ Register item 888 guessed the cause was a boot marking unfinished runs finished all at
+    /// once, and said in the same breath that it had not measured it. It is the opposite: those 154
+    /// runs were finished long before, by daemons that watched them end and had nowhere to say so.
+    ///
+    /// ⚠⚠ **THE 154 CANNOT BE REPAIRED** — this stamp never moves once set, so their wrong second
+    /// is permanent. Register item 891's rule: a column's SHAPE is retroactive and its VALUES are
+    /// not. What the pair below can do is stop the next 154 from being invented.
+    ///
+    /// ⚠ [`None`] carries [`moved_at`](Self::moved_at)'s meaning exactly — *nobody recorded it*.
     #[serde(default)]
     pub ended_at: Option<u64>,
+    /// 🎯🎯🎯🎯🎯 **WHEN A DAEMON WATCHED THIS RUN BEGIN** — unix seconds, register item 888, and
+    /// the left end of the only interval anybody may subtract.
+    ///
+    /// Stamped on the first log a daemon writes that carries this run **and whose predecessor did
+    /// not**, which is exactly *this daemon created it*, and carried unchanged after that. A run
+    /// INHERITED from a predecessor's log is in that predecessor's log by construction, so it gets
+    /// [`None`] — its beginning happened where nothing was watching.
+    ///
+    /// # ⛔⛔⛔ Why the field exists at all
+    ///
+    /// Register item 872 ⑶ is *measure the delay between a run ending and the next one being
+    /// launched*, and three re-judgements in a row could not: `awk '/pub struct PersistedRun/,/^}/'
+    /// … | grep -cE 'pub (started_at|start_at|began_at|birth)'` answered **0**, so the register
+    /// recorded the clause as blocked behind this item four times. There was no left end.
+    ///
+    /// ⚠⚠ **THE RESIDUE, STATED**: this is the first LOG a daemon wrote carrying the run, not the
+    /// instant it was submitted, so it is late by up to one save tick. That is `moved_at`'s own
+    /// bargain (item 801: nothing in this module holds a clock) and it is why the name says
+    /// *watched* rather than *started*. Every run already in the store gets [`None`] for ever.
+    #[serde(default)]
+    pub ran_from: Option<u64>,
+    /// 🎯🎯🎯🎯🎯 **WHEN A DAEMON WATCHED THIS RUN STOP** — unix seconds, register item 888, and
+    /// the right end of that interval.
+    ///
+    /// Stamped when a log finds this run [`finished`](Self::finished) and the log before it did
+    /// NOT — the transition happened inside one tick, so a daemon was watching. Carried unchanged
+    /// after that.
+    ///
+    /// ⚠⚠⚠ **THIS IS THE DISCRIMINATOR [`ended_at`](Self::ended_at) HAS NO ROOM FOR.** That field
+    /// reads `(finished, before.ended_at)` and never asks whether `before` was ALREADY finished, so
+    /// a run whose ending predates the column and a run that just ended reach the same arm. This
+    /// one asks, and answers [`None`] for the first — which is why the 154 rows in that field's
+    /// measurement get nothing here rather than a second that is off by two days.
+    ///
+    /// ⚠ [`None`] therefore means *nobody was watching when this stopped*, which covers a run out
+    /// of a log older than this column, one inherited already finished, and one whose daemon died
+    /// with it. Never a zero: `now_unix_secs` answers [`None`] for a clock that will not speak.
+    #[serde(default)]
+    pub ran_to: Option<u64>,
     /// Whether it had already finished. A run still `Running` when the daemon died comes back
     /// [`RunState::Interrupted`]; one that had finished keeps having finished.
     pub finished: bool,
@@ -4072,6 +4138,13 @@ impl RunRegistry {
                         // reading item 801 exists to remove.
                         moved_at: None,
                         ended_at: None,
+                        // ⚠⚠ NOR THE INTERVAL SOMEBODY WATCHED — register item 888, and here the
+                        // absence is stronger than a missing clock: `ran_to` is stamped from
+                        // whether the PREVIOUS log already said this run had finished, and this
+                        // module has no previous log. A value written here could only repeat
+                        // `finished`, which is the conflation the item was filed for.
+                        ran_from: None,
+                        ran_to: None,
                         finished,
                         outcome,
                         ceiling,
@@ -7201,6 +7274,9 @@ mod tests {
                 unit: None,
                 moved_at: None,
                 ended_at: None,
+                // ⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888. Stamped by `durability`.
+                ran_from: None,
+                ran_to: None,
                 finished: false,
                 outcome: None,
                 ceiling: None,
@@ -7454,6 +7530,9 @@ mod tests {
             unit: None,
             moved_at: None,
             ended_at: None,
+            // ⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888. Stamped by `durability`, not here.
+            ran_from: None,
+            ran_to: None,
             finished: false,
             outcome: None,
             ceiling: None,
@@ -7574,6 +7653,9 @@ mod tests {
             unit: None,
             moved_at: None,
             ended_at: None,
+            // ⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888. Stamped by `durability`, not here.
+            ran_from: None,
+            ran_to: None,
             finished: false,
             outcome: None,
             ceiling: None,
@@ -7682,6 +7764,9 @@ mod tests {
             unit: None,
             moved_at: None,
             ended_at: None,
+            // ⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888. Stamped by `durability`.
+            ran_from: None,
+            ran_to: None,
             finished,
             outcome: None,
             ceiling: None,
@@ -8128,6 +8213,9 @@ mod tests {
                 unit: None,
                 moved_at: None,
                 ended_at: None,
+                // ⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888. Stamped by `durability`.
+                ran_from: None,
+                ran_to: None,
                 finished: false,
                 outcome: None,
                 ceiling: None,

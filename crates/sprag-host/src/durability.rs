@@ -222,6 +222,33 @@ pub fn stamp_run_times(
             (true, None) => now,
             (false, None) => None,
         };
+        // 🎯🎯🎯🎯🎯 **AND THE INTERVAL SOMEBODY ACTUALLY WATCHED** — register item 888, and the
+        // arm above is the item: it reads `(finished, before.ended_at)` and never asks whether
+        // `before` was ALREADY finished, so *it just ended* and *it ended before anybody was
+        // writing this down* reach one arm and get one answer.
+        //
+        // ⇒ Measured 2026-09-05: 154 of 220 stored rows carry `ended_at` of one single second,
+        // and they are not one event — 61 `failed`, 36 `converged`, 27 `cancelled` across a dozen
+        // builds. They are every run that had already finished when the first daemon carrying
+        // that column wrote its first log, and `(true, None) => now` dated all of them `now`.
+        //
+        // ⚠⚠ `before.finished` IS THE WHOLE FIX and it was one field away the entire time.
+        let watched_it_stop = run.finished && !before.is_some_and(|before| before.finished);
+        run.ran_to = match before.and_then(|before| before.ran_to) {
+            Some(already) => Some(already),
+            None if watched_it_stop => now,
+            None => None,
+        };
+        // 🎯 AND THE LEFT END — register item 888, for register item 872 ⑶, which four
+        // re-judgements recorded as blocked because no such column existed. `before` absent is
+        // exactly *this daemon created this run*: `save_runs_if_changed` loads the PREDECESSOR's
+        // log into `last` on its first tick (item 801's own comment), so an inherited run is in
+        // `before` by construction and correctly gets nothing here.
+        run.ran_from = match before.and_then(|before| before.ran_from) {
+            Some(already) => Some(already),
+            None if before.is_none() => now,
+            None => None,
+        };
     }
 }
 
@@ -230,6 +257,17 @@ fn bare(run: &crate::runs::PersistedRun) -> crate::runs::PersistedRun {
     let mut bare = run.clone();
     bare.moved_at = None;
     bare.ended_at = None;
+    // ⛔⛔⛔⛔⛔ **AND THE PAIR — register item 888, and a stamp missing from this list is the one
+    // defect that makes the WHOLE clock useless.** `moved_at` above means *when this record last
+    // differed*, and it is computed from this comparison; a stamp left in it differs on the tick
+    // after it is first written, so every run would read as having moved one tick late for ever —
+    // and `save_runs_if_changed` would write the file on every tick because the log never settles.
+    //
+    // ⚠ This is the list `stamp_run_times`'s own doc refuses on principle ("a list nobody extends
+    // is the escape hatch this repository refuses"), and it is unavoidable HERE precisely because
+    // these fields are the comparison's output rather than its input. The gate below drives it.
+    bare.ran_from = None;
+    bare.ran_to = None;
     bare
 }
 
@@ -752,6 +790,10 @@ mod tests {
             unit: None,
             moved_at: None,
             ended_at: None,
+            // ⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888. The stamping arms vary these, so a
+            // fixture that pre-filled them would be asserting its own input.
+            ran_from: None,
+            ran_to: None,
             finished,
             outcome: None,
             ceiling: None,
@@ -902,6 +944,187 @@ mod tests {
             now_unix_secs().is_some_and(|now| now > 1_577_836_800),
             "the wall clock on this machine answers a date after 2020: {:?}",
             now_unix_secs(),
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AN ENDING OLDER THAN THE COLUMN THAT RECORDS IT IS NOT DATED `now`** —
+    /// register item **888**, and the population its entry demands: *a gate must make a log in
+    /// which MANY runs are found finished at once and show red — in a one-run fixture the two
+    /// meanings always have the same value.*
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the store actually holds, and why `ended_at` cannot be the answer
+    ///
+    /// Measured 2026-09-05: **154 of 220 rows carry one single second** (`09-02 21:43:55`). They
+    /// are not one event — 61 `failed`, 36 `converged`, 27 `cancelled`, 17 `exhausted`, 13
+    /// `blocked`, across a dozen builds. They are every run that had ALREADY finished when the
+    /// first daemon carrying that column wrote its first log: the column shipped in `8bbedf1` on
+    /// 09-01 16:51 and the daemon holding it started a day later, so
+    /// [`stamp_run_times`]'s `(true, None) => now` arm dated two days of history to one instant.
+    ///
+    /// ⚠ Item 888 GUESSED the cause was a boot marking unfinished runs finished all at once, and
+    /// said in the same entry that it had not measured it. It is the opposite, and the difference
+    /// matters here: those runs' `finished` was already `true` in the previous log, so the arm the
+    /// gate has to drive is *`before` already said finished* and not *`before` said running*.
+    ///
+    /// # ⚠⚠⚠ Why the fixture carries FOUR runs and not one
+    ///
+    /// Three already-finished with no stamp, and one that finishes inside the tick. A one-run
+    /// fixture cannot separate the policies, and a fixture of only the old ones would pass with
+    /// `ran_to` hard-wired to [`None`] — which is the dead control this workspace has now met four
+    /// times. The fourth run is what makes the field able to say anything at all.
+    #[test]
+    fn an_ending_older_than_the_column_that_records_it_is_not_dated_now() {
+        // A predecessor's log from a build with no such column: `serde(default)` gives its rows
+        // `ran_to: None` while `finished` is already true — which is EXACTLY the 154.
+        let older = a_log(vec![
+            a_run(1, 40, true),
+            a_run(2, 12, true),
+            a_run(3, 7, true),
+            a_run(4, 9, false),
+        ]);
+        let mut now_written = a_log(vec![
+            a_run(1, 40, true),
+            a_run(2, 12, true),
+            a_run(3, 7, true),
+            // ⚠ THE ONE THAT ACTUALLY ENDED IN THIS TICK: `before` said running, this says done.
+            a_run(4, 9, true),
+        ]);
+        stamp_run_times(&mut now_written, Some(&older), Some(9_000));
+
+        let watched: Vec<Option<u64>> = now_written.runs.iter().map(|run| run.ran_to).collect();
+        assert_eq!(
+            watched,
+            vec![None, None, None, Some(9_000)],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 888: three runs that were finished before this column \
+             existed were dated as though they had just stopped, which is how 154 of 220 stored \
+             rows came to share one second. `before.finished` is the whole discriminator and it \
+             was one field away: {watched:?}",
+        );
+        // ⚠⚠ AND `ended_at` STILL DATES ALL FOUR, which is not a defect but the other NAME. Its
+        // 220 stored values ARE first-recording moments, so changing what it means would rewrite
+        // history rather than describe it — item 891's rule, and item 888's *two names* clause.
+        let recorded: Vec<Option<u64>> = now_written.runs.iter().map(|run| run.ended_at).collect();
+        assert_eq!(
+            recorded,
+            vec![Some(9_000); 4],
+            "⚠⚠⚠ ITEM 888's OTHER HALF: `ended_at` means *when a log first said this had \
+             finished*, and it must go on saying exactly that. A reader who wants the ending asks \
+             `ran_to`; one who wants to know when this daemon noticed asks this. Folding them \
+             would make the 154 rows unreadable in BOTH senses: {recorded:?}",
+        );
+        // ── AND AN ENDING IS STILL A MOMENT, on the neighbouring gate's rule ──────────────────
+        let settled = now_written.clone();
+        let mut later = a_log(vec![
+            a_run(1, 40, true),
+            a_run(2, 12, true),
+            a_run(3, 7, true),
+            a_run(4, 9, true),
+        ]);
+        stamp_run_times(&mut later, Some(&settled), Some(11_000));
+        assert_eq!(
+            later.runs[3].ran_to,
+            Some(9_000),
+            "a watched ending is a MOMENT — re-stamping it would tell a reader every finished run \
+             stopped `now`, which is the reading item 801 was filed to remove",
+        );
+        assert_eq!(
+            later.runs[0].ran_to, None,
+            "⛔⛔⛔ AND A TICK LATER MUST NOT PROMOTE AN UNWATCHED ENDING EITHER. `before` says \
+             finished and carries no stamp on every tick from here to the end of the file, so a \
+             rule that looked only at *this tick has a clock* would date the 154 on the SECOND \
+             tick instead of the first — the same defect, one tick later",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A RUN THIS DAEMON DID NOT START HAS NO BEGINNING TO REPORT** — register item
+    /// 888, the left end of the interval, and what register item **872 ⑶** was blocked behind.
+    ///
+    /// # ⛔⛔⛔ Four re-judgements recorded that clause as blocked, and this is why
+    ///
+    /// `awk '/pub struct PersistedRun/,/^}/' crates/sprag-host/src/runs.rs | grep -cE 'pub
+    /// (started_at|start_at|began_at|birth)'` answered **0** on 2026-09-04 and again on 09-05, and
+    /// the row's own 30 keys held two times, both of them endings. So *how long after one run
+    /// stopped was the next one launched* had no left-hand side at any distance.
+    ///
+    /// ⚠⚠ `before` ABSENT IS THE DISCRIMINATOR, and it is exact rather than a heuristic:
+    /// [`save_runs_if_changed`] loads the PREDECESSOR's log into `last` on a daemon's first tick
+    /// (item 801's own comment says so, and its reason is that otherwise every orphan reads as
+    /// having just moved). So an inherited run is in `before` by construction, and a run that is
+    /// not there is one this daemon created.
+    #[test]
+    fn a_run_this_daemon_did_not_start_has_no_beginning_to_report() {
+        // A predecessor's log holding one run this daemon will inherit.
+        let inherited = a_log(vec![a_run(1, 40, false)]);
+        let mut mine = a_log(vec![
+            // The inherited one, still going.
+            a_run(1, 40, false),
+            // ⚠ AND ONE THIS DAEMON MADE, which `before` has never carried.
+            a_run(2, 1, false),
+        ]);
+        stamp_run_times(&mut mine, Some(&inherited), Some(9_000));
+
+        let began: Vec<Option<u64>> = mine.runs.iter().map(|run| run.ran_from).collect();
+        assert_eq!(
+            began,
+            vec![None, Some(9_000)],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 888: a run this daemon inherited must not claim to have \
+             begun when this daemon first wrote it down — that would date every run in the store \
+             to whichever promotion happened to read it, which is precisely the defect `ended_at` \
+             already has and item 872 ⑶ cannot survive twice: {began:?}",
+        );
+        // ⚠ AND A BEGINNING IS A MOMENT TOO.
+        let settled = mine.clone();
+        let mut later = a_log(vec![a_run(1, 40, false), a_run(2, 2, false)]);
+        stamp_run_times(&mut later, Some(&settled), Some(11_000));
+        assert_eq!(
+            (later.runs[0].ran_from, later.runs[1].ran_from),
+            (None, Some(9_000)),
+            "the beginning this daemon watched is carried forward, and the one it never saw stays \
+             absent — a later tick must not fill either in",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND BOTH NEW STAMPS ARE CLEARED BEFORE TWO RECORDS ARE COMPARED** — register
+    /// item 888, and **the one defect that would make the whole clock useless.**
+    ///
+    /// [`bare`] is what decides whether a run MOVED, and its own doc argues against a named list
+    /// of columns. These two have to be on it anyway, because they are the comparison's OUTPUT: a
+    /// stamp left in makes the record differ from its predecessor on the tick after it is written,
+    /// so `moved_at` advances for a run that did nothing and [`save_runs_if_changed`] writes the
+    /// file every tick for ever.
+    ///
+    /// ⚠⚠ It is a SEPARATE gate rather than a clause on the two above, because neither of them
+    /// looks at `moved_at` — the mutation that drops a field from `bare` leaves both perfectly
+    /// green, which is the hole this workspace has now measured in four different items.
+    #[test]
+    fn a_run_that_only_gained_a_stamp_did_not_move() {
+        let mut first = a_log(vec![a_run(1, 5, true)]);
+        stamp_run_times(&mut first, None, Some(9_000));
+        assert_eq!(
+            (first.runs[0].moved_at, first.runs[0].ran_to),
+            (Some(9_000), Some(9_000)),
+            "a first sighting is dated, and a run finishing with no previous record is one this \
+             tick watched stop: {:?}",
+            first.runs[0],
+        );
+
+        // ⚠ THE SAME RECORD AGAIN. Nothing about the run changed; only the stamps are now filled.
+        let mut again = a_log(vec![a_run(1, 5, true)]);
+        stamp_run_times(&mut again, Some(&first), Some(20_000));
+        assert_eq!(
+            again.runs[0].moved_at,
+            Some(9_000),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 888: a stamp missing from `bare` makes every record differ \
+             from itself one tick later, so *last moved* becomes *last written* — the exact \
+             reading item 801 exists to remove, reintroduced by the field meant to sharpen it. \
+             And `save_runs_if_changed` would then rewrite the log on every tick: {:?}",
+            again.runs[0],
+        );
+        assert_eq!(
+            again, first,
+            "⇒ AND THE WHOLE LOG SETTLES, which is what `save_runs_if_changed` compares to decide \
+             whether to write at all. Two ticks over an unchanging registry must produce the same \
+             bytes, or this file grows for ever over a run nobody touched",
         );
     }
 

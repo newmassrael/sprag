@@ -4466,6 +4466,12 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. This fixture writes a log; the
                 // gates that drive the answer are in `runs`, on the submit and on the restore.
                 overridden: None,
+                // ⚠⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888, and this fixture IS the
+                // population that item is about: a log written by a build with no such column,
+                // whose finished runs must come back saying *nobody was watching* rather than
+                // *they stopped when this daemon read the file*.
+                ran_from: None,
+                ran_to: None,
                 stood_down: None,
                 stood_down_by: None,
                 cancelled_by: None,

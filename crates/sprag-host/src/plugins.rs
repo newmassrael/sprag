@@ -8709,6 +8709,9 @@ mod tests {
             unit: None,
             moved_at: None,
             ended_at: None,
+            // ⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888. Stamped by `durability`, not here.
+            ran_from: None,
+            ran_to: None,
             finished: false,
             outcome: None,
             ceiling: None,
@@ -9254,6 +9257,9 @@ mod tests {
                 unit: None,
                 moved_at: None,
                 ended_at: None,
+                // ⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888. Stamped by `durability`.
+                ran_from: None,
+                ran_to: None,
                 finished: false,
                 outcome: None,
                 ceiling: None,
@@ -9448,6 +9454,9 @@ mod tests {
             unit: None,
             moved_at: None,
             ended_at: None,
+            // ⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888. Stamped by `durability`, not here.
+            ran_from: None,
+            ran_to: None,
             finished: false,
             outcome: None,
             ceiling: None,
@@ -9870,6 +9879,10 @@ mod tests {
                 unit: None,
                 moved_at: None,
                 ended_at: None,
+                // ⚠⚠ AND NOT `ran_to` EITHER, which is the point of item 888 in a fixture like
+                // this one: `finished: true` out of a log is not an ending anybody watched.
+                ran_from: None,
+                ran_to: None,
                 finished: true,
                 outcome: None,
                 ceiling: None,
@@ -19351,6 +19364,9 @@ mod tests {
                     unit: None,
                     moved_at: None,
                     ended_at: None,
+                    // ⚠ NOR THE INTERVAL ANYBODY WATCHED — item 888. Stamped by `durability`.
+                    ran_from: None,
+                    ran_to: None,
                     finished: false,
                     outcome: None,
                     ceiling: None,
