@@ -573,11 +573,19 @@ fn words(args: Vec<String>) -> io::Result<()> {
 fn disposition_rows() -> Vec<String> {
     sprag_plugin::driver::Disposition::table()
         .map(|(word, next)| {
+            // ⛔⛔⛔⛔⛔ THE THIRD COLUMN IS WHAT A MACHINE MAY DO ALONE — register item 872(2), and
+            // it is a WORD in the row rather than a sentence inside the fourth column for one
+            // reason: the reader this column is for is not a person. An executor matches on
+            // fields, and a tally of the arms saying a machine may not proceed alone was prose in
+            // three files that nothing could match on. ⚠ It is appended rather than inserted,
+            // because the first two fields are a CONTRACT `.githooks/loop-read.sh` matches on.
             format!(
-                "  {:<10}  {:<9}  {}",
+                "  {:<10}  {:<9}  {:<10}  {} — {}",
                 word,
                 next.wire_str(),
-                next.describe()
+                next.unattended().wire_str(),
+                next.describe(),
+                next.unattended().describe(),
             )
         })
         .collect()
@@ -608,9 +616,17 @@ fn disposition_rows() -> Vec<String> {
 ///
 /// # ⚠ It prescribes NOTHING, and that is item 827's own prohibition carried forward
 ///
-/// Nothing here starts, stops or schedules a run. Two of the four answers say a machine may not
-/// proceed alone, so *reading this table* and *obeying it* are different acts and only the first
-/// one is here.
+/// Nothing here starts, stops or schedules a run. WHICH endings a machine may proceed past is a
+/// question this table now answers in its own third column
+/// ([`Unattended`](sprag_plugin::driver::Unattended), register item 872(2)) rather than in a
+/// sentence here — *reading this table* and *obeying it* are different acts and only the first one
+/// is here.
+///
+/// ⛔⛔ This paragraph used to TALLY THE ARMS and say a machine may not proceed past that many of
+/// them — a number stated in prose, in three separate files, with nothing anywhere reading any of
+/// them. A fifth disposition would have left all three silently wrong. The column is what an
+/// executor matches on and what a gate can hold; the tally is gone from all three by a gate that
+/// reads their sources.
 ///
 /// # Errors
 ///
@@ -7342,9 +7358,12 @@ fn render_run(run: &Value) -> String {
                     .map_or_else(String::new, |why| format!("\n  failed: {why}")),
                 // ⚠⚠ AND WHAT BECAME OF THE WORK, present only for a run that was CUT SHORT. A
                 // person who cancelled a loop and was told only `cancelled` cannot tell whether the
-                // peer stopped or is still spending — and two of the four answers here say it is
-                // still going. Dropping it was the shape this project keeps paying for: a fact that
-                // reaches the wire and dies at the mouth somebody actually reads.
+                // peer stopped or is still spending — and `Stopped::Unreached` and
+                // `Stopped::Unsupported` both say it is still going. ⚠ The two are NAMED rather
+                // than counted, register item 872(2)'s lesson: a tally in prose is a number
+                // nothing reads and it goes stale the moment an arm is added. Dropping this
+                // clause was the shape this project keeps paying for: a fact that reaches the
+                // wire and dies at the mouth somebody actually reads.
                 outcome[sprag_host::plugins::RUN_STOPPED_KEY]
                     .as_str()
                     .map_or_else(String::new, |stopped| format!("\n  {stopped}")),

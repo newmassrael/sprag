@@ -620,13 +620,130 @@ impl Disposition {
     /// opinion, and a hand-kept list would be a table an outcome can be added without joining.
     ///
     /// ⚠ It prescribes NOTHING. Item 827 is explicit that *automatically re-launch it* must not be
-    /// assumed to be the answer, and item 867 repeats it: [`Person`](Self::Person) and
-    /// [`Nothing`](Self::Nothing) are endings a machine may NOT proceed past, so reading this table
-    /// and obeying it are different acts and only the first one lives here.
+    /// assumed to be the answer, and item 867 repeats it: which endings a machine may proceed past
+    /// is [`unattended`](Self::unattended)'s answer, so reading this table and obeying it are
+    /// different acts and only the first one lives here.
     pub fn table() -> impl Iterator<Item = (&'static str, Self)> {
         OutcomeState::EVERY_SHAPE
             .iter()
             .map(|outcome| (outcome.wire_str(), outcome.disposition()))
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT A MACHINE MAY DO WITH THIS ENDING WITH NOBODY WATCHING** — register item
+    /// 872(2), and the sentence three files stated in PROSE and nothing could ask.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The claim was written in three places and measured in none
+    ///
+    /// It stood in `.githooks/loop-read.sh`, in the `disposition` verb's own doc and inside
+    /// [`describe`](Self::describe)'s sentences — each time as a TALLY OF THE ARMS followed by a
+    /// permission, and **nothing anywhere read any of them.** It is this workspace's rule 10
+    /// exactly — *prose nobody measures* — and because the tally was a number, a fifth disposition
+    /// or a reclassified arm would have left all three sentences silently wrong at once.
+    ///
+    /// Item 872 asks for a gate that `person` and `nothing` are never launched automatically. A
+    /// gate needs something to ask, and until this method there was nothing: the fact lived in
+    /// English, in files that report and never gate.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why THREE answers and not a boolean, argued from this type's own sentences
+    ///
+    /// A boolean would answer *may a machine proceed* and stop there, and the very next question is
+    /// already written down and already load-bearing: [`describe`](Self::describe) says of
+    /// [`NextWork`](Self::NextWork) that **re-launching this one would re-do a finished job**. So
+    /// *a machine may proceed* is true of it and *re-launch it* is false of it, and an executor
+    /// holding one bit would read the first and do the second. Item 872's own done-when hedges at
+    /// exactly this seam — *"`same_work`(과 필요하면 `next_work`)"* — and its measurement counts 21
+    /// `next_work` against 1 `same_work`, so the arm the hedge is about is **twenty-one twenty-
+    /// seconds of the population it would be let loose on**.
+    ///
+    /// ⚠⚠ [`Asks`](crate::act::Asks)' rule, one register over: a word names what the case IS and a
+    /// value outside the space is refused, where a second boolean beside the first is two flags for
+    /// one fact — the shape this register keeps paying for.
+    ///
+    /// ⚠ It says what a machine MAY do and never what one should. Nothing in this crate launches
+    /// anything from it; item 872(1) is where an executor is decided, and it is held behind item
+    /// 868(3) — the conflict between re-launching at once and leaving a window to promote a build.
+    #[must_use]
+    pub const fn unattended(self) -> Unattended {
+        match self {
+            // The work is unfinished and nothing about the ending needs a person, so the SAME
+            // brief is the honest next thing.
+            Self::SameWork => Unattended::SameBrief,
+            // ⚠ NOT `SameBrief`, and this is the arm a boolean would have got wrong: this run
+            // finished what it was given, so its brief is spent — see `describe`.
+            Self::NextWork => Unattended::NewBrief,
+            // ⛔ The two item 872(2) is about. A person is what happens next, or somebody has
+            // already decided this run should stop; either way a machine acting alone here is
+            // acting against a decision that has been made or has yet to be.
+            Self::Person | Self::Nothing => Unattended::Never,
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT A MACHINE MAY DO WITH AN ENDING WHEN NOBODY IS WATCHING** —
+/// [`Disposition::unattended`], and register item 872(2).
+///
+/// # ⚠⚠⚠ It is a PROHIBITION, and that is why it can exist before any executor does
+///
+/// Item 872(1) — *what actually launches the next run* — is held behind item 868(3), because an
+/// executor that re-launches at once closes the window in which this repository's own daemon can
+/// be rebuilt and promoted. **This is the other half and nothing holds it**: it says what a machine
+/// may NOT do, so it cannot shrink that window — it forbids exactly the automation that would. It
+/// is the door an executor has to come through the day one is decided, built first on purpose.
+///
+/// ⚠⚠ **THE SPACE IS CLOSED AND EVERY DISPOSITION ANSWERS**, so a fifth disposition arrives having
+/// to say what a machine may do with it rather than falling into the reassuring reading of an
+/// unclassified value — this workspace's rule 6, and the failure mode the retired prose had by
+/// tallying the arms instead of asking them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unattended {
+    /// `same_brief` — a machine may open the next run with THIS run's brief.
+    SameBrief,
+    /// `new_brief` — a machine may open a next run, but **never with this brief**: the work this
+    /// one was given is finished, and re-typing it would re-do a finished job.
+    NewBrief,
+    /// ⛔ `never` — no machine may open anything. A person is what happens next, or a person has
+    /// already said this run should stop.
+    Never,
+}
+
+impl Unattended {
+    /// Every answer, so a walk over them needs no list somebody has to remember to extend.
+    pub const ALL: [Self; 3] = [Self::SameBrief, Self::NewBrief, Self::Never];
+
+    /// This answer's word — the ONE place the variant → name mapping lives.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::SameBrief => "same_brief",
+            Self::NewBrief => "new_brief",
+            Self::Never => "never",
+        }
+    }
+
+    /// Whether a machine may open a run at all off an ending that answers this.
+    ///
+    /// ⚠ Derived rather than a fourth field, so *may it proceed* and *with what* cannot come apart:
+    /// the boolean this replaced is the one an executor would have read while ignoring the word.
+    #[must_use]
+    pub const fn a_machine_may_act(self) -> bool {
+        !matches!(self, Self::Never)
+    }
+
+    /// **WHAT TO TELL WHOEVER READS THE ENDING** — the clause the published table carries beside
+    /// [`Disposition::describe`]'s.
+    ///
+    /// ⚠ Its own sentence rather than words folded into that one, for the reason the two are
+    /// separate facts: that one says what the run's state IS, and this says what an unattended
+    /// machine is permitted to do about it. An executor reads this one; a person reads both.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::SameBrief => "a machine may open the next run alone, carrying this same brief",
+            Self::NewBrief => {
+                "a machine may open a next run alone, but NEVER with this brief — this one is spent"
+            }
+            Self::Never => "NO machine may open anything off this ending — a person decides",
+        }
     }
 }
 
@@ -642,10 +759,13 @@ sprag_vt::closed_set! {
 /// running and still spending. A caller cannot tell which, and the one they need to act on is the
 /// second.
 ///
-/// Each arm is a different thing to tell them, and two of the four say **the work is still
-/// running** — which is why this is a closed set and not an `Option<Signalled>` whose `None` would
-/// have meant all three of *nothing was running*, *this host cannot stop things*, and *the stop
-/// failed*.
+/// Each arm is a different thing to tell them, and [`Unreached`](Self::Unreached) and
+/// [`Unsupported`](Self::Unsupported) say **the work is still running** — which is why this is a
+/// closed set and not an `Option<Signalled>` whose `None` would have meant all three of *nothing
+/// was running*, *this host cannot stop things*, and *the stop failed*.
+///
+/// ⚠ The two are NAMED rather than counted, register item 872(2)'s lesson one type over: a tally
+/// in prose is a number nothing reads, and it goes stale the moment an arm is added.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stopped {
     /// The job the run had working was signalled, and this is what received it.
@@ -2324,6 +2444,188 @@ mod tests {
                 None,
                 "{word:?} is not an ending this vocabulary publishes, and answering for it would \
                  invent the record item 827 asks to be kept",
+            );
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN ENDING A PERSON OWNS IS ONE NO MACHINE MAY ACT ON, AND THAT IS NOW A
+    /// PREDICATE RATHER THAN A SENTENCE** — register item 872(2).
+    ///
+    /// # ⛔⛔⛔⛔⛔ The claim was written three times, as a tally, and read nowhere
+    ///
+    /// It lived in `.githooks/loop-read.sh`, in the `disposition` verb's doc and inside
+    /// [`Disposition::describe`]'s sentences. **Nothing read any of them**, which is this
+    /// workspace's rule 10 — *prose nobody measures* — and each copy counted the arms, so a fifth
+    /// disposition or a reclassified arm would have left three files silently wrong at once.
+    ///
+    /// # ⚠⚠⚠ It is asked of the SIX ENDINGS and not of the four dispositions
+    ///
+    /// The population an executor meets is endings, not dispositions: it holds `failed` off a run
+    /// log. Walking [`OutcomeState::EVERY_SHAPE`] is what makes a SEVENTH ending have to decide —
+    /// walking `Disposition::ALL` would let a new ending join whichever arm it was mapped to and
+    /// say nothing here. That is item 827's own shape: *an ending nobody decided about*.
+    ///
+    /// # ⚠⚠ Why this gate exists before the executor it constrains
+    ///
+    /// Item 872(1) — what actually launches the next run — is held behind item 868(3). This half
+    /// is a PROHIBITION and nothing holds it: it forbids exactly the automation that would close
+    /// the promotion window, so it cannot make 868 worse. It is the door built before the thing
+    /// that has to come through it.
+    #[test]
+    fn an_ending_that_belongs_to_a_person_is_one_no_machine_may_act_on() {
+        // ── ① THE TWO ITEM 872(2) NAMES, ASKED OF THE ENDINGS THEMSELVES ────────────────────
+        //
+        // ⚠ Spelled as *which endings answer `Never`* rather than as a count, because the prose
+        // this replaces was a count and a count is what went stale.
+        let never: Vec<&'static str> = OutcomeState::EVERY_SHAPE
+            .iter()
+            .filter(|outcome| outcome.disposition().unattended() == Unattended::Never)
+            .map(OutcomeState::wire_str)
+            .collect();
+        assert_eq!(
+            never,
+            vec!["failed", "cancelled", "blocked", "taken_over"],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872(2): the endings a machine may NOT act on alone are not \
+             the ones this repository decided they are. `failed` and `blocked` want a person; \
+             `cancelled` and `taken_over` are a person having already said stop, and a machine \
+             acting on either reverses a decision that has been made or has yet to be. Got \
+             {never:?}",
+        );
+
+        // ── ② AND THE ONES IT MAY ACT ON DO NOT ALL MEAN THE SAME THING ─────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ THE ARM A BOOLEAN WOULD HAVE GOT WRONG. `Disposition::describe` says of
+        // `converged` that **re-launching this one would re-do a finished job** — so *a machine
+        // may proceed* is true of it and *re-launch it* is false, and an executor holding one bit
+        // would read the first and do the second. Item 872's own measurement counts 21 `next_work`
+        // against 1 `same_work`, so that is 21/22 of the population it would be let loose on.
+        assert_eq!(
+            (
+                OutcomeState::Converged.disposition().unattended(),
+                OutcomeState::Exhausted(Ceiling::Iterations)
+                    .disposition()
+                    .unattended(),
+            ),
+            (Unattended::NewBrief, Unattended::SameBrief),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872(2): a finished run's brief is SPENT and a bounded one's is \
+             not, and this answer pools them. An executor reading one bit re-types a finished \
+             brief into a fresh session, which is the job being done twice",
+        );
+
+        // ── ③ RULE 6: EVERY ANSWER IS REACHED, AND EVERY ENDING REACHES ONE ─────────────────
+        for want in Unattended::ALL {
+            assert!(
+                OutcomeState::EVERY_SHAPE
+                    .iter()
+                    .any(|outcome| outcome.disposition().unattended() == want),
+                "⚠ no ending answers {:?}, so that arm is a distinction this type invented rather \
+                 than one the six endings needed",
+                want.wire_str(),
+            );
+        }
+
+        // ── ④ AND `a_machine_may_act` CANNOT DISAGREE WITH THE WORD IT IS DERIVED FROM ──────
+        //
+        // ⚠⚠ The boolean is the thing an executor will actually branch on, and a boolean beside a
+        // word is two authorities on one fact — the shape this file pays for repeatedly. It is
+        // derived, and this says so in a way a later hand-written `match` would break.
+        for want in Unattended::ALL {
+            assert_eq!(
+                want.a_machine_may_act(),
+                want != Unattended::Never,
+                "⛔⛔⛔⛔ REGISTER ITEM 872(2): {:?} answers one thing as a word and another as a \
+                 permission, so an executor branching on the boolean would act against the word",
+                want.wire_str(),
+            );
+        }
+
+        // ── ⑤ THE THREE SAY DIFFERENT THINGS, IN BOTH SPELLINGS ────────────────────────────
+        for spelling in [
+            Unattended::ALL.map(Unattended::wire_str),
+            Unattended::ALL.map(Unattended::describe),
+        ] {
+            let mut unique = spelling.to_vec();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                Unattended::ALL.len(),
+                "two answers saying the same thing are one answer: {spelling:?}",
+            );
+        }
+
+        // ── ⑥ AND NO SENTENCE IN THIS WORKSPACE STATES THE COUNT AGAIN ─────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ THE RATCHET, and the whole reason this gate is not decoration. What went
+        // wrong was not that the fact was unstated — it was stated three times — but that it was
+        // stated as PROSE carrying a NUMBER, in files nothing compares with the type. A fourth
+        // copy would age exactly as the first three did, and this is asked of the SOURCES rather
+        // than of a list of files somebody has to remember to extend.
+        /// The three files the retired sentence stood in — one of them another crate's, which is
+        /// the point: the copies were spread across the workspace and no single crate's gate
+        /// would have seen them all.
+        const SOURCES: [(&str, &str); 3] = [
+            ("driver.rs", include_str!("driver.rs")),
+            (
+                "loop-read.sh",
+                include_str!("../../../.githooks/loop-read.sh"),
+            ),
+            (
+                "sprag.rs",
+                include_str!("../../sprag-host/src/bin/sprag.rs"),
+            ),
+        ];
+        // ⚠⚠ WHITESPACE-NORMALISED AND WHOLE-FILE, not line by line. The first draft of this gate
+        // read lines, and `rustfmt` had already WRAPPED the original sentence across a line break,
+        // so half the copies it was written to catch went straight through it. A gate whose
+        // subject is prose has to read prose the way prose is written.
+        // ⚠⚠⚠ THE NEEDLES ARE COMPOSED AND NEVER WRITTEN OUT, because this gate reads its OWN
+        // source: spelling the forbidden sentence in the array below would be a copy of it, and
+        // the first draft of this gate failed on itself for exactly that. A check a query can
+        // satisfy is no check.
+        //
+        // ⚠⚠ THE DENOMINATOR IS THE ARM COUNT AND NOTHING VAGUER. An earlier draft also looked for
+        // *N of them*, which is ordinary English — it matched three sentences in this file that
+        // tally nothing, and a gate that cries on prose it is not about gets its subject widened
+        // until somebody deletes it. `three` is here beside `four` because `Unattended` has three
+        // arms and the next copy of this mistake will be about them.
+        let needles: Vec<String> = ["two", "2", "three", "3"]
+            .into_iter()
+            .flat_map(|count| {
+                ["the four", "the 4", "these four", "the three", "the 3"]
+                    .into_iter()
+                    .map(move |den| format!("{count} of {den}"))
+            })
+            .collect();
+        // ⚠⚠⚠⚠⚠ AND THE TALLY ALONE IS NOT THE CLAIM — the SUBJECT has to be there too. A draft
+        // that looked for the tally by itself went red on *two of the three ceilings*, *two of the
+        // three by hand* and *three of the four bundled plugins*: three sentences in this file that
+        // tally something else entirely. A gate that cries on prose it is not about gets its
+        // subject widened until somebody deletes it, which is a worse ending than never having
+        // built it. What makes it THIS claim is a permission granted to a MACHINE.
+        const NEARBY: usize = 200;
+        for (named, text) in SOURCES {
+            let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let low = flat.to_lowercase();
+            let restated: Vec<&String> = needles
+                .iter()
+                .filter(|claim| {
+                    low.match_indices(claim.as_str()).any(|(at, found)| {
+                        let from = at.saturating_sub(NEARBY);
+                        let to = (at + found.len() + NEARBY).min(low.len());
+                        low.get(from..to)
+                            .is_some_and(|window| window.contains("machine"))
+                    })
+                })
+                .collect();
+            assert!(
+                restated.is_empty(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 872(2) AND RULE 10: {named} tallies the arms in prose \
+                 again — {restated:?}. That is the sentence nothing could read, and a copy of it \
+                 goes stale the moment a fifth disposition is added or an arm is reclassified. Say \
+                 it by asking `Disposition::unattended`, which is a thing a gate and an executor \
+                 can both put a question to — and if the history is worth keeping, write it \
+                 without the number.",
             );
         }
     }

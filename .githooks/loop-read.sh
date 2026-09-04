@@ -211,10 +211,19 @@ loop_read_stranded_only() {
 # and printing the rest verbatim. It never spells an answer.
 #
 # ⚠⚠ AND IT PRESCRIBES NOTHING. Item 827's prohibition, carried forward by 867:
-# *automatically re-launch it* must not be assumed to be the answer, and two of
-# the four dispositions are endings a machine may NOT proceed past. This clause
-# says what the product says and does none of it -- the same shape as every other
-# sentence in this file, which reports and never gates.
+# *automatically re-launch it* must not be assumed to be the answer. WHICH
+# endings a machine may proceed past is the table's own THIRD FIELD since
+# register item 872(2) (`same_brief` / `new_brief` / `never`), relayed here
+# verbatim with the rest -- this clause says what the product says and does none
+# of it, the same shape as every other sentence in this file, which reports and
+# never gates.
+#
+# ⛔⛔ THIS COMMENT USED TO TALLY THE ARMS and say a machine may not proceed past
+# that many of them -- a number in prose, one of three copies of the same
+# sentence, in three files, that nothing anywhere read. A fifth disposition
+# would have left all three silently wrong. The rule this file already keeps for
+# the MAPPING (never hold a copy) is the rule that sentence broke, one fact over,
+# and a gate in `driver.rs` now reads these three sources for it.
 
 # THE REPOSITORY THIS FILE IS IN, derived from the file rather than from `pwd`.
 #

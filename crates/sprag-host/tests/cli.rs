@@ -19384,7 +19384,32 @@ fn the_push_time_reader_says_what_happens_next_in_the_products_own_words() {
             next.wire_str(),
             next.describe(),
         );
+        // ⛔⛔⛔⛔⛔ AND WHAT A MACHINE MAY DO WITH IT ALONE REACHES THE PUSH TOO — register item
+        // 872(2). This is the field an EXECUTOR matches on, and until this column existed the
+        // answer was prose in three files that nothing could read. A row that names the
+        // disposition and drops this one hands a future executor the permission question and no
+        // way to ask it.
+        assert!(
+            said.contains(next.unattended().wire_str())
+                && said.contains(next.unattended().describe()),
+            "⛔ REGISTER ITEM 872(2): probe#{id} reached the push without the column saying what a \
+             machine may do with `{}` alone. The hook prints the row verbatim, so a missing word \
+             is a column this binary is not printing.\n  wanted: {} — {}\n  it said: {said}",
+            outcome.wire_str(),
+            next.unattended().wire_str(),
+            next.unattended().describe(),
+        );
     }
+    // ⛔⛔⛔⛔ AND THE TWO ENDINGS GET DIFFERENT PERMISSIONS, which is the control for the pair
+    // above: `failed` is a person's and `converged` is not, so a relay printing one row for
+    // everything cannot satisfy both. Without this, item 872(2)'s whole claim — that the two are
+    // TOLD APART where an executor can see it — is asserted by a sentence that appears twice.
+    assert_ne!(
+        OutcomeState::Failed.disposition().unattended(),
+        OutcomeState::Converged.disposition().unattended(),
+        "⛔ REGISTER ITEM 872(2): the ending that wants a person and the one that does not carry \
+         the same permission, so nothing an executor reads separates them",
+    );
     // ⚠ THE CONTROL: the two endings did not get the SAME answer. Without it every assertion above
     // is satisfied by one row printed twice.
     assert_ne!(
