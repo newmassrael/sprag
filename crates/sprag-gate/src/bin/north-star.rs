@@ -89,19 +89,22 @@ fn main() -> std::process::ExitCode {
             .severity_declared
             .map_or_else(|| "none".to_string(), |n| n.to_string()),
     );
-    // ⚠⚠ THE CAP IS THE DOCUMENT'S, NOT THIS BINARY'S — register item 833(2) and 773's axis ("the
-    // subject is the launcher's, the policy is the document's"). This prints what the shipped
-    // default holds so a reader can see the chain; a round that changes the document's number and
-    // wants this line to agree passes it.
-    let cap: u32 = std::env::var("SPRAG_REAIM_MAX")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(1);
-    let deferred = reading.deferred(cap);
+    // ⚠⚠ THE CAP IS THE DOCUMENT'S, NOT THIS BINARY'S — register item 833(1) and 773's axis ("the
+    // subject is the launcher's, the policy is the document's"). See [`cap`], which is where that
+    // sentence stopped being a comment.
+    let cap = match cap() {
+        Ok(cap) => cap,
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let deferred = reading.deferred(cap.depth());
     let held: Vec<String> = deferred.iter().map(ToString::to_string).collect();
     println!(
-        "deferred {} at depth > {cap}: {}",
+        "deferred {} at depth > {}: {}",
         deferred.len(),
+        cap.spelled(),
         held.join(" "),
     );
     println!(
@@ -123,6 +126,51 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::FAILURE
 }
 
+/// ⛔⛔⛔⛔⛔ **THE DOCUMENT THIS REPOSITORY'S DEBT RUNS ARE DRIVEN BY**, read at build time.
+///
+/// # ⚠⚠⚠ Why `debt_loop.scxml` and not the template beside it
+///
+/// `ai_loop.scxml` is the TEMPLATE other repositories copy; `debt_loop.scxml` is the kind this
+/// repository's own loop runs, and its `reaim_max` is the one a round here is actually held to.
+/// The two happen to ship the same number today, and reading the template would be reading a
+/// document no run of this ledger is driven by — a second author with a coincidence for a gate.
+///
+/// ⚠⚠ `include_str!` and not a path read at run time, which is a decision rather than a saving:
+/// `sprag_gate::sources::workspace_root` PANICS when the tree it was compiled in is not the tree it
+/// is running in, and this binary is handed a ledger that lives outside the repository entirely.
+/// Baked in, the number travels with the binary — and a binary older than its document is the
+/// same staleness every other gate in this crate already has, said the same way.
+///
+/// ⚠ It is a text file, so this costs the crate none of its charter: `north-star` still builds
+/// when the product does not.
+const DRIVING_DOCUMENT: &str = include_str!("../../../sprag-plugin/src/debt_loop.scxml");
+
+/// ⛔⛔⛔⛔⛔ **THE RE-AIM CAP THIS BINARY JUDGES UNDER — THE DOCUMENT'S, OR NOTHING** — register
+/// item 833(1).
+///
+/// # ⛔⛔⛔⛔⛔ It was `.unwrap_or(1)`, under a comment saying it was the document's
+///
+/// Measured 2026-09-04: `debt_loop.scxml`'s `reaim_max` was set to `2` and this binary rebuilt. It
+/// went on printing `deferred 10 at depth > 1`, and `--admits` refused item 843 with *"sits deeper
+/// than 1 in the chain that found it"*. **Five critical items stayed held back by a number the
+/// document no longer declared**, and nothing anywhere said the two disagreed — which is register
+/// item 445's two-authors defect sitting inside the instrument item 833 exists to be.
+///
+/// ⚠⚠ **AND THE `SPRAG_REAIM_MAX` OVERRIDE IS GONE WITH IT.** Its whole reason was that the
+/// document was not read — *"a round that changes the document's number and wants this line to
+/// agree passes it"*. Kept beside a reader that DOES read the document it would be an escape hatch
+/// that can silently disagree with the policy's author, which is this workspace's rule 6 and the
+/// exact thing being removed. A round that wants a different cap changes the document.
+///
+/// # Errors
+///
+/// The document's own sentence, when it declares no cap, declares it twice, or declares something
+/// this reader can make neither a number nor `never` of — see [`north_star::declared_reaim`]. Rule
+/// 6: not a `1`.
+fn cap() -> Result<north_star::Reaim, String> {
+    north_star::declared_reaim(DRIVING_DOCUMENT)
+}
+
 /// 🎯🎯🎯🎯🎯 **IS THIS PROPOSAL ONE A ROUND MAY TAKE NEXT?** — register item 839, and the half of
 /// register item 833(1) that had been written as prose.
 ///
@@ -137,9 +185,10 @@ fn main() -> std::process::ExitCode {
 /// set aside, and the sentence below travels with the verdict — which is exactly what a silent
 /// admission would not be.
 ///
-/// ⚠⚠ **THE CAP IS THE DOCUMENT'S AND THIS ONLY MIRRORS IT**, as the report above already does:
-/// `SPRAG_REAIM_MAX` names the same number `ai_loop.scxml` holds, and a round that moves the
-/// document's value and wants this to agree passes it.
+/// ⚠⚠ **THE CAP IS THE DOCUMENT'S AND THIS ONLY MIRRORS IT** — [`cap`], which reads it out of the
+/// document rather than holding a number of its own. That sentence stood here while the code two
+/// screens down said `.unwrap_or(1)`; register item 833(1) and [`cap`]'s own doc carry what the
+/// disagreement cost.
 fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::ExitCode {
     // ⚠ NOT `println!` on the failure paths: this reply is read as a VERDICT, and a first word that
     // is not YES or NO is *the checker said nothing this run could read* — the honest answer for an
@@ -185,11 +234,17 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
         );
         return std::process::ExitCode::FAILURE;
     }
-    let cap: u32 = std::env::var("SPRAG_REAIM_MAX")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(1);
-    let admitted = reading.admits(cap);
+    // ⚠⚠ THE SAME ONE READING, and the failure is a REFUSAL rather than a verdict: a checker that
+    // cannot say what cap it is judging under has said nothing, and `stderr` is where this binary
+    // puts *the instrument could not judge* so a reader is sent to the instrument.
+    let cap = match cap() {
+        Ok(cap) => cap,
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let admitted = reading.admits(cap.depth());
     let spelled: Vec<String> = admitted.iter().map(ToString::to_string).collect();
     let proposal = proposal.to_string_lossy();
     let Some(number) = reading.names(&proposal) else {
@@ -232,10 +287,11 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
     // ⚠⚠ THE REASON NAMES WHICH RULE REFUSED IT, because the two remedies differ: an item the
     // severity gate holds back waits for the critical set to empty, and one the depth cap holds
     // back waits for the cap to lift. A reader told only *"not in the set"* cannot act.
-    let why = if reading.deferred(cap).contains(&number) {
+    let why = if reading.deferred(cap.depth()).contains(&number) {
         format!(
-            "item {number} sits deeper than {cap} in the chain that found it, so it is \
-                 registered rather than worked"
+            "item {number} sits deeper than {} in the chain that found it, so it is \
+                 registered rather than worked",
+            cap.spelled(),
         )
     } else if reading.population().contains(&number) {
         format!("item {number} is open but not in the set to take next")

@@ -825,6 +825,121 @@ impl Reading {
     }
 }
 
+/// The `<data>` id a loop document declares its re-aim cap under.
+///
+/// ⚠ `reaim_max` and not `debt_depth_max`: register item 833 renamed it when a gate caught the word
+/// `debt` in `ai_loop.scxml`, which other repositories copy. The ledger's own prose still calls it
+/// the depth cap, and it is the same number.
+pub const REAIM_MAX: &str = "reaim_max";
+
+/// ⛔⛔⛔⛔⛔ **HOW DEEP A RUN MAY RE-AIM, AS THE DOCUMENT DECLARES IT** — register item 833(1),
+/// and the number this crate must hold no opinion about.
+///
+/// # ⛔⛔⛔⛔⛔ The binary held a literal `1` under a comment saying it did not
+///
+/// Measured 2026-09-04. `north-star.rs` carried, in as many words, *"THE CAP IS THE DOCUMENT'S,
+/// NOT THIS BINARY'S"* — and two lines below it, twice, `.unwrap_or(1)`. **The document was never
+/// read.** Driven: `debt_loop.scxml`'s `reaim_max` was set to `2` and the binary rebuilt, and it
+/// went on printing `deferred 10 at depth > 1` and refusing item 843 with *"sits deeper than 1"*.
+/// Five critical items stayed held back by a number the document no longer declared.
+///
+/// ⇒ That is register item 445's shape — **two authors for one policy** — sitting inside the
+/// instrument item 833 exists to build, and it is the failure mode 773's axis names: *the subject
+/// is the launcher's, the policy is the DOCUMENT's.*
+///
+/// # ⚠⚠⚠ Rule 6: a document that declares none is a FAULT and never a `1`
+///
+/// A default here is the escape hatch that retires the gate. `sprag_plugin` already refuses at the
+/// door a document that declares no cap (`Briefed::NotHeld`), and this is that refusal on the
+/// reading side: the answer to *what cap is this ledger being judged under* has to be a document's,
+/// or nobody's.
+///
+/// # ⚠⚠ `never` is a value and not an absence
+///
+/// The document's own guard reads `reaim_max != 'never'`, so declining the cap is a thing a
+/// document may say. It is [`Reaim::Never`] here rather than a very large number, because a reader
+/// told `at depth > 4294967295` learns nothing and a reader told `never` learns the whole of it.
+///
+/// # Errors
+///
+/// A sentence naming what is wrong, for a document that declares the cap zero times, more than
+/// once, or with a value this reader cannot make a number or `never` of.
+pub fn declared_reaim(document: &str) -> Result<Reaim, String> {
+    let needle = format!("<data id=\"{REAIM_MAX}\"");
+    let stated: Vec<&str> = document
+        .lines()
+        .filter(|line| line.contains(&needle))
+        .collect();
+    let [only] = stated.as_slice() else {
+        return Err(format!(
+            "this document declares `{REAIM_MAX}` {} times, and the cap a run obeys must be one \
+             number one document states once",
+            stated.len(),
+        ));
+    };
+    let said = only
+        .split_once("expr=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(value, _)| value.trim())
+        .ok_or_else(|| {
+            format!(
+                "`{REAIM_MAX}` is declared without an `expr`: {}",
+                only.trim()
+            )
+        })?;
+    // ⚠ The quotes are the DOCUMENT's: `expr` is an expression in its datamodel, so a word arrives
+    // quoted and a number does not. Stripping them here is reading the document's own spelling,
+    // not guessing at it.
+    let bare = said.trim_matches('\'');
+    if bare == "never" {
+        return Ok(Reaim::Never);
+    }
+    bare.parse().map(Reaim::Of).map_err(|_| {
+        format!(
+            "`{REAIM_MAX}` is declared as {said:?}, which is neither a number nor `never` — and an \
+             unreadable policy must not be read as the default this reader would otherwise have \
+             invented"
+        )
+    })
+}
+
+/// ⛔⛔⛔ **WHAT A DOCUMENT SAYS ABOUT RE-AIMING** — [`declared_reaim`]'s answer.
+///
+/// ⚠ A word and not an `Option<u32>`, for the reason `sprag_plugin::Counted` gives one crate over:
+/// [`None`] already means *nothing readable is there*, and *the author declined the cap* is the
+/// opposite of that — one is a document to refuse, the other is a document to obey.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reaim {
+    /// A run may re-aim this many times before a further checkpoint is registered and not taken.
+    Of(u32),
+    /// The document declines the cap: nothing is ever held back for being too deep.
+    Never,
+}
+
+impl Reaim {
+    /// The depth [`Reading::deferred`] and [`Reading::admits`] are asked with.
+    ///
+    /// ⚠ [`Never`](Self::Never) is the largest depth there is, which is the honest translation: a
+    /// chain cannot be deeper than the register has items. It is spelled here once so no caller
+    /// invents its own translation — the defect this whole function exists to remove, one layer in.
+    #[must_use]
+    pub const fn depth(self) -> u32 {
+        match self {
+            Self::Of(cap) => cap,
+            Self::Never => u32::MAX,
+        }
+    }
+
+    /// The word a reader is shown beside a count.
+    #[must_use]
+    pub fn spelled(self) -> String {
+        match self {
+            Self::Of(cap) => cap.to_string(),
+            Self::Never => "never".to_owned(),
+        }
+    }
+}
+
 /// Split the ledger at section A's boundaries. Returns the lines of A alone.
 ///
 /// ⚠ A missing section A yields nothing, and the caller must treat an EMPTY reading as a fault
@@ -1919,6 +2034,99 @@ mod tests {
             }),
             "the backlog may shrink, never grow: {:?}",
             reading.faults,
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE CAP THIS INSTRUMENT JUDGES UNDER IS THE DOCUMENT'S** — register item 833(1),
+    /// and the sentence that was a comment while the code held a literal.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the disagreement cost, measured
+    ///
+    /// `north-star.rs` carried *"THE CAP IS THE DOCUMENT'S, NOT THIS BINARY'S"* two lines above
+    /// `.unwrap_or(1)`, twice. Driven 2026-09-04: `debt_loop.scxml`'s `reaim_max` set to `2`, the
+    /// binary rebuilt, and it went on printing `deferred 10 at depth > 1` and refusing item 843
+    /// with *"sits deeper than 1"*. **Five critical items held back by a number the document no
+    /// longer declared.**
+    ///
+    /// # ⚠⚠⚠ The arms are the three ways a document can fail to say it, and none is a `1`
+    ///
+    /// Rule 6: an unreadable policy must be a REFUSAL, because a default here is the escape hatch
+    /// that retires the gate — and the default it would take is precisely the value that was wrong.
+    #[test]
+    fn the_reaim_cap_is_the_documents_and_a_document_that_says_none_is_refused() {
+        // ── ① THE NUMBER COMES OUT OF THE TEXT, AND A DIFFERENT TEXT GIVES A DIFFERENT NUMBER ──
+        //
+        // ⚠ Both arms, because *reads the document* and *returns 1* agree on every document that
+        // says 1 — which is every document this repository ships today.
+        assert_eq!(
+            declared_reaim("  <data id=\"reaim_max\" expr=\"1\"/>"),
+            Ok(Reaim::Of(1)),
+        );
+        assert_eq!(
+            declared_reaim("  <data id=\"reaim_max\" expr=\"2\"/>"),
+            Ok(Reaim::Of(2)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 833(1): a document that raised its cap is being judged under \
+             the old one, which is the measured defect — five critical items held back by a number \
+             nobody had declared since",
+        );
+
+        // ── ② `never` IS A VALUE THE DOCUMENT MAY SAY, AND IT IS NOT AN ABSENCE ──
+        //
+        // ⚠ The document's own guard reads `reaim_max != 'never'`, so this is its vocabulary and
+        // not an invention here. It is quoted in the text because `expr` is an expression.
+        assert_eq!(
+            declared_reaim("<data id=\"reaim_max\" expr=\"'never'\"/>"),
+            Ok(Reaim::Never),
+        );
+        assert_eq!(
+            Reaim::Never.depth(),
+            u32::MAX,
+            "declining the cap must hold nothing back",
+        );
+        assert_eq!(Reaim::Never.spelled(), "never");
+
+        // ── ③ RULE 6: THE THREE SILENCES ARE REFUSALS, NEVER THE DEFAULT ──
+        for (named, document) in [
+            ("declares none", "<data id=\"something_else\" expr=\"1\"/>"),
+            (
+                "declares two",
+                "<data id=\"reaim_max\" expr=\"1\"/>\n<data id=\"reaim_max\" expr=\"3\"/>",
+            ),
+            (
+                "declares a word nobody can read",
+                "<data id=\"reaim_max\" expr=\"'soon'\"/>",
+            ),
+            ("declares it with no expr", "<data id=\"reaim_max\"/>"),
+        ] {
+            assert!(
+                declared_reaim(document).is_err(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 833(1) AND RULE 6: a document that {named} was read \
+                 anyway. The value this reader would otherwise invent is `1` — the exact number \
+                 that was wrong — so a default here is the escape hatch that retires the gate",
+            );
+        }
+    }
+
+    /// ⛔⛔⛔⛔ **AND THE DOCUMENT THIS REPOSITORY'S RUNS OBEY DECLARES ONE** — the control for the
+    /// gate above, and the one arm that would notice the file being renamed or the `<data>` going.
+    ///
+    /// ⚠⚠ It reads `debt_loop.scxml` and not `ai_loop.scxml`: the template is what other
+    /// repositories copy, and a run of THIS ledger is driven by the kind. `north-star.rs` bakes the
+    /// same file in, and this is the assertion that the file it bakes in still answers.
+    #[test]
+    fn this_repositorys_own_loop_document_declares_a_cap_this_reader_can_use() {
+        let document = include_str!("../../sprag-plugin/src/debt_loop.scxml");
+        let cap = declared_reaim(document).expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 833(1): `debt_loop.scxml` declares no cap this reader can \
+             use, so `north-star` refuses to judge — which is the honest answer and a red here, \
+             because every round of this repository is gated by that judgement",
+        );
+        assert_eq!(
+            cap,
+            Reaim::Of(1),
+            "⚠⚠ THE OWNER'S DEFAULT, register item 833(2): *부채의 부채는 몇 depth까지 갚을지 \
+             scxml에 지정할수있게하고 default로 1 depth로해*. A round that moves it moves this \
+             line with it — which is the whole point of the number living in one place.",
         );
     }
 }
