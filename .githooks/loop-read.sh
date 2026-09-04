@@ -218,6 +218,13 @@ loop_read_stranded_only() {
 # of it, the same shape as every other sentence in this file, which reports and
 # never gates.
 #
+# ⚠⚠ AND WHO IS OWED THE NEXT RUN is the FOURTH FIELD since register item 872(1)
+# (`this_runs_opener` / `a_person` / `nobody`). Naming a party is still not a
+# prescription: item 872 measured a push whose endings permitted next runs and
+# got none, and the gap was that the permission had nobody attached to it, so no
+# party had failed. This file relays that word for the same reason it relays the
+# other three -- it holds no copy of any of them.
+#
 # ⛔⛔ THIS COMMENT USED TO TALLY THE ARMS and say a machine may not proceed past
 # that many of them -- a number in prose, one of three copies of the same
 # sentence, in three files, that nothing anywhere read. A fifth disposition

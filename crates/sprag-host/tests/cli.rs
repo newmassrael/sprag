@@ -19402,7 +19402,31 @@ fn the_push_time_reader_says_what_happens_next_in_the_products_own_words() {
             next.unattended().wire_str(),
             next.unattended().describe(),
         );
+        // ⛔⛔⛔⛔⛔ AND SO DOES THE PARTY THAT IS OWED THE NEXT RUN — register item 872(1). Item
+        // 872's measurement is a push whose endings permitted 22 next runs and got none; the
+        // permission was on the row and nobody was. This is the column that puts a party there, so
+        // a push can say who was owed as well as what was allowed.
+        assert!(
+            said.contains(next.opens_next().wire_str())
+                && said.contains(next.opens_next().describe()),
+            "⛔ REGISTER ITEM 872(1): probe#{id} reached the push without the column naming what \
+             opens the next run off `{}`. The hook prints the row verbatim, so a missing word is a \
+             column this binary is not printing.\n  wanted: {} — {}\n  it said: {said}",
+            outcome.wire_str(),
+            next.opens_next().wire_str(),
+            next.opens_next().describe(),
+        );
     }
+    // ⛔⛔⛔⛔ AND THE TWO ENDINGS GET DIFFERENT PARTIES, the control for the pair above and the
+    // reason this column is not the permission column renamed: `failed` is owed to a person and
+    // `converged` to whoever opened the run. Without it, a relay printing one party for everything
+    // satisfies every assertion above.
+    assert_ne!(
+        OutcomeState::Failed.disposition().opens_next(),
+        OutcomeState::Converged.disposition().opens_next(),
+        "⛔ REGISTER ITEM 872(1): the ending a person is owed and the one their opener is owed \
+         name the same party, so nothing a reader sees says who failed to open the next run",
+    );
     // ⛔⛔⛔⛔ AND THE TWO ENDINGS GET DIFFERENT PERMISSIONS, which is the control for the pair
     // above: `failed` is a person's and `converged` is not, so a relay printing one row for
     // everything cannot satisfy both. Without this, item 872(2)'s whole claim — that the two are

@@ -660,8 +660,11 @@ impl Disposition {
     /// one fact — the shape this register keeps paying for.
     ///
     /// ⚠ It says what a machine MAY do and never what one should. Nothing in this crate launches
-    /// anything from it; item 872(1) is where an executor is decided, and it is held behind item
-    /// 868(3) — the conflict between re-launching at once and leaving a window to promote a build.
+    /// anything from it; WHO IS OWED the next run is [`opens_next`](Self::opens_next)'s answer
+    /// (item 872(1)), and WHETHER AN EXECUTOR MAY GO AT ONCE is item 868(3)'s — the conflict
+    /// between re-launching immediately and leaving a window to promote a build. Those are two
+    /// questions, and reading them as one is what left this half published with nobody attached
+    /// to it while item 872's own measurement counted the runs that got nothing.
     #[must_use]
     pub const fn unattended(self) -> Unattended {
         match self {
@@ -677,6 +680,43 @@ impl Disposition {
             Self::Person | Self::Nothing => Unattended::Never,
         }
     }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT IS TO OPEN THE NEXT RUN** — [`Opener`], and register item 872(1).
+    ///
+    /// # ⛔⛔⛔⛔⛔ The state this answers, measured rather than argued
+    ///
+    /// Item 872 counted a push's endings and found 21 `next_work` and 1 `same_work` — 22 runs
+    /// whose ending said a machine may open a next one — and **nothing opened one**. What was
+    /// missing was not permission, which [`unattended`](Self::unattended) had already granted:
+    /// it was that no party was NAMED, so no party had failed. An unowed run and an owed run
+    /// nobody opened look identical from outside, and only the second is a debt.
+    ///
+    /// # ⚠⚠⚠ It DECIDES and does not EXECUTE, and that is the line item 868(3) draws
+    ///
+    /// Item 872's done-when asks for the answer to be *determined in the record — person or
+    /// machine*, as something a document or an artefact can be asked. Whether an executor may
+    /// re-launch AT ONCE is item 868(3)'s question, because an executor that does closes the
+    /// window this repository rebuilds and promotes its own daemon in. Naming the party answers
+    /// the first and cannot move the second: nothing in this crate opens a run, and the party
+    /// named for the two machine-actionable arms is *the one who opened this run* — a session at
+    /// a pane, not this daemon.
+    ///
+    /// ⚠ [`Person`](Self::Person) and [`Nothing`](Self::Nothing) split here where
+    /// [`unattended`](Self::unattended) pools them, and that split is the point: `never` is true
+    /// of both, and a person IS owed the next run off a `failed` while nobody is owed one off a
+    /// `cancelled`. A reader holding only the permission cannot tell those apart.
+    #[must_use]
+    pub const fn opens_next(self) -> Opener {
+        match self {
+            // ⚠ The two the item's done-when names — *`same_work`(과 필요하면 `next_work`)*. They
+            // differ in the BRIEF, which is the other axis's answer, and agree in the party.
+            Self::SameWork | Self::NextWork => Opener::ThisRunsOpener,
+            // A person is what happens next, so a person is what opens what comes after it.
+            Self::Person => Opener::APerson,
+            // ⛔ Somebody already decided this run should stop. Nothing is owed.
+            Self::Nothing => Opener::Nobody,
+        }
+    }
 }
 
 /// ⛔⛔⛔⛔⛔ **WHAT A MACHINE MAY DO WITH AN ENDING WHEN NOBODY IS WATCHING** —
@@ -684,11 +724,16 @@ impl Disposition {
 ///
 /// # ⚠⚠⚠ It is a PROHIBITION, and that is why it can exist before any executor does
 ///
-/// Item 872(1) — *what actually launches the next run* — is held behind item 868(3), because an
-/// executor that re-launches at once closes the window in which this repository's own daemon can
-/// be rebuilt and promoted. **This is the other half and nothing holds it**: it says what a machine
-/// may NOT do, so it cannot shrink that window — it forbids exactly the automation that would. It
-/// is the door an executor has to come through the day one is decided, built first on purpose.
+/// Whether an executor may re-launch AT ONCE is item 868(3)'s question, because one that does
+/// closes the window in which this repository's own daemon can be rebuilt and promoted. **This is
+/// a half nothing holds**: it says what a machine may NOT do, so it cannot shrink that window — it
+/// forbids exactly the automation that would. It is the door an executor has to come through the
+/// day one is built, built first on purpose.
+///
+/// ⚠ **WHO IS OWED the next run is a third half again**, and not this one: [`Opener`], item
+/// 872(1). This grants a permission and names nobody; that names a party and grants nothing. The
+/// two were read as one question while the answer to both was prose, and the reading is what left
+/// endings carrying a permission that no party had failed to act on.
 ///
 /// ⚠⚠ **THE SPACE IS CLOSED AND EVERY DISPOSITION ANSWERS**, so a fifth disposition arrives having
 /// to say what a machine may do with it rather than falling into the reassuring reading of an
@@ -743,6 +788,98 @@ impl Unattended {
                 "a machine may open a next run alone, but NEVER with this brief — this one is spent"
             }
             Self::Never => "NO machine may open anything off this ending — a person decides",
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT OPENS THE NEXT RUN OFF AN ENDING** — [`Disposition::opens_next`], and register
+/// item 872(1).
+///
+/// # ⚠⚠⚠ It is not [`Unattended`] said again — the two axes CROSS
+///
+/// [`Unattended`] answers *what a machine MAY do* and pools `person` with `nothing`: both say
+/// `never`, because neither is an ending a machine may act on alone. This answers *WHAT IS TO DO
+/// IT* and pools the other pair instead: `same_work` and `next_work` are both opened by the party
+/// that opened this run, and what differs between them is the BRIEF, which is the other axis's
+/// answer. So the pair separates all four dispositions and **neither member of it does that
+/// alone** — the shape item 833(2) states as *a tuple separates only over the numbers it names*.
+/// A gate in this module holds exactly that, so an arm added here that copies [`Unattended`]'s
+/// partition is a second spelling of one fact and goes red.
+///
+/// # ⛔ Why the answer for a machine-actionable ending is a PARTY and not a mechanism
+///
+/// Item 872's done-when asks that *what launches the next run be DETERMINED in the record — person
+/// or machine* — and item 868(3) holds the neighbouring question of whether an executor may
+/// re-launch **at once**, because one that does closes the window this repository rebuilds and
+/// promotes its own daemon in. Naming the party settles the first without touching the second:
+/// this says WHO is owed the next run, and nothing here opens one. The two questions were read as
+/// one while the answer was prose, and that reading cost item 872 its measurement — runs whose
+/// ending permitted a next one, with nothing named to open it and therefore nobody who failed to.
+///
+/// ⚠⚠ **THE PARTY IS THE RUN'S OWN OPENER AND NOT *a person*.** A loop's runs are opened by a
+/// session at a pane, which may be a person or an agent, and a run request's `opened_by` is where
+/// that is already recorded. Saying *a person* here would be false of every run this repository's
+/// own loop opens, and saying *the daemon* would be the automation item 868(3) holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opener {
+    /// `this_runs_opener` — whoever opened THIS run is what opens the next one, carrying the brief
+    /// [`Unattended`] names. ⚠ Not *anybody* and not *the daemon*: the party is a recorded fact of
+    /// the run, and an ending that answers this with no opener on record has nobody owed it.
+    ThisRunsOpener,
+    /// `a_person` — a PERSON opens the next run, and nothing is opened until they have been.
+    APerson,
+    /// ⛔ `nobody` — nothing opens a next run at all. Somebody already decided this work should
+    /// stop, and opening one reverses them.
+    Nobody,
+}
+
+impl Opener {
+    /// Every answer, so a walk over them needs no list somebody has to remember to extend.
+    pub const ALL: [Self; 3] = [Self::ThisRunsOpener, Self::APerson, Self::Nobody];
+
+    /// This answer's word — the ONE place the variant → name mapping lives.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::ThisRunsOpener => "this_runs_opener",
+            Self::APerson => "a_person",
+            Self::Nobody => "nobody",
+        }
+    }
+
+    /// Whether a next run is owed off an ending that answers this AT ALL.
+    ///
+    /// ⚠ Derived rather than a fourth field, for [`Unattended::a_machine_may_act`]'s reason: a
+    /// caller that branches on *is one owed* while the word says otherwise is two authorities on
+    /// one fact. [`Nobody`](Self::Nobody) is the only arm that answers *no*, and it is the arm
+    /// [`Unattended`] cannot express — `never` is said by `person` too, and a person IS owed one.
+    #[must_use]
+    pub const fn a_next_run_is_owed(self) -> bool {
+        !matches!(self, Self::Nobody)
+    }
+
+    /// **WHAT TO TELL WHOEVER READS THE ENDING** — the clause the published table carries third,
+    /// beside [`Disposition::describe`]'s and [`Unattended::describe`]'s.
+    ///
+    /// ⚠ Its own sentence rather than words folded into either of those, because it is a third
+    /// fact: one says what the run's state IS, one says what an unattended machine is PERMITTED to
+    /// do about it, and this says WHO IS OWED the doing. A reader holding the first two still
+    /// cannot say who failed to act, which is the state item 872 measured.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::ThisRunsOpener => {
+                "whoever opened this run is what opens the next one — the party on this run's own \
+                 record, and nobody is owed it where that is unrecorded"
+            }
+            Self::APerson => {
+                "a person opens the next run, and until one has, nothing else is owed and nothing \
+                 else happens"
+            }
+            Self::Nobody => {
+                "nothing opens a next run off this ending — this work is over because somebody \
+                 said so"
+            }
         }
     }
 }
@@ -2467,10 +2604,15 @@ mod tests {
     ///
     /// # ⚠⚠ Why this gate exists before the executor it constrains
     ///
-    /// Item 872(1) — what actually launches the next run — is held behind item 868(3). This half
-    /// is a PROHIBITION and nothing holds it: it forbids exactly the automation that would close
-    /// the promotion window, so it cannot make 868 worse. It is the door built before the thing
-    /// that has to come through it.
+    /// Whether an executor may re-launch AT ONCE is held behind item 868(3). This half is a
+    /// PROHIBITION and nothing holds it: it forbids exactly the automation that would close the
+    /// promotion window, so it cannot make 868 worse. It is the door built before the thing that
+    /// has to come through it.
+    ///
+    /// ⚠ Its sibling gate, [`every_ending_names_the_party_that_is_owed_the_next_run`], holds the
+    /// other side — who is OWED a next run, item 872(1) — and the two are pinned to each other by
+    /// a biconditional there: a party that may be an agent must never be named on an ending this
+    /// gate says a person owns.
     #[test]
     fn an_ending_that_belongs_to_a_person_is_one_no_machine_may_act_on() {
         // ── ① THE TWO ITEM 872(2) NAMES, ASKED OF THE ENDINGS THEMSELVES ────────────────────
@@ -2629,6 +2771,163 @@ mod tests {
             );
         }
     }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY ENDING NAMES THE PARTY THAT IS OWED THE NEXT RUN, AND THAT NAMING IS NOT
+    /// THE PERMISSION SAID TWICE** — register item 872(1).
+    ///
+    /// # ⛔⛔⛔⛔⛔ What item 872 measured, and why permission was never the gap
+    ///
+    /// A push's endings were counted: 21 `next_work` and 1 `same_work` — 22 runs whose ending said
+    /// a machine may open a next one — **and nothing opened one**. [`Unattended`] had already
+    /// granted the permission; what no record held was WHO WAS OWED THE DOING, so no party had
+    /// failed to do it. An ending nobody is owed and an ending somebody was owed and did not open
+    /// look identical from outside, and only the second is a debt. That is the sentence this gate
+    /// turns into something a document can be asked.
+    ///
+    /// # ⚠⚠⚠ THE AXES CROSS, and that is the whole claim
+    ///
+    /// A second word that partitions the dispositions the way the first one does is one fact with
+    /// two spellings — the defect this file has paid for repeatedly, and the reason
+    /// [`Unattended::a_machine_may_act`] is derived rather than stored. So this asks for the
+    /// crossing IN BOTH DIRECTIONS, with the witnesses named: [`Opener`] splits `person` from
+    /// `nothing` where [`Unattended`] pools them under `never`, and [`Unattended`] splits
+    /// `same_work` from `next_work` where [`Opener`] pools them. ⚠ Item 833(2)'s rule, one register
+    /// over: **a tuple separates only over the numbers it names**, so the pair is asked to separate
+    /// all four and each member is asked to fail at it alone.
+    ///
+    /// # ⚠⚠ It is asked of the SIX ENDINGS, for the gate above's reason
+    ///
+    /// The population an executor meets is endings, not dispositions — it holds `failed` off a run
+    /// log. Walking [`OutcomeState::EVERY_SHAPE`] is what makes a SEVENTH ending have to answer.
+    #[test]
+    fn every_ending_names_the_party_that_is_owed_the_next_run() {
+        // ── ① THE PARTY, ASKED OF THE ENDINGS THEMSELVES ────────────────────────────────────
+        //
+        // ⚠ Spelled as *which endings answer each party* rather than as a count, because a count
+        // is what went stale three times over in the neighbouring register.
+        let owed = |want: Opener| -> Vec<&'static str> {
+            OutcomeState::EVERY_SHAPE
+                .iter()
+                .filter(|outcome| outcome.disposition().opens_next() == want)
+                .map(OutcomeState::wire_str)
+                .collect()
+        };
+        assert_eq!(
+            owed(Opener::ThisRunsOpener),
+            vec!["converged", "exhausted"],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872(1): the endings whose next run is owed to whoever opened \
+             this one are not the ones this repository decided they are. Those are the two item \
+             872's done-when names — *`same_work`(과 필요하면 `next_work`)* — and they are exactly \
+             the endings a machine may act on alone",
+        );
+        assert_eq!(
+            (owed(Opener::APerson), owed(Opener::Nobody)),
+            (vec!["failed", "blocked"], vec!["cancelled", "taken_over"]),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872(1): a person is owed the next run off an ending that \
+             WANTS one and nobody is owed one off an ending somebody already stopped, and this \
+             answer has them the wrong way about or pooled",
+        );
+
+        // ── ② THE AXES CROSS, IN BOTH DIRECTIONS, WITH THE WITNESSES NAMED ──────────────────
+        //
+        // ⛔⛔⛔⛔⛔ THE ASSERTION THAT MAKES THIS A SECOND FACT RATHER THAN A SECOND SPELLING. If
+        // either half fails, one of the two words is derivable from the other and the published
+        // column it feeds tells a reader nothing they did not already hold.
+        assert!(
+            Disposition::Person.unattended() == Disposition::Nothing.unattended()
+                && Disposition::Person.opens_next() != Disposition::Nothing.opens_next(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872(1): `person` and `nothing` are one class on BOTH axes, so \
+             a reader who knows a machine may not act still cannot tell an ending that is waiting \
+             for somebody from an ending nobody is coming to",
+        );
+        assert!(
+            Disposition::SameWork.opens_next() == Disposition::NextWork.opens_next()
+                && Disposition::SameWork.unattended() != Disposition::NextWork.unattended(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872(1): `same_work` and `next_work` are one class on BOTH \
+             axes, so this column is the permission column renamed",
+        );
+        // ⚠ AND THE PAIR SEPARATES WHAT NEITHER MEMBER DOES — item 833(2)'s rule stated as a
+        // count over the type rather than as a sentence about it.
+        let spread = |named: fn(Disposition) -> (Option<Unattended>, Option<Opener>)| -> usize {
+            let mut seen: Vec<(Option<Unattended>, Option<Opener>)> =
+                Disposition::ALL.iter().copied().map(named).collect();
+            seen.sort_by_key(|(may, who)| {
+                (may.map(Unattended::wire_str), who.map(Opener::wire_str))
+            });
+            seen.dedup();
+            seen.len()
+        };
+        assert_eq!(
+            (
+                spread(|next| (Some(next.unattended()), Some(next.opens_next()))),
+                spread(|next| (Some(next.unattended()), None)),
+                spread(|next| (None, Some(next.opens_next()))),
+            ),
+            (Disposition::ALL.len(), 3, 3),
+            "⛔⛔⛔⛔ REGISTER ITEM 872(1) AND 833(2): the pair must tell every disposition apart \
+             and NEITHER member may do it alone. A pair that separates fewer than all of them \
+             leaves two endings an executor cannot distinguish; a member that separates all of \
+             them on its own makes the other one decoration",
+        );
+
+        // ── ③ RULE 6: EVERY ANSWER IS REACHED, AND EVERY ENDING REACHES ONE ─────────────────
+        for want in Opener::ALL {
+            assert!(
+                OutcomeState::EVERY_SHAPE
+                    .iter()
+                    .any(|outcome| outcome.disposition().opens_next() == want),
+                "⚠ no ending answers {:?}, so that arm is a party this type invented rather than \
+                 one the six endings needed",
+                want.wire_str(),
+            );
+        }
+
+        // ── ④ AND NO PARTY MAY BE NAMED WHERE ITEM 872(2) FORBIDS ONE ──────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ THE CONTRACT THAT KEEPS THE TWO REGISTERS FROM PULLING APART. Item 872(2) is a
+        // PROHIBITION: `person` and `nothing` are endings no machine may act on alone. This half
+        // names a party, and the party named for a machine-actionable ending is the one who opened
+        // the run — which may be an agent. So naming that party on an ending a person owns would
+        // be item 872(2) undone by its own sibling, in a column an executor matches on.
+        for next in Disposition::ALL {
+            assert_eq!(
+                next.opens_next() == Opener::ThisRunsOpener,
+                next.unattended().a_machine_may_act(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 872(1) AGAINST 872(2): `{}` names the party that opened \
+                 the run and the permission says otherwise. The opener of a loop's run is a \
+                 session at a pane and may be an agent, so these two disagreeing is a machine \
+                 named on an ending a person owns — or a person's ending left with nobody",
+                next.wire_str(),
+            );
+        }
+
+        // ── ⑤ AND `a_next_run_is_owed` CANNOT DISAGREE WITH THE WORD IT IS DERIVED FROM ────
+        for want in Opener::ALL {
+            assert_eq!(
+                want.a_next_run_is_owed(),
+                want != Opener::Nobody,
+                "⛔⛔⛔⛔ REGISTER ITEM 872(1): {:?} answers one thing as a word and another as a \
+                 debt, so a reader counting what is owed would count against the word",
+                want.wire_str(),
+            );
+        }
+
+        // ── ⑥ THE THREE SAY DIFFERENT THINGS, IN BOTH SPELLINGS ───────────────────────────
+        for spelling in [
+            Opener::ALL.map(Opener::wire_str),
+            Opener::ALL.map(Opener::describe),
+        ] {
+            let mut unique = spelling.to_vec();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                Opener::ALL.len(),
+                "two parties named the same way are one party: {spelling:?}",
+            );
+        }
+    }
+
     use crate::access::{KeyStroke, PaneRow, Written};
     use crate::plugin::Step;
     use crate::run::poll_until;

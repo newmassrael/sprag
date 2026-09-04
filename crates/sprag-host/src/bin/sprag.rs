@@ -574,18 +574,28 @@ fn disposition_rows() -> Vec<String> {
     sprag_plugin::driver::Disposition::table()
         .map(|(word, next)| {
             // ⛔⛔⛔⛔⛔ THE THIRD COLUMN IS WHAT A MACHINE MAY DO ALONE — register item 872(2), and
-            // it is a WORD in the row rather than a sentence inside the fourth column for one
+            // it is a WORD in the row rather than a sentence inside the last column for one
             // reason: the reader this column is for is not a person. An executor matches on
             // fields, and a tally of the arms saying a machine may not proceed alone was prose in
             // three files that nothing could match on. ⚠ It is appended rather than inserted,
             // because the first two fields are a CONTRACT `.githooks/loop-read.sh` matches on.
+            //
+            // ⛔⛔⛔⛔⛔ AND THE FOURTH IS WHAT IS TO DO IT — register item 872(1). The third says
+            // whether a machine MAY and with what brief; this says WHICH PARTY IS OWED the next
+            // run, and the two cross: `person` and `nothing` both answer `never` there and answer
+            // differently here, `same_work` and `next_work` the other way about. Item 872 measured
+            // 22 endings that permitted a next run and got none — permission was never the gap,
+            // and a reader holding only the third column cannot say who failed to act because
+            // nothing had named anybody. ⚠ Appended for the third column's reason exactly.
             format!(
-                "  {:<10}  {:<9}  {:<10}  {} — {}",
+                "  {:<10}  {:<9}  {:<10}  {:<16}  {} — {} — {}",
                 word,
                 next.wire_str(),
                 next.unattended().wire_str(),
+                next.opens_next().wire_str(),
                 next.describe(),
                 next.unattended().describe(),
+                next.opens_next().describe(),
             )
         })
         .collect()
@@ -621,6 +631,12 @@ fn disposition_rows() -> Vec<String> {
 /// ([`Unattended`](sprag_plugin::driver::Unattended), register item 872(2)) rather than in a
 /// sentence here — *reading this table* and *obeying it* are different acts and only the first one
 /// is here.
+///
+/// ⚠⚠ **AND THE FOURTH COLUMN NAMES A PARTY, WHICH IS STILL NOT A PRESCRIPTION** —
+/// [`Opener`](sprag_plugin::driver::Opener), register item 872(1). It says who is OWED the next
+/// run off an ending, not that anything opens one; this verb opens nothing and neither does the
+/// crate the answer comes from. Item 872 measured endings that permitted a next run and got none,
+/// and the gap it names is that no party was on record, so nobody had failed to act.
 ///
 /// ⛔⛔ This paragraph used to TALLY THE ARMS and say a machine may not proceed past that many of
 /// them — a number stated in prose, in three separate files, with nothing anywhere reading any of
@@ -12703,6 +12719,19 @@ mod tests {
                  {row}\n  wanted: {}",
                 next.wire_str(),
                 next.describe(),
+            );
+            // ⛔⛔⛔⛔⛔ AND THE PARTY THAT IS OWED THE NEXT RUN — register item 872(1). The
+            // permission column says a machine MAY; this says WHO IS OWED, and item 872 measured
+            // endings that had the first and got no next run because nothing held the second. A
+            // row that drops this column publishes a permission with nobody attached to it.
+            assert!(
+                row.contains(next.opens_next().wire_str())
+                    && row.contains(next.opens_next().describe()),
+                "⛔⛔ ITEM 872(1): `{word}`'s row does not name what opens the next run (`{}`). \
+                 Without it a reader can see that an ending permitted a next run and still cannot \
+                 say who failed to open one.\n  row: {row}\n  wanted: {}",
+                next.opens_next().wire_str(),
+                next.opens_next().describe(),
             );
             disposition(vec![word.to_owned()])
                 .unwrap_or_else(|why| panic!("`sprag disposition {word}` answers: {why}"));
