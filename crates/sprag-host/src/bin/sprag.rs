@@ -13004,6 +13004,34 @@ mod tests {
             "⚠⚠⚠⚠ THE PREMISE for item 856(3): the split a person reads must name the road the \
              hardening took, or the two opposite remedies arrive as one number: {split:?}",
         );
+        // ⛔⛔⛔⛔⛔ **AND THE ORDINARY ROW IS *NOT* IN THIS SENTENCE, WHICH IS A DECISION AND NOW A
+        // PREDICATE** — register item 856's widening. That table gained a row for the run's
+        // ordinary traffic so its rows would sum to the run's totals, and this sentence
+        // deliberately leaves it out: the comparison it exists for holds the PROMPT SHAPE constant
+        // and varies only what put the loop there, and briefs and turn prompts are a different
+        // shape. Printed beside `capacity` it invites exactly the reading item 856 was filed
+        // about.
+        //
+        // ⚠⚠ Asserted rather than left in a comment, because a comment is what a later round
+        // walking `Occasion::ALL` here would not fail. The row's own home is the arithmetic —
+        // `Deliveries` against the split — which is gated in `sprag_plugin::outer`.
+        let mut with_ordinary = run.clone();
+        with_ordinary[sprag_host::plugins::RUN_FOLDS_BY_REASON_KEY]["ordinary"] = serde_json::json!({
+            "delivered": 40,
+            "folded": 7,
+            "unasked_after_a_fold": 0,
+            "unasked_on_the_pane": 2,
+        });
+        let widened = sprag_host::plugins::folds_by_reason_sentence(&with_ordinary)
+            .expect("a run that reflected still has a split to say");
+        assert_eq!(
+            widened, split,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the ordinary row reached the sentence that compares \
+             REASONS. A reader meeting `ordinary 7 of 40` beside `capacity 3 of 3` reads two \
+             populations as one axis — the prompts differ in shape, not in what put the loop \
+             there — which is the pooling this split was built to end. Widened {widened:?}, \
+             reasons-only {split:?}",
+        );
         // ⛔⛔⛔⛔⛔ AND HOW MANY OF THIS RUN'S PROMPTS BECAME A QUESTION — register item 856, the
         // number three separate instruments could not hold. The table names the two roads that sit
         // inside `made - folded` and are NOT landings (a peer that paints nothing, and a run that
@@ -13014,6 +13042,17 @@ mod tests {
             "echoed": 0,
             "account": 0,
             "let_go": 1,
+            // ⛔⛔⛔⛔⛔ **THE EIGHTH ROAD, AND ITS ABSENCE HERE WAS A RED THAT SHIPPED** — register
+            // item 889 added `Emptied` and this hand-written table was not updated, so
+            // `delivered_by_road_sentence` answered `None` — *whole or nothing* working exactly as
+            // designed — and the sentence a person reads vanished.
+            //
+            // ⚠⚠⚠ **NOTHING CAUGHT IT FOR THREE COMMITS BECAUSE THE LANE WAS NEVER RUN.** Every
+            // suite this round was `-p sprag-host --lib`, and this test lives in the `--bin sprag`
+            // target: a package's binary targets are not in its lib run. Register item 833 already
+            // recorded that shape — *"run the package with NO target filter"* — and it cost this
+            // one again.
+            "emptied": 0,
             "unchecked": 3,
             "unasked": 1,
             "unproven": 0,
