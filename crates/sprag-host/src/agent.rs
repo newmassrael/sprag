@@ -1383,6 +1383,111 @@ mod tests {
         em.advance(lines.join("\r\n").as_bytes());
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHAT THE COMPOSER IS SHOWING CROSSES THE WIRE, AND AN ABSENT KEY IS NOT AN
+    /// EMPTY BOX** — register item 889's one wire hop.
+    ///
+    /// # ⛔⛔⛔⛔ Why this hop needs a gate of its own
+    ///
+    /// `plugins.rs` states the rule for every fact here: the IN-PROCESS driver reads the tracker's
+    /// observation and a REMOTE one reads [`verdict_of`]'s, so a fact carried by one mouth and not
+    /// the other makes a run behave differently depending on which side of a socket it drives from.
+    /// `SubmittedWhen::Emptied`'s own gates live in `sprag_plugin` and exercise the in-process
+    /// mouth only — so without this, [`verdict_json`] could stop writing the key, or `verdict_of`
+    /// stop reading it, and the ONE population that matters (the loop drives its panes through the
+    /// daemon's socket) would silently lose the contract while every gate stayed green.
+    ///
+    /// # ⚠⚠⚠ Staged through the product, on the gate below's rule
+    ///
+    /// The rows are the ones [`AgentRegistry::observe`] produced from a real emulator screen, and
+    /// they are read back through [`verdict_of`]. A fixture that wrote `{"composing": "..."}` by
+    /// hand and read it back would pass against a daemon that never publishes the key at all.
+    #[test]
+    fn what_the_composer_is_showing_crosses_the_wire_and_an_absent_key_is_not_an_empty_box() {
+        fn at_once() -> Hysteresis {
+            Hysteresis {
+                settle: Duration::ZERO,
+            }
+        }
+
+        /// A pane holding a prompt too short to fold: the box shows the text INLINE, so no
+        /// placeholder is painted and `holding` is the `false` this key exists to get past.
+        const HOLDING_INLINE: &[&str] = &[
+            "  the turn before this one",
+            "❯ ORTHOGONAL-889-ON-THE-WIRE",
+            "  ⏸ manual mode on · ? for shortcuts",
+        ];
+
+        let mut reg = AgentRegistry::new(Ruleset::new(vec![sprag_detect::claude()]));
+        let em = painted(HOLDING_INLINE);
+        let id = PaneId(9);
+        let seen = reg
+            .observe(
+                id,
+                em.screen(),
+                Some("✳ Claude Code"),
+                Instant::now(),
+                at_once,
+            )
+            .expect("the glyph and the footer claim this pane");
+
+        assert_eq!(
+            seen.holding,
+            Some(false),
+            "⛔⛔⛔ THE STAGING: this prompt is short enough to sit in the box as itself, so no \
+             placeholder is painted and the BOOLEAN says no. If it ever says yes, this fixture has \
+             grown a fold and the key below is being gated on the population it was not built for",
+        );
+        let showing = seen
+            .composing
+            .as_deref()
+            .expect("a screen carrying a composer marker has rows to publish");
+        assert!(
+            showing.contains("ORTHOGONAL-889-ON-THE-WIRE")
+                && !showing.contains("the turn before this one"),
+            "⚠⚠ and they are the BOX's rows and not the pane's: the transcript above the marker is \
+             what makes *is my text still in there* answerable at all. Got {showing:?}",
+        );
+
+        // ── AND THE HOP: rendered by one mouth, read by the other ─────────────────────────────
+        let rendered = verdict_json(&seen);
+        assert_eq!(
+            rendered[crate::wire::AGENT_COMPOSING_KEY],
+            serde_json::json!(showing),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889: the daemon knows what that box is showing and does not \
+             say so, which leaves every OUT-OF-PROCESS driver — the loop's own — with the expiring \
+             account and nothing else. Rendered {rendered}",
+        );
+        let Verdict::Seen(back) = verdict_of(&rendered, Sent::now()) else {
+            panic!("a rendered verdict must read back as one: {rendered}");
+        };
+        assert_eq!(
+            back.composing.as_deref(),
+            Some(showing),
+            "⚠⚠⚠ BOTH MOUTHS OR NEITHER: a key written and never read back is a fact the remote \
+             driver cannot have, and `SubmittedWhen::Emptied` would refuse on exactly the \
+             population it was built for — the one this repository's loop runs on",
+        );
+
+        // ── AND THE ABSENCE IS *NOTHING COULD SAY*, NEVER *THE BOX IS EMPTY* ──────────────────
+        //
+        // ⛔⛔⛔⛔⛔ An older daemon writes no key at all, and during a rollout that is the common
+        // case. Read as *the box let go* it would settle a submit off a build that never looked, so
+        // the contract must refuse — which it can only do if the absence arrives as `None`.
+        let mut older = rendered.clone();
+        older
+            .as_object_mut()
+            .expect("the verdict is an object")
+            .remove(crate::wire::AGENT_COMPOSING_KEY);
+        let Verdict::Seen(from_older) = verdict_of(&older, Sent::now()) else {
+            panic!("a verdict missing one answer key is still a verdict: {older}");
+        };
+        assert_eq!(
+            from_older.composing, None,
+            "⛔⛔⛔⛔ REGISTER ITEM 889: an absent key is a daemon that cannot say, and reading it \
+             as an empty box would confirm a submit that never landed",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE REPORTER'S HEALTH CROSSES THE WIRE, AND AN ABSENT KEY IS NOT AGREEMENT** —
     /// register item 709's *one wire hop*, from the tracker to what a DRIVER builds.
     ///
