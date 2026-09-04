@@ -11235,6 +11235,39 @@ impl OuterLoop {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE CONTEXT CEILING THIS RUN ACTUALLY RAN UNDER** — register item 856(1b), and
+    /// the number without which that item's own experiment cannot be read.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A rate with no denominator anybody can name
+    ///
+    /// Item 856's measurement is a FOLD RATE: how often a prompt this run typed was swallowed by
+    /// the peer's composer. Measured 2026-09-04 over the runs whose build carries the counters —
+    /// **603 folded of 2,516 attempted, 23.97 %, across 80 runs** — and its remaining clause is an
+    /// experiment: move this number and see whether the onset moves with it.
+    ///
+    /// **Nothing on a run's record said which ceiling that rate belonged to.** Measured the same
+    /// day: 0 of 214 rows carried it, and the one place that knew (`RunRequest`) is dropped by the
+    /// restore path, so 0 of 214 finished rows kept it either. An experiment run at a different
+    /// ceiling would therefore land in the same undifferentiated pile as the baseline — which is
+    /// not *an experiment nobody noticed*, it is **an experiment that cannot be told from its own
+    /// control**.
+    ///
+    /// # ⚠⚠⚠ Why the DATAMODEL's value and not the brief's
+    ///
+    /// The number resolves in three steps — the caller's, then this repository's kind document,
+    /// then the template's own — and only the last of those happens inside the machine. What the
+    /// door holds is the first two; what the run OBEYED is this. A row carrying the brief's number
+    /// would be right about every run except the ones the experiment is about.
+    ///
+    /// ⚠ [`None`] is *this run's datamodel does not answer*, which is a document with no such
+    /// `<data>` and a machine that has stopped speaking — never a zero. A `0` is a real value here
+    /// (`reviewing` guards every deciding edge on `context_ceiling > 0`), so publishing one for
+    /// absence would say *this run had no ceiling* about a run nobody asked.
+    #[must_use]
+    pub fn context_ceiling(&self) -> Option<i64> {
+        self.authored_number("context_ceiling")
+    }
+
     /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES THIS RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the
     /// document's own `unchecked`, incremented by the adopting arm where the `successor_check` slot
     /// published no word at all. Register item 847.

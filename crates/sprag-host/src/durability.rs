@@ -767,6 +767,7 @@ mod tests {
             at: None,
             place: None,
             document: None,
+            context_ceiling: None,
             stood_down: None,
             stood_down_by: None,
             deliveries: None,

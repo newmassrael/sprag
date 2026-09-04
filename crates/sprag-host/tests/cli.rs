@@ -4461,6 +4461,7 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 at: None,
                 // ⚠ FOREIGN, which is what makes the successor WITHHOLD rather than resume — 737.
                 document: Some("0000000000000000".to_owned()),
+                context_ceiling: None,
                 stood_down: None,
                 stood_down_by: None,
                 cancelled_by: None,

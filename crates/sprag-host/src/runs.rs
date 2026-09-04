@@ -2385,6 +2385,21 @@ pub struct PersistedRun {
     /// ⚠ Compared for EQUALITY only; it is an identity and never an ordering.
     #[serde(default)]
     pub document: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHICH CONTEXT CEILING THE RUN RAN UNDER** — register item 856(1b), and the field
+    /// that makes that item's fold rate a comparison rather than a number.
+    ///
+    /// # ⛔ Why it is persisted and not left on the request
+    ///
+    /// It WAS on the request, and that is the defect: measured 2026-09-04, 0 of 214 finished rows
+    /// still carried one, because the restore path drops it. So the ceiling a run obeyed was
+    /// knowable exactly while the run was alive and never afterwards — and item 856's measurement
+    /// is computed over runs that have ENDED. A moved ceiling and the eighty runs of the baseline
+    /// published the same row.
+    ///
+    /// ⚠⚠ [`None`] is *nobody wrote it down* — a log from before this field, or a plugin with no
+    /// such ceiling. **Never a zero**, which is a value the loop's own guards read as unbounded.
+    #[serde(default)]
+    pub context_ceiling: Option<i64>,
     /// ⚠⚠⚠⚠⚠ **THE WHOLE PLACE THE MACHINE WAS IN** — `sprag_plugin::LoopPlace::in_words`, the
     /// active configuration led by the current state, in the document's own names. [`None`] for a
     /// run whose plugin walks no statechart, one that never took a step, or a log written before
@@ -4066,6 +4081,16 @@ impl RunRegistry {
                         // place recorded without one is a vocabulary nobody can check.
                         document: (at.is_some() || place.is_some())
                             .then(|| sprag_plugin::STATECHARTS_FINGERPRINT.to_owned()),
+                        // ⛔⛔⛔⛔⛔ AND WHICH CEILING IT RAN UNDER — register item 856(1b). This is
+                        // the hop the fact used to die at: it lived on the run REQUEST, which the
+                        // restore path does not carry, so every ended run forgot the one number
+                        // its fold rate had to be compared against.
+                        //
+                        // ⚠ Taken from the run's own progress rather than from the request even
+                        // now, because the value resolves in three steps and the last of them
+                        // happens inside the machine — the request holds the caller's number, and
+                        // what a reader needs is the one the run OBEYED.
+                        context_ceiling: run.progress.context_ceiling,
                         // ⚠⚠⚠ ALWAYS `Some`, INCLUDING `false` — item 594. This image DID look, so
                         // `Some(false)` is a claim it is entitled to make; the `None` this field
                         // documents belongs to a log written before the field existed, and only a
@@ -4399,6 +4424,11 @@ impl RunRegistry {
                 progress: Arc::new(Mutex::new(Progress {
                     iterations: saved.iterations,
                     cost,
+                    // ⛔ AND THE CEILING IT RAN UNDER — register item 856(1b), carried across the
+                    // restart on the ending's terms above: a restored run's row must still say
+                    // which experiment it was, or the restart itself becomes the thing that erases
+                    // the distinction.
+                    context_ceiling: saved.context_ceiling,
                     // ⚠⚠⚠⚠⚠ **THE PLACE IS CARRIED FORWARD, AND ONLY THROUGH THE DOOR THAT CHECKS
                     // THE DOCUMENT** — register items 543 and 544. `saved.place` is words from
                     // whatever build wrote the log; `resumable_place` hands them back only when
@@ -5073,6 +5103,51 @@ mod tests {
     /// the key, which no other gate here reads.
     ///
     /// ⚠⚠ It loads as [`None`] and NOT as this image: the absence means nobody recorded it.
+    #[test]
+    fn a_restored_run_says_which_context_ceiling_it_ran_under() {
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 856(1b). Item 856's remaining clause is an experiment — move
+        // `context_ceiling` and see whether the fold onset moves with it — and measured
+        // 2026-09-04 it could not be READ: 0 of 214 rows carried the ceiling they ran under, and
+        // the one place that knew (the run request) is dropped by the restore path, so 0 of 214
+        // finished rows kept it either. The baseline that experiment would be compared against is
+        // 603 folds of 2,516 attempted (23.97 %) over 80 runs, and **nothing said what ceiling
+        // that number belongs to**. A run at a moved ceiling would land in the same pile.
+        //
+        // ⚠⚠ THE RESTORE IS THE CLAIM, not the row. A value that reaches a live row and dies at
+        // the restart is exactly what was already there — item 856's rate is computed over runs
+        // that have ENDED, and every one of those has crossed a restart.
+        let saved: RunLog = serde_json::from_str(
+            r#"{"version":1,"runs":[
+                {"id":7,"label":"ai_loop pane=3","iterations":2,"cost":null,"unit":null,
+                 "finished":false,"outcome":null,"ceiling":null,"output":null,
+                 "context_ceiling":4242},
+                {"id":8,"label":"ai_loop pane=4","iterations":2,"cost":null,"unit":null,
+                 "finished":false,"outcome":null,"ceiling":null,"output":null}]}"#,
+        )
+        .expect("a log naming the ceiling parses, and so does one that does not");
+        let mut successor = RunRegistry::default();
+        successor.restore(&saved);
+        // ⚠ Read back through `persistable`, which is the ROUND TRIP and not a peek: a value that
+        // came out of the log and did not go back into it would be lost at the NEXT restart, and
+        // this fact's whole defect was surviving one hop and not the next.
+        let ceilings: Vec<Option<i64>> = successor
+            .persistable()
+            .runs
+            .iter()
+            .map(|run| run.context_ceiling)
+            .collect();
+        assert_eq!(
+            ceilings,
+            vec![Some(4242), None],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1b): the ceiling a run obeyed must cross the restart, and \
+             a log that names none must come back as NOBODY SAID rather than as a zero. A zero \
+             here is a value the loop's own guards read as *unbounded* (`context_ceiling > 0` \
+             gates every deciding edge in `reviewing`), so publishing one for silence would claim \
+             a run was unbounded on behalf of a daemon that was never asked — and it would put \
+             every pre-field run into the experiment's control group.",
+        );
+    }
+
     #[test]
     fn a_restored_run_keeps_the_build_that_drove_it_and_a_new_one_is_stamped_with_this_image() {
         let mut registry = RunRegistry::default();
@@ -6844,6 +6919,7 @@ mod tests {
                 tree: None,
                 at: None,
                 document: None,
+                context_ceiling: None,
                 stood_down: None,
                 stood_down_by: None,
                 cancelled_by: None,
@@ -7093,6 +7169,7 @@ mod tests {
             tree: None,
             at: at.map(str::to_owned),
             document: document.map(str::to_owned),
+            context_ceiling: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -7207,6 +7284,7 @@ mod tests {
             tree: None,
             at: None,
             document: document.map(str::to_owned),
+            context_ceiling: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -7311,6 +7389,7 @@ mod tests {
             tree: None,
             at: None,
             document: document.map(str::to_owned),
+            context_ceiling: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -7755,6 +7834,7 @@ mod tests {
                 tree: None,
                 at: None,
                 document: None,
+                context_ceiling: None,
                 // ⚠ A log with no such field: `None`, which restores as *no order was recorded*.
                 stood_down: None,
                 stood_down_by: None,

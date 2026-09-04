@@ -1343,6 +1343,32 @@ pub trait Plugin {
         None
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE CONTEXT CEILING THIS RUN RAN UNDER** — register item 856(1b), and the one
+    /// number that makes that item's fold rate comparable to anything.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A control an experiment cannot be told apart from
+    ///
+    /// Item 856 measures how often a prompt is swallowed by the receiving session's composer, and
+    /// its axis is HOW FULL that session is. The ceiling is what decides when the loop replaces a
+    /// session, so moving it is the experiment — and until this method **no run recorded which
+    /// ceiling it obeyed**: 0 of 214 rows, measured 2026-09-04, with the only place that knew
+    /// (the run request) dropped by the restore path. A run at a moved ceiling and the eighty runs
+    /// of the baseline published the same row.
+    ///
+    /// ⚠⚠ [`None`] is *this plugin has no such ceiling* — every bundled plugin but the loop, and a
+    /// loop whose datamodel has stopped answering. **Never `Some(0)` for either**: zero is a real
+    /// value the loop's own guards test for (`context_ceiling > 0`), so a zero published for
+    /// absence would claim a run was unbounded on behalf of a machine nobody asked.
+    ///
+    /// ⚠ Asked by the [`Driver`] each step on [`deferred`](Self::deferred)'s argument, even though
+    /// what it answers is a CONSTANT: a value carried once, at submit, is a value the restore path
+    /// drops — which is exactly how this fact came to be missing.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn context_ceiling(&self) -> Option<i64> {
+        None
+    }
+
     /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES THIS RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the owner's
     /// decision of 2026-09-03, register item 847, and [`deferred`](Self::deferred)'s twin at the
     /// other end of the same bound.

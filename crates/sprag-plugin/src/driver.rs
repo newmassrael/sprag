@@ -1172,6 +1172,13 @@ pub struct Driver {
     /// document, so a second counter out here would be a number that agrees until the day it does
     /// not — `deliveries`' own words, one field down.
     deferred: Option<u32>,
+    /// ⛔ **WHAT THE PLUGIN LAST SAID ITS CONTEXT CEILING WAS** — register item 856(1b), held and
+    /// refreshed on the line above's terms.
+    ///
+    /// ⚠ A CONSTANT read every step, which looks wasteful and is not: the alternative is to carry
+    /// it once from the submit, and a value carried once at submit is what the restore path drops.
+    /// 0 of 214 rows recorded this number for exactly that reason.
+    context_ceiling: Option<i64>,
     /// 🎯 **WHAT THE PLUGIN LAST SAID ITS UNCHECKED RE-AIMS CAME TO** — register item 847, held on
     /// the line above's terms and read from the plugin at the same one place. ⚠ NEVER incremented
     /// here, for that field's reason exactly.
@@ -1287,6 +1294,13 @@ pub struct Progress {
     ///
     /// ⚠ [`None`] is *nobody was counting* — see [`Outcome::deferred`].
     pub deferred: Option<u32>,
+    /// ⛔ **AND WHICH CONTEXT CEILING IT IS RUNNING UNDER** — register item 856(1b). See
+    /// [`crate::plugin::Plugin::context_ceiling`], where the argument is.
+    ///
+    /// ⚠ Published WHILE THE RUN IS GOING on `deferred`'s argument, and for a sharper reason of its
+    /// own: this is the control an experiment is read against, and a run whose ceiling is only
+    /// known after it ends is a run nobody could have watched being the experiment.
+    pub context_ceiling: Option<i64>,
     /// 🎯 **AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED** — register item 847, published WHILE
     /// THE RUN IS STILL GOING on the line above's argument: a person watching a loop re-aim itself
     /// unchecked is the one who can still go and name a classifier for it.
@@ -1540,6 +1554,10 @@ impl Driver {
             // *nobody was counting* is a different answer from *it set nothing aside*. See
             // `Plugin::deferred`.
             deferred: None,
+            // ⚠ `None` on the line above's rule, and here a zero would be worse than unhelpful:
+            // `0` is a ceiling the loop's own guards read as *unbounded*, so publishing it for a
+            // run nobody has asked yet would answer a question about the experiment with a lie.
+            context_ceiling: None,
             // ⚠ `None` FOR `deferred`'s REASON ONE LINE UP — a run nobody has stepped has not been
             // asked, and *nobody was counting* is not *every direction it took was checked*.
             unchecked: None,
@@ -1602,6 +1620,10 @@ impl Driver {
             // IS STILL GOING for `answered`'s reason on the row below: a person watching a loop
             // defer proposal after proposal is the one who can still change its brief.
             deferred: self.deferred,
+            // ⛔ AND WHICH CEILING IT IS RUNNING UNDER — register item 856(1b), live because the
+            // experiment that needs it is watched while it runs: a fold rate read afterwards is
+            // read against a control, and the control is this number.
+            context_ceiling: self.context_ceiling,
             // 🎯 AND HOW MANY OF THEM NOBODY CHECKED — register item 847, live for the reason
             // above it: the person watching is the one who can still go and name a classifier.
             unchecked: self.unchecked,
@@ -1989,6 +2011,13 @@ impl Driver {
                     // and a machine in a final state may no longer read its own datamodel — what a
                     // reader wants is the last answer it COULD give, not the silence after it.
                     self.deferred = plugin.deferred().or_else(|| self.deferred.take());
+                    // ⛔ AND WHICH CEILING IT IS OBEYING — register item 856(1b), read in the same
+                    // breath and KEPT on the same terms. It is what makes a fold rate comparable:
+                    // without it the eighty runs of the baseline and a run at a moved ceiling
+                    // publish the same row.
+                    self.context_ceiling = plugin
+                        .context_ceiling()
+                        .or_else(|| self.context_ceiling.take());
                     // 🎯 AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED — register item 847, read in
                     // the same breath and KEPT on the same terms: the step that ends a run is the
                     // one whose machine may no longer read its own datamodel, and what a reader

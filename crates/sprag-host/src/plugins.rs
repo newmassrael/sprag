@@ -329,6 +329,29 @@ pub const RUN_ANSWERED_KEY: &str = "answered";
 /// had the budget and never had to spend it**, and a reader who cannot tell that from *nobody was
 /// counting* cannot tell a healthy run from a broken one.
 pub const RUN_DEFERRED_KEY: &str = "deferred";
+/// ⛔⛔⛔⛔⛔ **WHICH CONTEXT CEILING A RUN RAN UNDER** — register item 856(1b), and the control
+/// that item's own experiment is read against.
+///
+/// # ⛔⛔⛔⛔⛔ A rate measured 214 times with no denominator anybody could name
+///
+/// Item 856 measures how often a prompt is swallowed by the receiving session's composer, and its
+/// axis is how full that session is. `context_ceiling` decides when the loop replaces a session, so
+/// moving it IS the experiment. Measured 2026-09-04: the fold rate over the runs whose build
+/// carries the counters is **603 of 2,516 attempted — 23.97 %, across 80 runs** — and **0 of 214
+/// rows recorded which ceiling that rate belongs to.** The one place that knew is the run request,
+/// and 0 of 214 finished rows still carry one, because the restore path drops it.
+///
+/// So a run started at a moved ceiling would land in the same undifferentiated pile as its own
+/// control. That is not an experiment nobody noticed; it is an experiment that **cannot be told
+/// from the baseline**, however many times it is run.
+///
+/// ⚠⚠ ABSENT is *nobody said*, and it is NEVER a zero: `0` is a value the loop's own guards read
+/// (`context_ceiling > 0` gates every deciding edge in `reviewing`), so a zero published for
+/// silence would claim a run was unbounded on behalf of a machine that was never asked.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_OVERRIDDEN_KEY`]'s argument unchanged: an added
+/// answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_CONTEXT_CEILING_KEY: &str = "context_ceiling";
 /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the owner's
 /// decision of 2026-09-03, register item 847, and [`RUN_DEFERRED_KEY`]'s twin at the other end of
 /// the same bound.
@@ -5664,6 +5687,13 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
     if let Some(unadmitted) = progress.unadmitted {
         answer[RUN_UNADMITTED_KEY] = json!(unadmitted);
     }
+    // ⛔⛔⛔⛔⛔ AND WHICH CEILING THE RUN IS OBEYING — register item 856(1b). It is a CONSTANT and
+    // it rides the live row anyway, on the two clauses above's polling argument sharpened: the
+    // person watching an experiment is the one who can still tell it apart from its control, and
+    // this is the only field that says which of the two they are looking at.
+    if let Some(ceiling) = progress.context_ceiling {
+        answer[RUN_CONTEXT_CEILING_KEY] = json!(ceiling);
+    }
     // ⚠⚠⚠⚠⚠ **AND WHERE THE RUN'S MACHINE IS — register item 662, and this renderer is the ONLY
     // way that fact can cross a process boundary.** A driver in another process reports through
     // here and nowhere else, so a key missing here is a fact the daemon cannot know about such a
@@ -8472,6 +8502,7 @@ mod tests {
             tree: None,
             at: None,
             document: Some(document.to_owned()),
+            context_ceiling: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -9009,6 +9040,7 @@ mod tests {
                 opened_by_session: Some(RESUMED.to_owned()),
                 at: None,
                 document: None,
+                context_ceiling: None,
                 // ⚠ `None` and not `Some(false)` — this fixture IS a log written by an older
                 // daemon, so the honest value is *nobody recorded whether an order was given*.
                 stood_down: None,
@@ -9200,6 +9232,7 @@ mod tests {
             tree: None,
             at: None,
             document: None,
+            context_ceiling: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -9618,6 +9651,7 @@ mod tests {
                 tree: None,
                 at: None,
                 document: None,
+                context_ceiling: None,
                 stood_down: None,
                 stood_down_by: None,
                 cancelled_by: None,
@@ -13406,6 +13440,7 @@ mod tests {
                 answered: 0,
                 screened: 0,
                 deferred,
+                context_ceiling: None,
                 unchecked,
                 // ⚠ `None` HERE AND ASSERTED ELSEWHERE — register item 833. This fixture is about
                 // the two counts it takes as arguments; the subset that says WHY has its own gate
@@ -13506,6 +13541,7 @@ mod tests {
                 answered: 0,
                 screened: 0,
                 deferred: None,
+                context_ceiling: None,
                 unchecked: None,
                 unadmitted: None,
                 waiting: None,
@@ -18850,6 +18886,7 @@ mod tests {
                     tree: None,
                     at: None,
                     document: document.map(str::to_owned),
+                    context_ceiling: None,
                     stood_down: None,
                     stood_down_by: None,
                     cancelled_by: None,

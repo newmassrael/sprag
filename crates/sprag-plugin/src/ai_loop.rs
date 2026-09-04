@@ -1411,6 +1411,15 @@ impl Plugin for AiLoop {
             .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
     }
 
+    /// ⛔ **THE DOCUMENT'S OWN `context_ceiling`, ON ITS WAY TO THE ROW SOMEBODY READS** — register
+    /// item 856(1b), delegated on `deferred`'s exact terms above.
+    ///
+    /// ⚠ NOT narrowed and NOT defaulted: the number is the datamodel's after all three fall-through
+    /// steps, and it is reported as it is read. A `None` is a machine that has stopped answering.
+    fn context_ceiling(&self) -> Option<i64> {
+        self.inner.context_ceiling()
+    }
+
     /// 🎯 **THE DOCUMENT'S OWN `unchecked`, ON ITS WAY TO THE ROW SOMEBODY READS** — register item
     /// 847, delegated on `deferred`'s exact terms above: the `<if>` that counts is written in
     /// `ai_loop.scxml`, and a driver-side tally would agree with it until the day the document grew
@@ -5942,6 +5951,22 @@ mod tests {
             "⚠⚠⚠⚠⚠ ITEM 492: the caller's ceiling must REACH the datamodel `reviewing` reads. \
              `None` here is the defect this item is about — a state guarded on a number nothing \
              could set",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE MOUTH REPORTS WHAT THE DATAMODEL HOLDS — register item 856(1b), and
+        // this line is a mutation's finding: silencing the reporter left every gate in this
+        // workspace green while the number stopped reaching the row.
+        //
+        // ⚠⚠ It asks the PLUGIN and not the inner loop, because the driver asks the plugin. The
+        // assertion above proves the number arrived; this proves somebody can read it — and item
+        // 856's experiment needs the second as much as the first, since a fold rate is compared
+        // against the ceiling it was measured under and that comparison happens off the row.
+        assert_eq!(
+            crate::plugin::Plugin::context_ceiling(&carried),
+            Some(NAMED),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1b): the loop holds its ceiling and does not report it, so \
+             the run's row cannot say which ceiling it ran under. Measured 2026-09-04 that was \
+             true of 214 of 214 rows, and it makes an experiment that moves this number \
+             indistinguishable from the baseline it is meant to be compared with",
         );
 
         // ⚠⚠⚠ THE CONTROL. Without it a product that took the caller's number and ALSO overwrote a
