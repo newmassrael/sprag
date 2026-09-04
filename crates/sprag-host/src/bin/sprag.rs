@@ -6913,6 +6913,12 @@ fn render_build(run: &Value) -> String {
 /// log written before the stamp existed is not *the same run as whatever else bears this number*,
 /// it is nobody having recorded which run it was — and a silent omission here would read as the
 /// former to anyone comparing two rows.
+///
+/// ⚠⚠⚠ **THE EXISTING READER WAS CHECKED RATHER THAN ASSUMED**, which is the constraint
+/// `render_build`'s neighbours state: the repayment skill's `watch.sh` anchors on `^run <N> ` as a
+/// PREFIX and takes the run's status from the line after the heading, so a clause appended to the
+/// end of the heading moves neither. Driven against a real snapshot before this shipped. It is the
+/// only bracketed field on that line, which is what lets a shell reader take it with `[^][]*$`.
 fn render_which_run(run: &Value) -> String {
     match run[sprag_host::plugins::RUN_WHICH_RUN_KEY].as_str() {
         Some(which) => format!("  [{which}]"),
