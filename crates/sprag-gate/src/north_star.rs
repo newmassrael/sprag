@@ -168,6 +168,79 @@ pub const SEVERITY_DECLARATION: &str = "@sev-unclassified:";
 /// their own ratchet.
 pub const PARENT: &str = "@from:";
 
+/// ⛔⛔⛔⛔⛔ **THE WORDS THIS LEDGER USES FOR *I MET IT WHILE PAYING SOMETHING ELSE*** — register
+/// item 896, and the vocabulary [`PARENT`]'s own *CAUSED BY, NEVER MERELY MET WHILE* section
+/// argues about while nothing read it.
+///
+/// # ⛔⛔⛔⛔⛔ The rule was written into this file and the parser threw the reason away
+///
+/// `Parent::parse` — SPELLED, not linked: it is private and this constant is public, so a link is
+/// `private_intra_doc_links` under `-D warnings` (register item 365, and the commit hook refused
+/// this file for it) — reads the FIRST WORD of the value, the number, and discards the sentence
+/// after it. So the distinction that section calls *the whole scheme* was enforced by whoever
+/// happened to be writing the line, which is this workspace's rule 10 exactly: prose nobody
+/// measures.
+///
+/// **Measured 2026-09-05 over the ledger's own 78 `@from:` lines**, and the vocabulary is not
+/// invented here — it is counted:
+///
+/// | form | on `@from: none` | on `@from: <n>` |
+/// | --- | ---: | ---: |
+/// | `마주친` / `마주쳤다` | **9** | **1** |
+/// | `드러났다` | 0 | 2 |
+/// | `넘겨줬다` | 0 | 1 |
+///
+/// ⇒ **Nine lines say *met while* and root themselves; four say *met while* and name a parent.**
+/// The nine are the convention — each carries its own pre-existence evidence (*그 부재는 X 전부터
+/// 있었다*) — so the four are slips, and one of them is `@from: 852 — 852 를 재느라 GUI 로그를 읽다
+/// «마주친» 것이다` sitting eight lines below a sibling that writes `@from: none` for the same
+/// sentence. No round ever argued for the numbered form; it was typed.
+///
+/// ⇒ And the cost is the one that section predicted in as many words: **the oldest debts sink
+/// fastest.** Item 868 is `@sev: critical`, was opened 2026-09-03, and three separate rounds
+/// recorded *규칙 14 로 이번 라운드에 낼 수도 없다* about it — held back by a depth it never earned.
+///
+/// ⚠ Surface forms rather than stems, because Korean inflects by suffix and `만든` does not
+/// contain `만들`. ⛔ A reason outside BOTH sets is not caught here and it is not pretended
+/// otherwise — three open items write one (`입구`, `골라 넣은 수다`, `갈랐다`) — so it is registered
+/// as item 896 rather than settled by growing this array. **Widening a vocabulary until a ledger
+/// passes is the one move the north star forbids.**
+pub const MET_WHILE: [&str; 4] = ["마주친", "마주쳤다", "넘겨줬다", "드러났다"];
+
+/// ⛔⛔⛔ **AND THE WORDS IT USES FOR *PAYING THAT MADE THIS*** — [`MET_WHILE`]'s other half.
+///
+/// A line carrying BOTH is drawing the distinction rather than falling foul of it — the ledger
+/// does this twice on purpose (`갚다 «마주친» 것이 아니라 갚으면서 내가 만들었다`, and item 869's
+/// `갚다가 «생긴» 것이 아니라 승격이 «만드는» 것이다`) — so a creation word settles the line.
+///
+/// ⚠⚠ **THE RESIDUE, STATED**: that also lets a line saying *made, not met* while MEANING the
+/// reverse through. It is narrower than reading nothing, which is what this file did until now,
+/// and the hole is registered rather than hidden — see register item 896.
+pub const MADE_BY_PAYING: [&str; 6] = ["만들", "만든", "만드는", "생겼", "생긴", "났다"];
+
+/// Whether `reason` states that the debt was MET rather than made — [`MET_WHILE`] with no
+/// [`MADE_BY_PAYING`] word beside it.
+///
+/// # ⛔⛔⛔⛔⛔ THE MATCHED WORD IS CUT OUT BEFORE THE OTHER SET IS ASKED, and that is not tidiness
+///
+/// `드러났다` **contains** `났다`. The first build of this asked both sets over the whole sentence,
+/// so every *was revealed* line looked like a *made by paying* line and the check silently passed
+/// the two items it was written for — including item 868, the `@sev: critical` one three rounds
+/// had recorded as un-takeable. A Korean suffix is a substring of the word it inflects, so two
+/// vocabularies over one string collide by construction rather than by accident.
+///
+/// ⇒ Held by `a_reason_that_says_revealed_is_not_a_reason_that_says_made`, which is red for the
+/// version that asks the whole sentence.
+#[must_use]
+pub fn met_while(reason: &str) -> Option<&'static str> {
+    let word = MET_WHILE.into_iter().find(|word| reason.contains(word))?;
+    let without = reason.replace(word, " ");
+    if MADE_BY_PAYING.iter().any(|made| without.contains(made)) {
+        return None;
+    }
+    Some(word)
+}
+
 /// The line the ledger declares its own count of items that state no [`PARENT`]:
 /// `@from-unclassified: <n>`.
 ///
@@ -378,6 +451,23 @@ pub enum Fault {
         /// The line as written.
         line: String,
     },
+    /// ⛔⛔⛔⛔⛔ **A [`PARENT`] LINE THAT NAMES A NUMBER AND SAYS IT WAS MET WHILE PAYING IT** —
+    /// register item 896, and the inversion [`PARENT`]'s own doc calls *the whole scheme*.
+    ///
+    /// The reason states [`MET_WHILE`] with no [`MADE_BY_PAYING`] word beside it, so the item is a
+    /// ROOT wearing a child's number. Every debt below it inherits a depth nobody earned, and
+    /// [`Reading::deferred`] then holds it back — *the oldest debts sink fastest*, measured on the
+    /// four lines that were doing exactly this.
+    ///
+    /// ⚠ The repair is `{PARENT} none`, keeping the sentence: it already says why.
+    MetWhileNotMade {
+        /// The item that said it.
+        number: u32,
+        /// The parent it named.
+        named: u32,
+        /// The word in its reason that says it was met rather than made.
+        word: &'static str,
+    },
     /// An item names a parent section A does not have. **A chain that leaves the ledger cannot be
     /// walked**, so the depth of everything below it is unknown rather than zero.
     DanglingParent {
@@ -519,6 +609,17 @@ impl fmt::Display for Fault {
                     line.trim()
                 )
             }
+            Self::MetWhileNotMade {
+                number,
+                named,
+                word,
+            } => write!(
+                f,
+                "item {number} names {named} as its parent and its reason says `{word}` — met \
+                 while paying, not made by paying. That is a ROOT wearing a child's number, and \
+                 every debt under it inherits a depth nobody earned: write `{PARENT} none` and \
+                 keep the sentence, which already says why",
+            ),
             Self::DanglingParent { number, named } => write!(
                 f,
                 "item {number} says it was found while paying {named}, which section A does not \
@@ -1116,7 +1217,24 @@ pub fn read(text: &str) -> Reading {
             for line in body {
                 if let Some(value) = parent_value(line) {
                     match Parent::parse(value) {
-                        Some(found) => parents.push(found),
+                        Some(found) => {
+                            // ⛔⛔⛔⛔⛔ AND THE REASON IS READ, NOT DISCARDED — register item 896.
+                            // `Parent::parse` takes the first word and drops the sentence, so the
+                            // rule this file's own `PARENT` doc calls *the whole scheme* was
+                            // enforced by whoever typed the line. Four lines were on the wrong
+                            // side of it, one of them a `@sev: critical` item three rounds had
+                            // recorded as un-takeable.
+                            if let Parent::Item(named) = found
+                                && let Some(word) = met_while(value)
+                            {
+                                faults.push(Fault::MetWhileNotMade {
+                                    number: *number,
+                                    named,
+                                    word,
+                                });
+                            }
+                            parents.push(found);
+                        }
                         None => faults.push(Fault::UnknownParent {
                             number: Some(*number),
                             line: (*line).to_string(),
@@ -2019,6 +2137,80 @@ mod tests {
 
     /// An item added without parentage raises the standing count and reds — the same ratchet the
     /// other two marks hold.
+    #[test]
+    fn a_reason_that_says_revealed_is_not_a_reason_that_says_made() {
+        // ⛔⛔⛔⛔⛔ ── THE SUBSTRING COLLISION, WHICH IS THE WHOLE OF THIS TEST ──────────────────
+        //
+        // `드러났다` CONTAINS `났다`. Asking both vocabularies over the whole sentence therefore
+        // reads every *was revealed* line as a *made by paying* line, and the first build of
+        // `met_while` did exactly that: it reported two of the four lines it was written for and
+        // silently passed item 868, the `@sev: critical` one three rounds had recorded as
+        // un-takeable. Two vocabularies over one string collide because Korean inflects by suffix.
+        assert_eq!(
+            met_while("865 가 그 물음을 세우자 «성공»했고, 그때 드러났다"),
+            Some("드러났다"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 896: a `드러났다` line read as a creation claim, because \
+             `났다` is inside it. This is the arm that made the check pass the item it existed for",
+        );
+        assert_eq!(
+            met_while("852 를 재느라 GUI 로그를 읽다 «마주친» 것이다"),
+            Some("마주친"),
+            "⚠ the plainest form, and the one nine `@from: none` lines already use",
+        );
+        assert_eq!(
+            met_while("pinion 감시자가 «자기 런에서» 재서 넘겨줬다"),
+            Some("넘겨줬다"),
+        );
+
+        // ── AND A LINE DRAWING THE DISTINCTION IS NOT CAUGHT ────────────────────────────────
+        //
+        // ⚠ The ledger does this twice on purpose, so a creation word beside the other settles
+        // the line. Without these arms the gate would red on two correctly-filed children and the
+        // repair would be to delete a sentence that is doing real work.
+        assert_eq!(
+            met_while("갚다 «마주친» 것이 아니라 갚으면서 내가 만들었다"),
+            None,
+            "⚠⚠ item 864's own line: it names the wrong reading in order to refuse it",
+        );
+        assert_eq!(
+            met_while(
+                "868 의 승격을 실제로 해서 났다. 갚다가 «생긴» 것이 아니라 승격이 «만드는» 것이다"
+            ),
+            None,
+            "⚠⚠ item 869's own line, and `났다` is doing the work here rather than colliding",
+        );
+        assert_eq!(
+            met_while("840 을 갚으며 «만든» 리더다"),
+            None,
+            "⚠ the ordinary child, which must stay quiet",
+        );
+
+        // ── AND THE PARSE SITE ACTUALLY CALLS IT, which is a hop of its own ─────────────────
+        //
+        // ⛔⛔⛔⛔⛔ The assertions above hold the PREDICATE. `Parent::parse` takes the first word
+        // of the value and drops the rest, so a build that handed this function that first word —
+        // or never called it — passes every one of them and reads the ledger exactly as it did
+        // before item 896. Items 889, 894, 891 and 893 each found a hop outside their gate while
+        // the one beside it was green; this is that lesson spent before paying for it again.
+        let ledger = LEDGER.replace(
+            "     @from: none\n     body mentioning ai_loop here",
+            "     @from: 898 — 898 을 재느라 로그를 읽다 «마주친» 것이다\n     body mentioning \
+             ai_loop here",
+        );
+        let reading = read(&ledger);
+        assert!(
+            reading.faults.contains(&Fault::MetWhileNotMade {
+                number: 900,
+                named: 898,
+                word: "마주친",
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 896: the reading did not carry the fault, so the reason is \
+             being discarded at the parse site again — the exact shape that let four lines name a \
+             parent they had only met. Faults: {:?}",
+            reading.faults,
+        );
+    }
+
     #[test]
     fn an_item_added_without_a_parent_grows_the_backlog_and_reds() {
         let ledger = LEDGER.replace(
