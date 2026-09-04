@@ -6917,11 +6917,12 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
     // found a healthy agent, and spent a session on the wrong quantity.
     if deliveries.unreported > 0 {
         let swallowed = format!(
-            "⚠ {} prompt(s) were typed into a composer that swallowed them and the peer never named \
-             the question — do NOT go and look at that pane: it is showing a placeholder and the \
-             prompt is nowhere a person can read it. What is worth checking is whether that peer's \
-             hooks report at all",
+            "⚠ {} of this run's {} prompts were typed into a composer that swallowed them and the \
+             peer never named the question — do NOT go and look at that pane: it is showing a \
+             placeholder and the prompt is nowhere a person can read it. What is worth checking is \
+             whether that peer's hooks report at all",
             deliveries.unreported,
+            deliveries.attempted(),
         );
         if deliveries.made == 0 && deliveries.unsubmitted == 0 {
             return Some(swallowed);
@@ -6941,10 +6942,23 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
     // a number folded into theirs, on `delivery_sentence`'s own stated argument that the fact a
     // person acts on is the reading and not the count.
     if deliveries.unsubmitted > 0 {
+        // ⛔⛔⛔⛔⛔ **THE DENOMINATOR TRAVELS WITH IT** — register item 669, and it is this
+        // struct's own rule finally applied to the pair it was never applied to. `folded` has said
+        // *N of M* since item 591 because *three folds* is every prompt invisible at three and a
+        // rounding error at two hundred; a prompt that was never asked is the same fact and reached
+        // a reader as a bare count. Measured over 156 runs: P(a run gets stuck at least once) is
+        // 0.091 under five prompts and 0.962 over forty — so the SAME `1` is a run in deep trouble
+        // or the ordinary cost of business, and nothing here said which.
+        //
+        // ⚠⚠ `attempted()` AND NOT `made`: a refusal produced no witness and never entered `made`,
+        // so dividing by it would divide by a population missing its own numerator — and a run
+        // whose only prompt was refused would divide by zero.
         let wedged = format!(
-            "⚠ {} prompt(s) reached that pane and were never asked — the text is sitting in its \
-             composer, so go and look at that pane: what is there is a question nobody put",
+            "⚠ {} of this run's {} prompts reached that pane and were never asked — the text is \
+             sitting in its composer, so go and look at that pane: what is there is a question \
+             nobody put",
             deliveries.unsubmitted,
+            deliveries.attempted(),
         );
         if deliveries.made == 0 {
             return Some(wedged);
@@ -8946,6 +8960,110 @@ mod tests {
             both.contains("do NOT go and look at that pane"),
             "⛔⛔⛔⛔ REGISTER ITEM 762: a run with both readings dropped the swallowed one, which is \
              the half a reader gets wrong: {both:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PROMPT THAT WAS NEVER ASKED ARRIVES WITH ITS DENOMINATOR** — register item
+    /// 669, and this struct's own rule finally applied to the pair it was never applied to.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The same `1` is a run in deep trouble or the ordinary cost of business
+    ///
+    /// `sprag_plugin::Deliveries` has said *N of M folded* since item 591, and its own doc gives
+    /// the reason: *three folds is every prompt of this reason invisible if it was asked three
+    /// times, and a rounding error if it was asked two hundred.* The identical argument was never
+    /// applied to `unsubmitted` and `unreported`, which reached a reader as bare counts.
+    ///
+    /// Measured 2026-09-04 over this repository's 156 briefed runs — P(a run gets stuck at least
+    /// once), by how many prompts it put to its pane: **0.091** under five, 0.500 at 5–10, 0.727 at
+    /// 10–20, 0.842 at 20–40, **0.962** over forty. A ten-fold ratio against a named variable, and
+    /// the variable is the count the sentence now carries.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The denominator is ATTEMPTS and not `made`, which is what this gate is really for
+    ///
+    /// A refusal produces no witness, so it never entered `made`. A run whose ONLY prompt was
+    /// refused has `made: 0` — so `made` as the denominator prints *1 of 0*, which is not a ratio,
+    /// and every mixed run understates itself by exactly the number in its own numerator. That run
+    /// is not a corner: it is `run 197`, which died of it.
+    #[test]
+    fn a_prompt_that_was_never_asked_arrives_with_its_denominator() {
+        // ── ① THE RUN WHOSE ONLY PROMPT WAS REFUSED: the denominator is 1, never 0 ──
+        let alone = delivery_sentence(&json!({
+            RUN_DELIVERED_KEY: 0,
+            RUN_FOLDED_KEY: 0,
+            RUN_UNSUBMITTED_KEY: 1,
+            RUN_UNREPORTED_KEY: 0,
+        }))
+        .expect("a wedged run has a sentence");
+        assert!(
+            alone.contains("1 of this run's 1 prompts"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 669: the count a person reads has no denominator, or the \
+             denominator is `made` — which is ZERO for this run, because a refusal produces no \
+             witness and never entered it. `1 of 0` is not a ratio and `1 prompt` is not one \
+             either: {alone:?}",
+        );
+
+        // ── ② A LONG RUN SAYS SO, AND THE SAME NUMERATOR READS DIFFERENTLY ──
+        //
+        // ⚠⚠ This is the whole finding in one comparison: `1` above is a run that got nothing
+        // through, and `1` here is a run that got sixty prompts through and lost one. A reader
+        // shown the bare count cannot tell them apart, and P(stuck) says they are 0.091 and 0.962
+        // populations.
+        let busy = delivery_sentence(&json!({
+            RUN_DELIVERED_KEY: 59,
+            RUN_FOLDED_KEY: 12,
+            RUN_UNSUBMITTED_KEY: 1,
+            RUN_UNREPORTED_KEY: 0,
+        }))
+        .expect("a run that delivered and wedged has a sentence");
+        assert!(
+            busy.contains("1 of this run's 60 prompts"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 669: the denominator is not the population the numerator came \
+             out of. 59 landed and 1 was refused, so 60 prompts were put to that pane — anything \
+             else is a ratio over a set that excludes its own numerator: {busy:?}",
+        );
+        assert!(
+            !busy.contains("of this run's 59 prompts"),
+            "⛔⛔⛔⛔ AND `made` IS NOT IT. That is the denominator a reader reaches for, it is \
+             wrong by exactly the numerator, and it is zero on the run that matters most: {busy:?}",
+        );
+
+        // ── ③ THE SWALLOWED ROAD CARRIES IT TOO, AND STILL SENDS THE OPPOSITE INSTRUCTION ──
+        //
+        // ⚠⚠⚠ The two roads keep their opposite remedies (item 762) — the denominator is about the
+        // RATE and the remedy is about where to walk, and a build that gave both roads one sentence
+        // to gain one denominator would pay for this with the thing item 762 bought.
+        let swallowed = delivery_sentence(&json!({
+            RUN_DELIVERED_KEY: 9,
+            RUN_FOLDED_KEY: 3,
+            RUN_UNSUBMITTED_KEY: 0,
+            RUN_UNREPORTED_KEY: 1,
+        }))
+        .expect("a swallowed run has a sentence");
+        assert!(
+            swallowed.contains("1 of this run's 10 prompts")
+                && swallowed.contains("do NOT go and look at that pane"),
+            "⛔⛔⛔⛔ REGISTER ITEMS 669 AND 762: the swallowed road must carry the denominator AND \
+             keep its own instruction. One of the two is missing: {swallowed:?}",
+        );
+
+        // ── ④ AND THE DENOMINATOR DOES NOT DOUBLE-COUNT THE SUB-COUNTS ──
+        //
+        // ⚠⚠ `folded` and `released` are subsets of `made`, not siblings of it. A denominator that
+        // added them would grow with a run's folds and make the rate fall as the peer got WORSE,
+        // which is the reassuring direction and therefore the dangerous one.
+        assert_eq!(
+            sprag_plugin::Deliveries {
+                made: 9,
+                folded: 3,
+                released: 2,
+                unsubmitted: 0,
+                unreported: 1,
+            }
+            .attempted(),
+            10,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 669: the denominator counts a prompt twice. `folded` and \
+             `released` are sub-counts of `made` — adding them makes the rate FALL as the composer \
+             gets worse, which is the flattering answer",
         );
     }
 

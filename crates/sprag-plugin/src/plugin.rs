@@ -522,6 +522,63 @@ impl Deliveries {
     pub const fn all_folded(self) -> bool {
         self.made > 0 && self.folded == self.made
     }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY PROMPT THIS RUN PUT TO ITS PANE, HOWEVER IT ENDED** — register item 669,
+    /// and the denominator the two refusal counts have never had.
+    ///
+    /// # ⛔⛔⛔⛔⛔ *One prompt was never asked* means opposite things at the two ends of a run
+    ///
+    /// [`folded`](Self::folded) travels with [`made`](Self::made) and this struct's own doc says
+    /// why: *three folds is every prompt of this reason invisible if it was asked three times, and
+    /// a rounding error if it was asked two hundred.* **The identical argument was never applied to
+    /// [`unsubmitted`](Self::unsubmitted) and [`unreported`](Self::unreported)**, which reach a
+    /// reader as bare counts.
+    ///
+    /// Measured 2026-09-04 over this repository's 156 briefed runs — the probability that a run
+    /// gets stuck AT LEAST ONCE, by how many prompts it put to its pane:
+    ///
+    /// | prompts put | runs | stuck runs | P |
+    /// | ---: | ---: | ---: | ---: |
+    /// | under 5 | 44 | 4 | **0.091** |
+    /// | 5–10 | 34 | 17 | 0.500 |
+    /// | 10–20 | 33 | 24 | 0.727 |
+    /// | 20–40 | 19 | 16 | 0.842 |
+    /// | 40+ | 26 | 25 | **0.962** |
+    ///
+    /// ⇒ **A ten-fold ratio against a named variable, and the variable is the count this method
+    /// returns.** So `1 prompt was never asked` is a run in deep trouble at four prompts and the
+    /// ordinary cost of business at sixty, and nothing a reader was shown told them which.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It is NOT `made`, and that is the whole reason this is a method
+    ///
+    /// A refusal produces no witness, so it never entered `made` — see
+    /// [`unsubmitted`](Self::unsubmitted). A reader who wrote `unsubmitted as f64 / made as f64`
+    /// would be dividing by a population that excludes its own numerator, and a run whose ONLY
+    /// prompt was refused would divide by zero. Spelled here rather than added up at each reader,
+    /// `crate::outer::Unasked::total`'s rule: two readers summing this differently is how one
+    /// sentence and one gate come to disagree about a run.
+    ///
+    /// ⚠⚠ [`folded`](Self::folded) and [`released`](Self::released) are NOT added: both are
+    /// sub-counts of `made`, and adding a subset to its container counts those prompts twice.
+    #[must_use]
+    pub const fn attempted(self) -> u32 {
+        self.made
+            .saturating_add(self.unsubmitted)
+            .saturating_add(self.unreported)
+    }
+
+    /// ⛔⛔⛔ **HOW MANY OF THOSE NEVER BECAME A QUESTION** — register item 669's numerator, beside
+    /// the denominator above and never apart from it.
+    ///
+    /// ⚠ The two roads are SUMMED here and told apart everywhere a reader must act
+    /// ([`delivery_sentence`](crate::plugin::Deliveries) has a separate sentence for each, because
+    /// one says *go and look at that pane* and the other says *do not*). What this answers is the
+    /// RATE question, where the remedy does not enter: a prompt that never became a question is a
+    /// turn the loop paid for and did not get, whichever road it took.
+    #[must_use]
+    pub const fn never_asked(self) -> u32 {
+        self.unsubmitted.saturating_add(self.unreported)
+    }
 }
 
 /// **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, and the answer to
