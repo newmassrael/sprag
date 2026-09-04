@@ -7362,23 +7362,14 @@ pub fn delivered_by_road_sentence(run: &Value) -> Option<String> {
 /// ⚠ Off the ROW's own JSON, [`delivered_by_road_sentence`]'s argument verbatim.
 #[must_use]
 pub fn said_by_sentence_sentence(run: &Value) -> Option<String> {
-    let table = run.get(RUN_SAID_BY_SENTENCE_KEY)?.as_object()?;
     // ⚠⚠ WALKED IN `Sentence::ALL`'s ORDER and not the object's, `delivered_by_road_sentence`'s
     // rule: a sentence this build cannot spell does not sort itself into the middle of a
-    // comparison.
+    // comparison. ⚠⚠⚠ AND A SENTENCE THE ROW DOES NOT CARRY IS NOT A ZERO — the reader that
+    // holds that rule is `said_by_sentence_rows`, shared with `SaidAcrossRuns` so this grain and
+    // the population grain cannot come to disagree about which rows are readable.
     let (mut sent, mut unasked) = (0_u64, 0_u64);
     let mut stuck: Vec<String> = Vec::new();
-    for sentence in sprag_plugin::Sentence::ALL {
-        let Some(row) = table.get(sentence.named()) else {
-            // ⚠⚠⚠ A SENTENCE THE ROW DOES NOT CARRY IS NOT A ZERO. An older daemon wrote a table
-            // this build has a word for and it did not; reading the gap as `0 of 0` would publish
-            // *every prompt of this sentence was asked* on behalf of a writer that never said so,
-            // which is rule 6's reassuring reading of an unclassified value.
-            return None;
-        };
-        let put = row.get("sent").and_then(Value::as_u64)?;
-        let missed = row.get("unasked_after_a_fold").and_then(Value::as_u64)?
-            + row.get("unasked_on_the_pane").and_then(Value::as_u64)?;
+    for (sentence, put, missed) in said_by_sentence_rows(run)? {
         sent += put;
         unasked += missed;
         if missed > 0 {
@@ -7395,6 +7386,205 @@ pub fn said_by_sentence_sentence(run: &Value) -> Option<String> {
         "{unasked} of {sent} prompts never became a question — {}",
         stuck.join(" · ")
     ))
+}
+
+/// ⛔⛔⛔⛔⛔ **THE SENTENCE TABLE ADDED UP OVER RUNS, WITH THE ROWS IT COULD NOT ADD NAMED** —
+/// register item 889(1), and the half that stood on *"the rows are still empty, wait for a
+/// promotion"* until the rows stopped being empty.
+///
+/// # ⛔⛔⛔⛔⛔ The fifteen-fold ratio is a CROSS-RUN fact and no run's row holds it
+///
+/// [`said_by_sentence_sentence`] answers about ONE run, which is the right grain for a person
+/// scanning a listing and the wrong grain for item 889's own subject: *the turn prompt sticks
+/// fifteen times as often as the brief* is a statement about a population. Until this, producing
+/// it meant a `python3` heredoc over `/run/user/1000/loop/run*.log` — the same files items 887 and
+/// 888 measured as unreliable, which is why item 889's done-when asks for the table to come **out
+/// of rows**. The rows carry it now; nothing added them up.
+///
+/// # ⛔⛔⛔⛔⛔ WHY THE POPULATION IS THE HARD PART, measured 2026-09-04
+///
+/// In the persisted log every run's row carries a full eleven-sentence table — **212 of 212** —
+/// and 209 of them sum to `sent = 0`, because saving a run restored from a daemon that predates
+/// the counter still serialises the empty one. **206 of those 209 recorded steps**, so their zero
+/// is not *this run said nothing*: it is *nothing counted what this run said*. Adding them is item
+/// 891's defect committed a second time, one key over, and it would put the denominator of item
+/// 889's headline at 212 while three rows carried all the data. So a row that says it took steps
+/// and counts no sentence is **named and set aside**, never summed — this workspace's rule 6, and
+/// the reason the control matters: three rows sum to zero having taken NO step, and those are
+/// honest zeros that belong in the population.
+///
+/// ⚠⚠⚠ **THE SAME FACT HAS TWO SHAPES ON TWO SURFACES, and a reader that survives one is not
+/// enough.** The daemon's answer OMITS the key for an empty table (see where
+/// [`RUN_SAID_BY_SENTENCE_KEY`] is set beside a restored run), so over `sprag runs` those 209 rows
+/// arrive carrying nothing and land in [`unreadable`](Self::unreadable); over the persisted file
+/// they arrive carrying zeros and land in [`uncounted`](Self::uncounted). Both are *nobody counted
+/// this* and neither is summed, which is the only property that matters — but a reader written
+/// against one shape alone would have read the other as data.
+///
+/// ⚠ The discriminator is the run's OWN two fields disagreeing, not a commit this file would have
+/// to remember. `iterations` predates every counter here, so it cannot itself be a zero that means
+/// *nobody counted*.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaidAcrossRuns {
+    /// Rows whose table was added.
+    counted: usize,
+    /// ⛔ Rows that recorded steps and counted no sentence — **nothing counted them**.
+    uncounted: usize,
+    /// Rows with no table to add: the key absent, or a sentence word this build knows missing.
+    ///
+    /// ⚠⚠ **THE KEY IS ABSENT FOR TWO DIFFERENT REASONS AND NEITHER IS A ZERO.** The daemon omits
+    /// it for a run whose table is empty (`if !sentences.is_empty()`), so a run that genuinely
+    /// said nothing lands here beside one from a daemon with no counter — and a run whose row
+    /// carries a word this build cannot spell lands here too. All three are *nobody told me*,
+    /// which is what this count is for; only the persisted file's own shape separates them, and it
+    /// separates them by [`uncounted`](Self::uncounted).
+    unreadable: usize,
+    /// `(sentence, sent, unasked)` in [`sprag_plugin::Sentence::ALL`]'s order.
+    ///
+    /// ⚠ A list built FROM `ALL` rather than an array an index picks into —
+    /// `SaidBySentence::of`'s rule, for its reason: an index is a second spelling of an order that
+    /// type already owns.
+    sums: Vec<(sprag_plugin::Sentence, u64, u64)>,
+}
+
+impl SaidAcrossRuns {
+    /// Add up every run's sentence table, setting aside the rows nothing counted.
+    #[must_use]
+    pub fn of_runs<'a>(runs: impl IntoIterator<Item = &'a Value>) -> Self {
+        let mut said = Self {
+            counted: 0,
+            uncounted: 0,
+            unreadable: 0,
+            sums: sprag_plugin::Sentence::ALL
+                .into_iter()
+                .map(|sentence| (sentence, 0, 0))
+                .collect(),
+        };
+        for run in runs {
+            let Some(rows) = said_by_sentence_rows(run) else {
+                said.unreadable += 1;
+                continue;
+            };
+            let sent: u64 = rows.iter().map(|(_, put, _)| *put).sum();
+            // ⛔⛔⛔⛔⛔ THE ROW THAT MUST NOT BE ADDED. A run that took steps put prompts at its
+            // pane — the brief alone guarantees it — so a table saying nothing was said is a table
+            // nothing wrote. Folding it in reads *every prompt was asked* on behalf of a daemon
+            // that never counted one, which is rule 6's reassuring reading of an unclassified
+            // value and, measured, 206 of this loop's 212 rows.
+            if sent == 0 && stepped(run) {
+                said.uncounted += 1;
+                continue;
+            }
+            said.counted += 1;
+            for (at, (_, put, missed)) in rows.into_iter().enumerate() {
+                if let Some(row) = said.sums.get_mut(at) {
+                    row.1 += put;
+                    row.2 += missed;
+                }
+            }
+        }
+        said
+    }
+
+    /// Every sentence with what was put and what never became a question — **including the empty
+    /// ones**, which is item 889's done-when in its own words: *a branch with no sample still gets
+    /// a row*.
+    pub fn rows(&self) -> impl Iterator<Item = (sprag_plugin::Sentence, u64, u64)> + '_ {
+        self.sums.iter().copied()
+    }
+
+    /// How many rows were added.
+    #[must_use]
+    pub const fn counted(&self) -> usize {
+        self.counted
+    }
+
+    /// ⛔ How many rows said they took steps and counted no sentence.
+    #[must_use]
+    pub const fn uncounted(&self) -> usize {
+        self.uncounted
+    }
+
+    /// How many rows carried no table this build can read.
+    #[must_use]
+    pub const fn unreadable(&self) -> usize {
+        self.unreadable
+    }
+
+    /// **THE PUBLISHED TABLE** — a header, one line per sentence, and the population it was added
+    /// over. Empty when there is nothing to say about any of it.
+    ///
+    /// ⚠⚠ The population line is NOT optional and not a footnote: a rate whose denominator is a
+    /// count of rows somebody assumed is the arithmetic item 889 caught being done wrong. It says
+    /// all three numbers even when two of them are zero.
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        if self.counted == 0 && self.uncounted == 0 && self.unreadable == 0 {
+            return Vec::new();
+        }
+        let mut out = vec![
+            "sentences  — which of these runs' prompts never became a question, added up from \
+             their rows"
+                .to_owned(),
+        ];
+        for (sentence, sent, unasked) in self.rows() {
+            // ⚠ `0 of 0` is printed rather than skipped — see `rows`. A sentence nothing has
+            // produced is a population, and dropping it publishes a list of failures with no
+            // scale.
+            let rate = if sent == 0 {
+                "no sample".to_owned()
+            } else if unasked == 0 {
+                "every one asked".to_owned()
+            } else {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a percentage of counts this small loses nothing a reader could see"
+                )]
+                let share = (unasked as f64) * 100.0 / (sent as f64);
+                format!("{share:.2}%")
+            };
+            out.push(format!(
+                "  {:<12}  {unasked:>5} of {sent:<6}  {rate}",
+                sentence.named(),
+            ));
+        }
+        out.push(format!(
+            "  added over {} run(s); {} recorded steps and counted no sentence, so nothing counted \
+             them; {} said nothing about their sentences at all",
+            self.counted, self.uncounted, self.unreadable,
+        ));
+        out
+    }
+}
+
+/// `(sentence, sent, unasked)` for every [`sprag_plugin::Sentence::ALL`] on this run's row, or
+/// [`None`] when the row carries no table this build can read.
+///
+/// ⚠ [`said_by_sentence_sentence`]'s None-discipline verbatim, and shared with it rather than
+/// written twice: a sentence the row does not carry is NOT a zero.
+fn said_by_sentence_rows(run: &Value) -> Option<Vec<(sprag_plugin::Sentence, u64, u64)>> {
+    let table = run.get(RUN_SAID_BY_SENTENCE_KEY)?.as_object()?;
+    sprag_plugin::Sentence::ALL
+        .into_iter()
+        .map(|sentence| {
+            let row = table.get(sentence.named())?;
+            let put = row.get("sent").and_then(Value::as_u64)?;
+            let missed = row.get("unasked_after_a_fold").and_then(Value::as_u64)?
+                + row.get("unasked_on_the_pane").and_then(Value::as_u64)?;
+            Some((sentence, put, missed))
+        })
+        .collect()
+}
+
+/// Whether this run's row says it took a step at all.
+///
+/// ⚠⚠ `iterations` and nothing newer, on purpose: it predates every counter in this file, so a
+/// zero here is a run that did not run rather than a field nobody wrote — which is the whole
+/// distinction [`SaidAcrossRuns`] is defending.
+fn stepped(run: &Value) -> bool {
+    run.get("iterations")
+        .and_then(Value::as_u64)
+        .is_some_and(|steps| steps > 0)
 }
 
 /// What became of the prompts this run actually DELIVERED — [`delivery_sentence`]'s fold reading,
@@ -10035,6 +10225,189 @@ mod tests {
             None,
             "⚠⚠⚠ a run that typed nothing has no rate to publish, and eleven `0 of 0` rows on its \
              row would be a comparison over nothing",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SENTENCE TABLE COMES OUT OF ROWS, AND THE ROWS NOTHING COUNTED ARE NAMED
+    /// RATHER THAN ADDED AS ZEROS** — register item 889(1).
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was still owed after the counter was built
+    ///
+    /// Item 889's done-when asks that the table *come out of rows rather than the log*, and its
+    /// own residue said the rows were still empty and a promotion was what it waited on. Measured
+    /// 2026-09-04 the rows are no longer empty — three of them carry data, one with a numerator —
+    /// and the thing standing between those rows and the table is not a promotion. It is that
+    /// **206 of the other 209 rows carry an all-zero table written by a daemon with no counter**,
+    /// and adding them would put a denominator of 212 under data from three.
+    ///
+    /// # ⚠⚠⚠ The control is in the data and this fixture stages it
+    ///
+    /// Three rows sum to zero having taken NO step, and those zeros are honest — a run that did
+    /// not run said nothing. So *nothing counted this* and *this counted nothing* are told apart by
+    /// the run's own two fields disagreeing, and the fixture carries one of each so a build that
+    /// pooled them cannot pass by getting the other one right.
+    #[test]
+    fn the_sentence_table_adds_up_over_rows_and_names_the_ones_nothing_counted() {
+        // A row a counting daemon wrote: the brief clean, the turn prompt stuck — the pair item
+        // 889 exists for, and both of them `work`, so a table grouped by `asks` would pool them.
+        let mut live = sprag_plugin::SaidBySentence::NONE;
+        for _ in 0..8 {
+            live.record(sprag_plugin::Sentence::Brief);
+        }
+        for _ in 0..25 {
+            live.record(sprag_plugin::Sentence::Turn);
+        }
+        live.record_unasked(
+            sprag_plugin::Sentence::Turn,
+            sprag_plugin::UnaskedRoad::OnThePane,
+        );
+        live.record_unasked(
+            sprag_plugin::Sentence::Turn,
+            sprag_plugin::UnaskedRoad::AfterAFold,
+        );
+        let counted = json!({
+            "iterations": 40,
+            RUN_SAID_BY_SENTENCE_KEY: said_by_sentence_json(live),
+        });
+        // ⛔ THE ROW NOTHING COUNTED: it took forty steps and its table says nothing was said.
+        let uncounted = json!({
+            "iterations": 40,
+            RUN_SAID_BY_SENTENCE_KEY:
+                said_by_sentence_json(sprag_plugin::SaidBySentence::NONE),
+        });
+        // ⚠ THE CONTROL: the same all-zero table on a run that never took a step. Its zeros are
+        // honest and it belongs in the population.
+        let never_ran = json!({
+            "iterations": 0,
+            RUN_SAID_BY_SENTENCE_KEY:
+                said_by_sentence_json(sprag_plugin::SaidBySentence::NONE),
+        });
+        // ⚠ And a row from a daemon whose vocabulary this build does not share.
+        let mut gapped = said_by_sentence_json(sprag_plugin::SaidBySentence::NONE);
+        gapped
+            .as_object_mut()
+            .expect("the table is an object")
+            .remove(sprag_plugin::Sentence::Resume.named());
+        let unreadable = json!({ "iterations": 40, RUN_SAID_BY_SENTENCE_KEY: gapped });
+        // ⚠ And the shape the DAEMON produces for the same fact: no key at all, because it omits
+        // an empty table rather than sending eleven zeros. Two of these, so the three population
+        // counts are three DIFFERENT numbers — a control the first draft of this gate lacked, and
+        // a mutation that dropped one of them from the printed line went green on the digit of
+        // another.
+        let unsaid = json!({ "iterations": 40 });
+
+        let said = SaidAcrossRuns::of_runs(&[
+            counted.clone(),
+            uncounted.clone(),
+            never_ran.clone(),
+            unreadable,
+            unsaid.clone(),
+            unsaid,
+        ]);
+
+        // ── ① THE POPULATION IS SPLIT THREE WAYS AND EVERY ROW LANDS IN ONE ─────────────────
+        assert_eq!(
+            (said.counted(), said.uncounted(), said.unreadable()),
+            (2, 1, 3),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889(1) AND 891: a row that took steps and counted no \
+             sentence is not a zero, and a row that took no steps is. Pooling either into the \
+             other is how a rate gets a denominator nobody measured — measured on this loop, that \
+             is 206 rows joining a population of 3",
+        );
+
+        // ── ② AND THE SUMS ARE UNCHANGED BY THE ROW NOTHING COUNTED ───────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ THE ASSERTION A BUILD THAT ADDS THE ZEROS FAILS. The counts alone would still
+        // be right if the uncounted row were added AND named, so this asks the arithmetic.
+        let without = SaidAcrossRuns::of_runs(&[counted.clone(), never_ran.clone()]);
+        assert_eq!(
+            said.rows().collect::<Vec<_>>(),
+            without.rows().collect::<Vec<_>>(),
+            "⛔⛔⛔⛔ REGISTER ITEM 889(1): a row nothing counted moved the table, so its zeros \
+             are being read as *every prompt of this run was asked*",
+        );
+
+        // ── ③ EVERY SENTENCE GETS A ROW, INCLUDING THE ONES WITH NO SAMPLE ────────────────
+        //
+        // ⚠⚠ Item 889's done-when in its own words — *표본 없는 갈래도 행을 갖는다* (rule 6). A
+        // table that printed only what it had would publish failures with no scale.
+        assert_eq!(
+            said.rows().count(),
+            sprag_plugin::Sentence::ALL.len(),
+            "⚠ a sentence went missing from the table, so a twelfth one would arrive unnoticed",
+        );
+        let lines = said.lines();
+        for sentence in sprag_plugin::Sentence::ALL {
+            assert!(
+                lines.iter().any(|line| line.contains(sentence.named())),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 889(1) AND RULE 6: `{}` is not in the published table. \
+                 `handover` is put to a pane only by a run that spends a ceiling and `rule` only \
+                 by one that met a dialog, so the sentences with no sample are exactly the ones a \
+                 reader must be able to see are empty rather than absent.\n  {lines:#?}",
+                sentence.named(),
+            );
+        }
+
+        // ── ④ AND THE COMPARISON THE ITEM EXISTS FOR SURVIVES THE ADDING UP ───────────────
+        //
+        // ⛔⛔⛔⛔⛔ `brief` and `turn` declare the SAME `asks` word. A table that pooled them
+        // publishes the 1.86 % that made this axis invisible; item 889's whole finding is that
+        // they are 0.23 % against 3.48 %.
+        let rate = |want: sprag_plugin::Sentence| -> (u64, u64) {
+            said.rows()
+                .find(|(sentence, _, _)| *sentence == want)
+                .map(|(_, sent, unasked)| (sent, unasked))
+                .expect("every sentence has a row")
+        };
+        assert_eq!(
+            (
+                rate(sprag_plugin::Sentence::Brief),
+                rate(sprag_plugin::Sentence::Turn)
+            ),
+            // ⚠ 27 and not 25: `record_unasked` raises the DENOMINATOR too — a refusal is a
+            // prompt this run put at its pane, which is `SaidUnder::sent`'s own argument for why
+            // `unasked` is a rate and not a tally.
+            ((8, 0), (27, 2)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 889(1): the brief and the turn prompt are not being kept \
+             apart in the added-up table. They are one `asks` word and the sharpest split this \
+             register has, and a build that pooled them would report one middling rate",
+        );
+
+        // ── ⑤ THE POPULATION IS PRINTED, NOT ONLY HELD ───────────────────────────────────
+        //
+        // ⚠⚠ A rate whose denominator is a number the reader assumed is the arithmetic item 889
+        // caught being done wrong, over a whole log, at the wrong grain.
+        let population = lines
+            .last()
+            .expect("the table ends with what it was added over");
+        // ⛔⛔⛔⛔⛔ EACH NUMBER BESIDE ITS OWN WORDS, and never the bare digit. The first draft
+        // asked only that each count appear SOMEWHERE in the line, and a mutation that dropped the
+        // third clause outright went GREEN — the digit it was looking for was sitting in another
+        // clause. A number a reader cannot attach to a category is not a population.
+        for (named, said_number) in [
+            ("added over", said.counted()),
+            ("recorded steps", said.uncounted()),
+            ("said nothing", said.unreadable()),
+        ] {
+            let want = if named == "added over" {
+                format!("{named} {said_number}")
+            } else {
+                format!("{said_number} {named}")
+            };
+            assert!(
+                population.contains(&want),
+                "⛔⛔⛔ REGISTER ITEM 889(1): the table does not say what it was added over — \
+                 {want:?} is not in its population line, so one of its three counts is either \
+                 missing or attached to the wrong words, and its rates are percentages of a \
+                 population the reader has to guess at.\n  {population}",
+            );
+        }
+
+        // ── ⑥ AND NOTHING AT ALL IS AN EMPTY TABLE, NOT A TABLE OF ZEROS ─────────────────
+        assert!(
+            SaidAcrossRuns::of_runs(&[]).lines().is_empty(),
+            "⚠ a listing with no runs publishes no table — eleven `0 of 0` rows over nothing is a \
+             comparison with no population",
         );
     }
 

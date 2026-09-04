@@ -6595,6 +6595,18 @@ fn runs(args: Vec<String>) -> io::Result<()> {
     for run in entries {
         print!("{}", render_run(run));
     }
+    // ⛔⛔⛔⛔⛔ AND THE SENTENCE TABLE OVER THE RUNS JUST LISTED — register item 889(1). Each
+    // run's own line says which of ITS prompts stuck; item 889's subject is the comparison ACROSS
+    // runs (*the turn prompt sticks fifteen times as often as the brief*), and until this the only
+    // way to that number was a heredoc over the loop's log files — the files items 887 and 888
+    // measured as unreliable. The done-when asks for it to come out of ROWS, and these are them.
+    //
+    // ⚠⚠ It says the population as well as the rates, and that is the load-bearing half: measured
+    // 2026-09-04, 206 of this loop's 212 rows carry an all-zero table written by a daemon that had
+    // no counter, and adding those would put a denominator of 212 under data from three.
+    for line in sprag_host::plugins::SaidAcrossRuns::of_runs(entries).lines() {
+        println!("{line}");
+    }
     Ok(())
 }
 
