@@ -1204,6 +1204,27 @@ pub trait Plugin {
         crate::outer::FoldsByReason::NONE
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND EVERY DELIVERY, SPLIT BY WHAT PROVED IT ARRIVED** — register item 856, and
+    /// the one place a prompt LANDING is counted exhaustively.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Both answers above count every fold and only some landings
+    ///
+    /// [`deliveries`](Self::deliveries) offers `made - folded` as the landing count and it is not
+    /// one: two of the five roads inside that subtraction are a run ending mid-delivery and a peer
+    /// that paints nothing, neither of which is a question anybody asked.
+    /// [`folds_by_reason`](Self::folds_by_reason) counts only what was asked during a reflection.
+    /// Measured over runs 194-198 and 201 of this repository, the third instrument — the run log —
+    /// agreed with the persisted fold count **12 of 12** and reached **16 of 127** landings.
+    ///
+    /// ⚠ The default is [`crate::outer::DeliveredByRoad::NONE`]: every road present and zero,
+    /// which is the honest answer for a plugin that has typed nothing. It is not *nothing landed*.
+    ///
+    /// ⚠⚠ Asked here for [`deliveries`](Self::deliveries)' reason exactly: a level with one call
+    /// site, never a per-[`Step`] delta that twenty-odd construction sites could each forget.
+    fn delivered_by_road(&self) -> crate::outer::DeliveredByRoad {
+        crate::outer::DeliveredByRoad::NONE
+    }
+
     /// ⚠⚠⚠⚠⚠ **WHAT BECAME OF THIS PLUGIN'S INDEPENDENT CHECKS** — register item 601, and
     /// [`deliveries`](Self::deliveries)' argument one fact over: asked here, at the one site a step
     /// completes, so it cannot be forgotten at any of the twenty-odd places a [`Step`] is built —

@@ -592,6 +592,25 @@ pub const RUN_FOLDED_KEY: &str = "folded";
 /// the change this surface's pin does not number — an older daemon omits it and the reader below
 /// answers [`None`] rather than filling in a table nobody reported.
 pub const RUN_FOLDS_BY_REASON_KEY: &str = "folds_by_reason";
+/// ⛔⛔⛔⛔⛔ The answer key carrying **WHICH ROAD EVERY ONE OF A RUN'S DELIVERIES ARRIVED ON** —
+/// register item 856, and the one place a prompt LANDING is published exhaustively.
+///
+/// # ⛔⛔⛔⛔⛔ Three instruments counted every fold and only some landings
+///
+/// Measured 2026-09-04 over this repository's runs 194-198 and 201: the run log's fold count agreed
+/// with the persisted tally **12 of 12**, and its landing count reached **16 against 127**. The
+/// same shape holds for [`RUN_FOLDS_BY_REASON_KEY`] above, whose population is reflections, and for
+/// a per-priming row proposed by another repository. All three are downstream of an interesting
+/// event; a landing is not one, so it was recorded only where something else made it worth a line.
+///
+/// ⇒ **An instrument whose denominator can only equal its numerator can confirm an axis and never
+/// refute one** — item 856's own recorded disease, found inside the instruments built to measure
+/// it. The bias has a direction: every ratio built on any of the three reads the fold rate high.
+///
+/// ⚠ An OBJECT keyed by the road's word, [`RUN_FOLDS_BY_REASON_KEY`]'s shape and its reason. An
+/// ADDED KEY on an answer, which this surface's pin does not number — an older daemon omits it and
+/// the reader answers [`None`] rather than filling in a table nobody reported.
+pub const RUN_DELIVERED_BY_ROAD_KEY: &str = "delivered_by_road";
 /// The answer key carrying **HOW MANY OF A RUN'S PROMPTS ARE SITTING IN A COMPOSER, TYPED AND NEVER
 /// ASKED** — register item 617, present beside [`RUN_DELIVERED_KEY`] and never alone.
 ///
@@ -5433,6 +5452,11 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         // `FoldsByReason::rows`, which walks `ReflectReason::ALL`, so a seventh reason arrives here
         // with a row rather than being silently left out of a hand-written list.
         RUN_FOLDS_BY_REASON_KEY: folds_by_reason_json(progress.folds_by_reason),
+        // ⛔⛔⛔⛔⛔ AND WHAT PROVED EACH OF THOSE DELIVERIES — register item 856, and the only key
+        // here from which a LANDING count can be read. Composed from `DeliveredByRoad::rows`,
+        // which walks `Witnessed::ALL`, so an eighth road arrives with a row rather than being left
+        // out of a hand-written list and pooled into a total nobody split.
+        RUN_DELIVERED_BY_ROAD_KEY: delivered_by_road_json(progress.delivered_by_road),
         RUN_CHECKS_KEY: {
             "asked": progress.checks.asked,
             "silent": progress.checks.silent,
@@ -5534,6 +5558,10 @@ pub struct ReportedProgress {
     /// for a driver whose build knew no [`RUN_FOLDS_BY_REASON_KEY`], never for one that has never
     /// reflected: that run reports a table of zero rows, which is a population and not a silence.
     pub folds_by_reason: Option<sprag_plugin::FoldsByReason>,
+    /// ⛔⛔⛔⛔⛔ Which road each of those deliveries arrived on — items 663 / 856. [`None`] for a
+    /// driver whose build knew no [`RUN_DELIVERED_BY_ROAD_KEY`], never for one that has delivered
+    /// nothing: that run reports every road at zero, which is a population and not a silence.
+    pub delivered_by_road: Option<sprag_plugin::DeliveredByRoad>,
     /// What it said its milestone checks came to — items 663 / 601. The TALLY; the sentence a
     /// reader gets is [`checks_sentence`]'s, composed here from this.
     pub checks: Option<sprag_plugin::Checks>,
@@ -5626,6 +5654,36 @@ fn folds_by_reason_in(beside: &Value) -> Option<sprag_plugin::FoldsByReason> {
     Some(folds)
 }
 
+/// **THE ROAD TABLE AS IT CROSSES THE WIRE** — one entry per [`sprag_plugin::Witnessed`] word.
+///
+/// ⚠ Composed from `rows()` rather than from a list here, so `Witnessed::ALL` stays the only
+/// authority on which roads there are — register item 856 and this workspace's rule 6: a road
+/// nobody classified must not quietly leave the table, and the roads with no observed member yet
+/// are exactly the ones a surprise arrives on.
+fn delivered_by_road_json(roads: sprag_plugin::DeliveredByRoad) -> Value {
+    let mut out = serde_json::Map::new();
+    for (road, count) in roads.rows() {
+        out.insert(road.word().to_owned(), json!(count));
+    }
+    Value::Object(out)
+}
+
+/// The reverse of [`delivered_by_road_json`] — see [`ReportedProgress::delivered_by_road`].
+///
+/// ⚠⚠ **WHOLE OR NOTHING**, [`folds_by_reason_in`]'s rule and for the same reason one axis over: a
+/// road a live peer names and this build cannot spell is a BUILD SKEW, and a partial table would
+/// publish a landing count over a population this image never saw. The DURABLE log is the other
+/// way round and deliberately so — see `crate::runs::PersistedDeliveredByRoad`.
+fn delivered_by_road_in(beside: &Value) -> Option<sprag_plugin::DeliveredByRoad> {
+    let table = beside.get(RUN_DELIVERED_BY_ROAD_KEY)?.as_object()?;
+    let mut roads = sprag_plugin::DeliveredByRoad::NONE;
+    for (word, count) in table {
+        let road = sprag_plugin::Witnessed::named(word)?;
+        roads.restore(road, small(Some(count))?);
+    }
+    Some(roads)
+}
+
 /// Read a driver's progress report — see [`ReportedProgress`].
 #[must_use]
 pub fn progress_from_report(reported: &Value) -> ReportedProgress {
@@ -5663,6 +5721,10 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
     // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1), whole or nothing for the
     // block's stated reason and one of its own: the value IS a comparison between rows.
     let folds_by_reason = folds_by_reason_in(beside);
+    // ⛔⛔⛔⛔⛔ AND WHAT PROVED EACH DELIVERY — register item 856, whole or nothing for the block's
+    // stated reason and one of its own: the value is a DENOMINATOR, and a table read in halves is a
+    // landing count over a population nobody reported.
+    let delivered_by_road = delivered_by_road_in(beside);
     let checks = (|| {
         let tally = beside.get(RUN_CHECKS_KEY)?;
         Some(sprag_plugin::Checks {
@@ -5742,6 +5804,7 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
         }),
         deliveries,
         folds_by_reason,
+        delivered_by_road,
         checks,
         driving: beside
             .get(RUN_DRIVING_KEY)
@@ -6055,6 +6118,17 @@ fn run_to_json(run: &RunSummary, seat: Option<u64>, blocked_now: Option<String>)
         .unwrap_or(run.progress.folds_by_reason);
     if !folds.is_empty() {
         entry[RUN_FOLDS_BY_REASON_KEY] = folds_by_reason_json(folds);
+    }
+    // ⛔⛔⛔⛔⛔ AND WHAT PROVED EACH DELIVERY — register item 856, on the line above's terms: the
+    // report first, the cell as the fallback, and its own predicate because the population is the
+    // run's deliveries rather than its reflections. ⚠ A row with `made > 0` and no table here is an
+    // older driver, which is what `is_empty` on a table of zeros says and a filled-in zero would
+    // not.
+    let roads = reported
+        .delivered_by_road
+        .unwrap_or(run.progress.delivered_by_road);
+    if !roads.is_empty() {
+        entry[RUN_DELIVERED_BY_ROAD_KEY] = delivered_by_road_json(roads);
     }
     // ⚠⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601,
     // beside the state for the two keys above's reason and absent when no claim was ever put to a
@@ -6939,6 +7013,69 @@ pub fn folds_by_reason_sentence(run: &Value) -> Option<String> {
     Some(format!("folds by why it reflected — {}", rows.join(" · "),))
 }
 
+/// ⛔⛔⛔⛔⛔ **HOW MANY OF THIS RUN'S PROMPTS BECAME A QUESTION, AND WHAT PROVED IT** — register
+/// item 856, and the sentence [`RUN_DELIVERED_BY_ROAD_KEY`] carries. [`None`] for a run that has
+/// delivered nothing.
+///
+/// # ⛔⛔⛔⛔⛔ Why a sentence and not the seven keys the row already carries
+///
+/// This item is about a number nobody could read, and a table of seven counts is a number nobody
+/// reads either: the landing count is `painted + account + let_go`, and the three roads that prove
+/// nothing sit next to two that mean opposite things. Every reader who has needed this so far did
+/// the arithmetic in their head and got it wrong the same way — `made - folded`, which silently
+/// counts a run that ended mid-delivery as a prompt that landed.
+///
+/// ⚠⚠⚠ **THE THREE ANSWERS OF [`sprag_plugin::Landing`] ARE PRINTED APART.** Folding *unproven*
+/// into *did not land* is the same collapse one surface up, and it is the one that would make this
+/// sentence lie in the reassuring direction: a peer that paints nothing (`unchecked`) would be
+/// published as a peer that took no questions.
+///
+/// ⚠ Off the ROW's own JSON, [`folds_by_reason_sentence`]'s argument verbatim.
+#[must_use]
+pub fn delivered_by_road_sentence(run: &Value) -> Option<String> {
+    let table = run.get(RUN_DELIVERED_BY_ROAD_KEY)?.as_object()?;
+    // ⚠⚠ WALKED IN `Witnessed::ALL`'s ORDER and not the object's, `folds_by_reason_sentence`'s
+    // rule: a road this build cannot spell does not sort itself into the middle of a comparison.
+    let mut counted = std::collections::BTreeMap::<&'static str, u64>::new();
+    let mut roads: Vec<String> = Vec::new();
+    for road in sprag_plugin::Witnessed::ALL {
+        let Some(count) = table.get(road.word()).and_then(Value::as_u64) else {
+            // ⚠⚠⚠ A ROAD THE ROW DOES NOT CARRY IS NOT A ZERO. An older daemon wrote a table this
+            // build has a word for and it did not; reading the gap as `0` would publish *nothing
+            // arrived this way* on behalf of a writer that never said so, which is rule 6's
+            // reassuring reading of an unclassified value.
+            return None;
+        };
+        let bucket = match road.landing() {
+            sprag_plugin::Landing::Asked => "landed",
+            sprag_plugin::Landing::Unproven => "unproven",
+            sprag_plugin::Landing::NotAsked => "not asked",
+        };
+        *counted.entry(bucket).or_default() += count;
+        // ⚠ THE EMPTY ROADS ARE NOT PRINTED, `folds_by_reason_sentence`'s rule: `0` beside a real
+        // count invites a road nothing has ever arrived on to be read as one that is behaving.
+        // They are still SUMMED above, which is where their being present matters.
+        if count > 0 {
+            roads.push(format!("{count} {}", road.word()));
+        }
+    }
+    let total: u64 = counted.values().sum();
+    if total == 0 {
+        return None;
+    }
+    let landed = counted.get("landed").copied().unwrap_or_default();
+    let mut said = format!("{landed} of {total} prompts became a question");
+    // ⚠⚠ THE TWO OTHER ANSWERS ONLY WHERE THERE IS ONE, and they are named rather than added: a
+    // reader who sees `unproven` knows the number is a floor, and one who sees `not asked` knows a
+    // run ended between the typing and the submit. Summing them would say neither.
+    for bucket in ["unproven", "not asked"] {
+        if let Some(count) = counted.get(bucket).copied().filter(|count| *count > 0) {
+            said.push_str(&format!(", {count} {bucket}"));
+        }
+    }
+    Some(format!("{said} — {}", roads.join(" · ")))
+}
+
 /// What became of the prompts this run actually DELIVERED — [`delivery_sentence`]'s fold reading,
 /// lifted out so the wedged clause above can carry it too.
 ///
@@ -7645,6 +7782,7 @@ mod tests {
             cancelled_by: None,
             deliveries: None,
             folds_by_reason: None,
+            delivered_by_road: None,
             banked: None,
             briefed: None,
             done_reason: None,
@@ -8181,6 +8319,7 @@ mod tests {
                 // argument as `stood_down` above: it reads as `0 of 0`, which claims nothing.
                 deliveries: None,
                 folds_by_reason: None,
+                delivered_by_road: None,
                 // ⚠ And item 616's, for that reason exactly — absent reads as *nobody counted*,
                 // which is the honest answer for a log written before the column existed.
                 banked: None,
@@ -8362,6 +8501,7 @@ mod tests {
             cancelled_by: None,
             deliveries: None,
             folds_by_reason: None,
+            delivered_by_road: None,
             banked: None,
             briefed: None,
             done_reason: None,
@@ -8573,6 +8713,7 @@ mod tests {
                 cancelled_by: None,
                 deliveries,
                 folds_by_reason: None,
+                delivered_by_road: None,
                 banked: None,
                 briefed: None,
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
@@ -9011,6 +9152,118 @@ mod tests {
             None,
             "⚠⚠⚠ a run that reflected nothing has no comparison to publish, and six empty rows \
              on its row would be a table over nothing",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ROAD OF EVERY DELIVERY SURVIVES THE WIRE AND SAYS HOW MANY LANDED** —
+    /// register item 856, and the crossing a LANDING count is read across.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the three existing instruments could not do
+    ///
+    /// Measured 2026-09-04 over runs 194-198 and 201 of this repository: the run log's fold count
+    /// matched the persisted tally **12 of 12** and its landing count reached **16 against 127**.
+    /// A walk publishes a delivery's road as a CHANGE, so a run that lands thirty in a row says so
+    /// once — which is right for a journal and is why a LEVEL had to exist.
+    ///
+    /// ⚠⚠⚠ The fixture puts a count on **five** roads and leaves two empty, because both halves are
+    /// claims: the empty rows must cross (rule 6 — *nothing arrived this way* and *this build had
+    /// no word for it* must not read alike) and the populated ones must not be summed into one
+    /// another by a reader that lost the distinction between them.
+    #[test]
+    fn the_road_of_every_delivery_survives_the_wire_and_says_how_many_landed() {
+        let mut live = sprag_plugin::DeliveredByRoad::NONE;
+        // Two proven landings, on the two roads that prove one differently: the pane painted it,
+        // and the agent named the question off a screen that never carried it.
+        for _ in 0..5 {
+            live.record(sprag_plugin::Witnessed::Painted);
+        }
+        for _ in 0..2 {
+            live.record(sprag_plugin::Witnessed::Account);
+        }
+        // ⚠⚠ A FOLD THAT LANDED — register item 762's second road. It is inside `folded` and inside
+        // `landed`, and a build that let either predicate stand in for the other pools the two.
+        live.record(sprag_plugin::Witnessed::LetGo);
+        // ⚠⚠⚠ AND THE TWO SHAPES `made - folded` SILENTLY COUNTED AS LANDINGS: a peer that paints
+        // nothing, and a run that ended between the typing and the submit. They are the reason the
+        // subtraction was never the number anybody read it as.
+        for _ in 0..3 {
+            live.record(sprag_plugin::Witnessed::Unchecked);
+        }
+        live.record(sprag_plugin::Witnessed::Unasked);
+
+        // ══ ① THE WIRE ═════════════════════════════════════════════════════════════════════════
+        let beside = json!({ RUN_DELIVERED_BY_ROAD_KEY: delivered_by_road_json(live) });
+        assert_eq!(
+            delivered_by_road_in(&beside),
+            Some(live),
+            "⛔⛔⛔⛔ REGISTER ITEM 856: the road table does not survive its own round trip, so \
+             the landing count a reader is shown is not the one the run made",
+        );
+
+        // ── AND A ROAD THIS BUILD CANNOT SPELL REFUSES THE TABLE WHOLE ──
+        //
+        // ⚠⚠ Not dropped, `folds_by_reason_in`'s call one axis over: a live peer naming a road this
+        // daemon has no arm for is a BUILD SKEW, and a partial table would publish a landing count
+        // over a population this image never saw — in the flattering direction, since the road it
+        // could not read might be the one nothing landed on.
+        let mut skewed = delivered_by_road_json(live);
+        skewed["a-road-this-build-has-no-arm-for"] = json!(9);
+        assert_eq!(
+            delivered_by_road_in(&json!({ RUN_DELIVERED_BY_ROAD_KEY: skewed })),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: a table carrying a road this build cannot spell was read \
+             anyway, so a denominator is being published with one of its rows missing",
+        );
+
+        // ══ ② THE MOUTH ════════════════════════════════════════════════════════════════════════
+        let said = delivered_by_road_sentence(&beside)
+            .expect("a run that delivered has a landing count to say");
+        assert!(
+            said.contains("8 of 12 prompts became a question"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the sentence does not say how many prompts LANDED, which \
+             is the one number three separate instruments could not answer. `made - folded` would \
+             have said 11 of this run's 12 and four of those never became a question: {said:?}",
+        );
+        assert!(
+            said.contains("3 unproven") && said.contains("1 not asked"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the two answers that are NOT landings are pooled or \
+             dropped. *Nothing here can say* and *nothing was asked* are opposite facts — one is a \
+             floor on the count above and the other is a run that ended mid-delivery — and folding \
+             them together is the collapse this whole item is about: {said:?}",
+        );
+        assert!(
+            said.contains("5 painted") && !said.contains("echoed"),
+            "⛔⛔⛔⛔ THE ROADS WITH A COUNT ARE NAMED AND THE EMPTY ONES ARE NOT PRINTED: a `0 \
+             echoed` beside real counts invites a road nothing ever arrived on to be read as one \
+             that is behaving. Both halves of rule 6 in one line: {said:?}",
+        );
+
+        // ── AND A ROW MISSING A ROAD SAYS NOTHING, RATHER THAN CALLING IT ZERO ──
+        //
+        // ⚠⚠⚠ An older daemon wrote a table this build has a word for and it did not. Reading the
+        // gap as `0` would publish *nothing arrived this way* on behalf of a writer that never
+        // said so, and the total under it would be a denominator that is missing a row.
+        let mut gapped = delivered_by_road_json(live);
+        gapped
+            .as_object_mut()
+            .expect("the table is an object")
+            .remove(sprag_plugin::Witnessed::Echoed.word());
+        assert_eq!(
+            delivered_by_road_sentence(&json!({ RUN_DELIVERED_BY_ROAD_KEY: gapped })),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: a table with a road missing was read as a table with a \
+             zero in it, so a landing ratio is being printed over a population one row short",
+        );
+
+        // ── AND A RUN THAT DELIVERED NOTHING SAYS NOTHING AT ALL ──
+        assert_eq!(
+            delivered_by_road_sentence(&json!({
+                RUN_DELIVERED_BY_ROAD_KEY:
+                    delivered_by_road_json(sprag_plugin::DeliveredByRoad::NONE),
+            })),
+            None,
+            "⚠⚠⚠ a run that typed nothing has no landing count to publish, and `0 of 0` on its \
+             row would be a ratio over nothing",
         );
     }
 
@@ -10124,6 +10377,115 @@ mod tests {
             "⚠⚠⚠ A RUN THAT REFLECTED NOTHING PUBLISHES NO TABLE. Six `0 of 0` rows beside runs \
              with real populations read as six reasons that never fold, which is rule 6 the other \
              way up — the escape is not a pass, it is an invented row: {quiet}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE LANDING COUNT REACHES THE ROW AND ITS MOUTH** — register item 856, and the
+    /// last two feet of the journey.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Do not measure a new value at its two ENDS — delete each publication along the way
+    ///
+    /// The rule the neighbouring gate wrote down on 2026-09-04, applied here in advance rather than
+    /// after the fact. `run_to_json` is where a number stops being a wire value and becomes
+    /// something a PERSON is shown, and for this item that is the whole debt: item 856's remaining
+    /// question is *how many of this run's prompts actually arrived*, and a number that dies one
+    /// function short of the reader pays nothing at all.
+    ///
+    /// ⚠⚠ The sentence is asserted off the ROW's own JSON, its neighbour's arrangement exactly, so
+    /// *what the row carries* and *what the mouth says* cannot be two shapes that agree in a test
+    /// and differ in production.
+    #[test]
+    fn the_landing_count_reaches_the_row_and_its_mouth() {
+        /// A row for a run whose progress carries `roads`.
+        fn row(roads: sprag_plugin::DeliveredByRoad) -> Value {
+            let progress = sprag_plugin::Progress {
+                delivered_by_road: roads,
+                ..sprag_plugin::Progress::default()
+            };
+            run_to_json(
+                &crate::runs::RunSummary {
+                    id: RunId(7),
+                    label: "ai_loop pane=3".to_owned(),
+                    loop_kind: None,
+                    opened_by: None,
+                    opened_by_session: None,
+                    overridden: None,
+                    state: RunState::Running,
+                    progress,
+                    reported: None,
+                    build: Some(crate::wire::BUILD.to_owned()),
+                    stood_down: false,
+                    stood_down_by: None,
+                    held: false,
+                    cancelled_by: None,
+                    withheld: None,
+                    ended_driver: None,
+                    not_resumed: None,
+                    resumed: false,
+                },
+                None,
+                None,
+            )
+        }
+
+        let mut counted = sprag_plugin::DeliveredByRoad::NONE;
+        for _ in 0..5 {
+            counted.record(sprag_plugin::Witnessed::Painted);
+        }
+        // ⚠⚠ THE THREE ROADS `made - folded` COUNTED AS LANDINGS AND SHOULD NOT HAVE: a peer that
+        // paints nothing, and a run that ended between the typing and the submit. Without them in
+        // the fixture the sentence below would be right for the wrong reason.
+        for _ in 0..3 {
+            counted.record(sprag_plugin::Witnessed::Unchecked);
+        }
+        counted.record(sprag_plugin::Witnessed::Unasked);
+
+        // ── ① THE NUMBERS REACH THE ROW ──
+        let carried = row(counted);
+        assert_eq!(
+            carried[RUN_DELIVERED_BY_ROAD_KEY],
+            json!({
+                "painted": 5,
+                "echoed": 0,
+                "account": 0,
+                "let_go": 0,
+                "unchecked": 3,
+                "unasked": 1,
+                "unproven": 0,
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the road table stops one function short of the row, so \
+             no reader of a run can ask how many of its prompts became a question — which is the \
+             one number the run log, the reflection split and a per-priming row all failed to \
+             hold. ⚠ THE EMPTY ROADS ARE PART OF THE CLAIM: rule 6, and two of the seven had no \
+             observed member anywhere when this was written: {carried}",
+        );
+
+        // ── ② AND THE MOUTH SAYS THEM, OFF THE ROW'S OWN JSON ──
+        let said = delivered_by_road_sentence(&carried)
+            .expect("a row carrying a road table can be said back to a person");
+        assert!(
+            said.contains("5 of 9 prompts became a question"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the row carries the table and the mouth cannot say what \
+             it means. `made - folded` reads 9 of 9 for this run and four of those never became a \
+             question — the reassuring answer, which is what a reader has been getting: {said:?}",
+        );
+        assert!(
+            said.contains("3 unproven") && said.contains("1 not asked"),
+            "⛔⛔⛔⛔ AND IT KEEPS THE TWO NON-LANDINGS APART. *Nothing here can say* is a floor on \
+             the count and *nothing was asked* is a run that ended mid-delivery; one number for \
+             both is the pooling this item exists to end: {said:?}",
+        );
+
+        // ── ③ AND A RUN THAT DELIVERED NOTHING PUTS NO TABLE ON ITS ROW ──
+        //
+        // ⚠⚠ The key is ABSENT rather than seven zeros, the neighbouring gate's decision and for
+        // its reason: on the wire an empty table is this image saying it counted; on the row it
+        // would be a ratio over nothing sitting beside runs that have one.
+        let quiet = row(sprag_plugin::DeliveredByRoad::NONE);
+        assert!(
+            quiet.get(RUN_DELIVERED_BY_ROAD_KEY).is_none()
+                && delivered_by_road_sentence(&quiet).is_none(),
+            "⚠⚠⚠ A RUN THAT TYPED NOTHING PUBLISHES NO TABLE: {quiet}",
         );
     }
 
@@ -11612,6 +11974,7 @@ mod tests {
                 waiting: None,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 folds_by_reason: sprag_plugin::FoldsByReason::NONE,
+                delivered_by_road: sprag_plugin::DeliveredByRoad::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
@@ -11707,6 +12070,7 @@ mod tests {
                 waiting: None,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 folds_by_reason: folds,
+                delivered_by_road: sprag_plugin::DeliveredByRoad::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
@@ -11789,6 +12153,74 @@ mod tests {
              stay reserved for a driver whose build knew none — that is the only thing telling \
              *nobody counted* apart from *nothing reflected*, and the row's own `is_empty` is what \
              turns the second into silence: {quiet}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE ROAD TABLE CROSSES THE SAME WIRE** — register item 856, and the crossing
+    /// EVERY run this daemon starts actually takes.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Two crossings that cannot be skipped, and item 856 needs both
+    ///
+    /// The measurement this item rests on came from FINISHED runs read out of a daemon that had
+    /// been restarted, so the durable log is one crossing (gated in `crate::runs`). This is the
+    /// other: a run this daemon starts is driven OUT OF PROCESS, so its cell is zeros for ever and
+    /// everything a reader sees arrived through `progress_to_json`. A table that stopped here would
+    /// read `0 of 0` for every real run while every type-level gate stayed green — which is item
+    /// 856's own shape, one layer down.
+    ///
+    /// ⚠⚠ The sentence is composed off the JSON the crossing produced, its neighbour's arrangement:
+    /// two spellings of one shape are free to agree in a test and differ in production.
+    #[test]
+    fn the_road_of_every_delivery_crosses_the_wire_to_the_row() {
+        /// A progress cell as a driver really hands one over, carrying `roads`.
+        fn progress(roads: sprag_plugin::DeliveredByRoad) -> sprag_plugin::Progress {
+            sprag_plugin::Progress {
+                delivered_by_road: roads,
+                ..sprag_plugin::Progress::default()
+            }
+        }
+
+        let mut counted = sprag_plugin::DeliveredByRoad::NONE;
+        for _ in 0..5 {
+            counted.record(sprag_plugin::Witnessed::Painted);
+        }
+        counted.record(sprag_plugin::Witnessed::LetGo);
+        // ⚠⚠ THE TWO ROADS `made - folded` COUNTS AS LANDINGS AND MUST NOT BE. Without them the
+        // sentence below would be right by arithmetic that is wrong.
+        for _ in 0..3 {
+            counted.record(sprag_plugin::Witnessed::Unchecked);
+        }
+        counted.record(sprag_plugin::Witnessed::Unasked);
+
+        // ── ① IT CROSSES, AND IT COMES BACK THE SAME TABLE ──
+        let carried = progress_to_json(&progress(counted));
+        assert_eq!(
+            progress_from_report(&carried).delivered_by_road,
+            Some(counted),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the road table does not survive the crossing every real \
+             run takes. A run this daemon starts is driven out of process, so its cell is zeros \
+             for ever and this is the only road the number travels: {carried}",
+        );
+
+        // ── ② AND THE ROW'S SENTENCE IS COMPOSABLE FROM WHAT ARRIVED ──
+        let beside = &carried[REPORTED_BESIDE_KEY];
+        let said = delivered_by_road_sentence(beside)
+            .expect("a table that crossed can be said back to a person");
+        assert!(
+            said.contains("6 of 10 prompts became a question"),
+            "⛔⛔⛔⛔ REGISTER ITEM 856: the table arrived and the mouth cannot say what it means — \
+             *a fact that reaches the wire and dies at the mouth*, which this file names in five \
+             places. `made - folded` reads 9 of 10 for this run: {said:?}",
+        );
+
+        // ── ③ AND A RUN THAT DELIVERED NOTHING CROSSES A TABLE, NOT A SILENCE ──
+        let quiet = progress_to_json(&progress(sprag_plugin::DeliveredByRoad::NONE));
+        assert_eq!(
+            progress_from_report(&quiet).delivered_by_road,
+            Some(sprag_plugin::DeliveredByRoad::NONE),
+            "⚠⚠⚠ THIS IMAGE LOOKED, so seven empty roads are a claim it may make. A MISSING key \
+             stays reserved for a driver whose build knew none — the only thing telling *nobody \
+             counted* apart from *nothing was delivered*: {quiet}",
         );
     }
 
@@ -16800,6 +17232,7 @@ mod tests {
                     cancelled_by: None,
                     deliveries: None,
                     folds_by_reason: None,
+                    delivered_by_road: None,
                     banked: None,
                     briefed: None,
                     // ⚠ Item 706's field, absent for the reason every field above it is.

@@ -2297,6 +2297,18 @@ pub struct PersistedRun {
     /// gain a value no reader would treat differently from the absence.
     #[serde(default)]
     pub folds_by_reason: Option<PersistedFoldsByReason>,
+    /// ⛔⛔⛔⛔⛔ **WHICH ROAD EACH OF THIS RUN'S DELIVERIES ARRIVED ON** — register item 856, and
+    /// the only stored value from which a LANDING count can be read. See
+    /// [`PersistedDeliveredByRoad`].
+    ///
+    /// [`None`] for a log written before this field existed, and it must NOT read as *this run
+    /// landed nothing*: an absent table is one nobody wrote down. The distinction the field above
+    /// makes, one axis over.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move — [`build`](Self::build)'s argument, and the same call
+    /// items 606, 616, 762 and 856(1) each made.
+    #[serde(default)]
+    pub delivered_by_road: Option<PersistedDeliveredByRoad>,
     /// ⚠⚠⚠⚠⚠ **HOW MUCH OF ITS WORK WAS COMPLETE AND KEPT** — register item 616, the residue item
     /// 604 left. See [`PersistedBanked`] for why this crosses a restart where
     /// [`at`](Self::at) may not.
@@ -2546,6 +2558,62 @@ impl From<PersistedFoldsByReason> for sprag_plugin::FoldsByReason {
                     },
                 },
             );
+        }
+        live
+    }
+}
+
+/// **THE STORED SHAPE OF [`sprag_plugin::DeliveredByRoad`]** — register item 856, on
+/// [`PersistedFoldsByReason`]'s terms exactly: `sprag-plugin` states a serde-free contract, so the
+/// host owns every mapping to a stored shape.
+///
+/// # ⛔⛔⛔⛔⛔ IT HAS TO CROSS A RESTART OR IT MEASURES NOTHING, AND THAT IS MEASURED
+///
+/// Item 606 asked two live daemons for their runs' delivery pairs and **thirteen answered with
+/// none** — every one restored. A landing count is read AFTER a run ends, off a daemon that has
+/// been restarted since, so a table that died with its daemon would be an instrument whose readings
+/// are only available while nobody is reading. That is the same sentence item 856(1) wrote for the
+/// reason split, and it binds harder here: the reason split has a live rival in the walk, and the
+/// landing count has none at all — the walk publishes a delivery's road as a CHANGE, so a run that
+/// lands thirty prompts in a row says so once.
+///
+/// ⚠ A map keyed by the road's WORD rather than an array, [`PersistedFoldsByReason`]'s call: an
+/// array is a promise about ORDER that two builds could disagree about in silence. A word this
+/// build cannot spell is DROPPED — a count restored under the wrong road is worse than one lost.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedDeliveredByRoad {
+    /// One entry per road WORD, each a count.
+    ///
+    /// ⚠ Roads with no deliveries are written too: *nothing arrived this way* and *this build had
+    /// no word for it* must not read alike, and the only thing that tells them apart is the row
+    /// being present and zero. Two of the seven roads had no observed member at all when this was
+    /// written, and they are the ones a surprise arrives on.
+    #[serde(flatten)]
+    pub on: std::collections::BTreeMap<String, u32>,
+}
+
+impl From<sprag_plugin::DeliveredByRoad> for PersistedDeliveredByRoad {
+    fn from(live: sprag_plugin::DeliveredByRoad) -> Self {
+        Self {
+            on: live
+                .rows()
+                .map(|(road, count)| (road.word().to_owned(), count))
+                .collect(),
+        }
+    }
+}
+
+impl From<PersistedDeliveredByRoad> for sprag_plugin::DeliveredByRoad {
+    fn from(stored: PersistedDeliveredByRoad) -> Self {
+        let mut live = Self::NONE;
+        for (word, count) in stored.on {
+            // ⚠ A word this build has no arm for is DROPPED, this type's stated decision:
+            // `Witnessed::ALL` is the only authority on which roads there are, and a count restored
+            // under the wrong road is worse than a count lost.
+            let Some(road) = sprag_plugin::Witnessed::named(&word) else {
+                continue;
+            };
+            live.restore(road, count);
         }
         live
     }
@@ -3670,6 +3738,16 @@ impl RunRegistry {
                                 .unwrap_or(run.progress.folds_by_reason)
                                 .into(),
                         ),
+                        // ⛔⛔⛔⛔⛔ AND WHAT PROVED EACH DELIVERY — register item 856, written the
+                        // way the two above are and for their reasons. This is the column a LANDING
+                        // is read from, and it is read off a finished run whose daemon has since
+                        // been restarted, which is what item 606 measured.
+                        delivered_by_road: Some(
+                            reported
+                                .delivered_by_road
+                                .unwrap_or(run.progress.delivered_by_road)
+                                .into(),
+                        ),
                         // ⚠⚠⚠⚠⚠ AND HOW MUCH OF THE WORK IS KEPT — register item 616. `None` here
                         // is the PLUGIN's own answer (*I count no completed work*) rather than
                         // this daemon's silence, which is why it is mapped through rather than
@@ -3986,6 +4064,18 @@ impl RunRegistry {
                         .folds_by_reason
                         .clone()
                         .map_or(sprag_plugin::FoldsByReason::NONE, Into::into),
+                    // ⛔⛔⛔⛔⛔ AND WHAT PROVED EACH DELIVERY IS RESTORED WITH THEM — register item
+                    // 856, on the two arguments above and for the sharpest instance of them: a
+                    // LANDING is only ever read off a finished run, and item 606 measured that
+                    // every run anybody reads has been restored. A road table that stopped at the
+                    // daemon boundary would be the third instrument that cannot count a landing.
+                    //
+                    // ⚠ An older log reads as every road `0`, which publishes nothing at all
+                    // (`is_empty`) rather than *this run landed none*.
+                    delivered_by_road: saved
+                        .delivered_by_road
+                        .clone()
+                        .map_or(sprag_plugin::DeliveredByRoad::NONE, Into::into),
                     // ⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, on the same argument.
                     checks: sprag_plugin::Checks::NONE,
                     // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS KEPT **IS** RESTORED — register item 616,
@@ -5188,6 +5278,110 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND THE ROAD OF EVERY DELIVERY SURVIVES THE DAEMON TOO** — register item 856, on
+    /// item 606's measurement and the crossing a LANDING count is only ever read across.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The run anybody reads has been restored, and this is the value that proves it
+    ///
+    /// Item 606 asked two live daemons for their runs' delivery pairs and **thirteen answered with
+    /// none, every one restored**: *a run is READ after it ends, and the daemon that drove it is
+    /// restarted between rounds.* A landing count is read on exactly those runs — the whole
+    /// measurement that opened this item was six FINISHED runs of this repository compared against
+    /// their logs — so a table that died with its daemon would be a fourth instrument nobody can
+    /// consult.
+    ///
+    /// ⚠⚠ **THROUGH THE FILE**, its neighbours' argument, and it binds hardest here: the value is a
+    /// MAP behind `#[serde(flatten)]`, the one attribute that can swallow a whole table in silence.
+    ///
+    /// ⚠ The fixture puts different counts on roads that mean different things — a proven landing,
+    /// a fold that landed, a road that proves nothing, and one that establishes nothing was asked —
+    /// so a restore that dropped a row, or filled one from its neighbour, fails here rather than
+    /// agreeing by coincidence.
+    #[test]
+    fn the_road_of_every_delivery_survives_the_daemon_that_counted_it() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let progress = ProgressCell::default();
+        let mut roads = sprag_plugin::DeliveredByRoad::NONE;
+        for _ in 0..5 {
+            roads.record(sprag_plugin::Witnessed::Painted);
+        }
+        // ⚠⚠ A FOLD THAT LANDED — register item 762's second road, inside `folded` and inside
+        // `landed` at once. A restore that let one classification stand in for the other pools them.
+        roads.record(sprag_plugin::Witnessed::LetGo);
+        // ⚠⚠⚠ AND THE TWO SHAPES `made - folded` COUNTED AS LANDINGS. They are the reason the
+        // subtraction was never the number it was read as, so a restore that lost them would leave
+        // a landing count that agrees with the wrong arithmetic.
+        for _ in 0..3 {
+            roads.record(sprag_plugin::Witnessed::Unchecked);
+        }
+        roads.record(sprag_plugin::Witnessed::Unasked);
+        lock(&progress).delivered_by_road = roads;
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            overridden: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(an_outcome()),
+                output: None,
+                uncommitted: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress,
+        });
+
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the run log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+
+        let carried = successor.snapshot()[0].progress.delivered_by_road;
+        assert_eq!(
+            carried, roads,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the road table did not survive its daemon, and item 606 \
+             MEASURED that this is the crossing every reader takes — thirteen live runs, every one \
+             restored. The landing count this item exists to create would be available only while \
+             nobody was reading it. Got {carried:?} from {on_disk}",
+        );
+        assert_eq!(
+            (carried.landed(), carried.unproven(), carried.not_asked()),
+            (6, 3, 1),
+            "⛔⛔⛔⛔ AND THE THREE ANSWERS COME BACK APART. A restore that summed them, or that \
+             lost the road proving nothing, would publish `9 of 10 landed` for a run where four \
+             prompts never became a question — which is exactly what `made - folded` says. Got \
+             {carried:?} from {on_disk}",
+        );
+
+        // ⛔⛔⛔⛔⛔ ── AND A LOG WRITTEN BEFORE THE TABLE EXISTED READS AS EMPTY, NOT AS A REFUSAL ──
+        //
+        // The OPPOSITE call from the live wire's (`crate::plugins::delivered_by_road_in` refuses a
+        // report naming a road this build cannot spell). A stored row is a fact from another build
+        // and its silence is nothing a reader can act on; a live driver's silence is a skew.
+        // Driven through a real decode, because a `#[serde(default)]` that was dropped would leave
+        // every pre-existing run log unreadable — and this daemon restores from one on every boot.
+        let mut older: Value = serde_json::from_str(&on_disk).expect("the log just written parses");
+        older["runs"][0]
+            .as_object_mut()
+            .expect("a run is an object")
+            .remove(crate::plugins::RUN_DELIVERED_BY_ROAD_KEY);
+        let older = older.to_string();
+        let old_log: RunLog = serde_json::from_str(&older).expect(
+            "⛔⛔⛔⛔ REGISTER ITEM 856: a run log written before the road table existed must still \
+             decode. Every boot of this daemon restores from one.",
+        );
+        let mut before = RunRegistry::default();
+        before.restore(&old_log);
+        assert!(
+            before.snapshot()[0].progress.delivered_by_road.is_empty(),
+            "⚠⚠ and it reads as *nobody counted this*, which publishes no sentence at all rather \
+             than a clean bill — the honest answer for a build that could not have said otherwise",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **WHO STOOD A RUN DOWN SURVIVES THE DAEMON THAT WAS TOLD** — register item 835,
     /// and **the crossing that decides whether that item is paid at all.**
     ///
@@ -5665,6 +5859,7 @@ mod tests {
                 cancelled_by: None,
                 deliveries: None,
                 folds_by_reason: None,
+                delivered_by_road: None,
                 // ⚠ `None` is what an OLDER LOG reads as, which is what these fixtures are about.
                 banked: None,
                 briefed: None,
@@ -5910,6 +6105,7 @@ mod tests {
             cancelled_by: None,
             deliveries: None,
             folds_by_reason: None,
+            delivered_by_road: None,
             // ⚠ `None` is what an OLDER LOG reads as, which is what this fixture is about.
             banked: None,
             briefed: None,
@@ -6020,6 +6216,7 @@ mod tests {
             cancelled_by: None,
             deliveries: None,
             folds_by_reason: None,
+            delivered_by_road: None,
             banked: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -6120,6 +6317,7 @@ mod tests {
             cancelled_by: None,
             deliveries: None,
             folds_by_reason: None,
+            delivered_by_road: None,
             banked: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -6563,6 +6761,7 @@ mod tests {
                 // ⚠ Nor what it delivered — item 606's field, absent in a log written before it.
                 deliveries: None,
                 folds_by_reason: None,
+                delivered_by_road: None,
                 // ⚠ Nor how much it banked — item 616's field, absent for that field's reason.
                 banked: None,
                 briefed: None,

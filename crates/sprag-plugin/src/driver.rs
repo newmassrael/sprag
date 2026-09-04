@@ -934,6 +934,9 @@ pub struct Driver {
     /// here for that field's reason: the split and the total are two readings of ONE event, and
     /// only the thing that delivered saw it.
     folds_by_reason: crate::outer::FoldsByReason,
+    /// ⛔⛔⛔ **AND THE SPLIT OF THE SAME DELIVERIES BY WHAT PROVED EACH ONE** — register item 856,
+    /// held and read exactly as the two above are, and never added to here for their reason.
+    delivered_by_road: crate::outer::DeliveredByRoad,
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS INDEPENDENT CHECKS CAME TO** — register item 601, held
     /// and read exactly as [`deliveries`](Self::deliveries) is, and never added to here.
     checks: Checks,
@@ -1102,6 +1105,19 @@ pub struct Progress {
     /// ⚠ [`crate::outer::FoldsByReason::NONE`] for every plugin that does not reflect — every row
     /// `0 of 0`, which is *no reason ever fired* and not *nothing folded*.
     pub folds_by_reason: crate::outer::FoldsByReason,
+    /// ⛔⛔⛔⛔⛔ **AND EVERY DELIVERY, SPLIT BY WHAT PROVED IT ARRIVED** —
+    /// [`Plugin::delivered_by_road`], register item 856.
+    ///
+    /// The two fields above cannot answer *how many prompts LANDED*: `made - folded` pools five
+    /// roads, two of which are not landings, and the split beside it counts only what a reflection
+    /// asked. Measured over runs 194-198 and 201 of this repository, the third instrument — the run
+    /// log — matched the persisted fold count 12 of 12 and reached 16 of 127 landings, because a
+    /// walk publishes a delivery's road as a CHANGE and a run that lands thirty in a row says so
+    /// once.
+    ///
+    /// ⚠ [`crate::outer::DeliveredByRoad::NONE`] for a plugin that types no composed prompt —
+    /// every road present and zero, which is a population and not *nothing landed*.
+    pub delivered_by_road: crate::outer::DeliveredByRoad,
     /// ⚠⚠⚠⚠⚠ **WHICH PANE THIS RUN IS DRIVING RIGHT NOW** — [`Plugin::driving`], register item 540.
     ///
     /// # The fact that was published only as prose inside a name
@@ -1260,6 +1276,7 @@ impl Driver {
             unadmitted: None,
             deliveries: Deliveries::NONE,
             folds_by_reason: crate::outer::FoldsByReason::NONE,
+            delivered_by_road: crate::outer::DeliveredByRoad::NONE,
             checks: Checks::NONE,
             banked: None,
             briefed: None,
@@ -1323,6 +1340,7 @@ impl Driver {
             place: self.place.clone(),
             deliveries: self.deliveries,
             folds_by_reason: self.folds_by_reason,
+            delivered_by_road: self.delivered_by_road,
             checks: self.checks.clone(),
             banked: self.banked.clone(),
             briefed: self.briefed,
@@ -1674,6 +1692,11 @@ impl Driver {
                     // read a step apart, the split could publish a denominator the total does not
                     // have, and a ratio nobody can reproduce is worse than no ratio.
                     self.folds_by_reason = plugin.folds_by_reason();
+                    // ⛔⛔⛔ AND THE THIRD SPLIT OF THE SAME EVENT — register item 856, in the same
+                    // breath as the two above for the line above's reason: the road table's total
+                    // IS `deliveries.made`, and read a step apart the two would publish a
+                    // denominator and a numerator taken from different moments of one run.
+                    self.delivered_by_road = plugin.delivered_by_road();
                     // ⚠⚠⚠ AND WHAT ITS CHECKS CAME TO — register item 601, in the same breath as
                     // the two above for the same reason: three totals read at three moments are
                     // three facts about three moments, and a reader weighing a `converged` needs
@@ -2445,6 +2468,110 @@ mod tests {
             "⚠⚠⚠ AND THE TWO READERS MUST AGREE. A forwarder that assembles its own `Progress` \
              is free to drift from the cell one field at a time, and the two readers are the same \
              person looking at one run through two windows.",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND IT FORWARDS WHAT PROVED EACH OF THE PLUGIN'S DELIVERIES** — register item
+    /// 856, and the crossing between the thing that counted and everything that reads the count.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Do not measure a new value at its two ENDS
+    ///
+    /// This workspace wrote that rule down on 2026-09-04 after three of item 856's crossings were
+    /// each found watched by nothing. THIS one is the first crossing of them all: the plugin holds
+    /// the table, and one line in [`Driver::run`] is what puts it in a `Progress`. Delete that line
+    /// and the type is still right, the wire still carries a table, the log still stores one, the
+    /// row still prints a sentence — and every number in it is zero, for ever, on every run.
+    ///
+    /// ⚠⚠ The claim is that the SINK and the CELL agree, its neighbour's argument verbatim: a run
+    /// driven in another process has the sink as its only channel, and a forwarder free to
+    /// assemble its own `Progress` drifts from the cell one field at a time.
+    ///
+    /// ⚠ The counts differ per road and none of them is 1, so a forwarder that filled the table
+    /// from a neighbouring field, or published a fresh one, fails here rather than agreeing by
+    /// coincidence.
+    #[test]
+    fn a_driver_forwards_what_proved_each_of_its_plugins_deliveries() {
+        /// A plugin that has delivered on three roads, the way `AiLoop` does.
+        struct Delivering(crate::outer::DeliveredByRoad);
+        impl Plugin for Delivering {
+            fn step(&mut self, _: &dyn PaneAccess, _: &RunContext) -> Result<Step, PaneError> {
+                Ok(Step::new(Cost::Bytes(3), Verdict::Continue))
+            }
+            fn driving(&self) -> Option<PaneId> {
+                None
+            }
+            fn delivered_by_road(&self) -> crate::outer::DeliveredByRoad {
+                self.0
+            }
+        }
+
+        let mut counted = crate::outer::DeliveredByRoad::NONE;
+        for _ in 0..5 {
+            counted.record(crate::deliver::Witnessed::Painted);
+        }
+        // ⚠⚠ THE ROADS THAT ARE NOT LANDINGS, so a crossing that carried only the interesting one
+        // fails here — which is the whole disease this item was filed on.
+        for _ in 0..3 {
+            counted.record(crate::deliver::Witnessed::Unchecked);
+        }
+        counted.record(crate::deliver::Witnessed::Unasked);
+        counted.record(crate::deliver::Witnessed::Unasked);
+
+        let cell: ProgressCell = ProgressCell::default();
+        let heard: Arc<Mutex<Vec<Progress>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let heard = Arc::clone(&heard);
+            Arc::new(move |progress: &Progress| {
+                heard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(progress.clone());
+            }) as ProgressSink
+        };
+        let _ = Driver::new(Guardrails {
+            max_iterations: 2,
+            max_cost: None,
+            max_duration: None,
+        })
+        .reporting_to(Arc::clone(&cell))
+        .forwarding_to(sink)
+        .run(
+            &mut Delivering(counted),
+            &RecordingPanes::new(),
+            &RunContext::uncancellable(),
+        );
+
+        let heard = heard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let last = heard
+            .last()
+            .expect("⚠⚠ THE PREMISE: a run that took steps must have published at least once");
+        assert_eq!(
+            last.delivered_by_road, counted,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the plugin counted what proved each of its deliveries \
+             and the driver forwarded none of it. This is the FIRST crossing — everything \
+             downstream of it would carry a table of zeros while every gate it has stayed green, \
+             which is the shape three of this item's other crossings were found in. Heard: \
+             {last:?}",
+        );
+        assert_eq!(
+            (
+                last.delivered_by_road.landed(),
+                last.delivered_by_road.unproven(),
+                last.delivered_by_road.not_asked(),
+            ),
+            (5, 3, 2),
+            "⚠⚠⚠ AND THE THREE ANSWERS ARRIVE APART. `made - folded` reads 10 of 10 for this \
+             plugin, and five of those never became a question: {last:?}",
+        );
+        assert_eq!(
+            *last,
+            *cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            "⚠⚠⚠ AND THE TWO READERS MUST AGREE, its neighbour's claim exactly.",
         );
     }
 

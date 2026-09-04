@@ -2579,6 +2579,162 @@ impl FoldsByReason {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHICH ROAD EVERY ONE OF THIS RUN'S DELIVERIES ARRIVED ON** — register item 856, and
+/// the one place a prompt LANDING is written down exhaustively.
+///
+/// # ⛔⛔⛔⛔⛔ Three instruments each counted every fold and only some landings
+///
+/// Measured 2026-09-04, over this repository's own runs 194-198 and 201:
+///
+/// | | folds | landings |
+/// | --- | ---: | ---: |
+/// | the run log against the persisted tally | **12 of 12** | **16 against 127** |
+///
+/// The fold pair agrees exactly and the landing pair is out by a factor of eight, and the same
+/// shape was found in two more places: [`FoldsByReason`], whose population is REFLECTIONS, and a
+/// per-`Priming` row proposed by another repository, whose population is priming lines. All three
+/// count a fold wherever it happens and a landing only where it is interesting.
+///
+/// ⇒ **An instrument whose denominator can only equal its numerator can confirm an axis and never
+/// refute one**, which is item 856's own recorded disease turning up inside the instruments built
+/// to measure it. The bias has a DIRECTION, which is what makes it worse than noise: every ratio
+/// built on any of the three reads the fold rate too high.
+///
+/// # ⚠⚠⚠ Why the mechanism is not a bug anybody could fix in the log
+///
+/// The walk publishes evidence as CHANGES — a level, republished only when the road MOVES — so a
+/// run that lands thirty prompts in a row emits ONE line saying so, while a fold between two
+/// landings emits three. That diffing is right for a journal and cannot be undone without making
+/// every pass repeat itself. **A LEVEL is the shape that answers this**, which is the same argument
+/// [`FoldsByReason`] makes about a bounded journal one paragraph over.
+///
+/// # ⚠⚠⚠⚠⚠ Rule 6: a road with no sample still gets a row
+///
+/// The rows are [`crate::deliver::Witnessed::ALL`], so an eighth road arrives with a row rather
+/// than falling into a total nobody split — and a road that has never been observed reads as
+/// `0`, which is a POPULATION and not a silence. Two of the seven had no observed member at all
+/// when this was written, and a hand-written list of the interesting roads is exactly what would
+/// have left them out: the roads nothing has produced yet are the ones a surprise arrives on.
+///
+/// ⚠⚠ **IT DOES NOT REPLACE [`crate::plugin::Deliveries`] AND IS NOT A SECOND SPELLING OF IT.**
+/// That tally answers *how many prompts did this run put in, and how many can a person find on the
+/// pane* — two numbers a reader acts on directly. This answers *what proved each one*, which is the
+/// question `made - folded` was being made to answer and cannot: two of the five roads inside that
+/// subtraction are not landings at all. The two are held together by a gate rather than by
+/// arithmetic anybody remembers — [`total`](Self::total) against `Deliveries::made`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeliveredByRoad {
+    /// One row per [`crate::deliver::Witnessed::ALL`], in that array's order.
+    ///
+    /// ⚠ Private, so the only way in and out is by ROAD — [`FoldsByReason::under`]'s rule exactly:
+    /// an index is a second spelling of the order this array happens to be in, and a caller that
+    /// wrote one would be free to disagree with `ALL` about which row is which.
+    on: [u32; crate::deliver::Witnessed::ALL.len()],
+}
+
+impl DeliveredByRoad {
+    /// **NOTHING DELIVERED YET** — every road zero, which is what a run that has typed nothing has
+    /// honestly counted.
+    pub const NONE: Self = Self {
+        on: [0; crate::deliver::Witnessed::ALL.len()],
+    };
+
+    /// Where `road`'s row lives — the one place an index is derived, so
+    /// [`crate::deliver::Witnessed::ALL`] is the only authority on the order.
+    fn at(road: crate::deliver::Witnessed) -> usize {
+        crate::deliver::Witnessed::ALL
+            .iter()
+            .position(|it| *it == road)
+            .expect("Witnessed::ALL is every road")
+    }
+
+    /// **RECORD ONE DELIVERY THAT ARRIVED ON `road`.**
+    ///
+    /// ⚠ No classification happens here and that is deliberate: the caller is handed a
+    /// [`crate::deliver::Witnessed`] and files it, so this type has no opinion about which roads
+    /// are landings and cannot come to disagree with
+    /// [`crate::deliver::Witnessed::landing`] — the one authority.
+    pub fn record(&mut self, road: crate::deliver::Witnessed) {
+        let row = &mut self.on[Self::at(road)];
+        *row = row.saturating_add(1);
+    }
+
+    /// **PUT A ROW BACK AS IT WAS WRITTEN DOWN** — for a host reading a run out of its durable log.
+    ///
+    /// ⚠⚠ Separate from [`record`](Self::record) for [`FoldsByReason::restore`]'s reason: `record`
+    /// is the LIVE act, one delivery at a time, and this assigns a number somebody already counted.
+    pub fn restore(&mut self, road: crate::deliver::Witnessed, count: u32) {
+        self.on[Self::at(road)] = count;
+    }
+
+    /// How many deliveries arrived on `road`.
+    #[must_use]
+    pub fn on(&self, road: crate::deliver::Witnessed) -> u32 {
+        self.on[Self::at(road)]
+    }
+
+    /// Every row with its road, in [`crate::deliver::Witnessed::ALL`]'s order — **including the
+    /// empty ones**, which is this type's whole rule 6 argument.
+    pub fn rows(&self) -> impl Iterator<Item = (crate::deliver::Witnessed, u32)> + '_ {
+        crate::deliver::Witnessed::ALL
+            .into_iter()
+            .map(|road| (road, self.on(road)))
+    }
+
+    /// **EVERY DELIVERY THIS RUN MADE** — the denominator, spelled here rather than added up at
+    /// each reader so the rows cannot come to be summed one way in a sentence and another way in a
+    /// gate ([`Unasked::total`]'s rule).
+    ///
+    /// ⚠⚠ It is the same population as `crate::plugin::Deliveries::made` and a gate says so. Two
+    /// counts of one event are what this file pays for repeatedly; the answer is not to keep one of
+    /// them but to make the disagreement a red.
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        self.on.iter().copied().fold(0, u32::saturating_add)
+    }
+
+    /// **HOW MANY OF THEM BECAME A QUESTION THE PEER HAS** — the number item 856 could not read off
+    /// anything, and the reason this type exists.
+    ///
+    /// ⚠⚠⚠ The three answers of [`crate::deliver::Landing`] are counted APART
+    /// ([`unproven`](Self::unproven), [`not_asked`](Self::not_asked)), never folded into *not
+    /// landed*: `made - folded` was read as a landing count for exactly as long as nobody asked
+    /// what the roads inside it were.
+    #[must_use]
+    pub fn landed(&self) -> u32 {
+        self.counting(crate::deliver::Landing::Asked)
+    }
+
+    /// How many arrived on a road that says nothing either way — see
+    /// [`crate::deliver::Landing::Unproven`].
+    #[must_use]
+    pub fn unproven(&self) -> u32 {
+        self.counting(crate::deliver::Landing::Unproven)
+    }
+
+    /// How many were established NOT to have become a question — see
+    /// [`crate::deliver::Landing::NotAsked`].
+    #[must_use]
+    pub fn not_asked(&self) -> u32 {
+        self.counting(crate::deliver::Landing::NotAsked)
+    }
+
+    /// The one place the three above are derived, so they cannot disagree about which roads are
+    /// which.
+    fn counting(&self, landing: crate::deliver::Landing) -> u32 {
+        self.rows()
+            .filter(|(road, _)| road.landing() == landing)
+            .fold(0, |sum, (_, count)| sum.saturating_add(count))
+    }
+
+    /// Whether anything has been counted at all — a run that has typed nothing, so the table has
+    /// nothing to say rather than saying every road is clean.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+}
+
 /// **A COUNT A DOCUMENT MAY ALSO DECLINE** — read off a datamodel by `OuterLoop::authored_count`.
 ///
 /// ⚠ The reader is spelled rather than LINKED: it is crate-private and this type is public, so an
@@ -5858,6 +6014,16 @@ pub struct OuterLoop {
     /// over one event, incremented at two sites, is exactly the drift both their docs argue
     /// against.
     folds: FoldsByReason,
+    /// ⛔⛔⛔⛔⛔ **AND THE SAME DELIVERIES, SPLIT BY WHAT PROVED EACH ONE** — register item 856,
+    /// answered through [`Plugin::delivered_by_road`](crate::Plugin).
+    ///
+    /// Neither of the two fields above can answer *how many prompts LANDED*: `deliveries` pools
+    /// five roads under `made - folded`, two of which are not landings, and `folds` counts only
+    /// what was asked during a reflection. See [`DeliveredByRoad`] for the measurement that says
+    /// how far out the readings were.
+    ///
+    /// ⚠ Written at the same ONE place as the two beside it, and in the same act, for their reason.
+    roads: DeliveredByRoad,
     /// ⚠⚠⚠⚠⚠ **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, answered
     /// through [`Plugin::checks`](crate::Plugin).
     ///
@@ -6091,6 +6257,7 @@ impl OuterLoop {
             told: Told::default(),
             deliveries: crate::plugin::Deliveries::NONE,
             folds: FoldsByReason::NONE,
+            roads: DeliveredByRoad::NONE,
             checks: crate::plugin::Checks::NONE,
         })
     }
@@ -7905,6 +8072,18 @@ impl OuterLoop {
         self.folds
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND EVERY DELIVERY, SPLIT BY WHAT PROVED IT** — register item 856, and what
+    /// [`crate::Plugin::delivered_by_road`] answers for an `ai_loop` run.
+    ///
+    /// ⚠ A LEVEL, and here the argument is sharper than for the two above rather than the same
+    /// one: the walk publishes a delivery's evidence as a CHANGE, so a run that lands thirty
+    /// prompts in a row says so ONCE. Measured over six runs of this repository, that is the
+    /// difference between 16 landings and 127 — see [`DeliveredByRoad`].
+    #[must_use]
+    pub const fn delivered_by_road(&self) -> DeliveredByRoad {
+        self.roads
+    }
+
     /// **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, and what
     /// [`crate::Plugin::checks`] answers for an `ai_loop` run.
     ///
@@ -7946,6 +8125,23 @@ impl OuterLoop {
             return;
         };
         self.deliveries.made = self.deliveries.made.saturating_add(1);
+        // ⛔⛔⛔⛔⛔ **AND WHICH ROAD THIS ONE ARRIVED ON** — register item 856, written in the same
+        // act as the total it is inside, for the reason this function's doc gives about `folded`
+        // below: a site that forgot the increment reads as *a run whose prompts were visible*
+        // rather than as a missing count.
+        //
+        // ⚠⚠⚠⚠⚠ **THIS IS THE LANDING RECORD, AND IT IS EXHAUSTIVE BY BEING HERE.** Three separate
+        // instruments counted every fold and only some landings — the run log (12 of 12 folds
+        // against 16 of 127 landings, measured over runs 194-198 and 201), `FoldsByReason` (whose
+        // population is reflections) and a per-`Priming` row. All three are downstream of an
+        // interesting event; this is upstream of every one, because it is the line the delivery
+        // itself passes through. See [`DeliveredByRoad`].
+        //
+        // ⚠⚠ NO CLASSIFICATION HAPPENS HERE. The witness is filed as itself and
+        // `Witnessed::landing` is the only thing that says which roads are landings — the same
+        // separation `folded_away` won below, where a `==` at this call site let a new road join
+        // the majority in silence.
+        self.roads.record(evidence);
         // ⚠⚠⚠ THE ROADS WHERE THE PANE CANNOT ANSWER. `Account` means the agent named the question
         // and its screen never carried the text — see `Witnessed::Account`. Every other road leaves
         // the prompt somewhere a person can find it, so every other road is a delivery this count
@@ -22389,6 +22585,187 @@ mod tests {
              the reason as `None` everywhere — the invariant above satisfied by recording nothing \
              — and rows equal to this run's every delivery is the leak itself. Rows {rows}, total \
              {deliveries:?}, split {folds:?}, walked {walked:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY DELIVERY THIS RUN MAKES IS ON EXACTLY ONE ROAD, AND THAT IS WHERE A
+    /// LANDING IS COUNTED** — register item 856, driven on a real pane.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Three instruments counted every fold and only some landings
+    ///
+    /// Measured 2026-09-04 against this repository's own runs 194-198 and 201, comparing the run
+    /// log's phrases with the persisted tally:
+    ///
+    /// | | log | persisted |
+    /// | --- | ---: | ---: |
+    /// | folds | 12 | **12** |
+    /// | landings | 16 | **127** |
+    ///
+    /// The fold pair agrees exactly; the landing pair is out by a factor of eight. The mechanism is
+    /// not a bug: a walk publishes a delivery's evidence as a CHANGE, so a run that lands thirty
+    /// prompts in a row says so once, while a fold between two landings says so three times.
+    /// [`FoldsByReason`] has the same disease from a different direction (its population is
+    /// reflections) and so does a per-priming row proposed by another repository. **All three count
+    /// a fold wherever it happens and a landing only where something else made it interesting.**
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the invariant is `total == made` and not a number this gate remembers
+    ///
+    /// A count asserted against a literal is a gate that agrees with whatever the fixture happens
+    /// to do, and it goes stale the first time the stand-in agent changes. What this holds is the
+    /// TIE: `DeliveredByRoad` is a partition of the same population `Deliveries::made` counts, so
+    /// every delivery is in exactly one row and the two numbers are one number. A recording site
+    /// that was deleted, forgot a road, or double-counted one shows up here whatever the run did.
+    ///
+    /// ⚠⚠ **AND THE FOLD ROADS ARE HELD AGAINST `folded` FOR THE SAME REASON.** That is the
+    /// stronger half: the roads are two DIFFERENT classifications of one witness
+    /// (`Witnessed::folded_away` against `Witnessed::landing`), and a build in which they disagree
+    /// is one where `made - folded` and the road table say different things about the same run —
+    /// exactly the two-authorities drift this file pays for repeatedly.
+    ///
+    /// ⚠ Per PASS rather than at the end, its neighbour's rule: a closing assertion cannot say
+    /// WHICH pass broke the tie, and this loop's deliveries are spread over eighty of them.
+    #[test]
+    fn every_delivery_a_run_makes_is_on_exactly_one_road() {
+        /// Above any reading, so no `capacity` reflection interferes — the sibling gates' ROOMY.
+        const ROOMY: i64 = 800_000;
+        /// Enough passes to prime, work, reflect and go back to work several times over.
+        const PASSES: usize = 80;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item 794.
+        let nowhere = sprag_scratch::scratch_root()
+            .join(format!("sprag-roads-{}", std::process::id()))
+            .join("no-record-was-ever-written.jsonl");
+        let access = crate::testing::supervised_writing(&workspace, &nowhere);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "keep the stand-in answering".to_string(),
+                milestone: "reach it".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                working_rules: None,
+                unverified_rules: None,
+                context_ceiling: Some(ROOMY),
+                reflect_after_refusals: None,
+                reaim_max: None,
+                milestone_check: None,
+                successor_check: None,
+                reask_max: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                reflect_every: Some(1),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        while walked.len() < PASSES {
+            let Ok(moved) = loops.pump(&access, &run) else {
+                break;
+            };
+            let Pumped::Moved {
+                from, raised, to, ..
+            } = moved
+            else {
+                break;
+            };
+            walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+            let roads = loops.delivered_by_road();
+            let deliveries = loops.deliveries();
+            // ══ THE TIE ════════════════════════════════════════════════════════════════════════
+            assert_eq!(
+                roads.total(),
+                deliveries.made,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 856: this run has made {} deliveries and the road table \
+                 accounts for {}. The table is the ONE place a landing is written down, and a \
+                 delivery missing from it is a landing that was never counted — which is how the \
+                 run log came to report 16 of this repository's 127. Roads {roads:?}, deliveries \
+                 {deliveries:?}, walked {walked:?}",
+                deliveries.made,
+                roads.total(),
+            );
+            assert_eq!(
+                roads.on(crate::deliver::Witnessed::Account)
+                    + roads.on(crate::deliver::Witnessed::LetGo),
+                deliveries.folded,
+                "⛔⛔⛔⛔⛔ REGISTER ITEMS 762 AND 856: the two FOLD roads and the fold total \
+                 disagree, so `Witnessed::folded_away` and this table are two authorities on one \
+                 witness. Whichever is right, a reader comparing `made - folded` against the road \
+                 rows is being shown two different runs. Roads {roads:?}, deliveries \
+                 {deliveries:?}, walked {walked:?}",
+            );
+            // ⛔⛔⛔ AND THE THREE LANDING ANSWERS ARE A PARTITION OF THE SAME TOTAL. A build that
+            // classified a road into none of them, or into two, would leave a landing count that
+            // silently omits a road — which is the defect one level up, restated at this one.
+            assert_eq!(
+                roads.landed() + roads.unproven() + roads.not_asked(),
+                roads.total(),
+                "⛔⛔⛔⛔ REGISTER ITEM 856: the landing classification is not a partition of the \
+                 road table, so `landed` is a numerator over a denominator it is not inside. \
+                 Roads {roads:?}, walked {walked:?}",
+            );
+        }
+        let roads = loops.delivered_by_road();
+        let deliveries = loops.deliveries();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        // ══ THE STAGING ════════════════════════════════════════════════════════════════════════
+        //
+        // ⚠⚠⚠⚠⚠ Without it every assertion above is `0 == 0`: a run that delivered nothing has a
+        // table that agrees with its total by having nothing in it, which is the vacuous green
+        // this workspace's rule 5 is about.
+        //
+        // ⛔⛔⛔⛔⛔ **AND THE SECOND CLAUSE IS THE ITEM ITSELF, MEASURED HERE.** What this run
+        // produces is 23 deliveries on `unchecked` and nothing else — its peer is a `/bin/sh` that
+        // paints only whole lines, so `shows_the_prompt` is false for every loop fixture in this
+        // crate (see `spec`). **That road is announced on no journal line at all**: a reader
+        // counting this run's landings out of its log would find zero of twenty-three, which is
+        // the 16-of-127 measurement in this gate's doc with the fixture's own numbers. So the
+        // staging asserts the table holds deliveries that are NOT folds — the population all three
+        // instruments were losing — rather than asserting a `Painted` this fixture cannot produce.
+        //
+        // ⚠ A proven LANDING needs an agent CLI that renders into its prompt box, which is
+        // `AiLoopSpec::driving`'s territory and not a `/bin/sh` peer's. The classification itself
+        // is gated where it lives (`deliver::tests`) and across all three crossings with values
+        // built by construction.
+        let folds = roads.on(crate::deliver::Witnessed::Account)
+            + roads.on(crate::deliver::Witnessed::LetGo);
+        assert!(
+            deliveries.made > 0 && roads.total() > folds,
+            "⚠⚠⚠⚠⚠ THE STAGING: this run must deliver at least one prompt, and at least one of \
+             them must NOT be a fold — otherwise the tie above is a comparison between two zeros, \
+             or between two numbers a fold counter already had. Roads {roads:?}, deliveries \
+             {deliveries:?}, walked {walked:?}",
+        );
+        // ⛔⛔⛔⛔ AND EVERY ROAD HAS A ROW, INCLUDING THE ONES NOTHING HAS EVER ARRIVED ON —
+        // rule 6. Two of the seven had no observed member anywhere when this was written, and a
+        // hand-written list of the interesting roads is exactly what would have left them out:
+        // the roads with no sample are the ones a surprise arrives on.
+        assert_eq!(
+            roads.rows().count(),
+            crate::deliver::Witnessed::ALL.len(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the table publishes fewer rows than there are roads, so \
+             a delivery on a road nobody listed is counted nowhere and reads as a run that did not \
+             make it. Roads {roads:?}",
         );
     }
 

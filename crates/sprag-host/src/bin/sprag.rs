@@ -7040,6 +7040,15 @@ fn render_run(run: &Value) -> String {
     // instruction, and the person reading the instruction is not the person reading the diagnosis.
     let split = sprag_host::plugins::folds_by_reason_sentence(run)
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⛔⛔⛔⛔⛔ AND HOW MANY OF THIS RUN'S PROMPTS BECAME A QUESTION — register item 856, in the
+    // same place and under the same constraint as the two clauses above.
+    //
+    // ⚠ A THIRD line for the second one's reason exactly: `prompts` says *can I go and look at that
+    // pane*, `split` says *what does folding depend on*, and this says *how much of what this run
+    // typed actually arrived* — the number three separate instruments could not answer, each of
+    // them counting every fold and only some landings.
+    let landed = sprag_host::plugins::delivered_by_road_sentence(run)
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     // ⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601, in
     // the same place and under the same constraint as the two clauses above.
     let verified = run[sprag_host::plugins::RUN_CHECKS_KEY]
@@ -7197,7 +7206,7 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -7278,7 +7287,7 @@ fn render_run(run: &Value) -> String {
                 )
             });
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -7328,7 +7337,7 @@ fn render_run(run: &Value) -> String {
         // had happened was a `kill-server`. **A fact that reaches the wire and dies at the mouth
         // somebody actually reads** is the sentence the `Reported` arm above already wrote down.
         _ => format!(
-            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{split}{verified}{canceller}\n",
+            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{split}{landed}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("?"),
             render_why_it_ended(state),
         ),
@@ -12700,9 +12709,6 @@ mod tests {
                 "unasked_on_the_pane": 0,
             },
         });
-        let said = render_run(&run);
-        let lines: Vec<&str> = said.lines().collect();
-
         let delivered = sprag_host::plugins::delivery_sentence(&run)
             .expect("a run that delivered has a delivery sentence");
         let split = sprag_host::plugins::folds_by_reason_sentence(&run)
@@ -12721,11 +12727,36 @@ mod tests {
             "⚠⚠⚠⚠ THE PREMISE for item 856(3): the split a person reads must name the road the \
              hardening took, or the two opposite remedies arrive as one number: {split:?}",
         );
+        // ⛔⛔⛔⛔⛔ AND HOW MANY OF THIS RUN'S PROMPTS BECAME A QUESTION — register item 856, the
+        // number three separate instruments could not hold. The table names the two roads that sit
+        // inside `made - folded` and are NOT landings (a peer that paints nothing, and a run that
+        // ended between the typing and the submit), so a mouth that printed the subtraction would
+        // say 9 of 10 where the truth is 6.
+        run[sprag_host::plugins::RUN_DELIVERED_BY_ROAD_KEY] = serde_json::json!({
+            "painted": 5,
+            "echoed": 0,
+            "account": 0,
+            "let_go": 1,
+            "unchecked": 3,
+            "unasked": 1,
+            "unproven": 0,
+        });
+        let said = render_run(&run);
+        let lines: Vec<&str> = said.lines().collect();
+        let landed = sprag_host::plugins::delivered_by_road_sentence(&run)
+            .expect("a run that delivered has a landing count to say");
+        assert!(
+            landed.contains("6 of 10 prompts became a question"),
+            "⚠⚠⚠ THE PREMISE OF THE ARM BELOW: the composed sentence must carry the LANDING count, \
+             or *the mouth prints it* is a claim about a sentence that says nothing item 856 was \
+             filed about: {landed:?}",
+        );
         let expected: Vec<&str> = clauses
             .iter()
             .map(|(_, sentence)| *sentence)
             .chain(std::iter::once(delivered.as_str()))
             .chain(std::iter::once(split.as_str()))
+            .chain(std::iter::once(landed.as_str()))
             .collect();
 
         for sentence in &expected {

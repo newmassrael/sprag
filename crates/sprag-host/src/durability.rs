@@ -769,6 +769,7 @@ mod tests {
             stood_down_by: None,
             deliveries: None,
             folds_by_reason: None,
+            delivered_by_road: None,
             banked: None,
             cancelled_by: None,
             briefed: None,

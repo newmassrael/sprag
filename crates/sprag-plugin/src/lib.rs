@@ -226,7 +226,10 @@ pub use ai_loop::{AiLoop, NotStarted};
 pub use answer::Answer;
 pub use completion::{Completion, DoneWhen, Over, Turn};
 pub use consent::{Answered, Consent, Consents, Refusal, Taken, Unanswered};
-pub use deliver::{DEFAULT_SUBMIT_GRACE, Delivered, Delivery, SubmittedWhen, deliver, has_painted};
+pub use deliver::{
+    DEFAULT_SUBMIT_GRACE, Delivered, Delivery, Landing, SubmittedWhen, Witnessed, deliver,
+    has_painted,
+};
 pub use dialogue::{Dialogue, DialogueSpec, Endpoint, ReplyFormat};
 pub use document::{Faulted, faults, opened};
 pub use driver::{
@@ -235,10 +238,10 @@ pub use driver::{
 };
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use outer::{
-    AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, Briefing, Counted, DoneReason,
-    FoldsByReason, FoldsUnder, HOLD_TAKES_EFFECT, HOLD_WITHIN_KEY, INNER_SESSION_ENDS, LoopPlace,
-    Made, NotResumed, NotScreenable, Noticed, OuterLoop, Pumped, ReflectReason, Retyped,
-    STAND_DOWN_TAKES_EFFECT, Unasked, UnaskedRoad, refusal_in_words,
+    AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, Briefing, Counted,
+    DeliveredByRoad, DoneReason, FoldsByReason, FoldsUnder, HOLD_TAKES_EFFECT, HOLD_WITHIN_KEY,
+    INNER_SESSION_ENDS, LoopPlace, Made, NotResumed, NotScreenable, Noticed, OuterLoop, Pumped,
+    ReflectReason, Retyped, STAND_DOWN_TAKES_EFFECT, Unasked, UnaskedRoad, refusal_in_words,
 };
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{

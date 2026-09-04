@@ -1021,9 +1021,14 @@ impl Delivered {
 /// delivery produces two. A closed vocabulary is what a journal LINE can render and a reader can
 /// scan for.
 ///
-/// ⚠ **NO WORD IN FRONT OF THE SENTENCE**, deliberately, and for [`crate::outer::Heard`]'s reason:
-/// nothing in this product spells any of these as a wire value or a datamodel word, so inventing
-/// one here would publish a spelling nothing serves.
+/// ⛔⛔⛔⛔⛔ **IT HAS A WORD SINCE 2026-09-04, AND THE SENTENCE THAT REFUSED ONE IS WHY** —
+/// register item 856. What stood here was *"NO WORD IN FRONT OF THE SENTENCE, deliberately, and
+/// for [`crate::outer::Heard`]'s reason: nothing in this product spells any of these as a wire
+/// value or a datamodel word, so inventing one here would publish a spelling nothing serves."*
+/// That test is the right one and its ANSWER changed: [`crate::outer::DeliveredByRoad`] publishes a
+/// row per road, over the wire and into the durable log, and a row needs a key. See
+/// [`word`](Self::word) — the spelling is served now, by the one instrument that can count a
+/// landing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Witnessed {
     /// The pane painted the prompt back and nothing but the program could have painted it —
@@ -1064,7 +1069,116 @@ pub enum Witnessed {
     Unproven,
 }
 
+/// ⛔⛔⛔⛔⛔ **WHETHER A DELIVERY BECAME A QUESTION THE AGENT HAS** — register item 856, and the
+/// fact three separate instruments were each missing five sixths of.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is three answers and not a `bool`
+///
+/// Item 856's disease, in its own words: *an instrument whose denominator can only equal its
+/// numerator can confirm an axis and never refute one.* Measured 2026-09-04 over this repository's
+/// run logs 194-198 and 201, the fold count agreed with the persisted tally **12 of 12** while the
+/// landing count came to **16 against 127** — because a fold is announced on its own road and a
+/// landing was only ever announced on one of the five roads that are not folds.
+///
+/// The obvious repair is a `landed: bool` on [`Witnessed`], and it would have re-made the same
+/// defect one level down. **`false` would then mean two opposite things**:
+/// [`Witnessed::Unasked`] is *the submit never went out, nothing was asked*, which is established;
+/// and [`Witnessed::Echoed`], [`Witnessed::Unchecked`] and [`Witnessed::Unproven`] are
+/// *nothing here can say*, which is an absence of evidence. Summing those into one number is how
+/// `made - folded` came to be read as a landing count — and it is not one, because two of the roads
+/// inside it are not landings and one of them is the run ending mid-delivery.
+///
+/// ⇒ A reader that wants a ratio has to choose its denominator, and this type is what makes that
+/// choice VISIBLE rather than arithmetic somebody did in their head.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landing {
+    /// **A QUESTION REACHED THE PEER**, and this road is what proves it.
+    Asked,
+    /// **NOTHING HERE CAN SAY EITHER WAY.** The road carries evidence about something else — a
+    /// terminal's echo, a peer that paints nothing, a run that ended before the answer came — and
+    /// reading it as either outcome is inventing a measurement.
+    Unproven,
+    /// **NO QUESTION WAS ASKED, AND THAT IS ESTABLISHED** rather than unknown.
+    NotAsked,
+}
+
 impl Witnessed {
+    /// **EVERY ROAD A DELIVERY MAY ARRIVE ON**, in the order [`crate::outer::DeliveredByRoad`]
+    /// keeps its rows.
+    ///
+    /// ⚠⚠ It is the one authority on which roads there are, for [`crate::ReflectReason::ALL`]'s
+    /// reason and this workspace's rule 6: an eighth road must arrive with a ROW rather than
+    /// falling out of a hand-written list into a total nobody split. A gate walks it against
+    /// [`word`](Self::word) so the two cannot come apart.
+    pub const ALL: [Self; 7] = [
+        Self::Painted,
+        Self::Echoed,
+        Self::Account,
+        Self::LetGo,
+        Self::Unchecked,
+        Self::Unasked,
+        Self::Unproven,
+    ];
+
+    /// **THE KEY THIS ROAD IS PUBLISHED UNDER** — one word, for the wire and the durable log.
+    ///
+    /// ⚠⚠⚠ It is NOT a spelling this product had before (see the type's own doc): no `.scxml`, no
+    /// datamodel slot and no wire call names a road. It exists because a per-road row has to be
+    /// keyed by something, and a POSITION would be a promise about order that two builds could
+    /// disagree about in silence — which is the identical failure a positional wire shape has one
+    /// surface over (`crate::outer::FoldsByReason`'s stored map made the same call).
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Painted => "painted",
+            Self::Echoed => "echoed",
+            Self::Account => "account",
+            Self::LetGo => "let_go",
+            Self::Unchecked => "unchecked",
+            Self::Unasked => "unasked",
+            Self::Unproven => "unproven",
+        }
+    }
+
+    /// The road named by `word`, or [`None`] for a word outside the closed set.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|road| road.word() == word)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS ROAD SAYS A QUESTION WAS ASKED** — register item 856, and the
+    /// classification that stops a landing count being arithmetic somebody invented.
+    ///
+    /// # ⚠⚠ EXHAUSTIVE, WITH NO `_` ARM, for [`folded_away`](Self::folded_away)'s reason
+    ///
+    /// An eighth road cannot be added without somebody deciding which of the three it is — the
+    /// compiler asks. A wildcard here would put a new road into whichever answer the majority
+    /// happens to sit in, and this file has already paid for exactly that once: the fold
+    /// classification used to be a `==` at the counter's own call site, where a new road joined the
+    /// majority in silence and was published as *this run's prompts are visible*.
+    ///
+    /// ⚠⚠⚠ **[`LetGo`](Self::LetGo) IS `Asked` AND IT IS ALSO A FOLD**, which is not a
+    /// contradiction and is the whole reason the two classifications are separate functions.
+    /// [`folded_away`](Self::folded_away) answers *can a person find this prompt on that pane* and
+    /// this answers *did the peer get a question*; the composer emptying says yes to the second and
+    /// no to the first. A single predicate covering both is the pooling register item 762 split.
+    #[must_use]
+    pub const fn landing(self) -> Landing {
+        match self {
+            // The program painted it and the submit satisfied what the caller asked of it; the
+            // agent named the question; the composer let go of the paste. Three different proofs
+            // of one fact, which is why they are one answer here and three rows in the table.
+            Self::Painted | Self::Account | Self::LetGo => Landing::Asked,
+            // The terminal may be what painted it, the peer paints nothing at all, or the run
+            // ended before the evidence could arrive. None of the three is about whether a
+            // question was taken.
+            Self::Echoed | Self::Unchecked | Self::Unproven => Landing::Unproven,
+            // The run ended BETWEEN the typing and the submit, so the submit never went out. This
+            // is the one road where *no question was asked* is a measurement.
+            Self::Unasked => Landing::NotAsked,
+        }
+    }
+
     /// The evidence `delivered` was accepted on, or [`None`] for the two answers that are REFUSALS
     /// rather than deliveries ([`Delivered::Unconfirmed`] and [`Delivered::Unsubmitted`]) — whose
     /// callers turn them into a named [`PaneError`] and never reach a walk's evidence channel at
@@ -5538,5 +5652,126 @@ mod tests {
              not touch. Got {held:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY ROAD A DELIVERY CAN ARRIVE ON HAS A ROW, A WORD AND A LANDING** — register
+    /// item 856, and this workspace's rule 6 applied to the vocabulary the landing record is built
+    /// on.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The escape this closes is an eighth road joining the majority in silence
+    ///
+    /// `crate::outer::DeliveredByRoad` keys its rows on [`Witnessed::ALL`], and a road missing from
+    /// that array is a delivery counted into no row at all — which reads as a table whose total
+    /// disagrees with `Deliveries::made` only if something asserts the two are equal, and reads as
+    /// *nothing arrived that way* everywhere else. This file has already paid for the same shape
+    /// once: [`Witnessed::folded_away`]'s classification used to be a `==` at a call site, where a
+    /// new road was published as *this run's prompts are visible*.
+    ///
+    /// ⛔⛔⛔⛔⛔ **THE MEMBERSHIP IS ASKED OF THE SOURCE, BECAUSE NOTHING ELSE CAN ASK IT.** An
+    /// exhaustive `match` forces a new variant to be given a word and a landing — the compiler says
+    /// so — but **no `match` can force it into a `const` array**, and a road missing from `ALL` is
+    /// a delivery counted into no row at all. A gate iterating `ALL` cannot see it either: the road
+    /// it is looking for is the one that never arrives. So this reads the enum out of this file and
+    /// holds `ALL` to the names it declares, which is the shape item 470's gate uses one crate
+    /// over. ⚠ A count would not do: `[Painted, Painted, …]` has the right length.
+    ///
+    /// ⚠ And [`Landing`] is asserted to be a PARTITION with all three answers populated — rule 5:
+    /// a bucket nothing can reach is a classification with a dead arm, and the reason the three
+    /// exist is that `false` would have meant two opposite things.
+    #[test]
+    fn every_road_a_delivery_arrives_on_has_a_row_a_word_and_a_landing() {
+        // ══ THE SOURCE IS ASKED WHICH ROADS EXIST ══════════════════════════════════════════════
+        const SOURCE: &str = include_str!("deliver.rs");
+        let declared: std::collections::BTreeSet<&str> = SOURCE
+            .split_once("pub enum Witnessed {")
+            .expect("this file declares the road vocabulary")
+            .1
+            .split_once("\n}")
+            .expect("and closes it")
+            .0
+            .lines()
+            .filter_map(|line| line.strip_prefix("    ")?.strip_suffix(','))
+            .filter(|name| {
+                name.chars().next().is_some_and(char::is_uppercase)
+                    && name.chars().all(char::is_alphanumeric)
+            })
+            .collect();
+        let listed: std::collections::BTreeSet<String> = Witnessed::ALL
+            .iter()
+            .map(|road| format!("{road:?}"))
+            .collect();
+        assert_eq!(
+            declared
+                .iter()
+                .map(|it| (*it).to_owned())
+                .collect::<std::collections::BTreeSet<_>>(),
+            listed,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: `Witnessed` declares roads that `Witnessed::ALL` does \
+             not list, or the other way round. A road missing from `ALL` has no row in \
+             `DeliveredByRoad`, so every delivery that takes it is counted NOWHERE — and no gate \
+             iterating `ALL` can find it, because the road it is looking for is the one that never \
+             arrives. Declared {declared:?}, listed {listed:?}",
+        );
+        assert!(
+            declared.len() > 1,
+            "⚠⚠⚠⚠⚠ THE PARSE MUST HAVE FOUND SOMETHING: an empty set equals an empty set, and \
+             this gate would pass on a file it could no longer read. Declared {declared:?}",
+        );
+
+        for road in Witnessed::ALL {
+            assert_eq!(
+                Witnessed::named(road.word()),
+                Some(road),
+                "⛔⛔⛔⛔ REGISTER ITEM 856: `{road:?}` does not read back as itself through its \
+                 own word, so a row written under it cannot be restored — the durable log and the \
+                 wire both key on this word",
+            );
+        }
+        let words: std::collections::BTreeSet<&str> =
+            Witnessed::ALL.iter().map(|road| road.word()).collect();
+        assert_eq!(
+            words.len(),
+            Witnessed::ALL.len(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: two roads share a word, so two populations are being \
+             written into one row and no reader can tell them apart. Words: {words:?}",
+        );
+        assert_eq!(
+            Witnessed::named("a-road-no-build-has"),
+            None,
+            "⚠⚠⚠ a word outside the closed set must be refused, or a skewed peer's table is read \
+             as this build's",
+        );
+
+        // ── AND THE LANDING CLASSIFICATION IS A PARTITION WITH NO DEAD ARM ──
+        for answer in [Landing::Asked, Landing::Unproven, Landing::NotAsked] {
+            assert!(
+                Witnessed::ALL.iter().any(|road| road.landing() == answer),
+                "⚠⚠⚠⚠⚠ RULE 5: no road answers `{answer:?}`, so a count of it can never be \
+                 anything but zero — a population with a role in it that was never going to \
+                 arrive. The three answers exist because `false` would have meant *nothing was \
+                 asked* and *nothing here can say* at once",
+            );
+        }
+        // ⛔⛔⛔ THE TWO CLASSIFICATIONS ARE INDEPENDENT AND THIS SAYS SO. `LetGo` is a FOLD and it
+        // is also a LANDING — the composer emptied, so no person can find the prompt on that pane
+        // and the peer has the question all the same. A build that made one predicate stand in for
+        // the other would pool register item 762's split back together.
+        assert_eq!(
+            (Witnessed::LetGo.folded_away(), Witnessed::LetGo.landing()),
+            (true, Landing::Asked),
+            "⛔⛔⛔⛔⛔ REGISTER ITEMS 762 AND 856: the composer letting go is a fold whose \
+             question WAS asked, and collapsing the two readings is what made `made - folded` look \
+             like a landing count",
+        );
+        assert_eq!(
+            (
+                Witnessed::Unasked.folded_away(),
+                Witnessed::Unasked.landing()
+            ),
+            (false, Landing::NotAsked),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the run ending between the typing and the submit is NOT \
+             a fold and is NOT a landing, and it sits inside `made - folded` — which is precisely \
+             why that subtraction was never the landing count anybody read it as",
+        );
     }
 }
