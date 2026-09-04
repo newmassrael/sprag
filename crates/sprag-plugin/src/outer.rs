@@ -6221,6 +6221,41 @@ pub struct OuterLoop {
     /// reported — and one that breaks AGAIN, or a replacement session naming a different unreadable
     /// file, is a new finding rather than a silence.
     unaccountable: Option<std::path::PathBuf>,
+    /// ⛔⛔⛔⛔⛔ **THE FULLEST THIS RUN'S SESSION HAS EVER BEEN** — register item 894, and the
+    /// LEFT-HAND SIDE of the comparison this document makes on every reflection.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A comparison published with one side missing
+    ///
+    /// `reviewing` decides between an economic restart, a capacity restart and carrying on by
+    /// evaluating `context >= context_ceiling` — eleven guards in `ai_loop.scxml` name the pair.
+    /// Register item 856(1b) put the RIGHT-hand side on a run's record, and measured 2026-09-05 the
+    /// left-hand side is on no surface at all: of the 49 `RUN_*_KEY` words a row can carry, exactly
+    /// one says anything about context and it is the ceiling. A reader could learn which bound a
+    /// run ran under and never how close it came to it — which is the whole of item 856's axis.
+    ///
+    /// # ⚠⚠⚠ Why the PEAK and not the last reading
+    ///
+    /// [`context`](Self::context) is a LEVEL, and it drops to a new session's floor every time the
+    /// loop replaces one. A level sampled when a run happens to end says *how full the session that
+    /// outlived it was*, which is a fact about WHEN SOMEBODY LOOKED — the reading this register has
+    /// already paid for twice (a run graded at its driver's death, and a fold table read mid-run).
+    /// Every other fact a row publishes beside its state is look-time-independent; the peak is the
+    /// reading of this one that is, and it answers *did this run's sessions ever actually fill up*,
+    /// which is the question the ceiling is the bound on.
+    ///
+    /// # ⛔⛔⛔ Why a ZERO NEVER RAISES IT, which is what keeps [`None`] meaning *nobody read one*
+    ///
+    /// `context` is `0` in TWO situations that are not a fullness: this document seeds it that way
+    /// (`<data id="context" expr="0"/>`, so every run holds a zero before its first turn ends), and
+    /// [`costs_now`](Self::costs_now) sends a zero for a session whose record could not be read —
+    /// which `a_session_past_its_ceiling_reflects_without_being_asked` already asserts. A peak that
+    /// accepted zeros would therefore be `Some(0)` on EVERY run from its first pass, and *nothing
+    /// was measured* would arrive as *this session had read nothing*. That is register item 891's
+    /// defect exactly, one field over.
+    ///
+    /// ⚠⚠ So `Some` is always positive here and [`None`] is *no pass of this run ever read one*.
+    /// There is no path to `Some(0)`, which is why no reader downstream has an arm for it.
+    fullest: Option<i64>,
     /// ⚠⚠⚠⚠⚠ **WHETHER THE TURN THAT JUST ENDED PRODUCED ANYTHING** — register item 719. Written by
     /// [`costs_now`](Self::costs_now), which is the one place a turn's ending reads its session's
     /// record, and read at the funnel on the pass that raised `turn.done`.
@@ -6558,6 +6593,10 @@ impl OuterLoop {
             chain: Chain::Unsaid,
             unadmitted: None,
             unaccountable: None,
+            // ⚠ No pass has read a positive `context` yet, and a `0` here would claim this run's
+            // session had been measured at nothing — see the field, where the two zeros are
+            // argued apart.
+            fullest: None,
             // ⚠ No turn has ended, so there is no turn for this to be an answer about.
             made: None,
             witnessed: None,
@@ -8325,6 +8364,39 @@ impl OuterLoop {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE FULLEST THIS RUN'S SESSION HAS EVER BEEN** — register item 894, and the
+    /// left-hand side of `reviewing`'s own comparison. See
+    /// [`fullest`](Self#structfield.fullest), which holds the whole argument: why the PEAK and not
+    /// [`context`](Self::context)'s current level, and why a zero never raises it.
+    ///
+    /// ⚠ [`None`] is *no pass of this run ever read a positive one*, and there is no path to
+    /// `Some(0)`.
+    #[must_use]
+    pub fn context_high_water(&self) -> Option<i64> {
+        self.fullest
+    }
+
+    /// Raise [`fullest`](Self#structfield.fullest) to this pass's reading — the one writer, called
+    /// at the top of [`pump`](Self::pump). Register item 894.
+    ///
+    /// ⚠⚠ **A ZERO IS NOT A READING AND IS DROPPED HERE**, which is the field's own rule and the
+    /// reason it can promise a positive `Some`: this document seeds `context` at `0` and
+    /// [`costs_now`](Self::costs_now) sends `0` for a record nobody could read, so a peak that took
+    /// them would be `Some(0)` on every run before its first turn.
+    ///
+    /// ⚠ A NEGATIVE cannot arrive — the document only ever assigns what `costs_now` computed from
+    /// a file — and if one did it would be dropped by the same test rather than lowering a peak.
+    fn note_fullness(&mut self) {
+        let Some(read) = self.context().filter(|read| *read > 0) else {
+            return;
+        };
+        // ⚠⚠ `max` AND NOT AN ASSIGNMENT. A session replacement drops the level back to a fresh
+        // session's floor, so a run that replaced twice would otherwise publish the SMALLEST of
+        // its three sessions as *the fullest it ever got* — and it is the runs that replace most
+        // that item 856 is about.
+        self.fullest = Some(self.fullest.map_or(read, |peak| peak.max(read)));
+    }
+
     /// **HOW MANY `error.*` THIS DOCUMENT RAISED AND NOTHING ANSWERED** — consumed from SCE 2026-08-20.
     ///
     /// # ⚠⚠⚠⚠⚠ What it means NOW THAT THE DOCUMENT ANSWERS — register item 505, paid
@@ -8704,6 +8776,19 @@ impl OuterLoop {
         if std::mem::take(&mut self.rescued) {
             self.peer_restarted();
         }
+        // ⛔⛔⛔⛔⛔ **AND HOW FULL THE SESSION IS, RAISED INTO THIS RUN'S PEAK** — register item
+        // 894, read at the top of a pass on `stand_down`'s reason above: what the machine holds
+        // NOW, before this pass changes anything.
+        //
+        // ⚠⚠⚠ THE PASS THAT FINDS A FINAL STATE STILL RUNS THIS LINE, which is what makes the
+        // peak whole: `pumping` returns `Pumped::Ended` from its own first check, so the reading a
+        // run's LAST judged turn wrote is taken here on the pass after it. A sampler placed inside
+        // `pumping` would miss exactly that one.
+        //
+        // ⚠⚠ ONCE PER PASS AND NOT PER TURN, and that is enough rather than approximate: `context`
+        // is assigned on entry to `judging`, one transition per turn, and a pass is one transition
+        // — so no assignment can be overwritten by another before this has seen it.
+        self.note_fullness();
         // ⚠⚠⚠⚠ **THE DELIVERY EVIDENCE IS EMPTIED HERE AND NOWHERE ELSE** — register item 434.
         // Cleared at the TOP of the pass rather than taken at the funnel, because a pass has six
         // exits and five of them are `?`: a `take` at the funnel would leave a refused delivery's
@@ -16260,6 +16345,83 @@ mod tests {
             "⚠⚠ and the other road to a record is forgotten on the same terms: a launch name is a \
              fact about the process that has gone. Got {:?}",
             fresh.identity,
+        );
+
+        WorkspacePaneAccess::new(Arc::clone(&workspace))
+            .lifecycle()
+            .expect("lifecycle")
+            .close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND HOW FULL THIS RUN'S SESSIONS EVER GOT IS A PEAK THAT SURVIVES THAT SAME
+    /// REPLACEMENT** — register item 894, and the producer of the LEFT-hand side of the comparison
+    /// `reviewing` decides every restart by.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Two mutations, and both of them compile and read as tidier code
+    ///
+    /// ⑴ **An assignment instead of `max`.** [`context`](OuterLoop::context) is a LEVEL and a
+    /// session replacement drops it back to a fresh session's floor, so a run that replaced twice
+    /// would publish the SMALLEST of its three sessions as *the fullest it ever got* — and it is
+    /// the runs that replace most that item 856 is about. The gate one function up is what makes
+    /// this reachable: the replacement really does forget.
+    ///
+    /// ⑵ **Taking the zero.** This document seeds `context` at `0` (`<data id="context"
+    /// expr="0"/>`) and `costs_now` sends `0` for a session whose record could not be read, so a
+    /// peak that accepted zeros would be `Some(0)` on EVERY run from its first pass — and *nothing
+    /// was measured* would arrive downstream as *this session had read nothing*. That is register
+    /// item 891's defect exactly, one field over, and it is why [`None`] can mean what it says.
+    ///
+    /// ⚠⚠ The readings are written into the document's own datamodel rather than handed to the
+    /// method, because that is where `judging`'s `onentry` puts them — a gate that passed a number
+    /// in would be testing a channel the product does not have.
+    #[test]
+    fn how_full_a_runs_session_got_is_a_peak_a_zero_never_moves() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+
+        /// Read a reading into the document the way `judging`'s `onentry` assigns it.
+        fn as_the_document_holds_it(loops: &OuterLoop, context: i64) {
+            loops
+                .script
+                .set_variable(&loops.session, "context", ScriptValue::Int(context))
+                .expect("the document's own numbers are writable");
+        }
+
+        // ── ① A SEEDED ZERO IS NOT A READING, which is what the document holds before turn one ──
+        as_the_document_holds_it(&loops, 0);
+        loops.note_fullness();
+        assert_eq!(
+            loops.context_high_water(),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 894: `context` is `0` before a run's first turn ends and `0` \
+             for a session record nobody could open. A peak that took them would be `Some(0)` on \
+             every run there is, and *nothing was measured* would reach every reader downstream as \
+             *this session had read nothing* — register item 891, one field over.",
+        );
+
+        // ── ② A REAL READING RAISES IT ──
+        as_the_document_holds_it(&loops, 612_000);
+        loops.note_fullness();
+        assert_eq!(
+            loops.context_high_water(),
+            Some(612_000),
+            "⚠⚠⚠ THE CONTROL: a loop that never publishes a reading makes every assertion here \
+             vacuous, and the whole of item 856's axis is this number",
+        );
+
+        // ── ③ AND A REPLACEMENT'S FLOOR DOES NOT LOWER IT ──
+        as_the_document_holds_it(&loops, 120_000);
+        loops.note_fullness();
+        assert_eq!(
+            loops.context_high_water(),
+            Some(612_000),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 894: `context` is a LEVEL and a replacement drops it to a \
+             fresh session's floor. Sampled rather than peaked, this answers *how full the session \
+             that happened to outlive the run was* — a fact about WHEN SOMEBODY LOOKED, which this \
+             register has already paid for twice. The runs that replace most are exactly the ones \
+             item 856 is about, so the defect would be worst where the number matters.",
         );
 
         WorkspacePaneAccess::new(Arc::clone(&workspace))

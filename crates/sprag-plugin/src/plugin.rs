@@ -1369,6 +1369,34 @@ pub trait Plugin {
         None
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE FULLEST THIS RUN'S SESSION EVER GOT** — register item 894, and the LEFT-hand
+    /// side of the comparison [`context_ceiling`](Self::context_ceiling) is the right-hand side of.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Half a comparison is not a measurement
+    ///
+    /// The method above put the BOUND on a run's record so an experiment could be told from its
+    /// control. What it could not say is how close the run came to that bound — and item 856's
+    /// axis is exactly that distance. Measured 2026-09-05: of the 49 answer keys a row can carry,
+    /// one mentions context and it is the ceiling; the document reads the pair in eleven guards.
+    /// So the loop computes this number on every judged turn, decides its own restarts by it, and
+    /// publishes it nowhere. This is not a quantity nobody can measure — it is one measured and
+    /// kept.
+    ///
+    /// ⚠⚠ [`None`] is *this plugin has no session to fill* — every bundled plugin but the loop —
+    /// or a loop no pass of which ever read a positive one. **Never `Some(0)`**: `context` is `0`
+    /// both before a run's first turn ends and for a session whose record could not be read, so a
+    /// zero here would publish *this session had read nothing* about a run nobody had measured.
+    /// See `crate::outer::OuterLoop`'s `fullest`, where the two zeros are argued apart.
+    ///
+    /// ⚠ Asked by the [`Driver`] each step on [`deferred`](Self::deferred)'s argument, and here
+    /// the polling is not merely defensible but required: unlike the ceiling this is a LEVEL, and
+    /// the peak of a level cannot be taken once at the end.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn context_high_water(&self) -> Option<i64> {
+        None
+    }
+
     /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES THIS RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the owner's
     /// decision of 2026-09-03, register item 847, and [`deferred`](Self::deferred)'s twin at the
     /// other end of the same bound.

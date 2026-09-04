@@ -2400,6 +2400,24 @@ pub struct PersistedRun {
     /// such ceiling. **Never a zero**, which is a value the loop's own guards read as unbounded.
     #[serde(default)]
     pub context_ceiling: Option<i64>,
+    /// ⛔⛔⛔⛔⛔ **AND HOW FULL ITS SESSION EVER GOT** — register item 894, the LEFT-hand side of
+    /// the comparison the field above is the right-hand side of, and the number without which that
+    /// one is half a measurement.
+    ///
+    /// # ⛔ Both sides, or the row says which bound and never which reading
+    ///
+    /// `ai_loop.scxml` restarts on `context >= context_ceiling`. Item 856's axis is that distance,
+    /// and its two experiment arms had to MOVE the ceiling only because the reading was
+    /// unobservable — measured 2026-09-05, of 49 answer keys exactly one mentioned context and it
+    /// was the bound. With this field the covariate rides every ordinary run and the fold rate is
+    /// read without pushing anything.
+    ///
+    /// ⚠⚠ [`None`] is *nobody wrote it down* — a log from before this field, a plugin with no
+    /// session, or a run no pass of which read a positive one. **Never a zero**: the document
+    /// seeds `context` at `0` and sends `0` for a record it could not read, so a zero here would
+    /// claim a session had read nothing on behalf of a run nobody measured.
+    #[serde(default)]
+    pub context_high_water: Option<i64>,
     /// ⚠⚠⚠⚠⚠ **THE WHOLE PLACE THE MACHINE WAS IN** — `sprag_plugin::LoopPlace::in_words`, the
     /// active configuration led by the current state, in the document's own names. [`None`] for a
     /// run whose plugin walks no statechart, one that never took a step, or a log written before
@@ -4090,7 +4108,24 @@ impl RunRegistry {
                         // now, because the value resolves in three steps and the last of them
                         // happens inside the machine — the request holds the caller's number, and
                         // what a reader needs is the one the run OBEYED.
-                        context_ceiling: run.progress.context_ceiling,
+                        //
+                        // ⛔⛔⛔⛔⛔ **AND THE REPORT IS READ FIRST, WHICH IS THE HALF THAT WAS
+                        // MISSING** — register item 894, and a correction to item 856(1b)'s own
+                        // crossing. This line read the CELL alone, and for an out-of-process run
+                        // the cell never moves (`spawn_driven_run`: *"AN EMPTY CELL, AND IT STAYS
+                        // EMPTY"*) — the default since 2026-08-24. Measured 2026-09-05, every
+                        // other fact in this struct reads `reported…or(cell)` and this was the one
+                        // exception, so the ceiling reached a LIVE row and never a durable log.
+                        // Item 856's rate is computed over runs that have ENDED, so the fact was
+                        // knowable exactly while nobody needed it.
+                        context_ceiling: reported.context_ceiling.or(run.progress.context_ceiling),
+                        // ⛔⛔⛔⛔⛔ AND HOW FULL ITS SESSION EVER GOT — register item 894, on the
+                        // line above's terms and travelling with it: the pair is a comparison, and
+                        // a log that kept one side would record which bound a run ran under and
+                        // never how close it came.
+                        context_high_water: reported
+                            .context_high_water
+                            .or(run.progress.context_high_water),
                         // ⚠⚠⚠ ALWAYS `Some`, INCLUDING `false` — item 594. This image DID look, so
                         // `Some(false)` is a claim it is entitled to make; the `None` this field
                         // documents belongs to a log written before the field existed, and only a
@@ -4429,6 +4464,11 @@ impl RunRegistry {
                     // which experiment it was, or the restart itself becomes the thing that erases
                     // the distinction.
                     context_ceiling: saved.context_ceiling,
+                    // ⛔ AND HOW FULL ITS SESSION GOT — register item 894, carried across the
+                    // restart on the line above's terms and for the same reason item 606 measured:
+                    // every run anybody reads is a restored one, so a peak that stopped at the
+                    // daemon boundary would be the left-hand side of a comparison nobody can make.
+                    context_high_water: saved.context_high_water,
                     // ⚠⚠⚠⚠⚠ **THE PLACE IS CARRIED FORWARD, AND ONLY THROUGH THE DOOR THAT CHECKS
                     // THE DOCUMENT** — register items 543 and 544. `saved.place` is words from
                     // whatever build wrote the log; `resumable_place` hands them back only when
@@ -5146,6 +5186,106 @@ mod tests {
              a run was unbounded on behalf of a daemon that was never asked — and it would put \
              every pre-field run into the experiment's control group.",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND HOW FULL ITS SESSION EVER GOT CROSSES THE SAME RESTART** — register item
+    /// 894, the LEFT-hand side of the comparison the gate above holds the right-hand side of.
+    ///
+    /// Written as its own gate rather than a clause on that one because the two absences differ
+    /// and only one of them is spelled by the document: a missing ceiling is *no bound was
+    /// authored* and a missing reading is *nobody measured*. Both must come back [`None`], and a
+    /// zero for either is the claim register item 891 was filed for.
+    #[test]
+    fn a_restored_run_says_how_full_its_session_ever_got() {
+        let saved: RunLog = serde_json::from_str(
+            r#"{"version":1,"runs":[
+                {"id":7,"label":"ai_loop pane=3","iterations":2,"cost":null,"unit":null,
+                 "finished":false,"outcome":null,"ceiling":null,"output":null,
+                 "context_ceiling":800000,"context_high_water":612000},
+                {"id":8,"label":"ai_loop pane=4","iterations":2,"cost":null,"unit":null,
+                 "finished":false,"outcome":null,"ceiling":null,"output":null}]}"#,
+        )
+        .expect("a log naming the fullness parses, and so does one that does not");
+        let mut successor = RunRegistry::default();
+        successor.restore(&saved);
+        // ⚠ THE ROUND TRIP, its neighbour's rule: a value that came out of the log and did not go
+        // back in is lost at the NEXT restart, which is the hop this pair's other half died at.
+        let read: Vec<(Option<i64>, Option<i64>)> = successor
+            .persistable()
+            .runs
+            .iter()
+            .map(|run| (run.context_high_water, run.context_ceiling))
+            .collect();
+        assert_eq!(
+            read,
+            vec![(Some(612_000), Some(800_000)), (None, None)],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 894: the fullness a run's session reached must cross the \
+             restart beside the bound it was judged by, and a log that names neither must come \
+             back as NOBODY MEASURED. A zero reading is what this document holds before a run's \
+             first turn ends and what `costs_now` sends for a record it could not read, so \
+             publishing one for silence would turn every pre-field run into an empty session — \
+             register item 891, one field over.",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND A RUN WHOSE CELL NEVER MOVED KEEPS WHAT ITS DRIVER REPORTED** — register
+    /// item 894, and **a correction to the two gates above rather than a third of their kind.**
+    ///
+    /// # ⛔⛔⛔⛔⛔ Those gates restore from a LOG, so they never watch a value ENTER one
+    ///
+    /// Both start by putting a value into the cell and then read it back out, which measures the
+    /// restart and nothing before it. The hop they cannot see is a LIVE run's value reaching the
+    /// log in the first place — and measured 2026-09-05 that hop was broken for the ceiling from
+    /// the day it was published: [`RunRegistry::persistable`] read `run.progress` ALONE for it,
+    /// the one fact in that struct not written `reported…or(cell)`.
+    ///
+    /// ⇒ For a run driven in ANOTHER PROCESS the cell never moves at all
+    /// (`crate::plugins::spawn_driven_run` says so of itself: *"AN EMPTY CELL, AND IT STAYS
+    /// EMPTY"*), and that has been the default since 2026-08-24. So the ceiling was knowable while
+    /// a run was alive and never afterwards — and item 856's rate is computed over runs that have
+    /// ENDED. The fact was published exactly where nobody needed it.
+    ///
+    /// ⚠⚠ **THE CELL IS LEFT EMPTY ON PURPOSE, AND THAT IS THE WHOLE POPULATION.** A fixture that
+    /// filled it in would pass with the defect in place — which is precisely how the defect
+    /// survived the gate its own item wrote.
+    #[test]
+    fn a_run_whose_cell_never_moved_persists_the_pair_its_driver_reported() {
+        let released = Arc::new(AtomicBool::new(false));
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        registry.submit(a_worker_that_will_not_come_back(id, &released));
+        // ⚠ NOTHING TOUCHES THE CELL. This is the out-of-process shape: the driver's only channel
+        // is `report`, and the `Progress` beside the record stays at its default for ever.
+        registry
+            .report(
+                id,
+                serde_json::json!({
+                    "iterations": 2,
+                    crate::plugins::REPORTED_BESIDE_KEY: {
+                        crate::plugins::RUN_CONTEXT_CEILING_KEY: 800_000,
+                        crate::plugins::RUN_CONTEXT_HIGH_WATER_KEY: 612_000,
+                    },
+                }),
+            )
+            .expect("a running run accepts its driver's report");
+
+        let log = registry.persistable();
+        let kept = log
+            .runs
+            .iter()
+            .find(|run| run.id == id.0)
+            .map(|run| (run.context_high_water, run.context_ceiling));
+        assert_eq!(
+            kept,
+            Some((Some(612_000), Some(800_000))),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 894: a run driven in another process reported both sides of \
+             the comparison it restarts by, and the log kept neither. Reading the cell first — or \
+             alone — publishes *nobody said* about every run this daemon starts, because the cell \
+             beside such a run never moves. That is not a defensive nicety about an unusual \
+             driver: it is the DEFAULT driver, and item 856's whole axis is this pair.",
+        );
+
+        released.store(true, Ordering::Release);
     }
 
     #[test]
@@ -6920,6 +7060,7 @@ mod tests {
                 at: None,
                 document: None,
                 context_ceiling: None,
+                context_high_water: None,
                 stood_down: None,
                 stood_down_by: None,
                 cancelled_by: None,
@@ -7170,6 +7311,7 @@ mod tests {
             at: at.map(str::to_owned),
             document: document.map(str::to_owned),
             context_ceiling: None,
+            context_high_water: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -7285,6 +7427,7 @@ mod tests {
             at: None,
             document: document.map(str::to_owned),
             context_ceiling: None,
+            context_high_water: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -7390,6 +7533,7 @@ mod tests {
             at: None,
             document: document.map(str::to_owned),
             context_ceiling: None,
+            context_high_water: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -7835,6 +7979,7 @@ mod tests {
                 at: None,
                 document: None,
                 context_ceiling: None,
+                context_high_water: None,
                 // ⚠ A log with no such field: `None`, which restores as *no order was recorded*.
                 stood_down: None,
                 stood_down_by: None,

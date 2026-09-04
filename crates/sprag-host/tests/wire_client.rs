@@ -8159,17 +8159,34 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
     /// asserted below rather than assumed.
     const ROOMY: i64 = READING * 10;
 
-    /// Drive one arm at `ceiling` and hand back its ending, its walk, what the document held as
-    /// `context` when it decided, and the daemon's pane set before and after.
-    fn ran(
-        ceiling: i64,
-    ) -> (
-        sprag_plugin::Outcome,
-        Vec<String>,
-        Option<i64>,
-        Vec<u64>,
-        Vec<u64>,
-    ) {
+    /// **WHAT ONE ARM OF THIS GATE CAME BACK WITH.**
+    ///
+    /// ⚠ A struct rather than the tuple this was: register item 894 added a sixth reading and the
+    /// positions stopped being readable — which is `clippy::type_complexity`'s complaint and, more
+    /// to the point, the same defect this gate is about one level down. `published` and `context`
+    /// are both `Option<i64>` and mean opposite things (a PEAK the run reached, and the LEVEL
+    /// still readable afterwards), so a pair of them told apart only by position is a comparison
+    /// waiting to be made backwards.
+    struct Arm {
+        /// How the run ended.
+        outcome: sprag_plugin::Outcome,
+        /// The journal notes, which is where the doors it took are named.
+        walk: Vec<String>,
+        /// What the document still held as `context` after the run — a LEVEL, and the last judged
+        /// turn's rather than the one the decision was taken at. See the premise below.
+        context: Option<i64>,
+        /// The PEAK its progress cell published — register item 894, and never the level above.
+        fullest: Option<i64>,
+        /// The ceiling that cell published beside it — register item 856(1b).
+        ceiling: Option<i64>,
+        /// The daemon's pane set before the run, and after: a respawn is one death and one birth,
+        /// which is the reading a walk cannot give.
+        before: Vec<u64>,
+        after: Vec<u64>,
+    }
+
+    /// Drive one arm at `ceiling` and hand back what it did — see [`Arm`].
+    fn ran(ceiling: i64) -> Arm {
         let (_host, sock) = spawn_host();
         let (driving, mut setup) = remote_driver(&sock);
 
@@ -8270,14 +8287,30 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
             .filter_map(|step| step.note.clone())
             .collect();
         let held = loops.context();
+        // ⛔⛔⛔⛔⛔ **AND THE PAIR AS THE CELL PUBLISHES IT** — register item 894. Read off the
+        // PROGRESS CELL rather than from `loops`, because that is the whole journey under test:
+        // the loop keeps the peak, `AiLoop` delegates it, the `Driver` reads it every step and
+        // keeps it across the ending. Asking the plugin here would skip all three.
+        let (fullest, published_ceiling) = {
+            let cell = progress.lock().expect("the progress cell");
+            (cell.context_high_water, cell.context_ceiling)
+        };
         let after = listed(&mut setup);
         println!(
-            "== ceiling {ceiling}: {:?} in {} iteration(s), context {held:?}, panes {before:?} -> \
-             {after:?} ==",
+            "== ceiling {ceiling}: {:?} in {} iteration(s), context {held:?}, published \
+             {fullest:?} of {published_ceiling:?}, panes {before:?} -> {after:?} ==",
             outcome.state, outcome.iterations,
         );
         let _ = std::fs::remove_dir_all(&under);
-        (outcome, walk, held, before, after)
+        Arm {
+            outcome,
+            walk,
+            context: held,
+            fullest,
+            ceiling: published_ceiling,
+            before,
+            after,
+        }
     }
 
     // ── ⚠⚠ THE ARITHMETIC PREMISE, BEFORE EITHER RUN ────────────────────────────────────────
@@ -8295,8 +8328,8 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
          this gate is not about, and the arm that is supposed to restart would prove nothing",
     );
 
-    let (filled, full_walk, full_context, full_before, full_after) = ran(FULL);
-    let (roomy, roomy_walk, roomy_context, roomy_before, roomy_after) = ran(ROOMY);
+    let full = ran(FULL);
+    let room = ran(ROOMY);
 
     // ── ⚠⚠ THE PREMISES ──────────────────────────────────────────────────────────────────────
     //
@@ -8312,13 +8345,15 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
     // only on `context > 0 && context < context_ceiling`. The reading being real is the part the
     // door cannot say — a `0` takes a different door entirely — and that is what this asserts.
     assert!(
-        full_context.is_some_and(|held| held > 0) && roomy_context.is_some_and(|held| held > 0),
+        full.context.is_some_and(|held| held > 0) && room.context.is_some_and(|held| held > 0),
         "⚠⚠⚠⚠⚠ THE PREMISE FAILED: the session's own record did not reach the document as \
-         `context` on both arms — {full_context:?} and {roomy_context:?}. A `0` is what a run whose \
+         `context` on both arms — {:?} and {:?}. A `0` is what a run whose \
          reporter states no transcript reads, and it takes a `context_ceiling <= 0` door, which \
          restarts: the claim below would then be satisfied by a run that consulted no ceiling",
+        full.context,
+        room.context,
     );
-    for (name, walk) in [("filled", &full_walk), ("roomy", &roomy_walk)] {
+    for (name, walk) in [("filled", &full.walk), ("roomy", &room.walk)] {
         assert!(
             walk.iter().any(|note| note.contains("--> Reviewing")),
             "⚠⚠⚠ THE PREMISE FAILED: the {name} arm never reached `reviewing`, so it took neither \
@@ -8358,63 +8393,131 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
 
     // ── ⛔⛔⛔ THE CLAIM: A FULL SESSION HANDS OVER, NAMING CAPACITY ─────────────────────────
     assert!(
-        full_walk
+        full.walk
             .iter()
             .any(|note| note.contains("--> Restarting — capacity:")),
         "⛔⛔⛔⛔⛔ REGISTER ITEM 424(b): a session whose reading has passed the ceiling its caller \
          authored must hand over, and `reviewing` must say WHY in that word. Every other door out \
          of that state also restarts, so a replacement alone says nothing — the reason is the \
-         claim. The walk: {full_walk:?}",
+         claim. The walk: {:?}",
+        full.walk,
     );
     assert!(
-        full_after != full_before && full_after.len() == full_before.len(),
+        full.after != full.before && full.after.len() == full.before.len(),
         "⚠⚠⚠ and the daemon must have seen it: ONE pane died and ONE was born, which is what a \
          respawn is and what a walk cannot distinguish from a machine visiting states. Panes \
-         {full_before:?} -> {full_after:?}",
+         {:?} -> {:?}",
+        full.before,
+        full.after,
     );
     // ⚠ AND THE CEILING OUTRANKED THE CADENCE. `judging` tests it above `turns_since_reflect`, so
     // this arm reflected on the turn its window filled rather than waiting for its budget to come
     // round — which is the half of item 424(b) a cadence cannot buy.
     assert!(
-        full_walk
+        full.walk
             .iter()
             .any(|note| note.contains("--> Reflecting — capacity:")),
         "⚠⚠⚠ and it must have been the CEILING that sent it to reflect, not the cadence — the two \
          are different edges and only one of them can act before the count comes round. The walk: \
-         {full_walk:?}",
+         {:?}",
+        full.walk,
     );
 
     // ── ⛔⛔ THE CONTROL: A SESSION WITH ROOM KEEPS WORKING ON THE SAME PANE ─────────────────
     assert!(
-        !roomy_walk
-            .iter()
-            .any(|note| note.contains("--> Restarting")),
+        !room.walk.iter().any(|note| note.contains("--> Restarting")),
         "⛔⛔⛔⛔ THE CONTROL: a session that is nowhere near its ceiling must be KEPT. This is the \
          only edge in `reviewing` that does not restart, so it is the only thing that can show the \
-         ceiling deciding rather than the loop doing what it always does. The walk: {roomy_walk:?}",
+         ceiling deciding rather than the loop doing what it always does. The walk: {:?}",
+        room.walk,
     );
     assert!(
-        roomy_walk
+        room.walk
             .iter()
             .any(|note| note.contains("Reviewing --") && note.contains("--> Priming")),
         "⚠⚠⚠ and it must have gone back to `priming` — re-briefed on the session it already had, \
-         which is what *kept* means here. The walk: {roomy_walk:?}",
+         which is what *kept* means here. The walk: {:?}",
+        room.walk,
     );
     assert_eq!(
-        roomy_after, roomy_before,
+        room.after, room.before,
         "⛔⛔⛔ AND THE DAEMON MUST HAVE SEEN NOTHING HAPPEN. No pane was born and none died: this \
          is the reading that cannot be satisfied by a machine that merely visited the states, and \
          it is the same instrument the neighbouring gate needed after its first one turned out to \
          be vacuous",
     );
 
+    // ── ⛔⛔⛔⛔⛔ AND THE PAIR THAT DECIDED IT IS PUBLISHED — register item 894 ───────────────
+    //
+    // Everything above this line reads the DOORS: which word `reviewing` named, and whether a pane
+    // died. That is what the walk can say, and it is not what a later reader has. Item 856's rate
+    // is computed over ROWS of runs that have ended, and measured 2026-09-05 a row carried the
+    // ceiling and never the reading — so the axis of that item was on no surface at all, and its
+    // two experiment arms had to MOVE a ceiling only because the fullness was unobservable.
+    //
+    // ⚠⚠ THIS IS THE WHOLE CHAIN, and the only place in the workspace where it runs with a REAL
+    // reading: `OuterLoop` keeps the peak, `AiLoop` delegates it, the `Driver` reads it every step
+    // and keeps it across the ending, and the cell below is what a daemon publishes. Each of those
+    // four has a gate of its own; none of them can see the others, and the value is `None` at the
+    // end of the chain if ANY of them is deleted.
+    for (name, arm, ceiling) in [("filled", &full, FULL), ("roomy", &room, ROOMY)] {
+        assert_eq!(
+            arm.ceiling,
+            Some(ceiling),
+            "⛔⛔⛔⛔ REGISTER ITEM 856(1b): the {name} arm published the wrong bound, or none. \
+             The two arms of this gate differ by exactly this number, so a row that cannot say \
+             which one it ran under reads as its own control: {:?}",
+            arm.ceiling,
+        );
+        assert!(
+            arm.fullest.is_some_and(|fullest| fullest > 0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 894: the {name} arm decided its restarts on a reading it \
+             published nowhere. This is the LEFT-hand side of `context >= context_ceiling` — the \
+             loop computes it every judged turn — and without it a reader learns which bound a run \
+             ran under and never how close it came. A zero would be worse than the silence: the \
+             document holds `0` before turn one and for a record it could not open: {:?}",
+            arm.fullest,
+        );
+        assert!(
+            arm.fullest >= arm.context,
+            "⚠⚠⚠ REGISTER ITEM 894: the {name} arm published a PEAK below the level still \
+             readable after the run. `context` is a level every judged turn overwrites — this \
+             gate's own premise records reading 20,000 and 24,000 for a decision taken at 12,000 — \
+             so a sampled value answers *how full the session that happened to outlive the run \
+             was*, which is a fact about when somebody looked: {:?} against {:?}",
+            arm.fullest,
+            arm.context,
+        );
+    }
+    // ⛔⛔⛔⛔⛔ **AND THE PUBLISHED PAIR TELLS THE EXPERIMENT FROM ITS CONTROL BY ITSELF** — which
+    // is the entire reason item 894 is worth paying. Every assertion above needed the WALK to say
+    // which arm this was; these two need only the number a row carries, which is all a reader of
+    // an ended run has ever had.
+    assert!(
+        full.fullest.is_some_and(|fullest| fullest >= FULL),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 894: the arm that handed over on `capacity` published a fullness \
+         BELOW the ceiling it was judged by, which the door it took says is impossible \
+         (`context >= context_ceiling`). Either the peak is not the reading the document decided \
+         on, or it is not being kept across the session replacement that decision caused — and a \
+         replacement drops the level back to a fresh session's floor: {:?}",
+        full.fullest,
+    );
+    assert!(
+        room.fullest.is_some_and(|fullest| fullest < ROOMY),
+        "⛔⛔ AND THE CONTROL: the arm that kept its session must publish a fullness UNDER its \
+         ceiling. Without this the assertion above is satisfied by a field that reports the \
+         ceiling back, or any number large enough — the two arms are one instrument and this is \
+         the half that can refute it: {:?}",
+        room.fullest,
+    );
+
     // ── ⚠⚠ AND BOTH ARMS DID THE WORK THEY WERE BUDGETED ────────────────────────────────────
     assert_eq!(
         (
-            filled.state,
-            roomy.state,
-            filled.banked.as_ref().map(|banked| banked.completed),
-            roomy.banked.as_ref().map(|banked| banked.completed),
+            full.outcome.state,
+            room.outcome.state,
+            full.outcome.banked.as_ref().map(|banked| banked.completed),
+            room.outcome.banked.as_ref().map(|banked| banked.completed),
         ),
         (
             sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Turns),
@@ -8424,7 +8527,9 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
         ),
         "⚠⚠⚠ both arms must spend their whole turn budget — a `duration` ending is a turn that \
          never ended, and a short count is a run that stopped working after it decided. Filled \
-         walked {full_walk:?}; roomy walked {roomy_walk:?}",
+         walked {:?}; roomy walked {:?}",
+        full.walk,
+        room.walk,
     );
 }
 

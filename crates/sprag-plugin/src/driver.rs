@@ -1179,6 +1179,13 @@ pub struct Driver {
     /// it once from the submit, and a value carried once at submit is what the restore path drops.
     /// 0 of 214 rows recorded this number for exactly that reason.
     context_ceiling: Option<i64>,
+    /// ⛔ **WHAT THE PLUGIN LAST SAID THE FULLEST ITS SESSION EVER GOT WAS** — register item 894,
+    /// held and refreshed on the line above's terms.
+    ///
+    /// ⚠ A LEVEL'S PEAK rather than a constant, which makes the every-step read load-bearing where
+    /// the ceiling's is merely safe: the plugin raises its own peak on every pass, and a reader
+    /// that asked once would get whichever session happened to be current.
+    context_high_water: Option<i64>,
     /// 🎯 **WHAT THE PLUGIN LAST SAID ITS UNCHECKED RE-AIMS CAME TO** — register item 847, held on
     /// the line above's terms and read from the plugin at the same one place. ⚠ NEVER incremented
     /// here, for that field's reason exactly.
@@ -1301,6 +1308,14 @@ pub struct Progress {
     /// own: this is the control an experiment is read against, and a run whose ceiling is only
     /// known after it ends is a run nobody could have watched being the experiment.
     pub context_ceiling: Option<i64>,
+    /// ⛔ **AND THE FULLEST ITS SESSION EVER GOT** — register item 894, the LEFT-hand side of the
+    /// comparison the field above is the right-hand side of. See
+    /// [`crate::plugin::Plugin::context_high_water`], where the argument is.
+    ///
+    /// ⚠ Published WHILE THE RUN IS GOING for the ceiling's reason and one of its own: a person
+    /// watching a session approach its bound is the one who can still do something about it, and
+    /// a peak known only after the run ends is a peak nobody could act on.
+    pub context_high_water: Option<i64>,
     /// 🎯 **AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED** — register item 847, published WHILE
     /// THE RUN IS STILL GOING on the line above's argument: a person watching a loop re-aim itself
     /// unchecked is the one who can still go and name a classifier for it.
@@ -1558,6 +1573,11 @@ impl Driver {
             // `0` is a ceiling the loop's own guards read as *unbounded*, so publishing it for a
             // run nobody has asked yet would answer a question about the experiment with a lie.
             context_ceiling: None,
+            // ⚠ `None` on the line above's rule — register item 894. A `0` would be worse here
+            // than there: it is what the loop's own `context` holds before its first turn ends, so
+            // publishing one for a run nobody has stepped would answer the question with the
+            // reading that means *nothing could be measured*.
+            context_high_water: None,
             // ⚠ `None` FOR `deferred`'s REASON ONE LINE UP — a run nobody has stepped has not been
             // asked, and *nobody was counting* is not *every direction it took was checked*.
             unchecked: None,
@@ -1624,6 +1644,10 @@ impl Driver {
             // experiment that needs it is watched while it runs: a fold rate read afterwards is
             // read against a control, and the control is this number.
             context_ceiling: self.context_ceiling,
+            // ⛔ AND HOW FULL ITS SESSION EVER GOT — register item 894, live on the line above's
+            // argument: a fold rate is read against a control, and a control with one side missing
+            // is the half of the comparison item 856 has been reading for a week.
+            context_high_water: self.context_high_water,
             // 🎯 AND HOW MANY OF THEM NOBODY CHECKED — register item 847, live for the reason
             // above it: the person watching is the one who can still go and name a classifier.
             unchecked: self.unchecked,
@@ -2018,6 +2042,14 @@ impl Driver {
                     self.context_ceiling = plugin
                         .context_ceiling()
                         .or_else(|| self.context_ceiling.take());
+                    // ⛔ AND HOW FULL ITS SESSION EVER GOT — register item 894, read in the same
+                    // breath and KEPT on the same terms. ⚠ The KEEP is what makes the peak whole
+                    // across the run's ending: the step that ends a run is the one whose machine
+                    // may no longer read its own datamodel, and the fullest a session got is
+                    // exactly the reading a reader wants from a run that has just ended.
+                    self.context_high_water = plugin
+                        .context_high_water()
+                        .or_else(|| self.context_high_water.take());
                     // 🎯 AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED — register item 847, read in
                     // the same breath and KEPT on the same terms: the step that ends a run is the
                     // one whose machine may no longer read its own datamodel, and what a reader
@@ -3225,6 +3257,99 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             "⚠⚠⚠ AND THE TWO READERS MUST AGREE, its neighbour's claim exactly.",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND IT FORWARDS HOW FULL ITS PLUGIN'S SESSION EVER GOT, BESIDE THE BOUND THAT
+    /// JUDGED IT** — register items 894 and 856(1b), and the FIRST crossing of the pair.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Do not measure a new value at its two ENDS
+    ///
+    /// This workspace's rule of 2026-09-04, written after three of item 856's crossings were each
+    /// found watched by nothing. This is the crossing before all of them: the plugin holds the
+    /// peak, and one line in [`Driver::run`] is what puts it in a `Progress`. Delete that line and
+    /// the trait still answers, the wire still carries a key, the log still stores a column, the
+    /// row still prints a sentence — and every run says *nobody measured*, for ever.
+    ///
+    /// # ⚠⚠⚠ Why the pair is asserted after the run has ENDED
+    ///
+    /// The peak is KEPT (`.or_else(|| self.….take())`) precisely because the step that ends a run
+    /// is the one whose machine may no longer read its own datamodel — so a driver that merely
+    /// copied the plugin's current answer would publish [`None`] on the last publication, which is
+    /// the one every ended run is read by. The plugin below answers the pair for its first step
+    /// and goes silent afterwards, which is the shape a real ending has.
+    ///
+    /// ⚠⚠ The claim is that the SINK and the CELL agree, its neighbours' argument verbatim: a run
+    /// driven in another process has the sink as its only channel, and a forwarder free to
+    /// assemble its own `Progress` drifts from the cell one field at a time.
+    #[test]
+    fn a_driver_forwards_how_full_its_plugins_session_ever_got() {
+        /// A plugin that reads its document on its FIRST step and cannot on the last, the way
+        /// `AiLoop` does when its machine has reached a final state.
+        struct Filling(u32);
+        impl Plugin for Filling {
+            fn step(&mut self, _: &dyn PaneAccess, _: &RunContext) -> Result<Step, PaneError> {
+                self.0 += 1;
+                Ok(Step::new(Cost::Bytes(1), Verdict::Continue))
+            }
+            fn context_ceiling(&self) -> Option<i64> {
+                (self.0 < 2).then_some(800_000)
+            }
+            fn context_high_water(&self) -> Option<i64> {
+                (self.0 < 2).then_some(612_000)
+            }
+            fn driving(&self) -> Option<PaneId> {
+                None
+            }
+        }
+
+        let cell: ProgressCell = ProgressCell::default();
+        let heard: Arc<Mutex<Vec<Progress>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let heard = Arc::clone(&heard);
+            Arc::new(move |progress: &Progress| {
+                heard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(progress.clone());
+            }) as ProgressSink
+        };
+        let _ = Driver::new(Guardrails {
+            max_iterations: 3,
+            max_cost: None,
+            max_duration: None,
+        })
+        .reporting_to(Arc::clone(&cell))
+        .forwarding_to(sink)
+        .run(
+            &mut Filling(0),
+            &RecordingPanes::new(),
+            &RunContext::uncancellable(),
+        );
+
+        let heard = heard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let last = heard
+            .last()
+            .expect("⚠⚠ THE PREMISE: a run that took steps must have published at least once");
+        assert_eq!(
+            (last.context_high_water, last.context_ceiling),
+            (Some(612_000), Some(800_000)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 894: the fullest a run's session got is computed by the loop \
+             on every judged turn, decides its own restarts, and reached no `Progress` at all. \
+             This is the first crossing of them all — the type, the wire, the log and the row can \
+             every one of them be right while every number is *nobody measured*. And it must \
+             survive the LAST publication, whose plugin can no longer read its own datamodel: \
+             {last:?}",
+        );
+        assert_eq!(
+            *last,
+            *cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            "⚠⚠⚠ AND THE TWO READERS MUST AGREE, its neighbours' claim exactly.",
         );
     }
 

@@ -352,6 +352,26 @@ pub const RUN_DEFERRED_KEY: &str = "deferred";
 /// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_OVERRIDDEN_KEY`]'s argument unchanged: an added
 /// answer key withdraws no address and widens no value space a peer decodes whole.
 pub const RUN_CONTEXT_CEILING_KEY: &str = "context_ceiling";
+/// ⛔⛔⛔⛔⛔ **HOW FULL A RUN'S SESSION EVER GOT** — register item 894, and the LEFT-hand side of
+/// the comparison [`RUN_CONTEXT_CEILING_KEY`] is the right-hand side of.
+///
+/// # ⛔⛔⛔⛔⛔ The key above published a bound and nothing published the reading
+///
+/// `ai_loop.scxml` decides every restart by `context >= context_ceiling` — eleven guards name the
+/// pair. Measured 2026-09-05: of the 49 `RUN_*_KEY` words on this file, exactly one said anything
+/// about context and it was the ceiling. So a reader could learn which bound a run ran under and
+/// never how close it came to it, and item 856's axis IS that distance. Its two experiment arms
+/// had to MOVE the ceiling precisely because the fullness was unobservable; with this key the
+/// covariate rides every ordinary run and the rate is read without pushing anything.
+///
+/// ⚠⚠ ABSENT is *nobody read one*, and it is **never a zero**: the document seeds `context` at `0`
+/// and sends `0` for a session whose record could not be read, so a zero published for silence
+/// would claim a session had read nothing on behalf of a run nobody measured. The producer drops
+/// zeros for that reason, so a value here is always positive.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_OVERRIDDEN_KEY`]'s argument: an added answer
+/// key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_CONTEXT_HIGH_WATER_KEY: &str = "context_high_water";
 /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the owner's
 /// decision of 2026-09-03, register item 847, and [`RUN_DEFERRED_KEY`]'s twin at the other end of
 /// the same bound.
@@ -5687,13 +5707,6 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
     if let Some(unadmitted) = progress.unadmitted {
         answer[RUN_UNADMITTED_KEY] = json!(unadmitted);
     }
-    // ⛔⛔⛔⛔⛔ AND WHICH CEILING THE RUN IS OBEYING — register item 856(1b). It is a CONSTANT and
-    // it rides the live row anyway, on the two clauses above's polling argument sharpened: the
-    // person watching an experiment is the one who can still tell it apart from its control, and
-    // this is the only field that says which of the two they are looking at.
-    if let Some(ceiling) = progress.context_ceiling {
-        answer[RUN_CONTEXT_CEILING_KEY] = json!(ceiling);
-    }
     // ⚠⚠⚠⚠⚠ **AND WHERE THE RUN'S MACHINE IS — register item 662, and this renderer is the ONLY
     // way that fact can cross a process boundary.** A driver in another process reports through
     // here and nowhere else, so a key missing here is a fact the daemon cannot know about such a
@@ -5775,6 +5788,24 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
             // flatter the checker by counting a question that never happened.
             "unasked": progress.checks.unasked,
         },
+        // ⛔⛔⛔⛔⛔ AND THE TWO SIDES OF THE COMPARISON THE DOCUMENT DECIDES BY — register items
+        // 856(1b) and 894. The ceiling rode the TOP LEVEL of this answer when it was first
+        // published, and measured 2026-09-05 that is why it never reached a durable log: the top
+        // level is the `running` state object, `progress_from_report` reads nothing but `beside`,
+        // and `crate::runs::RunRegistry::persistable` therefore had only the CELL to read — which
+        // `spawn_driven_run` files empty and says stays empty for every out-of-process run, the
+        // default since 2026-08-24. So the fact was knowable while a run was alive and never
+        // afterwards, and item 856's rate is computed over runs that have ENDED.
+        //
+        // ⚠⚠ THE PAIR TRAVELS TOGETHER, `Deliveries`' rule: this value IS a comparison, and a
+        // ceiling with no reading beside it is the half item 856 has already spent two experiment
+        // arms working around.
+        //
+        // ⚠ Each is `null` where nobody said, never `0`: a zero ceiling is *none was authored* and
+        // a zero reading is *the record could not be read*, and both are real answers this key
+        // must not manufacture.
+        RUN_CONTEXT_CEILING_KEY: progress.context_ceiling,
+        RUN_CONTEXT_HIGH_WATER_KEY: progress.context_high_water,
         RUN_DRIVING_KEY: progress.driving.map(|pane| pane.0),
         RUN_BANKED_KEY: progress.banked.as_ref().map(|banked| json!({
             "completed": banked.completed,
@@ -5869,6 +5900,18 @@ pub struct ReportedProgress {
     /// What it said its milestone checks came to — items 663 / 601. The TALLY; the sentence a
     /// reader gets is [`checks_sentence`]'s, composed here from this.
     pub checks: Option<sprag_plugin::Checks>,
+    /// ⛔⛔⛔⛔⛔ Which context ceiling it said it ran under, and how full it said its session ever
+    /// got — items 663 / 856(1b) / 894, the two sides of `ai_loop.scxml`'s own comparison.
+    ///
+    /// ⚠⚠ **NOT whole-or-nothing, and that is the one place these differ from their neighbours.**
+    /// The compound values above refuse a half because a fold count without its denominator is a
+    /// rate over nothing. These are two INDEPENDENT facts that happen to be read together: a
+    /// driver that knows the ceiling and not the reading has said something true, and refusing it
+    /// would throw away the half item 856(1b) has already paid for. What they must never do is
+    /// invent the missing one — [`None`] here, `null` on the row.
+    pub context_ceiling: Option<i64>,
+    /// See [`context_ceiling`](Self::context_ceiling) — the other side of the same comparison.
+    pub context_high_water: Option<i64>,
     /// Which pane it said it was driving — items 663 / 540.
     pub driving: Option<PaneId>,
     /// How much of its work it said was complete and kept — items 663 / 616.
@@ -6110,6 +6153,17 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             unasked: small(tally.get("unasked"))?,
         })
     })();
+    // ⛔⛔⛔⛔⛔ AND THE TWO SIDES OF THE COMPARISON THE DOCUMENT RESTARTS BY — register items
+    // 856(1b) and 894, read out of `beside` like everything else here and read SEPARATELY, which
+    // is `ReportedProgress::context_ceiling`'s own stated exception to the whole-or-nothing rule
+    // this block otherwise runs on.
+    //
+    // ⚠⚠ `as_i64` AND NOT `small`: these are token counts, not the `u32` tallies around them, and
+    // a session past four billion tokens is a number this reader must carry rather than saturate.
+    let context_ceiling = beside.get(RUN_CONTEXT_CEILING_KEY).and_then(Value::as_i64);
+    let context_high_water = beside
+        .get(RUN_CONTEXT_HIGH_WATER_KEY)
+        .and_then(Value::as_i64);
     let banked = (|| {
         let banked = beside.get(RUN_BANKED_KEY)?;
         Some(sprag_plugin::Banked {
@@ -6168,6 +6222,8 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
         delivered_by_road,
         said_by_sentence,
         checks,
+        context_ceiling,
+        context_high_water,
         driving: beside
             .get(RUN_DRIVING_KEY)
             .and_then(Value::as_u64)
@@ -6540,6 +6596,27 @@ pub(crate) fn run_to_json(
         .and_then(briefing_sentence)
     {
         entry[RUN_BRIEFED_KEY] = json!(said);
+    }
+    // ⛔⛔⛔⛔⛔ AND THE TWO SIDES OF THE COMPARISON IT RESTARTS BY — register items 856(1b) and
+    // 894, beside the state on the terms every clause above is published under and for a reason of
+    // their own: they mean the same thing whether the run is going or over, and item 856's rate is
+    // read off runs that have ENDED. Left inside `running` — which is where the ceiling was first
+    // published — they would vanish from every row anybody computes that rate over.
+    //
+    // ⚠⚠ THE REPORT FIRST, the rule every beside-the-state key here follows: for an
+    // out-of-process run the cell never moves, so reading it first published *nobody said* about
+    // every run this daemon starts.
+    //
+    // ⚠ PRESENT-IS-THE-CLAIM, `RUN_TREE_KEY`'s rule: absent is *nobody read one*, and a reader
+    // that filled it in would be asserting a fullness for a run that never reported one.
+    if let Some(ceiling) = reported.context_ceiling.or(run.progress.context_ceiling) {
+        entry[RUN_CONTEXT_CEILING_KEY] = json!(ceiling);
+    }
+    if let Some(fullest) = reported
+        .context_high_water
+        .or(run.progress.context_high_water)
+    {
+        entry[RUN_CONTEXT_HIGH_WATER_KEY] = json!(fullest);
     }
     // 🎯🎯🎯🎯🎯 AND WHICH OF ITS BOUNDS ARE NOT ITS DOCUMENT'S — register item 853, beside the
     // state on the terms every clause above it is published under.
@@ -7225,6 +7302,65 @@ pub fn uncommitted_sentence(run: &Value) -> Option<String> {
             )),
         },
     }
+}
+
+/// ⛔⛔⛔⛔⛔ **HOW FULL THIS RUN'S SESSION GOT, AGAINST THE BOUND IT WAS JUDGED BY** — register
+/// items 894 and 856(1b), and the sentence both mouths print for the pair. [`None`] for a run that
+/// reported neither.
+///
+/// # ⛔⛔⛔⛔⛔ Why the two are ONE sentence and never two clauses
+///
+/// The document restarts on `context >= context_ceiling`. Neither number decides anything alone —
+/// a reading of 612,000 is nearly full under an 800,000 ceiling and long past a 100,000 one — so a
+/// row that printed them apart would be handing a reader the comparison to make by eye, which is
+/// the defect [`delivery_sentence`] exists for one key over. Item 856's own two experiment arms
+/// exist because the pair could not be read at all.
+///
+/// # ⚠⚠⚠ Why a MISSING side is spoken rather than dropped
+///
+/// Whichever half is absent, the sentence says so. A reader shown *the fullest it got is 612,000*
+/// with nothing beside it would supply the ceiling from whatever they last saw — and the runs this
+/// matters most for are exactly the ones whose ceiling was moved. `Deliveries::attempted`'s rule:
+/// a number is not published without the thing it is measured against.
+///
+/// ⚠ A ceiling of `0` is a real answer and is spelled — *none was authored* — because that is what
+/// the document's own guards read it as. A `0` READING has no path to here at all: the producer
+/// drops it, since `context` is `0` before a run's first turn ends and for a record nobody could
+/// read. So there is no arm for one, and if a build ever grew one it would print as the honest
+/// large-or-small number it claims to be rather than as a silence.
+#[must_use]
+pub fn context_sentence(run: &Value) -> Option<String> {
+    let fullest = run.get(RUN_CONTEXT_HIGH_WATER_KEY).and_then(Value::as_i64);
+    let ceiling = run.get(RUN_CONTEXT_CEILING_KEY).and_then(Value::as_i64);
+    if fullest.is_none() && ceiling.is_none() {
+        return None;
+    }
+    let read = match fullest {
+        None => "nothing recorded how full its session ever got".to_owned(),
+        Some(read) => format!("the fullest its session ever got is {read} tokens read"),
+    };
+    let bound = match ceiling {
+        None => "and nothing recorded the ceiling it ran under".to_owned(),
+        // ⚠ The document's own reading of a zero, in the document's own consequence: *"ZERO MEANS
+        // NO CEILING WAS AUTHORED, and the loop then behaves exactly as it did before this existed:
+        // every reflection replaces the session."*
+        Some(0) => "and no context ceiling was authored, so every reflection replaced its session"
+            .to_owned(),
+        Some(ceiling) => {
+            let mut said = format!("against a ceiling of {ceiling}");
+            // ⚠⚠ THE SHARE ONLY WHERE BOTH SIDES ARE THERE, which is the whole point of the
+            // sentence: it is the one number a reader acts on, and computing it from a missing
+            // half would be the invention this function exists to refuse.
+            if let Some(read) = fullest.filter(|read| *read > 0) {
+                said.push_str(&format!(
+                    " — {} % of it",
+                    read.saturating_mul(100) / ceiling
+                ));
+            }
+            said
+        }
+    };
+    Some(format!("{read}, {bound}"))
 }
 
 /// **WHAT A RUN'S PROMPTS LOOK LIKE FROM THE PANE**, or [`None`] for a run that has delivered
@@ -8503,6 +8639,7 @@ mod tests {
             at: None,
             document: Some(document.to_owned()),
             context_ceiling: None,
+            context_high_water: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -9041,6 +9178,7 @@ mod tests {
                 at: None,
                 document: None,
                 context_ceiling: None,
+                context_high_water: None,
                 // ⚠ `None` and not `Some(false)` — this fixture IS a log written by an older
                 // daemon, so the honest value is *nobody recorded whether an order was given*.
                 stood_down: None,
@@ -9233,6 +9371,7 @@ mod tests {
             at: None,
             document: None,
             context_ceiling: None,
+            context_high_water: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -9652,6 +9791,7 @@ mod tests {
                 at: None,
                 document: None,
                 context_ceiling: None,
+                context_high_water: None,
                 stood_down: None,
                 stood_down_by: None,
                 cancelled_by: None,
@@ -11746,6 +11886,139 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND THE PAIR THE DOCUMENT RESTARTS BY REACHES THE ROW AND ITS MOUTH** —
+    /// register items 894 and 856(1b), and the last two feet of the journey for both sides.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The value a REPORT carries is the only one a real run has
+    ///
+    /// The fixture below drives the reported arm first, not the cell, and that ordering is the
+    /// claim: every run this daemon starts is driven in another process, its cell never moves, and
+    /// a row built from `run.progress` alone publishes *nobody said* about all of them. The cell
+    /// arm is asserted second because a daemon told `RUN_DRIVER_PROCESS = off` is the way back and
+    /// still has to work.
+    ///
+    /// # ⚠⚠⚠ Why the mouth is asked off the ROW'S OWN JSON
+    ///
+    /// [`context_sentence`] reads a row, so composing it here from the row this function built is
+    /// the only arrangement in which *what the row carries* and *what the mouth says* cannot be
+    /// two shapes that agree in a gate and differ in production — its neighbours' rule, and the
+    /// hole every crossing gate in this file was written for.
+    ///
+    /// ⚠⚠ **AND THE SHARE IS THE NUMBER A PERSON ACTS ON.** 612,000 is nearly full under an
+    /// 800,000 ceiling and long past a 100,000 one, so a mouth printing the two apart hands the
+    /// comparison back to the reader by eye — which is the defect [`delivery_sentence`] exists for
+    /// one key over, and the reason item 856 had to MOVE a ceiling to see anything at all.
+    #[test]
+    fn how_full_a_run_got_and_the_bound_it_was_judged_by_reach_the_row_and_its_mouth() {
+        /// A row for a run whose DRIVER reported the pair, which is every real run.
+        fn reported_row(ceiling: Option<i64>, fullest: Option<i64>) -> Value {
+            let progress = sprag_plugin::Progress {
+                context_ceiling: ceiling,
+                context_high_water: fullest,
+                ..sprag_plugin::Progress::default()
+            };
+            row_from(sprag_plugin::Progress::default(), Some(progress))
+        }
+
+        /// A row built from a `Progress`, with an optional driver report beside it. The cell is
+        /// what a thread-driven run fills; the report is what every other run has.
+        fn row_from(cell: sprag_plugin::Progress, said: Option<sprag_plugin::Progress>) -> Value {
+            run_to_json(
+                &crate::runs::RunSummary {
+                    id: RunId(214),
+                    label: "ai_loop pane=3".to_owned(),
+                    loop_kind: None,
+                    opened_by: None,
+                    opened_by_session: None,
+                    tree: None,
+                    overridden: None,
+                    state: RunState::Running,
+                    progress: cell,
+                    reported: said.as_ref().map(progress_to_json),
+                    build: Some(crate::wire::BUILD.to_owned()),
+                    which_run: None,
+                    stood_down: false,
+                    stood_down_by: None,
+                    held: false,
+                    cancelled_by: None,
+                    withheld: None,
+                    ended_driver: None,
+                    not_resumed: None,
+                    resumed: false,
+                },
+                None,
+                None,
+            )
+        }
+
+        // ── ① BOTH SIDES REACH THE ROW, off the report ──
+        let carried = reported_row(Some(800_000), Some(612_000));
+        assert_eq!(
+            (
+                carried[RUN_CONTEXT_HIGH_WATER_KEY].as_i64(),
+                carried[RUN_CONTEXT_CEILING_KEY].as_i64()
+            ),
+            (Some(612_000), Some(800_000)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 894: the pair stops one function short of the row, so no \
+             reader of a run can ask how close it came to the bound it was judged by — which is \
+             the whole of item 856's axis. The REPORT is the arm that matters: every run this \
+             daemon starts is driven in another process: {carried}",
+        );
+
+        // ── ② AND THE MOUTH SAYS THEM AS ONE COMPARISON, off the row's own JSON ──
+        let said = context_sentence(&carried).expect("a row carrying the pair can be said back");
+        assert!(
+            said.contains("612000") && said.contains("800000") && said.contains("76 %"),
+            "⛔⛔⛔⛔ REGISTER ITEM 894: the row carries the pair and the mouth cannot say what it \
+             comes to. The SHARE is the number a person acts on — the same reading is nearly full \
+             under one ceiling and long past another — and a mouth that prints the two apart hands \
+             the comparison back by eye: {said:?}",
+        );
+
+        // ── ③ AND A THREAD-DRIVEN RUN'S CELL IS STILL READ, which is the way back ──
+        let from_cell = row_from(
+            sprag_plugin::Progress {
+                context_ceiling: Some(100_000),
+                context_high_water: Some(90_000),
+                ..sprag_plugin::Progress::default()
+            },
+            None,
+        );
+        assert_eq!(
+            (
+                from_cell[RUN_CONTEXT_HIGH_WATER_KEY].as_i64(),
+                from_cell[RUN_CONTEXT_CEILING_KEY].as_i64()
+            ),
+            (Some(90_000), Some(100_000)),
+            "⚠⚠ A DAEMON TOLD `off` DRIVES ON A THREAD AND HAS NO REPORT AT ALL, so the cell is \
+             the whole answer for such a run and the fallback is not a defensive nicety: \
+             {from_cell}",
+        );
+
+        // ── ④ AND A RUN THAT REPORTED NEITHER PUBLISHES NEITHER, and the mouth stays shut ──
+        let quiet = reported_row(None, None);
+        assert!(
+            quiet.get(RUN_CONTEXT_HIGH_WATER_KEY).is_none()
+                && quiet.get(RUN_CONTEXT_CEILING_KEY).is_none()
+                && context_sentence(&quiet).is_none(),
+            "⛔⛔⛔ PRESENT-IS-THE-CLAIM, `RUN_TREE_KEY`'s rule. A reader that filled either in \
+             would assert a bound, or a fullness, for a run that reported none — and a `0` would \
+             be worse than a guess, because the document reads a zero ceiling as UNBOUNDED and a \
+             zero reading as a record nobody could open: {quiet}",
+        );
+
+        // ── ⑤ AND A HALF IS SPOKEN AS A HALF rather than completed from thin air ──
+        let lonely = context_sentence(&reported_row(None, Some(612_000)))
+            .expect("a row carrying one side can still be said back");
+        assert!(
+            lonely.contains("612000") && !lonely.contains('%'),
+            "⚠⚠⚠ REGISTER ITEM 894: a reading shown with no bound beside it is one a reader \
+             completes from whatever ceiling they last saw — and the runs this matters most for \
+             are exactly the ones whose ceiling was moved. No share may be computed from a \
+             missing half: {lonely:?}",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **WHICH RUN A ROW IS ABOUT REACHES THE ROW, AND A PROGRAM CAN REFUSE A JOIN** —
     /// register item 887.
     ///
@@ -13441,6 +13714,7 @@ mod tests {
                 screened: 0,
                 deferred,
                 context_ceiling: None,
+                context_high_water: None,
                 unchecked,
                 // ⚠ `None` HERE AND ASSERTED ELSEWHERE — register item 833. This fixture is about
                 // the two counts it takes as arguments; the subset that says WHY has its own gate
@@ -13504,6 +13778,82 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND BOTH SIDES OF THE COMPARISON THE DOCUMENT RESTARTS BY CROSS THE WIRE** —
+    /// register items 894 and 856(1b), and the crossing the RIGHT-hand side never actually made.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The ceiling was published where no durable reader looks
+    ///
+    /// `ai_loop.scxml` decides every restart on `context >= context_ceiling`. Item 856(1b) put the
+    /// ceiling on a run's record and measured 2026-09-05 it went onto the TOP LEVEL of this
+    /// answer — the `running` state object — which [`progress_from_report`] does not read at all:
+    /// it reads [`REPORTED_BESIDE_KEY`] and nothing else. So the value crossed to a live row and
+    /// died before every durable reader there is, and item 856's rate is read off runs that have
+    /// ENDED.
+    ///
+    /// ⇒ Both now ride `beside`, and this gate is what says so. **Do not measure a new value at
+    /// its two ENDS** — this workspace's rule of 2026-09-04, and the reason the assertion is a
+    /// ROUND TRIP through the two real functions rather than a look at either one's output.
+    ///
+    /// # ⚠⚠⚠ THREE READINGS, and the third is the one item 891 costs
+    ///
+    /// A pair crosses; an ABSENT key comes back [`None`]; and a `null` is NOT a zero. Unlike
+    /// `RUN_DEFERRED_KEY` one gate up, neither of these has an affirmative zero to publish: a zero
+    /// ceiling is *none was authored* and a zero reading is *the record could not be read*, and a
+    /// reader handed either as a measurement would put every pre-field run into the control group
+    /// of item 856's experiment.
+    #[test]
+    fn a_run_says_on_the_wire_both_sides_of_the_comparison_it_restarts_by() {
+        /// A progress cell as a driver really hands one over, with the pair as given.
+        fn progress(ceiling: Option<i64>, fullest: Option<i64>) -> sprag_plugin::Progress {
+            sprag_plugin::Progress {
+                context_ceiling: ceiling,
+                context_high_water: fullest,
+                ..sprag_plugin::Progress::default()
+            }
+        }
+
+        // ── ① THE PAIR CROSSES, through both real functions ──
+        let carried = progress_to_json(&progress(Some(800_000), Some(612_000)));
+        let read = progress_from_report(&carried);
+        assert_eq!(
+            (read.context_high_water, read.context_ceiling),
+            (Some(612_000), Some(800_000)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 894: both sides of `context >= context_ceiling` must survive \
+             the one channel an out-of-process run has. The ceiling rode the TOP LEVEL of this \
+             answer from the day it was published and `progress_from_report` reads `beside` \
+             alone, so it reached a live row and no durable reader at all: {carried}",
+        );
+
+        // ── ② AND SILENCE STAYS SILENCE, on both sides ──
+        let quiet = progress_to_json(&progress(None, None));
+        let nothing = progress_from_report(&quiet);
+        assert_eq!(
+            (nothing.context_high_water, nothing.context_ceiling),
+            (None, None),
+            "⛔⛔⛔ NEITHER SIDE MAY BE MANUFACTURED. Every bundled plugin but the loop answers \
+             `None` to both, and a zero read back here would claim on their behalf that no bound \
+             was authored and that the session had read nothing: {quiet}",
+        );
+        assert!(
+            quiet[REPORTED_BESIDE_KEY][RUN_CONTEXT_HIGH_WATER_KEY].is_null()
+                && quiet[REPORTED_BESIDE_KEY][RUN_CONTEXT_CEILING_KEY].is_null(),
+            "⚠⚠⚠ AND THE ABSENCE IS SPELLED `null` ON THE WIRE, never `0` — register item 891. A \
+             zero reading is what this document holds before a run's first turn ends, so a peer \
+             decoding one would read every silent run as an empty session: {quiet}",
+        );
+
+        // ── ③ AND THE HALVES ARE INDEPENDENT, which is this pair's own exception ──
+        let half = progress_from_report(&progress_to_json(&progress(Some(800_000), None)));
+        assert_eq!(
+            (half.context_high_water, half.context_ceiling),
+            (None, Some(800_000)),
+            "⚠⚠ THE PAIR IS NOT WHOLE-OR-NOTHING, unlike every compound beside it. A driver that \
+             knows the bound and not the reading has said something TRUE, and dropping it would \
+             throw away the half item 856(1b) has already paid for — see \
+             `ReportedProgress::context_ceiling`, where the exception is argued.",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **AND THE SPLIT OF A RUN'S FOLDS CROSSES THE SAME WAY** — register item 856(1),
     /// and **the second gate this crossing's own mutation asked for.**
     ///
@@ -13542,6 +13892,7 @@ mod tests {
                 screened: 0,
                 deferred: None,
                 context_ceiling: None,
+                context_high_water: None,
                 unchecked: None,
                 unadmitted: None,
                 waiting: None,
@@ -18887,6 +19238,7 @@ mod tests {
                     at: None,
                     document: document.map(str::to_owned),
                     context_ceiling: None,
+                    context_high_water: None,
                     stood_down: None,
                     stood_down_by: None,
                     cancelled_by: None,

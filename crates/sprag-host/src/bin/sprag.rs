@@ -7162,6 +7162,16 @@ fn render_run(run: &Value) -> String {
     // reflection split and no road table can express.
     let stuck = sprag_host::plugins::said_by_sentence_sentence(run)
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⛔⛔⛔⛔⛔ AND HOW FULL ITS SESSION GOT AGAINST THE BOUND IT WAS JUDGED BY — register items
+    // 894 and 856(1b), in the same place and under the same constraint as the four clauses above.
+    //
+    // ⚠ A FIFTH line rather than a clause on any of them, on `split`'s reason: those four are
+    // about what happened to this run's PROMPTS, and this is about the session receiving them.
+    // Item 856 measured that the second is what the first moves with — so a person deciding
+    // whether a folded prompt is a pane to walk to or a session to replace needs both lines and
+    // needs to be able to tell them apart.
+    let fullness = sprag_host::plugins::context_sentence(run)
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     // ⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601, in
     // the same place and under the same constraint as the two clauses above.
     let verified = run[sprag_host::plugins::RUN_CHECKS_KEY]
@@ -7340,7 +7350,7 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{fullness}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -7421,7 +7431,7 @@ fn render_run(run: &Value) -> String {
                 )
             });
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{fullness}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -7474,7 +7484,7 @@ fn render_run(run: &Value) -> String {
         // had happened was a `kill-server`. **A fact that reaches the wire and dies at the mouth
         // somebody actually reads** is the sentence the `Reported` arm above already wrote down.
         _ => format!(
-            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{split}{landed}{stuck}{verified}{canceller}\n",
+            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{split}{landed}{stuck}{fullness}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("?"),
             render_why_it_ended(state),
         ),
@@ -11659,6 +11669,67 @@ mod tests {
             briefed: None,
             done_reason: ending.map(std::borrow::Cow::Borrowed),
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ROW A PERSON READS SAYS HOW FULL THE SESSION GOT AGAINST ITS BOUND** —
+    /// register items 894 and 856(1b), at the mouth that is not an agent's.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A fact that reaches the wire and dies at the mouth
+    ///
+    /// This file names that failure in five places, and the composer having a gate is not the same
+    /// as the mouth printing what it composes: the clause is one interpolation in a format string,
+    /// deleting it leaves `context_sentence`'s own gate perfectly green, and item 856's whole
+    /// remaining debt is *somebody reads the number*. A value that stops one format string short
+    /// of the reader pays nothing at all.
+    ///
+    /// ⚠⚠ **TWO ROWS, because one cannot fail.** A renderer printing a fixed sentence — or the
+    /// ceiling twice, or the reading twice — satisfies a single-row fixture. The two here differ
+    /// in the SHARE and in nothing else a reader would notice, which is the number the pair exists
+    /// to produce: 612,000 is nearly full under an 800,000 ceiling and long past a 100,000 one.
+    ///
+    /// ⚠ And a run that reported neither says nothing rather than a zero — rule 6, and register
+    /// item 891 one field over.
+    #[test]
+    fn the_row_a_person_reads_says_how_full_the_session_got_against_its_bound() {
+        let with = |fullest: Option<i64>, ceiling: Option<i64>| -> String {
+            let mut row = run_entry(&a_run_that_closed(None));
+            if let Some(fullest) = fullest {
+                row[sprag_host::plugins::RUN_CONTEXT_HIGH_WATER_KEY] = serde_json::json!(fullest);
+            }
+            if let Some(ceiling) = ceiling {
+                row[sprag_host::plugins::RUN_CONTEXT_CEILING_KEY] = serde_json::json!(ceiling);
+            }
+            render_run(&row)
+        };
+
+        // ══ ① THE ROW SAYS IT, AND THE TWO CEILINGS READ DIFFERENTLY ═══════════════════════════
+        let roomy = with(Some(612_000), Some(800_000));
+        let tight = with(Some(612_000), Some(100_000));
+        for (share, row) in [("76 %", &roomy), ("612 %", &tight)] {
+            assert!(
+                row.contains("612000") && row.contains(share),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 894: the daemon publishes how full a run's session got \
+                 and `sprag runs` does not print it, so the only reader item 856 has is back to \
+                 the bound alone. Wanted {share}: {row:?}",
+            );
+        }
+        assert_ne!(
+            roomy, tight,
+            "⛔⛔⛔⛔ REGISTER ITEM 894: the same reading under two ceilings renders identically, \
+             so the mouth is printing something other than the comparison. The share IS the \
+             answer — a run at 76 % of its window and one at six times it want opposite \
+             remedies:\n{roomy}\n{tight}",
+        );
+
+        // ══ ② AND A RUN THAT REPORTED NEITHER SAYS NOTHING, never a zero ═══════════════════════
+        let silent = with(None, None);
+        assert!(
+            !silent.contains("fullest its session"),
+            "⛔⛔⛔ RULE 6, and register item 891 one field over: a row out of a log written before \
+             these columns existed must stay SILENT. A `0 %` printed for silence reads as a run \
+             that never used its window, which is the reassuring reading of an unmeasured \
+             value:\n{silent}",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **THE ROW A PERSON READS SAYS WHICH ENDING CLOSED THE RUN** — register item 706's

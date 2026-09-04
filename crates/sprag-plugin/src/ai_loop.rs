@@ -1420,6 +1420,14 @@ impl Plugin for AiLoop {
         self.inner.context_ceiling()
     }
 
+    /// ⛔ **AND HOW FULL ITS SESSION EVER GOT, ON ITS WAY TO THE SAME ROW** — register item 894,
+    /// delegated on the line above's terms. The peak is kept by the loop rather than out here for
+    /// `deferred`'s reason exactly: the party that reads the document's `context` every pass is the
+    /// only one that can see every value it took.
+    fn context_high_water(&self) -> Option<i64> {
+        self.inner.context_high_water()
+    }
+
     /// 🎯 **THE DOCUMENT'S OWN `unchecked`, ON ITS WAY TO THE ROW SOMEBODY READS** — register item
     /// 847, delegated on `deferred`'s exact terms above: the `<if>` that counts is written in
     /// `ai_loop.scxml`, and a driver-side tally would agree with it until the day the document grew

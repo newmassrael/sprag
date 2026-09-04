@@ -2860,12 +2860,24 @@ fn render_run(run: &Value) -> String {
     let not_resumed = run[sprag_host::plugins::RUN_NOT_RESUMED_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!(" {said}."));
+    // ⛔⛔⛔⛔⛔ AND HOW FULL ITS SESSION GOT AGAINST THE BOUND IT WAS JUDGED BY — register items
+    // 894 and 856(1b), from the host's own composer for the reason every clause here is: two
+    // mouths reading one fact must not reach two conclusions.
+    //
+    // ⚠⚠⚠ **AND THIS MOUTH IS THE ONE THAT CAN ACT ON IT.** The clause above says which prompts
+    // stuck; this says what the session receiving them had already read — and item 856 measured
+    // that the second is the axis the first moves along. A supervising agent watching a loop is
+    // the only continuous reader of both, and the remedy it can choose between (walk to the pane,
+    // or widen the ceiling this run is judged by) is decided by exactly this pair. A composer that
+    // reached only a person's terminal would be aimed away from the party that acts.
+    let fullness = sprag_host::plugins::context_sentence(run)
+        .map_or_else(String::new, |said| format!(" {said}."));
     match state["status"].as_str() {
         // The counters, for the reason the person's renderer prints them: an agent that polls a
         // long run and sees the same numbers twice has learned it is stuck, and `still running`
         // could not say that. It also lets an agent see spend BEFORE the budget is gone.
         Some("running") => format!(
-            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}{order}{prompts}{split}{verified}{canceller}\n{}",
+            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}{order}{prompts}{split}{fullness}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -2878,7 +2890,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  What it captured:\n{text}\n"));
             format!(
-                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{order}{prompts}{split}{verified}{canceller}{}{}\n{}{reply}",
+                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{order}{prompts}{split}{fullness}{verified}{canceller}{}{}\n{}{reply}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING, because the three have three different remedies and an agent
                 // told only `exhausted` has to guess which one to change. It is also the fact an
@@ -2913,7 +2925,7 @@ fn render_run(run: &Value) -> String {
         // under a standing order left a reader a bare word and no way to learn that what was asked
         // for had never happened.
         _ => format!(
-            "Run {id} ({label}): {}.{withheld}{not_resumed}{order}{prompts}{split}{verified}{canceller}\n",
+            "Run {id} ({label}): {}.{withheld}{not_resumed}{order}{prompts}{split}{fullness}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("in an unknown state"),
         ),
     }
@@ -9196,6 +9208,15 @@ mod tests {
              publish, and empty rows beside runs with real ones are an invented population: \
              {quiet}",
         );
+        // ⛔⛔⛔⛔⛔ AND HOW FULL THE SESSION GOT IS ITS OWN CONTROL TOO — register item 894, for
+        // the split's reason exactly: it is a COMPARISON this mouth composes, and a run that
+        // reported neither side must not be handed a share computed from nothing.
+        assert!(
+            !quiet.contains("fullest its session"),
+            "⚠⚠⚠ THE CONTROL for the pair: a run out of a log written before these columns \
+             existed must say nothing about its window. *Nobody measured* rendered as a percentage \
+             is register item 891 arriving at the surface that acts on it: {quiet}",
+        );
 
         for (key, sentence) in clauses {
             run[*key] = Value::String((*sentence).to_owned());
@@ -9238,7 +9259,29 @@ mod tests {
                 "unasked_on_the_pane": 0,
             },
         });
+        // ⛔⛔⛔⛔⛔ AND BOTH SIDES OF THE COMPARISON THE LOOP RESTARTS BY — register items 894 and
+        // 856(1b), and **this list was found short for a THIRD time by exactly the hazard it
+        // records above**: a fact the daemon publishes that this renderer never learned about is
+        // invisible to the one gate whose name is *every fact a run publishes reaches the agent
+        // reading it*.
+        //
+        // ⚠⚠⚠ AND THIS MOUTH IS THE ONE THAT ACTS ON IT. The clause above says which prompts
+        // stuck; this says what the session receiving them had already read, and item 856 measured
+        // that the second is the axis the first moves along. The two remedies a supervisor chooses
+        // between — walk to the pane, or widen the ceiling this run is judged by — are decided by
+        // exactly this pair, and a supervisor reads `list_runs` and decides without asking.
+        run[sprag_host::plugins::RUN_CONTEXT_HIGH_WATER_KEY] = serde_json::json!(612_000);
+        run[sprag_host::plugins::RUN_CONTEXT_CEILING_KEY] = serde_json::json!(800_000);
         let said = render_run(&run);
+
+        let fullness = sprag_host::plugins::context_sentence(&run)
+            .expect("a run carrying both sides has a comparison to say");
+        assert!(
+            fullness.contains("76 %"),
+            "⚠⚠⚠ THE PREMISE for item 894: the composed sentence must carry the SHARE. The two \
+             numbers apart hand the comparison back to the reader by eye, and the same reading is \
+             nearly full under one ceiling and long past another: {fullness:?}",
+        );
 
         let delivered = sprag_host::plugins::delivery_sentence(&run)
             .expect("a run that delivered has a delivery sentence");
@@ -9266,6 +9309,7 @@ mod tests {
             .map(|(_, sentence)| *sentence)
             .chain(std::iter::once(delivered.as_str()))
             .chain(std::iter::once(split.as_str()))
+            .chain(std::iter::once(fullness.as_str()))
         {
             assert!(
                 said.contains(sentence),

@@ -768,6 +768,7 @@ mod tests {
             place: None,
             document: None,
             context_ceiling: None,
+            context_high_water: None,
             stood_down: None,
             stood_down_by: None,
             deliveries: None,
