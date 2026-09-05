@@ -19721,5 +19721,36 @@ fn a_current_builds_daemon_leaves_a_log_whose_runs_can_be_paired() {
         "⚠⚠⚠ and every run is accounted for on the real road too: {waits:?}",
     );
 
+    // ── ③ AND THE VERB A PERSON RUNS SAYS SO, over the file this daemon actually wrote ──
+    //
+    // ⛔⛔⛔ EVERYTHING ABOVE IS THE LIBRARY. `sprag waits` is what anybody asking item 872 ⑶'s
+    // question types, and its two halves are gated apart — `waits_between_runs` where it lives and
+    // `waits_lines` at the mouth — with nothing joining them over a REAL store. That is item 856
+    // ⑸'s shape exactly: gates on either side of a crossing, green, and the value never arriving.
+    //
+    // ⚠⚠ The LOG IS NAMED rather than swept, which is also the arm that proves the naming path: a
+    // sweep here would read this developer's own state directory and answer about some other
+    // daemon entirely — the miss measured at 2026-09-05T08:47:23Z, where the same command answered
+    // about 229 runs with `XDG_STATE_HOME` set and 62 integration-test runs without it.
+    let named = runs_dir.join(
+        std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .find(|name| name.to_string_lossy().ends_with(".runs.json"))
+            .expect("the daemon's own run log is in its own state directory"),
+    );
+    let said = sprag(&sock, &["waits", &named.to_string_lossy()]);
+    assert!(said.ok, "`sprag waits <log>` refused: {}", said.stderr);
+    assert!(
+        said.stdout.contains(" waited ") && said.stdout.contains("after run"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 872 ⑶: the rows pair in the library and the VERB prints no \
+         stretch, so the answer stops one hop short of the only mouth that asks for it. Over the \
+         live store this verb answers *229 run(s) measure nothing* and that is correct there — \
+         this is the control that says it can ever answer anything else. Got:\n{}",
+        said.stdout,
+    );
+
     drop(guard);
 }
