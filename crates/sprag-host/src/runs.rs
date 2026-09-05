@@ -2484,6 +2484,31 @@ pub struct PersistedRun {
     /// claim a session had read nothing on behalf of a run nobody measured.
     #[serde(default)]
     pub context_high_water: Option<i64>,
+    /// ⛔⛔⛔⛔⛔ **AND WHAT REPLACING THAT SESSION WOULD HAVE TO BE WORTH** — register item 908,
+    /// the third column of the same comparison and the one that says whether the `capacity` road
+    /// was open to this run **at all**.
+    ///
+    /// # ⛔⛔⛔⛔⛔ `capacity 0 of 0` said two opposite things in one word
+    ///
+    /// `reviewing` replaces a session by whichever threshold the rising reading meets first:
+    /// `context >= context_ceiling` writes `capacity` on the row, `context >= break-even` — with
+    /// room still left — writes `economics`. So a run whose break-even sits BELOW its ceiling takes
+    /// the economic door every time and can never produce a `capacity` reflection, however long it
+    /// runs and however full it gets.
+    ///
+    /// Item 856's own refutation condition is *one `capacity` reflection whose prompt LANDS*.
+    /// Measured 2026-09-05T16:10:51Z against one 800,000 ceiling: run 231 broke even at 1,019,154
+    /// and could reach that road; run 232 broke even at 525,965 and was structurally unable to.
+    /// **Both rows said `capacity 0 of 0`**, so the axis was waiting on evidence one of them could
+    /// never give, and no reader could tell *not yet* from *never*.
+    ///
+    /// ⚠⚠ [`None`] is *nobody wrote it down* — a log from before this field, a plugin with no
+    /// session to price, or a run no pass of which read a composed one. **Never a zero**: the
+    /// document writes `0` whenever either half of the price came back unread, and the producer
+    /// drops those, so a zero here would say replacing a session was free on behalf of a run nobody
+    /// could price.
+    #[serde(default)]
+    pub context_break_even: Option<i64>,
     /// 🎯🎯🎯🎯🎯 **AND WHICH OF ITS NUMBERS WERE NOT ITS DOCUMENT'S** — register item 859, and the
     /// word that says an EXPERIMENT is an experiment.
     ///
@@ -4288,6 +4313,11 @@ impl RunLog {
                 id: run.id,
                 fullest,
                 ceiling,
+                // ⛔⛔⛔⛔⛔ AND THE PRICE THAT DECIDES WHICH ROAD WAS OPEN — register item 908.
+                // ⚠ NOT a condition of the population, unlike the two terms above it: a row that
+                // records no price still measures a fold rate, and refusing it here would drop
+                // every row written before that field for a question those rows never asked.
+                break_even: run.context_break_even,
                 judged,
                 folds: split,
                 comparable,
@@ -4984,6 +5014,43 @@ impl Folds {
         self.rated().count()
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND HOW MANY OF THOSE RUNS COULD HAVE TAKEN THE `capacity` ROAD AT ALL** —
+    /// register item 908, over exactly the population
+    /// [`folded_by_road`](Self::folded_by_road) sums.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The denominator of the axis's own road can be structurally empty
+    ///
+    /// That rate prints `capacity f of d` beside its control roads, and the roads with nothing on
+    /// them are printed rather than dropped because they are the control. What no line could say is
+    /// that a `capacity` denominator of zero may be a run's document declining to open the road
+    /// rather than a road left untravelled: `reviewing` takes whichever of the two replacing
+    /// thresholds is lower, and a run whose break-even sits under its ceiling meets the economic
+    /// one first. Item 856 spent five re-judgements waiting on a landing that some of its own
+    /// population could not produce.
+    ///
+    /// ⚠⚠ Every arm of [`CapacityRoad`] **including the zeros**, on
+    /// [`unmeasured`](Self::unmeasured)'s rule: this is the population beside a rate, and a
+    /// population that prints only its non-empty arms is one a reader cannot check against the run
+    /// count on the same line.
+    ///
+    /// ⚠ Over `rated` — the rows [`folded_by_road`](Self::folded_by_road) sums — and not over every
+    /// measured row, because the number it
+    /// qualifies is that rate's. The per-run lines carry each row's own answer.
+    #[must_use]
+    pub fn capacity_road_over_the_rate(&self) -> Vec<(CapacityRoad, usize)> {
+        CapacityRoad::ALL
+            .into_iter()
+            .map(|road| {
+                (
+                    road,
+                    self.rated()
+                        .filter(|row| row.capacity_road() == road)
+                        .count(),
+                )
+            })
+            .collect()
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE ROWS THE RATE IS OVER, WRITTEN ONCE** — judged by their own document's
     /// ceiling AND carrying a split that is total for the run.
     ///
@@ -5114,6 +5181,16 @@ pub struct FoldAtFullness {
     pub fullest: i64,
     /// **WHAT IT WAS JUDGED BY** — [`PersistedRun::context_ceiling`], the right-hand term.
     pub ceiling: i64,
+    /// ⛔⛔⛔⛔⛔ **AND WHAT REPLACING ITS SESSION WOULD HAVE TO BE WORTH** —
+    /// [`PersistedRun::context_break_even`], register item 908, and the term that says which of the
+    /// two replacing doors this run was ever going to walk through. See
+    /// [`capacity_road`](Self::capacity_road), which is the question it answers.
+    ///
+    /// ⚠ [`None`] is *the row records no price* — a log from before that field, or a run no pass of
+    /// which read one — and is never a zero. It is the only optional term on this row, because the
+    /// two above it are what put the row in the population at all and this one is not: a row that
+    /// cannot say which road was open still measures a fold rate.
+    pub break_even: Option<i64>,
     /// **WHOSE NUMBERS THOSE WERE** — derived from [`PersistedRun::overridden`], register item 859.
     pub judged: Judged,
     /// Its whole split, every occasion — never the `capacity` row alone.
@@ -5232,6 +5309,135 @@ impl FoldAtFullness {
     #[must_use]
     pub fn columns_disagree(&self) -> bool {
         self.took_the_capacity_road() && !self.reached_its_ceiling()
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER THE `capacity` ROAD WAS EVER OPEN TO THIS RUN** — register item 908, and
+    /// the sentence without which `capacity 0 of 0` is two opposite readings in one word.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Two doors watch one rising level, and the lower one takes the session
+    ///
+    /// `reviewing` replaces a session on `context >= context_ceiling` — which writes `capacity` on
+    /// the row — or, with room still left, on `context >= replacement_break_even`, which writes
+    /// `economics`. Both are thresholds on the SAME rising reading, so a run whose break-even sits
+    /// under its ceiling meets the economic door first at every reflection taken between the two.
+    ///
+    /// Measured 2026-09-05T16:10:51Z against one 800,000 ceiling: run 231 broke even at 1,019,154
+    /// and would reach `capacity`; run 232 broke even at 525,965 and would not. **Both rows said
+    /// `capacity 0 of 0`**, and item 856's refutation condition — *one `capacity` reflection whose
+    /// prompt LANDS* — was waiting on evidence the second run's own document would not let it
+    /// produce.
+    ///
+    /// ⚠⚠ **THE PRICE IS A PEAK OVER THE RUN'S SESSIONS** (`OuterLoop`'s `dearest`), so
+    /// [`CapacityRoad::Open`] is *at least one session of this run could reach the ceiling first*
+    /// and never *every one of them could*. A run replaces sessions and they are priced
+    /// separately.
+    ///
+    /// ⚠ It is asked of the ROW and needs no fold count: it is a fact about the two thresholds,
+    /// true before any prompt is composed.
+    #[must_use]
+    pub fn capacity_road(&self) -> CapacityRoad {
+        CapacityRoad::of(self.break_even, self.ceiling)
+    }
+
+    /// ⛔⛔⛔ **WHETHER THIS RUN WALKED A ROAD ITS OWN PRICE STOOD UNDER** — the one reading
+    /// [`capacity_road`](Self::capacity_road) does not license, said rather than hidden.
+    ///
+    /// [`CapacityRoad::Undercut`] means the economic door is met FIRST *at a reflection taken
+    /// between the two thresholds*. It is not an impossibility: a single turn can carry the reading
+    /// from under the break-even to over the ceiling, and then the capacity door is the one that
+    /// fires. So a row can be `Undercut` and still hold `capacity` prompts, and a reader shown the
+    /// word alone would call that a contradiction.
+    ///
+    /// ⚠ [`columns_disagree`](Self::columns_disagree)'s lesson, one column over: a condition
+    /// written in a doc and not asked is an arm that will be read off wrongly. This one is asked.
+    #[must_use]
+    pub fn walked_a_road_its_price_undercut(&self) -> bool {
+        self.capacity_road() == CapacityRoad::Undercut && self.took_the_capacity_road()
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHETHER A RUN'S DOCUMENT COULD EVER HAVE SENT IT DOWN THE `capacity` ROAD** —
+/// register item 908, and [`FoldAtFullness::capacity_road`]'s answer.
+///
+/// # ⛔⛔⛔⛔⛔ Why a zero on that road needed a word beside it
+///
+/// Item 856's axis is refuted by *one `capacity` reflection whose prompt LANDS*, and its report
+/// counts those over every readable row. A run whose break-even stands below its ceiling meets the
+/// economic door first and contributes a `capacity` row of `0 of 0` — indistinguishable, in every
+/// line this report prints, from a run that could have taken the road and had not yet. Five
+/// re-judgements of item 856 read the second where the store held the first.
+///
+/// ⚠⚠ **THE ARMS ARE A PARTITION AND THE ZEROS ARE CARRIED**, [`NoFullness`]'s rule: a reader
+/// deciding what to print may drop an empty arm, a reader deciding whether the table is whole may
+/// not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CapacityRoad {
+    /// The break-even stands AT OR ABOVE the ceiling, so the ceiling is the threshold this run's
+    /// sessions meet first and `capacity` is a road it could walk.
+    Open,
+    /// The break-even stands BELOW the ceiling, so the economic door is met first at every
+    /// reflection taken between them. ⚠ Not *impossible*: one turn carrying the reading past both
+    /// at once still fires `capacity` — see
+    /// [`FoldAtFullness::walked_a_road_its_price_undercut`].
+    Undercut,
+    /// The row records no price at all — a log written before item 908, or a run no pass of which
+    /// read one. ⚠ It is an ABSENCE and never a cheap session: nothing here says which door was
+    /// lower.
+    Unpriced,
+}
+
+impl CapacityRoad {
+    /// Every arm, in the order a report prints them — the population, on [`NoFullness::ALL`]'s
+    /// argument.
+    pub const ALL: [Self; 3] = [Self::Open, Self::Undercut, Self::Unpriced];
+
+    /// The verdict itself, written ONCE — [`FoldAtFullness::capacity_road`] and
+    /// [`crate::plugins::context_sentence`] both ask it here.
+    ///
+    /// # ⚠⚠⚠ Two readers of one comparison is how they come to disagree
+    ///
+    /// The report reads a stored row and the sentence reads a live one, so a second spelling would
+    /// be a run described one way while it is going and the other way afterwards — items 855 and
+    /// 864's shape, and the reason item 908 put the price in one place in the document to begin
+    /// with.
+    ///
+    /// ⚠⚠ **`ceiling` MUST BE IN FORCE (`> 0`), and every caller establishes that first.** A
+    /// ceiling of `0` is what the document reads as *none was authored*, where no `capacity` edge
+    /// can fire at all — every edge into that road is guarded `context_ceiling > 0` — so the road
+    /// is closed for a reason that has nothing to do with the price, and answering
+    /// [`Open`](CapacityRoad::Open) on
+    /// `price >= 0` would be arithmetic standing in for a fact. [`Folds`] blames such a row
+    /// [`NoFullness::CeilingUnbounded`] before it can become a [`FoldAtFullness`], and
+    /// `context_sentence` spells that case in its own words.
+    #[must_use]
+    pub fn of(break_even: Option<i64>, ceiling: i64) -> Self {
+        debug_assert!(
+            ceiling > 0,
+            "⚠⚠ a ceiling that is not in force is not a side of this comparison — see the doc",
+        );
+        match break_even {
+            None => Self::Unpriced,
+            Some(price) if price >= ceiling => Self::Open,
+            Some(_) => Self::Undercut,
+        }
+    }
+
+    /// What a reader is told, as a clause that follows the run's own numbers.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Open => {
+                "its ceiling is the lower threshold, so the `capacity` road was open to it"
+            }
+            Self::Undercut => {
+                "its break-even stands UNDER that ceiling, so the economic door is met first and a \
+                 `capacity` count of zero here is *could not*, not *has not yet*"
+            }
+            Self::Unpriced => {
+                "nothing recorded what replacing its session would have to be worth, so which door \
+                 was lower is unknown — an absence, not a cheap session"
+            }
+        }
     }
 }
 
@@ -6520,6 +6726,14 @@ impl RunRegistry {
                         context_high_water: reported
                             .context_high_water
                             .or(run.progress.context_high_water),
+                        // ⛔⛔⛔⛔⛔ AND WHAT REPLACING THAT SESSION WOULD HAVE TO BE WORTH —
+                        // register item 908, on the two lines above's terms and travelling with
+                        // them: the trio is one comparison, and a log holding two thirds of it can
+                        // say how close a run came to a bound and not whether it could ever have
+                        // reached it.
+                        context_break_even: reported
+                            .context_break_even
+                            .or(run.progress.context_break_even),
                         // 🎯🎯🎯🎯🎯 AND WHICH OF ITS NUMBERS THE CALLER TOOK — register item 859,
                         // and the third fact in a row to have been readable only while the run was
                         // alive. ⚠ NOT `reported…or(cell)` like the pair above: this is not a
@@ -6894,6 +7108,12 @@ impl RunRegistry {
                     // every run anybody reads is a restored one, so a peak that stopped at the
                     // daemon boundary would be the left-hand side of a comparison nobody can make.
                     context_high_water: saved.context_high_water,
+                    // ⛔ AND WHAT REPLACING THAT SESSION WOULD HAVE TO BE WORTH — register item
+                    // 908, carried across the restart on the line above's terms: the road a run
+                    // could take is the third column of that same comparison, and a restart that
+                    // dropped it would put the run back in the undifferentiated pile the other two
+                    // were published to get it out of.
+                    context_break_even: saved.context_break_even,
                     // ⚠⚠⚠⚠⚠ **THE PLACE IS CARRIED FORWARD, AND ONLY THROUGH THE DOOR THAT CHECKS
                     // THE DOCUMENT** — register items 543 and 544. `saved.place` is words from
                     // whatever build wrote the log; `resumable_place` hands them back only when
@@ -7619,6 +7839,7 @@ mod tests {
             document: None,
             context_ceiling: None,
             context_high_water: None,
+            context_break_even: None,
             overridden: None,
             place: None,
             stood_down: None,
@@ -10628,6 +10849,7 @@ mod tests {
                 document: None,
                 context_ceiling: None,
                 context_high_water: None,
+                context_break_even: None,
                 // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
                 overridden: None,
                 stood_down: None,
@@ -10888,6 +11110,7 @@ mod tests {
             document: document.map(str::to_owned),
             context_ceiling: None,
             context_high_water: None,
+            context_break_even: None,
             // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
             overridden: None,
             stood_down: None,
@@ -11015,6 +11238,7 @@ mod tests {
             document: document.map(str::to_owned),
             context_ceiling: None,
             context_high_water: None,
+            context_break_even: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -11130,6 +11354,7 @@ mod tests {
             document: document.map(str::to_owned),
             context_ceiling: None,
             context_high_water: None,
+            context_break_even: None,
             stood_down: None,
             stood_down_by: None,
             cancelled_by: None,
@@ -11583,6 +11808,7 @@ mod tests {
                 document: None,
                 context_ceiling: None,
                 context_high_water: None,
+                context_break_even: None,
                 // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
                 overridden: None,
                 // ⚠ A log with no such field: `None`, which restores as *no order was recorded*.
@@ -12299,8 +12525,12 @@ mod tests {
             "runs": [
                 // ── ① THE HEADLINE: an ordinary run, judged by its own document's ceiling ──
                 //    4 capacity prompts, 1 folded ⇒ THREE landings, and each is a refutation.
+                //    ⛔ AND ITS PRICE IS ABOVE ITS CEILING — register item 908: the ceiling is the
+                //    lower of the two thresholds, so `capacity` is a road this run could walk, and
+                //    the three landings are evidence about the axis rather than about the document.
                 { "id": 1, "label": "ai_loop pane=3", "iterations": 9, "finished": true,
                   "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [],
+                  "context_break_even": 1_019_154,
                   "deliveries": { "made": 44, "folded": 1 },
                   "folds_by_reason": { "capacity": { "delivered": 4, "folded": 1 },
                                        "ordinary": { "delivered": 40, "folded": 0 } } },
@@ -12311,9 +12541,13 @@ mod tests {
                   "deliveries": { "made": 28, "folded": 1 },
                   "folds_by_reason": { "capacity": { "delivered": 28, "folded": 1 } } },
                 // ── ③ THE CONTROL: a caller who moved something ELSE is NOT an experiment here ──
+                //    ⛔ AND IT WALKED A ROAD ITS OWN PRICE STANDS UNDER — register item 908. Its
+                //    break-even is below its ceiling, so the economic door is met first at any
+                //    reflection between them; a single turn carrying the reading past BOTH fires
+                //    `capacity` anyway. The word must not be read as *this cannot have happened*.
                 { "id": 3, "label": "ai_loop pane=5", "iterations": 9, "finished": true,
                   "context_high_water": 800_000, "context_ceiling": 800_000,
-                  "overridden": ["max_seconds"],
+                  "overridden": ["max_seconds"], "context_break_even": 525_965,
                   "deliveries": { "made": 2, "folded": 2 },
                   "folds_by_reason": { "capacity": { "delivered": 2, "folded": 2 } } },
                 // ── ④ THE PROMOTION WALL, WITH THE ROAD WALKED AND NOTHING LEFT STANDING ──
@@ -12456,8 +12690,14 @@ mod tests {
                 //    came to read `ordinary 0 of 141` over a store that had only ever watched 142
                 //    ordinary prompts. It still answers the capacity question, so it is set aside
                 //    from the COMPARISON and not from the report.
+                //    ⛔⛔⛔⛔⛔ AND IT IS ALSO REGISTER ITEM 908's OWN SHAPE — run 232, measured
+                //    2026-09-05T16:10:51Z: a break-even of 525,965 under an 800,000 ceiling, and a
+                //    `capacity` row of `0 of 0` that means *this run could not have produced one*
+                //    rather than *it has not yet*. Item 856's refutation condition was waiting on
+                //    a landing from runs shaped exactly like this.
                 { "id": 15, "label": "ai_loop pane=17", "iterations": 9, "finished": true,
                   "context_high_water": 500_000, "context_ceiling": 800_000, "overridden": [],
+                  "context_break_even": 525_965,
                   "deliveries": { "made": 60, "folded": 12 },
                   "folds_by_reason": { "milestone": { "delivered": 20, "folded": 12 } } },
             ]
@@ -12679,6 +12919,84 @@ mod tests {
              printed without the population that decides how to read it, and here the population \
              is the span. Rows: {:?}",
             folds.measured,
+        );
+
+        // ── ②af AND WHETHER THAT `capacity` COLUMN COULD EVER HAVE BEEN NON-ZERO ──
+        //
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 908. Every rate above prints a `capacity` figure beside its
+        // control roads, and a denominator of zero there has two opposite causes: the road was not
+        // travelled, or the run's own document could not open it. `reviewing` replaces a session by
+        // whichever of two thresholds the rising reading meets FIRST — the ceiling (`capacity`) or
+        // the break-even (`economics`) — so a run priced under its ceiling meets the economic door
+        // and contributes nothing to that road however long it runs.
+        //
+        // Measured 2026-09-05T16:10:51Z against one 800,000 ceiling: run 231 broke even at
+        // 1,019,154 and could reach the road; run 232 broke even at 525,965 and could not. **Both
+        // published `capacity 0 of 0`**, and item 856 spent five re-judgements waiting on a landing
+        // that part of its own population was structurally unable to produce.
+        let road = |id: u64| {
+            folds
+                .measured
+                .iter()
+                .find(|row| row.id == id)
+                .unwrap_or_else(|| panic!("run {id} must be readable: {:?}", folds.measured))
+                .capacity_road()
+        };
+        assert_eq!(
+            (road(1), road(15), road(10)),
+            (
+                CapacityRoad::Open,
+                CapacityRoad::Undercut,
+                CapacityRoad::Unpriced
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 908: run 1 is priced at 1,019,154 against an 800,000 ceiling, \
+             so the ceiling is the lower threshold and `capacity` is a road it could walk. Run 15 \
+             is priced at 525,965 against the same ceiling — item 908's own measurement of run 232 \
+             — so the economic door is met first and its `capacity 0 of 0` is *could not*. Run 10 \
+             records no price at all, which is what every row in the live store carries today, and \
+             an ABSENCE must not be read as a cheap session. Rows: {:?}",
+            folds.measured,
+        );
+        // ⛔⛔⛔ AND THE ONE READING THE WORD DOES NOT LICENSE. `Undercut` says the economic door
+        // is met first AT A REFLECTION BETWEEN the thresholds; a turn that carries the reading past
+        // both at once fires `capacity` anyway. Run 3 is exactly that row, and a report that called
+        // it a contradiction would be making the mistake `columns_disagree` cost a round for one
+        // column over — a condition written in a doc and never asked.
+        assert_eq!(
+            (
+                road(3),
+                folds
+                    .measured
+                    .iter()
+                    .filter(|row| row.walked_a_road_its_price_undercut())
+                    .map(|row| row.id)
+                    .collect::<Vec<_>>(),
+            ),
+            (CapacityRoad::Undercut, vec![3]),
+            "⛔⛔⛔⛔ REGISTER ITEM 908: run 3 is priced under its ceiling AND took the capacity \
+             road. Run 15 is priced the same way and did not, so a build that reported every \
+             `Undercut` row as a contradiction would be wrong about one of them — and one that \
+             reported none would leave a reader to call the pair inconsistent. Rows: {:?}",
+            folds.measured,
+        );
+        // ⛔⛔⛔⛔⛔ AND THE POPULATION BESIDE THE RATE, EVERY ARM INCLUDING THE ZEROS. The rate at
+        // ②a prints `capacity 3 of 6` over three runs; this says how many of those three could
+        // have contributed to that road at all. Without it the figure is a fraction whose
+        // denominator a reader cannot interpret.
+        assert_eq!(
+            folds.capacity_road_over_the_rate(),
+            vec![
+                (CapacityRoad::Open, 1),
+                (CapacityRoad::Undercut, 1),
+                (CapacityRoad::Unpriced, 1),
+            ],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 908: the rate's own population, split by whether its \
+             `capacity` column could ever have been non-zero. It must be over exactly the rows \
+             `folded_by_road` sums — {} of them — and it must carry every arm, because an arm \
+             dropped for being empty is a population a reader cannot check against the run count \
+             beside it. Got {:?}",
+            folds.production_runs(),
+            folds.capacity_road_over_the_rate(),
         );
 
         // ── ②b THE WALL HAS A SIZE, AND IT IS NOT A THIRD REFUTATION ──

@@ -1498,6 +1498,14 @@ impl Plugin for AiLoop {
         self.inner.context_high_water()
     }
 
+    /// ⛔ **AND WHAT REPLACING THAT SESSION WOULD HAVE TO BE WORTH** — register item 908, delegated
+    /// on the line above's terms and for its reason: the price is composed inside the document, and
+    /// the party that reads that datamodel every pass is the only one that can see every value it
+    /// took.
+    fn context_break_even(&self) -> Option<i64> {
+        self.inner.context_break_even()
+    }
+
     /// 🎯 **THE DOCUMENT'S OWN `unchecked`, ON ITS WAY TO THE ROW SOMEBODY READS** — register item
     /// 847, delegated on `deferred`'s exact terms above: the `<if>` that counts is written in
     /// `ai_loop.scxml`, and a driver-side tally would agree with it until the day the document grew
@@ -14033,7 +14041,25 @@ mod tests {
             let (mut engine, host, lua, session) = started();
             carried(&mut engine, &host, AiLoopEvent::Start, "");
             carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
-            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+            // ⛔⛔⛔⛔⛔ THE SESSION'S THREE READINGS RIDE THE TURN THAT ENDED — register item 908,
+            // and they used to be written by hand below with the ceiling. `judging`'s onentry is
+            // where the document composes `replacement_break_even` out of `cold` and `floor`, and
+            // the economic edges now compare against THAT rather than spelling the arithmetic
+            // themselves. A fixture that wrote the two readings after the composition would be
+            // driving a decision the document never made — the gate went red exactly there, which
+            // is the door it was built to keep nailed open (item 428).
+            //
+            // ⚠ The ceiling stays a hand-write: it is a `<data>` the KIND authors and no
+            // `turn.done` carries it.
+            carried(
+                &mut engine,
+                &host,
+                AiLoopEvent::TurnDone,
+                &format!(
+                    r#"{{"context": {}, "cold": {}, "floor": {}, "produced": false}}"#,
+                    read.context, read.cold, read.floor,
+                ),
+            );
             carried(&mut engine, &host, AiLoopEvent::Judge, "{\"done\": true}");
             assert_eq!(
                 engine.get_current_state(),
@@ -14048,20 +14074,40 @@ mod tests {
                  milestone is taken",
             );
 
-            // ⚠⚠⚠ WRITTEN HERE RATHER THAN CARRIED ON `judge`, and that is what makes this gate
-            // about the DECISION rather than about the driver's reader: `judging`'s onentry copies
-            // these three out of the event, so a run driven by hand would be asserting whatever
-            // `_event.data` happened to hold. These are the values the document holds when it
-            // decides.
-            for (name, value) in [
-                ("context_ceiling", read.ceiling),
-                ("context", read.context),
-                ("floor", read.floor),
-                ("cold", read.cold),
-            ] {
-                lua.set_variable(&session, name, ScriptValue::Int(value))
-                    .expect("the document's own numbers are writable");
-            }
+            // ⚠⚠⚠ THE BOUND IS WRITTEN HERE AND THE READINGS ARE NOT, and the split is the point:
+            // a ceiling is a `<data>` a KIND authors, so writing it is exactly what a caller does,
+            // while the three readings are the document's own and reach it through `turn.done`
+            // above. Writing those by hand is what this gate used to do, and register item 908
+            // made it a fixture asserting a decision the document could not have taken.
+            lua.set_variable(&session, "context_ceiling", ScriptValue::Int(read.ceiling))
+                .expect("the document's own numbers are writable");
+            // ⛔⛔⛔⛔⛔ AND THE COMPOSED PRICE IS A PRICE EXACTLY WHEN BOTH READINGS WERE TAKEN —
+            // register item 908, and the half of that item the state assertions below cannot
+            // reach. The edges refuse a zero on their own account, so a composition that wrote
+            // `floor` alone for a half-read pair would change no decision here and would still be
+            // wrong: the value LEAVES this document on a run's row, where a plausible number
+            // standing for an absence is item 891's defect arriving where nobody looks for it.
+            //
+            // ⚠ The RELATION and not the arithmetic. What `floor + 20 * cold` is written as has
+            // exactly three homes — the document, the paragraph beside it and `testing.rs` — and
+            // `an_economic_edge_carries_the_population_it_was_measured_in` pins those three to each
+            // other. A fourth spelling here would be a number that could drift from all of them.
+            let ScriptValue::Int(composed) = lua
+                .get_variable(&session, "replacement_break_even")
+                .expect("the document declares the price this gate is about")
+            else {
+                panic!("⚠⚠ ITEM 908: the price must be a number, whatever it says");
+            };
+            assert_eq!(
+                composed > 0,
+                read.cold > 0 && read.floor > 0,
+                "⚠⚠⚠⚠ ITEM 908: `judging` composed {composed} out of cold {} and floor {}. A price \
+                 is composed exactly when BOTH readings were taken — a positive number from a \
+                 half-read pair says *replacing this session costs this much* about a session \
+                 nobody could read, and a zero from a whole one loses a real price",
+                read.cold,
+                read.floor,
+            );
 
             carried(&mut engine, &host, event, "{\"carried\": \"\"}");
             engine.get_current_state()

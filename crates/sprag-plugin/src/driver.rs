@@ -1186,6 +1186,11 @@ pub struct Driver {
     /// the ceiling's is merely safe: the plugin raises its own peak on every pass, and a reader
     /// that asked once would get whichever session happened to be current.
     context_high_water: Option<i64>,
+    /// ⛔ **WHAT THE PLUGIN LAST SAID REPLACING ITS SESSION WOULD HAVE TO BE WORTH** — register
+    /// item 908, held and refreshed on the line above's terms and for its reason: this is composed
+    /// from levels re-read every turn, so the peak is the plugin's to keep and this holds the last
+    /// answer it could give.
+    context_break_even: Option<i64>,
     /// 🎯 **WHAT THE PLUGIN LAST SAID ITS UNCHECKED RE-AIMS CAME TO** — register item 847, held on
     /// the line above's terms and read from the plugin at the same one place. ⚠ NEVER incremented
     /// here, for that field's reason exactly.
@@ -1320,6 +1325,15 @@ pub struct Progress {
     /// watching a session approach its bound is the one who can still do something about it, and
     /// a peak known only after the run ends is a peak nobody could act on.
     pub context_high_water: Option<i64>,
+    /// ⛔ **AND WHAT REPLACING THAT SESSION WOULD HAVE TO BE WORTH** — register item 908, the
+    /// threshold whichever of `reviewing`'s two replacing doors is LOWER takes the session at. See
+    /// [`crate::plugin::Plugin::context_break_even`], where the argument is.
+    ///
+    /// ⚠ Published WHILE THE RUN IS GOING for the two fields above's reason and one of its own: a
+    /// run whose break-even sits under its ceiling can never take the `capacity` door, and the
+    /// person who can move a ceiling is the one watching now rather than the one reading the row
+    /// afterwards.
+    pub context_break_even: Option<i64>,
     /// 🎯 **AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED** — register item 847, published WHILE
     /// THE RUN IS STILL GOING on the line above's argument: a person watching a loop re-aim itself
     /// unchecked is the one who can still go and name a classifier for it.
@@ -1622,6 +1636,11 @@ impl Driver {
             // publishing one for a run nobody has stepped would answer the question with the
             // reading that means *nothing could be measured*.
             context_high_water: None,
+            // ⚠ `None` ON THE LINE ABOVE'S RULE — register item 908. The loop's document holds a
+            // `0` here before its first judged turn and on every turn whose readings came back
+            // unread, so publishing one for a run nobody has stepped would answer *replacing this
+            // session is free* about a run nobody could price.
+            context_break_even: None,
             // ⚠ `None` FOR `deferred`'s REASON ONE LINE UP — a run nobody has stepped has not been
             // asked, and *nobody was counting* is not *every direction it took was checked*.
             unchecked: None,
@@ -1693,6 +1712,11 @@ impl Driver {
             // argument: a fold rate is read against a control, and a control with one side missing
             // is the half of the comparison item 856 has been reading for a week.
             context_high_water: self.context_high_water,
+            // ⛔ AND WHAT REPLACING THAT SESSION WOULD HAVE TO BE WORTH — register item 908, live
+            // on the two lines above's argument: the road a run CAN take is decided by this
+            // against the ceiling, and a person watching a run that can never reach the capacity
+            // door is the one who can move the ceiling while it still matters.
+            context_break_even: self.context_break_even,
             // 🎯 AND HOW MANY OF THEM NOBODY CHECKED — register item 847, live for the reason
             // above it: the person watching is the one who can still go and name a classifier.
             unchecked: self.unchecked,
@@ -2106,6 +2130,14 @@ impl Driver {
                     self.context_high_water = plugin
                         .context_high_water()
                         .or_else(|| self.context_high_water.take());
+                    // ⛔ AND WHAT REPLACING THAT SESSION WOULD HAVE TO BE WORTH — register item
+                    // 908, read in the same breath and KEPT on the same terms, which matter here
+                    // for the same reason: the last judged turn of a run is the one whose price a
+                    // reader wants, and the step that ends the run is the step whose machine may
+                    // no longer be asked for it.
+                    self.context_break_even = plugin
+                        .context_break_even()
+                        .or_else(|| self.context_break_even.take());
                     // 🎯 AND HOW MANY OF ITS DIRECTIONS NOBODY CHECKED — register item 847, read in
                     // the same breath and KEPT on the same terms: the step that ends a run is the
                     // one whose machine may no longer read its own datamodel, and what a reader

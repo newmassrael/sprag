@@ -6567,6 +6567,40 @@ pub struct OuterLoop {
     /// ⚠⚠ So `Some` is always positive here and [`None`] is *no pass of this run ever read one*.
     /// There is no path to `Some(0)`, which is why no reader downstream has an arm for it.
     fullest: Option<i64>,
+    /// ⛔⛔⛔⛔⛔ **THE DEAREST THIS RUN'S SESSIONS EVER WERE TO REPLACE** — register item 908, and
+    /// the number that decides which of `reviewing`'s two replacing doors a run could ever have
+    /// walked through.
+    ///
+    /// # ⛔⛔⛔⛔⛔ `capacity 0 of 0` was two sentences in one word
+    ///
+    /// `reviewing` replaces a session on `context >= context_ceiling` (`capacity`) or, with room
+    /// still left, on `context >= replacement_break_even` (`economics`). Both compare a rising
+    /// level against a threshold, so **whichever threshold is lower is the one a session reaches**:
+    /// a run whose break-even sits below its ceiling takes the economic door every time and can
+    /// never reach the capacity door, however long it runs and however full it gets.
+    ///
+    /// Measured 2026-09-05T16:10:51Z over two live runs against the same 800,000 ceiling: run 231
+    /// broke even at 1,019,154 and could reach `capacity`; run 232 broke even at 525,965 and was
+    /// structurally unable to. Both published `capacity 0 of 0`, and item 856's refutation
+    /// condition — *one `capacity` reflection whose prompt lands* — was waiting on a road one of
+    /// them could not walk. Nothing on a row could tell those apart, which is register item 908.
+    ///
+    /// # ⚠⚠⚠ Why the MAXIMUM, and why it is not [`fullest`](Self#structfield.fullest)'s argument
+    ///
+    /// That field peaks because a level drops on every replacement, so a sample says *how full the
+    /// session that outlived the run was*. This one peaks because its question is EXISTENTIAL: the
+    /// road was open to this run if ANY of its sessions could have reached the ceiling, and that is
+    /// the dearest one to replace. A run's cheapest session says nothing about whether the road
+    /// ever opened.
+    ///
+    /// ⚠⚠ The price is composed IN THE DOCUMENT and read back from it — see
+    /// [`replacement_break_even`](Self::replacement_break_even). The multiplier in it is a number
+    /// that document authors over its own measured population, and a driver that recomposed it
+    /// here would be a second authority on one price (items 855 and 864).
+    ///
+    /// ⚠ So `Some` is always positive and [`None`] is *no pass of this run ever read a composed
+    /// price*. There is no path to `Some(0)`, and no reader downstream has an arm for one.
+    dearest: Option<i64>,
     /// ⚠⚠⚠⚠⚠ **WHETHER THE TURN THAT JUST ENDED PRODUCED ANYTHING** — register item 719. Written by
     /// [`costs_now`](Self::costs_now), which is the one place a turn's ending reads its session's
     /// record, and read at the funnel on the pass that raised `turn.done`.
@@ -6919,6 +6953,10 @@ impl OuterLoop {
             // session had been measured at nothing — see the field, where the two zeros are
             // argued apart.
             fullest: None,
+            // ⚠ No pass has read a composed price yet, and a `0` here would claim this run's
+            // session could be replaced for nothing — see the field, where the zeros are argued
+            // apart on `fullest`'s terms.
+            dearest: None,
             // ⚠ No turn has ended, so there is no turn for this to be an answer about.
             made: None,
             witnessed: None,
@@ -8720,6 +8758,64 @@ impl OuterLoop {
         self.fullest = Some(self.fullest.map_or(read, |peak| peak.max(read)));
     }
 
+    /// **WHAT THE DOCUMENT HOLDS AS THE PRICE OF REPLACING ITS SESSION** — its own
+    /// `replacement_break_even`, composed on entry to `judging` from the `cold` and `floor` this
+    /// driver put on `turn.done`. Register item 908.
+    ///
+    /// # ⚠⚠⚠ Read from the MACHINE, on [`context`](Self::context)'s argument exactly
+    ///
+    /// This driver supplies both readings the number is made of, so composing it out here would be
+    /// a SECOND authority on one price — and the multiplier in it is a number the document
+    /// authors, measured over that document's own population. What is worth publishing is the
+    /// value a guard would see, and the only way to have that is to ask the guard's own datamodel.
+    ///
+    /// ⚠ `Some(0)` is *neither reading was taken*: the document seeds it at `0` and re-writes a
+    /// `0` on every turn whose `cold` or `floor` came back unread. See
+    /// [`dearest`](Self#structfield.dearest), which drops those.
+    #[must_use]
+    pub fn replacement_break_even(&self) -> Option<i64> {
+        match self
+            .script
+            .get_variable(&self.session, "replacement_break_even")
+        {
+            Ok(ScriptValue::Int(price)) => Some(price),
+            _ => None,
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE DEAREST THIS RUN'S SESSIONS EVER WERE TO REPLACE** — register item 908, and
+    /// the number that says whether the `capacity` road was open to this run at all. See
+    /// [`dearest`](Self#structfield.dearest), which holds the whole argument.
+    ///
+    /// ⚠ [`None`] is *no pass of this run ever read a composed price*, and there is no path to
+    /// `Some(0)`.
+    #[must_use]
+    pub fn context_break_even(&self) -> Option<i64> {
+        self.dearest
+    }
+
+    /// Raise [`dearest`](Self#structfield.dearest) to this pass's price — the one writer, called at
+    /// the top of [`pump`](Self::pump) beside [`note_fullness`](Self::note_fullness). Register item
+    /// 908.
+    ///
+    /// ⚠⚠ **A ZERO IS NOT A PRICE AND IS DROPPED HERE**, on the field above's rule and for the
+    /// document's own reason: `replacement_break_even` is `0` before the first judged turn and on
+    /// every turn whose pair could not be read, so a peak that took them would publish *replacing
+    /// this session is free* about a run nobody could price.
+    ///
+    /// ⚠⚠⚠ **THE MAXIMUM, AND IT IS NOT [`note_fullness`](Self::note_fullness)'s ARGUMENT.** That
+    /// one peaks because a level dropping on a replacement would otherwise report the smallest of a
+    /// run's sessions. This peaks because the question it answers is EXISTENTIAL: `capacity` was
+    /// open to this run if ANY of its sessions could reach the ceiling before the economic door
+    /// took it, and the session that could is the dearest one to replace. A run whose cheapest
+    /// session was cheap says nothing about whether the road ever opened.
+    fn note_break_even(&mut self) {
+        let Some(price) = self.replacement_break_even().filter(|price| *price > 0) else {
+            return;
+        };
+        self.dearest = Some(self.dearest.map_or(price, |peak| peak.max(price)));
+    }
+
     /// **HOW MANY `error.*` THIS DOCUMENT RAISED AND NOTHING ANSWERED** — consumed from SCE 2026-08-20.
     ///
     /// # ⚠⚠⚠⚠⚠ What it means NOW THAT THE DOCUMENT ANSWERS — register item 505, paid
@@ -9124,6 +9220,12 @@ impl OuterLoop {
         // is assigned on entry to `judging`, one transition per turn, and a pass is one transition
         // — so no assignment can be overwritten by another before this has seen it.
         self.note_fullness();
+        // ⛔⛔⛔⛔⛔ **AND WHAT REPLACING THAT SESSION WOULD COST, RAISED INTO THIS RUN'S PEAK** —
+        // register item 908, in the line above's place and on every one of its arguments: the
+        // document composes the price on entry to `judging`, one transition per turn, and the pass
+        // that finds a final state still runs this line. A run's LAST judged turn is exactly the
+        // one whose price would otherwise never be read.
+        self.note_break_even();
         // ⚠⚠⚠⚠ **THE DELIVERY EVIDENCE IS EMPTIED HERE AND NOWHERE ELSE** — register item 434.
         // Cleared at the TOP of the pass rather than taken at the funnel, because a pass has six
         // exits and five of them are `?`: a `take` at the funnel would leave a refused delivery's
@@ -16833,6 +16935,87 @@ mod tests {
             .close(pane);
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND WHAT REPLACING THOSE SESSIONS WOULD HAVE TO BE WORTH IS A PEAK OF ITS OWN,
+    /// FOR THE OPPOSITE REASON** — register item 908, and the producer of the term that says which
+    /// of `reviewing`'s two replacing doors a run could ever have walked through.
+    ///
+    /// # ⛔⛔⛔⛔⛔ It peaks, and NOT on its neighbour's argument
+    ///
+    /// [`note_fullness`](OuterLoop::note_fullness) peaks because a level drops on every replacement,
+    /// so a sample would report whichever session outlived the run. This peaks because the question
+    /// is EXISTENTIAL: `capacity` was open to a run if ANY of its sessions could reach the ceiling
+    /// before the economic door took it, and the session that could is the DEAREST to replace.
+    /// Written as an assignment, a run whose last session was cheap would publish *this run could
+    /// never have reached its ceiling* over a run that did.
+    ///
+    /// ⚠⚠ **AND THE ZERO IS SHARPER HERE THAN IT IS THERE.** The document writes `0` into this
+    /// name on every turn whose `cold` or `floor` came back unread — not merely before the first
+    /// one — so a peak that took zeros would answer *replacing this session is free* about exactly
+    /// the runs nobody could price, and `Some(0)` would then be compared against a ceiling and read
+    /// as *the road was closed*.
+    ///
+    /// ⚠ The readings are written into the datamodel rather than handed in, on the neighbour's
+    /// argument: `judging`'s `onentry` is the channel the product has.
+    #[test]
+    fn what_replacing_a_runs_session_costs_is_a_peak_a_zero_never_moves() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+
+        /// Put a composed price into the document the way `judging`'s `onentry` composes one.
+        fn as_the_document_composed_it(loops: &OuterLoop, price: i64) {
+            loops
+                .script
+                .set_variable(
+                    &loops.session,
+                    "replacement_break_even",
+                    ScriptValue::Int(price),
+                )
+                .expect("the document's own numbers are writable");
+        }
+
+        // ── ① THE SEEDED ZERO IS NOT A PRICE, and neither is the one a half-read pair leaves ──
+        as_the_document_composed_it(&loops, 0);
+        loops.note_break_even();
+        assert_eq!(
+            loops.context_break_even(),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 908: the document seeds this at `0` and re-writes a `0` on \
+             every turn whose `cold` or `floor` could not be read. A peak that took them would \
+             publish *replacing this session is free* about a run nobody could price — and a row \
+             comparing that against a ceiling would report the `capacity` road CLOSED on the \
+             strength of an absence.",
+        );
+
+        // ── ② A COMPOSED PRICE RAISES IT ──
+        as_the_document_composed_it(&loops, 525_965);
+        loops.note_break_even();
+        assert_eq!(
+            loops.context_break_even(),
+            Some(525_965),
+            "⚠⚠⚠ THE CONTROL: a loop that never publishes a price makes every assertion here \
+             vacuous, and it is the whole of what item 908 puts on a row",
+        );
+
+        // ── ③ AND A CHEAPER SESSION DOES NOT LOWER IT ──
+        as_the_document_composed_it(&loops, 120_000);
+        loops.note_break_even();
+        assert_eq!(
+            loops.context_break_even(),
+            Some(525_965),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 908: the question this answers is *could ANY session of this \
+             run have reached its ceiling first*, and the session that could is the dearest one to \
+             replace. Assigned rather than peaked, a run whose last session was cheap would report \
+             a road closed that one of its own sessions had open.",
+        );
+
+        WorkspacePaneAccess::new(Arc::clone(&workspace))
+            .lifecycle()
+            .expect("lifecycle")
+            .close(pane);
+    }
+
     /// ⛔⛔⛔⛔⛔ **AND WHAT THE RUN MUST NOT FORGET ACROSS THAT REPLACEMENT IS THE TEXT THE
     /// REPLACEMENT WAS BOUGHT WITH** — register item 719, and the exact opposite claim to its
     /// neighbour's, one struct out.
@@ -17496,16 +17679,61 @@ mod tests {
             paying.iter().all(|edge| {
                 edge.contains("cold &gt; 0")
                     && edge.contains("floor &gt; 0")
-                    && edge.contains("context - floor &gt;= 20 * cold")
+                    && edge.contains("context &gt;= replacement_break_even")
                     && edge.contains("context &lt; context_ceiling")
             }),
-            "⚠⚠⚠⚠ each must be written on the BREAK-EVEN and on nothing invented: `context - floor` \
-             is what this session could actually drop, `cold` is what its replacement re-writes, and \
-             a cache write costs twenty times a cache read — so no author is asked for a number. \
+            "⚠⚠⚠⚠ each must be written on the BREAK-EVEN and on nothing invented, and since \
+             register item 908 that break-even is NAMED rather than spelled twice — the edges read \
+             `replacement_break_even`, which claim 5b below holds to `floor` and `cold`. \
              ⚠ Both zeroes refused, because `cold` and `floor` degrade to 0 with `context` and an \
              unreadable number that could BUY a replacement would hand over exactly when the loop \
              sees least. ⚠⚠ And `context &lt; context_ceiling`, because capacity outranks this: a \
              session past its ceiling takes the fall-back whatever the economics say. Got {paying:?}",
+        );
+
+        // 5b. ⛔⛔⛔⛔⛔ AND THE NAME THE EDGES NOW CARRY IS COMPOSED FROM THE TWO READINGS AND
+        //     NOTHING ELSE — register item 908. Moving the price out of the guards is what let a
+        //     driver READ it, and it is also what would let an author quietly replace a measured
+        //     break-even with a number somebody picked: the edges above no longer show their own
+        //     arithmetic, so this claim is the only thing that keeps them honest.
+        //
+        //     ⚠ ONE assignment, not merely at least one. Two would be the drift the naming was
+        //     done to end, one document over from where items 855 and 864 each found it.
+        let priced: Vec<&str> = flat
+            .match_indices("<assign location=\"replacement_break_even\"")
+            .filter_map(|(at, _)| {
+                let rest = &flat[at..];
+                let end = rest.find("/>")? + 2;
+                Some(&rest[..end])
+            })
+            .filter(|assign| assign.contains("floor"))
+            .collect();
+        assert_eq!(
+            priced.len(),
+            1,
+            "⚠⚠⚠⚠ ITEM 908: the price must be COMPOSED in exactly one place. The edges above read \
+             it by name, so a second composition is a second authority on one number and a zeroth \
+             is a guard comparing against whatever the datamodel was seeded with. Got {priced:?}",
+        );
+        assert!(
+            priced
+                .iter()
+                .all(|assign| assign.contains("floor + 20 * cold")),
+            "⚠⚠⚠⚠ ITEM 908: and it must be that measurement and not a number somebody picked — \
+             `floor` is what a restart cannot escape, `cold` is what it re-writes, and a cache \
+             write costs twenty times a cache read, so no author is asked for a threshold here. \
+             ⚠ The multiplier is now written in ONE place in the document, which is where \
+             `sprag_gate::economics` reads it to recompute the stated sum. Got {priced:?}",
+        );
+        // ⚠⚠ AND THE COMPOSITION IS GUARDED ON BOTH READINGS, which is what keeps the PUBLISHED
+        // value honest rather than the guard: `reviewing` refuses a zero on its own account, but
+        // the price now leaves this document on a run's row (register item 908), and
+        // `floor + 20 * cold` over a half-read pair is a plausible number standing for an absence
+        // — item 891's defect, arriving where nobody would look for it.
+        assert!(
+            flat.contains("<if cond=\"cold &gt; 0 &amp;&amp; floor &gt; 0\">"),
+            "⚠⚠⚠⚠ ITEM 908: the composition must refuse a half-read pair, so that a `0` published \
+             on a row means *neither reading was taken* and never *replacing this session is free*",
         );
 
         // 6. ⚠⚠⚠⚠ AND THE CAPACITY DOOR IS ITS OWN EDGE — register item 445. It used to be a case

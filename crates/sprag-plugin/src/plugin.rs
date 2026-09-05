@@ -1494,6 +1494,39 @@ pub trait Plugin {
         None
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND WHAT REPLACING ITS SESSION WOULD HAVE TO BE WORTH** — register item 908, and
+    /// the number that says which of the two replacing doors this run could ever have walked
+    /// through.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A road nothing could say was closed
+    ///
+    /// The loop replaces a session on `context >= context_ceiling` (`capacity`) or, with room left,
+    /// on `context >= replacement_break_even` (`economics`). Both watch one rising level, so the
+    /// LOWER threshold is the one a session reaches — and a run whose break-even sits under its
+    /// ceiling takes the economic door every time and can never reach the capacity door at all.
+    ///
+    /// Item 856's stated refutation is *one `capacity` reflection whose prompt LANDS*, so a run
+    /// that structurally cannot produce one is not evidence about that axis and had been reported
+    /// as though it were. Measured 2026-09-05T16:10:51Z against one 800,000 ceiling, run 231 broke
+    /// even at 1,019,154 and could reach `capacity` while run 232 broke even at 525,965 and never
+    /// could — and both rows said `capacity 0 of 0`, which is *it has not happened yet* and *it can
+    /// never happen* in one word.
+    ///
+    /// ⚠⚠ [`None`] is *this plugin has no session to price* — every bundled plugin but the loop —
+    /// or a loop no pass of which ever read a composed price. **Never `Some(0)`**: the loop's
+    /// document writes a `0` whenever either half of the price came back unread, and a zero
+    /// published here would say *replacing this session is free* about a run nobody could price.
+    /// See `crate::outer::OuterLoop`'s `dearest`.
+    ///
+    /// ⚠ Asked by the [`Driver`] each step on [`context_high_water`](Self::context_high_water)'s
+    /// argument and for its reason: this is composed from LEVELS re-read every turn, and the peak
+    /// of a level cannot be taken once at the end.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn context_break_even(&self) -> Option<i64> {
+        None
+    }
+
     /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES THIS RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the owner's
     /// decision of 2026-09-03, register item 847, and [`deferred`](Self::deferred)'s twin at the
     /// other end of the same bound.

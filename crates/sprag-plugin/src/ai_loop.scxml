@@ -2251,6 +2251,46 @@
     <data id="floor" expr="0"/>
 
     <!--
+      ⛔⛔⛔⛔⛔ THE READING PAST WHICH REPLACING THIS SESSION PAYS FOR ITSELF
+      — register item 908, and the quantity the two economic edges below used
+      to spell inside their own guards.
+
+      IT IS NOT A NEW NUMBER. `context - floor &gt;= 20 * cold` and
+      `context &gt;= floor + 20 * cold` are the same comparison, and this names
+      its right-hand side so that ONE place in this document decides it. Written
+      twice — once per economic edge — it was a number two guards could come to
+      disagree about, which is the shape items 855 and 864 each cost a round.
+
+      ⚠⚠⚠⚠⚠ AND THE REASON IT IS A `data` RATHER THAN AN EXPRESSION: a driver
+      can READ it. `reviewing` has two doors that replace a session and they
+      point opposite ways — `capacity` fires where a session reached its
+      ceiling, `economics` where replacing became worth its cold start with room
+      to spare. Which one a run CAN reach is decided by this against
+      `context_ceiling`: with the break-even below the ceiling the economic door
+      always comes first and the capacity door is unreachable for that session,
+      however long it runs. Measured 2026-09-05 over two live runs, one of each:
+      run 231 broke even at 1,019,154 against an 800,000 ceiling and could reach
+      `capacity`; run 232 broke even at 525,965 against the same ceiling and
+      never could. Nothing outside this document could tell those apart, so a
+      `capacity 0 of 0` row said *it has not happened yet* and *it can never
+      happen* in one word.
+
+      ⚠⚠ ZERO IS *NEITHER READING WAS TAKEN* AND NEVER A LOW BREAK-EVEN, which
+      is why the assignment guards on both halves rather than composing whatever
+      the pair happen to hold. `cold` and `floor` degrade to 0 with `context`
+      and for the same cause, and `floor + 20 * cold` over a HALF-read pair is
+      an arithmetic result with nothing behind it — the absence-as-a-number
+      defect of item 891, which the driver publishing this would then have no
+      way to tell from a session that really is cheap to replace.
+
+      ⚠ THE MULTIPLIER IS STILL THE ONE THE PARAGRAPH ABOVE MEASURES, and it is
+      now written in exactly one place in this file. The ratchet
+      `an_economic_edge_carries_the_population_it_was_measured_in` reads it from
+      here and recomputes the stated sum against it.
+    -->
+    <data id="replacement_break_even" expr="0"/>
+
+    <!--
       ⚠⚠⚠⚠⚠ WHETHER THE TURN THAT JUST ENDED PRODUCED ANYTHING — register item
       719, written by the driver on the same `turn.done` as the three above and
       by nothing else.
@@ -4235,6 +4275,28 @@
       <assign location="cold" expr="_event.data.cold"/>
       <assign location="floor" expr="_event.data.floor"/>
       <!--
+        ⛔⛔⛔⛔⛔ AND THE BREAK-EVEN THE PAIR ABOVE COMPOSES — register item
+        908, in this block's one place and for its reason exactly: the two
+        readings are assigned here, so the number they make is assigned here
+        too. Derived on the edges instead it would be two copies of one price,
+        and derived by a reader it would be a second authority on it.
+
+        ⚠⚠ THE GUARD IS THE SAME ONE THE ECONOMIC EDGES CARRY, and it is here
+        rather than only there because this value is PUBLISHED: `reviewing` will
+        not buy a replacement on an unread pair, and a row must not report a
+        break-even composed from one. `floor + 20 * cold` with `cold` unread is
+        just `floor`, which is a plausible-looking number that means nothing.
+
+        ⚠ The `else` writes `0` rather than leaving the last turn's value: this
+        is a LEVEL like the three above it, and a stale price on a session that
+        has since become unreadable is worse than a silence.
+      -->
+      <if cond="cold &gt; 0 &amp;&amp; floor &gt; 0">
+        <assign location="replacement_break_even" expr="floor + 20 * cold"/>
+      <else/>
+        <assign location="replacement_break_even" expr="0"/>
+      </if>
+      <!--
         ⚠⚠⚠⚠⚠ AND WHETHER THE TURN THAT JUST ENDED PRODUCED ANYTHING — register
         item 719, in the block above's one place and for its reason exactly:
         every way in is a `turn.done`, so this runs once per judged turn.
@@ -5661,6 +5723,14 @@
       drop, `cold` is what its replacement re-pays — so no author is asked for a
       number here and nothing is being rounded.
 
+      ⚠⚠⚠ AND THE THRESHOLD ITSELF IS NAMED ABOVE RATHER THAN SPELLED HERE —
+      register item 908. This guard used to carry `context - floor &gt;= 20 *
+      cold`, and so did its twin on `review.none`: one price written in two
+      places, and a reader outside this document could see neither. It is now
+      `replacement_break_even`, composed once beside `cold` and `floor`, and the
+      comparison is the same one — `context - floor &gt;= 20 * cold` and
+      `context &gt;= floor + 20 * cold` differ by moving a term.
+
       ⚠⚠ IT IS ORDERED AFTER CAPACITY AND CANNOT OVERRULE IT. This edge asks its
       question only where there IS room; a session past its ceiling takes the
       fall-back below whatever the economics say, because the two axes point
@@ -5692,7 +5762,7 @@
       round; see `restart_reason`.
     -->
     <transition event="review.done"
-                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling &amp;&amp; cold &gt; 0 &amp;&amp; floor &gt; 0 &amp;&amp; context - floor &gt;= 20 * cold"
+                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling &amp;&amp; cold &gt; 0 &amp;&amp; floor &gt; 0 &amp;&amp; context &gt;= replacement_break_even"
                 target="restarting">
       <assign location="carried" expr="_event.data.carried"/>
       <assign location="restart_reason" expr="'economics'"/>
@@ -5833,7 +5903,7 @@
       guards themselves are written to avoid one paragraph up.
     -->
     <transition event="review.none"
-                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling &amp;&amp; cold &gt; 0 &amp;&amp; floor &gt; 0 &amp;&amp; context - floor &gt;= 20 * cold"
+                cond="context_ceiling &gt; 0 &amp;&amp; context &gt; 0 &amp;&amp; context &lt; context_ceiling &amp;&amp; cold &gt; 0 &amp;&amp; floor &gt; 0 &amp;&amp; context &gt;= replacement_break_even"
                 target="restarting">
       <assign location="carried" expr="''"/>
       <assign location="restart_reason" expr="'economics'"/>

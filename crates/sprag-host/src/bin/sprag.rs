@@ -1045,17 +1045,46 @@ fn folds_lines(
                     )
                 })
                 .collect();
+            // ⛔⛔⛔⛔⛔ **AND WHETHER THE `capacity` ROAD WAS EVER OPEN TO THIS RUN** — register
+            // item 908, on the row and not only in the aggregate below, because the reading it
+            // repairs is per-run: `reviewing` takes whichever of its two replacing thresholds is
+            // LOWER, so a run whose break-even stands under its ceiling meets the economic door
+            // first and its `capacity 0 of 0` is *could not* rather than *has not yet*. Measured
+            // 2026-09-05T16:10:51Z, two live runs at one 800,000 ceiling broke even at 1,019,154
+            // and 525,965 and printed the same word.
+            //
+            // ⚠ The price is PRINTED beside the verdict, because the verdict is a comparison and a
+            // reader handed only its result cannot see which side moved.
+            let mut road = match row.break_even {
+                Some(price) => format!(
+                    ", replacing its session had to be worth {price} — {}",
+                    row.capacity_road().describe()
+                ),
+                None => format!(", {}", row.capacity_road().describe()),
+            };
+            // ⛔⛔⛔ AND THE ONE READING THAT WORD DOES NOT LICENSE, asked rather than written in a
+            // doc — `columns_disagree`'s lesson one column over. `Undercut` says the economic door
+            // is met first AT A REFLECTION BETWEEN the two thresholds; a single turn can carry the
+            // reading past both at once, and then `capacity` fires anyway. A reader shown only the
+            // word would read such a row as a contradiction.
+            if row.walked_a_road_its_price_undercut() {
+                road.push_str(
+                    " ⚠ AND IT TOOK THAT ROAD ANYWAY, so one turn carried it past both thresholds \
+                     at once",
+                );
+            }
             lines.push(format!(
                 // ⛔⛔⛔⛔⛔ **PEAKED AT, NOT READ** — `context_high_water` is a MAXIMUM and its own
                 // doc says so; the mouth said *read*, which names a level. Measured over the live
                 // store, the same two `budget` folds of run 232 were printed beside **435,382**
                 // (2026-09-05T15:18:51Z), **574,713** (16:16:50Z) and **678,379** (16:54:37Z) —
                 // one set of folds, three fullnesses, decided by when somebody looked.
-                "  run {}: peaked at {} of a {} ceiling, {}{} — {}",
+                "  run {}: peaked at {} of a {} ceiling, {}{}{} — {}",
                 row.id,
                 row.fullest,
                 row.ceiling,
                 row.judged.describe(),
+                road,
                 // ⚠ A row whose peak is BELOW the ceiling **it reflected on** is a defect in the
                 // recording rather than a fact about a session — the document turns on
                 // `context >= context_ceiling` and the peak is taken over those readings. Said
@@ -1154,6 +1183,30 @@ fn folds_lines(
                 "  over {} production run(s) judged by their own document's ceiling{span}: {}",
                 folds.production_runs(),
                 split.join(" · "),
+            ));
+            // ⛔⛔⛔⛔⛔ AND HOW MANY OF THOSE RUNS COULD HAVE WALKED THE `capacity` ROAD AT ALL —
+            // register item 908, printed directly under the rate it qualifies and over exactly
+            // that rate's population. The `capacity` column of the line above is the axis's own
+            // road, and its denominator can be structurally empty: `reviewing` takes whichever of
+            // its two replacing thresholds is LOWER, so a run whose break-even stands under its
+            // ceiling meets the economic door first and can contribute nothing to that road.
+            // Without this line `capacity 0 of 0` says *has not happened yet* and *cannot happen*
+            // in one word — the last shape of the zero-read-as-clean defect item 856 has paid for
+            // six times.
+            //
+            // ⚠ EVERY ARM INCLUDING THE ZEROS, so the counts can be checked against the run count
+            // one line up by eye — the roads-with-nothing-on-them rule, applied to a population
+            // rather than to a rate.
+            lines.push(format!(
+                "  of those {}, by whether that `capacity` column could ever have been non-zero: \
+                 {}",
+                folds.production_runs(),
+                folds
+                    .capacity_road_over_the_rate()
+                    .into_iter()
+                    .map(|(road, count)| format!("{count} where {}", road.describe()))
+                    .collect::<Vec<_>>()
+                    .join("; "),
             ));
         }
         // 🎯🎯🎯🎯🎯 AND THE AXIS'S OWN QUESTION, over every row that recorded a fullness — register
@@ -13989,8 +14042,11 @@ mod tests {
         let log: RunLog = serde_json::from_value(serde_json::json!({
             "version": sprag_host::runs::RUN_LOG_VERSION,
             "runs": [
+                // ⛔ PRICED ABOVE ITS CEILING — register item 908, so the ceiling is the lower
+                //    threshold and `capacity` is a road this run could walk.
                 {"id": 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
                  "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [],
+                 "context_break_even": 1_019_154,
                  "deliveries": {"made": 44, "folded": 1},
                  "folds_by_reason": {"capacity": {"delivered": 4, "folded": 1},
                                      "ordinary": {"delivered": 40, "folded": 0}}},
@@ -14028,16 +14084,28 @@ mod tests {
                 //    ever produced looked like (2026-09-05T13:01:38Z), and the mouth called it a
                 //    recording defect. Nothing in this fixture had a peak below its ceiling, so
                 //    the arm was unreachable and only the live store could find it.
+                //    ⛔⛔⛔⛔⛔ AND IT IS REGISTER ITEM 908's OWN SHAPE TOO: priced at 525,965
+                //    under an 800,000 ceiling, exactly as run 232 was measured on
+                //    2026-09-05T16:10:51Z. Its `capacity` road was not merely untravelled — the
+                //    economic door stands below the ceiling, so this run could not have taken it,
+                //    and the axis was waiting on a landing from rows shaped like this one.
                 {"id": 4, "label": "ai_loop pane=4", "iterations": 5, "finished": false,
                  "context_high_water": 303_328, "context_ceiling": 800_000, "overridden": [],
+                 "context_break_even": 525_965,
                  "deliveries": {"made": 2, "folded": 0},
                  "folds_by_reason": {"ordinary": {"delivered": 2, "folded": 0}}},
                 // ⚠⚠ AND ITS CONTROL, which is what keeps the fix from being *never warn*: the
                 //    SAME two columns disagreeing on a run that DID walk the capacity road. There
                 //    the document turned on `context >= context_ceiling` and the peak is a peak
                 //    over those readings, so a peak below the ceiling really is a recording defect.
+                //    ⛔ AND IT IS ALSO THE ROW THAT WALKED A ROAD ITS OWN PRICE STANDS UNDER —
+                //    register item 908. `Undercut` means the economic door is met first AT A
+                //    REFLECTION BETWEEN the thresholds, not that `capacity` is impossible: one
+                //    turn carrying the reading past both fires it anyway. The page has to say so,
+                //    or this row and its word read as a contradiction.
                 {"id": 5, "label": "ai_loop pane=5", "iterations": 9, "finished": true,
                  "context_high_water": 100_000, "context_ceiling": 800_000, "overridden": [],
+                 "context_break_even": 525_965,
                  "deliveries": {"made": 1, "folded": 1},
                  "folds_by_reason": {"capacity": {"delivered": 1, "folded": 1}}},
                 // ⚠⚠ AND THE THIRD WAY THE ROAD IS TAKEN, which is the half a `delivered > 0` test
@@ -14176,6 +14244,104 @@ mod tests {
              `context_ceiling > 0` — so it could never supply the landing item 856 waits for, and \
              its 6 folds of 12 would quieten the very control road the axis is read against. The \
              live store held such a row on 2026-09-05T15:33:48Z. Got:\n{said}",
+        );
+
+        // ── ②bba AND WHETHER THAT `capacity` COLUMN COULD EVER HAVE BEEN NON-ZERO ──
+        //
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 908. The rate one assertion up prints `capacity 2 of 5` over four
+        // production runs, and a `capacity` denominator has two opposite causes a reader cannot
+        // tell apart: the road was not travelled, or the run's document could not open it.
+        // `reviewing` replaces a session by whichever of two thresholds the rising reading meets
+        // FIRST — the ceiling (`capacity`) or the break-even (`economics`) — so a run priced under
+        // its ceiling contributes nothing to that road however long it runs.
+        //
+        // Measured 2026-09-05T16:10:51Z at one 800,000 ceiling: run 231 broke even at 1,019,154 and
+        // could reach the road, run 232 at 525,965 and could not. **Both printed `capacity 0 of
+        // 0`.** Run 4 here is run 232's own shape.
+        assert!(
+            said.contains(
+                "run 1: peaked at 800000 of a 800000 ceiling, its document's ceiling, replacing \
+                 its session had to be worth 1019154 — its ceiling is the lower threshold, so the \
+                 `capacity` road was open to it"
+            ) && said.contains(
+                "replacing its session had to be worth 525965 — its break-even stands UNDER that \
+                 ceiling, so the economic door is met first and a `capacity` count of zero here is \
+                 *could not*, not *has not yet*"
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 908: each measured row must say whether the `capacity` road \
+             was ever open to it, WITH the price beside the verdict — a reader handed only the \
+             result cannot see which side of the comparison moved. Got:\n{said}",
+        );
+        // ⛔⛔⛔ AND THE ONE READING THE WORD DOES NOT LICENSE, said on the row that has it. Run 5
+        // is priced under its ceiling and DID take the road: `Undercut` is *the economic door is
+        // met first at a reflection between the two*, and a single turn can carry the reading past
+        // both at once. Run 4 is priced identically and did not take it, so a page that warned on
+        // every undercut row would be wrong about one of them.
+        assert!(
+            said.contains(
+                "run 5: peaked at 100000 of a 800000 ceiling, its document's ceiling, replacing \
+                 its session had to be worth 525965 — its break-even stands UNDER that ceiling, so \
+                 the economic door is met first and a `capacity` count of zero here is *could \
+                 not*, not *has not yet* ⚠ AND IT TOOK THAT ROAD ANYWAY"
+            ) && !said.contains(
+                "run 4: peaked at 303328 of a 800000 ceiling, its document's \
+                 ceiling, replacing its session had to be worth 525965 — its break-even stands \
+                 UNDER that ceiling, so the economic door is met first and a `capacity` count of \
+                 zero here is *could not*, not *has not yet* ⚠"
+            ),
+            "⛔⛔⛔⛔ REGISTER ITEM 908: `Undercut` is not *impossible*, and the page must say so \
+             exactly on the rows where it happened. A condition written in a doc and never asked \
+             is what `columns_disagree` cost a round, one column over. Got:\n{said}",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE POPULATION BESIDE THE RATE, EVERY ARM INCLUDING ITS ZEROS. Runs 6 and 3
+        // record no price — which is what every row in the live store carries today — and an
+        // ABSENCE printed as a number would decide the question on behalf of a daemon that never
+        // answered it.
+        assert!(
+            said.contains(
+                "of those 4, by whether that `capacity` column could ever have been non-zero: 1 \
+                 where its ceiling is the lower threshold"
+            ) && said.contains("2 where its break-even stands UNDER that ceiling")
+                && said.contains(
+                    "1 where nothing recorded what replacing its session would have to be worth, \
+                     so which door was lower is unknown — an absence, not a cheap session"
+                ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 908: the rate's `capacity` figure needs the population that \
+             says how to read its denominator, and every arm has to travel — an arm dropped for \
+             being empty is a population a reader cannot check against the run count one line up. \
+             Got:\n{said}",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE ZEROS THEMSELVES, OVER A LOG THAT HAS ONLY ONE KIND OF ROW — which is
+        // the arm the fixture above cannot reach, because all three of its arms have members.
+        //
+        // ⚠⚠ **MEASURED: THE ASSERTION ABOVE IS SATISFIED BY A RENDERER THAT DROPS EMPTY ARMS.**
+        // A build filtering `count > 0` off that line passed it, and the live store is exactly
+        // where that matters — at 2026-09-05T22:47:22Z `sprag folds` over 240 rows printed
+        // `0 … ; 0 … ; 3 …`, so on the real answer TWO of the three arms are the ones a filter
+        // would remove. A reader then sees a population that does not sum to the run count beside
+        // it and has no way to know which arms were dropped. This workspace's rule, printed: an
+        // arm nothing reaches will be wrong.
+        let all_one_kind: RunLog = serde_json::from_value(serde_json::json!({
+            "version": sprag_host::runs::RUN_LOG_VERSION,
+            "runs": [
+                {"id": 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
+                 "context_high_water": 400_000, "context_ceiling": 800_000, "overridden": [],
+                 "deliveries": {"made": 4, "folded": 1},
+                 "folds_by_reason": {"ordinary": {"delivered": 4, "folded": 1}}},
+            ]
+        }))
+        .expect("a log whose only production run records no price");
+        let single = folds_lines(&[(here.clone(), all_one_kind)], None).join("\n");
+        assert!(
+            single.contains(
+                "of those 1, by whether that `capacity` column could ever have been non-zero: 0 \
+                 where its ceiling is the lower threshold"
+            ) && single.contains("; 0 where its break-even stands UNDER that ceiling")
+                && single.contains("; 1 where nothing recorded"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 908: the ZEROS are the half of this population a reader \
+             checks the run count against, and over the live store two of the three arms ARE zero. \
+             A line that prints only its non-empty arms says *1 of 1* while looking like a table \
+             that might have said anything. Got:\n{single}",
         );
 
         // ── ②bc AND THE ROAD QUESTION OVER EVERY READABLE TABLE — the wider half, register 856 ──

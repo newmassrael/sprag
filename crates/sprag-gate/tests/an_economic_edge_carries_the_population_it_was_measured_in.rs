@@ -14,7 +14,8 @@
 //!
 //! # ⚠⚠⚠⚠⚠ So the pin is over THREE artefacts, and the sum is recomputed
 //!
-//! * the DOCUMENT's guards, which is where the multiplier lives;
+//! * the DOCUMENT's own composition of `replacement_break_even`, which is where the multiplier
+//!   lives — register item 908 moved it there out of the two guards, which now read it by name;
 //! * the TEMPLATE's paragraph, which states the measurement, its date and its rate;
 //! * the FIXTURE's trio, which is what every gate drives.
 //!
@@ -36,29 +37,43 @@ fn read(relative: &str) -> String {
         .unwrap_or_else(|why| panic!("⚠ `{}` must be readable: {why}", path.display()))
 }
 
-/// ⚠⚠⚠⚠ **THE DOCUMENT'S TWO GUARDS PRICE A HANDOVER THE SAME WAY, AND THAT PRICE IS WHAT THE
-/// PARAGRAPH DOES ITS SUM WITH.**
+/// ⚠⚠⚠⚠ **THE DOCUMENT PRICES A HANDOVER IN ONE PLACE, BOTH ECONOMIC EDGES READ THAT PRICE, AND
+/// IT IS WHAT THE PARAGRAPH DOES ITS SUM WITH.**
 ///
-/// `review.done` and `review.none` each carry an economic edge. Two multipliers would make *did the
-/// reviewer find a habit* decide what a restart costs — register item 424(a)'s own argument, which
-/// the plugin's text gate holds on the guards' SHAPE. This holds the number itself, and hands it to
-/// the pin below so that re-pricing the trade cannot leave the prose behind.
+/// `review.done` and `review.none` each carry an economic edge, and two multipliers would make *did
+/// the reviewer find a habit* decide what a restart costs — register item 424(a)'s own argument,
+/// which the plugin's text gate holds on the guards' SHAPE.
+///
+/// ⚠⚠ **THAT USED TO BE ASKED AS *do the two guards agree*** — register item 908 moved the price
+/// out of the guards and into one composition the edges read by NAME, so a driver can publish it
+/// and a row can say which of the loop's two replacing doors a run could ever have taken. The claim
+/// therefore split in two, and neither half is sufficient: one composition proves nothing if the
+/// edges went on computing thresholds of their own, and two edges naming the value prove nothing if
+/// the value is composed twice.
 #[test]
-fn both_guards_price_a_handover_at_one_multiplier() {
+fn the_price_is_composed_once_and_both_economic_edges_read_it() {
     let scxml = read(TEMPLATE);
-    let multipliers = economics::guard_multipliers(&scxml);
+    let multipliers = economics::priced_multipliers(&scxml);
 
-    assert!(
-        !multipliers.is_empty(),
-        "⚠⚠⚠⚠⚠ no guard in `{TEMPLATE}` compares `context - floor` against a multiple of `cold`. \
-         The economic door is what keeps a loop from replacing a session it should have kept; a \
-         document without it decides handovers on capacity alone.",
+    assert_eq!(
+        multipliers.len(),
+        1,
+        "⚠⚠⚠⚠⚠ `{TEMPLATE}` must compose `replacement_break_even` from `floor` and `cold` in \
+         EXACTLY one place, and it composes it in {}: {multipliers:?}. Zero is a document that has \
+         stopped pricing handovers at all — the economic door is what keeps a loop from replacing a \
+         session it should have kept, and without it handovers are decided on capacity alone. Two \
+         is the drift naming the price was done to end, arriving one element up.",
+        multipliers.len(),
     );
-    assert!(
-        multipliers.windows(2).all(|two| two[0] == two[1]),
-        "⚠⚠⚠⚠ the guards disagree about what a cache write costs: {multipliers:?}. `review.done` \
-         and `review.none` must price a handover identically, or whether the reviewer found a habit \
-         silently changes the trade.",
+    // ⚠⚠⚠ AND THE EDGES DECIDE ON THAT PRICE. Without this, the composition could be a value
+    // nothing reads — a number published on rows while the guards trade at another, which is the
+    // *one value, two homes* defect (items 855, 864) wearing this item's own repair as a disguise.
+    let reading = economics::edges_reading_the_price(&scxml);
+    assert_eq!(
+        reading, 2,
+        "⚠⚠⚠⚠ `review.done` and `review.none` must BOTH decide on the composed price and {reading} \
+         do. An edge spelling its own threshold beside it is a second authority on one number, and \
+         the row a driver publishes would then describe a trade the loop is not making.",
     );
 
     // ⚠⚠⚠ AND THE FIXTURE'S OWN ARITHMETIC IS AT THE SAME PRICE. `Billed::toll` spells the
@@ -100,10 +115,10 @@ fn the_stated_break_even_is_the_fixtures_own_and_the_sum_is_redone() {
 
     let said = economics::stated(&scxml).unwrap_or_else(|why| panic!("{why}"));
     let fixture = economics::sample(&rust).unwrap_or_else(|why| panic!("{why}"));
-    let multipliers = economics::guard_multipliers(&scxml);
+    let multipliers = economics::priced_multipliers(&scxml);
     let priced = *multipliers
         .first()
-        .expect("`both_guards_price_a_handover_at_one_multiplier` holds this end");
+        .expect("`the_price_is_composed_once_and_both_economic_edges_read_it` holds this end");
 
     assert_eq!(
         said.multiplier, priced,

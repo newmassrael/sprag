@@ -372,6 +372,31 @@ pub const RUN_CONTEXT_CEILING_KEY: &str = "context_ceiling";
 /// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_OVERRIDDEN_KEY`]'s argument: an added answer
 /// key withdraws no address and widens no value space a peer decodes whole.
 pub const RUN_CONTEXT_HIGH_WATER_KEY: &str = "context_high_water";
+/// ⛔⛔⛔⛔⛔ **AND WHAT REPLACING THAT SESSION WOULD HAVE TO BE WORTH** — register item 908, the
+/// third column of the comparison the two keys above are the other two of.
+///
+/// # ⛔⛔⛔⛔⛔ `capacity 0 of 0` is two sentences, and no row could tell them apart
+///
+/// `reviewing` replaces a session by whichever of two thresholds the rising reading meets first:
+/// `context >= context_ceiling` puts `capacity` on the row, and `context >= replacement_break_even`
+/// — with room still left — puts `economics` there. So a run whose break-even sits BELOW its
+/// ceiling takes the economic door every time and **can never produce a `capacity` reflection at
+/// all**, however long it runs.
+///
+/// Item 856's own stated refutation is *one `capacity` reflection whose prompt LANDS*. Measured
+/// 2026-09-05T16:10:51Z over two live runs against the same 800,000 ceiling: run 231 broke even at
+/// 1,019,154 and could reach that road; run 232 broke even at 525,965 and never could. **Both
+/// published `capacity 0 of 0`** — *it has not happened yet* and *it can never happen* in one word,
+/// and item 856's condition was waiting on evidence one of them was structurally unable to give.
+///
+/// ⚠⚠ ABSENT is *nobody composed one*, and it is **never a zero**: the loop's document writes `0`
+/// whenever either half of the price came back unread, and the producer drops those — so a value
+/// here is always positive, and a zero would claim replacing a session was free on behalf of a run
+/// nobody could price. Item 891's rule, one key over.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_OVERRIDDEN_KEY`]'s argument unchanged: an added
+/// answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_CONTEXT_BREAK_EVEN_KEY: &str = "context_break_even";
 /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN CHANGED DIRECTION WITH NOBODY CHECKING** — the owner's
 /// decision of 2026-09-03, register item 847, and [`RUN_DEFERRED_KEY`]'s twin at the other end of
 /// the same bound.
@@ -6093,6 +6118,12 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         // must not manufacture.
         RUN_CONTEXT_CEILING_KEY: progress.context_ceiling,
         RUN_CONTEXT_HIGH_WATER_KEY: progress.context_high_water,
+        // ⛔⛔⛔⛔⛔ AND THE THIRD COLUMN OF THAT SAME COMPARISON — register item 908. The pair
+        // above says how full a session got and what it was judged by; this says which of the two
+        // doors out of `reviewing` the run could ever have taken, and without it a `capacity`
+        // count of zero over a run that could never walk that road reads as evidence about the
+        // road. ⚠ `null` where nobody composed one, never `0` — see the key.
+        RUN_CONTEXT_BREAK_EVEN_KEY: progress.context_break_even,
         RUN_DRIVING_KEY: progress.driving.map(|pane| pane.0),
         RUN_BANKED_KEY: progress.banked.as_ref().map(|banked| json!({
             "completed": banked.completed,
@@ -6204,6 +6235,10 @@ pub struct ReportedProgress {
     pub context_ceiling: Option<i64>,
     /// See [`context_ceiling`](Self::context_ceiling) — the other side of the same comparison.
     pub context_high_water: Option<i64>,
+    /// ⛔ What it said replacing its session would have to be worth — register item 908, read on
+    /// the two above's terms and independent of both: a driver that knows the price and not the
+    /// reading has still said which door its run could take.
+    pub context_break_even: Option<i64>,
     /// Which pane it said it was driving — items 663 / 540.
     pub driving: Option<PaneId>,
     /// How much of its work it said was complete and kept — items 663 / 616.
@@ -6525,6 +6560,12 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
     let context_high_water = beside
         .get(RUN_CONTEXT_HIGH_WATER_KEY)
         .and_then(Value::as_i64);
+    // ⛔⛔⛔⛔⛔ AND THE THIRD, READ SEPARATELY ON THE TWO ABOVE'S OWN EXCEPTION — register item
+    // 908. A daemon too old to publish it says nothing about which road a run could take, and that
+    // silence must reach the row as a silence: filled in, it would decide the question.
+    let context_break_even = beside
+        .get(RUN_CONTEXT_BREAK_EVEN_KEY)
+        .and_then(Value::as_i64);
     let banked = (|| {
         let banked = beside.get(RUN_BANKED_KEY)?;
         Some(sprag_plugin::Banked {
@@ -6586,6 +6627,7 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
         checks,
         context_ceiling,
         context_high_water,
+        context_break_even,
         driving: beside
             .get(RUN_DRIVING_KEY)
             .and_then(Value::as_u64)
@@ -7054,6 +7096,16 @@ pub(crate) fn run_to_json(run: &RunSummary, seat: Option<u64>, look: LiveLook) -
         .or(run.progress.context_high_water)
     {
         entry[RUN_CONTEXT_HIGH_WATER_KEY] = json!(fullest);
+    }
+    // ⛔⛔⛔⛔⛔ AND WHAT REPLACING THAT SESSION WOULD HAVE TO BE WORTH — register item 908, beside
+    // the state on the two clauses above's terms and for their reason: item 856's rate is read off
+    // runs that have ENDED, so a fact that lives only while a run is alive is a fact that rate can
+    // never use.
+    if let Some(price) = reported
+        .context_break_even
+        .or(run.progress.context_break_even)
+    {
+        entry[RUN_CONTEXT_BREAK_EVEN_KEY] = json!(price);
     }
     // 🎯🎯🎯🎯🎯 AND WHICH OF ITS BOUNDS ARE NOT ITS DOCUMENT'S — register item 853, beside the
     // state on the terms every clause above it is published under.
@@ -7786,6 +7838,10 @@ pub fn uncommitted_sentence(run: &Value) -> Option<String> {
 pub fn context_sentence(run: &Value) -> Option<String> {
     let fullest = run.get(RUN_CONTEXT_HIGH_WATER_KEY).and_then(Value::as_i64);
     let ceiling = run.get(RUN_CONTEXT_CEILING_KEY).and_then(Value::as_i64);
+    // ⛔ AND THE THIRD TERM — register item 908. ⚠ It does NOT open the sentence: a price with no
+    // ceiling beside it has nothing to be compared against, and this function's whole rule is that
+    // a number is not published without the thing it is measured against.
+    let price = run.get(RUN_CONTEXT_BREAK_EVEN_KEY).and_then(Value::as_i64);
     if fullest.is_none() && ceiling.is_none() {
         return None;
     }
@@ -7810,6 +7866,35 @@ pub fn context_sentence(run: &Value) -> Option<String> {
                     " — {} % of it",
                     read.saturating_mul(100) / ceiling
                 ));
+            }
+            // ⛔⛔⛔⛔⛔ AND WHICH OF THE TWO REPLACING DOORS THAT CEILING IS EVEN ON THE WAY TO —
+            // register item 908. `reviewing` replaces a session at whichever threshold the rising
+            // reading meets FIRST: the ceiling (`capacity`) or the break-even (`economics`). A
+            // session priced under its ceiling meets the economic door every time, so *83 % of
+            // its ceiling* reads as *nearly there* about a run that was never going anywhere near
+            // it.
+            //
+            // ⚠⚠ IT IS THE THIRD TERM OF THE COMPARISON THIS SENTENCE EXISTS TO HOLD TOGETHER,
+            // and leaving it out of the sentence while the row carries it would re-create, at the
+            // mouth, the half-a-comparison defect items 894 and 908 are both about.
+            //
+            // ⚠ Only where the ceiling is IN FORCE, which is what this arm already establishes —
+            // `CapacityRoad::of` holds why a zero ceiling is not a side of this comparison.
+            if ceiling > 0 {
+                // ⚠ THE SAME WORDS THE REPORT PRINTS, from the same authority — `sprag folds` and
+                // this sentence are two mouths on one comparison, and a reader who saw a run
+                // described one way while it ran and another way afterwards would be right to
+                // trust neither.
+                said.push_str(&match price {
+                    Some(price) => format!(
+                        ", and replacing its session had to be worth {price} — {}",
+                        crate::runs::CapacityRoad::of(Some(price), ceiling).describe(),
+                    ),
+                    None => format!(
+                        ", and {}",
+                        crate::runs::CapacityRoad::of(None, ceiling).describe()
+                    ),
+                });
             }
             said
         }
@@ -9237,6 +9322,7 @@ mod tests {
             document: Some(document.to_owned()),
             context_ceiling: None,
             context_high_water: None,
+            context_break_even: None,
             // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
             overridden: None,
             stood_down: None,
@@ -9785,6 +9871,7 @@ mod tests {
                 document: None,
                 context_ceiling: None,
                 context_high_water: None,
+                context_break_even: None,
                 // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
                 overridden: None,
                 // ⚠ `None` and not `Some(false)` — this fixture IS a log written by an older
@@ -9987,6 +10074,7 @@ mod tests {
             document: None,
             context_ceiling: None,
             context_high_water: None,
+            context_break_even: None,
             // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
             overridden: None,
             stood_down: None,
@@ -10417,6 +10505,7 @@ mod tests {
                 document: None,
                 context_ceiling: None,
                 context_high_water: None,
+                context_break_even: None,
                 // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859. A log fixture answers no door.
                 overridden: None,
                 stood_down: None,
@@ -12819,9 +12908,16 @@ mod tests {
     fn how_full_a_run_got_and_the_bound_it_was_judged_by_reach_the_row_and_its_mouth() {
         /// A row for a run whose DRIVER reported the pair, which is every real run.
         fn reported_row(ceiling: Option<i64>, fullest: Option<i64>) -> Value {
+            priced_row(ceiling, fullest, None)
+        }
+
+        /// The same, with the price of replacing its session beside them — register item 908, the
+        /// third term of this comparison.
+        fn priced_row(ceiling: Option<i64>, fullest: Option<i64>, price: Option<i64>) -> Value {
             let progress = sprag_plugin::Progress {
                 context_ceiling: ceiling,
                 context_high_water: fullest,
+                context_break_even: price,
                 ..sprag_plugin::Progress::default()
             };
             row_from(sprag_plugin::Progress::default(), Some(progress))
@@ -12880,6 +12976,36 @@ mod tests {
              comes to. The SHARE is the number a person acts on — the same reading is nearly full \
              under one ceiling and long past another — and a mouth that prints the two apart hands \
              the comparison back by eye: {said:?}",
+        );
+
+        // ── ②b AND THE THIRD TERM: WHICH OF THE TWO REPLACING DOORS THAT CEILING IS ON ──
+        //
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 908. `reviewing` replaces a session at whichever threshold the
+        // rising reading meets FIRST — the ceiling (`capacity`) or the break-even (`economics`) —
+        // so *76 % of its ceiling* reads as *nearly there* about a run that was never going to
+        // arrive. Measured 2026-09-05T16:10:51Z at one 800,000 ceiling: run 231 priced at
+        // 1,019,154 could reach that door and run 232 at 525,965 could not, and every mouth said
+        // the same thing about both.
+        let open = context_sentence(&priced_row(Some(800_000), Some(612_000), Some(1_019_154)))
+            .expect("a row carrying all three can be said back");
+        let undercut = context_sentence(&priced_row(Some(800_000), Some(612_000), Some(525_965)))
+            .expect("a row carrying all three can be said back");
+        assert!(
+            open.contains("replacing its session had to be worth 1019154")
+                && open.contains("the `capacity` road was open to it")
+                && undercut.contains("replacing its session had to be worth 525965")
+                && undercut.contains("its break-even stands UNDER that ceiling"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 908: the row carries the price and this sentence is where the \
+             comparison is held together — leaving the third term out of it re-creates the \
+             half-a-comparison defect at the mouth, one term along from where item 894 found it. \
+             open={open:?} undercut={undercut:?}",
+        );
+        assert!(
+            said.contains("nothing recorded what replacing its session would have to be worth"),
+            "⛔⛔⛔⛔ AND AN ABSENCE IS SPOKEN AS AN ABSENCE, which is the whole live store today \
+             (240 rows, `context_break_even` non-null 0 at 2026-09-05T22:46:10Z). A sentence \
+             silent about it lets a reader assume the road was open; one that printed a zero would \
+             claim the session was free to replace: {said:?}",
         );
 
         // ── ③ AND A THREAD-DRIVEN RUN'S CELL IS STILL READ, which is the way back ──
@@ -14786,6 +14912,7 @@ mod tests {
                 deferred,
                 context_ceiling: None,
                 context_high_water: None,
+                context_break_even: None,
                 unchecked,
                 // ⚠ `None` HERE AND ASSERTED ELSEWHERE — register item 833. This fixture is about
                 // the two counts it takes as arguments; the subset that says WHY has its own gate
@@ -14965,6 +15092,7 @@ mod tests {
                 deferred: None,
                 context_ceiling: None,
                 context_high_water: None,
+                context_break_even: None,
                 unchecked: None,
                 unadmitted: None,
                 waiting: None,
@@ -20555,6 +20683,7 @@ mod tests {
                     document: document.map(str::to_owned),
                     context_ceiling: None,
                     context_high_water: None,
+                    context_break_even: None,
                     // ⚠ NOR WHICH NUMBERS ITS CALLER TOOK — item 859: a log fixture answers no
                     // door. The gates that DRIVE the answer are `runs`'s own, on the submit.
                     overridden: None,

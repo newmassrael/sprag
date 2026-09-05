@@ -23,9 +23,15 @@
 //!   it, because prose is not a test.
 //!
 //! So this reads BOTH and pins them to each other (register item 470: a ratchet that cannot rot
-//! reads both artefacts), and it takes the multiplier from the DOCUMENT'S OWN GUARDS rather than
-//! from either side's prose — so `20` becoming `15` in the transitions makes the stated sum wrong
-//! by arithmetic instead of by opinion.
+//! reads both artefacts), and it takes the multiplier from the DOCUMENT'S OWN PRICE rather than
+//! from either side's prose — so `20` becoming `15` there makes the stated sum wrong by arithmetic
+//! instead of by opinion.
+//!
+//! ⚠⚠ **THAT PRICE MOVED, AND THE NEEDLE MOVED WITH IT** — register item 908. It used to be spelled
+//! inside the two economic guards; it is now composed once into `replacement_break_even`, which the
+//! guards read by name and a driver can publish on a run's row. See
+//! [`crate::economics::PRICE`], which also holds why the old needle would have gone on matching —
+//! out of a COMMENT.
 //!
 //! ⚠⚠⚠⚠ **NOTHING HERE IS SPELLED.** The claim is found by its SHAPE (`N * X + Y` = `Z`, a rate of
 //! `n of the m sessions`, a date), so re-wording the paragraph around it changes nothing and
@@ -46,12 +52,25 @@ pub const FIXTURE: &str = "crates/sprag-plugin/src/testing.rs";
 /// What that trio is declared as in [`FIXTURE`].
 pub const SAMPLE: &str = "MEASURED_HERE";
 
-/// The quantities `reviewing`'s guards compare, as the document escapes them.
+/// Where the document COMPOSES the price of a handover, as it escapes the assignment.
 ///
-/// ⚠ It is the LEFT-HAND SIDE only. The multiplier is what follows, and reading it out of the guard
-/// is the whole point: prose that disagreed with the transitions would otherwise be arithmetic
-/// nobody could check.
-pub const GUARD: &str = "context - floor";
+/// # ⛔⛔⛔⛔⛔ It used to be `"context - floor"`, read out of the guards themselves
+///
+/// That was right while the two economic edges each spelled their own arithmetic, and register item
+/// 908 ended that: the price is now composed once, into `replacement_break_even`, and the edges
+/// read it by name — so a driver can publish it and a row can say which of the loop's two replacing
+/// doors a run was ever going to walk through.
+///
+/// ⚠⚠ **AND THE OLD NEEDLE WOULD STILL HAVE MATCHED**, which is why this one anchors on an
+/// ATTRIBUTE rather than on an expression: the document's own prose spells `context - floor >= 20 *
+/// cold` while explaining the move, and a scan for it would read a multiplier out of a COMMENT and
+/// call it the price the loop trades at. A needle that can be satisfied by prose is a needle that
+/// stops being about the product the day somebody writes about it — register item 453's shape, in
+/// the direction it is easiest to miss.
+///
+/// ⚠ It is the LEFT-HAND SIDE only. The multiplier is what follows inside the expression, and
+/// reading it from the document rather than from either side's prose is the whole point.
+pub const PRICE: &str = "location=\"replacement_break_even\"";
 
 /// How the fixture's own helper spells the toll, so the one number it DOES hard-code is pinned too.
 ///
@@ -101,21 +120,33 @@ impl Sample {
     }
 }
 
-/// Every multiplier the document's own guards compare the discardable reading against.
+/// Every multiplier the document composes the price of a handover at — see [`PRICE`].
 ///
-/// ⚠⚠ Plural on purpose: `review.done` and `review.none` each carry one, and two guards that
-/// disagree are a document in which *did the reviewer find a habit* decides the price of a
-/// handover. The caller asserts they agree; this only reports what is written.
+/// ⚠⚠ **STILL PLURAL, and it is a different plural than it used to be.** It reported one entry per
+/// economic GUARD, and two that disagreed were a document in which *did the reviewer find a habit*
+/// decided what a restart costs. Since register item 908 the guards read a NAME and the price is
+/// composed in one place, so an entry here is a composition site: **one** is the shape, zero is a
+/// document that has stopped pricing handovers at all, and two is the same drift arriving one
+/// element up. The caller decides what a count means; this only reports what is written.
+///
+/// ⚠ The `else` arm of that composition writes a bare `0` and is not a price — it names no `floor`,
+/// so it is skipped here rather than reported as a multiplier of nothing.
 #[must_use]
-pub fn guard_multipliers(scxml: &str) -> Vec<u64> {
+pub fn priced_multipliers(scxml: &str) -> Vec<u64> {
     let mut found = Vec::new();
-    for (at, _) in scxml.match_indices(GUARD) {
-        let rest = scxml[at + GUARD.len()..].trim_start();
-        let rest = rest
-            .strip_prefix("&gt;=")
-            .or_else(|| rest.strip_prefix(">="))
-            .unwrap_or(rest)
-            .trim_start();
+    for (at, _) in scxml.match_indices(PRICE) {
+        // ⚠ THE ASSIGNMENT'S OWN EXPRESSION AND NOTHING PAST IT. Without this bound a composition
+        // that stopped naming `floor` would go on matching whatever the next element happened to
+        // spell — which is how a needle comes to read a number out of the document's prose.
+        let rest = &scxml[at + PRICE.len()..];
+        let Some(end) = rest.find("/>") else {
+            continue;
+        };
+        let expr = &rest[..end];
+        let Some(sum) = expr.find("floor +") else {
+            continue;
+        };
+        let rest = expr[sum + "floor +".len()..].trim_start();
         let Some((multiplier, end)) = number_at(rest, 0) else {
             continue;
         };
@@ -124,6 +155,26 @@ pub fn guard_multipliers(scxml: &str) -> Vec<u64> {
         }
     }
     found
+}
+
+/// Every economic edge that reads that price BY NAME, rather than spelling arithmetic of its own.
+///
+/// ⚠⚠ It is the other half of [`priced_multipliers`] and neither is sufficient alone: one
+/// composition site proves nothing if the edges went on computing their own thresholds beside it,
+/// and two edges naming the value prove nothing if the value is composed twice. Register item 908
+/// moved the price so a driver could READ it, and both halves are what keep the value the edges
+/// decide on the same one a row publishes.
+#[must_use]
+pub fn edges_reading_the_price(scxml: &str) -> usize {
+    scxml
+        .match_indices("<transition")
+        .filter_map(|(at, _)| {
+            let rest = &scxml[at..];
+            let end = rest.find('>')? + 1;
+            Some(&rest[..end])
+        })
+        .filter(|edge| edge.contains("cond=") && edge.contains("replacement_break_even"))
+        .count()
 }
 
 /// Every multiplier the FIXTURE spells in its own arithmetic — see [`FIXTURE_TOLL`].
@@ -358,7 +409,7 @@ fn flatten(block: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{arithmetic, guard_multipliers, rate_in, sample, stated};
+    use super::{arithmetic, edges_reading_the_price, priced_multipliers, rate_in, sample, stated};
 
     /// ⚠⚠⚠⚠⚠ **THE DERIVATION IS EXERCISED ON TEXT THIS FILE WROTE, so a red in the gate beside it
     /// is a claim about the product rather than about this reader.**
@@ -412,25 +463,49 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠⚠ **THE GUARD IS WHERE THE MULTIPLIER COMES FROM**, and a document whose two guards
-    /// disagree must be visible as two readings rather than averaged into one.
+    /// ⚠⚠⚠⚠ **THE COMPOSITION IS WHERE THE MULTIPLIER COMES FROM** — register item 908 — and a
+    /// document that composed the price twice must be visible as two readings rather than averaged
+    /// into one.
     #[test]
-    fn the_multiplier_is_read_off_every_guard_that_prices_a_handover() {
-        let both = r#"<transition cond="context - floor &gt;= 20 * cold" target="restarting"/>
-                      <transition cond="context - floor &gt;= 20 * cold" target="restarting"/>"#;
-        assert_eq!(guard_multipliers(both), vec![20, 20]);
+    fn the_multiplier_is_read_off_the_one_place_the_price_is_composed() {
+        let one = r#"<assign location="replacement_break_even" expr="floor + 20 * cold"/>"#;
+        assert_eq!(priced_multipliers(one), vec![20]);
 
-        let split = both.replacen("20 * cold", "15 * cold", 1);
+        let twice = format!("{one}\n{}", one.replace("20 * cold", "15 * cold"));
         assert_eq!(
-            guard_multipliers(&split),
-            vec![15, 20],
-            "⚠⚠⚠ two guards, two prices — the caller is what refuses this, and it cannot refuse \
-             what it cannot see",
+            priced_multipliers(&twice),
+            vec![20, 15],
+            "⚠⚠⚠ two compositions, two prices — the caller is what refuses this, and it cannot \
+             refuse what it cannot see",
         );
 
         assert!(
-            guard_multipliers(r#"cond="context - floor &gt;= cold""#).is_empty(),
-            "⚠ a guard with no multiplier at all is not a price this can recompute",
+            priced_multipliers(r#"<assign location="replacement_break_even" expr="0"/>"#)
+                .is_empty(),
+            "⚠ the `else` arm writes a bare zero and is not a price — it names no `floor`",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE PROSE THAT EXPLAINS THE MOVE IS NOT A PRICE, which is the whole reason
+        // this needle anchors on an attribute. The document says `context - floor &gt;= 20 * cold`
+        // in a comment while explaining what it used to do, and the needle this replaced would
+        // have read a multiplier out of exactly that.
+        assert!(
+            priced_multipliers(
+                "<!-- this guard used to carry `context - floor &gt;= 20 * cold`, and \
+                 `context &gt;= floor + 20 * cold` is the same comparison -->"
+            )
+            .is_empty(),
+            "⚠⚠⚠⚠ a needle a COMMENT can satisfy is a needle that stops being about the product \
+             the day somebody writes about it",
+        );
+        assert_eq!(
+            edges_reading_the_price(
+                r#"<transition event="review.done" cond="cold &gt; 0 &amp;&amp; context &gt;= replacement_break_even" target="restarting">
+                   <transition event="review.none" cond="context &gt;= replacement_break_even" target="restarting">
+                   <transition event="review.none" cond="context &gt;= context_ceiling" target="restarting">"#
+            ),
+            2,
+            "⚠⚠⚠ and the other half: the edges must READ that one price rather than spell their \
+             own, or one composition site proves nothing about what the loop decides on",
         );
         assert_eq!(
             super::fixture_multipliers("const fn toll(&self) -> u64 {\n        20 * self.cold\n}"),
