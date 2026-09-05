@@ -724,11 +724,20 @@ fn disposition(args: Vec<String>) -> io::Result<()> {
 /// ⚠⚠ **NEEDS NO DAEMON**, and not for convenience: the delay is bounded at its left end by a
 /// daemon that is GONE, so a verb that required a live one could never answer about the promotion
 /// that ended it. It reads the logs `crate`'s durability layer leaves on disk — item 867's reader,
-/// `.githooks/loop-read.sh`, works from the same directory for the same reason.
+/// `.githooks/loop-read.sh`, works from the same DERIVATION for the same reason.
 ///
 /// ⚠ Naming a LOG reads exactly that file, which is how a test drives this over a store it wrote.
-/// Naming none reads every `*.runs.json` in sprag's state directory, which is what a person asking
+/// Naming none SWEEPS every `*.runs.json` in sprag's state directory, which is what a person asking
 /// about this machine means.
+///
+/// # ⛔⛔⛔⛔⛔ AND A SWEPT ANSWER NAMES ITS DIRECTORY, because the derivation moves
+///
+/// *Same derivation* is not *same directory*, and this doc said the second until it was measured.
+/// The loop exports its own `XDG_STATE_HOME`; a push-time hook inherits none. **Measured
+/// 2026-09-05T08:47:23Z**: this verb answered about the loop's **229 runs** with the variable set
+/// and about **62 integration-test runs across twelve logs** without it — same command, same
+/// machine, both tables long and confident, and nothing said which. So the sweep's address is
+/// printed with it; see [`waits_lines`], which holds the argument.
 ///
 /// # Errors
 ///
@@ -785,7 +794,10 @@ fn waits(args: Vec<String>) -> io::Result<()> {
         "waits  — how long each working tree had NO run driving it, between one run's watched stop \
          and the next one's watched start"
     );
-    for line in waits_lines(&read) {
+    // ⚠ The swept directory travels so the ANSWER can name it — see `waits_lines`. `None` when a
+    // caller named a log, because then the caller already said where and a warning about a
+    // derivation that did not happen would make the certain case read as the doubtful one.
+    for line in waits_lines(&read, args.is_empty().then_some(dir.as_path())) {
         println!("{line}");
     }
     Ok(())
@@ -795,7 +807,36 @@ fn waits(args: Vec<String>) -> io::Result<()> {
 /// [`disposition_rows`] makes one verb over, and for its reason: the mouth is where item 856 ⑸
 /// measured a value crossing into nothing, and a renderer nothing drives is a renderer that goes
 /// green while saying anything at all.
-fn waits_lines(read: &[(std::path::PathBuf, sprag_host::runs::RunLog)]) -> Vec<String> {
+fn waits_lines(
+    read: &[(std::path::PathBuf, sprag_host::runs::RunLog)],
+    swept: Option<&std::path::Path>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    // ⛔⛔⛔⛔⛔ **WHICH DIRECTORY THIS IS AN ANSWER ABOUT, WHEN NOBODY NAMED ONE** — and it is here
+    // because running the verb without `XDG_STATE_HOME` printed a confident, complete, WRONG answer.
+    //
+    // **Measured 2026-09-05T08:47:23Z.** The loop exports its own `XDG_STATE_HOME`; a push-time hook
+    // inherits none. With it, this verb reads the loop's store — 229 runs. Without it, it reads
+    // `~/.local/state/sprag` and reported **62 runs across twelve logs**, every one of them left by
+    // an integration test (`sprag-cli-it-*`, `sprag-fold`, `sprag-host`). Same command, same
+    // machine, two answers, and nothing in the output said which.
+    //
+    // ⚠⚠ `.githooks/loop-read.sh` carries this hazard as a named sentence (`LOOP_READ_BLIND_COST`)
+    // for the same directory and the same reason — *the fallback is a real directory holding real
+    // logs from integration tests*. It is SHARPER here: there the wrong place prints zeros, which
+    // reads as *nothing happened*; here it prints a full table, which reads as *this is your
+    // machine*. Item 790's lesson at one more remove.
+    //
+    // ⚠ Said whether or not anything was found, because the sweep's ADDRESS is what the reader has
+    // to be able to doubt — a table is not more trustworthy for being long.
+    if let Some(dir) = swept {
+        lines.push(format!(
+            "swept {} — this path is derived from XDG_STATE_HOME and MOVES with it; the fallback \
+             holds integration-test logs, so a table from the wrong place looks exactly like a \
+             table from the right one",
+            dir.display()
+        ));
+    }
     // ⛔⛔⛔ EMPTY LOGS ARE COUNTED, NOT LISTED — and this line is here because running the verb at
     // the real store printed it: a machine that has served TUI clients accumulates a `*.runs.json`
     // per socket, and at 2026-09-05T07:52:53Z that was **68 empty logs against 1 with runs in it**,
@@ -804,7 +845,6 @@ fn waits_lines(read: &[(std::path::PathBuf, sprag_host::runs::RunLog)]) -> Vec<S
     // ⚠⚠ The COUNT stays, because *sixty-eight logs held nothing* and *there was one log* are
     // different facts and a reader must not infer the first from an absence — item 856's rule
     // pointing the other way. What is dropped is the repetition, never the population.
-    let mut lines = Vec::new();
     let mut empty = 0usize;
     for (path, log) in read {
         let waits = log.waits_between_runs();
@@ -13246,7 +13286,7 @@ mod tests {
         }))
         .expect("the log a predecessor leaves is what this reads");
         let here = std::path::PathBuf::from("/tmp/one.runs.json");
-        let lines = waits_lines(&[(here.clone(), log)]);
+        let lines = waits_lines(&[(here.clone(), log.clone())], None);
         let said = lines.join("\n");
 
         // ── ① THE STRETCH, WITH ITS NUMBER — item 827's own shape, 13,629s being 3h47m ──
@@ -13293,6 +13333,36 @@ mod tests {
         assert!(
             extra.to_string().contains("one at a time"),
             "⚠ and the refusal says what the shape is: {extra}",
+        );
+
+        // ── ⑤ AND A SWEPT ANSWER NAMES THE DIRECTORY IT IS ABOUT ──
+        //
+        // ⛔⛔⛔⛔⛔ MEASURED, not imagined. The loop exports its own `XDG_STATE_HOME` and a
+        // push-time hook inherits none, so `sprag waits` reads a DIFFERENT directory depending on
+        // who runs it — 2026-09-05T08:47:23Z, the same command on the same machine answered about
+        // the loop's 229 runs with the variable and about **62 integration-test runs across twelve
+        // logs** without it. Both tables are long, confident and complete. Nothing in the output
+        // said which one you were looking at.
+        //
+        // ⚠⚠ `.githooks/loop-read.sh` holds the same hazard as a named sentence for the same
+        // directory; there the wrong place prints ZEROS, which reads as *nothing happened*. Here it
+        // prints a full table, which reads as *this is your machine* — so the address has to be on
+        // the page.
+        let swept = waits_lines(&[(here, log)], Some(std::path::Path::new("/state/sprag")));
+        assert!(
+            swept.first().is_some_and(
+                |line| line.contains("/state/sprag") && line.contains("XDG_STATE_HOME")
+            ),
+            "⛔⛔⛔⛔⛔ A SWEPT TABLE DID NOT SAY WHICH DIRECTORY IT SWEPT. The path is derived \
+             from the environment and the fallback is a real directory full of integration-test \
+             logs, so an answer that does not name its address cannot be doubted by the person \
+             holding it. Got: {swept:?}",
+        );
+        assert!(
+            !said.contains("XDG_STATE_HOME"),
+            "⚠⚠ AND A NAMED LOG CARRIES NO SUCH WARNING: the caller said where, so a note about a \
+             derivation that did not happen would make the one certain case read as the doubtful \
+             one. Got:\n{said}",
         );
     }
 
