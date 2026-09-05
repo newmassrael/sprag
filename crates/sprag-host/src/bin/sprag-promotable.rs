@@ -24,8 +24,25 @@
 //! read its own blindness as consent would say *promote* at the one moment the window is shut,
 //! which is the failure that opened the item. `sprag my-runs` is what item 865 built for asking.
 
+//! ## ⭐ And what the run that just ended should do — item 868's ⑶
+//!
+//! The last line answers the one question two register entries both claim: a finished run is the
+//! only quiet this tree gets, item 827 says fill it in minutes and item 868 says leave it for a
+//! build. `Readiness::what_follows_an_ending` settles it from the rows rather than by preference,
+//! and this prints the verdict with the reason it was composed from. It says; it fires nothing.
+
 use sprag_host::promotion::{Answer, BehindTheDoor, Readiness, all_of};
 use sprag_host::runs::RunLog;
+
+/// The one thing a person can tell this process that it cannot see — condition ⑴.
+///
+/// ⛔⛔⛔⛔⛔ **WITHOUT IT THE VERDICT HAS NO PATH TO *YES*, AND THAT IS A DEFECT AND NOT A
+/// SAFEGUARD.** Condition ⑴ is another repository's live run; this process answers
+/// [`Answer::Unknowable`] and that answer holds the verdict back, correctly. But an instrument
+/// whose good value is unreachable is one nobody can act on — this workspace's rule 5 — and item
+/// 865 built `sprag my-runs` precisely so a PERSON could answer this. This flag is where their
+/// answer arrives. ⚠ The default is unchanged: silence stays *ask a person*, never a pass.
+const WINDOW_OPEN: &str = "--window-open";
 
 /// What this repository's promoted binaries live under.
 const PROMOTED: &str = ".local/share/sprag-loop/bin";
@@ -34,9 +51,15 @@ const PROMOTED: &str = ".local/share/sprag-loop/bin";
 const BINARIES: [&str; 4] = ["sprag", "sprag-term", "sprag-gui", "sprag-mcp"];
 
 fn main() -> std::process::ExitCode {
-    if std::env::args_os().nth(1).is_some() {
+    let mut window_open = false;
+    for arg in std::env::args().skip(1) {
+        if arg == WINDOW_OPEN {
+            window_open = true;
+            continue;
+        }
         eprintln!(
-            "sprag-promotable: takes no argument — it reads this tree and the promoted binaries"
+            "sprag-promotable: unknown argument {arg:?} — it takes {WINDOW_OPEN} and nothing else, \
+             and reads the rest off this tree and the promoted binaries"
         );
         return std::process::ExitCode::FAILURE;
     }
@@ -78,10 +101,17 @@ fn main() -> std::process::ExitCode {
     let edited: Vec<&str> = edited.lines().filter(|line| !line.is_empty()).collect();
 
     let reading = Readiness::of([
-        Answer::Unknowable(
-            "not this process's to see — ask whoever holds the other run (`sprag my-runs`)"
-                .to_owned(),
-        ),
+        // ⚠ A PERSON'S ANSWER, OR NONE — see `WINDOW_OPEN`. Silence is `Unknowable` and holds the
+        // verdict back; it is never read as consent, which is the failure that opened item 868.
+        if window_open {
+            Answer::Met
+        } else {
+            Answer::Unknowable(
+                "not this process's to see — ask whoever holds the other run (`sprag my-runs`), \
+                 then say so with --window-open"
+                    .to_owned(),
+            )
+        },
         if edited.is_empty() {
             Answer::Met
         } else {
@@ -102,6 +132,17 @@ fn main() -> std::process::ExitCode {
         "  {:32} {}",
         "may promote now",
         if reading.may_promote() { "YES" } else { "NO" }
+    );
+    // ── DONE-WHEN ⑶: which of the two register entries owns the instant a run ends ──────────
+    //
+    // ⛔ IT SAYS AND IT FIRES NOTHING — item 827 wrote *「자동으로 다시 걸어라」가 답이라고 미리
+    // 정하지 마라*, and item 872's ⑵ made *`person` and `nothing` are never fired unattended* a
+    // gate. Whether a re-fire is one a machine may make at all is the ENDING's disposition
+    // (`sprag disposition`), a different question with a different answer.
+    println!(
+        "  {:32} {}",
+        "a run just ended, so",
+        reading.what_follows_an_ending()
     );
 
     // ── DONE-WHEN ⑷: and what is waiting behind the door ────────────────────────────────────

@@ -127,6 +127,39 @@ impl Condition {
             Self::BinariesThatSayHead => Moment::AtTheCopy,
         }
     }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER A FINISHED RUN DECLINING TO RE-FIRE IS WHAT MAKES THIS TRUE** —
+    /// register item 868's ⑶, and the whole of what separates the two claims on that moment.
+    ///
+    /// A finished run is the one instant this tree is quiet. Item 827 says fill it immediately —
+    /// it measured **3 h 49 m** of a dead loop against two to three minutes elsewhere. Item 868
+    /// says leave it empty — a build needs a tree nobody is editing, and re-firing is what closes
+    /// the window. Both are true, and 868 recorded that *그 갈등이 지금 아무 데도 안 적혀 있다*.
+    ///
+    /// ⇒ This is the axis that settles it, and it is a property of each CONDITION rather than a
+    /// preference between two items: **the only thing a re-fire can take away is a condition a
+    /// stand-down would have bought.** A condition standing down cannot reach is one that holding
+    /// the loop back does not move, so waiting on it is dead time item 827 already priced.
+    ///
+    /// ⚠ It is deliberately NOT [`Moment`] re-spelled. [`Moment::WhileBuilding`] is *when* the
+    /// condition has to hold; this is *who can make it hold*. They agree on today's three and
+    /// would part on a fourth — a condition true only at the copy could still be one a build
+    /// produces — so a fourth condition has to answer both rather than have one inferred from the
+    /// other.
+    #[must_use]
+    pub const fn mended_by_standing_down(self) -> bool {
+        match self {
+            // ⛔ ANOTHER REPOSITORY'S RUN. No amount of quiet here opens it, and a loop that
+            // waited on it would wait for ever — item 865 built `sprag my-runs` because a PERSON
+            // is the only channel this fact has.
+            Self::AWindowSomebodyElseOpened => false,
+            // ⭐ THIS IS THE ONE THE RE-FIRE DESTROYS. It is true exactly while no run is editing.
+            Self::ATreeNothingEditedWhileBuilding => true,
+            // ⭐ AND THIS IS WHAT THE QUIET IS FOR — the build and the copy the stand-down makes
+            // room for are what put HEAD into the binaries.
+            Self::BinariesThatSayHead => true,
+        }
+    }
 }
 
 /// What a measurement of one [`Condition`] came to.
@@ -177,6 +210,70 @@ impl Readiness {
         self.answers.iter().all(|answer| *answer == Answer::Met)
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHETHER THE RUN THAT JUST ENDED SHOULD BE RE-FIRED, OR THE LOOP SHOULD STAND
+    /// DOWN SO A PROMOTION CAN HAPPEN** — register item 868's done-when ⑶, the clause that asks
+    /// for *되걸기와 승격 중 무엇이 이기는지* to be settled by something a reader can ask rather
+    /// than by two register entries pushing at each other.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The judgement, and why it is not a preference
+    ///
+    /// It reads off [`Condition::mended_by_standing_down`], one row at a time:
+    ///
+    /// * **any condition a stand-down cannot mend is unmet ⇒ [`WhatFollowsAnEnding::ReFire`].**
+    ///   Holding the loop back buys nothing that is not already in reach, so all it buys is the
+    ///   dead time item 827 measured at 3 h 49 m. **Item 827 wins, and it wins by measurement.**
+    /// * **otherwise, some condition a stand-down WOULD mend is unmet ⇒
+    ///   [`WhatFollowsAnEnding::StandDown`].** The quiet a finished run leaves is exactly what
+    ///   that condition needs and exactly what a re-fire destroys. **Item 868 wins.**
+    /// * **every condition already holds ⇒ [`WhatFollowsAnEnding::ReFire`].** The copy does not
+    ///   read this tree — item 868's own correction, measured at its second promotion — so there
+    ///   is nothing for the loop to stay out of the way of.
+    ///
+    /// ⇒ ⭐⭐ Stated as one sentence: **a promotion wins the moment a finished run leaves, but
+    /// only when the part nobody here controls is already true.** The loop never stands down on
+    /// speculation, which is item 868's own finding that *창은 「기다리면 오는 것」이 아니라
+    /// «만들어야 하는 것»이다* — a window is made by a person saying so, not by waiting.
+    ///
+    /// ⚠⚠ **IT DECIDES AND IT DOES NOT ACT.** Item 827 wrote *「자동으로 다시 걸어라」가 답이라고
+    /// 미리 정하지 마라*, item 867 repeated it, and item 872's ⑵ made *`person` and `nothing` are
+    /// never fired unattended* a gate. Nothing here fires anything: this says which of two
+    /// register entries governs the instant, and the disposition of the ENDING still says whether
+    /// that re-fire is one a machine may make at all. Two questions, two answers, and folding them
+    /// would let this function authorise a re-fire item 872 forbids.
+    #[must_use]
+    pub fn what_follows_an_ending(&self) -> WhatFollowsAnEnding {
+        let unmet = |mendable: bool| -> Vec<String> {
+            self.rows()
+                .filter(|(condition, _, _)| condition.mended_by_standing_down() == mendable)
+                .filter_map(|(condition, _, answer)| match answer {
+                    Answer::Met => None,
+                    Answer::Blocked(why) | Answer::Unknowable(why) => {
+                        Some(format!("{} ({why})", condition.word()))
+                    }
+                })
+                .collect()
+        };
+        let out_of_reach = unmet(false);
+        if !out_of_reach.is_empty() {
+            return WhatFollowsAnEnding::ReFire(format!(
+                "standing down would not mend {} — waiting on it is dead loop time",
+                out_of_reach.join(", ")
+            ));
+        }
+        let waiting = unmet(true);
+        if waiting.is_empty() {
+            return WhatFollowsAnEnding::ReFire(
+                "every condition already holds and the copy does not read this tree, so a \
+                 promotion needs no quiet"
+                    .to_owned(),
+            );
+        }
+        WhatFollowsAnEnding::StandDown(format!(
+            "this quiet is what {} needs, and a re-fire is what takes it away",
+            waiting.join(", ")
+        ))
+    }
+
     /// What stands in the way, in [`Condition::ALL`]'s order — empty when [`may_promote`] is true.
     ///
     /// [`may_promote`]: Self::may_promote
@@ -188,6 +285,45 @@ impl Readiness {
                 Answer::Blocked(why) | Answer::Unknowable(why) => Some((condition, why.as_str())),
             })
             .collect()
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT HAPPENS AFTER THE RUN THAT JUST FINISHED** — register item 868's done-when ⑶,
+/// where two register entries claim the same instant.
+///
+/// ⚠⚠ **TWO ARMS AND EACH CARRIES ITS REASON.** A bare verdict here would be prose one line later
+/// — a watcher told *stand down* with no reason re-fires anyway, and this repository's rule 10 is
+/// that an unmeasured justification is one nobody reads. So the reason is part of the value and
+/// [`Readiness::what_follows_an_ending`] composes it from the rows it actually read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WhatFollowsAnEnding {
+    /// **RE-FIRE NOW** — item 827, with why holding the loop back would buy nothing.
+    ReFire(String),
+    /// **LEAVE THE TREE QUIET AND PROMOTE** — item 868, with what the re-fire would take away.
+    StandDown(String),
+}
+
+impl WhatFollowsAnEnding {
+    /// The word it is reported under.
+    #[must_use]
+    pub const fn word(&self) -> &'static str {
+        match self {
+            Self::ReFire(_) => "RE-FIRE NOW",
+            Self::StandDown(_) => "STAND DOWN — PROMOTE FIRST",
+        }
+    }
+
+    /// Why, in the words the reading composed.
+    #[must_use]
+    pub fn why(&self) -> &str {
+        let (Self::ReFire(why) | Self::StandDown(why)) = self;
+        why
+    }
+}
+
+impl fmt::Display for WhatFollowsAnEnding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} — {}", self.word(), self.why())
     }
 }
 
@@ -425,6 +561,107 @@ mod tests {
             "⛔⛔⛔⛔⛔ REGISTER ITEM 868 ⑷ and item 891: *nobody could say* printed as *nothing \
              is waiting*, which is the reassuring reading of an unmeasured value and the one that \
              stops a reader looking. Said: {unmeasured}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE CONFLICT BETWEEN RE-FIRING AND PROMOTING IS SETTLED BY THE ROWS, NOT BY A
+    /// PREFERENCE** — register item 868's done-when ⑶, the clause that asks *되걸기와 승격 중
+    /// 무엇이 이기는지* to become something a reader can ask.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What both wrong answers look like, and what each costs
+    ///
+    /// | fixed answer | what it says | what it costs |
+    /// |---|---|---|
+    /// | always re-fire | item 827 always wins | the window is never made — 23 commits deep today |
+    /// | always stand down | item 868 always wins | 3 h 49 m of dead loop, against 2-3 min elsewhere |
+    ///
+    /// Both read as decisive and both are wrong on some rounds, which is why item 868 left the
+    /// clause open rather than picking one. The axis that settles it is
+    /// [`Condition::mended_by_standing_down`]: **quiet is worth waiting for only when quiet is
+    /// what the unmet condition needs.**
+    ///
+    /// # ⚠⚠⚠ The arms, and why the second is the one that keeps this honest
+    ///
+    /// Arm ② is today's real state — condition ⑴ is another repository's and comes back
+    /// *ask a person*, so this tree standing down buys nothing and item 827 wins **by
+    /// measurement**. A build that read that blindness as a reason to wait would hold the loop
+    /// down for ever on a window nobody had opened, which is [`Readiness::may_promote`]'s failure
+    /// wearing the opposite face.
+    #[test]
+    fn a_stand_down_is_owed_only_to_a_condition_that_a_stand_down_can_mend() {
+        // ── THE AXIS IS STATED PER CONDITION, and it is not `Moment` re-spelled ─────────────
+        assert_eq!(
+            Condition::ALL.map(Condition::mended_by_standing_down),
+            [false, true, true],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 868 ⑶: a condition that does not say whether quiet reaches \
+             it cannot take part in this judgement, and the judgement then collapses into a \
+             preference between two register entries — which is the state the clause was left in",
+        );
+
+        // ── ① THE WINDOW IS OPEN AND THE TREE IS DIRTY: item 868 wins ───────────────────────
+        //
+        // A person has said the other repository's window is open, so the only thing left is what
+        // this tree can give — and what it can give is exactly what a re-fire would take.
+        let owed = Readiness::of([
+            Answer::Met,
+            Answer::Blocked("3 path(s) edited in this tree".to_owned()),
+            Answer::Blocked("sprag says 7181c74".to_owned()),
+        ])
+        .what_follows_an_ending();
+        let WhatFollowsAnEnding::StandDown(why) = &owed else {
+            panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 868 ⑶: the window a person confirmed is open, the tree \
+                 is the only thing standing in the way, and this said re-fire — which closes the \
+                 window in the minutes item 868 measured it lasting. Got: {owed:?}"
+            );
+        };
+        assert!(
+            why.contains("nothing edited while building") && why.contains("3 path(s)"),
+            "⚠⚠ AND IT NAMES WHAT THE RE-FIRE WOULD TAKE: a watcher told *stand down* with no \
+             reason re-fires anyway, which is rule 10 inside this instrument. Said: {why}",
+        );
+
+        // ── ② NOBODY HAS OPENED A WINDOW: item 827 wins, and by measurement ─────────────────
+        let dead_time = Readiness::of([
+            Answer::Unknowable("ask whoever holds the other run (`sprag my-runs`)".to_owned()),
+            Answer::Blocked("3 path(s) edited in this tree".to_owned()),
+            Answer::Blocked("sprag says 7181c74".to_owned()),
+        ])
+        .what_follows_an_ending();
+        let WhatFollowsAnEnding::ReFire(why) = &dead_time else {
+            panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 827: no quiet in THIS tree opens another repository's \
+                 window, so a loop that stood down for it would wait for ever — 3 h 49 m was the \
+                 measured cost of one such wait, against 2-3 minutes in two other repositories. \
+                 This is also today's real reading, so a build that gets it wrong stops the loop \
+                 the moment it is deployed. Got: {dead_time:?}"
+            );
+        };
+        assert!(
+            why.contains("a window somebody else opened"),
+            "⚠⚠ the reason has to name the condition that is out of reach, or a reader cannot \
+             tell *nothing to wait for* from *nothing measured*. Said: {why}",
+        );
+
+        // ── ③ EVERYTHING HOLDS: still re-fire, on item 868's own correction ─────────────────
+        //
+        // ⚠ The copy does not read this tree — the item measured that at its second promotion,
+        // where the build was made clean and the tree was dirty by the copy and nothing was wrong.
+        // So a ready door asks the loop for nothing.
+        let ready = Readiness::of([Answer::Met, Answer::Met, Answer::Met]).what_follows_an_ending();
+        assert!(
+            matches!(ready, WhatFollowsAnEnding::ReFire(_)),
+            "⚠⚠⚠ THE CONTROL AGAINST A GATE THAT ALWAYS STANDS THE LOOP DOWN: with every \
+             condition met there is nothing for the loop to stay out of the way of, and holding \
+             it back would be item 827's dead time bought for nothing. Got: {ready:?}",
+        );
+
+        // ── ④ AND THE VERDICT IS READABLE WITHOUT PARSING THE REASON ───────────────────────
+        assert_eq!(
+            (owed.word(), dead_time.word()),
+            ("STAND DOWN — PROMOTE FIRST", "RE-FIRE NOW"),
+            "⚠ the two arms must be tellable apart by a word, because the reader is a person \
+             scanning one line of a tool's output",
         );
     }
 
