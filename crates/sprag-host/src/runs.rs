@@ -10337,4 +10337,130 @@ mod tests {
              possible claim made from no evidence at all. Got {old:?}",
         );
     }
+
+    /// 🎯🎯🎯🎯🎯 **THE NUMBER IS BUILT OUT OF STAMPS THE PRODUCT WROTE, NOT OUT OF A FIXTURE'S
+    /// ARITHMETIC** — register item 872 ⑶, the crossing half.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the gate beside this one cannot claim, and why that matters here
+    ///
+    /// `how_long_a_tree_had_nothing_driving_it_is_measured_and_what_cannot_be_is_named` hands the
+    /// reader a log with `ran_from` and `ran_to` **typed into it by this file**. Every arm of it
+    /// stays green on a build whose stamper never writes those fields, writes them under other
+    /// names, or writes them at moments that do not bracket anything — and the whole question of
+    /// item 872 ⑶ is whether a REAL store will ever yield the number. Item 856 ⑸ measured this
+    /// exact shape: seven surfaces gated, the call that fills them replaced by a discard, workspace
+    /// green.
+    ///
+    /// ⇒ So this drives [`crate::durability::stamp_run_times`] — the product's own stamper, with
+    /// its clock injected — across the tick sequence a daemon actually performs, and reads the
+    /// answer off what that left behind. Nothing here spells a `ran_from`.
+    ///
+    /// # ⚠⚠⚠ And it answers the question the promotion wall leaves open
+    ///
+    /// The live store cannot produce a stretch today: measured 2026-09-05T07:53:28Z, 229 rows and
+    /// 229 of them unmeasurable, because the running daemon predates all three columns. That is a
+    /// fact about the DAEMON, and it leaves *will this work when the daemon is new* unanswered —
+    /// four re-judgements have already recorded this clause as blocked without asking it. This is
+    /// the answer, and it needs no promotion to give.
+    #[test]
+    fn the_stretch_is_computed_from_stamps_the_daemons_own_saver_wrote() {
+        /// A run as a daemon holds it — ⛔ **NO `ran_from`, NO `ran_to`, NO `ended_at`**. Those are
+        /// the stamper's OUTPUT, and a fixture that supplied them would be this gate measuring its
+        /// own arithmetic.
+        fn held(id: u64, finished: bool) -> serde_json::Value {
+            serde_json::json!({
+                "id": id, "label": format!("ai_loop pane={id}"), "iterations": 7,
+                "finished": finished, "place": ["working"], "tree": "/repo",
+            })
+        }
+        fn log_of(runs: Vec<serde_json::Value>) -> RunLog {
+            serde_json::from_value(serde_json::json!({
+                "version": RUN_LOG_VERSION, "runs": runs,
+            }))
+            .expect("a log the daemon's own saver would serialize")
+        }
+        // Every tick goes through the product's stamper against the tick before it, which is
+        // exactly what `save_runs_if_changed` does with the `last` it carries.
+        let tick = |mut log: RunLog, previous: Option<&RunLog>, now: u64| -> RunLog {
+            crate::durability::stamp_run_times(&mut log, previous, Some(now));
+            log
+        };
+
+        // ── THE SEQUENCE, as a daemon performs it ──
+        // ⚠ `previous: None` on the first tick is a daemon with NO PREDECESSOR, which is the one
+        // case `ran_from` is written in — an inherited run is in the predecessor's log by
+        // construction and correctly gets nothing.
+        let first = tick(log_of(vec![held(1, false)]), None, 1000);
+        let stopped = tick(log_of(vec![held(1, true)]), Some(&first), 1100);
+
+        // ── THE CONTROL, FIRST: no successor yet, so there is no stretch to report ──
+        //
+        // ⚠⚠ Without this the gate below passes on a build that reports a stretch the moment a run
+        // ends — against nothing, or against whatever came next in the file. *A run stopped* is not
+        // *a tree waited*; the second needs the run that ended the waiting.
+        let waiting = stopped.waits_between_runs();
+        assert!(
+            waiting.measured.is_empty(),
+            "⛔⛔⛔ A STRETCH WAS REPORTED WITH NOTHING TO CLOSE IT. The tree is still waiting at \
+             this tick — the number is not knowable until something follows — and a report that \
+             answered here would be measuring against a run that does not exist. Got {:?}",
+            waiting.measured,
+        );
+
+        let opened = tick(
+            log_of(vec![held(1, true), held(2, false)]),
+            Some(&stopped),
+            4629,
+        );
+        let done = tick(
+            log_of(vec![held(1, true), held(2, true)]),
+            Some(&opened),
+            4700,
+        );
+
+        // ── THE PREMISE, ASSERTED: the stamper really did write both ends ──
+        //
+        // ⚠⚠⚠ Without this the headline below could pass by measuring nothing and finding nothing
+        // — it is `assert!(empty)`'s dual, and the failure it guards is a stamper that has stopped
+        // writing while every arm about *what cannot be measured* goes on being satisfied.
+        assert_eq!(
+            (done.runs[0].ran_to, done.runs[1].ran_from),
+            (Some(1100), Some(4629)),
+            "⛔⛔⛔⛔⛔ THE STAMPER DID NOT WRITE THE INTERVAL. Item 888 built `ran_to` and \
+             `ran_from` expressly for item 872 ⑶ — `ran_from`'s own doc says so — and if they stop \
+             arriving then every gate about this clause measures a fixture's arithmetic while the \
+             real store answers nothing for ever. Got {:?}",
+            done.runs,
+        );
+
+        // ── ① THE HEADLINE: the number, built from stamps this file never typed ──
+        let waits = done.waits_between_runs();
+        assert_eq!(
+            waits.measured,
+            vec![Wait {
+                tree: "/repo".to_owned(),
+                after: 1,
+                before: 2,
+                seconds: 3529
+            }],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872 ⑶: the delay item 827 measured at 3 h 49 m by hand does \
+             not come out of a log this build stamped. The live store cannot show this today — its \
+             daemon predates the columns — so THIS is the only thing that can say the answer will \
+             arrive at all once a promotion happens, which is what four re-judgements left \
+             unasked. Report: {waits:?}",
+        );
+        assert_eq!(
+            waits.longest().map(|wait| wait.seconds),
+            Some(3529),
+            "⚠⚠ and the longest stretch is the number item 827's 3 h 49 m is compared against",
+        );
+
+        // ── ② AND THE POPULATION STILL ADDS UP over a log nothing hand-stamped ──
+        assert_eq!(
+            waits.runs(),
+            done.runs.len(),
+            "⚠⚠⚠ a run went missing between the halves on the stamped road, which is the road \
+             that matters: {waits:?}",
+        );
+    }
 }
