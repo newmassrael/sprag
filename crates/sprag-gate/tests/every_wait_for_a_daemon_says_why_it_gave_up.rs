@@ -65,7 +65,11 @@ const DIAGNOSIS: &str = "why_not_serving";
 /// ask whether a CURRENT build leaves a run log whose rows can be paired — the assumption four
 /// rounds had recorded as *blocked on the promotion* without ever putting it to a daemon. Seventh
 /// time the ratchet has named the change rather than anybody remembering to.
-const WAITS_REGISTERED: usize = 46;
+///
+/// ⚠ AND BY ONE AGAIN ON 2026-09-05: register item 856 ⑴ added a gate that spawns a daemon of its
+/// own to ask which of that item's three stored columns a CURRENT build actually writes — the same
+/// shape as the seventh, one item over, and the eighth time this ratchet has named the change.
+const WAITS_REGISTERED: usize = 47;
 
 /// This gate's own source, which must SPELL the needle in order to hunt for it.
 ///

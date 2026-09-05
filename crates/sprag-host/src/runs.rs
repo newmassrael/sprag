@@ -3827,6 +3827,107 @@ impl RunLog {
                 .collect(),
         }
     }
+
+    /// 🎯🎯🎯🎯🎯 **HOW FULL EACH SESSION WAS WHEN IT FOLDED THE PROMPTS IT WAS SENT** — register
+    /// item 856 ⑴, and the number five re-judgements have answered *after the promotion* without
+    /// once putting a command behind it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The clause, and why counting folds alone can never answer it
+    ///
+    /// Item 856's axis is that a session folds a prompt because of **how full it is**, and the item
+    /// states its own refutation: `sprag_plugin`'s outer loop says it in the product's words — *one
+    /// capacity reflection whose prompt LANDS*. Measured 2026-09-05 over the loop's own store, that
+    /// refutation had arrived **29 times** and every one of them came from a run whose ceiling a
+    /// caller had MOVED to `20000`. At a moved ceiling a `capacity` reflection is not *the session
+    /// filled up*, it is *we handed over early* — so the condition silently assumed **ceiling =
+    /// fullness**, and the 29 say nothing about the axis at all.
+    ///
+    /// ⇒ Telling those apart needs three columns beside the fold split, and each one is an item:
+    /// [`PersistedRun::context_high_water`] (894, how full it actually got),
+    /// [`PersistedRun::context_ceiling`] (856 ⑴b, what it was judged by) and
+    /// [`PersistedRun::overridden`] (859, whose numbers those were). Until this method there was no
+    /// reader of the three together, so the answer was a `python3 -c` typed at the store — this
+    /// workspace's rule 10 exactly, and the same absence [`RunLog::waits_between_runs`] was written
+    /// for one item over.
+    ///
+    /// # ⛔⛔⛔⛔⛔ IT COUNTS WHAT IT CANNOT MEASURE, and today that is the whole answer
+    ///
+    /// A run this cannot read yields no row, so a report of rows alone says *nothing to see* about
+    /// a store where nothing is readable — **and that is today's store**: measured
+    /// 2026-09-05T10:13:40Z, 229 rows carrying `context_high_water` 0 times, `context_ceiling` 0
+    /// times and `overridden` 0 times, because the daemon driving that loop predates all three.
+    /// So every run lands in exactly one bucket — a [`FoldAtFullness`] or one [`NoFullness`] — and
+    /// [`Folds::runs`] is that sum, which a gate holds. A sixth reason cannot be swallowed by an
+    /// existing one, and *the promotion has not happened yet* cannot read as *nothing folded*.
+    ///
+    /// # ⚠⚠ The population predicate is ASKED, never re-spelled — register item 895
+    ///
+    /// Whether a row is in the population is [`PersistedRun::sampled`]'s answer and not a filter
+    /// written here: item 895 measured four readers of this same store each inventing their own,
+    /// with two counts of one population differing 8 against 10. Its middle answer
+    /// ([`Sampled::Zeroed`]) is carried as its own arm for that item's reason — folding it into
+    /// either neighbour decides 209 of 220 rows by fiat.
+    #[must_use]
+    pub fn folds_against_fullness(&self) -> Folds {
+        let mut unmeasured: std::collections::BTreeMap<NoFullness, usize> =
+            NoFullness::ALL.iter().map(|why| (*why, 0)).collect();
+        let mut blame = |why: NoFullness| {
+            *unmeasured
+                .get_mut(&why)
+                .expect("NoFullness::ALL seeded every arm") += 1;
+        };
+        let mut measured = Vec::new();
+        for run in &self.runs {
+            // ⚠ FIRST, and it is a precedence rather than an accident: without a split there is no
+            // fold to put a fullness beside, so no later question can be asked of this row.
+            match run.sampled(Tally::FoldsByReason) {
+                Sampled::Unsaid => {
+                    blame(NoFullness::SplitUnsaid);
+                    continue;
+                }
+                Sampled::Zeroed => {
+                    blame(NoFullness::SplitZeroed);
+                    continue;
+                }
+                Sampled::Counted => {}
+            }
+            let Some(stored) = run.folds_by_reason.clone() else {
+                // ⚠ Unreachable by `sampled`'s own definition — `Unsaid` is exactly the absent
+                // table. It BLAMES rather than panics because the one fatal defect of this
+                // instrument is a row that leaves the population silently, and `Folds::runs` is
+                // what would catch that.
+                blame(NoFullness::SplitUnsaid);
+                continue;
+            };
+            let (Some(fullest), Some(ceiling)) = (run.context_high_water, run.context_ceiling)
+            else {
+                blame(if run.context_high_water.is_none() {
+                    NoFullness::FullnessUnread
+                } else {
+                    NoFullness::CeilingUnrecorded
+                });
+                continue;
+            };
+            let Some(judged) = run.overridden.as_deref().and_then(Judged::of) else {
+                blame(NoFullness::ExperimentUnsaid);
+                continue;
+            };
+            measured.push(FoldAtFullness {
+                id: run.id,
+                fullest,
+                ceiling,
+                judged,
+                folds: stored.into(),
+            });
+        }
+        Folds {
+            measured,
+            unmeasured: NoFullness::ALL
+                .iter()
+                .map(|why| (*why, unmeasured[why]))
+                .collect(),
+        }
+    }
 }
 
 /// 🎯 **WHAT A LOG CAN AND CANNOT SAY ABOUT THE DELAY BETWEEN ITS RUNS** — the whole answer of
@@ -3948,6 +4049,256 @@ impl NoWait {
             Self::NothingFollowed => "nothing has followed it on that tree yet",
             Self::SuccessorStartUnwatched => "nobody was watching when the next one began",
             Self::SuccessorStartedFirst => "the next one began before it stopped",
+        }
+    }
+}
+
+/// 🎯 **WHAT A LOG CAN AND CANNOT SAY ABOUT ITEM 856's AXIS** — the whole answer of
+/// [`RunLog::folds_against_fullness`].
+///
+/// ⚠⚠ **THE TWO HALVES ARE ONE POPULATION**: every run in the log is either exactly one
+/// [`measured`](Self::measured) row or counted under exactly one
+/// [`unmeasured`](Self::unmeasured) reason, and [`Folds::runs`] is that sum. A reader that took
+/// the first half alone would read a store where nothing is readable as a store where nothing
+/// folded — which is what five re-judgements of that item each had to say by hand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Folds {
+    /// Every run this log can put a fullness beside, in the order the log holds them.
+    pub measured: Vec<FoldAtFullness>,
+    /// How many runs could not be read, under each [`NoFullness`] — every arm, **including the
+    /// zeros**, in [`NoFullness::ALL`]'s order.
+    ///
+    /// ⚠ The zeros are carried rather than filtered because the POPULATION is the enum: a reader
+    /// deciding what to print may drop an empty line, and a reader deciding whether the table is
+    /// whole may not. Item 856 ⑹ measured what a table that builds its own population does.
+    pub unmeasured: Vec<(NoFullness, usize)>,
+}
+
+impl Folds {
+    /// How many runs this answer accounts for — the sum of both halves, and what a caller checks
+    /// against the log's own length.
+    #[must_use]
+    pub fn runs(&self) -> usize {
+        self.measured.len()
+            + self
+                .unmeasured
+                .iter()
+                .map(|(_, count)| count)
+                .sum::<usize>()
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE AXIS'S OWN STATED REFUTATION, COUNTED** — a prompt asked during a
+    /// `capacity` reflection that LANDED, in a run judged by the ceiling its own document
+    /// authored.
+    ///
+    /// The loop's own source states the condition, in the product's words: *item 856's axis says a
+    /// full session folds, its discriminator is the `capacity` reflection, and one capacity
+    /// reflection whose prompt LANDS is the register's own stated refutation.*
+    ///
+    /// ⚠⚠ **[`landings_at_a_moved_ceiling`](Self::landings_at_a_moved_ceiling) IS NEVER ADDED TO
+    /// THIS**, and keeping them apart is why this is a method rather than a filter at each reader.
+    /// Measured 2026-09-05, the store held 29 such landings and every one belonged to a run whose
+    /// ceiling a caller had moved to `20000` — where a `capacity` reflection means *we handed over
+    /// early* and not *the session filled up*. Pooling them would refute the axis with the
+    /// experiment's own definition of *full*.
+    #[must_use]
+    pub fn refutations(&self) -> u32 {
+        self.landings(Judged::ByItsDocument)
+    }
+
+    /// **THE SAME LANDINGS, IN RUNS WHOSE CEILING A CALLER MOVED** — reported beside
+    /// [`refutations`](Self::refutations) and never inside it; see that method.
+    ///
+    /// ⚠ Not a lesser number and not noise: it is what an EXPERIMENT produced, and item 856's own
+    /// entry states the cost of losing it — *an experiment nobody is told about does not go
+    /// unnoticed, it contaminates the denominator it was run in.*
+    #[must_use]
+    pub fn landings_at_a_moved_ceiling(&self) -> u32 {
+        self.landings(Judged::ByACallerWhoMovedIt)
+    }
+
+    /// The two above, over one arm — written once so the pair cannot come to mean different sums.
+    fn landings(&self, judged: Judged) -> u32 {
+        self.measured
+            .iter()
+            .filter(|row| row.judged == judged)
+            .map(FoldAtFullness::landed_on_the_capacity_road)
+            .sum()
+    }
+}
+
+/// One run whose fold split can be read against how full its session got — [`Folds::measured`]'s
+/// member, and the row register item 894 built its column for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FoldAtFullness {
+    /// The run.
+    pub id: u64,
+    /// **HOW FULL ITS SESSION EVER GOT** — [`PersistedRun::context_high_water`], the left-hand term
+    /// of item 856's comparison and a PEAK rather than a level.
+    pub fullest: i64,
+    /// **WHAT IT WAS JUDGED BY** — [`PersistedRun::context_ceiling`], the right-hand term.
+    pub ceiling: i64,
+    /// **WHOSE NUMBERS THOSE WERE** — derived from [`PersistedRun::overridden`], register item 859.
+    pub judged: Judged,
+    /// Its whole split, every occasion — never the `capacity` row alone.
+    ///
+    /// ⚠⚠ **THE OTHER ROADS ARE THE CONTROL AND THE ROW CARRIES THEM FOR THAT REASON.** Item 856's
+    /// design note says it outright: counting `capacity` alone is what the split was built to stop,
+    /// because with no control group the axis cannot be told from *a reflection prompt is the
+    /// longest thing this loop builds*. The other occasions hold the prompt's SHAPE roughly fixed
+    /// and vary only what brought the loop there, so line against line is the axis.
+    pub folds: sprag_plugin::FoldsByReason,
+}
+
+impl FoldAtFullness {
+    /// Its `capacity` row — the discriminator, named once so no reader picks the occasion itself.
+    #[must_use]
+    pub fn on_the_capacity_road(&self) -> sprag_plugin::FoldsUnder {
+        self.folds.under(sprag_plugin::Occasion::Reflecting(
+            sprag_plugin::ReflectReason::Capacity,
+        ))
+    }
+
+    /// **HOW MANY OF ITS `capacity` PROMPTS LANDED** — delivered minus folded, on that road.
+    ///
+    /// ⚠ `delivered` is every prompt asked under the occasion and `folded` is the subset the
+    /// composer swallowed, so the difference is the landings — the arithmetic item 856 ⑴ got wrong
+    /// once by reading `delivered` as *landed*.
+    #[must_use]
+    pub fn landed_on_the_capacity_road(&self) -> u32 {
+        let row = self.on_the_capacity_road();
+        row.delivered.saturating_sub(row.folded)
+    }
+
+    /// Whether the session had really reached the bound it was judged by.
+    ///
+    /// ⚠⚠ It is NOT what tells an experiment from an ordinary run — [`judged`](Self::judged) is,
+    /// and this is true of both by construction whenever the `capacity` road was taken at all
+    /// (`ai_loop.scxml` turns on `context >= context_ceiling`, and [`fullest`](Self::fullest) is a
+    /// peak over those readings). It is carried so a reader can see the two columns AGREE, and a
+    /// row where they do not is a defect in the recording rather than a fact about a session.
+    #[must_use]
+    pub const fn reached_its_ceiling(&self) -> bool {
+        self.fullest >= self.ceiling
+    }
+}
+
+/// 🎯🎯🎯🎯🎯 **WHOSE NUMBERS A RUN WAS JUDGED BY** — register item 859, as item 856's measurement
+/// needs it.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is asked of the row and not kept as a note beside it
+///
+/// Item 856's two experiment arms were launched by moving `context_ceiling` off the document's
+/// number, and on 2026-09-05 a round had to separate them from the ordinary runs **by reading a
+/// human note in a memory file**. The number that came out of that hand-split — 29 landings — is
+/// the one this type exists to keep from being quoted as a refutation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Judged {
+    /// The caller took none of the numbers this run's document authored — the healthy launch, and
+    /// the only population item 856's axis can be read over.
+    ByItsDocument,
+    /// A caller named `context_ceiling` itself, so this run is an EXPERIMENT: its `capacity`
+    /// reflections say *we handed over at the number we chose*, never *the session filled up*.
+    ByACallerWhoMovedIt,
+}
+
+impl Judged {
+    /// Both answers, so a reader printing a partition cannot leave one out.
+    pub const ALL: [Self; 2] = [Self::ByItsDocument, Self::ByACallerWhoMovedIt];
+
+    /// What a stored [`PersistedRun::overridden`] says, or [`None`] when nothing does.
+    ///
+    /// ⚠⚠ [`None`] is *nobody answered* AND *this build cannot spell a word in that list*, which
+    /// [`crate::plugins::Overridden::restored`] folds together and states its reason for: a shorter
+    /// list is not a weaker claim, it names a different set of flags. Both are *this row cannot be
+    /// told from an experiment*, which is the only thing this method is asked.
+    fn of(words: &[String]) -> Option<Self> {
+        crate::plugins::Overridden::restored(words).map(|taken| {
+            if taken.moved_the_context_ceiling() {
+                Self::ByACallerWhoMovedIt
+            } else {
+                Self::ByItsDocument
+            }
+        })
+    }
+
+    /// What a reader is looking at, in one clause — ⛔ an exhaustive `match` with no `_` arm.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::ByItsDocument => "its document's ceiling",
+            Self::ByACallerWhoMovedIt => "A CEILING A CALLER MOVED, so this run is an experiment",
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHY A RUN'S FOLDS CANNOT BE READ AGAINST A FULLNESS** — [`Folds::unmeasured`]'s
+/// population, and the half register item 856 ⑴ cannot be answered without.
+///
+/// # ⚠⚠⚠⚠⚠ It is a closed vocabulary because the alternative is a silent drop
+///
+/// A run that cannot be read yields no row, and *no row* and *no fold* are the same silence.
+/// Naming each way is what lets a reader tell **the promotion wall** (these three columns exist in
+/// this build and in no stored row yet) from **a session that folded nothing** — and today, over
+/// the loop's own store, every run that ever delivered a prompt is behind one wall.
+///
+/// ⚠ The arms are tried in the order they are declared, and that order is a claim: a run with no
+/// split has no fold for a fullness to be beside, so nothing further can be asked of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NoFullness {
+    /// No split at all — [`Sampled::Unsaid`], a row from a daemon older than the table.
+    SplitUnsaid,
+    /// A split that is present and all zero — [`Sampled::Zeroed`]. *Delivered nothing* for a build
+    /// that had the counter and *never counted* for one written before register item 891, and the
+    /// row cannot say which.
+    ///
+    /// ⚠ Its own arm rather than either neighbour's, which is register item 895's whole finding:
+    /// measured over 220 stored rows, folding it would decide 209 of them by fiat.
+    SplitZeroed,
+    /// It delivered prompts and no [`PersistedRun::context_high_water`] — **the promotion wall**,
+    /// register item 894. Nothing says how full that session was, so its folds sit on no axis.
+    FullnessUnread,
+    /// How full it got is recorded and [`PersistedRun::context_ceiling`] is not, so the row states
+    /// a reading and never what it was measured against — register item 856 ⑴b.
+    CeilingUnrecorded,
+    /// Both readings are there and [`PersistedRun::overridden`] answers nothing, so an EXPERIMENT
+    /// cannot be told from an ordinary run — register item 859. ⛔ Counted here rather than assumed
+    /// to be the document's: assuming would put a moved-ceiling run into the axis's own
+    /// denominator, which is the contamination item 856 filed 859 to stop.
+    ExperimentUnsaid,
+}
+
+impl NoFullness {
+    /// Every way, as the population [`Folds::unmeasured`] is built from — a sixth reason added to
+    /// the type appears in every report without anybody widening a list.
+    pub const ALL: [Self; 5] = [
+        Self::SplitUnsaid,
+        Self::SplitZeroed,
+        Self::FullnessUnread,
+        Self::CeilingUnrecorded,
+        Self::ExperimentUnsaid,
+    ];
+
+    /// What a reader is looking at, in one clause — ⛔ an exhaustive `match` with no `_` arm, so a
+    /// sixth way cannot reach a report wearing a fifth's sentence.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::SplitUnsaid => {
+                "no fold split recorded at all, so there is no fold to put a fullness beside"
+            }
+            Self::SplitZeroed => {
+                "a fold split present and all zero, which is *delivered nothing* and *never \
+                 counted* at once"
+            }
+            Self::FullnessUnread => {
+                "nothing recorded how full that session ever got, so its folds sit on no axis"
+            }
+            Self::CeilingUnrecorded => "nothing recorded which ceiling it was judged by",
+            Self::ExperimentUnsaid => {
+                "nothing says whether its numbers were its document's, so an experiment cannot be \
+                 told from an ordinary run"
+            }
         }
     }
 }
@@ -10335,6 +10686,197 @@ mod tests {
              store today — 229 rows, none of them able to name a tree — and a report that returned \
              an empty answer for it would read as *no tree ever waited*, which is the strongest \
              possible claim made from no evidence at all. Got {old:?}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **HOW FULL A SESSION WAS WHEN IT FOLDED IS READ, AND WHAT CANNOT BE IS NAMED** —
+    /// register item 856 ⑴, and the arithmetic five re-judgements of that item each did by hand.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The two landings that must never be one number
+    ///
+    /// Item 856's stated refutation is *a `capacity` reflection whose prompt LANDS*. Measured
+    /// 2026-09-05 that had happened 29 times, and all 29 belonged to runs whose ceiling a caller
+    /// had moved to `20000` — where a `capacity` reflection is *we handed over early*, not *the
+    /// session filled up*. The condition had silently assumed **ceiling = fullness**. So the
+    /// headline of this gate is that the two counts stay apart, and the control is a run whose
+    /// caller overrode something ELSE: the answer keys on the ceiling's own word and not on *an
+    /// override happened*.
+    ///
+    /// # ⚠⚠ AND THE FIXTURE IS THE JSON A PREDECESSOR LEAVES, decoded by the product's reader
+    ///
+    /// Item 856's own instruments died at a crossing twice — 894 measured the ceiling reaching a
+    /// live row and never a stored one, and `folds_by_reason` is `#[serde(flatten)]`, the one
+    /// attribute that can swallow a table whole. A hand-built struct would assert this file's own
+    /// typing, so every column here arrives through `serde` as a real key or a real absence.
+    #[test]
+    fn how_full_a_session_was_when_it_folded_is_read_and_what_cannot_be_is_named() {
+        let log: RunLog = serde_json::from_value(serde_json::json!({
+            "version": RUN_LOG_VERSION,
+            "runs": [
+                // ── ① THE HEADLINE: an ordinary run, judged by its own document's ceiling ──
+                //    4 capacity prompts, 1 folded ⇒ THREE landings, and each is a refutation.
+                { "id": 1, "label": "ai_loop pane=3", "iterations": 9, "finished": true,
+                  "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [],
+                  "folds_by_reason": { "capacity": { "delivered": 4, "folded": 1 },
+                                       "ordinary": { "delivered": 40, "folded": 0 } } },
+                // ── ② AN ARM: the shape of runs 214 and 215, which produced 27 of the 29 ──
+                { "id": 2, "label": "ai_loop pane=4", "iterations": 9, "finished": true,
+                  "context_high_water": 24_000, "context_ceiling": 20_000,
+                  "overridden": ["context_ceiling"],
+                  "folds_by_reason": { "capacity": { "delivered": 28, "folded": 1 } } },
+                // ── ③ THE CONTROL: a caller who moved something ELSE is NOT an experiment here ──
+                { "id": 3, "label": "ai_loop pane=5", "iterations": 9, "finished": true,
+                  "context_high_water": 800_000, "context_ceiling": 800_000,
+                  "overridden": ["max_seconds"],
+                  "folds_by_reason": { "capacity": { "delivered": 2, "folded": 2 } } },
+                // ── ④ THE PROMOTION WALL: it delivered, and nothing recorded how full it got ──
+                { "id": 4, "label": "ai_loop pane=6", "iterations": 9, "finished": true,
+                  "context_ceiling": 800_000, "overridden": [],
+                  "folds_by_reason": { "capacity": { "delivered": 3, "folded": 3 } } },
+                // ── ⑤ A READING WITH NOTHING TO MEASURE IT AGAINST ──
+                { "id": 5, "label": "ai_loop pane=7", "iterations": 9, "finished": true,
+                  "context_high_water": 700_000, "overridden": [],
+                  "folds_by_reason": { "capacity": { "delivered": 3, "folded": 3 } } },
+                // ── ⑥ BOTH READINGS AND NOBODY ANSWERED WHOSE NUMBERS THEY WERE ──
+                { "id": 6, "label": "ai_loop pane=8", "iterations": 9, "finished": true,
+                  "context_high_water": 800_000, "context_ceiling": 800_000,
+                  "folds_by_reason": { "capacity": { "delivered": 3, "folded": 0 } } },
+                // ── ⑦ AND A WORD THIS BUILD CANNOT SPELL, which refuses the whole answer ──
+                { "id": 7, "label": "ai_loop pane=9", "iterations": 9, "finished": true,
+                  "context_high_water": 800_000, "context_ceiling": 800_000,
+                  "overridden": ["a_bound_a_later_build_authored"],
+                  "folds_by_reason": { "capacity": { "delivered": 3, "folded": 0 } } },
+                // ── ⑧ A SPLIT PRESENT AND ALL ZERO — 214 of today's 229 rows ──
+                { "id": 8, "label": "ai_loop pane=10", "iterations": 9, "finished": true,
+                  "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [],
+                  "folds_by_reason": { "capacity": { "delivered": 0, "folded": 0 } } },
+                // ── ⑨ NO SPLIT AT ALL — a row from a daemon older than the table ──
+                { "id": 9, "label": "ai_loop pane=11", "iterations": 9, "finished": true,
+                  "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [] },
+                // ── ⑩ THE CONTROL GROUP THE AXIS IS READ AGAINST: reflected, never on capacity ──
+                //    Its peak is BELOW its ceiling, which is what an unfilled session looks like.
+                { "id": 10, "label": "ai_loop pane=12", "iterations": 9, "finished": true,
+                  "context_high_water": 40_000, "context_ceiling": 800_000, "overridden": [],
+                  "folds_by_reason": { "budget": { "delivered": 8, "folded": 8 } } },
+            ]
+        }))
+        .expect("the log a predecessor leaves is what this reads");
+
+        let folds = log.folds_against_fullness();
+        let of = |why: NoFullness| {
+            folds
+                .unmeasured
+                .iter()
+                .find(|(arm, _)| *arm == why)
+                .map(|(_, count)| *count)
+                .unwrap_or_else(|| panic!("{why:?} must be in the report's population"))
+        };
+
+        // ── ① THE HEADLINE, AND THE WHOLE POINT: the two landing counts are separate numbers ──
+        assert_eq!(
+            (folds.refutations(), folds.landings_at_a_moved_ceiling()),
+            (3, 27),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴: a `capacity` prompt that LANDED is this axis's own \
+             stated refutation, and one that landed under a ceiling A CALLER MOVED is not — at a \
+             moved ceiling that reflection means *we handed over early*. Measured 2026-09-05 the \
+             live store held 29 of the second kind and 0 of the first, and a build that returned \
+             their sum would refute the axis with the experiment's own definition of *full*. \
+             Rows: {:?}",
+            folds.measured,
+        );
+        assert_ne!(
+            folds.refutations(),
+            folds.refutations() + folds.landings_at_a_moved_ceiling(),
+            "⚠⚠⚠ THE CONTROL FOR THE ARM ABOVE: a fixture whose experiment produced no landings \
+             would satisfy it with the two numbers pooled",
+        );
+
+        // ── ② AND THE ANSWER KEYS ON THE CEILING'S OWN WORD, not on *an override happened* ──
+        let judged = |id: u64| {
+            folds
+                .measured
+                .iter()
+                .find(|row| row.id == id)
+                .unwrap_or_else(|| panic!("run {id} must be readable: {:?}", folds.measured))
+                .judged
+        };
+        assert_eq!(
+            (judged(2), judged(3)),
+            (Judged::ByACallerWhoMovedIt, Judged::ByItsDocument),
+            "⛔⛔⛔⛔ REGISTER ITEM 859: run 3's caller took `max_seconds` and left the ceiling \
+             alone, so its `capacity` reflections still mean *the session filled up*. A build that \
+             read *any override* as *an experiment* would throw a healthy run out of the axis's \
+             denominator, and one that read it as neither would put run 2 into it.",
+        );
+
+        // ── ③ EVERY REASON REACHED, so none of the five is decoration ──
+        for (why, expected) in [
+            (NoFullness::SplitUnsaid, 1),
+            (NoFullness::SplitZeroed, 1),
+            (NoFullness::FullnessUnread, 1),
+            (NoFullness::CeilingUnrecorded, 1),
+            // ⚠ TWO: nobody answered, and a word this build cannot spell. `Overridden::restored`
+            // folds them and states why — both are *this row cannot be told from an experiment*.
+            (NoFullness::ExperimentUnsaid, 2),
+        ] {
+            assert_eq!(
+                of(why),
+                expected,
+                "⛔⛔⛔ {why:?} — {}. An arm nothing can reach is an arm that will be wrong \
+                 without anybody finding out, and this workspace's rule 6 is that an unclassified \
+                 run is a RED and not a pass. Report: {:?}",
+                why.describe(),
+                folds.unmeasured,
+            );
+        }
+
+        // ── ④ THE SUM, which is what makes a silent drop impossible ──
+        assert_eq!(
+            folds.runs(),
+            log.runs.len(),
+            "⛔⛔⛔⛔⛔ RUNS WENT MISSING BETWEEN THE TWO HALVES. A run that is neither read nor \
+             blamed has been dropped, and a dropped run is invisible in exactly the direction that \
+             reads as *nothing folded* — this report's whole subject. Read {} + blamed {:?} \
+             against {} rows",
+            folds.measured.len(),
+            folds.unmeasured,
+            log.runs.len(),
+        );
+
+        // ── ⑤ THE CONTROL GROUP IS IN THE POPULATION, and it is what the axis is read against ──
+        //
+        // ⚠⚠ Item 856's own design note: counting `capacity` alone is what the split was built to
+        // stop, because a reflection prompt is the longest thing this loop composes and *long
+        // prompts fold* is a live rival explanation. Run 10 reflected on `budget` at 40,000 read
+        // of an 800,000 ceiling and folded all eight — a row the axis has to be able to see.
+        let control = folds
+            .measured
+            .iter()
+            .find(|row| row.id == 10)
+            .expect("a run that reflected on another road is READ, not blamed");
+        assert!(
+            !control.reached_its_ceiling()
+                && control.landed_on_the_capacity_road() == 0
+                && control.folds.under(sprag_plugin::Occasion::Reflecting(
+                    sprag_plugin::ReflectReason::Budget
+                )) == sprag_plugin::FoldsUnder {
+                    delivered: 8,
+                    folded: 8,
+                    unasked: sprag_plugin::Unasked::default(),
+                },
+            "⛔⛔⛔⛔ THE CONTROL GROUP MUST SURVIVE THE READING. A build that kept only the \
+             `capacity` row would publish exactly the capacity-only count item 856 filed the split \
+             to replace, and this row — an unfilled session that folded everything on another road \
+             — is the one that makes *full sessions fold* falsifiable. Got {control:?}",
+        );
+        assert!(
+            folds
+                .measured
+                .iter()
+                .find(|row| row.id == 1)
+                .is_some_and(FoldAtFullness::reached_its_ceiling),
+            "⚠⚠ AND THE OTHER SIDE OF THAT COMPARISON: a session that DID reach its ceiling must \
+             read so, or `reached_its_ceiling` is a constant and the clause beside run 10 is empty",
         );
     }
 

@@ -15010,7 +15010,10 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
         // `daemons`' reason rather than `disposition`'s — the delay it reports is bounded at its
         // left end by a daemon that has ENDED, so needing a live one would rule out the promotion
         // that ended it. Driven here before the count moved.
-        (66, 5, 3),
+        // ⚠ REGISTER ITEM 856 ⑴: `folds` is the 67th, driven with NO daemon on `waits`' reason —
+        // item 856's rate is over runs that have ENDED, and item 606 measured that every run a
+        // reader meets is a RESTORED record, so a live daemon is not what holds the answer.
+        (67, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -15202,7 +15205,10 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         // ⚠ REGISTER ITEM 872 ⑶: `waits` is the 43rd in the third column, on `disposition`'s
         // reason with one of its own — what it answers about is the daemon that ENDED, so the
         // client a key is pressed inside is the one party the question is not about.
-        (15, 10, 43, 6),
+        // ⚠ REGISTER ITEM 856 ⑴: `folds` is the 44th, on `waits`' reason verbatim — it answers,
+        // there is no view for a table of fold rates, and the runs it reads ended under a daemon
+        // that has been restarted since.
+        (15, 10, 44, 6),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 
@@ -19752,5 +19758,309 @@ fn a_current_builds_daemon_leaves_a_log_whose_runs_can_be_paired() {
         said.stdout,
     );
 
+    drop(guard);
+}
+
+/// **A PEER THAT ANSWERS EVERY TURN AND SPENDS NOTHING** — the fixture
+/// [`a_current_builds_daemon_leaves_a_log_saying_which_ceiling_its_runs_were_judged_by`] needs, and
+/// the difference between the two columns that gate exists to separate.
+///
+/// # ⛔⛔⛔⛔⛔ Why an echoing shell will not do, measured twice
+///
+/// The shipped turn contract is `Settles`, which pairs the peer's rest against `asked_seq` — and
+/// that counter moves only on a report that STATES A PROMPT. A pane that merely echoes therefore
+/// never ends a turn, and what follows is not a hang but the loop working correctly: the question
+/// goes unasked, the loop RESTARTS, and the session it opens is spawned with the real `claude`
+/// command. Measured on this gate's own drafts: with the turn unbounded the driver sat inside one
+/// step for 120 s (`running — 2 iterations` with `max_iterations: 1` in force, because the
+/// guardrail is checked BETWEEN steps); with `turn_within_ms` bounding it, the run reached the
+/// restart instead and `sprag runs` answered an **empty page** — the replacement pane died, the
+/// session went with it, and there was nothing left to ask about.
+///
+/// # ⚠⚠ AND IT DELIBERATELY WRITES NO TRANSCRIPT, which is the whole point
+///
+/// `wire_client.rs`'s `standin_that_reports_itself` states a `--transcript` and appends a billed
+/// request per turn, so `costs_now` reads a growing number and the session fills up. This one does
+/// not: it answers, and it never spends. So `context` stays at the document's seeded `0`,
+/// `note_fullness` takes no positive reading, and `context_high_water` is honestly [`None`] — which
+/// is exactly the arm the gate needs to tell *this build does not write the column* from *nothing
+/// in this run ever filled a session*.
+///
+/// ⚠ The four clauses in the `case` are the document's own: `exactly:` ends every work prompt,
+/// *Summarise* is what `closing` asks, *where you got to* is what `stopping` asks. A peer that
+/// answered none of them would end the run on its wall clock instead of its turn budget.
+fn a_peer_that_answers_and_never_spends(state: &Path) -> String {
+    let sprag = Path::new(env!("CARGO_BIN_EXE_sprag")).display().to_string();
+    let log = state.join("what-the-daemon-said-to-each-report");
+    format!(
+        "export XDG_STATE_HOME='{state}'\n\
+         stty -echo\n\
+         s=1\n\
+         '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
+         printf 'AGENT-READY\\n'\n\
+         while IFS= read -r line; do\n\
+         printf '%s\\n' \"$line\"\n\
+         case \"$line\" in *exactly:*|*Summarise*|*'where you got to'*) ;; *) continue;; esac\n\
+         s=$((s+1))\n\
+         '{sprag}' report-agent working --name sh --seq $s --asked \"$line\" >> '{log}' 2>&1\n\
+         printf 'ACK\\n'\n\
+         s=$((s+1))\n\
+         '{sprag}' report-agent idle --name sh --seq $s >> '{log}' 2>&1\n\
+         done\n",
+        state = state.display(),
+        log = log.display(),
+    )
+}
+
+/// 🎯🎯🎯🎯🎯 **A DAEMON OF THIS BUILD LEAVES A LOG SAYING WHICH CEILING A RUN WAS JUDGED BY AND
+/// WHOSE NUMBERS THOSE WERE** — register item 856 ⑴, and the half of its wall that does NOT need a
+/// promotion to answer.
+///
+/// # ⛔⛔⛔⛔⛔ One number, three claims — which is what the gate above found one item over
+///
+/// Item 856 ⑴ is blocked on `context_high_water` reading **0 of 229** over the loop's own store
+/// (2026-09-05T10:13:40Z), and `context_ceiling` and `overridden` read 0 of 229 beside it. Five
+/// rounds recorded all three as *behind the promotion* — an assumption about a BUILD argued from a
+/// store an older one wrote, which is verbatim the shape
+/// `a_current_builds_daemon_leaves_a_log_whose_runs_can_be_paired` was written to break.
+///
+/// Split, the three zeros are not one fact:
+///
+/// * `context_ceiling` and `overridden` are written on **any** `ai_loop` run — the ceiling comes
+///   off the kind's own document and the override list off the request, both at submit time. So
+///   their zeros are the STORE's age and nothing else, and this gate is what says so.
+/// * `context_high_water` is a reading of what the AGENT SPENT — `OuterLoop::note_fullness` takes
+///   the peak of `context`, which the document assigns from `costs_now` over a real transcript. No
+///   run without a spending peer can produce one, whatever build drives it. **That zero waits on a
+///   promotion AND on a loop that actually talks to an agent**, and this gate measures the
+///   difference rather than arguing it.
+///
+/// ⚠⚠ The pane holds a SHELL, deliberately: this is the arm where nothing spends, so the third
+/// column's absence here is the product being honest rather than a defect. The arm where a peer
+/// DOES spend is `wire_client.rs`'s `a_session_that_has_filled_up_hands_over_and_one_that_has_not_
+/// keeps_working`, which drives a real loop over a stand-in that reports a growing reading and
+/// asserts the pair on the progress cell. Neither alone is the chain; the two together are.
+///
+/// ⚠ The ceiling is DERIVED from `LoopKind`'s own answer rather than typed here — a number this
+/// file spelled would be this file measuring itself the day the document changes (item 492).
+#[test]
+fn a_current_builds_daemon_leaves_a_log_saying_which_ceiling_its_runs_were_judged_by() {
+    let sock = socket_path();
+    // ⚠ `scratch_root`, never the bare `std::env::temp_dir()` — item 794's ratchet, which has
+    // caught this copied line twice in this file already.
+    let state = sprag_scratch::scratch_root().join(format!(
+        "sprag-folds-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": {
+                "name": "work",
+                "cmd": ["sh", "-c", &a_peer_that_answers_and_never_spends(&state)],
+                // ⚠ POINTED AT A TREE — item 738, layer 4: a debt loop is refused over a pane that
+                // stands nowhere, so a harness left where cargo put it builds no loop at all.
+                "cwd": a_tree_to_stand_in().to_string_lossy(),
+            },
+        }),
+    )
+    .expect("new_session answers");
+    let pane = conn
+        .call(
+            "scene/query",
+            json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .expect("the session's pane");
+
+    // ⚠⚠ NO `context_ceiling` ON THE REQUEST, which is the whole point of the second assertion:
+    // this is the ORDINARY launch, the only population item 856's axis can be read over. The
+    // guardrails are named so the run ends on its own; they are a different class of number, and
+    // that difference is exactly what `Judged` reads.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "work",
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "ai_loop",
+                "pane": pane,
+                "loop_kind": "debt",
+                "agent": "claude",
+                "north_star": "a stored run says which ceiling it was judged by",
+                "milestone": "leave a log this build's own reader can answer about",
+                "reference": "register item 856 (1)",
+                "ready_when": { "match": "shows", "marker": "AGENT-READY" },
+                // ⚠ The stand-in paints only whole lines, so a delivery cannot be confirmed on
+                // screen before the newline that submits it.
+                "shows_prompt": false,
+                // ⚠⚠ **THE RUN ENDS ON THE DOCUMENT'S TURN BUDGET**, which is the only ending that
+                // says every turn actually completed — `exhausted(duration)` is what a peer that
+                // stopped answering produces, and this gate would then be measuring the fixture.
+                // See `a_peer_that_answers_and_never_spends` for the two endings measured before
+                // this one.
+                "max_turns": 1,
+                "turn_within_ms": 20_000,
+                "guardrails": { "max_iterations": 200, "max_seconds": 90 },
+            },
+        }),
+    )
+    .expect("the loop is submitted");
+    drop(conn);
+
+    // ⚠⚠ THE FILE IS FOUND BY SCANNING THIS TEST'S OWN STATE DIR — `runs_path` would resolve
+    // `XDG_STATE_HOME` in THIS process, which is the developer's; the neighbouring gate records
+    // that exact miss and `sprag waits`' own doc measures what it costs.
+    let runs_dir = state.join("sprag");
+    let read = || {
+        std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".runs.json"))
+            .filter_map(|entry| sprag_host::load_runs(&entry.path()))
+            .find(|log: &sprag_host::runs::RunLog| !log.runs.is_empty())
+    };
+    // ⚠⚠ **WHAT IS WAITED FOR IS A STEP, NOT AN ENDING**, and saying so is the honest report: the
+    // three columns are written every step (`Driver::run` reads them off the plugin in one breath
+    // and KEEPS them), and this gate's claim is that a real daemon of this build puts them in the
+    // FILE at all. That they also survive the ending and the restart is a different claim with its
+    // own gates — `a_restored_run_says_how_full_its_session_ever_got` and
+    // `a_run_whose_cell_never_moved_persists_the_pair_its_driver_reported`, both in `runs.rs`.
+    //
+    // ⚠ A delivery is the product's own proof that the loop got past readiness and primed: the
+    // ceiling is read off the DATAMODEL, and a run that never primed has none — measured on this
+    // gate's first draft, which came back `context_ceiling: None` with `iterations: 0`.
+    let mut last = String::new();
+    assert!(
+        wait_for(Duration::from_secs(90), || {
+            last = sprag(&sock, &["runs", "-t", "work"]).stdout;
+            last.contains("prompt(s) delivered")
+        }),
+        "the run never delivered a prompt, so it never took the step the ceiling is read on: {last}",
+    );
+    assert!(
+        wait_for(Duration::from_secs(30), || read().is_some()),
+        "the daemon never persisted a run at all under {} -- the row says: {last}",
+        runs_dir.display(),
+    );
+    let log = read().expect("the log this daemon wrote");
+    let run = &log.runs[0];
+
+    // ── ① THE CEILING IT WAS JUDGED BY, off the kind's own document ──
+    let script: std::sync::Arc<dyn sce_rust_runtime::IScriptEngine> =
+        std::sync::Arc::new(sce_rust_lua::LuaEngine::new());
+    let authored = sprag_plugin::kind::LoopKind::named("debt", script)
+        .expect("this repository's own loop kind")
+        .context_ceiling();
+    assert_eq!(
+        run.context_ceiling, authored,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴: a run driven by a daemon of THIS build left no record of \
+         the ceiling it obeyed, so item 856's rate would again be computed over runs that cannot \
+         say what *full* meant for them. That column reads 0/229 on the live store and five rounds \
+         have called it *the old daemon* — this is what makes that an answer instead of an \
+         assumption. Wrote: {run:?}",
+    );
+
+    // ── ② AND WHOSE NUMBERS THEY WERE, which is what tells an experiment from an ordinary run ──
+    let overridden = run
+        .overridden
+        .as_deref()
+        .expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 859: nobody answered whether this run's numbers were its \
+             document's, so `sprag folds` cannot tell it from an arm of item 856's own experiment \
+             — and putting a moved-ceiling run into that denominator is the contamination the \
+             column exists to stop",
+        )
+        .to_vec();
+    assert!(
+        !overridden.iter().any(|word| word == "context_ceiling"),
+        "⛔⛔⛔⛔ THE REQUEST NAMED NO CEILING AND THE ROW SAYS A CALLER TOOK ONE. Every ordinary \
+         run would then read as an experiment and item 856's population would be empty. Got \
+         {overridden:?}",
+    );
+    // ⚠ THE CONTROL: the list is not empty either — the caller DID take `max_iterations`, and a
+    // build that answered `[]` for everything would satisfy the arm above by saying nothing.
+    assert!(
+        overridden.iter().any(|word| word == "max_iterations"),
+        "⚠⚠⚠ A CONTROL FAILED: this request took `max_iterations` from the document and the row \
+         does not say so, so the affirmative answer above proves nothing about what it can see. \
+         Got {overridden:?}",
+    );
+
+    // ── ③ AND HOW FULL THE SESSION GOT IS **HONESTLY ABSENT**, which is the OTHER half of 0/229 ──
+    //
+    // ⛔⛔⛔ This is the claim this gate exists to separate. Nothing spent here — the peer answers
+    // and states no transcript — so `note_fullness` never took a positive reading and the column
+    // is `None`. That is the product being honest, and it means the third zero on the live store
+    // is NOT the same fact
+    // as the two above: those two arrive with the promotion, this one arrives with the promotion
+    // AND a run whose agent actually spends. A build that published a `0` here would claim a
+    // session had read nothing — register item 891, one field over.
+    assert_eq!(
+        run.context_high_water, None,
+        "⚠⚠⚠⚠⚠ A SESSION NOTHING SPENT IN REPORTED A FULLNESS. Either a zero is being published \
+         for silence — which would put every peerless run into item 856's control group as an \
+         empty session — or this arm's premise is wrong and something did spend. Wrote: {run:?}",
+    );
+
+    // ── ④ AND THE VERB A PERSON RUNS COUNTS THAT RUN RATHER THAN DROPPING IT ──
+    //
+    // ⛔⛔⛔ The population is the half that fails GREEN: a run this cannot read yields no row, so
+    // a verb that printed only rows would answer a blank page here and a reader would take it for
+    // *nothing folded*. Item 856 ⑸'s shape — gates either side of a crossing, and the value never
+    // arriving at the mouth.
+    let named = runs_dir.join(
+        std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .find(|name| name.to_string_lossy().ends_with(".runs.json"))
+            .expect("the daemon's own run log is in its own state directory"),
+    );
+    let said = sprag(&sock, &["folds", &named.to_string_lossy()]);
+    assert!(said.ok, "`sprag folds <log>` refused: {}", said.stderr);
+    assert!(
+        said.stdout.contains("1 run(s)") && said.stdout.contains("measure nothing"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴: a run a current build's daemon just wrote is missing from \
+         the answer entirely. What cannot be read has to be COUNTED and named — that is the \
+         difference between *the promotion has not happened yet* and *nothing folded*, and over \
+         the live store today it is the whole of the report. Got:\n{}",
+        said.stdout,
+    );
+    // ⚠ AND THE VERB NAMES THE WALL THIS RUN IS ACTUALLY BEHIND, which is the third column and not
+    // one of the two above — the whole split this gate exists for, read back through the mouth.
+    assert!(
+        said.stdout
+            .contains(sprag_host::runs::NoFullness::FullnessUnread.describe()),
+        "⛔⛔⛔⛔ THE WALL WAS NAMED WRONG. This run recorded its ceiling and whose numbers it \
+         obeyed; what it has not got is a fullness, because nothing spent. A report blaming any \
+         other arm would send a reader looking for a column that is there. Got:\n{}",
+        said.stdout,
+    );
+
+    // ⚠ The run is still going — this gate waited for a STEP, not an ending — so it is stopped
+    // here rather than left for the guard to kill with the daemon: a loop left running would
+    // replace its session and spawn the real `claude` on this machine.
+    let _ = sprag(&sock, &["cancel-run", "0", "-t", "work"]);
     drop(guard);
 }

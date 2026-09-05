@@ -112,6 +112,10 @@
 //!                                          — one line per stretch, plus a line per run the logs
 //!                                          cannot measure and why. NEEDS NO DAEMON (it reads the
 //!                                          run logs on disk); naming a LOG reads only that one
+//! sprag folds [LOG]                        print HOW FULL each session was when it folded the
+//!                                          prompts it was sent — one line per run that can be
+//!                                          read, plus a line per run the logs cannot read and
+//!                                          why. NEEDS NO DAEMON; naming a LOG reads only that one
 //! sprag list-keys                          print the client keymap `config.toml` produces
 //! sprag bind-key [-nr] [-T TABLE] KEY ACTION…  give a key a meaning (tmux bind-key)
 //! sprag unbind-key [-n] [-T TABLE] KEY     take a key's meaning away (tmux unbind-key)
@@ -318,6 +322,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Words => words(args.collect()),
         Verb::Disposition => disposition(args.collect()),
         Verb::Waits => waits(args.collect()),
+        Verb::Folds => folds(args.collect()),
         Verb::Daemons => daemons(args.collect()),
         Verb::ShowGrammar => show_grammar(args.collect()),
         Verb::Orchestrate => orchestrate(args.collect()),
@@ -745,51 +750,7 @@ fn disposition(args: Vec<String>) -> io::Result<()> {
 /// named log cannot be read or the state directory holds none — ⛔ a REFUSAL rather than an empty
 /// table, on this workspace's rule 6: *no logs* and *no waiting* must never print alike.
 fn waits(args: Vec<String>) -> io::Result<()> {
-    if let Some(extra) = args.get(1) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("waits: unexpected argument {extra:?} (it takes [LOG], one at a time)"),
-        ));
-    }
-    let dir = sprag_host::state_dir();
-    let logs: Vec<std::path::PathBuf> = match args.first() {
-        Some(named) => vec![std::path::PathBuf::from(named)],
-        // Sorted so two readings of one machine are diffable — the whole use of this verb is
-        // comparing today's number with item 827's.
-        None => {
-            let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.file_name()
-                        .and_then(std::ffi::OsStr::to_str)
-                        .is_some_and(|name| name.ends_with(".runs.json"))
-                })
-                .collect();
-            found.sort();
-            found
-        }
-    };
-    let read: Vec<(std::path::PathBuf, sprag_host::runs::RunLog)> = logs
-        .into_iter()
-        .filter_map(|path| sprag_host::load_runs(&path).map(|log| (path, log)))
-        .collect();
-    if read.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "waits: no readable run log{}. A log this build cannot parse is skipped rather \
-                 than guessed at, so an empty answer here means NOTHING WAS READ and never that \
-                 nothing waited.",
-                match args.first() {
-                    Some(named) => format!(" at {named}"),
-                    None => format!(" in {}", dir.display()),
-                }
-            ),
-        ));
-    }
+    let (read, dir) = run_logs("waits", "nothing waited", &args)?;
     println!(
         "waits  — how long each working tree had NO run driving it, between one run's watched stop \
          and the next one's watched start"
@@ -864,6 +825,237 @@ fn waits_lines(
         // exactly: 229 runs, 229 of them behind a wall. The empty ARMS are dropped here at the
         // mouth — item 856's `0 of 0` rule — and never in the answer, which carries all six.
         for (why, count) in waits.unmeasured.iter().filter(|(_, count)| *count > 0) {
+            lines.push(format!(
+                "  {count} run(s) measure nothing: {}",
+                why.describe()
+            ));
+        }
+    }
+    if empty > 0 {
+        lines.push(format!("{empty} further log(s) held no runs at all"));
+    }
+    lines
+}
+
+/// **THE RUN LOGS A `[LOG]` VERB IS ANSWERING ABOUT** — [`waits`]' reader and [`folds`]', written
+/// once.
+///
+/// # ⚠⚠ Why the two verbs share this rather than each carrying its own copy
+///
+/// They ask different questions of the same files and must not come to disagree about WHICH files
+/// those are. Three decisions live here and each is one this workspace has paid for: naming a LOG
+/// reads exactly that file; naming none SWEEPS `*.runs.json` out of sprag's state directory; and a
+/// log this build cannot parse is SKIPPED rather than guessed at — which is why nothing readable
+/// is a REFUSAL and not an empty table, on rule 6, since *no logs* and *nothing to report* must
+/// never print alike. A second spelling is a second place for any of the three to be softened.
+///
+/// It hands back the derived directory as well, so a caller can name the sweep's address in the
+/// answer — see [`waits_lines`], which holds the argument for why that matters.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidInput`] for a second argument, and [`io::ErrorKind::NotFound`] when the
+/// named log cannot be read or the state directory holds none.
+fn run_logs(
+    verb: &str,
+    nothing_happened: &str,
+    args: &[String],
+) -> io::Result<(
+    Vec<(std::path::PathBuf, sprag_host::runs::RunLog)>,
+    std::path::PathBuf,
+)> {
+    if let Some(extra) = args.get(1) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{verb}: unexpected argument {extra:?} (it takes [LOG], one at a time)"),
+        ));
+    }
+    let dir = sprag_host::state_dir();
+    let logs: Vec<std::path::PathBuf> = match args.first() {
+        Some(named) => vec![std::path::PathBuf::from(named)],
+        // Sorted so two readings of one machine are diffable — the whole use of these verbs is
+        // comparing today's number with a number somebody wrote down.
+        None => {
+            let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(std::ffi::OsStr::to_str)
+                        .is_some_and(|name| name.ends_with(".runs.json"))
+                })
+                .collect();
+            found.sort();
+            found
+        }
+    };
+    let read: Vec<(std::path::PathBuf, sprag_host::runs::RunLog)> = logs
+        .into_iter()
+        .filter_map(|path| sprag_host::load_runs(&path).map(|log| (path, log)))
+        .collect();
+    if read.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "{verb}: no readable run log{}. A log this build cannot parse is skipped rather \
+                 than guessed at, so an empty answer here means NOTHING WAS READ and never that \
+                 {nothing_happened}.",
+                match args.first() {
+                    Some(named) => format!(" at {named}"),
+                    None => format!(" in {}", dir.display()),
+                }
+            ),
+        ));
+    }
+    Ok((read, dir))
+}
+
+/// 🎯🎯🎯🎯🎯 `folds [LOG]`: **HOW FULL EACH SESSION WAS WHEN IT FOLDED THE PROMPTS IT WAS SENT**
+/// — register item 856 ⑴, and the command that item's number has never had.
+///
+/// # ⛔⛔⛔⛔⛔ The clause this answers, and what five re-judgements each did instead
+///
+/// Item 856's axis is *a session folds because of how full it is*, and its refutation is stated by
+/// the loop itself: **one `capacity` reflection whose prompt LANDS**. Measured 2026-09-05 that had
+/// happened 29 times — and every one of the 29 came from a run whose ceiling a caller had moved to
+/// `20000`, where a `capacity` reflection means *we handed over early* rather than *the session
+/// filled up*. The condition had been assuming **ceiling = fullness**, and telling the two apart
+/// takes three columns that only exist together in a row: how full it got (item 894), what it was
+/// judged by (856 ⑴b) and whose numbers those were (859).
+///
+/// ⇒ Nothing read the three together, so the answer was a `python3 -c` at the store, re-typed each
+/// round — this workspace's rule 10, and the same absence [`waits`] was written for one item over.
+/// The experiment's own arms had to be separated from the ordinary runs **by reading a human note
+/// in a memory file**, which is the step this verb exists to end.
+///
+/// # ⛔⛔⛔⛔⛔ IT PRINTS WHAT IT CANNOT READ, AND TODAY THAT IS THE WHOLE ANSWER
+///
+/// A run this cannot read yields no row, so rows alone would say *nothing to see* about a store
+/// where nothing is readable — **and that is today's store**: measured 2026-09-05T10:13:40Z, 229
+/// rows with `context_high_water` 0 times, `context_ceiling` 0 times, `overridden` 0 times. The
+/// daemon driving that loop predates all three. So the unreadable half prints as loudly as the
+/// readable one, under [`sprag_host::runs::NoFullness`]'s own words, and *the promotion has not
+/// happened yet* cannot be read as *nothing folded*.
+///
+/// ⚠⚠ **NEEDS NO DAEMON**, and not for convenience: item 856's rate is over runs that have ENDED,
+/// and item 606 measured thirteen live runs of which every single one was a RESTORED record. The
+/// population this answers about exists only in a file.
+///
+/// # Errors
+///
+/// [`run_logs`]'s, verbatim.
+fn folds(args: Vec<String>) -> io::Result<()> {
+    let (read, dir) = run_logs("folds", "nothing folded", &args)?;
+    println!(
+        "folds  — how full each session was when it folded the prompts it was sent, and whose \
+         ceiling it was judged by"
+    );
+    // ⚠ The swept directory travels so the ANSWER can name it — `waits_lines` holds the argument,
+    // and `None` when a caller named a log for the same reason it gives.
+    for line in folds_lines(&read, args.is_empty().then_some(dir.as_path())) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// [`folds`]'s BODY, separated from the printing so a gate can read what it says — [`waits_lines`]'
+/// split, for its reason: the mouth is where item 856 ⑸ measured a value crossing into nothing.
+fn folds_lines(
+    read: &[(std::path::PathBuf, sprag_host::runs::RunLog)],
+    swept: Option<&std::path::Path>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    // ⛔ WHICH DIRECTORY THIS IS AN ANSWER ABOUT — `waits_lines` carries the measurement this line
+    // exists for (2026-09-05T08:47:23Z, the same command answering about two machines' worth of
+    // runs depending on one environment variable).
+    if let Some(dir) = swept {
+        lines.push(format!(
+            "swept {} — this path is derived from XDG_STATE_HOME and MOVES with it; the fallback \
+             holds integration-test logs, so a table from the wrong place looks exactly like a \
+             table from the right one",
+            dir.display()
+        ));
+    }
+    let mut empty = 0usize;
+    for (path, log) in read {
+        let folds = log.folds_against_fullness();
+        if folds.runs() == 0 {
+            empty += 1;
+            continue;
+        }
+        lines.push(format!("{}  {} run(s)", path.display(), folds.runs()));
+        for row in &folds.measured {
+            // ⛔ THE EMPTY OCCASIONS ARE DROPPED HERE AT THE MOUTH and never in the answer, which
+            // carries all of `Occasion::ALL`: `0 of 0` on a road nothing was ever asked on reads as
+            // *clean* — item 856's own rule about a table whose zeros are indistinguishable.
+            let split: Vec<String> = row
+                .folds
+                .rows()
+                .filter(|(_, under)| under.delivered > 0)
+                .map(|(occasion, under)| {
+                    format!(
+                        "{} {} of {}",
+                        occasion.word(),
+                        under.folded,
+                        under.delivered
+                    )
+                })
+                .collect();
+            lines.push(format!(
+                "  run {}: {} read of a {} ceiling, {}{} — {}",
+                row.id,
+                row.fullest,
+                row.ceiling,
+                row.judged.describe(),
+                // ⚠ A row whose peak is BELOW the ceiling it reflected on is a defect in the
+                // recording rather than a fact about a session — the document turns on
+                // `context >= context_ceiling` and the peak is taken over those readings. Said
+                // rather than dropped: a reader comparing the two columns must be able to see them
+                // disagree.
+                if row.reached_its_ceiling() {
+                    String::new()
+                } else {
+                    " ⚠ ITS PEAK IS BELOW THAT CEILING, so the two columns disagree".to_owned()
+                },
+                if split.is_empty() {
+                    "no prompt was asked on any road".to_owned()
+                } else {
+                    split.join(" · ")
+                },
+            ));
+        }
+        // ⛔⛔⛔⛔⛔ THE TWO LANDING COUNTS, BOTH OR NEITHER, AND NEVER ADDED. The first is the
+        // axis's own stated refutation and the second is what an EXPERIMENT bought; printing only
+        // the first would hide the 29 that were quoted as a refutation for a day, and printing
+        // their sum would refute the axis with the experiment's own definition of *full*.
+        //
+        // ⛔⛔⛔ **AND NEITHER IS PRINTED OVER AN EMPTY POPULATION** — item 856's `0 of 0` rule,
+        // which this verb's first run at the real store made the case for: `0 landing(s) refute
+        // the axis` above a store where NOTHING is readable reads as *the axis survived*, and the
+        // register's own repeated failure is a zero being read as clean. When no run can be read,
+        // the population is said instead and the counts are withheld.
+        if folds.measured.is_empty() {
+            lines.push(
+                "  no run here can be read against a fullness, so the landing counts have NO \
+                 population and are withheld — see the reasons below, not a zero"
+                    .to_owned(),
+            );
+        } else {
+            lines.push(format!(
+                "  {} capacity landing(s) refute the axis — a prompt asked of a session judged by \
+                 its OWN document's ceiling, and not folded",
+                folds.refutations(),
+            ));
+            lines.push(format!(
+                "  {} further landing(s) are at a ceiling a caller moved, which is a different \
+                 sentence and is not added to the line above",
+                folds.landings_at_a_moved_ceiling(),
+            ));
+        }
+        // ⛔⛔⛔⛔⛔ AND WHAT COULD NOT BE READ, AS LOUDLY — today that is every run in the store.
+        for (why, count) in folds.unmeasured.iter().filter(|(_, count)| *count > 0) {
             lines.push(format!(
                 "  {count} run(s) measure nothing: {}",
                 why.describe()
@@ -13363,6 +13555,145 @@ mod tests {
             "⚠⚠ AND A NAMED LOG CARRIES NO SUCH WARNING: the caller said where, so a note about a \
              derivation that did not happen would make the one certain case read as the doubtful \
              one. Got:\n{said}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE MOUTH KEEPS THE TWO LANDING COUNTS APART, AND WITHHOLDS THEM OVER AN EMPTY
+    /// POPULATION** — register item 856 ⑴, the crossing half.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the mouth needs a gate of its own
+    ///
+    /// `RunLog::folds_against_fullness` is gated where it lives. Item 856 ⑸ measured what that is
+    /// not enough for: seven surfaces a value passes through, each gated, and the call that puts it
+    /// in replaced by a discard left the whole workspace green. The renderer is that call here, and
+    /// it is where two numbers that must never be added could quietly become a sum.
+    ///
+    /// # ⛔⛔⛔ AND A ZERO OVER NO POPULATION IS WITHHELD RATHER THAN PRINTED
+    ///
+    /// The first run of this verb at the real store printed `0 capacity landing(s) refute the axis`
+    /// above a store where **nothing at all is readable** (2026-09-05T10:29:27Z, 229 rows). That
+    /// reads as *the axis survived*, and a zero being read as clean is this register item's own
+    /// most repeated failure. So the counts appear only when some run could be read, and the
+    /// population is said out loud when none could.
+    #[test]
+    fn the_two_landing_counts_print_apart_and_are_withheld_over_no_population() {
+        use sprag_host::runs::{NoFullness, RunLog};
+
+        // One run judged by its own document, one whose ceiling a caller moved, and one behind the
+        // promotion wall — the three shapes this verb exists to print together.
+        let log: RunLog = serde_json::from_value(serde_json::json!({
+            "version": sprag_host::runs::RUN_LOG_VERSION,
+            "runs": [
+                {"id": 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
+                 "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [],
+                 "folds_by_reason": {"capacity": {"delivered": 4, "folded": 1},
+                                     "ordinary": {"delivered": 40, "folded": 0}}},
+                {"id": 2, "label": "ai_loop pane=2", "iterations": 1, "finished": true,
+                 "context_high_water": 24_000, "context_ceiling": 20_000,
+                 "overridden": ["context_ceiling"],
+                 "folds_by_reason": {"capacity": {"delivered": 28, "folded": 1}}},
+                {"id": 3, "label": "ai_loop pane=3", "iterations": 1, "finished": true,
+                 "folds_by_reason": {"capacity": {"delivered": 3, "folded": 3}}},
+            ]
+        }))
+        .expect("the log a predecessor leaves is what this reads");
+        let here = std::path::PathBuf::from("/tmp/one.runs.json");
+        let lines = folds_lines(&[(here.clone(), log.clone())], None);
+        let said = lines.join("\n");
+
+        // ── ① THE ROW: a fullness, the ceiling beside it, and whose ceiling it was ──
+        assert!(
+            said.contains("run 1: 800000 read of a 800000 ceiling, its document's ceiling")
+                && said.contains("capacity 1 of 4")
+                // ⚠⚠ AND THE OTHER ROAD, which is the CONTROL and the half a renderer would drop
+                // first: *long prompts fold* is a live rival explanation for every capacity fold,
+                // and only the ordinary traffic beside it tells the two apart.
+                && said.contains("ordinary 0 of 40"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴: the left-hand term, the right-hand term and the WHOLE \
+             split have to arrive on ONE line or a reader is comparing two tables by eye — which \
+             is what five re-judgements of this item did with a `python3 -c`. Got:\n{said}",
+        );
+
+        // ── ② THE TWO LANDING COUNTS, PRESENT AND NOT POOLED ──
+        assert!(
+            said.contains("3 capacity landing(s) refute the axis")
+                && said.contains("27 further landing(s) are at a ceiling a caller moved"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴: 3 landings under the document's own ceiling refute the \
+             axis and 27 under a ceiling a caller MOVED do not — at a moved ceiling the reflection \
+             means *we handed over early*. The live store held 29 of the second kind and a round \
+             quoted them as the first for a day. A mouth printing one number instead of two puts \
+             that back. Got:\n{said}",
+        );
+        assert!(
+            !said.contains("30 capacity landing(s)"),
+            "⛔⛔⛔ AND NEVER THEIR SUM, which is the same sentence as ② said the way it actually \
+             went wrong. Got:\n{said}",
+        );
+
+        // ── ③ AND WHAT COULD NOT BE READ, WHICH IS THE HALF THAT GOES QUIET ──
+        assert!(
+            said.contains(NoFullness::FullnessUnread.describe()),
+            "⛔⛔⛔⛔⛔ THE UNREADABLE HALF IS NOT ON THE PAGE. Today's real store is 229 rows of \
+             exactly that (2026-09-05T10:30:15Z), so a verb printing only its rows answers a blank \
+             page for the machine it was built for. Got:\n{said}",
+        );
+        // ⚠ THE CONTROL: an arm nothing reached is not printed — item 856's own `0 of 0` rule. A
+        // renderer listing all five arms every time satisfies ③ by saying everything.
+        assert!(
+            !said.contains(NoFullness::CeilingUnrecorded.describe()),
+            "⚠⚠ an arm no run reached must not appear: a table that always prints five lines has \
+             stopped distinguishing them. Got:\n{said}",
+        );
+
+        // ── ④ AND OVER A STORE WHERE NOTHING IS READABLE, THE COUNTS ARE WITHHELD ──
+        //
+        // ⛔ This is today's real store, and the reading that made this arm: `0 landing(s) refute
+        // the axis` printed above 229 unreadable rows is a zero that reads as *the axis survived*.
+        let walled: RunLog = serde_json::from_value(serde_json::json!({
+            "version": sprag_host::runs::RUN_LOG_VERSION,
+            "runs": [{"id": 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
+                      "folds_by_reason": {"capacity": {"delivered": 3, "folded": 3}}}]
+        }))
+        .expect("a log from the daemon driving the loop today");
+        let wall = folds_lines(&[(here.clone(), walled)], None).join("\n");
+        assert!(
+            wall.contains("NO population") && !wall.contains("landing(s) refute the axis"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴: a landing count over a population of zero is a zero \
+             that reads as *the axis survived*. The population has to be stated instead — rule 6 \
+             at the mouth, and the failure this item has walked into more than any other. \
+             Got:\n{wall}",
+        );
+
+        // ── ⑤ AND NOTHING READ IS A REFUSAL ──
+        let refused = folds(vec!["/nonexistent/nothing.runs.json".to_owned()])
+            .expect_err("⛔ a log that cannot be read is a REFUSAL, never an empty table");
+        assert_eq!(refused.kind(), io::ErrorKind::NotFound);
+        assert!(
+            refused.to_string().contains("nothing folded"),
+            "⚠⚠ and it says which of the two silences this is, because *nothing was read* and \
+             *nothing folded* are opposite facts that print alike: {refused}",
+        );
+        let extra = folds(vec!["a".to_owned(), "b".to_owned()])
+            .expect_err("⚠⚠ two logs at once is refused rather than half-honoured");
+        assert!(
+            extra.to_string().contains("one at a time"),
+            "⚠ and the refusal says what the shape is: {extra}",
+        );
+
+        // ── ⑥ AND A SWEPT ANSWER NAMES THE DIRECTORY IT IS ABOUT — `waits`' measurement, verbatim ──
+        let swept = folds_lines(&[(here, log)], Some(std::path::Path::new("/state/sprag")));
+        assert!(
+            swept.first().is_some_and(
+                |line| line.contains("/state/sprag") && line.contains("XDG_STATE_HOME")
+            ),
+            "⛔⛔⛔⛔⛔ A SWEPT TABLE DID NOT SAY WHICH DIRECTORY IT SWEPT. Measured \
+             2026-09-05T08:47:23Z one verb over: the same command answered about the loop's 229 \
+             runs with `XDG_STATE_HOME` set and about 62 integration-test runs without it, both \
+             tables long and confident. Got: {swept:?}",
+        );
+        assert!(
+            !said.contains("XDG_STATE_HOME"),
+            "⚠⚠ AND A NAMED LOG CARRIES NO SUCH WARNING: the caller said where. Got:\n{said}",
         );
     }
 

@@ -4239,6 +4239,26 @@ impl Overridden {
         )
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHETHER THE CALLER TOOK THE CONTEXT CEILING ITSELF** — register item 856 ⑴, and
+    /// the one word in this list whose presence changes what a `capacity` reflection MEANS.
+    ///
+    /// # ⚠⚠ Why the question is answered here rather than by whoever holds the list
+    ///
+    /// The reader is `crate::runs::Judged`, which is deciding whether a stored run may be counted
+    /// into item 856's denominator at all: at a moved ceiling a `capacity` reflection is *we handed
+    /// over at the number we chose* and not *the session filled up*. That reader must not spell the
+    /// word — `AuthoredNumber` is its only authority and `every_word` above exists so a resolver
+    /// with its own list is impossible to build. One more spelling in one more module is that same
+    /// arrangement re-created for one key.
+    ///
+    /// ⚠ That type is SPELLED rather than linked: it is module-private and this method is public,
+    /// so an intra-doc link is `private_intra_doc_links` under `-D warnings` — register item 365,
+    /// met again here and refused by the commit hook before this sentence existed.
+    #[must_use]
+    pub fn moved_the_context_ceiling(&self) -> bool {
+        self.0.contains(&AuthoredNumber::ContextCeiling.wire_key())
+    }
+
     /// **PUT ONE BACK AS A DURABLE LOG WROTE IT** — register item 859, and the hop at which this
     /// answer used to die.
     ///
