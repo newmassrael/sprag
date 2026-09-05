@@ -2460,10 +2460,14 @@ impl WorkspaceExternal {
         };
         let ended = outcome.ended();
         match outcome {
-            WindowKillOutcome::Removed(_panes) => {
-                // A non-last window: its drained panes drop here, off-lock; wake clients watching
-                // the windows list.
+            WindowKillOutcome::Removed(panes) => {
+                // A non-last window: wake clients watching the windows list, then hand its drained
+                // panes to the retiring thread. ⛔ They used to drop HERE — off the registry lock,
+                // which the comment above said and which was true, and still on the request path,
+                // which is what every other client waits on. See [`retire`] for the two runs that
+                // measured what that cost (register item 906).
                 self.announce();
+                retire(panes);
             }
             WindowKillOutcome::Session(kill) => self.handle_session_kill(kill),
         }
@@ -3541,6 +3545,68 @@ impl WorkspaceExternal {
             DISPLAY_MESSAGE_ACTION => self.display_message(&args),
             _ => Err(InvokeError::UnknownPath),
         }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **HAND RETIRED PANES TO A THREAD OF THEIR OWN** — register item 906, and the second
+/// half of a discipline whose first half was already kept.
+///
+/// # 📊 What "off the registry lock" was not enough for, measured
+///
+/// `WindowKillOutcome::Removed` already carries a killed window's drained panes OUT of the registry
+/// lock so their blocking `Drop` runs outside it, and both sides say so. That is true, and it is not
+/// sufficient: the drop still ran **on the request path**, and the request path is what every other
+/// client of this daemon is waiting on.
+///
+/// A pane's `Drop` sends `SIGHUP` and then waits out a two-second grace before escalating to a
+/// `SIGKILL` of the process group, because a hangup is a request a child may refuse. So a pane whose
+/// child ignores `SIGHUP` costs two seconds to retire, and they are serial. **Measured against an
+/// isolated daemon, 2026-09-05:** such a pane took **2,009 ms** to kill where an ordinary `bash`
+/// pane took **5 ms**, and killing a window holding three of them stalled *every other client* for
+/// the whole of it — six concurrent `ls` calls all returned at **5,170 ms** and again at
+/// **5,212 ms** on a second run, several having given up with *the host accepted this connection
+/// and did not answer in time*. **That sentence is the one register item 906 was opened on**, and
+/// those two runs are it reproduced.
+///
+/// # ⚠⚠⚠ Why a thread and a channel — this daemon's own answer to this shape
+///
+/// [`crate::attention`] states the pattern for the same reason one level over: *the hook only SENDS
+/// on a channel, and a dedicated thread does the work*. Retiring a pane is that work — it blocks, it
+/// can block for seconds, and nothing waiting on this daemon needs it to have finished. The window
+/// left the registry under the lock, so every question a client can ask is already answered
+/// correctly the moment this returns.
+///
+/// ⛔ **NOT a thread per kill.** A verb a keybinding repeats must not spawn without bound: one named
+/// thread, and a send that cannot fail its caller.
+///
+/// ⛔⛔ **The session-ending arm does not come here.** `WindowKillOutcome::Session` is the last
+/// window, and that ends the daemon; deferring those panes would race the process's own exit and
+/// could leave a child with nothing left to reap it. The kill that ends everything is exactly the
+/// one that must finish before it answers.
+fn retire(panes: Vec<sprag_terminal::Pane>) {
+    use std::sync::OnceLock;
+    use std::sync::mpsc::{Sender, channel};
+
+    static RETIRING: OnceLock<Sender<Vec<sprag_terminal::Pane>>> = OnceLock::new();
+    let sender = RETIRING.get_or_init(|| {
+        let (tx, rx) = channel::<Vec<sprag_terminal::Pane>>();
+        std::thread::Builder::new()
+            .name("sprag-retire".to_owned())
+            .spawn(move || {
+                // Each batch drops HERE, one after another. Serial is right: these are hangup grace
+                // periods rather than work, and running them together would put a burst of
+                // `SIGKILL`s on the machine to save time nobody is waiting on.
+                for batch in rx {
+                    drop(batch);
+                }
+            })
+            .expect("spawn the pane-retiring thread");
+        tx
+    });
+    // ⚠ A dead channel means the process is already ending, and then dropping here is as good as
+    // anywhere — the same absorption `spawn_reaper`'s signal makes, for the same reason.
+    if let Err(returned) = sender.send(panes) {
+        drop(returned.0);
     }
 }
 

@@ -13509,6 +13509,118 @@ fn killing_a_window_leaves_the_daemon_answering_even_under_concurrent_clients() 
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **A SLOW REAP DOES NOT STALL THE OTHER CLIENTS** — register item 906, reproduced and
+/// then paid.
+///
+/// # 📊 The ingredient three earlier reproductions were missing
+///
+/// Item 906 asked for a minimal reproduction and the round that first tried could not get one: a
+/// bare `kill-window`, the item's own `kill-pane`-then-`kill-window` sequence, and either under
+/// forty concurrent clients all left the daemon answering. What was missing was not promotion and
+/// not live loops — it was **the pane's child**. A pane's `Drop` sends `SIGHUP` and waits out a
+/// two-second grace before escalating to a `SIGKILL` of the group, so a child that IGNORES `SIGHUP`
+/// costs two seconds to retire. Measured against an isolated daemon: **2,009 ms** for such a pane
+/// against **5 ms** for an ordinary `bash` one.
+///
+/// ⇒ Killing a window holding three of them then stalled **every other client** for the whole
+/// reap — six concurrent `ls` calls returning at **5,170 ms** and, on a second run, **5,212 ms**,
+/// several having given up with *the host accepted this connection and did not answer in time*.
+/// **That is the sentence item 906 was opened on.** With the panes handed to
+/// `sprag_host::workspace`'s retiring thread the same two runs answer in **17–80 ms**.
+///
+/// # ⚠⚠ What this asserts, and why not the killer's own latency
+///
+/// The claim is about the OTHER clients: a daemon that takes a while to answer the caller who asked
+/// for a kill is doing that caller's work, and a daemon that stops answering everybody else has
+/// stopped being a multiplexer. So the killer runs on its own thread and the probes are what is
+/// timed — which is also the shape of the observation, where the wedged call was one and the
+/// clients queued behind it were fifty.
+///
+/// ⚠ `trap "" HUP` is the fixture's whole trick and it is honest: an agent under this loop is a
+/// long-lived process that does not fall over on a hangup either, which is why the observed daemon
+/// was driving three of them when it stopped answering.
+#[test]
+fn a_window_whose_panes_ignore_hangup_does_not_stall_the_daemons_other_clients() {
+    /// Ignores the hangup, so its pane costs the full grace to retire.
+    const STUBBORN: &str = "trap \"\" HUP; exec sleep 600";
+    /// Three panes at two seconds apiece is six seconds of reap against a client deadline of five,
+    /// so a build that retires them on the request path cannot come in under this and a build that
+    /// hands them off answers in tens of milliseconds. Nothing lands near it.
+    const STALLED: Duration = Duration::from_secs(3);
+
+    let (_host, sock) = spawn_host();
+    assert!(sprag(&sock, &["new-window", "-t", "0", "-d", "victim"]).ok);
+    for _ in 0..3 {
+        let split = sprag(
+            &sock,
+            &[
+                "split-window",
+                "-w",
+                "victim",
+                "-t",
+                "0",
+                "--",
+                "sh",
+                "-c",
+                STUBBORN,
+            ],
+        );
+        assert!(
+            split.ok,
+            "the fixture needs panes that refuse a hangup, or this gate measures nothing: {:?}",
+            split.stderr,
+        );
+    }
+
+    let killer = {
+        let sock = sock.clone();
+        std::thread::spawn(move || {
+            let at = Instant::now();
+            (
+                sprag(&sock, &["kill-window", "victim", "-t", "0"]),
+                at.elapsed(),
+            )
+        })
+    };
+
+    // ⚠ Asked repeatedly rather than once: the stall is a window in time, and a single probe that
+    // happened to land after it would pass over the defect.
+    let mut worst = Duration::ZERO;
+    let mut refused: Vec<String> = Vec::new();
+    for _ in 0..8 {
+        let at = Instant::now();
+        let probe = sprag(&sock, &["ls"]);
+        worst = worst.max(at.elapsed());
+        if !probe.ok {
+            refused.push(probe.stderr.lines().next().unwrap_or_default().to_owned());
+        }
+    }
+    let (killed, took) = killer.join().expect("the killing client");
+
+    assert!(
+        worst < STALLED && refused.is_empty(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 906: a client that asked this daemon something else waited \
+         {worst:?} while ONE window was being killed, and {} of them gave up: {refused:?}. That is \
+         the reported failure — a verb nobody else was waiting on took the whole daemon with it. \
+         The panes go to the retiring thread precisely so this stays in milliseconds; a build that \
+         drops them on the request path measures 5.2 s here.",
+        refused.len(),
+    );
+
+    // ⚠ AND THE KILL ITSELF STILL HAPPENED, so a daemon that kept answering by refusing the work
+    // cannot pass. Its own latency is not asserted — that caller is the one who asked.
+    assert!(
+        killed.ok,
+        "the window must actually die ({took:?}): {:?} / {:?}",
+        killed.stdout, killed.stderr,
+    );
+    let left = sprag(&sock, &["windows", "-t", "0"]).stdout;
+    assert!(
+        !left.contains("victim"),
+        "the window is gone from the listing: {left:?}",
+    );
+}
+
 /// A daemon that is UP but wedged cannot stall the agent that ran the hook.
 ///
 /// This is the failure a connect timeout cannot see: the socket accepts, so the connection succeeds,
