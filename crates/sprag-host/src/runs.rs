@@ -3665,6 +3665,57 @@ pub struct RunLog {
     pub runs: Vec<PersistedRun>,
 }
 
+impl RunLog {
+    /// ⛔⛔⛔⛔⛔ **THE PANES A LOOP WAS STILL TYPING AT WHEN THIS LOG WAS WRITTEN** — register item
+    /// 869, and the one question a restore has to answer before it brings an agent back to its own
+    /// conversation.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why these panes must come back WITHOUT their conversation
+    ///
+    /// A restore re-runs an allowlisted agent's argv with `--resume <uuid>` of the conversation the
+    /// pane was in ([`crate::durability::restore_command`]), which is right for a person returning
+    /// to their own terminal. It is wrong for the inner pane of a loop, for three reasons that
+    /// compound:
+    ///
+    /// * Replacing that session is the ONLY move the loop has for shedding context
+    ///   (`ai_loop.scxml`'s `restarting`, reached from `context_ceiling`), and a run gets few of
+    ///   them. A pane restored full spends one undoing the restore rather than answering a ceiling.
+    /// * **Nobody reads the resumed transcript.** A boot that puts a run back primes its peer
+    ///   afresh ([`sprag_plugin::Resumed::Boot`]), so the conversation the resume paid for is
+    ///   briefed over on its first turn.
+    /// * A loop ORPHANS transcripts by design — every session replacement does — so the loss the
+    ///   resume exists to prevent is not a loss here.
+    ///
+    /// **Measured across four promotions and three repositories, exception 0** (2026-09-03 15:1x
+    /// and 21:2x, 2026-09-04 08:53 and 16:5x): every inner pane came back carrying `--resume`, and
+    /// a supervisor killed and re-opened each one by hand. **Measured against this join on the live
+    /// daemon at 2026-09-05T06:48:42Z**: three panes (1007, 1008, 1010) were driven by an
+    /// unfinished run and one `claude` pane (933, hand-opened) was not — the exact split those four
+    /// promotions had been making by hand.
+    ///
+    /// ⚠⚠⚠ **UNFINISHED IS THE POPULATION, AND [`PersistedRun::resumable_request`] IS DELIBERATELY
+    /// NOT.** A run this daemon cannot put back — the documents moved, the pane is gone — still
+    /// leaves a pane a loop was typing at, and the fourth promotion above restored **no run at
+    /// all** while every pane still came back resumed. Narrowing to the resumable ones would answer
+    /// *no* for exactly the boot that most needs a *yes*.
+    ///
+    /// ⚠⚠ **IT IS THE PANE'S OWN NUMBER AND NOT THE REQUEST'S** — [`PersistedRun::driving`], which
+    /// is where a run that replaced its session says it ended up. The request's `pane` key is a
+    /// birth certificate, and a loop three replacements in is nowhere near it.
+    ///
+    /// ⚠ EMPTY for a log whose runs all finished, for one written before `driving` existed, and for
+    /// a daemon with no predecessor — all three mean *no pane here belongs to a loop*, which is the
+    /// reading that leaves the restore exactly as it was.
+    #[must_use]
+    pub fn panes_a_loop_was_driving(&self) -> std::collections::HashSet<PaneId> {
+        self.runs
+            .iter()
+            .filter(|run| !run.finished)
+            .filter_map(|run| run.driving.map(PaneId))
+            .collect()
+    }
+}
+
 /// The run log's format version. A file written by a different one is IGNORED rather than guessed
 /// at: a run record is a convenience, and a wrong reading of one would be worse than its absence.
 pub const RUN_LOG_VERSION: u32 = 1;
@@ -9765,6 +9816,104 @@ mod tests {
              recorded for a reader that cannot use it, on EVERY run this daemon ever drives that \
              walks no statechart. Wrote: {:?}",
             placeless.runs[0].request,
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE PANES A LOOP WAS STILL TYPING AT, AND THE THREE THAT LOOK LIKE THEM** —
+    /// register item 869, the population half.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the population is the assertion and not the headline
+    ///
+    /// This set decides which panes a restore brings back WITHOUT their conversation, so every way
+    /// it can be wrong is a way the daemon takes something from somebody. Too wide and a person's
+    /// own `claude` loses the conversation they left it in — silently, on a reboot they did not
+    /// ask for. Too narrow and the defect this item is about comes straight back, because the
+    /// **default is to resume**: a pane this set forgets is a pane that is resumed, so an
+    /// under-counted population fails GREEN. Hence three controls against one headline, each a
+    /// different way of being *almost* a loop's pane.
+    ///
+    /// ⚠⚠ **AND IT IS DRIVEN THROUGH THE PRODUCT'S OWN READER.** The fixture is the JSON a
+    /// predecessor leaves on disk, decoded by the `serde` implementation `crate::load_runs` uses,
+    /// so the arm about a log written before `driving` existed is a real absent key rather than a
+    /// `None` this file typed. A hand-built struct would have asserted its own input there.
+    #[test]
+    fn a_restore_takes_the_conversation_only_from_panes_a_loop_was_still_typing_at() {
+        // ⚠ `finished` and `place` are the record's required words; everything varying here rides
+        // on `#[serde(default)]`, which is the compatibility this gate's third arm is about.
+        let log: RunLog = serde_json::from_value(serde_json::json!({
+            "version": RUN_LOG_VERSION,
+            "runs": [
+                // ── THE HEADLINE: a loop still going, on the pane it had REPLACED its way to ──
+                { "id": 1, "label": "ai_loop pane=996", "iterations": 41,
+                  "finished": false, "place": ["working"], "driving": 1010 },
+                // ── ① A RUN THAT ENDED. Its pane may well be a person's now, and the run that
+                //    made it a loop's is over — resuming it is right.
+                { "id": 2, "label": "ai_loop pane=983", "iterations": 53,
+                  "finished": true, "place": ["failed"], "driving": 983 },
+                // ── ② A LOG WRITTEN BEFORE `driving` EXISTED. Measured at 0 of 111 records and
+                //    again at 0 of 113 (see `PersistedRun::driving`): the field is young, and a
+                //    daemon that read a missing key as *pane 0* would strip the conversation off
+                //    whichever pane happened to be numbered that.
+                { "id": 3, "label": "ai_loop pane=7", "iterations": 4,
+                  "finished": false, "place": ["working"] },
+                // ── ③ A RUN THAT IS NOT A LOOP AT ALL, still going, typing at a pane. Nothing
+                //    here reads the plugin's name, and this arm is what says that is deliberate:
+                //    what makes the conversation replaceable is that SOMETHING is driving the
+                //    pane, which is exactly what a run being unfinished says.
+                { "id": 4, "label": "answer pane=933", "iterations": 1,
+                  "finished": false, "place": ["asking"], "driving": 44 },
+            ]
+        }))
+        .expect("the log a predecessor leaves is what this reads");
+
+        let panes = log.panes_a_loop_was_driving();
+        assert!(
+            panes.contains(&PaneId(1010)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 869: the pane a loop was still typing at is not in the set, so \
+             the restore resumes it — and the loop comes back holding a conversation it must spend \
+             its one context-shedding move to be rid of. Measured over four promotions and three \
+             repositories, exception 0. Got {panes:?}",
+        );
+        assert!(
+            panes.contains(&PaneId(44)),
+            "⚠⚠ a run that is not a loop but is still DRIVING a pane belongs here too: what makes \
+             a conversation replaceable is that something is driving it. Got {panes:?}",
+        );
+        assert!(
+            !panes.contains(&PaneId(983)),
+            "⛔⛔⛔⛔⛔ A FINISHED RUN'S PANE WAS TAKEN. Nothing is driving it, so the next thing to \
+             open that conversation is a PERSON — and this daemon would delete it out from under \
+             them on a reboot nobody asked for. Got {panes:?}",
+        );
+        assert!(
+            !panes.contains(&PaneId(0)),
+            "⚠⚠⚠ A LOG WRITTEN BEFORE `driving` EXISTED READ AS PANE 0. The field was absent from \
+             all 111 records in the first log measured for it; a build that read that as a number \
+             would strip whichever pane wore it. Got {panes:?}",
+        );
+        assert_eq!(
+            panes.len(),
+            2,
+            "⚠⚠ AND NOTHING ELSE — four records, two panes. A set that grew would be one of the \
+             controls above passing for the wrong reason: {panes:?}",
+        );
+
+        // ── AND THE RULE THE DAEMON ACTUALLY INSTALLS, over the same log ──
+        //
+        // ⚠⚠⚠ `crate::replaced_conversations` is what `sprag-term`'s boot calls, so the crossing
+        // *log → predicate* is driven here rather than left to the one line in a binary's `main`.
+        // Item 856 measured what an ungated hop costs: gates on both sides, green, and the value
+        // never arriving.
+        let asks = crate::replaced_conversations(Some(&log));
+        assert!(
+            asks(PaneId(1010)) && !asks(PaneId(983)),
+            "⚠⚠⚠⚠⚠ the predicate the daemon installs must answer as its own population does, or \
+             this file's set is a fact nothing acts on",
+        );
+        assert!(
+            !crate::replaced_conversations(None)(PaneId(1010)),
+            "⚠⚠ AND A DAEMON WITH NO PREDECESSOR TAKES NOTHING: a first boot has no loop to \
+             protect and every pane it restores is somebody's own",
         );
     }
 }

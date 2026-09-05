@@ -296,10 +296,29 @@ fn main() -> io::Result<()> {
     // rides beside the instrumentation because it reads what the instrumentation added — a host
     // installing one without the other would record names nothing wrote, or write names nothing
     // records.
+    // ⛔⛔⛔⛔⛔ AND WHICH OF THOSE CONVERSATIONS A RESTORE MUST **NOT** COME BACK TO — register item
+    // 869. The line above is written for a person's terminal; the inner pane of a loop is the other
+    // case, and there a resume spends the loop's one context-shedding move on a conversation nobody
+    // will read. `RunLog::panes_a_loop_was_driving` holds the argument and the measurement.
+    //
+    // ⚠⚠⚠ THE PREDECESSOR'S RUN LOG IS THEREFORE READ **BEFORE THE HOST IS BUILT**, which is the
+    // only ordering that works: the restore below asks this question while it is deciding what
+    // command to build, so a log read after that point would arrive with the panes already resumed.
+    // The same value is what the run registry is filled from further down, so the file is read once
+    // and the two readers cannot come to disagree about what the predecessor left.
+    let runs_file = sprag_host::runs_path(&sock);
+    let inherited = args
+        .daemon
+        .then(|| sprag_host::load_runs(&runs_file))
+        .flatten();
+    // ⚠ The RULE is `sprag_host::replaced_conversations`, not three lines here: a decision spelled
+    // at a call site is one no mutation can reach, which is what this daemon's boot has to avoid
+    // being. This line is a call and holds no judgement of its own.
     let host = Host::new((args.cols, args.rows))
         .with_pane_env(sprag_host::pane_env_source(&sock))
         .with_pane_args(sprag_host::pane_args_source())
-        .with_pane_identity(sprag_host::pane_identity_source());
+        .with_pane_identity(sprag_host::pane_identity_source())
+        .with_replaced_conversations(sprag_host::replaced_conversations(inherited.as_ref()));
     // Every pane this daemon births lands in the subtree taken above, so a person's session cannot
     // be starved by whichever neighbour spawned the most threads. A host with no tree spawns
     // exactly as it always did.
@@ -365,15 +384,17 @@ fn main() -> io::Result<()> {
     // THE RUN REGISTRY IS BUILT HERE, not by `HostState::new`, because the predecessor's run log
     // has to be read into it before the saver starts writing over that file.
     let runs = Arc::new(Mutex::new(sprag_host::runs::RunRegistry::default()));
-    let runs_file = sprag_host::runs_path(&sock);
     if args.daemon {
-        if let Some(log) = sprag_host::load_runs(&runs_file) {
+        // ⚠⚠ THE LOG WAS READ WHERE THE HOST WAS BUILT — register item 869's ordering note up
+        // there. Reading it a second time here would let one boot restore panes against one file's
+        // contents and its runs against another's, which is a disagreement no reader could see.
+        if let Some(log) = &inherited {
             // ⚠ Every run in it was driven by a process that is gone. `restore` marks the ones that
             // were still going as INTERRUPTED and drops their provenance — see `RunRegistry::restore`
             // for why a restored run must belong to nobody.
             runs.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .restore(&log);
+                .restore(log);
         }
         if let Some(snapshot) = load_snapshot(&snap_path) {
             // Run it with the exact-command allowlist (read once from the environment here,

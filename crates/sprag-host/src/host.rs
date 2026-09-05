@@ -1656,7 +1656,27 @@ pub struct Host {
     /// wholesale and must re-install it, or a pane would be placed on every path except after a
     /// reboot.
     homes: Arc<PaneHomes>,
+    /// ⛔⛔⛔⛔⛔ **WHICH PANES REPLACE THEIR OWN CONVERSATION**, so a [`restore`](Self::restore)
+    /// brings them back WITHOUT one — see
+    /// [`with_replaced_conversations`](Self::with_replaced_conversations) and register item 869.
+    ///
+    /// [`None`] — the default, and every caller that installs nothing — means *nobody does*, which
+    /// resumes every recorded conversation exactly as this door always has.
+    replaced_conversations: Option<ReplacedConversations>,
 }
+
+/// ⛔⛔⛔⛔⛔ **WHETHER THE OCCUPANT OF A PANE REPLACES ITS OWN CONVERSATION** — asked once per pane
+/// by [`Host::restore`], and the fact this crate's restore path cannot work out for itself.
+///
+/// # ⚠⚠⚠⚠⚠ Why it is injected rather than read here
+///
+/// The answer lives in the PREDECESSOR'S RUN LOG
+/// ([`crate::runs::RunLog::panes_a_loop_was_driving`], which holds the whole argument), and a host
+/// that read one would be a host that names a state directory — the same reason `allowlist` and
+/// `history` are handed in rather than looked up. It is a source rather than a set because that is
+/// the shape every other installed fact here takes, and because a caller with no log to consult
+/// installs nothing rather than computing an empty set to mean the same thing.
+pub type ReplacedConversations = Arc<dyn Fn(PaneId) -> bool + Send + Sync>;
 
 /// The `on_dirty` FACTORY a [`Host`] wires each client-created pane with: a fresh hook per pane,
 /// because a `Box<dyn Fn>` cannot be reused. The same shape [`Host::restore`] takes per call — the
@@ -1846,6 +1866,32 @@ pub fn pane_identity_source() -> PaneIdentitySource {
     Arc::new(|argv: &[String]| crate::hooks::launched_identity(argv))
 }
 
+/// ⛔⛔⛔⛔⛔ The [`ReplacedConversations`] a daemon installs: the panes a loop was still typing at
+/// when `log` was written replace their own conversations, and every other pane does not — register
+/// item 869.
+///
+/// [`crate::runs::RunLog::panes_a_loop_was_driving`] holds the whole argument for why a loop's inner
+/// pane must NOT come back resumed, and the measurement behind it.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a function of the crate and not three lines in the daemon's `main`
+///
+/// Because a decision spelled at a call site is a decision no mutation can reach. The crossing this
+/// value has to survive is *log → host → the command a restore builds*, and register item 856
+/// measured what happens when one hop of such a chain is written where nothing drives it: the gates
+/// on either side stay green while the value never arrives. With the rule here, `main` holds a call
+/// and no judgement, and both ends of the crossing are drivable from one test.
+///
+/// ⚠ [`None`] — a daemon with no predecessor, or one not restoring at all — yields a predicate that
+/// answers `false` for every pane, which is *nothing here belongs to a loop* and leaves every
+/// restore exactly as it was.
+#[must_use]
+pub fn replaced_conversations(log: Option<&crate::runs::RunLog>) -> ReplacedConversations {
+    let panes = log
+        .map(crate::runs::RunLog::panes_a_loop_was_driving)
+        .unwrap_or_default();
+    Arc::new(move |pane| panes.contains(&pane))
+}
+
 /// The `sprag` binary this daemon's agents report THROUGH: the sibling of the running executable,
 /// else `sprag` on `PATH`.
 ///
@@ -1938,6 +1984,7 @@ impl Host {
             pane_args: None,
             pane_identity: None,
             homes: Arc::new(PaneHomes::none()),
+            replaced_conversations: None,
         }
     }
 
@@ -2012,6 +2059,39 @@ impl Host {
         lock(&self.registry).set_pane_identity_source(Arc::clone(&source));
         self.pane_identity = Some(source);
         self
+    }
+
+    /// ⛔⛔⛔⛔⛔ **SAY WHICH PANES REPLACE THEIR OWN CONVERSATION**, so a
+    /// [`restore`](Self::restore) brings those back with no conversation at all — register item
+    /// 869. The daemon asks its predecessor's run log
+    /// ([`crate::runs::RunLog::panes_a_loop_was_driving`], which holds the argument for why a loop's
+    /// pane must NOT come back resumed); a GUI's in-process host and a test install nothing and
+    /// every recorded conversation is resumed, which is what this door did before this source
+    /// existed.
+    ///
+    /// # ⚠⚠⚠⚠⚠ HELD ONLY, and never installed on the registry — the one of these that is not
+    ///
+    /// Its siblings are read at every pane's BIRTH, so they belong on the pools and a restore
+    /// re-installs them. This is read once per pane by the restore ITSELF, while it is deciding what
+    /// command to build, and a pool that could answer it would be a pool able to change what a
+    /// FRESH pane resumes — which is a question no fresh pane has.
+    #[must_use]
+    pub fn with_replaced_conversations(mut self, source: ReplacedConversations) -> Self {
+        self.replaced_conversations = Some(source);
+        self
+    }
+
+    /// Whether `pane`'s occupant replaces its own conversation, so a restore must not bring it back
+    /// to one — [`with_replaced_conversations`](Self::with_replaced_conversations)'s reader, and
+    /// `false` for a host that was told nothing.
+    ///
+    /// ⚠ A host with no source answers `false` for EVERY pane rather than refusing to say, because
+    /// *nobody told me* and *nobody replaces one* have the same right answer here: resume it, which
+    /// is what this door did before the question existed.
+    fn conversation_is_replaced(&self, pane: PaneId) -> bool {
+        self.replaced_conversations
+            .as_ref()
+            .is_some_and(|replaces| replaces(pane))
     }
 
     /// Place every pane of this host in `tree` — the daemon's adopted cgroup subtree (R336). A
@@ -2202,13 +2282,28 @@ impl Host {
             // recorded the BUILT command as the pane's argv, resume and all. So the promise
             // *restoring and replacing read different fields* was prose, and the field they read
             // was the same one. `Restored::replacement_argv` is the second field it needed.
+            //
+            // ⛔⛔⛔⛔⛔ AND NOT FOR A PANE WHOSE OCCUPANT REPLACES ITS OWN CONVERSATION — register
+            // item 869. Everything above is written for a PERSON coming back to their terminal. The
+            // inner pane of a loop is the other case, and there the resume takes away the one move
+            // that loop has: `crate::runs::RunLog::panes_a_loop_was_driving` holds the argument and
+            // the measurement. Such a pane comes back with no conversation, and the instrumenting in
+            // `Workspace::spawn_restored` then names it a fresh one — which is precisely what a
+            // session replacement does, so the pane arrives in the state the loop would have had to
+            // spend a replacement to reach.
+            //
+            // ⚠⚠ ASKED OF THE PANE'S ID rather than of its conversation, because the id is what a
+            // predecessor's driver recorded and what a restore re-spawns the pane under; the
+            // conversation is the very thing being decided about and cannot also be the key.
             let rebuilt = match &pane.remote {
                 Some(remote) => crate::reconnect_command(remote),
                 None => crate::restore_command(
                     &pane.argv,
                     pane.cwd.as_deref(),
                     allowlist,
-                    pane.agent_session.as_deref(),
+                    pane.agent_session
+                        .as_deref()
+                        .filter(|_| !self.conversation_is_replaced(pane.id)),
                 ),
             };
             let crate::durability::Restored {
@@ -4762,6 +4857,153 @@ mod tests {
             None,
             "⚠⚠⚠ and the seat's own identity does not follow either — `Pane::agent_session`'s own \
              rule, which held all along and is what made the argv copy the only road in",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A LOOP'S PANE COMES BACK NAMED AFRESH AND A PERSON'S COMES BACK TO ITS OWN
+    /// CONVERSATION — OUT OF ONE SNAPSHOT, IN ONE RESTORE** — register item 869, done-when ⑶.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was measured, and why the pair is the whole gate
+    ///
+    /// A daemon restart re-runs an allowlisted agent's argv with `--resume <uuid>`, which is right
+    /// for a person returning to their terminal and wrong for the inner pane of a loop: replacing
+    /// that session is the only move the loop has for shedding context, a boot re-briefs the run it
+    /// puts back, and the transcript the resume paid for is then read by nobody. **Measured across
+    /// four promotions and three repositories, exception 0** — and every time, a supervisor killed
+    /// each inner pane and opened a fresh one by hand.
+    ///
+    /// A single pane could not assert this. *Came back without its conversation* is satisfied by a
+    /// build that stopped resuming ALTOGETHER — which is item 695's defect in reverse and would
+    /// take a person's own conversation on every reboot — so the control pane is not decoration:
+    /// **it is what makes the first arm a decision rather than a regression.** Both panes are
+    /// allowlisted agents out of the same snapshot with a conversation recorded, restored by one
+    /// call; the only thing that differs is the answer this host gives about them.
+    ///
+    /// ⚠⚠⚠ **AND THE LOOP'S PANE MUST COME BACK NAMED**, which is the arm that makes the repair
+    /// safe rather than merely different. Dropping the resume lets the instrumenting mint a fresh
+    /// `--session-id` (`Workspace::spawn_restored`: *`identity_args` stands down when it sees a
+    /// resume*), so the pane arrives in exactly the state a session replacement would have bought —
+    /// a new conversation this daemon knows the name of. A pane that came back ANONYMOUS would
+    /// satisfy *not resumed* and quietly break the join every row and every boot makes through
+    /// [`sprag_terminal::Pane::agent_session`].
+    #[test]
+    fn a_restore_strips_the_conversation_off_a_loops_pane_and_leaves_a_persons_alone() {
+        const LOOPS: &str = "aaaaaaaa-1111-4222-8333-444444444444";
+        const PERSONS: &str = "bbbbbbbb-5555-4666-8777-888888888888";
+
+        // A program NAMED `claude`, symlinked rather than written — register item 467's `ETXTBSY`
+        // window, exactly as the gate above stages it.
+        // ⚠ `scratch_root`, not the bare `std::env::temp_dir()` the gate above still spells —
+        // item 794's ratchet, which caught this line: with `TMPDIR` set-and-empty the std call
+        // resolves into this repository's own working tree.
+        let bin = sprag_scratch::scratch_root().join(format!("sprag-869-{}", std::process::id()));
+        std::fs::create_dir_all(&bin).expect("a directory for the stand-in agent");
+        let agent = bin.join("claude");
+        let _ = std::fs::remove_file(&agent);
+        std::os::unix::fs::symlink("/bin/cat", &agent).expect("a program NAMED claude");
+
+        let host = Host::new((80, 24));
+        let born = |name: &str| {
+            let mut command = CommandBuilder::new(agent.to_string_lossy().into_owned());
+            command.env("TERM", "dumb");
+            lock(&host.workspace())
+                .spawn(command, name.to_owned(), 80, 24)
+                .expect("an agent pane")
+        };
+        let inner = born("the loop's");
+        let persons = born("a person's");
+        lock(host.registry())
+            .window_mut("0", "0")
+            .expect("the default window")
+            .reconcile_layout(&[inner, persons]);
+
+        // The conversations, written where a live daemon's instrumenting writes them — this fixture
+        // cannot run a real agent, and what is under test is what the RESTORE does with the names.
+        let mut snap = sprag_terminal::snapshot(host.registry());
+        let mut named = 0;
+        for pane in &mut snap.sessions[0].windows[0].panes {
+            pane.agent_session = Some(match pane.id {
+                id if id == inner => LOOPS.to_owned(),
+                _ => PERSONS.to_owned(),
+            });
+            named += 1;
+        }
+        assert_eq!(
+            named, 2,
+            "⚠⚠ THE PREMISE: both panes are in the snapshot with a conversation recorded, or the \
+             pair below is not a pair",
+        );
+        let json = serde_json::to_string(&snap).expect("a snapshot serializes");
+        let back: Snapshot = serde_json::from_str(&json).expect("and round-trips");
+
+        let allow: std::collections::HashSet<String> = ["claude".to_owned()].into_iter().collect();
+        // ⚠⚠ THE PRODUCT'S OWN SOURCES, not stand-ins: `pane_args_source` is what mints a name for
+        // an un-resumed launch and `pane_identity_source` is what reads one back, so *was this
+        // resumed?* is observable here exactly as it is in the daemon. A fixture with its own
+        // minting would be proving that ITS names reach a pane.
+        let rebooted = Host::new((80, 24))
+            .with_pane_args(crate::pane_args_source())
+            .with_pane_identity(crate::pane_identity_source())
+            .with_replaced_conversations(Arc::new(move |pane| pane == inner));
+        assert_eq!(
+            rebooted
+                .restore(back, &allow, |_| None, || None, || None, |_| Vec::new())
+                .expect("the snapshot restores"),
+            2,
+        );
+        let conversation = |id: PaneId| {
+            lock(&rebooted.workspace())
+                .pane(id)
+                .expect("the pane came back under its old id")
+                .agent_session()
+                .map(str::to_owned)
+        };
+
+        // ── ① THE CONTROL, FIRST, because it is what makes ② a decision ──
+        assert_eq!(
+            conversation(persons).as_deref(),
+            Some(PERSONS),
+            "⛔⛔⛔⛔⛔ A PERSON'S OWN AGENT PANE LOST ITS CONVERSATION ON A REBOOT NOBODY ASKED FOR. \
+             That is item 695's defect pointing the other way, and it is the cost of getting this \
+             item's repair too wide — so this arm is asserted before its headline",
+        );
+
+        // ── ② THE HEADLINE: the loop's pane is NOT back in the conversation it was in ──
+        let inners = conversation(inner);
+        assert_ne!(
+            inners.as_deref(),
+            Some(LOOPS),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 869: the restore put the loop's pane back into its old \
+             conversation, so the loop starts its next round already full of a previous one and has \
+             to spend its ONE context-shedding move undoing a reboot. Measured over four \
+             promotions, exception 0, each repaired by a supervisor killing the pane by hand",
+        );
+
+        // ── ③ AND IT CAME BACK NAMED, which is what makes ② safe rather than merely different ──
+        assert!(
+            inners.is_some(),
+            "⚠⚠⚠⚠⚠ THE LOOP'S PANE CAME BACK ANONYMOUS. Dropping the resume is supposed to let the \
+             instrumenting mint a FRESH name — the state a session replacement buys — and a pane \
+             holding no name at all breaks every join a row and a boot make through \
+             `Pane::agent_session`. That is a second defect wearing this one's green",
+        );
+        assert_ne!(
+            inners.as_deref(),
+            Some(PERSONS),
+            "⚠⚠ and the fresh name is its own rather than its neighbour's",
+        );
+
+        // ── ④ AND IT IS STILL THE SAME PROGRAM — the repair strips a conversation, not a command ──
+        assert_eq!(
+            lock(&rebooted.workspace())
+                .pane(inner)
+                .expect("the pane came back")
+                .argv()
+                .first()
+                .map(String::as_str),
+            Some(agent.to_string_lossy().as_ref()),
+            "⚠⚠ a pane that came back as something else would satisfy every arm above by running \
+             nothing this gate is about",
         );
     }
 

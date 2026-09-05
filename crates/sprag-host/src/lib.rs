@@ -135,7 +135,8 @@ pub use hooks::{
 pub use host::{
     Host, HostClient, NESTED_AGENT_MARKERS, PANE_ENV_VAR, PANE_GENERATION_ENV_VAR, PaneAgent,
     PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneFrame, PaneMatch, PaneNotification,
-    PaneScrollFacts, pane_args_source, pane_env_source, pane_identity_source,
+    PaneScrollFacts, ReplacedConversations, pane_args_source, pane_env_source,
+    pane_identity_source, replaced_conversations,
 };
 pub use job::JobWatch;
 pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};

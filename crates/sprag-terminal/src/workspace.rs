@@ -203,6 +203,31 @@ pub struct Pane {
     /// occupant of that seat is wanted even though the seat came back from a snapshot. Carrying it
     /// would make a loop's own restart look like an orphan forever.
     revived: bool,
+    /// ⛔⛔⛔⛔⛔ **WHETHER THE CONVERSATION IN THIS PANE IS ONE IT HELD BEFORE THIS DAEMON STARTED**
+    /// — register item 869, and the half [`revived`](Self::revived) beside it cannot answer.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why `revived` stopped being enough
+    ///
+    /// It used to be, because a restore resumed EVERY agent pane's conversation, so *this pane was
+    /// re-run* and *this pane holds history from before the restart* were the same fact wearing two
+    /// names. They are no longer: a pane a loop was typing at comes back with no resume and is named
+    /// afresh by the instrumenting, precisely so the loop does not have to spend its one
+    /// context-shedding move undoing a reboot. Both panes are `revived`; only one has inherited
+    /// anything.
+    ///
+    /// ⚠⚠⚠ **AND A ROW WAS ALREADY TELLING PEOPLE TO ACT ON THE DIFFERENCE.**
+    /// `sprag_host`'s `revived_pane_now` prints *…is still in conversation X … Kill that pane and
+    /// open a fresh one*, which after that change is false for exactly the panes it fires on. This
+    /// field is what keeps that sentence true rather than what makes it longer.
+    ///
+    /// ⚠⚠ Read off the command the restore had ALREADY BUILT, before the instrumenting adds
+    /// anything: a name present there came out of `restore_command`'s resume, and a name present
+    /// only afterwards was minted by this daemon. Deriving it from the finished argv could not tell
+    /// them apart — both spell a conversation.
+    ///
+    /// ⚠ `false` for every other birth, and a fact of the BIRTH on [`revived`](Self::revived)'s
+    /// terms: not snapshotted, and not carried through a replacement, which mints its own name.
+    resumed: bool,
     /// Which cgroup this pane's processes ARE in, as the three ids that spell it — or WHY there is
     /// no such cgroup, which is two different answers and not one.
     ///
@@ -331,6 +356,15 @@ impl Pane {
     #[must_use]
     pub fn revived(&self) -> bool {
         self.revived
+    }
+
+    /// ⛔⛔⛔⛔⛔ Whether the conversation in this pane is one it held BEFORE this daemon started —
+    /// `true` only for a pane a restore brought back AND resumed. See the [field](Self::resumed),
+    /// and note that [`revived`](Self::revived) is no longer an answer to this: a restore leaves a
+    /// loop's pane revived and named afresh.
+    #[must_use]
+    pub fn resumed(&self) -> bool {
+        self.resumed
     }
 
     /// The name of the conversation this pane's launch joined, `None` for a pane that is not a named
@@ -501,6 +535,10 @@ impl Seat {
             // snapshot, but the REPLACEMENT was asked for by whatever called `respawn`, so carrying
             // this would leave a loop's own restart reading as an orphan for the pane's whole life.
             revived: _,
+            // ⚠ On the line above's terms, and item 869's: a replacement mints its own conversation
+            // (`identity_args` with nothing to stand down for), so it inherits nothing whatever the
+            // seat it took over had been given.
+            resumed: _,
             home: _,
         } = pane;
         Self {
@@ -1286,6 +1324,9 @@ impl Workspace {
             opened_by: None,
             // A person or a run asked for this one, which is what the fresh-spawn door MEANS.
             revived: false,
+            // ⚠ And it inherited nothing: a fresh launch either names a conversation this daemon
+            // just minted or names none — item 869's field, whose `true` has exactly one site.
+            resumed: false,
             name: None,
             home,
             grant: None,
@@ -1393,6 +1434,13 @@ impl Workspace {
         // a restored agent is instrumented afresh and named not at all. Handing this step the
         // REPLACEMENT's argv would mint an identity beside a resume and name one pane twice.
         let launched = argv_of(&command);
+        // ⛔⛔⛔⛔⛔ AND WHETHER THAT ARGV ALREADY NAMED A CONVERSATION — register item 869, asked
+        // HERE and nowhere later because here is the last moment the two cases are distinguishable.
+        // A name in this argv came out of `restore_command`'s resume; a name in the argv after the
+        // instrumenting below may have been minted by this daemon a microsecond ago, and the
+        // finished command spells both the same way. See the [field](Pane::resumed) for the sentence
+        // a row was already printing about the difference.
+        let resumed = (self.pane_identity)(&launched).is_some();
         // Re-derived from THIS daemon rather than restored, exactly as the environment below is and
         // for a sharper version of its reason: the recorded argv names what the pane ran, and the
         // flag this adds names an endpoint that did not survive the reboot. A restore that replayed
@@ -1479,6 +1527,10 @@ impl Workspace {
             // caller able to pass `false` would be a caller able to hide an orphan. See the
             // [field](Pane::revived).
             revived: true,
+            // ⛔ AND THE ONE PLACE **THIS** CAN BE EITHER — item 869. It is read off the argv above
+            // rather than fixed, because this door is now the door BOTH kinds of restored agent come
+            // through: a person's, resumed into its own conversation, and a loop's, named afresh.
+            resumed,
             name: None,
             home,
             grant: None,

@@ -3783,7 +3783,19 @@ impl PluginsExternal {
         // what a person greps the transcript directory by, and it is the one string that proves the
         // pane is holding somebody else's history rather than merely being old.
         let session = held.agent_session()?.to_owned();
-        held.revived().then(|| {
+        // ⛔⛔⛔⛔⛔ **AND RESUMED, WHICH `revived` USED TO IMPLY AND NO LONGER DOES.** When this
+        // sentence was written a restore resumed every agent pane, so *re-run* and *holding history
+        // from before the restart* were one fact. A restore now brings a loop's pane back named
+        // afresh — `crate::runs::RunLog::panes_a_loop_was_driving`, which is the repair this clause
+        // was the warning for — and every pane this clause can fire on is one of those. Without the
+        // second half the row would tell a person to kill a pane the daemon had already made clean,
+        // on every promotion, which is worse than the silence it replaced.
+        //
+        // ⚠⚠ THIS IS THE FIELD-VISIBLE CHECK ON THAT REPAIR, and the reason the two halves are
+        // asked rather than one: a boot that stopped installing the rule would resume those panes
+        // again, and this clause would come back saying so at the post-promotion check. It is
+        // absent because the daemon did the work, not because nobody looked.
+        (held.revived() && held.resumed()).then(|| {
             format!(
                 "⚠ the pane this run is driving ({}) came back from a restore, so the agent in it \
                  is still in conversation {session} — the one it held before the daemon restarted, \
@@ -11391,11 +11403,21 @@ mod tests {
     /// function's own rule and the second control below: a restore revives shells too, and a shell
     /// has no conversation to have inherited.
     fn a_restored_launch(argv: &[String], session: &str) -> crate::durability::Restored {
+        a_restore_of(argv, Some(session))
+    }
+
+    /// [`a_restored_launch`] with the resume made a CHOICE — item 869's door, where a restore
+    /// brings a loop's pane back holding nothing so the instrumenting can name it afresh.
+    ///
+    /// ⚠ Separated rather than given a `bool` parameter at the call sites, because the two are
+    /// different subjects at every fixture that uses them: one is a person returning to their
+    /// conversation and the other is a pane deliberately emptied of one.
+    fn a_restore_of(argv: &[String], session: Option<&str>) -> crate::durability::Restored {
         crate::restore_command(
             argv,
             None,
             &["claude".to_owned()].into_iter().collect(),
-            Some(session),
+            session,
         )
     }
 
@@ -17629,6 +17651,12 @@ mod tests {
         // filled by asking this of the BUILT command, so a gate with its own rule would be proving
         // that ITS rule reaches a row — R383, and item 619's fixture makes the same choice.
         lock(&workspace).set_pane_identity_source(crate::host::pane_identity_source());
+        // ⚠⚠ AND THE DAEMON'S INSTRUMENTING, for the third control below — item 869. A restore that
+        // appends no resume leaves `identity_args` free to MINT a name, and that minting is the
+        // whole reason a loop's pane comes back usable rather than anonymous. Without this source
+        // the fresh pane would hold no conversation and would be the shell control wearing a
+        // different program.
+        lock(&workspace).set_pane_args_source(crate::host::pane_args_source());
         let agent = a_claude_stand_in();
         let agent_argv = vec![agent.to_string_lossy().into_owned()];
 
@@ -17657,15 +17685,20 @@ mod tests {
             PaneId(9002),
             a_restored_launch(&["/bin/sh".to_owned()], RESTORED),
         );
+        // ⛔⛔⛔⛔⛔ THE THIRD LOOK-ALIKE, AND THE ONE THIS DAEMON NOW MAKES ON EVERY PROMOTION —
+        // item 869's repair. A loop's inner pane is restored with NO resume, so it comes back
+        // revived, agent-shaped, holding a conversation — and that conversation is one this daemon
+        // minted a moment ago rather than anything it inherited.
+        let emptied = spawn_as_restored(&workspace, PaneId(9003), a_restore_of(&agent_argv, None));
         assert_eq!(
-            [opened, revived, shell]
+            [opened, revived, shell, emptied]
                 .iter()
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
-            3,
-            "⚠⚠⚠ THREE PANES AND THREE IDS: two fixtures sharing a number would make one row's \
+            4,
+            "⚠⚠⚠ FOUR PANES AND FOUR IDS: two fixtures sharing a number would make one row's \
              answer the other's, which is how the first draft of this gate went red — got \
-             {opened:?} {revived:?} {shell:?}",
+             {opened:?} {revived:?} {shell:?} {emptied:?}",
         );
 
         // ── THE PREMISES, or every arm below is vacuous in the quietest way ────────────────────
@@ -17696,12 +17729,29 @@ mod tests {
                  and holding no conversation. A `Some` here would mean `restore_command` had \
                  handed a shell an argument meant for an agent",
             );
+            let (was_revived, holds) = of(emptied);
+            assert!(
+                was_revived && holds.is_some() && holds.as_deref() != Some(RESTORED),
+                "⛔⛔⛔⛔⛔ THE THIRD CONTROL, AND THE ONE WITH TWO WAYS TO GO QUIET: a loop's pane \
+                 must come back REVIVED, holding a conversation, and NOT the one recorded. A \
+                 `None` would mean the instrumenting never minted — the pane comes back anonymous \
+                 and every join through `agent_session` breaks — and {RESTORED:?} would mean the \
+                 restore resumed it after all, which is the defect. Got {holds:?}",
+            );
+            assert!(
+                held.pane(revived).expect("the subject").resumed()
+                    && !held.pane(emptied).expect("the third control").resumed(),
+                "⚠⚠⚠⚠⚠ AND THE PANE ITSELF MUST TELL THEM APART. `revived` is true of both, so \
+                 `Pane::resumed` is the only thing standing between this row's sentence and a \
+                 daemon that tells a person to kill a pane it had already made clean",
+            );
         }
 
         let registry = Arc::new(Mutex::new(RunRegistry::default()));
         let on_revived = a_run_driving(&registry, revived);
         let on_opened = a_run_driving(&registry, opened);
         let on_shell = a_run_driving(&registry, shell);
+        let on_emptied = a_run_driving(&registry, emptied);
         let external = PluginsExternal::new(
             Arc::clone(&workspace),
             Arc::clone(&registry),
@@ -17752,6 +17802,15 @@ mod tests {
                  shell with nothing to inherit. A build that answered *was this pane revived* \
                  alone passes arm ① and puts a warning on every shell in a restored daemon",
             ),
+            (
+                on_emptied,
+                "⛔⛔⛔⛔⛔ AND THIS IS THE PANE THE REPAIR MAKES, on every promotion: revived, \
+                 agent-shaped, holding a conversation this daemon minted rather than inherited. \
+                 The clause tells a person to KILL the pane and open a fresh one — advice that is \
+                 not merely useless here but wrong, because the daemon already did it. A build \
+                 that still keys on `revived` alone passes arms ① and ② and puts that instruction \
+                 on every healthy loop after every restart",
+            ),
         ] {
             let row = row_of(id);
             assert_eq!(
@@ -17774,7 +17833,7 @@ mod tests {
              revived pane has inherited no counters from anybody",
         );
 
-        for id in [revived, opened, shell] {
+        for id in [revived, opened, shell, emptied] {
             assert!(
                 lock(&workspace).close(id).is_some(),
                 "the panes this gate opened were there to close",
