@@ -944,9 +944,9 @@ fn run_logs(
 ///
 /// # ⛔⛔⛔⛔⛔ The clause this answers, and what five re-judgements each did instead
 ///
-/// Item 856's axis is *a session folds because of how full it is*, and its refutation is stated by
-/// the loop itself: **one `capacity` reflection whose prompt LANDS**. Measured 2026-09-05 that had
-/// happened 29 times — and every one of the 29 came from a run whose ceiling a caller had moved to
+/// Item 856's axis WAS *a session gets folded on because of how full it is*, and its refutation was
+/// stated by the loop itself: **one `capacity` reflection whose prompt LANDS**. Measured 2026-09-05
+/// that had happened 29 times — and every one of the 29 came from a run whose ceiling a caller had moved to
 /// `20000`, where a `capacity` reflection means *we handed over early* rather than *the session
 /// filled up*. The condition had been assuming **ceiling = fullness**, and telling the two apart
 /// takes three columns that only exist together in a row: how full it got (item 894), what it was
@@ -969,6 +969,21 @@ fn run_logs(
 /// ⚠⚠ **NEEDS NO DAEMON**, and not for convenience: item 856's rate is over runs that have ENDED,
 /// and item 606 measured thirteen live runs of which every single one was a RESTORED record. The
 /// population this answers about exists only in a file.
+///
+/// # ⭐⭐⭐⭐⭐ AND IT ANSWERED — the axis it was written to measure is the one it killed
+///
+/// Read at 2026-09-05T17:29:11Z over 237 logged runs, the road line said `capacity 4 of 33 ·
+/// budget 17 of 17 · milestone 30 of 50 · ordinary 0 of 141`. **The road the old axis said would
+/// fold MOST folds LEAST of the reflections, and the road that fires on a turn cadence rather than
+/// on fullness folds every single time** — while 141 ordinary prompts of those same runs were not
+/// folded once. Item 856's axis was rewritten from fullness to ROAD on the strength of that line,
+/// and `sprag_plugin::ai_loop::THE_AXIS` — the sentence a person gets when their loop dies — was
+/// rewritten with it.
+///
+/// ⚠ Which leaves this verb's own title honest but no longer the point: how full each session was
+/// is what it PRINTS, and which road each prompt came down is what that turned out to decide. The
+/// fullness columns stay because *at what fullness* is the next question and cannot be asked
+/// without them — see [`sprag_host::runs::Folds`] on why no row can band a fold by fullness yet.
 ///
 /// # Errors
 ///
@@ -1155,10 +1170,24 @@ fn folds_lines(
                 })
                 .collect();
             lines.push(format!(
-                "  and by ROAD ALONE over {} run(s) whose split can be read at all, no fullness \
+                "  and by ROAD ALONE over {} run(s) whose split is TOTAL for its run, no fullness \
                  attached and no ceiling told apart: {}",
                 folds.readable_runs(),
                 split.join(" · "),
+            ));
+        }
+        // ⛔⛔⛔⛔⛔ AND HOW MANY ROWS THAT COMPARISON HAD TO LEAVE OUT, which is not the same
+        // sentence as *measures nothing*: a split that is short of its run's deliveries still
+        // answers the one-road question above it. Printed because the count it changed was
+        // published for a day — `ordinary 0 of 141` over a store that had only ever watched 142
+        // ordinary prompts, the rest of the denominator being rows whose build never wrote that
+        // road. A denominator that quietly shrinks is this report's own defect, one table up.
+        if folds.uncomparable > 0 {
+            lines.push(format!(
+                "  {} further run(s) have a readable split that is NOT total for the run, so the \
+                 roads they never wrote cannot be told from roads that never folded — they answer \
+                 the capacity question above and no road-with-road comparison at all",
+                folds.uncomparable,
             ));
         }
         // ⛔⛔⛔⛔⛔ AND THE LANDINGS THIS LOG HOLDS AND THE AXIS MAY NOT USE — printed OUTSIDE the
@@ -11281,6 +11310,83 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// ⛔⛔⛔⛔⛔ **NO SENTENCE IN THIS CRATE STILL SAYS A FOLD MOVES WITH HOW FULL THE SESSION IS**
+    /// — register item 856, the half of that ratchet that lives where [`folds`] is printed.
+    ///
+    /// # ⚠⚠⚠ Two gates, ONE list, and why it is not two lists
+    ///
+    /// `include_str!` takes a literal, so a ratchet cannot cross a crate and there has to be one
+    /// here and one in `sprag-plugin`. The NEEDLES do not have to be duplicated, and must not be:
+    /// two spellings of one fact drift and the one that fell behind is the one somebody reads —
+    /// which is the argument `sprag_plugin::ai_loop::THE_AXIS` is a shared constant for, and
+    /// [`sprag_plugin::ai_loop::the_axis_this_product_retracted`] is the same answer for the clause
+    /// that constant retracted. Assembled at run time there, so naming it does not restore it.
+    ///
+    /// # ⭐ Why this crate is in scope at all
+    ///
+    /// [`folds`] is the command that killed the fullness axis, and its own verb doc had stated that
+    /// axis in the PRESENT tense, as this item's live claim. The instrument and the retracted claim
+    /// about it sat in one doc comment and nothing could tell them apart — so the file that
+    /// produced the refutation was also the file still publishing what it refuted.
+    ///
+    /// ⚠ Neither this doc nor the assertion below writes the clause out, even to name it: the
+    /// search folds case, so a file that spells what it forbids is red forever (item 872 ⑵, and
+    /// the sibling ratchet walked into it the hour this one was written).
+    #[test]
+    fn no_sentence_here_still_says_a_fold_moves_with_how_full_the_session_is() {
+        // ⚠ The verb's own doc, and the module that computes what it prints.
+        let read = [
+            ("bin/sprag.rs", include_str!("sprag.rs")),
+            ("runs.rs", include_str!("../runs.rs")),
+        ];
+        let retracted = sprag_plugin::ai_loop::the_axis_this_product_retracted();
+
+        // ⚠ Case is normalised as well as whitespace, and that is not tidiness: the clause shipped
+        // SHOUTED inside `THE_AXIS` and in lower case in the docs around it, so an exact match
+        // caught one spelling of the sentence and was green over the other. The sibling ratchet
+        // carries what measured that.
+        let found: Vec<(&str, &String)> = read
+            .iter()
+            .flat_map(|(name, source)| {
+                let flat = source
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_lowercase();
+                retracted
+                    .iter()
+                    .filter(move |clause| flat.contains(&clause.to_lowercase()))
+                    .map(move |clause| (*name, clause))
+            })
+            .collect();
+        assert!(
+            found.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: a sentence here makes the clause printed below, which \
+             this item retracted. `sprag folds` measured it false — read at \
+             2026-09-05T17:29:11Z its road line was `capacity 4 of 33 · budget 17 of 17 · \
+             milestone 30 of 50 · ordinary 0 of 141`, so the road the old axis said would fold most \
+             folds least and 141 ordinary prompts of the same runs were not folded once. The item's \
+             axis names the ROAD now. Found: {found:?}",
+        );
+
+        // ══ ⚠⚠⚠ THE CONTROL: this must be reading the two files it names ══════════════════════
+        for (name, marker) in [
+            ("bin/sprag.rs", ["fn", "folds"].join(" ")),
+            ("runs.rs", ["pub", "enum", "NoFullness"].join(" ")),
+        ] {
+            let flat = read
+                .iter()
+                .find(|(named, _)| *named == name)
+                .map(|(_, source)| source.split_whitespace().collect::<Vec<_>>().join(" "))
+                .unwrap_or_default();
+            assert!(
+                flat.contains(&marker),
+                "⚠⚠⚠ the ratchet read something that is not `{name}` — it found no {marker:?} — so \
+                 its silence about the retracted clause means nothing",
+            );
+        }
+    }
+
     /// The listing a PERSON greps tells a revived agent, a driven one, and a plain pane apart.
     ///
     /// ⚠⚠⚠⚠⚠ **THE DAEMON HAD ALREADY ANSWERED THIS AND THE ANSWER STOPPED AT THE WIRE** — register
@@ -13788,22 +13894,27 @@ mod tests {
             "runs": [
                 {"id": 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
                  "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [],
+                 "deliveries": {"made": 44, "folded": 1},
                  "folds_by_reason": {"capacity": {"delivered": 4, "folded": 1},
                                      "ordinary": {"delivered": 40, "folded": 0}}},
                 {"id": 2, "label": "ai_loop pane=2", "iterations": 1, "finished": true,
                  "context_high_water": 24_000, "context_ceiling": 20_000,
                  "overridden": ["context_ceiling"],
+                 "deliveries": {"made": 28, "folded": 1},
                  "folds_by_reason": {"capacity": {"delivered": 28, "folded": 1}}},
                 {"id": 3, "label": "ai_loop pane=3", "iterations": 1, "finished": true,
+                 "deliveries": {"made": 3, "folded": 3},
                  "folds_by_reason": {"capacity": {"delivered": 3, "folded": 3}}},
                 // ⛔⛔⛔⛔⛔ BEHIND THE SAME WALL AND HOLDING LANDINGS — the shape of runs 214 and
                 //    215, which is what this mouth was silent about. Nine capacity prompts, one
                 //    folded ⇒ EIGHT landings this axis may not use and a reader must still be
                 //    told about, or an empty readable half reads as *nothing ever took that road*.
                 {"id": 7, "label": "ai_loop pane=7", "iterations": 1, "finished": true,
+                 "deliveries": {"made": 9, "folded": 1},
                  "folds_by_reason": {"capacity": {"delivered": 9, "folded": 1}}},
                 // ⚠⚠ AND THE CONTROL: behind the wall having never walked it, so nothing is lost.
                 {"id": 8, "label": "ai_loop pane=8", "iterations": 1, "finished": true,
+                 "deliveries": {"made": 4, "folded": 0},
                  "folds_by_reason": {"ordinary": {"delivered": 4, "folded": 0}}},
                 // ⛔⛔⛔⛔⛔ A CEILING RECORDED AND NOT IN FORCE. It answers item 859, so nothing
                 //    else keeps it out — and the document guards every edge into the `capacity`
@@ -13812,6 +13923,7 @@ mod tests {
                 //    would quieten the ordinary road the axis is read against.
                 {"id": 9, "label": "ai_loop pane=9", "iterations": 1, "finished": true,
                  "context_high_water": 417_509, "context_ceiling": 0, "overridden": [],
+                 "deliveries": {"made": 12, "folded": 6},
                  "folds_by_reason": {"ordinary": {"delivered": 12, "folded": 6}}},
                 // ⛔⛔⛔⛔⛔ RUN 232's OWN SHAPE, byte for byte in the fields that decide: an
                 //    ORDINARY run carrying a fullness BELOW its own document's ceiling, whose
@@ -13821,6 +13933,7 @@ mod tests {
                 //    the arm was unreachable and only the live store could find it.
                 {"id": 4, "label": "ai_loop pane=4", "iterations": 5, "finished": false,
                  "context_high_water": 303_328, "context_ceiling": 800_000, "overridden": [],
+                 "deliveries": {"made": 2, "folded": 0},
                  "folds_by_reason": {"ordinary": {"delivered": 2, "folded": 0}}},
                 // ⚠⚠ AND ITS CONTROL, which is what keeps the fix from being *never warn*: the
                 //    SAME two columns disagreeing on a run that DID walk the capacity road. There
@@ -13828,6 +13941,7 @@ mod tests {
                 //    over those readings, so a peak below the ceiling really is a recording defect.
                 {"id": 5, "label": "ai_loop pane=5", "iterations": 9, "finished": true,
                  "context_high_water": 100_000, "context_ceiling": 800_000, "overridden": [],
+                 "deliveries": {"made": 1, "folded": 1},
                  "folds_by_reason": {"capacity": {"delivered": 1, "folded": 1}}},
                 // ⚠⚠ AND THE THIRD WAY THE ROAD IS TAKEN, which is the half a `delivered > 0` test
                 //    drops: the reflection happened and the question NEVER GOT ASKED. The
@@ -13836,9 +13950,23 @@ mod tests {
                 //    outside the delivered/folded pair entirely.
                 {"id": 6, "label": "ai_loop pane=6", "iterations": 9, "finished": true,
                  "context_high_water": 90_000, "context_ceiling": 800_000, "overridden": [],
+                 "deliveries": {"made": 0, "folded": 0},
                  "folds_by_reason": {"capacity": {"delivered": 0, "folded": 0,
                                                   "unasked_after_a_fold": 1,
                                                   "unasked_on_the_pane": 0}}},
+                // ⛔⛔⛔⛔⛔ AND A SPLIT THAT IS NOT *TOTAL* FOR ITS RUN — 15 of the live store's 21
+                //    readable rows on 2026-09-05T17:54:36Z. It made 50 deliveries and put 10 on a
+                //    road, so its `ordinary` cell is a STRUCTURAL zero: pooled into a road
+                //    comparison it hands `milestone` six folds and the control road nothing at
+                //    all. That pooling is how a published line came to read `ordinary 0 of 141`
+                //    over a store that had only ever watched 142 ordinary prompts on any build.
+                //    ⚠ It still carries a fullness and a ceiling in force, so it stays in the
+                //    axis's own population and out of every rate that sets one road beside
+                //    another — and the page has to SAY it was set aside.
+                {"id": 10, "label": "ai_loop pane=10", "iterations": 9, "finished": true,
+                 "context_high_water": 500_000, "context_ceiling": 800_000, "overridden": [],
+                 "deliveries": {"made": 50, "folded": 6},
+                 "folds_by_reason": {"milestone": {"delivered": 10, "folded": 6}}},
             ]
         }))
         .expect("the log a predecessor leaves is what this reads");
@@ -13929,7 +14057,7 @@ mod tests {
         // force — neither can be on the axis, and both still say which road their prompts took.
         // ⚠ It must be a SUPERSET and say so: `capacity 3 of 34` is right HERE and wrong above.
         assert!(
-            said.contains("and by ROAD ALONE over 9 run(s) whose split can be read at all")
+            said.contains("and by ROAD ALONE over 9 run(s) whose split is TOTAL for its run")
                 && said.contains("no fullness attached and no ceiling told apart")
                 && said.contains("capacity 7 of 45"),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the split exists to compare ROADS, and a page that can \
@@ -13938,7 +14066,39 @@ mod tests {
              pools what the axis keeps apart. Got:\n{said}",
         );
 
+        // ── ②bd AND THE ROW THAT COULD NOT JOIN THAT COMPARISON IS SAID, NOT DROPPED ──
+        //
+        // ⛔⛔⛔⛔⛔ Run 10's split covers 10 of its 50 deliveries. Pooled in, `milestone` reads
+        // `6 of 10` where nothing was watching the control road at all — the shape that put
+        // `ordinary 0 of 141` on a page over a store holding 142 watched ordinary prompts, and
+        // the line item 856's axis was about to be re-judged on. It is set aside from the
+        // COMPARISON and stays in the report, because *cannot be compared* and *measures nothing*
+        // are different sentences and this item has paid for confusing them before.
+        //
+        // ⚠ Asserted line by line and not over the whole page: run 10's OWN row prints
+        // `milestone 6 of 10` and should — a row is one run's split, and nothing there is being
+        // compared with anything. It is the two RATE lines that may not have it.
+        let rate = |needle: &str| {
+            lines
+                .iter()
+                .find(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("the page must carry the {needle:?} line:\n{said}"))
+                .clone()
+        };
+        assert!(
+            said.contains("1 further run(s) have a readable split that is NOT total for the run")
+                && rate("production run(s) judged by their own").contains("milestone 0 of 0")
+                && rate("by ROAD ALONE").contains("milestone 0 of 0"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: a split short of its run's deliveries has roads it never \
+             wrote, and those read exactly like roads that never folded. Summed into either rate \
+             it hands the reflection roads six folds and the control road nothing, so the \
+             comparison comes out in the axis's favour by construction — the shape that put \
+             `ordinary 0 of 141` on a page over a store holding 142 watched ordinary prompts. The \
+             page must leave it out of BOTH rates and count it out loud. Got:\n{said}",
+        );
+
         // ── ②c AND THE LANDINGS BEHIND THE WALL ARE SAID, WITH THE POPULATION THEY SIT IN ──
+        //
         assert!(
             said.contains("8 capacity landing(s) sit in 2 run(s) this axis cannot use"),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴⒞ / 894: runs 3 and 7 walked the capacity road behind \

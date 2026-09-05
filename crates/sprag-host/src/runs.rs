@@ -4012,6 +4012,8 @@ impl RunLog {
         let mut stranded = 0u32;
         // ⛔ THE WIDER HALF — every readable fold table, kept whether or not it reaches the axis.
         let mut readable = Vec::new();
+        // ⛔ AND THE ROWS THAT HALF MAY NOT SUM: a split that is not total for its run.
+        let mut uncomparable = 0usize;
         for run in &self.runs {
             // ⚠ FIRST, and it is a precedence rather than an accident: without a split there is no
             // fold to put a fullness beside, so no later question can be asked of this row.
@@ -4037,11 +4039,53 @@ impl RunLog {
             // ⚠ Converted BEFORE the axis is asked for, because the questions below it are asked
             // of rows that never reach the axis at all — see `on_the_capacity_road`.
             let split: sprag_plugin::FoldsByReason = stored.into();
-            // ⛔⛔⛔⛔⛔ AND KEPT BEFORE ANY OF THEM, which is the point: the ROAD question does not
-            // need a fullness, and on 2026-09-05 the rows that could answer it outnumbered the
-            // rows on the axis ten to one. Every `continue` below this line drops a table that
-            // still had something to say.
-            readable.push(split);
+            // ⛔⛔⛔⛔⛔ BUT FIRST, AND AHEAD OF THE WIDER HALF TOO: is this split TOTAL for its
+            // run? `FoldsByReason::total` is documented as the same population as
+            // `Deliveries::made`, so a row where it falls short is a row whose unwritten roads are
+            // structural zeros. Summing it beside a row that does write them puts folds in the
+            // reflection numerator and nothing in the control road's denominator — which is the
+            // one direction that makes item 856's own axis look better evidenced than it is.
+            //
+            // ⚠ A run with no delivery count at all cannot be checked, and is NOT waved through:
+            // `sampled` has already established the split is non-zero, so a missing `deliveries`
+            // means the row can state a split and not what it is a split OF.
+            // ⛔⛔⛔⛔⛔ AND KEPT BEFORE THE FULLNESS QUESTIONS, which is the point: the ROAD
+            // question does not need a fullness, and on 2026-09-05 the rows that could answer it
+            // outnumbered the rows on the axis three to one. Every `continue` below this line
+            // drops a table that still had something to say.
+            //
+            // ⛔⛔⛔⛔⛔ BUT ONLY IF THE SPLIT IS *TOTAL* FOR ITS RUN, and this is the one question
+            // asked of a row before it may be compared road-with-road.
+            // `FoldsByReason::delivered` is documented as the same population as
+            // `Deliveries::made`; a row where it falls SHORT was written before a road joined the
+            // split (item 856 ⑶ added `Occasion::Ordinary`), so its reflection rows are real
+            // measurements and its `ordinary` row is a structural zero.
+            //
+            // ⇒ **Summed beside a row that does write it, such a row puts folds in the reflection
+            // roads and nothing at all in the control road's denominator.** Measured over the live
+            // store at 2026-09-05T17:54:36Z: 15 such rows carrying `reflections 44 of 88` against
+            // `ordinary 0 of 0`, pooled into a published line reading `ordinary 0 of 141` — as
+            // though 141 ordinary prompts had been watched and none had folded, when only 142 ever
+            // were and all of them on one build. **The pooling flattered the road axis**, which is
+            // the direction that matters.
+            //
+            // ⚠ The predicate is the run's own invariant, not a build list: a run that delivered
+            // anything delivered its OPENING BRIEF, and that is an `Occasion::Ordinary`. A road
+            // added to the split in future without its recording site is caught by the same test.
+            //
+            // ⚠⚠ It does NOT `continue`. A partial row still answers the axis's own question —
+            // *did a `capacity` prompt land* reads ONE road and needs no denominator beside it — so
+            // calling it *measures nothing* would be false, and would take the 29 landings below
+            // out of the report. What it cannot do is be compared with another road.
+            let comparable = run
+                .deliveries
+                .as_ref()
+                .is_some_and(|counted| split.delivered() == counted.made);
+            if comparable {
+                readable.push(split);
+            } else {
+                uncomparable += 1;
+            }
             let (Some(fullest), Some(ceiling)) = (run.context_high_water, run.context_ceiling)
             else {
                 blame(if run.context_high_water.is_some() {
@@ -4078,6 +4122,7 @@ impl RunLog {
                 ceiling,
                 judged,
                 folds: split,
+                comparable,
             });
         }
         Folds {
@@ -4087,6 +4132,7 @@ impl RunLog {
                 .map(|why| (*why, unmeasured[why]))
                 .collect(),
             readable,
+            uncomparable,
             stranded,
         }
     }
@@ -4489,6 +4535,15 @@ pub struct Folds {
     /// and a row's fullness is exactly the thing it does not have. Carrying the rest would invite
     /// a reader to pair them again.
     pub readable: Vec<sprag_plugin::FoldsByReason>,
+    /// ⛔⛔⛔⛔⛔ **HOW MANY ROWS [`readable`](Self::readable) HAD TO LEAVE OUT** — splits that are
+    /// present and non-zero and NOT total for their run, so no road of theirs may be set beside
+    /// another's.
+    ///
+    /// ⚠ They are not *unmeasured*: each still answers the axis's own one-road question, and
+    /// [`stranded`](Self::stranded) shows they were carrying most of this store's evidence. What
+    /// they cannot do is be summed into a comparison. Published for the same reason as every other
+    /// half of this report — a denominator that quietly shrank is the defect it exists to prevent.
+    pub uncomparable: usize,
     /// ⛔⛔⛔⛔⛔ **THE `capacity` LANDINGS THIS ANSWER HOLDS AND MAY NOT JUDGE** — how big item
     /// 894's wall is, summed over the rows counted under [`NoFullness::CapacityUnjudgeable`].
     ///
@@ -4625,9 +4680,7 @@ impl Folds {
             .into_iter()
             .map(|occasion| {
                 let (folded, delivered) = self
-                    .measured
-                    .iter()
-                    .filter(|row| row.judged == Judged::ByItsDocument)
+                    .rated()
                     .map(|row| row.folds.under(occasion))
                     .fold((0, 0), |(folded, delivered), row| {
                         (folded + row.folded, delivered + row.delivered)
@@ -4658,12 +4711,7 @@ impl Folds {
     /// hold each pairing, and this says the range they span.
     #[must_use]
     pub fn production_span(&self) -> Option<(i64, i64)> {
-        let peaks = || {
-            self.measured
-                .iter()
-                .filter(|row| row.judged == Judged::ByItsDocument)
-                .map(|row| row.fullest)
-        };
+        let peaks = || self.rated().map(|row| row.fullest);
         Some((peaks().min()?, peaks().max()?))
     }
 
@@ -4675,10 +4723,35 @@ impl Folds {
     /// reads as *nothing folded* where it means *nobody has run yet*.
     #[must_use]
     pub fn production_runs(&self) -> usize {
+        self.rated().count()
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ROWS THE RATE IS OVER, WRITTEN ONCE** — judged by their own document's
+    /// ceiling AND carrying a split that is total for the run.
+    ///
+    /// # ⚠⚠⚠ One filter, three readers, is how they drift — and they had already begun to
+    ///
+    /// [`folded_by_road`](Self::folded_by_road), [`production_span`](Self::production_span) and
+    /// [`production_runs`](Self::production_runs) each spelled the `Judged` half themselves, and
+    /// this file's own note beside the span says what that costs. When the second condition was
+    /// found, one edit in one place gave it to all three; three edits would have given it to
+    /// however many the author remembered.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why TOTALITY is a condition of the rate and not only of the wider half
+    ///
+    /// The rate is a COMPARISON — `capacity` read against the roads that are its control — and a
+    /// split short of its run's deliveries has roads it never wrote. Summed in, it adds folds to
+    /// the reflection roads and nothing to the control road's denominator, so the comparison comes
+    /// out in the axis's favour by construction. **A fixture row of exactly that shape put
+    /// `milestone 12 of 20` into this rate beside `ordinary 0 of 40` the day this was written.**
+    ///
+    /// ⚠ It is NOT a condition of [`refutations`](Self::refutations): that reads ONE road and asks
+    /// whether a prompt landed, which needs no other road beside it. The same row is in the axis's
+    /// population and out of its rate, and those are two different sentences.
+    fn rated(&self) -> impl Iterator<Item = &FoldAtFullness> {
         self.measured
             .iter()
-            .filter(|row| row.judged == Judged::ByItsDocument)
-            .count()
+            .filter(|row| row.judged == Judged::ByItsDocument && row.comparable)
     }
 
     /// **HOW MANY RUNS [`stranded`](Self::stranded) SITS IN** — the count under
@@ -4687,6 +4760,11 @@ impl Folds {
     /// ⚠ A mouth needs BOTH numbers or it cannot print the stranded count honestly: over a
     /// population it does not name, a `0` there is the same reading this report withholds its
     /// landing counts to avoid.
+    ///
+    /// ⚠⚠ **The population is the rows that WALKED that road, not the rows holding a landing** —
+    /// a run whose every capacity prompt was folded contributes `0` and still belongs here,
+    /// because what the line tells a reader of an unreadable store is *this road was taken*. That
+    /// is why its zero is safe: the count beside it is never zero when the line is printed at all.
     #[must_use]
     pub fn unjudgeable_runs(&self) -> usize {
         self.unmeasured
@@ -4726,6 +4804,14 @@ pub struct FoldAtFullness {
     /// longest thing this loop builds*. The other occasions hold the prompt's SHAPE roughly fixed
     /// and vary only what brought the loop there, so line against line is the axis.
     pub folds: sprag_plugin::FoldsByReason,
+    /// ⛔⛔⛔⛔⛔ **WHETHER THAT SPLIT IS *TOTAL* FOR THE RUN** — whether its rows account for every
+    /// delivery the run made, which is what makes one road comparable with another.
+    ///
+    /// A row written before a road joined the split has real reflection counts and a STRUCTURAL
+    /// zero on the road it never wrote, so it belongs to the axis's population (one road, asked
+    /// alone) and to no rate that sets two roads side by side — see `Folds::rated`, which is what
+    /// every road-with-road reader here is filtered through.
+    pub comparable: bool,
 }
 
 /// A fold split's `capacity` row — the discriminator, named ONCE so no reader picks the occasion
@@ -11724,34 +11810,40 @@ mod tests {
                 //    4 capacity prompts, 1 folded ⇒ THREE landings, and each is a refutation.
                 { "id": 1, "label": "ai_loop pane=3", "iterations": 9, "finished": true,
                   "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [],
+                  "deliveries": { "made": 44, "folded": 1 },
                   "folds_by_reason": { "capacity": { "delivered": 4, "folded": 1 },
                                        "ordinary": { "delivered": 40, "folded": 0 } } },
                 // ── ② AN ARM: the shape of runs 214 and 215, which produced 27 of the 29 ──
                 { "id": 2, "label": "ai_loop pane=4", "iterations": 9, "finished": true,
                   "context_high_water": 24_000, "context_ceiling": 20_000,
                   "overridden": ["context_ceiling"],
+                  "deliveries": { "made": 28, "folded": 1 },
                   "folds_by_reason": { "capacity": { "delivered": 28, "folded": 1 } } },
                 // ── ③ THE CONTROL: a caller who moved something ELSE is NOT an experiment here ──
                 { "id": 3, "label": "ai_loop pane=5", "iterations": 9, "finished": true,
                   "context_high_water": 800_000, "context_ceiling": 800_000,
                   "overridden": ["max_seconds"],
+                  "deliveries": { "made": 2, "folded": 2 },
                   "folds_by_reason": { "capacity": { "delivered": 2, "folded": 2 } } },
                 // ── ④ THE PROMOTION WALL, WITH THE ROAD WALKED AND NOTHING LEFT STANDING ──
                 //    It reflected on capacity three times and the composer took all three, so the
                 //    wall costs this row nothing: 0 landings behind it.
                 { "id": 4, "label": "ai_loop pane=6", "iterations": 9, "finished": true,
                   "context_ceiling": 800_000, "overridden": [],
+                  "deliveries": { "made": 3, "folded": 3 },
                   "folds_by_reason": { "capacity": { "delivered": 3, "folded": 3 } } },
                 // ── ④b THE SAME WALL, AND FOUR LANDINGS BEHIND IT — the shape of runs 214/215 ──
                 //    This is what the live store held on 2026-09-05T13:41:36Z and what every
                 //    reading of this verb had been silent about: evidence present, unattributable.
                 { "id": 11, "label": "ai_loop pane=13", "iterations": 9, "finished": true,
                   "context_ceiling": 800_000, "overridden": [],
+                  "deliveries": { "made": 5, "folded": 1 },
                   "folds_by_reason": { "capacity": { "delivered": 5, "folded": 1 } } },
                 // ── ④c AND THE CONTROL FOR BOTH: behind the wall having never walked that road ──
                 //    Nothing was lost here, and an arm that pooled it with ④b would say so of ④b.
                 { "id": 12, "label": "ai_loop pane=14", "iterations": 9, "finished": true,
                   "context_ceiling": 800_000, "overridden": [],
+                  "deliveries": { "made": 4, "folded": 0 },
                   "folds_by_reason": { "ordinary": { "delivered": 4, "folded": 0 } } },
                 // ── ④d AND THE ROAD WALKED BY THE UNASKED HALF ALONE, behind the same wall ──
                 //    `delivered` is 0 and the document still transitioned on
@@ -11759,21 +11851,25 @@ mod tests {
                 //    this beside ④c as *no evidence*, which is item 856 ⑶'s own population.
                 { "id": 13, "label": "ai_loop pane=15", "iterations": 9, "finished": true,
                   "context_ceiling": 800_000, "overridden": [],
+                  "deliveries": { "made": 0, "folded": 0 },
                   "folds_by_reason": { "capacity": { "delivered": 0, "folded": 0,
                                                      "unasked_after_a_fold": 1,
                                                      "unasked_on_the_pane": 0 } } },
                 // ── ⑤ A READING WITH NOTHING TO MEASURE IT AGAINST ──
                 { "id": 5, "label": "ai_loop pane=7", "iterations": 9, "finished": true,
                   "context_high_water": 700_000, "overridden": [],
+                  "deliveries": { "made": 3, "folded": 3 },
                   "folds_by_reason": { "capacity": { "delivered": 3, "folded": 3 } } },
                 // ── ⑥ BOTH READINGS AND NOBODY ANSWERED WHOSE NUMBERS THEY WERE ──
                 { "id": 6, "label": "ai_loop pane=8", "iterations": 9, "finished": true,
                   "context_high_water": 800_000, "context_ceiling": 800_000,
+                  "deliveries": { "made": 3, "folded": 0 },
                   "folds_by_reason": { "capacity": { "delivered": 3, "folded": 0 } } },
                 // ── ⑦ AND A WORD THIS BUILD CANNOT SPELL, which refuses the whole answer ──
                 { "id": 7, "label": "ai_loop pane=9", "iterations": 9, "finished": true,
                   "context_high_water": 800_000, "context_ceiling": 800_000,
                   "overridden": ["a_bound_a_later_build_authored"],
+                  "deliveries": { "made": 3, "folded": 0 },
                   "folds_by_reason": { "capacity": { "delivered": 3, "folded": 0 } } },
                 // ── ⑧ A SPLIT PRESENT AND ALL ZERO — 214 of today's 229 rows ──
                 { "id": 8, "label": "ai_loop pane=10", "iterations": 9, "finished": true,
@@ -11789,12 +11885,27 @@ mod tests {
                 //    exactly this zero on 2026-09-05T15:33:48Z beside a peak of 417,509.
                 { "id": 14, "label": "ai_loop pane=16", "iterations": 9, "finished": true,
                   "context_high_water": 417_509, "context_ceiling": 0, "overridden": [],
+                  "deliveries": { "made": 12, "folded": 6 },
                   "folds_by_reason": { "ordinary": { "delivered": 12, "folded": 6 } } },
                 // ── ⑩ THE CONTROL GROUP THE AXIS IS READ AGAINST: reflected, never on capacity ──
                 //    Its peak is BELOW its ceiling, which is what an unfilled session looks like.
                 { "id": 10, "label": "ai_loop pane=12", "iterations": 9, "finished": true,
                   "context_high_water": 40_000, "context_ceiling": 800_000, "overridden": [],
+                  "deliveries": { "made": 8, "folded": 8 },
                   "folds_by_reason": { "budget": { "delivered": 8, "folded": 8 } } },
+                // ── ⑪ A SPLIT THAT IS NOT *TOTAL* FOR ITS RUN — 15 of today's 21 readable rows ──
+                //    ⛔⛔⛔⛔⛔ Its 60 deliveries are real and only 20 of them are on a road: this
+                //    is a row written before `Occasion::Ordinary` joined the split (item 856 ⑶),
+                //    so its `ordinary` cell is a STRUCTURAL zero rather than a measurement.
+                //    Summed into the road comparison it adds 12 folds to `milestone` and nothing
+                //    whatever to the control road's denominator — which is how a published line
+                //    came to read `ordinary 0 of 141` over a store that had only ever watched 142
+                //    ordinary prompts. It still answers the capacity question, so it is set aside
+                //    from the COMPARISON and not from the report.
+                { "id": 15, "label": "ai_loop pane=17", "iterations": 9, "finished": true,
+                  "context_high_water": 500_000, "context_ceiling": 800_000, "overridden": [],
+                  "deliveries": { "made": 60, "folded": 12 },
+                  "folds_by_reason": { "milestone": { "delivered": 20, "folded": 12 } } },
             ]
         }))
         .expect("the log a predecessor leaves is what this reads");
@@ -11894,9 +12005,19 @@ mod tests {
         // ⚠⚠ AND IT IS A SUPERSET, never a replacement: `folded_by_road` keeps the experiment out
         // and this one lets it in ON PURPOSE, because *which road* does not care whose ceiling it
         // was. Two answers to two questions, and the mouth says which is which.
+        //
+        // ⛔⛔⛔⛔⛔ **BUT ONLY OVER SPLITS THAT ARE TOTAL FOR THEIR RUN, AND RUN 15 IS THE ARM
+        // THAT SAYS SO.** It made 60 deliveries and put 20 on a road, so its `ordinary` cell is a
+        // structural zero; pooled in, `milestone` would read `24 of 40` and the control road would
+        // gain nothing at all. That is not hypothetical — measured over the live store at
+        // 2026-09-05T17:54:36Z, fifteen such rows carried `reflections 44 of 88` beside
+        // `ordinary 0 of 0` into a published line reading `ordinary 0 of 141`, when only 142
+        // ordinary prompts had ever been watched on any build. **The pooling flattered the road
+        // axis**, and item 856 was about to be re-judged on it.
         assert_eq!(
             (
                 folds.readable_runs(),
+                folds.uncomparable,
                 folds
                     .split_everywhere()
                     .into_iter()
@@ -11906,14 +12027,33 @@ mod tests {
             ),
             (
                 12,
+                1,
                 vec![("budget", 8, 8), ("capacity", 11, 51), ("ordinary", 6, 56)],
             ),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the split was built to compare ROADS, and the rate that \
              can only be summed over rows carrying a fullness throws away most of the sample that \
              comparison has. A build that published only the narrow figure answers the road \
              question from two runs while nineteen sit unread. ⚠ And it must be a SUPERSET — the \
-             experiment belongs here and not in the axis's own rate. Report: {:?}",
+             experiment belongs here and not in the axis's own rate. ⛔ AND run 15 must be OUT of \
+             it and COUNTED: a split short of its run's deliveries cannot put one road beside \
+             another, and a build that pools it publishes a control road whose denominator its own \
+             rows never wrote. Report: {:?}",
             folds.split_everywhere(),
+        );
+
+        // ── ②ac AND THE ROW SET ASIDE IS NOT THE ROW THAT MEASURES NOTHING ──
+        //
+        // ⛔⛔ Run 15 carries a fullness, a ceiling in force and an answer to item 859, so it is in
+        // `measured` and in the axis's own rate. What it cannot do is be COMPARED road with road.
+        // A build that dropped it from the report entirely would take a real capacity reading out
+        // of item 856's population to tidy up a different table.
+        assert!(
+            folds.measured.iter().any(|row| row.id == 15),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: a split that is not total for its run still answers \
+             *did a capacity prompt land* — that reads ONE road and needs no denominator beside \
+             it. Setting such a row aside from the axis as well is how this instrument would lose \
+             the 29 landings it exists to announce. Rows: {:?}",
+            folds.measured.iter().map(|row| row.id).collect::<Vec<_>>(),
         );
 
         // ── ②aa AND THE FULLNESS THAT RATE IS SUMMED ACROSS — register item 894 ⑶ / 856 ⒞ ──
@@ -11934,6 +12074,7 @@ mod tests {
         );
 
         // ── ②b THE WALL HAS A SIZE, AND IT IS NOT A THIRD REFUTATION ──
+        //
         assert_eq!(
             (
                 folds.stranded,

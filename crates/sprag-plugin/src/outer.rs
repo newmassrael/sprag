@@ -2448,11 +2448,18 @@ impl Unasked {
 ///
 /// # ⛔⛔⛔⛔⛔ The instrument counted the confirming case and could not count the refuting one
 ///
-/// Item 856 says a composer folds a prompt as a function of **how full the receiving session is**,
-/// and its whole discriminator is the `capacity` reflection — the one moment the loop KNOWS the
-/// session is full, because that is what put it there. The register's own words: *"판별자는
+/// Item 856 USED TO SAY a composer folds a prompt as a function of **the state of the receiving
+/// session**, and its whole discriminator was the `capacity` reflection — the one moment the loop
+/// KNOWS the session is full, because that is what put it there. The register's own words: *"판별자는
 /// `capacity` 반성 하나다"*, and *"반례 하나가 곧 반증"* — one capacity reflection whose prompt
 /// LANDS ends the hypothesis.
+///
+/// ⭐⭐⭐⭐⭐ **THAT AXIS IS DEAD AND THIS SPLIT IS WHAT KILLED IT** (2026-09-05). Reflections were
+/// folded away at 0%, at 53%, at 72% and at 101% of a ceiling, and the ORDINARY turn prompts of
+/// those same runs were not folded once — so fullness orders nothing and the road does. The item's
+/// axis was rewritten to say so. **The instrument is unchanged**: what it was built to separate is
+/// what separated, which is the whole point of building it with a control group. Read the current
+/// rate from `sprag folds` rather than from any sentence, including this one.
 ///
 /// **And nothing could record that reflection.** [`crate::plugin::Deliveries`] counts folds for the
 /// whole run, which cannot be split by anything; the walk names the reason and the fold on one
@@ -2759,6 +2766,28 @@ impl FoldsByReason {
         Occasion::ALL
             .into_iter()
             .map(|occasion| (occasion, self.under(occasion)))
+    }
+
+    /// **EVERY DELIVERY THIS SPLIT ACCOUNTS FOR** — the sum of the `delivered` column, spelled
+    /// here rather than added up at each reader so the rows cannot come to be summed one way in a
+    /// sentence and another way in a gate ([`DeliveredByRoad::total`]'s rule, one table over).
+    ///
+    /// ⚠⚠ **It is the same population as [`crate::plugin::Deliveries::made`], and a live gate says
+    /// so.** That is not a description of this method, it is the invariant that makes the split
+    /// COMPARABLE: every prompt a run delivered is on exactly one road, so a reader may put one
+    /// road's rate beside another's.
+    ///
+    /// ⇒ ⛔⛔⛔⛔⛔ **Which is why a row where this falls SHORT of `made` may not be summed beside
+    /// one where it does not.** Such a row predates a road joining the split — its `ordinary` count
+    /// is a structural zero rather than a measurement — and pooling it adds folds to the roads it
+    /// does write while adding nothing to the denominator of the road it does not.
+    /// `sprag_host::runs::NoFullness::SplitPartial` is that reading, and it exists because a report
+    /// built without it published `ordinary 0 of 141` over a store in which only 142 ordinary
+    /// prompts had ever been watched at all.
+    #[must_use]
+    pub fn delivered(&self) -> u32 {
+        self.rows()
+            .fold(0u32, |sum, (_, row)| sum.saturating_add(row.delivered))
     }
 
     /// Whether anything has been counted at all — a run that has typed nothing, so the split has
@@ -8705,9 +8734,10 @@ impl OuterLoop {
         }
         // ⛔⛔⛔⛔⛔ **AND THE SAME EVENT, SPLIT BY WHY THIS PROMPT WAS BEING ASKED** — register
         // item 856(1). The line above is a TOTAL, and a total is the one shape that cannot refute
-        // anything: item 856's axis says a full session folds, its discriminator is the `capacity`
-        // reflection, and *one capacity reflection whose prompt LANDS* is the register's own stated
-        // refutation. Nothing could record that reflection — see [`FoldsByReason`].
+        // anything: the axis item 856 held then was that a full session folds, its discriminator was
+        // the `capacity` reflection, and *one capacity reflection whose prompt LANDS* was the
+        // register's own stated refutation. Nothing could record that reflection — see
+        // [`FoldsByReason`], whose doc carries how that axis then died on this very split.
         //
         // ⚠⚠⚠⚠⚠ **IN THE SAME ACT AS THE TOTAL, WHICH IS THIS FUNCTION'S WHOLE ARGUMENT.** Its doc
         // says a site that forgot the increment *"does not read as a missing count, it reads as a
@@ -23266,8 +23296,9 @@ mod tests {
     ///
     /// # ⛔⛔⛔⛔⛔ The instrument could count the confirming case and not the refuting one
     ///
-    /// Item 856 says a composer folds a prompt as a function of how full the receiving session is,
-    /// and its discriminator is the `capacity` reflection. It also states its own refutation in one
+    /// Item 856 SAID a composer folds a prompt as a function of the state of the receiving session
+    /// (an axis this split has since killed — see [`super::FoldsByReason`]), and its discriminator
+    /// was the `capacity` reflection. It also stated its own refutation in one
     /// line — ***one reflection whose prompt LANDS*** — and nothing could record that. The total
     /// ([`crate::plugin::Deliveries::folded`]) cannot be split by anything; the walk names the
     /// reason and the fold on one line, but `crate::driver::Progress::journal` is BOUNDED, so a

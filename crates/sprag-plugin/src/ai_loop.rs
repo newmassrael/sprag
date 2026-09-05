@@ -1203,13 +1203,34 @@ fn a_second_fold_with_the_budget_gone(written: u64, attempts: u32) -> String {
 /// it* an instruction nobody can follow: whatever it is shortened to goes in as bytes that have
 /// already been accepted six times.
 ///
-/// # ⚠⚠ What it says instead, and what it deliberately does NOT claim
+/// # ⛔⛔⛔⛔⛔ AND THE AXIS THIS CONSTANT NAMED FOR TWO DAYS WAS KILLED BY THE SPLIT BUILT TO TEST IT
 ///
-/// What MOVES with the fold is how full the receiving session is — `wz` run 187 folded on the very
-/// transition that reached `context_ceiling`, a new pane's first prompt landed 5 times out of 5,
-/// and a reused pane's first prompt folded 1 of 1. **That is a correlation and this sentence says
-/// so.** *Full sessions fold* would be a cause nobody has measured, and this file's neighbour
-/// (register item 830) is what a sentence outrunning its measurement costs.
+/// It used to end on the state of the receiving session, on `wz` run 187 folding at the very
+/// transition that reached `context_ceiling`. Item 856 then built the road split
+/// ([`crate::outer::Occasion`]) to test that clause, and the split answered against it from both
+/// ends:
+///
+/// | fullness of the session | what was sent | folded? |
+/// |---|---|---|
+/// | a brand-new pane, nothing behind it | a run's opening brief | **yes** — and the same bytes went in on the next pane |
+/// | 53% and again 72% of its ceiling | a `budget` reflection | **yes**, both |
+/// | 101% of its ceiling | a `capacity` reflection | **yes** |
+/// | the whole life of those same runs | their ordinary turn prompts | **no, not once** |
+///
+/// ⇒ Nothing about fullness orders those four rows, and the last one settles it: the prompts that
+/// were not folded shared a session, a pane and a composer with the prompts that were. **What
+/// separates them is which road the prompt came down**, which is the split's own axis and the
+/// reason it was built with a control group beside `capacity` rather than as a `capacity` counter.
+///
+/// ⚠ **That is a correlation and this sentence says so.** *Reflections get folded* is not a cause
+/// either: the roads that fold carry the longest text this loop composes, so road and length are
+/// confounded here and nothing tells them apart — the size axis is dead at the three scales above,
+/// which leaves the mechanism unmeasured rather than known. This file's neighbour (register item
+/// 830) is what a sentence outrunning its measurement costs.
+///
+/// ⚠⚠ **It names no rate.** The rate is a fact about a live store, so the constant points at
+/// `sprag folds` instead of pinning a figure — a number copied into a sentence goes stale in
+/// silence, which is exactly what had happened to `2,816` (see below).
 ///
 /// ⚠ It is a CONSTANT rather than a sentence per notice, because the three notices differ in what
 /// the run did and not in what is known about folding. Three copies would drift, and the one that
@@ -1234,8 +1255,51 @@ fn a_second_fold_with_the_budget_gone(written: u64, attempts: u32) -> String {
 pub const THE_AXIS: &str = "What is not known is why: the size of this text is not the discriminator (a 15,669-byte brief \
      was delivered by a peer that then refused 224 bytes twice) and neither are the bytes \
      themselves (the same 224 bytes were taken six times by one session and refused on the \
-     seventh). What MOVES with a fold, measured and not explained, is HOW FULL THE RECEIVING \
-     SESSION IS, so look at what that session had already done rather than at this text";
+     seventh). Neither is the state of the session behind it: prompts have been folded away from a \
+     brand-new pane and from one over its ceiling alike, while the ordinary turn prompts of those \
+     same runs were not folded once. What MOVES with a fold, measured and not explained, is WHICH \
+     PROMPT THIS IS — a reflection gets folded and an ordinary turn prompt does not — and `sprag \
+     folds` prints that rate road by road over every run this machine still holds. So look at what \
+     this loop was doing when it composed the text, not at the text";
+
+/// ⛔⛔⛔⛔⛔ **THE CLAIM [`THE_AXIS`] RETRACTED**, in the spellings this workspace actually shipped
+/// it in — the population of the ratchets that keep it from coming back.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a function in the product and not a list inside one test
+///
+/// The retracted clause was written in FOUR files across TWO crates, and every one of them was
+/// true when it was written. A gate per crate is unavoidable — `include_str!` takes a literal — but
+/// a NEEDLE per crate is not, and two spellings of one fact is the defect this file's own
+/// `THE_AXIS` is `pub` to avoid. One authority, walked by both ratchets, is the same answer one
+/// level down.
+///
+/// # ⛔⛔ ASSEMBLED AT RUN TIME, NEVER SPELLED
+///
+/// A ratchet whose source contains the string it forbids matches itself and is red forever; item
+/// 872 ⑵ walked into that three times in one round while building this same shape. Each part below
+/// is harmless alone and none of them is the sentence.
+///
+/// # ⚠ What it does NOT forbid
+///
+/// *A full session folds* as a NAMED RIVAL — `capacity 5 of 5` is equally the evidence for it and
+/// for *a reflection's prompt folds*, and saying so is the whole argument for why the split has a
+/// control group. Naming a hypothesis is not asserting it, and a ratchet that could not tell those
+/// apart would delete the reasoning that produced the measurement.
+#[must_use]
+pub fn the_axis_this_product_retracted() -> [String; 3] {
+    [
+        // The clause `THE_AXIS` itself carried, and its two neighbours in `outer`.
+        ["how", "full", "the", "receiving", "session", "is"].join(" "),
+        // How `sprag folds`' own verb doc stated the item's axis.
+        [
+            "a", "session", "folds", "because", "of", "how", "full", "it", "is",
+        ]
+        .join(" "),
+        // ⚠ `axis says` and not `a full session folds` alone: the bare phrase is the rival named
+        // above, and forbidding it would forbid the control group's argument for existing.
+        ["axis", "says", "a", "full", "session", "folds"].join(" "),
+    ]
+}
 
 /// **THE SENTENCE A REFUSED QUESTION GETS**, one arm per [`crate::outer::Retyped`].
 ///
@@ -16670,10 +16734,10 @@ mod tests {
                 said.contains(super::THE_AXIS),
                 "⛔⛔⛔⛔⛔ REGISTER ITEM 856's ⑵: the `{shape}` notice does not carry \
                  `THE_AXIS`, so it denies the size axis (or says nothing about it) and names \
-                 nothing a reader can look at instead. What is measured to MOVE with a fold is how \
-                 full the receiving session is — `wz` run 187 folded on the very transition that \
-                 reached `context_ceiling`, a new pane's first prompt landed 5 of 5, a reused \
-                 pane's folded 1 of 1. Got: {said}",
+                 nothing a reader can look at instead. What is measured to MOVE with a fold is \
+                 WHICH ROAD THE PROMPT CAME DOWN — reflections are folded away at every fullness \
+                 that has been measured, from a brand-new pane to one over its ceiling, and the \
+                 ordinary turn prompts of those same runs are not folded at all. Got: {said}",
             );
         }
 
@@ -16685,6 +16749,152 @@ mod tests {
             "⛔⛔ two refusal shapes produced the SAME sentence, so the notice no longer says which \
              road the run took and `THE_AXIS` has swallowed the arm it was appended to",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **NO SENTENCE IN THIS CRATE STILL SAYS A FOLD MOVES WITH HOW FULL THE SESSION IS**
+    /// — register item 856, and the failure this workspace calls rule 10 with a receipt attached.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The clause was TRUE when it was written and nothing could go red when it stopped being
+    ///
+    /// [`super::THE_AXIS`] carried it, and the gate above holds every notice against that constant
+    /// — so the notices agree with it whatever it says. That gate's own doc states the ceiling on
+    /// what it may assert: *it holds that the axis is NAMED, never that it is true*. Correct, and
+    /// the consequence is that **this crate had no way to go red over an axis the product's own
+    /// split had refuted.** It stood false for two days across four files while every gate was
+    /// green, and what found it was a person reading `sprag folds` against the live store.
+    ///
+    /// # ⭐ What killed it, so a reader here need not go to the register
+    ///
+    /// Reflections were folded away at 0%, 53%, 72% and 101% of a ceiling, and the ordinary turn
+    /// prompts of those same runs — same session, same pane, same composer — were not folded once.
+    /// Fullness orders none of that. The road does.
+    ///
+    /// # ⚠⚠ Why the needles come from the PRODUCT and not from this test
+    ///
+    /// The clause was written in two crates, so there are two ratchets;
+    /// [`super::the_axis_this_product_retracted`] is the one list they share, for the same reason
+    /// `THE_AXIS` is one constant rather than three copies. Its parts are assembled at run time, so
+    /// naming the sentence here does not smuggle it back in (item 872 ⑵'s three-times-in-one-round
+    /// lesson).
+    ///
+    /// ⚠ Whitespace is normalised first: `rustfmt` wraps a doc line wherever it likes, so a
+    /// line-by-line reading would let the sentence back in by breaking it across two.
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND SO IS CASE, WHICH THIS GATE LEARNED BY BEING GREEN OVER THE REAL SENTENCE.**
+    /// The first version matched exactly, and the mutation that put the clause back into
+    /// [`super::THE_AXIS`] verbatim **passed**: the constant had shipped that clause shouted in
+    /// capitals while the docs beside it carried it in lower case, and an exact needle can only be
+    /// one of the two. A ratchet over English is a ratchet over spelling, and case is spelling.
+    ///
+    /// ⚠⚠ **AND THE CASE FIX IMMEDIATELY MADE THIS FILE MATCH ITSELF**, which is item 872 ⑵ again
+    /// and is why nothing here — not this doc, not the assertion below — may write the clause out
+    /// even to explain it. An exact-match ratchet tolerates a paraphrase in its own message; a
+    /// case-folding one does not, and a `rustfmt` rewrap would have been enough on its own.
+    #[test]
+    fn no_sentence_here_still_says_a_fold_moves_with_how_full_the_session_is() {
+        // ⚠ BOTH files, because the clause lived in both: the constant here, the split's docs
+        // there. `include_str!` takes a literal, which is why the FILES are named and the NEEDLES
+        // are not.
+        let read = [
+            ("ai_loop.rs", include_str!("ai_loop.rs")),
+            ("outer.rs", include_str!("outer.rs")),
+        ];
+        let retracted = super::the_axis_this_product_retracted();
+
+        // ══ ⛔⛔⛔⛔⛔ THE RETRACTED CLAUSE IS IN NEITHER FILE ══════════════════════════════════
+        let found: Vec<(&str, &String)> = read
+            .iter()
+            .flat_map(|(name, source)| {
+                let flat = source
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_lowercase();
+                retracted
+                    .iter()
+                    .filter(move |clause| flat.contains(&clause.to_lowercase()))
+                    .map(move |clause| (*name, clause))
+            })
+            .collect();
+        assert!(
+            found.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: a sentence here makes the clause printed below, which \
+             this item retracted. This crate's OWN split measured it false — reflections were \
+             folded away at 0%, 53%, 72% and 101% of a ceiling while the ordinary turn prompts of \
+             those same runs were not folded once — and the axis was rewritten to name the ROAD a \
+             prompt came down. If the road axis is ever refuted in turn, rewrite `THE_AXIS` and \
+             `the_axis_this_product_retracted` with it; do not put this one back. Found: {found:?}",
+        );
+
+        // ══ ⛔⛔⛔⛔ AND THE SENTENCE STILL NAMES SOMETHING ═══════════════════════════════════
+        //
+        // ⚠ A ratchet that only FORBIDS is satisfied by a constant that says nothing, which is the
+        // state item 856's ⑵ was opened over: two notices that denied the size axis and named no
+        // replacement, leaving a reader with *the number in front of you means nothing*.
+        for named in [
+            ["WHICH", "PROMPT", "THIS", "IS"].join(" "),
+            ["sprag", "folds"].join(" "),
+            ["measured", "and", "not", "explained"].join(" "),
+        ] {
+            assert!(
+                super::THE_AXIS.contains(&named),
+                "⛔⛔⛔⛔ REGISTER ITEM 856's ⑵: `THE_AXIS` no longer carries {named:?}. A reader \
+                 whose loop just died needs the axis NAMED, the instrument that recomputes it, and \
+                 the ceiling on what is claimed — dropping any of the three leaves the notice \
+                 denying things and offering nothing. Got: {}",
+                super::THE_AXIS,
+            );
+        }
+
+        // ══ ⚠⚠⚠⚠ AND THE NEEDLES MUST STILL BE THAT SENTENCE ═══════════════════════════════════
+        //
+        // A ratchet whose population can be emptied is rule 6's escape hatch wearing a gate's name:
+        // reword one entry to gibberish and every assertion above goes quiet while staying green.
+        // The sentence cannot be SPELLED here to check against — this file is one of the two it
+        // searches — so what is held is its shape: each clause is about a session's fullness, is
+        // long enough to be a claim rather than a word, and no two are the same entry twice.
+        assert_eq!(
+            retracted.len(),
+            3,
+            "⚠⚠⚠ item 856's retracted clause was shipped in three spellings and \
+             `the_axis_this_product_retracted` now offers {}. Shrinking it narrows both ratchets \
+             in silence; a spelling is only retired when the file that carried it is gone.",
+            retracted.len(),
+        );
+        for clause in &retracted {
+            let words: Vec<&str> = clause.split(' ').collect();
+            assert!(
+                words.len() >= 6 && words.contains(&"full") && words.contains(&"session"),
+                "⚠⚠⚠⚠ {clause:?} is not the retracted claim any more — it says nothing about how \
+                 full a session is, or is too short to be a claim. Both ratchets would pass over \
+                 the real sentence without a word.",
+            );
+            assert_eq!(
+                retracted.iter().filter(|other| *other == clause).count(),
+                1,
+                "⚠⚠⚠ {clause:?} is listed twice, so the population is smaller than it counts",
+            );
+        }
+
+        // ══ ⚠⚠⚠ THE CONTROL: the ratchet must be reading the files it thinks it is ═════════════
+        //
+        // A build where `include_str!` resolved elsewhere, or a normalisation that ate the text,
+        // would pass everything above by saying nothing about anything.
+        for (name, marker) in [
+            ("ai_loop.rs", ["pub", "const", "THE_AXIS"].join(" ")),
+            ("outer.rs", ["pub", "struct", "FoldsByReason"].join(" ")),
+        ] {
+            let flat = read
+                .iter()
+                .find(|(named, _)| *named == name)
+                .map(|(_, source)| source.split_whitespace().collect::<Vec<_>>().join(" "))
+                .unwrap_or_default();
+            assert!(
+                flat.contains(&marker),
+                "⚠⚠⚠ the ratchet read something that is not `{name}` — it found no {marker:?} — so \
+                 its silence about the retracted clause means nothing",
+            );
+        }
     }
 
     /// **A RUN THAT FOLDS TWICE HAS ONE ROAD TO `failed`** — the document half of item 762, and
