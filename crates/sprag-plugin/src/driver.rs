@@ -1211,6 +1211,10 @@ pub struct Driver {
     /// ⛔⛔⛔ **AND THE SPLIT OF THE SAME PROMPTS BY WHICH SENTENCE EACH ONE WAS** — register item
     /// 889, held and read exactly as the three above are, and never added to here for their reason.
     said_by_sentence: crate::outer::SaidBySentence,
+    /// ⛔⛔⛔ **AND WHAT THE WIDTH WOULD HAVE WITHHELD FROM THIS RUN'S REFLECTION ANSWERS** —
+    /// register item 866(2), held and read exactly as the four above are, and never added to here
+    /// for their reason: only the thing that read both surfaces saw the difference.
+    width_withheld: crate::outer::WidthWithheld,
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS INDEPENDENT CHECKS CAME TO** — register item 601, held
     /// and read exactly as [`deliveries`](Self::deliveries) is, and never added to here.
     checks: Checks,
@@ -1446,6 +1450,19 @@ pub struct Progress {
     ///
     /// ⚠⚠ AND [`None`] ON [`deliveries`](Self::deliveries)'S TERMS — register item 891.
     pub said_by_sentence: Option<crate::outer::SaidBySentence>,
+    /// ⛔⛔⛔⛔⛔ **AND WHAT THE PANE'S WIDTH WOULD HAVE WITHHELD FROM THIS RUN'S REFLECTION
+    /// ANSWERS** — [`Plugin::width_withheld`], register item 866(2).
+    ///
+    /// Item 866's ⑴ made reflection answers arrive whole. This is the SIZE of the loss that no
+    /// longer happens, published so the fix has a number and its regression has an alarm: a build
+    /// that went back to the rendered row publishes answers whose whole line IS the row, and
+    /// `wider` collapses to zero on a loop whose agent writes hundreds of cells.
+    ///
+    /// ⚠ [`crate::outer::WidthWithheld::NONE`] for a plugin that does not reflect — `0 of 0`,
+    /// which is a population and not *nothing was withheld*.
+    ///
+    /// ⚠⚠ AND [`None`] ON [`deliveries`](Self::deliveries)'S TERMS — register item 891.
+    pub width_withheld: Option<crate::outer::WidthWithheld>,
     /// ⚠⚠⚠⚠⚠ **WHICH PANE THIS RUN IS DRIVING RIGHT NOW** — [`Plugin::driving`], register item 540.
     ///
     /// # The fact that was published only as prose inside a name
@@ -1615,6 +1632,7 @@ impl Driver {
             folds_by_reason: crate::outer::FoldsByReason::NONE,
             delivered_by_road: crate::outer::DeliveredByRoad::NONE,
             said_by_sentence: crate::outer::SaidBySentence::NONE,
+            width_withheld: crate::outer::WidthWithheld::NONE,
             checks: Checks::NONE,
             banked: None,
             briefed: None,
@@ -1693,6 +1711,7 @@ impl Driver {
             folds_by_reason: Some(self.folds_by_reason),
             delivered_by_road: Some(self.delivered_by_road),
             said_by_sentence: Some(self.said_by_sentence),
+            width_withheld: Some(self.width_withheld),
             checks: self.checks.clone(),
             banked: self.banked.clone(),
             briefed: self.briefed,
@@ -2055,6 +2074,11 @@ impl Driver {
                     // holds them equal — two of them read a step apart would fail that gate over a
                     // run in which nothing was wrong.
                     self.said_by_sentence = plugin.said_by_sentence();
+                    // ⛔⛔⛔ AND WHAT THE WIDTH WOULD HAVE WITHHELD — register item 866(2), read in
+                    // the same breath as the four above for their reason: this table's denominator
+                    // is answers ADOPTED, and a numerator taken a step later would be counted
+                    // against a population from a different moment of the run.
+                    self.width_withheld = plugin.width_withheld();
                     // ⚠⚠⚠ AND WHAT ITS CHECKS CAME TO — register item 601, in the same breath as
                     // the two above for the same reason: three totals read at three moments are
                     // three facts about three moments, and a reader weighing a `converged` needs

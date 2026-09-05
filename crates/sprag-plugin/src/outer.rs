@@ -2572,6 +2572,92 @@ impl Occasion {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT THE WIDTH WOULD HAVE WITHHELD FROM THIS RUN'S REFLECTION ANSWERS** — register
+/// item 866's done-when ⑵, the runtime channel beside the counter the item told this to sit next
+/// to.
+///
+/// # ⛔⛔⛔⛔⛔ Why a SIZE and never a flag saying *this was truncated*
+///
+/// Item 866's ⑴ is paid: `OuterLoop::proposed` — SPELLED, not linked: it is private and this type
+/// is public, so a link is `private_intra_doc_links` under `-D warnings` (register item 365) —
+/// reads CONTENT off the logical lines, so a
+/// reflection answer no longer arrives cut. A channel that announced *truncated* would therefore be
+/// a word that can never be said — a value with no reachable state, which is this workspace's rule
+/// 5 — and the round that stopped short of ⑵ said exactly that: *온전히 도착한 값에 대해 아무것도
+/// 알리지 않으면서 결함으로 돌아가는 길만 열어 두게 된다.*
+///
+/// ⇒ So what is published is the SIZE OF THE LOSS THAT DID NOT HAPPEN: for each answer adopted,
+/// how many cells the first rendered row held and how many the whole line did. The difference is
+/// **exactly what the old read threw away** — the 762 → 161 the item measured on another
+/// repository's run 181 — and it is a number about a value that arrived WHOLE.
+///
+/// ⚠⚠ **AND THAT MAKES IT THE ALARM RATHER THAN A RECEIPT.** A build that went back to reading the
+/// row would publish answers whose whole line IS the row: `wider` collapses to zero on a loop whose
+/// agent writes hundreds of cells, and the row a person reads says so. A flag saying *not
+/// truncated* would have printed the same thing before and after the defect.
+///
+/// ⚠ Measured in CELLS through [`sprag_vt::char_columns`], the workspace's one width authority —
+/// item 866's own reading had to be redone in cells, because a char bound would have predicted
+/// `131 == 92` and a byte bound `161 == 201` and neither held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WidthWithheld {
+    /// How many reflection answers this run has ADOPTED — the denominator, without which `wider`
+    /// is a count nobody can place.
+    ///
+    /// ⚠ Counted per ANSWER and not per reflection: a reflection reads two markers and each is its
+    /// own answer with its own width.
+    pub adopted: u64,
+    /// How many of those ran past the first rendered row — the answers the old read would have cut.
+    pub wider: u64,
+    /// The total cells a width-read would have withheld, summed over `wider`.
+    ///
+    /// ⚠ A SUM and not a maximum: item 866's cost is *every reflection, all run long*, and a
+    /// maximum would report one reflection's loss for a run that made eleven.
+    pub withheld: u64,
+}
+
+impl WidthWithheld {
+    /// **NOTHING ADOPTED YET** — which is what a run that has not reflected has honestly counted.
+    pub const NONE: Self = Self {
+        adopted: 0,
+        wider: 0,
+        withheld: 0,
+    };
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS RUN ADOPTED NO ANSWER AT ALL** — the population question, and the
+    /// one thing `0` may mean here.
+    ///
+    /// ⚠⚠ **IT IS `adopted`, NEVER `wider`.** A run whose every answer fitted on one row has
+    /// `wider == 0` and that is a **measurement** — it is precisely what a build that went back to
+    /// reading the rendered row would publish on every run it ever drove. Calling it empty would
+    /// hide the alarm this type exists to be, and would be this workspace's rule 6 broken by the
+    /// predicate rather than by the gate.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.adopted == 0
+    }
+
+    /// **RECORD ONE ADOPTED ANSWER**, given the row that proved it arrived and the whole line.
+    ///
+    /// ⚠⚠ BOTH SURFACES ARE PASSED, never re-derived here from a width: this type holds no model
+    /// of how wide a pane is, because the caller has both readings in hand and a second width model
+    /// would be a second answer to *how wide is this* — the shape `confirmable` (private, and so
+    /// SPELLED rather than linked — register item 365) is careful about one screen over.
+    ///
+    /// ⚠ A line SHORTER than its row is not negative and not an error: `saturating_sub` reports
+    /// zero withheld, which is the truth for an answer the width did not reach the end of.
+    pub fn record(&mut self, row: &str, line: &str) {
+        let cells = |text: &str| text.chars().map(sprag_vt::char_columns).sum::<usize>() as u64;
+        let (row, line) = (cells(row), cells(line));
+        self.adopted += 1;
+        let withheld = line.saturating_sub(row);
+        if withheld > 0 {
+            self.wider += 1;
+            self.withheld += withheld;
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FoldsByReason {
     /// One row per [`Occasion::ALL`], in that array's order.
@@ -6349,6 +6435,17 @@ pub struct OuterLoop {
     /// over one event, incremented at two sites, is exactly the drift both their docs argue
     /// against.
     folds: FoldsByReason,
+    /// ⛔⛔⛔⛔⛔ **AND WHAT THE WIDTH WOULD HAVE WITHHELD FROM THIS RUN'S REFLECTION ANSWERS** —
+    /// register item 866's done-when ⑵, answered through
+    /// [`Plugin::width_withheld`](crate::Plugin).
+    ///
+    /// Item 866's ⑴ made the answers arrive whole. Nothing said how much that was WORTH on any
+    /// given run, so a build that quietly went back to the rendered row would look exactly like
+    /// this one from every mouth a person reads. See [`WidthWithheld`].
+    ///
+    /// ⚠ Written at the ONE place both surfaces are in hand ([`Self::proposed`]), for the reason
+    /// its neighbours are: a second increment site is two counters over one event.
+    withheld: WidthWithheld,
     /// ⛔⛔⛔⛔⛔ **AND THE SAME DELIVERIES, SPLIT BY WHAT PROVED EACH ONE** — register item 856,
     /// answered through [`Plugin::delivered_by_road`](crate::Plugin).
     ///
@@ -6607,6 +6704,7 @@ impl OuterLoop {
             told: Told::default(),
             deliveries: crate::plugin::Deliveries::NONE,
             folds: FoldsByReason::NONE,
+            withheld: WidthWithheld::NONE,
             roads: DeliveredByRoad::NONE,
             said: SaidBySentence::NONE,
             checks: crate::plugin::Checks::NONE,
@@ -8454,6 +8552,17 @@ impl OuterLoop {
     #[must_use]
     pub const fn folds_by_reason(&self) -> FoldsByReason {
         self.folds
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT THE WIDTH WOULD HAVE WITHHELD FROM THIS RUN'S REFLECTION ANSWERS** —
+    /// register item 866's done-when ⑵, and what [`crate::Plugin::width_withheld`] answers for an
+    /// `ai_loop` run.
+    ///
+    /// ⚠ A LEVEL rather than an event, on [`Self::folds_by_reason`]'s reason exactly: the journal
+    /// is bounded, so a long run has already dropped the reflections whose answers were widest.
+    #[must_use]
+    pub const fn width_withheld(&self) -> WidthWithheld {
+        self.withheld
     }
 
     /// ⛔⛔⛔⛔⛔ **AND EVERY DELIVERY, SPLIT BY WHAT PROVED IT** — register item 856, and what
@@ -11471,7 +11580,7 @@ impl OuterLoop {
     /// * ⚠ **IT IS THE ARGUMENT [`Self::pump`]'s ACCOUNT READER ALREADY MAKES**, and it was made
     ///   there first: *the echo is whatever was actually typed, which the session recorded as it
     ///   went in*. Two readers of one run's own echo, and only one of them had been fixed.
-    fn proposed(&self, panes: &dyn PaneAccess, marker: &str) -> Option<String> {
+    fn proposed(&mut self, panes: &dyn PaneAccess, marker: &str) -> Option<String> {
         let label = self.text_of(marker)?;
         let asked = &self.driving.asked;
         if label.trim().is_empty() {
@@ -11499,22 +11608,30 @@ impl OuterLoop {
         // * a LOGICAL LINE is what says what the answer WAS. Reading rows alone is item 866.
         //
         // ⚠ Both keep `rfind` and the echo discount, for the reasons above.
+        // ⚠ THE WIDEST FRESH ROW THAT MATCHED, kept rather than discarded — it is the width's whole
+        // answer for this label, and the ONLY thing that can price what reading rows would cost.
+        // Taking the widest is the reading most favourable to the old code: any narrower row would
+        // report a bigger loss, so a build that read rows cannot be flattered by this number.
         let arrived = self
             .driving
             .judged
             .fresh(panes, self.driving.pane)
             .iter()
             .filter_map(|row| opens_with(row, &label))
-            .any(|said| !said.is_empty() && !echoes(asked, &label, &said));
-        if !arrived {
-            return None;
-        }
-        panes
+            .filter(|said| !said.is_empty() && !echoes(asked, &label, said))
+            .max_by_key(|said| said.chars().map(sprag_vt::char_columns).sum::<usize>())?;
+        let said = panes
             .pane_full_lines(self.driving.pane)
             .unwrap_or_default()
             .iter()
             .filter_map(|line| opens_with(line, &label))
-            .rfind(|said| !said.is_empty() && !echoes(asked, &label, said))
+            .rfind(|said| !said.is_empty() && !echoes(asked, &label, said))?;
+        // ⛔⛔⛔⛔⛔ **AND WHAT THE WIDTH WOULD HAVE WITHHELD IS RECORDED HERE** — register item
+        // 866's ⑵, at the one moment both surfaces are in hand. A tally taken anywhere else would
+        // have to re-derive one of them, and a second reading of *how wide is this answer* is the
+        // defect this whole function exists to have ended. See [`WidthWithheld`].
+        self.withheld.record(&arrived, &said);
+        Some(said)
     }
 
     /// **CLOSE THE INNER SESSION AND OPEN A FRESH ONE** — `restarting`'s effect.

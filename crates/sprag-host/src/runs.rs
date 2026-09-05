@@ -2640,6 +2640,25 @@ pub struct PersistedRun {
     /// items 606, 616, 762, 856(1) and 856 each made.
     #[serde(default)]
     pub said_by_sentence: Option<PersistedSaidBySentence>,
+    /// ⛔⛔⛔⛔⛔ **WHAT THE PANE'S WIDTH WOULD HAVE WITHHELD FROM THIS RUN'S REFLECTION ANSWERS** —
+    /// register item 866(2). See [`PersistedWidthWithheld`].
+    ///
+    /// ⚠⚠ **IT IS STORED BECAUSE A LIVE ROW IS NOT A READING** — register item 859, measured on
+    /// this store: a value with no column here answers `null` for ever no matter what the running
+    /// row said, and item 606 measured that every run anybody reads has been through a restore. A
+    /// tally of what the width would have taken is only worth anything read ACROSS runs, so a
+    /// column that stopped at the daemon boundary would be the instrument item 866 already has —
+    /// none.
+    ///
+    /// [`None`] for a log written before this field existed, and it must NOT read as *this run's
+    /// answers all fitted on one row*: that is the reading a build which went back to the rendered
+    /// row would produce, and it is the exact fact this column exists to tell apart from an absent
+    /// one.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move — [`build`](Self::build)'s argument, and the same call
+    /// items 606, 616, 762, 856(1), 856 and 889 each made.
+    #[serde(default)]
+    pub width_withheld: Option<PersistedWidthWithheld>,
     /// ⚠⚠⚠⚠⚠ **HOW MUCH OF ITS WORK WAS COMPLETE AND KEPT** — register item 616, the residue item
     /// 604 left. See [`PersistedBanked`] for why this crosses a restart where
     /// [`at`](Self::at) may not.
@@ -2806,15 +2825,18 @@ pub enum Tally {
     DeliveredByRoad,
     /// [`PersistedRun::said_by_sentence`].
     SaidBySentence,
+    /// [`PersistedRun::width_withheld`].
+    WidthWithheld,
 }
 
 impl Tally {
     /// Every counter, in the order [`PersistedRun`] declares them.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Deliveries,
         Self::FoldsByReason,
         Self::DeliveredByRoad,
         Self::SaidBySentence,
+        Self::WidthWithheld,
     ];
 
     /// **THE KEY IT IS STORED UNDER** — the serde field name, so a reader of the file and a reader
@@ -2826,6 +2848,7 @@ impl Tally {
             Self::FoldsByReason => "folds_by_reason",
             Self::DeliveredByRoad => "delivered_by_road",
             Self::SaidBySentence => "said_by_sentence",
+            Self::WidthWithheld => "width_withheld",
         }
     }
 }
@@ -3177,6 +3200,42 @@ pub struct PersistedSaidBySentence {
     pub of: std::collections::BTreeMap<String, PersistedSaidUnder>,
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT THE WIDTH WOULD HAVE WITHHELD, AS THE LOG CARRIES IT** — register item 866(2),
+/// [`sprag_plugin::WidthWithheld`] in stored form.
+///
+/// ⚠ THREE COUNTS AND NEVER ONE, this type's whole shape: `wider` without `adopted` is a numerator
+/// over a population nobody stored, and `withheld` without either is a size nobody can place. A
+/// reader restoring half of it would be publishing a rate this run never reported.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedWidthWithheld {
+    /// [`sprag_plugin::WidthWithheld::adopted`] — the denominator.
+    pub adopted: u64,
+    /// [`sprag_plugin::WidthWithheld::wider`] — how many ran past the first rendered row.
+    pub wider: u64,
+    /// [`sprag_plugin::WidthWithheld::withheld`] — the cells a width-read would have thrown away.
+    pub withheld: u64,
+}
+
+impl From<sprag_plugin::WidthWithheld> for PersistedWidthWithheld {
+    fn from(withheld: sprag_plugin::WidthWithheld) -> Self {
+        Self {
+            adopted: withheld.adopted,
+            wider: withheld.wider,
+            withheld: withheld.withheld,
+        }
+    }
+}
+
+impl From<PersistedWidthWithheld> for sprag_plugin::WidthWithheld {
+    fn from(withheld: PersistedWidthWithheld) -> Self {
+        Self {
+            adopted: withheld.adopted,
+            wider: withheld.wider,
+            withheld: withheld.withheld,
+        }
+    }
+}
+
 /// One row of [`PersistedSaidBySentence`] — [`sprag_plugin::SaidUnder`] as the log carries it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PersistedSaidUnder {
@@ -3367,6 +3426,12 @@ impl PersistedRun {
                 .said_by_sentence
                 .clone()
                 .map(|it| sprag_plugin::SaidBySentence::from(it).is_empty()),
+            // ⚠⚠ EMPTY IS *ADOPTED NOTHING*, never *nothing was withheld* — see
+            // `sprag_plugin::WidthWithheld::is_empty`. A run whose answers all fitted on one row
+            // is COUNTED, because that reading is the alarm.
+            Tally::WidthWithheld => self
+                .width_withheld
+                .map(|it| sprag_plugin::WidthWithheld::from(it).is_empty()),
         };
         match empty {
             None => Sampled::Unsaid,
@@ -4487,6 +4552,15 @@ impl RunRegistry {
                             reported.said_by_sentence,
                             run.progress.said_by_sentence,
                         ),
+                        // ⛔⛔⛔⛔⛔ AND WHAT THE WIDTH WOULD HAVE WITHHELD — register item 866(2),
+                        // written the way the four above are and for their reasons, with one of
+                        // its own: this number is only worth anything read ACROSS runs, because a
+                        // single run whose answers were short is not evidence of anything and a
+                        // hundred of them is the alarm that a build stopped reading logical lines.
+                        width_withheld: counted(
+                            reported.width_withheld,
+                            run.progress.width_withheld,
+                        ),
                         // ⚠⚠⚠⚠⚠ AND HOW MUCH OF THE WORK IS KEPT — register item 616. `None` here
                         // is the PLUGIN's own answer (*I count no completed work*) rather than
                         // this daemon's silence, which is why it is mapped through rather than
@@ -4853,6 +4927,18 @@ impl RunRegistry {
                     // all (`is_empty`) rather than *every prompt of this run was asked*.
                     // ⛔⛔⛔ AND ITS ABSENCE IS KEPT ON `deliveries`' TERMS — register item 891.
                     said_by_sentence: saved.said_by_sentence.clone().map(Into::into),
+                    // ⛔⛔⛔⛔⛔ AND WHAT THE WIDTH WOULD HAVE WITHHELD IS RESTORED WITH THEM —
+                    // register item 866(2), on the four arguments above and for the sharpest
+                    // instance of them: this tally answers *is this build still reading logical
+                    // lines*, and that question is only asked of runs that have ENDED — every one
+                    // of which has been through a restore (item 606). A column that stopped at the
+                    // daemon boundary would answer it for no run at all.
+                    //
+                    // ⚠ An older log reads as `None`, which claims nothing — and specifically
+                    // does NOT claim *this run's answers all fitted on one row*, which is the
+                    // reading a regressed build would produce.
+                    // ⛔⛔⛔ AND ITS ABSENCE IS KEPT ON `deliveries`' TERMS — register item 891.
+                    width_withheld: saved.width_withheld.map(Into::into),
                     // ⚠ NOR WHAT ITS CHECKS CAME TO — register item 601, on the same argument.
                     checks: sprag_plugin::Checks::NONE,
                     // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS KEPT **IS** RESTORED — register item 616,
@@ -7031,14 +7117,18 @@ mod tests {
         // 891's gate above uses: take the population from the record's own structure, because a
         // hand list is what goes stale.
         //
-        // ⚠ THE ROW HAS TO HOLD ALL FOUR, or the difference below finds only the one this
+        // ⚠ THE ROW HAS TO HOLD EVERY ONE OF THEM, or the difference below finds only the one this
         // fixture bothered to fill and the gate passes while claiming a population of one. The
         // first draft did exactly that and said so: `left: ["deliveries"]`.
+        // ⚠⚠ AND IT IS WRITTEN AS A COUNT NOBODY TYPES — the list used to say *all four* in prose
+        // and the fifth column (item 866(2)) arrived the day after the fourth, exactly as the
+        // refusal below predicts. The arms are enumerated; the number is not.
         let holding = {
             let mut row = stored(Some(sprag_plugin::Deliveries::NONE));
             row.folds_by_reason = Some(sprag_plugin::FoldsByReason::NONE.into());
             row.delivered_by_road = Some(sprag_plugin::DeliveredByRoad::NONE.into());
             row.said_by_sentence = Some(sprag_plugin::SaidBySentence::NONE.into());
+            row.width_withheld = Some(sprag_plugin::WidthWithheld::NONE.into());
             row
         };
         let full = serde_json::to_value(holding.clone()).expect("a record serialises");
@@ -7048,6 +7138,7 @@ mod tests {
             row.folds_by_reason = None;
             row.delivered_by_road = None;
             row.said_by_sentence = None;
+            row.width_withheld = None;
             serde_json::to_value(row).expect("and so does the cleared one")
         };
         let mut columns: Vec<&str> = full
@@ -8100,6 +8191,7 @@ mod tests {
                 folds_by_reason: None,
                 delivered_by_road: None,
                 said_by_sentence: None,
+                width_withheld: None,
                 // ⚠ `None` is what an OLDER LOG reads as, which is what these fixtures are about.
                 banked: None,
                 briefed: None,
@@ -8356,6 +8448,7 @@ mod tests {
             folds_by_reason: None,
             delivered_by_road: None,
             said_by_sentence: None,
+            width_withheld: None,
             // ⚠ `None` is what an OLDER LOG reads as, which is what this fixture is about.
             banked: None,
             briefed: None,
@@ -8477,6 +8570,7 @@ mod tests {
             folds_by_reason: None,
             delivered_by_road: None,
             said_by_sentence: None,
+            width_withheld: None,
             banked: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -8588,6 +8682,7 @@ mod tests {
             folds_by_reason: None,
             delivered_by_road: None,
             said_by_sentence: None,
+            width_withheld: None,
             banked: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -9043,6 +9138,7 @@ mod tests {
                 folds_by_reason: None,
                 delivered_by_road: None,
                 said_by_sentence: None,
+                width_withheld: None,
                 // ⚠ Nor how much it banked — item 616's field, absent for that field's reason.
                 banked: None,
                 briefed: None,

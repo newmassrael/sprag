@@ -1372,6 +1372,12 @@ impl Plugin for AiLoop {
         self.inner.folds_by_reason()
     }
 
+    /// ⚠ DELEGATED for `deliveries`' reason — register item 866(2). The reading is taken where both
+    /// surfaces are in hand, and a tally at this layer would have to re-derive one of them.
+    fn width_withheld(&self) -> crate::outer::WidthWithheld {
+        self.inner.width_withheld()
+    }
+
     /// ⚠ DELEGATED for `deliveries`' reason — register item 856. The same event split a third way,
     /// recorded in the one act that witnessed it, so a tally at this layer could disagree with the
     /// total it is a split of.
@@ -9011,6 +9017,166 @@ mod tests {
              cell(s)",
             NEXT.len(),
             READ_NEXT.len(),
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE RUN SAYS WHAT THE WIDTH WOULD HAVE WITHHELD FROM THOSE ANSWERS** —
+    /// register item 866's done-when ⑵, the runtime channel its ⑴ left owed.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the number is a loss that did not happen, and why that is the only shape
+    ///
+    /// The round that paid ⑴ stopped short of ⑵ and wrote down why: after ⑴ *마일스톤·캐리가 «안»
+    /// 잘리므로, 그 메시지는 온전히 도착한 값에 대해 아무것도 알리지 않는다*. That objection is
+    /// correct about the message it was considering — a flag saying *this was truncated* has **no
+    /// reachable state** once the content read is on the logical lines, which is this workspace's
+    /// rule 5 and would be a counter that can only ever be zero.
+    ///
+    /// ⇒ So what is published is the SIZE of what the width would have withheld. It is reachable
+    /// (this fixture makes it non-zero at an ordinary 80 columns), it is about a value that
+    /// arrived WHOLE, and — the whole point — **a build that went back to reading the rendered row
+    /// would report zero here on every run it ever drove**, because there the adopted line IS the
+    /// row. The fix has a number and its regression has an alarm.
+    ///
+    /// # ⚠⚠ The same fixture as ⑴, deliberately
+    ///
+    /// [`a_reflection_longer_than_the_pane_is_wide_crosses_whole`] stages exactly the hazard this
+    /// measures: ordinary width, long answers. Staging a second one would be a second opinion about
+    /// what *wider than a row* means — and item 866's own trap is ⛔ *폭을 넓혀 초록으로 만들지
+    /// 마라*, so the variable moved here is the answer and never the pane.
+    #[test]
+    fn a_run_says_how_much_of_its_reflection_answers_the_width_would_have_withheld() {
+        /// ⚠ NO APOSTROPHE — the fixture interpolates this into a single-quoted `sh` script, which
+        /// is the death `a_reflection_longer_than_the_pane_is_wide_crosses_whole` records.
+        const NEXT: &str = "pay the third open item, and do it in this order: re-measure the \
+                            numbers in the register first, then build the gate, then mutate it, \
+                            because a gate nobody has seen go red is only prose";
+        const READ_NEXT: &str = "the register entry for it, and the two commands in its measured \
+                                 section, because the second one is the only place the denominator \
+                                 is written down and the first disagrees with it";
+
+        // ⚠ THE PREMISE for everything below: both answers must be WIDER than this fixture's 80
+        // columns, or a build that read the rendered row would report the same numbers and this
+        // gate would be measuring nothing. Stated as an assertion rather than trusted, because it
+        // is the one property of the constants the whole test rests on.
+        assert!(
+            NEXT.is_ascii() && READ_NEXT.is_ascii() && NEXT.len() > 80 && READ_NEXT.len() > 80,
+            "⚠ THE PREMISE: cells and chars agree only while these are ASCII, and each answer has \
+             to run past 80 columns — got {} and {} cell(s)",
+            NEXT.len(),
+            READ_NEXT.len(),
+        );
+
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(1, NEXT, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+
+        // ⚠⚠ NOTHING ADOPTED YET IS `0 of 0`, and it is asserted BEFORE the run — a table that
+        // started full would make every arm below unreadable, and `is_empty` is what the row's own
+        // predicate keys on.
+        assert!(
+            loops.width_withheld().is_empty() && loops.width_withheld().adopted == 0,
+            "⚠ THE PREMISE: a loop that has read no answer has adopted none. Got {:?}",
+            loops.width_withheld(),
+        );
+
+        let run = RunContext::uncancellable();
+        let mut replaced = None;
+        let mut steps = 0;
+        while replaced.is_none() && steps < 60 {
+            steps += 1;
+            let before = loops.state();
+            loops
+                .step(&access, &run)
+                .expect("every step of a reached milestone must be readable");
+            if loops.state() == AiLoopState::Priming && before == AiLoopState::Resuming {
+                replaced = Some(());
+            }
+            if matches!(
+                loops.state(),
+                AiLoopState::Converged
+                    | AiLoopState::Exhausted
+                    | AiLoopState::Failed
+                    | AiLoopState::Cancelled
+                    | AiLoopState::Blocked
+            ) {
+                break;
+            }
+        }
+        let withheld = loops.width_withheld();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        assert!(
+            replaced.is_some(),
+            "⚠ THE PREMISE: the run has to reach a replacement, or no answer was ever adopted",
+        );
+
+        // ── ① THE DENOMINATOR: both answers were adopted ──────────────────────────────────────
+        assert_eq!(
+            withheld.adopted, 2,
+            "⛔ REGISTER ITEM 866(2): a reflection reads TWO markers and each is its own answer \
+             with its own width, so a run that reached a replacement has adopted two. A count of \
+             one means the tally is taken per reflection rather than per answer, and the milestone \
+             and the carry are exactly the pair item 866 measured losing different amounts of \
+             (161 of 762 against 160 of 1966). Got {withheld:?}",
+        );
+
+        // ── ② THE NUMERATOR: both ran past the first rendered row ─────────────────────────────
+        assert_eq!(
+            withheld.wider, 2,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 866(2): each answer is over 140 cells on an 80-column pane, \
+             so each one runs past the first rendered row and the width would have cut both. A \
+             zero here on THIS fixture is the reading a build that went back to the row would \
+             publish, which is the one thing this tally exists to make loud. Got {withheld:?}",
+        );
+
+        // ── ③ AND THE SIZE IS WHAT THE ROW WOULD HAVE THROWN AWAY ─────────────────────────────
+        //
+        // ⚠⚠ ASSERTED AS A RANGE DERIVED FROM THE CONSTANTS, never as a literal: what a row holds
+        // depends on the peer's own indentation, which is the stand-in's business and not this
+        // gate's. What IS this gate's is that the loss is the part past one row — so it is at
+        // least each answer's length minus a whole 80-column row, and at most the whole of both.
+        let both = (NEXT.len() + READ_NEXT.len()) as u64;
+        let least = both - 2 * 80;
+        assert!(
+            (least..=both).contains(&withheld.withheld),
+            "⛔⛔⛔⛔ REGISTER ITEM 866(2): the cells withheld must be the part of the two answers \
+             that ran past one 80-column row — between {least} and {both} for these constants. A \
+             number outside that is a tally measuring something other than the two surfaces \
+             `proposed` actually read. Got {withheld:?}",
+        );
+
+        // ── ④ AND *EMPTY* MEANS ADOPTED NOTHING, NEVER *NOTHING WAS WITHHELD* ────────────────
+        //
+        // ⛔⛔⛔⛔⛔ This is the arm that decides whether the alarm can be read at all. Item 895's
+        // population predicate (`PersistedRun::sampled`) asks this table `is_empty`, and a run it
+        // calls empty is `Zeroed` — OUT of every rate taken over the store. So a build that keyed
+        // this on `wider` would drop from the population exactly the runs whose answers all fitted
+        // on one row, which is **the entire population a regressed build produces**: the tally
+        // would go quiet at the moment it had something to say.
+        //
+        // ⚠ Constructed rather than driven, deliberately: the state under test is a run whose
+        // answers were SHORT, and staging that would need a second fixture whose only difference
+        // from this one is the length of a constant — which is the same axis, measured twice.
+        let fitted = crate::outer::WidthWithheld {
+            adopted: 11,
+            wider: 0,
+            withheld: 0,
+        };
+        assert!(
+            !fitted.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 866(2) and item 895: a run that adopted eleven answers and \
+             found none of them wider than a row has COUNTED something — that reading is what a \
+             build which went back to the rendered row publishes on every run it drives. Calling \
+             it empty puts it outside every population and takes the alarm out of reach. Got \
+             {fitted:?}",
+        );
+        assert!(
+            crate::outer::WidthWithheld::NONE.is_empty(),
+            "⚠⚠ AND THE CONTROL: a run that adopted NOTHING is the one thing empty may mean, or \
+             the predicate has no zero at all and item 895's three answers collapse to two",
         );
     }
 

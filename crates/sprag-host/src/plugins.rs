@@ -715,6 +715,31 @@ pub const RUN_DELIVERED_BY_ROAD_KEY: &str = "delivered_by_road";
 /// ADDED KEY on an answer, which this surface's pin does not number — an older daemon omits it and
 /// the reader answers [`None`] rather than filling in a table nobody reported.
 pub const RUN_SAID_BY_SENTENCE_KEY: &str = "said_by_sentence";
+/// ⛔⛔⛔⛔⛔ The answer key carrying **WHAT THE PANE'S WIDTH WOULD HAVE WITHHELD FROM THIS RUN'S
+/// REFLECTION ANSWERS** — register item 866's done-when ⑵.
+///
+/// # ⛔⛔⛔⛔⛔ Why a run publishes a loss that did not happen
+///
+/// Item 866 measured a reflection answer arriving cut at the first rendered row: 762 cells written
+/// and 161 delivered, every reflection, while `ReflectApplied` published success. Its ⑴ moved the
+/// content read onto the logical lines and the answers now arrive whole — and **that made the
+/// defect and its repair indistinguishable from every mouth a person reads**, because a build that
+/// went back to the row would publish exactly what this one does unless the answer happened to be
+/// long enough to notice.
+///
+/// ⇒ So the run publishes the SIZE of what the width would have withheld. On a loop whose agent
+/// writes hundreds of cells the number is large and grows; a build that read the row would report
+/// answers whose whole line IS the row, and `wider` would sit at zero over a long run. **The
+/// regression has an alarm and the fix has a number**, which is what ⑵ asked for and what a flag
+/// saying *not truncated* could not have given: that word has no reachable state after ⑴, which is
+/// this workspace's rule 5.
+///
+/// ⚠ An OBJECT of three counts and never one number: `wider` without `adopted` is a numerator with
+/// no population, and `withheld` without either is a size nobody can place.
+///
+/// ⚠ An ADDED KEY on an answer, which this surface's pin does not number — an older daemon omits
+/// it and the reader answers [`None`] rather than filling in a tally nobody reported.
+pub const RUN_WIDTH_WITHHELD_KEY: &str = "width_withheld";
 /// The answer key carrying **HOW MANY OF A RUN'S PROMPTS ARE SITTING IN A COMPOSER, TYPED AND NEVER
 /// ASKED** — register item 617, present beside [`RUN_DELIVERED_KEY`] and never alone.
 ///
@@ -5963,6 +5988,10 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         // walks `Sentence::ALL`, so a twelfth sentence arrives with a row rather than being left
         // out of a hand-written list and pooled into a rate nobody split.
         RUN_SAID_BY_SENTENCE_KEY: progress.said_by_sentence.map(said_by_sentence_json),
+        // ⛔⛔⛔⛔⛔ AND WHAT THE WIDTH WOULD HAVE WITHHELD FROM ITS REFLECTION ANSWERS — register
+        // item 866(2), and the only key here from which *this build still reads the logical line*
+        // can be read. See [`RUN_WIDTH_WITHHELD_KEY`] for why a size and not a flag.
+        RUN_WIDTH_WITHHELD_KEY: progress.width_withheld.map(width_withheld_json),
         RUN_CHECKS_KEY: {
             "asked": progress.checks.asked,
             "silent": progress.checks.silent,
@@ -6091,6 +6120,11 @@ pub struct ReportedProgress {
     /// [`RUN_SAID_BY_SENTENCE_KEY`], never for one that has said nothing: that run reports every
     /// sentence at `0 of 0`, which is a population and not a silence.
     pub said_by_sentence: Option<sprag_plugin::SaidBySentence>,
+    /// ⛔⛔⛔⛔⛔ What the pane's width would have withheld from its reflection answers — items
+    /// 663 / 866(2). [`None`] for a driver whose build knew no [`RUN_WIDTH_WITHHELD_KEY`], never
+    /// for one that has adopted nothing: that run reports `0 of 0`, which is a population and not
+    /// *nothing was withheld*.
+    pub width_withheld: Option<sprag_plugin::WidthWithheld>,
     /// What it said its milestone checks came to — items 663 / 601. The TALLY; the sentence a
     /// reader gets is [`checks_sentence`]'s, composed here from this.
     pub checks: Option<sprag_plugin::Checks>,
@@ -6277,6 +6311,30 @@ fn said_by_sentence_in(beside: &Value) -> Option<sprag_plugin::SaidBySentence> {
     Some(said)
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT THE WIDTH WOULD HAVE WITHHELD, AS THE ROW CARRIES IT** — register item 866(2),
+/// and [`RUN_WIDTH_WITHHELD_KEY`]'s shape.
+fn width_withheld_json(withheld: sprag_plugin::WidthWithheld) -> Value {
+    json!({
+        "adopted": withheld.adopted,
+        "wider": withheld.wider,
+        "withheld": withheld.withheld,
+    })
+}
+
+/// The same, read back off a report — [`None`] where the driver's build did not carry the key.
+///
+/// ⚠⚠ **WHOLE OR NOTHING**, its neighbours' rule and its own sharpest instance: `wider` without
+/// `adopted` is a numerator over a population nobody reported, which is the only thing this tally
+/// exists to let a reader compare.
+fn width_withheld_in(beside: &Value) -> Option<sprag_plugin::WidthWithheld> {
+    let tally = beside.get(RUN_WIDTH_WITHHELD_KEY)?;
+    Some(sprag_plugin::WidthWithheld {
+        adopted: tally.get("adopted")?.as_u64()?,
+        wider: tally.get("wider")?.as_u64()?,
+        withheld: tally.get("withheld")?.as_u64()?,
+    })
+}
+
 /// Read a driver's progress report — see [`ReportedProgress`].
 #[must_use]
 pub fn progress_from_report(reported: &Value) -> ReportedProgress {
@@ -6323,6 +6381,9 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
     // denominator, so a table read in halves would publish a rate over a population nobody
     // reported, and the only thing this table is for is comparing those rates.
     let said_by_sentence = said_by_sentence_in(beside);
+    // ⛔⛔⛔⛔⛔ AND WHAT THE WIDTH WOULD HAVE WITHHELD — register item 866(2), whole or nothing for
+    // the block's stated reason: `wider` alone is a numerator with no population.
+    let width_withheld = width_withheld_in(beside);
     let checks = (|| {
         let tally = beside.get(RUN_CHECKS_KEY)?;
         Some(sprag_plugin::Checks {
@@ -6415,6 +6476,7 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
         folds_by_reason,
         delivered_by_road,
         said_by_sentence,
+        width_withheld,
         checks,
         context_ceiling,
         context_high_water,
@@ -6826,6 +6888,19 @@ pub(crate) fn run_to_json(run: &RunSummary, seat: Option<u64>, look: LiveLook) -
     let sentences = reported.said_by_sentence.or(run.progress.said_by_sentence);
     if let Some(sentences) = sentences.filter(|it| !it.is_empty()) {
         entry[RUN_SAID_BY_SENTENCE_KEY] = said_by_sentence_json(sentences);
+    }
+    // ⛔⛔⛔⛔⛔ AND WHAT THE WIDTH WOULD HAVE WITHHELD FROM ITS REFLECTION ANSWERS — register item
+    // 866(2), on the blocks above's terms: the report first, the cell as the fallback, and its own
+    // predicate because a run that has adopted no answer has no width to have been withheld by.
+    //
+    // ⚠⚠ THE PREDICATE IS `adopted`, NEVER `wider`. A run whose every answer fitted on one row has
+    // `wider == 0` and that is a MEASUREMENT — it is the reading a build that went back to the
+    // rendered row would produce on every run, so hiding it is hiding exactly the alarm this key
+    // exists to be. What is absent is a run that never adopted an answer at all.
+    // ⚠ `or` RATHER THAN `unwrap_or` — register item 891, the reason `deliveries` above gives.
+    let withheld = reported.width_withheld.or(run.progress.width_withheld);
+    if let Some(withheld) = withheld.filter(|it| it.adopted > 0) {
+        entry[RUN_WIDTH_WITHHELD_KEY] = width_withheld_json(withheld);
     }
     // ⚠⚠⚠⚠ AND WHETHER ANYTHING INDEPENDENT VERIFIED WHAT IT CONVERGED ON — register item 601,
     // beside the state for the two keys above's reason and absent when no claim was ever put to a
@@ -7986,6 +8061,52 @@ pub fn said_by_sentence_sentence(run: &Value) -> Option<String> {
     ))
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT THE PANE'S WIDTH WOULD HAVE WITHHELD FROM THIS RUN'S REFLECTION ANSWERS, AS ONE
+/// SENTENCE** — register item 866's done-when ⑵, and the mouth a person reads it at.
+///
+/// # ⛔⛔⛔⛔⛔ Why a run says a loss that did not happen
+///
+/// Item 866 measured a reflection answer arriving cut at the first rendered row — 762 cells written
+/// and 161 delivered, every reflection, while `ReflectApplied` published success. Its ⑴ moved the
+/// content read onto the logical lines, and **that is precisely what made the defect and its repair
+/// look alike**: both publish an answer, and only a reader who knew how long the agent's line had
+/// been could tell which build they were looking at.
+///
+/// So the run says how far past the first rendered row its answers ran. On this loop the number is
+/// hundreds of cells and climbs all run long; on a build that went back to the row it would be
+/// **zero, for ever, on every run** — because there the adopted line IS the row. That is the whole
+/// of what this sentence is for, and it is why the zero is printed rather than hidden.
+///
+/// ⚠ [`None`] only where the run adopted no answer at all — a run that has not reflected has no
+/// width to have been withheld by, and saying `0 of 0` would put a clean bill on silence.
+#[must_use]
+pub fn width_withheld_sentence(run: &Value) -> Option<String> {
+    let tally = run.get(RUN_WIDTH_WITHHELD_KEY)?;
+    let (adopted, wider, withheld) = (
+        tally.get("adopted")?.as_u64()?,
+        tally.get("wider")?.as_u64()?,
+        tally.get("withheld")?.as_u64()?,
+    );
+    if adopted == 0 {
+        return None;
+    }
+    // ⛔⛔⛔ THE ZERO IS SAID, and it is said as the READING it is rather than as a clean bill:
+    // this is exactly what a build that had gone back to the rendered row would publish, so a
+    // reader has to be able to tell it from *this run's answers were short*. The denominator is on
+    // the line either way, which is what lets them.
+    if wider == 0 {
+        return Some(format!(
+            "none of its {adopted} reflection answer(s) ran past the first rendered row, so the \
+             width withheld nothing — on a loop whose answers are long, that is what reading rows \
+             again would look like"
+        ));
+    }
+    Some(format!(
+        "{wider} of {adopted} reflection answer(s) ran past the first rendered row, and reading \
+         that row would have thrown away {withheld} cell(s) of what the agent wrote"
+    ))
+}
+
 /// ⛔⛔⛔⛔⛔ **THE SENTENCE TABLE ADDED UP OVER RUNS, WITH THE ROWS IT COULD NOT ADD NAMED** —
 /// register item 889(1), and the half that stood on *"the rows are still empty, wait for a
 /// promotion"* until the rows stopped being empty.
@@ -8902,6 +9023,7 @@ mod tests {
             folds_by_reason: None,
             delivered_by_road: None,
             said_by_sentence: None,
+            width_withheld: None,
             banked: None,
             briefed: None,
             done_reason: None,
@@ -9452,6 +9574,7 @@ mod tests {
                 folds_by_reason: None,
                 delivered_by_road: None,
                 said_by_sentence: None,
+                width_withheld: None,
                 // ⚠ And item 616's, for that reason exactly — absent reads as *nobody counted*,
                 // which is the honest answer for a log written before the column existed.
                 banked: None,
@@ -9644,6 +9767,7 @@ mod tests {
             folds_by_reason: None,
             delivered_by_road: None,
             said_by_sentence: None,
+            width_withheld: None,
             banked: None,
             briefed: None,
             done_reason: None,
@@ -10070,6 +10194,7 @@ mod tests {
                 folds_by_reason: None,
                 delivered_by_road: None,
                 said_by_sentence: None,
+                width_withheld: None,
                 banked: None,
                 briefed: None,
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
@@ -10852,6 +10977,138 @@ mod tests {
             None,
             "⚠⚠⚠ a run that typed nothing has no rate to publish, and eleven `0 of 0` rows on its \
              row would be a comparison over nothing",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN SAYS WHAT THE WIDTH WOULD HAVE WITHHELD, AND SAYS THE ZERO OUT LOUD** —
+    /// register item 866's done-when ⑵, at the mouth a person reads.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The zero is the arm, and hiding it would have hidden the whole point
+    ///
+    /// Item 866's ⑴ made reflection answers arrive whole, which is also what made the defect and
+    /// its repair indistinguishable: both publish an answer. The only thing that tells them apart
+    /// is HOW FAR PAST ONE RENDERED ROW the adopted line ran — and on a build that went back to the
+    /// row that distance is **zero on every run**, because there the adopted line IS the row.
+    ///
+    /// ⇒ So a run whose answers all fitted has to SAY so rather than fall silent, and it has to say
+    /// it with the denominator attached. A composer that returned [`None`] for `wider == 0` would
+    /// be silent on exactly the reading that means the defect is back — this workspace's rule 6,
+    /// where the unclassified case is stated and never glossed.
+    ///
+    /// ⚠ [`None`] is reserved for the one honest silence: a run that adopted no answer at all has
+    /// no width to have been withheld by, and `0 of 0` there would be a clean bill over nothing.
+    #[test]
+    fn a_run_says_what_the_width_would_have_withheld_and_a_zero_is_said_not_hidden() {
+        let row = |adopted: u64, wider: u64, withheld: u64| {
+            json!({ RUN_WIDTH_WITHHELD_KEY: {
+                "adopted": adopted, "wider": wider, "withheld": withheld,
+            }})
+        };
+
+        // ── ① THE READING ITEM 866 MEASURED: both answers ran past the row ────────────────────
+        let cut = width_withheld_sentence(&row(2, 2, 1207))
+            .expect("a run that adopted answers has a sentence");
+        assert!(
+            cut.contains("2 of 2") && cut.contains("1207"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 866(2): the row has to say how many answers ran past the \
+             first rendered row AND how much reading that row would have thrown away. Item 866 \
+             measured 762 cells written and 161 adopted, every reflection, with `ReflectApplied` \
+             publishing success — the count alone would not have told anybody what that cost. \
+             Said: {cut:?}",
+        );
+
+        // ── ② AND THE ZERO IS SAID, which is the arm that makes this an alarm ─────────────────
+        let whole = width_withheld_sentence(&row(11, 0, 0)).expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 866(2): a run whose answers all fitted on one row \
+                     must SAY so. That reading is what a build which went back to the rendered row \
+                     publishes on every run it drives, so silence here is silence on the \
+                     regression this whole tally exists to catch",
+        );
+        assert!(
+            whole.contains("11") && whole.contains("none"),
+            "⚠⚠ AND IT SAYS IT WITH THE DENOMINATOR: *nothing was withheld* over eleven answers is \
+             a finding on a loop whose agent writes hundreds of cells, and over nothing it is not \
+             a sentence at all. Said: {whole:?}",
+        );
+        assert_ne!(
+            cut, whole,
+            "⚠⚠⚠ THE CONTROL: the two readings must be different sentences, or a composer that \
+             printed one line for everything satisfies both arms above and separates nothing",
+        );
+
+        // ── ③ AND A RUN THAT ADOPTED NOTHING SAYS NOTHING ─────────────────────────────────────
+        assert_eq!(
+            width_withheld_sentence(&row(0, 0, 0)),
+            None,
+            "⚠⚠ THE ONE HONEST SILENCE: a run that has read no answer has no width to have been \
+             withheld by, and `0 of 0` would put a clean bill on a run that never reflected",
+        );
+        assert_eq!(
+            width_withheld_sentence(&json!({})),
+            None,
+            "⚠ AND A ROW WITHOUT THE KEY IS NOT A ZERO — an older daemon published no tally, which \
+             is not a run whose answers fitted",
+        );
+
+        // ── ④ AND THE ROW ITSELF CARRIES IT, on the same predicate ───────────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ THE COMPOSER ABOVE IS NOT THE MOUTH. Item 856(3)'s round put gates on seven
+        // surfaces a value passes THROUGH and none on the call that puts it in, and replacing that
+        // call with a discard left the workspace green. So the run's own row is asked here, and it
+        // is asked for the reading that MATTERS: a run whose answers all fitted must still publish
+        // the key, because a row that appears only when something was withheld is a row that goes
+        // silent exactly when the defect comes back.
+        let row_of = |withheld: sprag_plugin::WidthWithheld| -> Value {
+            let progress = sprag_plugin::Progress {
+                width_withheld: Some(withheld),
+                ..Default::default()
+            };
+            run_to_json(
+                &crate::runs::RunSummary {
+                    id: RunId(7),
+                    label: "ai_loop pane=3".to_owned(),
+                    loop_kind: None,
+                    opened_by: None,
+                    opened_by_session: None,
+                    tree: None,
+                    overridden: None,
+                    state: RunState::Running,
+                    progress,
+                    reported: None,
+                    build: Some(crate::wire::BUILD.to_owned()),
+                    which_run: None,
+                    stood_down: false,
+                    stood_down_by: None,
+                    held: false,
+                    cancelled_by: None,
+                    withheld: None,
+                    ended_driver: None,
+                    not_resumed: None,
+                    resumed: false,
+                },
+                None,
+                LiveLook::default(),
+            )
+        };
+        let fitted = row_of(sprag_plugin::WidthWithheld {
+            adopted: 11,
+            wider: 0,
+            withheld: 0,
+        });
+        assert_eq!(
+            fitted[RUN_WIDTH_WITHHELD_KEY]["adopted"],
+            json!(11),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 866(2): a run that adopted eleven answers and found none of \
+             them wider than a row published NOTHING. That reading is what a build which went back \
+             to the rendered row produces on every run it drives, so a row keyed on `wider` is one \
+             that disappears at the moment it has something to say. Row: {fitted}",
+        );
+        let silent = row_of(sprag_plugin::WidthWithheld::NONE);
+        assert_eq!(
+            silent[RUN_WIDTH_WITHHELD_KEY],
+            Value::Null,
+            "⚠⚠ AND THE CONTROL: a run that adopted no answer has no width to have been withheld \
+             by, so presence is the claim here as everywhere on this row. Row: {silent}",
         );
     }
 
@@ -14110,6 +14367,7 @@ mod tests {
                 folds_by_reason: Some(sprag_plugin::FoldsByReason::NONE),
                 delivered_by_road: Some(sprag_plugin::DeliveredByRoad::NONE),
                 said_by_sentence: Some(sprag_plugin::SaidBySentence::NONE),
+                width_withheld: Some(sprag_plugin::WidthWithheld::NONE),
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
@@ -14285,6 +14543,7 @@ mod tests {
                 folds_by_reason: Some(folds),
                 delivered_by_road: Some(sprag_plugin::DeliveredByRoad::NONE),
                 said_by_sentence: Some(sprag_plugin::SaidBySentence::NONE),
+                width_withheld: Some(sprag_plugin::WidthWithheld::NONE),
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
                 briefed: None,
@@ -19840,6 +20099,7 @@ mod tests {
                     folds_by_reason: None,
                     delivered_by_road: None,
                     said_by_sentence: None,
+                    width_withheld: None,
                     banked: None,
                     briefed: None,
                     // ⚠ Item 706's field, absent for the reason every field above it is.

@@ -7162,6 +7162,18 @@ fn render_run(run: &Value) -> String {
     // reflection split and no road table can express.
     let stuck = sprag_host::plugins::said_by_sentence_sentence(run)
         .map_or_else(String::new, |said| format!("\n  {said}"));
+    // ⛔⛔⛔⛔⛔ AND WHAT THE PANE'S WIDTH WOULD HAVE WITHHELD FROM ITS REFLECTION ANSWERS —
+    // register item 866(2), in the same place and under the same constraint as the clauses above.
+    //
+    // ⚠⚠ A LINE OF ITS OWN, and the reason is item 866's whole shape: the four clauses above are
+    // about prompts this run SENT, and this is about the answers it READ BACK. Item 866 measured
+    // 762 cells written and 161 adopted, every reflection, with `ReflectApplied` publishing
+    // success the whole time — so what was silent was never a delivery count. It was the reading.
+    //
+    // ⚠ AND IT IS HERE RATHER THAN LEFT TO THE JSON, on `authors`' argument one clause down: a key
+    // only a program can find is one item 856's arms had to be told apart by a human note.
+    let read_back = sprag_host::plugins::width_withheld_sentence(run)
+        .map_or_else(String::new, |said| format!("\n  {said}"));
     // ⛔⛔⛔⛔⛔ AND HOW FULL ITS SESSION GOT AGAINST THE BOUND IT WAS JUDGED BY — register items
     // 894 and 856(1b), in the same place and under the same constraint as the four clauses above.
     //
@@ -7384,7 +7396,7 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{revived_pane}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{fullness}{authors}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{revived_pane}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{read_back}{fullness}{authors}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
@@ -7465,7 +7477,7 @@ fn render_run(run: &Value) -> String {
                 )
             });
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{fullness}{authors}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{read_back}{fullness}{authors}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -7518,7 +7530,7 @@ fn render_run(run: &Value) -> String {
         // had happened was a `kill-server`. **A fact that reaches the wire and dies at the mouth
         // somebody actually reads** is the sentence the `Reported` arm above already wrote down.
         _ => format!(
-            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{split}{landed}{stuck}{fullness}{authors}{verified}{canceller}\n",
+            "{head}  {}{}{withheld}{leftover}{not_resumed}{order}{prompts}{split}{landed}{stuck}{read_back}{fullness}{authors}{verified}{canceller}\n",
             state["status"].as_str().unwrap_or("?"),
             render_why_it_ended(state),
         ),

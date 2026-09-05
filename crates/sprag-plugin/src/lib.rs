@@ -242,7 +242,7 @@ pub use outer::{
     DeliveredByRoad, DoneReason, FoldsByReason, FoldsUnder, HOLD_TAKES_EFFECT, HOLD_WITHIN_KEY,
     INNER_SESSION_ENDS, LoopPlace, Made, NotResumed, NotScreenable, Noticed, Occasion, OuterLoop,
     Pumped, ReflectReason, Retyped, STAND_DOWN_TAKES_EFFECT, SaidBySentence, SaidUnder, Unasked,
-    UnaskedRoad, refusal_in_words,
+    UnaskedRoad, WidthWithheld, refusal_in_words,
 };
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{

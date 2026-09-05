@@ -1293,6 +1293,27 @@ pub trait Plugin {
         crate::outer::FoldsByReason::NONE
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHAT THE PANE'S WIDTH WOULD HAVE WITHHELD FROM THIS RUN'S REFLECTION ANSWERS** —
+    /// register item 866's done-when ⑵.
+    ///
+    /// # ⛔⛔⛔⛔ Why the number is a loss that did NOT happen
+    ///
+    /// Item 866's ⑴ moved the content read onto the logical lines, so an answer no longer arrives
+    /// cut. What nothing said afterwards is how much that was WORTH — and a build that went back to
+    /// the rendered row would look identical from every mouth a person reads, because the only
+    /// evidence would be an answer that happened to be short. This publishes the difference between
+    /// the two surfaces at the moment both are in hand, so the fix has a size and its regression has
+    /// an alarm. See [`crate::outer::WidthWithheld`].
+    ///
+    /// ⚠ The default is [`crate::outer::WidthWithheld::NONE`], the honest answer for a plugin that
+    /// does not reflect: no answer was ever adopted, so `0 of 0` is a population rather than a
+    /// clean bill.
+    ///
+    /// ⚠⚠ A LEVEL with one call site, for [`folds_by_reason`](Self::folds_by_reason)' reason.
+    fn width_withheld(&self) -> crate::outer::WidthWithheld {
+        crate::outer::WidthWithheld::NONE
+    }
+
     /// ⛔⛔⛔⛔⛔ **AND EVERY DELIVERY, SPLIT BY WHAT PROVED IT ARRIVED** — register item 856, and
     /// the one place a prompt LANDING is counted exhaustively.
     ///
