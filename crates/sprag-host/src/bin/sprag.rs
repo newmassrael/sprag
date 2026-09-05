@@ -7442,6 +7442,20 @@ fn render_run(run: &Value) -> String {
                         outcome["state"].as_str().unwrap_or("?"),
                     )
                 });
+            // ⛔⛔⛔⛔⛔ AND WHY A BLOCKED RUN WAS NEVER ANSWERED — register item 903, beside
+            // `closed_under` because it is the same question one ending over. `blocked` says
+            // SOMEBODY HAS TO ANSWER THIS and, until this clause, said nothing about what stopped
+            // this host answering: measured 2026-09-05T05:05:23Z, 14 blocked runs and 0 carrying a
+            // reason a reader could see.
+            //
+            // ⚠⚠ IT IS HERE RATHER THAN LEFT TO THE JSON, on the clause below's standing argument:
+            // a fact that reaches the wire and dies at the mouth somebody actually reads is the
+            // shape this file keeps paying for, and item 903 is that shape at its largest.
+            let blocked_on = outcome[sprag_host::plugins::RUN_BLOCKED_BY_KEY]
+                .as_str()
+                .map_or_else(String::new, |why| {
+                    format!("\n  nothing answered it: `{why}`")
+                });
             let output = state["output"]
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
@@ -7477,7 +7491,7 @@ fn render_run(run: &Value) -> String {
                 )
             });
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{read_back}{fullness}{authors}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{blocked_on}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{read_back}{fullness}{authors}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -13443,6 +13457,19 @@ mod tests {
     /// ⚠ And a run that answered NOTHING says nothing, which is not the same key being absent —
     /// the wire always carries the count. Silence here is this renderer's choice, and a clause on
     /// every ordinary run would train a reader to skip the line that matters.
+    /// ⛔⛔⛔⛔⛔ **AND THE NEEDLE IS THE CLAUSE, NOT THE WORD** — narrowed 2026-09-05, register
+    /// items 903 and 901.
+    ///
+    /// The negative arm below asked whether the row contained `"answered"`, which is broader than
+    /// the fact it guards: what must not appear on a run that answered nothing is the CLAUSE
+    /// *answered N question(s) for you*, and the bare word belongs to any sentence that has cause
+    /// to use it. Item 903 added one — a blocked run now says what stopped it being answered — and
+    /// the gate refused it while the property it defends was never in question.
+    ///
+    /// ⇒ This is register item 901's shape exactly, and its remedy: **a needle wider than its
+    /// subject silently takes away the freedom to name things**, and what gets fixed is the needle
+    /// rather than the innocent sentence. `for you` is what the positive arm above already matches
+    /// on, so the two halves now name one clause between them.
     #[test]
     fn a_run_that_answered_for_you_says_so_before_it_is_over() {
         let running = serde_json::json!({
@@ -13475,7 +13502,7 @@ mod tests {
                 sprag_plugin::Refusal::NotOffered,
                 0
             )))
-            .contains("answered"),
+            .contains("for you"),
             "⚠ and a run that answered nothing says nothing — a clause on every ordinary run \
              trains a reader to skip the line that matters",
         );

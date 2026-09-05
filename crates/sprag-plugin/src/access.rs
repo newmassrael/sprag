@@ -491,6 +491,27 @@ pub enum PaneError {
     /// deadline whose stop failed has left work on somebody's machine, and *"cancelled"* on its own
     /// would tell them the opposite.
     NotStopped(Unstopped) = (Unstopped::Unseen),
+    /// ⛔⛔⛔⛔⛔ **A FAILURE SENTENCE READ BACK OUT OF A DURABLE LOG** — register item 903, and the
+    /// one arm of this set that describes nothing this daemon saw.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a run that died had to stop taking its reason to the grave
+    ///
+    /// Every other arm here is composed by the process that MET the failure, and that process dies
+    /// with its daemon — while a promotion IS a daemon restart. So the sentence a reader needs most
+    /// lived exactly as long as the thing that made reading it necessary. **Measured
+    /// 2026-09-05T04:59:20Z over the loop's own store: of 78 failed runs, 0 carried `done_reason`,
+    /// `output`, `request` or `ceiling`.** The ending WORD survived; the narrative did not.
+    ///
+    /// ⚠⚠⚠ **ONLY THE RESTORE DOOR BUILDS THIS**, which is what the variant is FOR: a plugin
+    /// meeting a real failure has a real arm to name it with, and one reaching for this would be
+    /// claiming a dead daemon's reading as its own. [`Plugin::step`](crate::plugin::Plugin::step)
+    /// has no reason to construct it.
+    ///
+    /// ⚠⚠ **IT CARRIES THE SENTENCE AND NOT THE VARIANT**, deliberately: what a log holds is what
+    /// [`Display`](std::fmt::Display) wrote, and parsing that back into a typed cause would be this
+    /// daemon inventing a structure the record does not have. The sentence is what a person reads
+    /// and what item 903 measured missing; the structure died with the process that had it.
+    Recorded(String) = (String::new()),
 }
 }
 
@@ -870,6 +891,26 @@ impl std::fmt::Display for PaneError {
                     "the pane's job was not stopped, and is still running: {why}"
                 )
             }
+            // ⚠⚠ VERBATIM, WITH NOTHING ADDED — register item 903. A previous daemon already wrote
+            // this sentence through this same `Display`, so a wrapper here would double its own
+            // prefix the moment a row survived two restarts. WHERE it came from is the row's
+            // business (`crate::runs::PersistedRun::failure` says a log carried it), not this
+            // sentence's — a reader wants the diagnosis, not its provenance, in the same breath.
+            // ⚠⚠ VERBATIM, WITH NOTHING ADDED — register item 903. A previous daemon already wrote
+            // this sentence through this same `Display`, so a wrapper here would double its own
+            // prefix the moment a row survived two restarts.
+            //
+            // ⛔⛔⛔⛔⛔ **AND A BLANK RECORD STILL HAS TO READ AS PROSE**, which is not tidiness:
+            // `every_pane_failure_reads_as_a_sentence_rather_than_a_rust_variant` holds that
+            // property over EVERY value this set can take, and it caught this arm rendering `""`.
+            // That is the right red — a run whose row said nothing would have handed an agent an
+            // empty failure, which is the leak that gate exists to stop. The restore door refuses
+            // to build one of these from a blank (`crate::runs`-side), so this says what a blank
+            // MEANS rather than pretending it cannot happen.
+            Self::Recorded(said) if said.trim().is_empty() => f.write_str(
+                "a previous daemon recorded that this run failed and left the reason blank",
+            ),
+            Self::Recorded(said) => f.write_str(said),
         }
     }
 }

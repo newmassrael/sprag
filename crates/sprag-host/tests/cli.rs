@@ -4483,6 +4483,10 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 banked: None,
                 briefed: None,
                 done_reason: None,
+                // ⚠ Item 903's two columns, absent on the line above's argument: an older log
+                // carries neither, and absent reads as *nobody wrote it down*.
+                failure: None,
+                blocked_by: None,
                 place: Some(vec!["working".to_owned(), "work".to_owned()]),
             }],
         })

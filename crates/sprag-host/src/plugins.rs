@@ -1007,6 +1007,20 @@ pub const RUN_UNCOMMITTED_KEY: &str = "uncommitted";
 /// ⚠ It names the exit status, so when a SIGNAL killed the driver the signal is in it — which is
 /// the whole difference between *my run hit a bug* and *somebody ran `kill-server`*.
 pub const RUN_ERROR_KEY: &str = "error";
+/// ⛔⛔⛔⛔⛔ The answer key carrying **WHY A BLOCKED RUN WAS NEVER ANSWERED** — register item 903.
+///
+/// A `blocked` run's ending word says *somebody has to answer this* and said nothing about what
+/// stopped this host answering it. Measured 2026-09-05T05:05:23Z over the loop's store: **14
+/// blocked runs, 0 carrying any reason at all** — the same hole `failed` had, one ending over.
+///
+/// ⚠⚠ THE REFUSAL'S WORD (`sprag_plugin::consent::Refusal::wire_str`, a closed set of eleven) and
+/// never the QUESTION beside it: [`outcome_from_words`] refuses to republish that one because it
+/// was read off a pane nobody has looked at since, and this key keeps that argument by carrying the
+/// half it does not reach — what THIS host could not do, which stays true however old the row is.
+///
+/// ⚠ Present only when a blocked run's record carries the detail; absence is *nobody wrote it
+/// down*, this surface's rule everywhere.
+pub const RUN_BLOCKED_BY_KEY: &str = "blocked_by";
 /// **WHERE A RELAY READS FROM** — the `pipe` form's own spelling of a pane, and the reason
 /// [`RUN_PANE_KEY`] is not the only one.
 ///
@@ -7147,14 +7161,31 @@ pub fn refusal_sentence(word: &str) -> String {
 /// ⚠ An unreadable pair answers [`OutcomeState::Failed`] rather than guessing a happier one: a
 /// record this build cannot parse is one it must not report as having converged.
 #[must_use]
-pub fn outcome_from_words(word: Option<&str>, ceiling: Option<&str>) -> OutcomeState {
+pub fn outcome_from_words(
+    word: Option<&str>,
+    ceiling: Option<&str>,
+    blocked_by: Option<&str>,
+) -> OutcomeState {
     match word {
         Some("converged") => OutcomeState::Converged,
         Some("cancelled") => OutcomeState::Cancelled,
-        // ⚠ The QUESTION is not restored. It was read off a pane that a restart has outlived, and
-        // a question re-published from a durable record would be a claim about a screen nobody has
-        // looked at since. The WORD survives, which is what tells a reader the run wants an answer.
-        Some("blocked") => OutcomeState::Blocked(None),
+        // ⚠ The QUESTION is STILL not restored, and that argument is untouched: it was read off a
+        // pane a restart has outlived, so republishing it would be a claim about a screen nobody
+        // has looked at since.
+        //
+        // ⛔⛔⛔⛔⛔ **WHAT DOES COME BACK IS THE REFUSAL** — register item 903. The word this host
+        // could not get past is not a screen reading: it names what THIS side could not do with
+        // what it saw, out of a closed set of eleven, and it stays true however old the row is.
+        // Measured 2026-09-05T05:05:23Z: 14 blocked runs, 0 able to say anything but *blocked*.
+        //
+        // ⚠ A word this build does not know reads as [`None`], which is exactly the answer every
+        // blocked run gave before this line — so a record from a newer daemon loses nothing it
+        // would have had.
+        Some("blocked") => OutcomeState::Blocked(
+            blocked_by
+                .and_then(sprag_plugin::consent::Refusal::from_wire)
+                .map(sprag_plugin::consent::Unanswered::recorded),
+        ),
         // ⚠⚠ READ THROUGH THE TYPE'S OWN LIST, not a match over the words this file knows. It
         // matched two by hand and answered `Iterations` for everything else, so the fourth ceiling
         // (`turns`, the loop's own budget) would have come back from a restart as *"you ran out of
@@ -8681,6 +8712,15 @@ pub fn outcome_to_json(outcome: &Outcome) -> Value {
         // error 32)")` reaching an agent, which is R283's leak on the loop's own answer.
         "failure": outcome.failure.as_ref().map(ToString::to_string),
     });
+    // ⛔⛔⛔⛔⛔ AND WHY A BLOCKED RUN WAS NEVER ANSWERED — register item 903, beside `failure`
+    // because they are one fact split by ending: what stopped this run getting to an answer. The
+    // word only; see [`RUN_BLOCKED_BY_KEY`] for why the question stays behind.
+    //
+    // ⚠ OMITTED RATHER THAN NULLED where the ending is not `blocked` or the record holds no
+    // detail, on `RUN_CEILING_KEY`'s rule: presence is the claim on this row.
+    if let sprag_plugin::OutcomeState::Blocked(Some(unanswered)) = &outcome.state {
+        answer[RUN_BLOCKED_BY_KEY] = json!(unanswered.why().wire_str());
+    }
     // 🎯🎯🎯🎯🎯 AND WHAT IT SET ASIDE AT ITS RE-AIMING CAP — register item 833(2), published on
     // EVERY ending and not only the happy one: a run that deferred three proposals and then hit its
     // iteration ceiling is exactly the run somebody reads an outcome to understand.
@@ -9027,6 +9067,9 @@ mod tests {
             banked: None,
             briefed: None,
             done_reason: None,
+            // ⚠ Item 903's two columns, absent on the line above's argument.
+            failure: None,
+            blocked_by: None,
             place: Some(words.clone()),
         };
         let here = sprag_plugin::STATECHARTS_FINGERPRINT;
@@ -9582,6 +9625,9 @@ mod tests {
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
                 // reads as *nobody wrote that down* rather than as a run that ended for no reason.
                 done_reason: None,
+                // ⚠ Item 903's two columns, absent on the line above's argument.
+                failure: None,
+                blocked_by: None,
                 // ⚠ An older log carries no place, which is this fixture's shape — item 543.
                 place: None,
             }],
@@ -9771,6 +9817,9 @@ mod tests {
             banked: None,
             briefed: None,
             done_reason: None,
+            // ⚠ Item 903's two columns, absent on the line above's argument.
+            failure: None,
+            blocked_by: None,
             place: None,
         }
     }
@@ -10200,6 +10249,9 @@ mod tests {
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
                 // reads as *nobody wrote that down* rather than as a run that ended for no reason.
                 done_reason: None,
+                // ⚠ Item 903's two columns, absent on the line above's argument.
+                failure: None,
+                blocked_by: None,
                 // ⚠ An older log carries no place, which is this fixture's shape — item 543.
                 place: None,
             }
@@ -20104,6 +20156,9 @@ mod tests {
                     briefed: None,
                     // ⚠ Item 706's field, absent for the reason every field above it is.
                     done_reason: None,
+                    // ⚠ And item 903's two, on the same argument.
+                    failure: None,
+                    blocked_by: None,
                     place,
                 }],
             }

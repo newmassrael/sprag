@@ -528,6 +528,23 @@ impl Refusal {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **THAT WORD READ BACK** — register item 903, and the door a durable log needs so a
+    /// blocked run can still say what stopped it after the daemon that met it is gone.
+    ///
+    /// ⚠⚠ **PROJECTED FROM [`ALL`](Self::ALL), never a second hand-written match.** The reverse of
+    /// a mapping typed twice is the drift `crate::plugins`' own `outcome_from_words` was filed for:
+    /// it matched two ceilings by hand and answered a third for everything else, so a restart
+    /// published a false sentence about a guardrail the run never met. An arm added above is
+    /// readable here the moment it exists.
+    ///
+    /// ⚠ [`None`] for a word this build does not know — a record written by a NEWER daemon. That
+    /// is *this build cannot say*, which is what a reader gets today anyway, and never a nearest
+    /// guess: naming the wrong refusal would send somebody to fix a thing that was never wrong.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|why| why.wire_str() == word)
+    }
+
     /// The reason named by `word`, or `None` for a word outside the closed set.
     #[must_use]
     pub fn parse(word: &str) -> Option<Self> {
@@ -625,6 +642,33 @@ pub struct Unanswered {
 }
 
 impl Unanswered {
+    /// ⛔⛔⛔⛔⛔ **A REFUSAL READ BACK OUT OF A DURABLE LOG** — register item 903, and the only
+    /// constructor here that describes nothing this process saw.
+    ///
+    /// A blocked run's ending word says *somebody has to answer this* and, until this existed, said
+    /// nothing about what stopped this host answering — measured 2026-09-05T05:05:23Z: **14 blocked
+    /// runs, 0 carrying any reason**, because the detail died with the daemon that read it.
+    ///
+    /// ⚠⚠⚠ **NO QUESTION, AND THAT IS THE WHOLE CARE TAKEN HERE.** The question was read off a
+    /// pane, and `crate::plugins`-side restore already refuses to republish one because *a question
+    /// re-published from a durable record would be a claim about a screen nobody has looked at
+    /// since*. That argument is kept exactly: what crosses is [`why`](Self::why), a word out of
+    /// [`Refusal::ALL`] describing what THIS host could not do, which stays true however old the
+    /// record is. `question: None` here is the same absence [`unreadable`](Self::unreadable)
+    /// already makes representable.
+    ///
+    /// ⚠ `bytes` is `0` and that is *nobody counted*, not *nothing was typed* — the log has no
+    /// column for it and inventing one would be this process vouching for a reading it never took.
+    #[must_use]
+    pub const fn recorded(why: Refusal) -> Self {
+        Self {
+            question: None,
+            why,
+            bytes: 0,
+            detail: None,
+        }
+    }
+
     /// A peer blocked on something this host cannot read as a menu.
     #[must_use]
     pub const fn unreadable() -> Self {

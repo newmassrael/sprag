@@ -799,6 +799,10 @@ mod tests {
             ceiling: None,
             output: None,
             done_reason: None,
+            // ⚠ Item 903's two columns, absent on the line above's argument: an older log carries
+            // neither, and absent reads as *nobody wrote it down*.
+            failure: None,
+            blocked_by: None,
             build: None,
             which_run: None,
             driver: None,

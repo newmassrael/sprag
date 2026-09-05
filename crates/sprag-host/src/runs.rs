@@ -2687,6 +2687,74 @@ pub struct PersistedRun {
     /// record the running daemon holds.
     #[serde(default)]
     pub done_reason: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHY IT FAILED, AS THE SENTENCE THE DRIVER THAT MET THE FAILURE WROTE** — register
+    /// item 903, and the column whose absence made this loop's post-mortems impossible in principle.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The diagnosis lived in daemon memory and a promotion is a daemon restart
+    ///
+    /// [`sprag_plugin::Outcome::failure`] is a typed [`sprag_plugin::PaneError`] composed by the
+    /// process that met the failure, and [`crate::plugins::outcome_to_json`] publishes its sentence
+    /// under `failure`. Nothing carried it here, so it survived exactly as long as the daemon —
+    /// **and the loop restarts its daemon to promote a build, which is the moment somebody most
+    /// wants to know why the last run died.**
+    ///
+    /// **Measured 2026-09-05T04:59:20Z over the loop's own store** (a live store: re-running the
+    /// count takes a NEW reading rather than checking this one): 228 runs, **78 `failed`**, and of
+    /// those `done_reason` 0, `output` 0, `request` 0, `ceiling` 0. What a failed run still carried
+    /// was its ending WORD — *that* it failed, never *why*.
+    ///
+    /// ⚠⚠⚠ **IT IS THE SENTENCE AND NOT THE VARIANT**, and the type says so on the way back:
+    /// a restore rebuilds [`sprag_plugin::PaneError::Recorded`], whose whole doc is that this
+    /// daemon did not observe what it holds. Parsing a sentence back into a typed cause would be
+    /// this process inventing structure the record never had.
+    ///
+    /// ⚠⚠ **IT IS NOT [`done_reason`](Self::done_reason)** and must not be folded into it. That one
+    /// is *the plugin named this ending, out of a closed vocabulary it holds* — its own doc reserves
+    /// [`None`] for every run that did NOT end on its own terms, which is every `failed` run there
+    /// has ever been. A `failed` run did not close itself; the machine stopped being drivable. Two
+    /// facts, two columns.
+    ///
+    /// ⚠ [`None`] is *no sentence was written down* — a run that did not fail, and a log written
+    /// before this column existed. Never *it failed for no reason*.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move, on [`build`](Self::build)'s argument and the same call
+    /// items 606, 616, 762, 856, 889 and 866(2) each made.
+    #[serde(default)]
+    pub failure: Option<String>,
+    /// ⛔⛔⛔⛔⛔ **WHY A BLOCKED RUN WAS NEVER ANSWERED, AS THE REFUSAL'S OWN WORD** — register item
+    /// 903, and [`failure`](Self::failure)'s sibling for the other ending that survives a restart
+    /// saying nothing.
+    ///
+    /// **Measured 2026-09-05T05:05:23Z over the loop's own store** (a live store: counting again
+    /// takes a NEW reading rather than checking this one). Every ending's *why* has a column, and
+    /// two of them were empty:
+    ///
+    /// | ending | runs | its column | carried |
+    /// | --- | ---: | --- | ---: |
+    /// | `cancelled` | 36 | `cancelled_by` | **36** |
+    /// | `exhausted` | 26 | `ceiling` | **26** |
+    /// | `converged` | 54 | `done_reason` | 35 |
+    /// | `failed` | 78 | *none* | **0** |
+    /// | `blocked` | 14 | *none* | **0** |
+    ///
+    /// ⇒ ⭐ **The debt was never *`done_reason` is attached to one ending*.** Two endings already
+    /// answered fully, in their own vocabularies; the hole was exactly these two.
+    ///
+    /// ⚠⚠⚠ **THE REFUSAL WORD AND NOT THE QUESTION.** `sprag_plugin::consent::Unanswered` carries
+    /// both, and only one of them may cross: the question was READ OFF A PANE, and
+    /// [`crate::plugins::outcome_from_words`] already refuses to republish it because *a question
+    /// re-published from a durable record would be a claim about a screen nobody has looked at
+    /// since*. **That argument is kept, and it does not reach the refusal** — `why` comes from a
+    /// closed set of eleven this build holds, it is a statement about what THIS host could not do
+    /// with what it saw, and it stays true however long ago it was. Same split
+    /// [`failure`](Self::failure) draws.
+    ///
+    /// ⚠ [`None`] is *nobody wrote that down* — a run that did not block, and a log written before
+    /// this column existed. Never *it blocked for no reason*.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move, on [`build`](Self::build)'s argument.
+    #[serde(default)]
+    pub blocked_by: Option<String>,
     /// ⚠⚠⚠⚠⚠ **HOW BIG THE BRIEF IT WAS STARTED WITH IS** — register item 719's second direction,
     /// and it crosses a restart on [`banked`](Self::banked)'s argument, which applies here harder
     /// than anywhere.
@@ -4315,63 +4383,109 @@ impl RunRegistry {
                     // one place that knows WHICH kind of driver produced the ending, and the word
                     // lives in a different place for each: in the `Outcome` this process computed,
                     // and in the report a driver on the far side of a socket sent back.
-                    let (finished, outcome, ceiling, output, done_reason) = match &run.state {
-                        RunState::Running | RunState::Interrupted => {
-                            (false, None, None, None, None)
-                        }
-                        // ⚠ `uncommitted` is NOT persisted, and the omission is stated rather than
-                        // an oversight: what a tree was holding is a fact about a moment that has
-                        // passed, and a successor daemon publishing it would be vouching for a
-                        // reading it never took. A restored run answers *cannot say*.
-                        RunState::Done {
-                            outcome, output, ..
-                        } => (
-                            true,
-                            Some(crate::plugins::outcome_word(outcome).to_owned()),
-                            crate::plugins::outcome_ceiling(outcome).map(str::to_owned),
-                            output.clone(),
-                            // ⛔ AND WHICH ENDING IT CLOSED UNDER — register item 706. Owned here
-                            // and borrowed live, which is the `Cow`'s whole point: the log is the
-                            // one reader that outlives the plugin that spelled the word.
-                            outcome.done_reason.as_deref().map(str::to_owned),
-                        ),
-                        // ⚠⚠⚠⚠ A RUN THAT ENDED IN ANOTHER PROCESS — register items 650 / 544, and
-                        // the durable log loses NOTHING here: what it keeps of an ending is the
-                        // word, the ceiling and the capture, and all three are what
-                        // `outcome_to_json` has always carried. Read out of the report rather than
-                        // recomputed, because the process that computed them is gone.
-                        //
-                        // ⚠ `PersistedRun`'s own fields are `Option<String>`, so a key the report
-                        // does not carry lands as [`None`] — which this log already reads as
-                        // *nobody wrote that down* rather than as a zero. An older daemon reading
-                        // this file meets exactly the shape it meets for a thread-driven run.
-                        RunState::Reported(reported) => (
-                            true,
-                            reported
-                                .get("state")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            reported
-                                .get(crate::plugins::RUN_CEILING_KEY)
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            reported
-                                .get("output")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            // ⛔ THE SAME WORD OUT OF THE REPORT — register item 706. The driver
-                            // on the far side wrote it with THIS daemon's own `outcome_to_json`,
-                            // so there is one spelling and this side reads rather than recomputes.
-                            reported
-                                .get(crate::plugins::RUN_DONE_REASON_KEY)
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                        ),
-                        // ⚠ A DRIVER THAT DIED NAMED NO ENDING, and `why` is not one: it is the
-                        // exit status of a process that stopped saying anything, which is the
-                        // opposite of a run closing on its own terms.
-                        RunState::Panicked(why) => (true, Some(why.clone()), None, None, None),
-                    };
+                    // ⛔⛔⛔⛔⛔ AND THE SIXTH IS WHY IT FAILED — register item 903, joining the
+                    // five for their reason exactly: the sentence lives in the `Outcome` this
+                    // process computed and in the report a driver across a socket sent back, and
+                    // these arms are the one place that knows which. See `PersistedRun::failure`.
+                    let (finished, outcome, ceiling, output, done_reason, failure, blocked_by) =
+                        match &run.state {
+                            RunState::Running | RunState::Interrupted => {
+                                (false, None, None, None, None, None, None)
+                            }
+                            // ⚠ `uncommitted` is NOT persisted, and the omission is stated rather than
+                            // an oversight: what a tree was holding is a fact about a moment that has
+                            // passed, and a successor daemon publishing it would be vouching for a
+                            // reading it never took. A restored run answers *cannot say*.
+                            RunState::Done {
+                                outcome, output, ..
+                            } => (
+                                true,
+                                Some(crate::plugins::outcome_word(outcome).to_owned()),
+                                crate::plugins::outcome_ceiling(outcome).map(str::to_owned),
+                                output.clone(),
+                                // ⛔ AND WHICH ENDING IT CLOSED UNDER — register item 706. Owned here
+                                // and borrowed live, which is the `Cow`'s whole point: the log is the
+                                // one reader that outlives the plugin that spelled the word.
+                                outcome.done_reason.as_deref().map(str::to_owned),
+                                // ⛔⛔⛔⛔⛔ AND WHY IT FAILED — register item 903. The SENTENCE, taken
+                                // through the same `Display` every reader of a live run sees, so a row
+                                // restored from this file and a row read off the running daemon say the
+                                // same words. `None` for every ending that is not a failure, which is
+                                // what `Outcome::failure` already means.
+                                outcome.failure.as_ref().map(ToString::to_string),
+                                // ⛔⛔⛔⛔⛔ AND WHY A BLOCKED RUN WAS NEVER ANSWERED — register item
+                                // 903. THE REFUSAL'S WORD, out of a closed set of eleven; the QUESTION
+                                // beside it does not cross, on `outcome_from_words`' stated argument.
+                                // See `PersistedRun::blocked_by` for why that argument does not reach
+                                // this half.
+                                match &outcome.state {
+                                    sprag_plugin::OutcomeState::Blocked(Some(unanswered)) => {
+                                        Some(unanswered.why().wire_str().to_owned())
+                                    }
+                                    _ => None,
+                                },
+                            ),
+                            // ⚠⚠⚠⚠ A RUN THAT ENDED IN ANOTHER PROCESS — register items 650 / 544, and
+                            // the durable log loses NOTHING here: what it keeps of an ending is the
+                            // word, the ceiling and the capture, and all three are what
+                            // `outcome_to_json` has always carried. Read out of the report rather than
+                            // recomputed, because the process that computed them is gone.
+                            //
+                            // ⚠ `PersistedRun`'s own fields are `Option<String>`, so a key the report
+                            // does not carry lands as [`None`] — which this log already reads as
+                            // *nobody wrote that down* rather than as a zero. An older daemon reading
+                            // this file meets exactly the shape it meets for a thread-driven run.
+                            RunState::Reported(reported) => (
+                                true,
+                                reported
+                                    .get("state")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                                reported
+                                    .get(crate::plugins::RUN_CEILING_KEY)
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                                reported
+                                    .get("output")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                                // ⛔ THE SAME WORD OUT OF THE REPORT — register item 706. The driver
+                                // on the far side wrote it with THIS daemon's own `outcome_to_json`,
+                                // so there is one spelling and this side reads rather than recomputes.
+                                reported
+                                    .get(crate::plugins::RUN_DONE_REASON_KEY)
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                                // ⛔⛔⛔⛔⛔ AND THE SENTENCE OUT OF THE REPORT — register item 903, on
+                                // the line above's argument: the far driver composed it with THIS
+                                // daemon's `outcome_to_json`, so there is one spelling and this side
+                                // reads rather than recomputes. ⚠ THE KEY IS THE ONE THAT SIDE WROTE
+                                // (`failure`), which is why it is spelled here exactly as that composer
+                                // spells it.
+                                reported
+                                    .get("failure")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                                // ⛔⛔⛔ AND THE REFUSAL'S WORD OUT OF THE REPORT — register item 903,
+                                // on the line above's argument. Spelled as that composer spells it.
+                                reported
+                                    .get(crate::plugins::RUN_BLOCKED_BY_KEY)
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                            ),
+                            // ⚠ A DRIVER THAT DIED NAMED NO ENDING, and `why` is not one: it is the
+                            // exit status of a process that stopped saying anything, which is the
+                            // opposite of a run closing on its own terms.
+                            //
+                            // ⚠⚠ NOR IS IT A FAILURE SENTENCE — register item 903. This `why` is
+                            // already published as `crate::plugins::RUN_ERROR_KEY` and means *the
+                            // driver stopped saying anything*; `failure` means *the plugin met a cause
+                            // and named it*. Putting an exit status in that column would hand a reader
+                            // a diagnosis nobody wrote.
+                            RunState::Panicked(why) => {
+                                (true, Some(why.clone()), None, None, None, None, None)
+                            }
+                        };
                     // ⚠⚠⚠⚠⚠ **A DRIVER'S REPORT IS PREFERRED OVER THE CELL, AND THE ROW HAD ALREADY
                     // DECIDED THIS** — register item 662. For a run driven in another process the
                     // cell NEVER MOVES (`spawn_driven_run` files an empty one and says so), so
@@ -4423,6 +4537,10 @@ impl RunRegistry {
                         ceiling,
                         output,
                         done_reason,
+                        // ⛔⛔⛔⛔⛔ AND WHY IT FAILED, AND WHY A BLOCKED ONE WAS NEVER ANSWERED —
+                        // register item 903. See the fields.
+                        failure,
+                        blocked_by,
                         build: run.build.clone(),
                         // ⛔⛔⛔⛔⛔ AND WHICH RUN IT IS — register item 887, and **the crossing
                         // the whole item turns on**: the numbers a successor reissues are the ones
@@ -4682,15 +4800,40 @@ impl RunRegistry {
                         state: crate::plugins::outcome_from_words(
                             saved.outcome.as_deref(),
                             saved.ceiling.as_deref(),
+                            // ⛔⛔⛔⛔⛔ AND WHY A BLOCKED ONE WAS NEVER ANSWERED — register item
+                            // 903. See `PersistedRun::blocked_by`.
+                            saved.blocked_by.as_deref(),
                         ),
                         iterations: saved.iterations,
                         cost,
-                        failure: None,
-                        // ⚠ AND NEITHER IS `stopped`, for the same reason `failure` is dropped
-                        // above: the log carries a run's SUMMARY, not its whole outcome. Both are
-                        // diagnostics about a moment that is over — the daemon that could have
-                        // acted on them is the one that died — and a restored pane's occupant is a
-                        // plain shell, so there is no job left for either to describe.
+                        // ⛔⛔⛔⛔⛔ **AND WHY IT FAILED COMES BACK** — register item 903, which
+                        // reversed the decision this line used to record. It read `failure: None`
+                        // under *the log carries a run's SUMMARY, not its whole outcome*, and that
+                        // sentence is true of a typed cause and false of a diagnosis: item 903
+                        // measured 78 failed runs of which **0** could still say why, because a
+                        // promotion is a daemon restart and the driver that met the failure dies
+                        // with it. The moment somebody needs the reason is exactly the moment it
+                        // was gone.
+                        //
+                        // ⚠⚠ THE SENTENCE, wrapped in `PaneError::Recorded`, whose whole doc is
+                        // that this daemon did not observe it. Parsing it back into a typed cause
+                        // would be inventing structure the file never held — so what crosses is
+                        // what a person reads, and the type says where it came from.
+                        // ⚠⚠ A BLANK IS *NOBODY WROTE IT DOWN*, filtered at the door rather than
+                        // carried: a record whose column exists and holds nothing is the same
+                        // claim as a record with no column, and letting the two differ would put
+                        // an empty failure in front of an agent — the leak
+                        // `every_pane_failure_reads_as_a_sentence_rather_than_a_rust_variant`
+                        // exists to stop.
+                        failure: saved
+                            .failure
+                            .clone()
+                            .filter(|said| !said.trim().is_empty())
+                            .map(sprag_plugin::PaneError::Recorded),
+                        // ⚠ AND `stopped` IS STILL DROPPED, and the split is the point: that one
+                        // describes a job that is STILL RUNNING somewhere, which is a claim about
+                        // NOW that a dead daemon's log cannot make. This column is about a moment
+                        // that is over and stays true however long ago it was.
                         stopped: None,
                         // ⚠ AND THE ANSWER TALLY IS NOT RESTORED EITHER, for a reason worth
                         // stating rather than folding into the two above: this one is a count of
@@ -5322,6 +5465,7 @@ mod tests {
             let read_back = crate::plugins::outcome_from_words(
                 Some(crate::plugins::outcome_word(&outcome)),
                 crate::plugins::outcome_ceiling(&outcome),
+                None,
             );
             assert_eq!(
                 read_back, state,
@@ -5332,12 +5476,285 @@ mod tests {
         // ⚠ AND AN UNREADABLE PAIR IS `Failed`, never a happier guess: a record this build cannot
         // parse must not be reported as having converged.
         assert_eq!(
-            crate::plugins::outcome_from_words(Some("a word from a newer build"), None),
+            crate::plugins::outcome_from_words(Some("a word from a newer build"), None, None),
             OutcomeState::Failed,
         );
         assert_eq!(
-            crate::plugins::outcome_from_words(None, None),
+            crate::plugins::outcome_from_words(None, None, None),
             OutcomeState::Failed,
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A FAILED RUN'S REASON SURVIVES ITS DAEMON, AND A BLOCKED ONE'S DOES TOO** —
+    /// register item 903's done-when ⑴, and the round trip that makes it true.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was lost, and why nothing could ever have found it
+    ///
+    /// The sentence a failed run reports is composed by the driver that MET the failure
+    /// (`sprag_plugin::PaneError`'s `Display`), and that process dies with its daemon — while a
+    /// promotion IS a daemon restart. **Measured 2026-09-05T04:59:20Z over the loop's own store**
+    /// (a live store: counting again takes a NEW reading rather than checking this one): 228 runs,
+    /// **78 `failed`**, of which `done_reason` 0, `output` 0, `request` 0, `ceiling` 0. The ending
+    /// WORD survived and the narrative did not — so the loop's post-mortems were impossible in
+    /// principle rather than merely neglected.
+    ///
+    /// ⚠⚠ **THE QUESTION IS STILL NOT RESTORED**, and this gate asserts that too: a blocked run's
+    /// question was read off a pane a restart has outlived, and only the REFUSAL — a word out of a
+    /// closed set of eleven, about what THIS host could not do — crosses.
+    #[test]
+    fn the_reason_a_run_failed_or_blocked_comes_back_out_of_the_log() {
+        use sprag_plugin::consent::{Refusal, Unanswered};
+        use sprag_plugin::{OutcomeState, PaneError};
+
+        // ── ① A FAILURE SENTENCE CROSSES WHOLE ───────────────────────────────────────────────
+        let met =
+            PaneError::Undrivable("the document reached a state this build has none for".into());
+        let said = met.to_string();
+        let recorded = PaneError::Recorded(said.clone());
+        assert_eq!(
+            recorded.to_string(),
+            said,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 903: a sentence read back out of a log must render as the \
+             words that were written, or a row that survived two restarts doubles its own prefix",
+        );
+
+        // ── ② AND A BLOCKED RUN'S REFUSAL DOES, THROUGH THE WORD AND NOT THE QUESTION ────────
+        for why in Refusal::ALL {
+            let back =
+                crate::plugins::outcome_from_words(Some("blocked"), None, Some(why.wire_str()));
+            assert_eq!(
+                back,
+                OutcomeState::Blocked(Some(Unanswered::recorded(why))),
+                "⛔⛔⛔⛔ REGISTER ITEM 903: every refusal this build knows has to survive the \
+                 log, and the list is WALKED rather than typed — a twelfth arm added to `Refusal` \
+                 must not come back as *blocked, and nobody wrote down why*",
+            );
+            let OutcomeState::Blocked(Some(carried)) = back else {
+                unreachable!("the assertion above settled the shape")
+            };
+            assert!(
+                carried.question().is_none(),
+                "⚠⚠⚠ AND THE QUESTION MUST NOT: it was read off a pane this restart has outlived, \
+                 and republishing it would be a claim about a screen nobody has looked at since. \
+                 That is `outcome_from_words`' own standing argument and this half keeps it",
+            );
+        }
+
+        // ── ③ AND THE WHOLE OF IT SURVIVES AN ACTUAL RESTART, ROUND TRIP AND ALL ────────────
+        //
+        // ⛔⛔⛔⛔⛔ THIS ARM EXISTS BECAUSE THE FIRST DRAFT OF THIS GATE DID NOT HAVE IT, and a
+        // mutation proved the hole: dropping the restore of `failure` altogether left the two arms
+        // above GREEN, because they measure the pieces and never drove the door. That is the shape
+        // item 868 records — *build an instrument and point it at the real subject* — and it is
+        // exactly the defect item 903 is about, one level up.
+        //
+        // ⚠⚠ READ BACK THROUGH `persistable`, which is the ROUND TRIP and not a peek: a sentence
+        // that came out of the log and did not go back into it would be lost at the NEXT restart,
+        // and surviving one hop and not the next is this fact's whole defect.
+        let saved: RunLog = serde_json::from_str(
+            r#"{"version":1,"runs":[
+                {"id":7,"label":"ai_loop pane=3","iterations":9,"cost":null,"unit":null,
+                 "finished":true,"outcome":"failed","ceiling":null,"output":null,
+                 "failure":"this run's machine could not be driven on: no effect for that state"},
+                {"id":8,"label":"ai_loop pane=4","iterations":3,"cost":null,"unit":null,
+                 "finished":true,"outcome":"blocked","ceiling":null,"output":null,
+                 "blocked_by":"unreadable"},
+                {"id":9,"label":"ai_loop pane=5","iterations":1,"cost":null,"unit":null,
+                 "finished":true,"outcome":"failed","ceiling":null,"output":null}]}"#,
+        )
+        .expect("a log naming the reasons parses, and so does one that does not");
+        let mut successor = RunRegistry::default();
+        successor.restore(&saved);
+        let back = successor.persistable();
+        let reasons: Vec<(Option<&str>, Option<&str>)> = back
+            .runs
+            .iter()
+            .map(|run| (run.failure.as_deref(), run.blocked_by.as_deref()))
+            .collect();
+        assert_eq!(
+            reasons,
+            vec![
+                (
+                    Some("this run's machine could not be driven on: no effect for that state"),
+                    None
+                ),
+                (None, Some("unreadable")),
+                (None, None),
+            ],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 903: a failed run's sentence and a blocked run's refusal have \
+             to cross a daemon restart AND go back into the next log, or the diagnosis dies at the \
+             promotion that made somebody want it. The third row is the control — a log that wrote \
+             neither must not gain one. Got: {reasons:?}",
+        );
+
+        // ── ④ AND AN UNKNOWN WORD IS *NOBODY SAID*, never a nearest guess ────────────────────
+        assert_eq!(
+            crate::plugins::outcome_from_words(
+                Some("blocked"),
+                None,
+                Some("a word from a newer build")
+            ),
+            OutcomeState::Blocked(None),
+            "⚠⚠ A refusal this build cannot read must land where every blocked run landed before \
+             this column existed. Naming the closest arm would send somebody to fix a thing that \
+             was never wrong",
+        );
+        assert_eq!(
+            crate::plugins::outcome_from_words(Some("blocked"), None, None),
+            OutcomeState::Blocked(None),
+            "⚠ AND THE CONTROL: an older log carries no such column and must still read as blocked",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY ENDING SAYS WHY, EACH IN ITS OWN COLUMN — AND THE COMPILER HOLDS THE
+    /// LIST** — register item 903's done-when ⑶, in the shape the measurement supports rather than
+    /// the one the item first wrote down.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The item's own prescription was disproved by re-measuring it
+    ///
+    /// Item 903 asked for `done_reason` to be *attached to every ending*, on the reading that a
+    /// field set for one ending gives the illusion that a reason exists. The first half is right and
+    /// the prescription is not, and [`sprag_plugin::Outcome::done_reason`]'s own doc says why: it
+    /// means **the plugin named this ending out of a closed vocabulary it holds**, and reserves
+    /// [`None`] for every run that did not end on its own terms. A `failed` run did not close
+    /// itself. Widening that field to cover it would be widening a gate until it went green.
+    ///
+    /// **Measured 2026-09-05T05:05:23Z over the loop's own store**, and this is what settles it:
+    ///
+    /// | ending | runs | its column | carried |
+    /// | --- | ---: | --- | ---: |
+    /// | `cancelled` | 36 | `cancelled_by` | **36** |
+    /// | `exhausted` | 26 | `ceiling` | **26** |
+    /// | `converged` | 54 | `done_reason` | 35 |
+    /// | `failed` | 78 | *none* | **0** |
+    /// | `blocked` | 14 | *none* | **0** |
+    ///
+    /// ⇒ ⭐⭐⭐ **Two endings already answered in full, in vocabularies of their own.** The debt was
+    /// never *one field is attached to one ending*; it was *two endings had no column at all*.
+    ///
+    /// # ⛔⛔ Why an exhaustive `match` and not a list
+    ///
+    /// [`sprag_plugin::OutcomeState`]'s arms carry data, so there is no `ALL` to walk. A match with
+    /// no `_` is stronger than one anyway: **a seventh ending will not compile until somebody names
+    /// the column that says why it happened**, which is this workspace's rule 6 enforced by the
+    /// compiler rather than by a reviewer.
+    #[test]
+    fn every_ending_names_a_column_that_says_why_it_happened() {
+        use sprag_plugin::{Ceiling, OutcomeState};
+
+        /// The column a reader opens to learn why THIS ending happened, or the statement that the
+        /// ending word is itself the whole answer.
+        ///
+        /// ⛔ There is no `_` arm and there must never be one: an unclassified ending is a RED, not
+        /// a pass.
+        fn why_column(state: &OutcomeState) -> Result<&'static str, &'static str> {
+            match state {
+                // The plugin closed itself and named the ending out of its own vocabulary.
+                OutcomeState::Converged => Ok("done_reason"),
+                // A guardrail stopped it, and WHICH one is the remedy.
+                OutcomeState::Exhausted(_) => Ok("ceiling"),
+                // ⛔ REGISTER ITEM 903: this column is the one this round built.
+                OutcomeState::Failed => Ok("failure"),
+                // A person decided, and the row says which conversation they decided from.
+                OutcomeState::Cancelled => Ok("cancelled_by"),
+                // ⛔ REGISTER ITEM 903: and so is this one.
+                OutcomeState::Blocked(_) => Ok("blocked_by"),
+                // ⚠⚠ THE ONE ENDING WHOSE WORD IS ITS OWN REASON, stated rather than defaulted:
+                // *a person took the pane* is the whole event, and a column beside it could only
+                // repeat it. This arm exists so that saying so is a DECISION somebody wrote down,
+                // which is what separates it from an ending nobody classified.
+                OutcomeState::TakenOver(_) => Err("the ending word is the reason"),
+            }
+        }
+
+        let every: Vec<OutcomeState> = [
+            OutcomeState::Converged,
+            OutcomeState::Cancelled,
+            OutcomeState::Failed,
+            OutcomeState::Blocked(None),
+            OutcomeState::TakenOver(None),
+        ]
+        .into_iter()
+        .chain(Ceiling::ALL.map(OutcomeState::Exhausted))
+        .collect();
+
+        // ⚠⚠ THE COLUMNS ARE CHECKED AGAINST THE RECORD'S OWN SHAPE, never a hand-written list:
+        // a column named here that the row does not actually have would be a gate vouching for a
+        // field nobody stores, which is the shape item 895 was filed over.
+        let row = serde_json::to_value(PersistedRun {
+            id: 7,
+            label: "ai_loop pane=2".to_owned(),
+            iterations: 3,
+            finished: true,
+            outcome: Some("failed".to_owned()),
+            // ⚠ THE FIVE THIS GATE IS ABOUT, each holding something, so *the column is absent* and
+            // *the column is empty* cannot pass for one another.
+            done_reason: Some("no_successor".to_owned()),
+            ceiling: Some("iterations".to_owned()),
+            cancelled_by: Some(Canceller::Person),
+            failure: Some("this run's machine could not be driven on: ...".to_owned()),
+            blocked_by: Some("unreadable".to_owned()),
+            // ⚠ AND EVERYTHING ELSE ABSENT, deliberately: what this gate reads is which columns
+            // EXIST on the record, and a fixture that filled them all would pass even if the five
+            // above were spelled wrong.
+            cost: None,
+            unit: None,
+            moved_at: None,
+            ended_at: None,
+            ran_from: None,
+            ran_to: None,
+            output: None,
+            build: None,
+            which_run: None,
+            driver: None,
+            driving: None,
+            opened_by_session: None,
+            at: None,
+            document: None,
+            context_ceiling: None,
+            context_high_water: None,
+            overridden: None,
+            place: None,
+            stood_down: None,
+            stood_down_by: None,
+            deliveries: None,
+            folds_by_reason: None,
+            delivered_by_road: None,
+            said_by_sentence: None,
+            width_withheld: None,
+            banked: None,
+            briefed: None,
+            request: None,
+            tree: None,
+        })
+        .expect("a record serialises");
+
+        let mut answered = 0;
+        for state in &every {
+            match why_column(state) {
+                Ok(column) => {
+                    assert!(
+                        row.get(column).is_some_and(|held| !held.is_null()),
+                        "⛔⛔⛔⛔⛔ REGISTER ITEM 903: a {state:?} run is supposed to say why in \
+                         `{column}`, and the durable row has no such column holding a value. A \
+                         gate that named a field nobody stores would pass while the reason went on \
+                         dying with the daemon. Row: {row}",
+                    );
+                    answered += 1;
+                }
+                Err(said) => assert_eq!(
+                    said, "the ending word is the reason",
+                    "⛔ RULE 6: an ending may be excused from having a column ONLY by a sentence \
+                     somebody wrote deciding so. {state:?} carries {said:?}",
+                ),
+            }
+        }
+        assert!(
+            answered >= every.len() - 1,
+            "⚠⚠⚠ THE POPULATION ARM: exactly one ending is excused, and if that ever grows this \
+             gate has become a list of exemptions instead of a check. {answered} of {} answered \
+             with a column",
+            every.len(),
         );
     }
 
@@ -8197,6 +8614,9 @@ mod tests {
                 briefed: None,
                 // ⚠ Item 706's field, absent on the line above's argument.
                 done_reason: None,
+                // ⚠ And item 903's two, on the same argument.
+                failure: None,
+                blocked_by: None,
                 place: None,
             }],
         };
@@ -8454,6 +8874,9 @@ mod tests {
             briefed: None,
             // ⚠ Item 706's field, absent on the line above's argument.
             done_reason: None,
+            // ⚠ And item 903's two, on the same argument.
+            failure: None,
+            blocked_by: None,
             // ⚠ This fixture is about the WORD, so it carries no place — which is also the
             // shape of every log written before item 543's field existed.
             place: None,
@@ -8576,6 +8999,9 @@ mod tests {
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
             // that never closed names no ending.
             done_reason: None,
+            // ⚠ And item 903's two, on the same argument.
+            failure: None,
+            blocked_by: None,
             place,
         };
         // ⚠ THE WORDS ARE THE PLUGIN'S OWN, taken from a real place rather than spelled here — a
@@ -8688,6 +9114,9 @@ mod tests {
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
             // that never closed names no ending.
             done_reason: None,
+            // ⚠ And item 903's two, on the same argument.
+            failure: None,
+            blocked_by: None,
             place,
         };
         let words = vec![
@@ -9144,6 +9573,9 @@ mod tests {
                 briefed: None,
                 // ⚠ Nor which ending it closed under — item 706's field, on the same argument.
                 done_reason: None,
+                // ⚠ Nor why it failed or blocked — item 903's two, on the same argument.
+                failure: None,
+                blocked_by: None,
                 place: None,
             }],
         });
