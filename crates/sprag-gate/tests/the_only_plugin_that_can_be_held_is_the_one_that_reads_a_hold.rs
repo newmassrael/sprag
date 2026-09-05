@@ -42,7 +42,19 @@ use sprag_gate::sources::rust_sources;
 ///
 /// ⚠ `held()` and not `held` — the FIELD `holding` and the local `held` bindings are everywhere in
 /// this workspace, and a needle that matched them would measure nothing about the order.
-const READER: &str = "held()";
+///
+/// ⛔⛔⛔⛔⛔ **AND THE DOT, WHICH THIS NEEDLE CLAIMED TO CARRY AND DID NOT** — measured 2026-09-05,
+/// register item 866(2). The paragraph beside `run.rs` below already argues the distinction: *a
+/// definition reads `fn held(&self)` and a CALL reads `.held()`*. The needle was the bare `held()`,
+/// so it matched **inside an identifier** — a new `width_withheld()` accessor put `ai_loop.rs` and
+/// `driver.rs` on the refusal list for a method that asks nothing about any order, and the failure
+/// told a reader to raise `WIRE_PROTOCOL` over it.
+///
+/// ⇒ This is NARROWER and not wider: every genuine call in this workspace carries the receiver
+/// (`self.orders.held()`, `record.run.held()`, `run.held()`, `place.held()` — all of them, checked
+/// the day this changed), and no call can reach the method without one. What it stops matching is
+/// `withheld`, `upheld`, `beheld` and every future word ending in the same four letters.
+const READER: &str = ".held()";
 
 /// The files allowed to ask whether a run is held, and why each one may.
 ///
