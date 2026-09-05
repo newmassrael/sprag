@@ -4472,6 +4472,59 @@ impl Folds {
         self.landings(Judged::ByACallerWhoMovedIt)
     }
 
+    /// 🎯🎯🎯🎯🎯 **THE RATE ITEM 856's AXIS IS ACTUALLY READ FROM** — register item 894 ⑶, and
+    /// the number five re-judgements of that clause each said was waiting on a population.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A per-run row is not a rate, and adding rows by hand is what this replaces
+    ///
+    /// [`measured`](Self::measured) prints one line per run, and item 856's question is a
+    /// COMPARISON between roads — *does a prompt sent while the session is full fold more often
+    /// than one sent for any other reason*. Answering it off the rows means a reader summing
+    /// columns in their head, which is exactly the `python3 -c` item 856 ⒝ was built to retire one
+    /// level down. Register item 894 ⑶ states the deliverable in those words: read the ratio over
+    /// PRODUCTION runs, with no ceiling moved for it.
+    ///
+    /// ⛔⛔ **ONLY THE ROWS JUDGED BY THEIR OWN DOCUMENT.** A run whose caller moved the ceiling
+    /// reflects on `capacity` because it was told to hand over early, so pooling it would answer
+    /// this axis with the experiment's own definition of *full* — [`refutations`](Self::refutations)
+    /// holds the whole argument and the 29 landings that forced it.
+    ///
+    /// ⚠ Every road in [`sprag_plugin::Occasion::ALL`]'s order **including the empty ones**, for
+    /// [`unmeasured`](Self::unmeasured)'s reason: the population is the enum, and a caller deciding
+    /// what to print may drop a line where a caller deciding whether the table is whole may not.
+    /// The roads with nothing on them are the CONTROL and the whole reason the split exists.
+    #[must_use]
+    pub fn folded_by_road(&self) -> Vec<(sprag_plugin::Occasion, u32, u32)> {
+        sprag_plugin::Occasion::ALL
+            .into_iter()
+            .map(|occasion| {
+                let (folded, delivered) = self
+                    .measured
+                    .iter()
+                    .filter(|row| row.judged == Judged::ByItsDocument)
+                    .map(|row| row.folds.under(occasion))
+                    .fold((0, 0), |(folded, delivered), row| {
+                        (folded + row.folded, delivered + row.delivered)
+                    });
+                (occasion, folded, delivered)
+            })
+            .collect()
+    }
+
+    /// **HOW MANY RUNS THAT RATE IS OVER** — the rows [`folded_by_road`](Self::folded_by_road)
+    /// sums, and the number that has to travel beside it.
+    ///
+    /// ⚠ Published rather than left to a caller's filter for item 856's most repeated failure: a
+    /// rate with no population is a number a reader cannot argue with, and `0 of 0` on every road
+    /// reads as *nothing folded* where it means *nobody has run yet*.
+    #[must_use]
+    pub fn production_runs(&self) -> usize {
+        self.measured
+            .iter()
+            .filter(|row| row.judged == Judged::ByItsDocument)
+            .count()
+    }
+
     /// **HOW MANY RUNS [`stranded`](Self::stranded) SITS IN** — the count under
     /// [`NoFullness::CapacityUnjudgeable`], read here so no mouth re-derives it from the map.
     ///
@@ -11558,6 +11611,43 @@ mod tests {
              alone, so its `capacity` reflections still mean *the session filled up*. A build that \
              read *any override* as *an experiment* would throw a healthy run out of the axis's \
              denominator, and one that read it as neither would put run 2 into it.",
+        );
+
+        // ── ②a THE RATE, ROAD BY ROAD, OVER PRODUCTION RUNS ONLY — register item 894 ⑶ ──
+        //
+        // ⛔⛔⛔⛔⛔ Run 2's caller moved the ceiling to 20,000 and it folded 1 of 28 capacity
+        // prompts. Summed in, the capacity denominator reads 34 and the axis is answered with the
+        // experiment's own definition of *full* — the same pooling `refutations` refuses one
+        // method over, arriving through the RATE instead of through the landings.
+        //
+        // ⚠⚠ AND THE EMPTY ROADS ARE IN THE ANSWER. They are the control group: item 856's whole
+        // design note is that counting `capacity` alone cannot tell the axis from *a reflection
+        // prompt is the longest thing this loop builds*, and a road nobody walked is what makes
+        // the comparison readable rather than a single figure.
+        assert_eq!(
+            (
+                folds.production_runs(),
+                folds
+                    .folded_by_road()
+                    .into_iter()
+                    .filter(|(_, _, delivered)| *delivered > 0)
+                    .map(|(occasion, folded, delivered)| (occasion.word(), folded, delivered))
+                    .collect::<Vec<_>>(),
+                folds.folded_by_road().len(),
+            ),
+            (
+                3,
+                vec![("budget", 8, 8), ("capacity", 3, 6), ("ordinary", 0, 40)],
+                sprag_plugin::Occasion::ALL.len(),
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 894 ⑶: the ratio item 856 is read from is a COMPARISON over \
+             production runs — `capacity` beside the roads that are its control — and it must sum \
+             only the rows judged by their OWN document's ceiling. Run 2 is an experiment: its \
+             caller moved the ceiling to 20,000, so its 28 capacity prompts answer *we handed \
+             over early* and belong to no rate about fullness. And every road stays in the answer, \
+             zeros included, because the empty ones are what make the walked ones mean anything. \
+             Rows: {:?}",
+            folds.measured,
         );
 
         // ── ②b THE WALL HAS A SIZE, AND IT IS NOT A THIRD REFUTATION ──

@@ -1087,6 +1087,29 @@ fn folds_lines(
                 folds.landings_at_a_moved_ceiling(),
             ));
         }
+        // 🎯🎯🎯🎯🎯 AND THE RATE ITSELF, ROAD BY ROAD — register item 894 ⑶, whose deliverable is
+        // *read item 856's ratio over production runs with no ceiling moved for it*. The rows
+        // above are per-run and the axis is a COMPARISON, so answering it off them means a reader
+        // summing columns by hand — the `python3 -c` this verb exists to retire.
+        //
+        // ⛔⛔ THE POPULATION TRAVELS ON THE SAME LINE, and the roads with nothing on them are
+        // PRINTED rather than dropped: they are the control group, and `0 of 0` beside a named
+        // run count is a population where the same figure alone would read as *nothing folded*.
+        // Withheld entirely when no production run could be read, on the landing counts' own rule.
+        if folds.production_runs() > 0 {
+            let split: Vec<String> = folds
+                .folded_by_road()
+                .into_iter()
+                .map(|(occasion, folded, delivered)| {
+                    format!("{} {folded} of {delivered}", occasion.word())
+                })
+                .collect();
+            lines.push(format!(
+                "  over {} production run(s) judged by their own document's ceiling: {}",
+                folds.production_runs(),
+                split.join(" · "),
+            ));
+        }
         // ⛔⛔⛔⛔⛔ AND THE LANDINGS THIS LOG HOLDS AND THE AXIS MAY NOT USE — printed OUTSIDE the
         // branch above, because the store where it matters most is exactly the one whose readable
         // half is empty. On 2026-09-05T13:41:36Z that was this loop's own log: 3 rows behind item
@@ -13780,6 +13803,34 @@ mod tests {
             !said.contains("30 capacity landing(s)"),
             "⛔⛔⛔ AND NEVER THEIR SUM, which is the same sentence as ② said the way it actually \
              went wrong. Got:\n{said}",
+        );
+
+        // ── ②bb THE RATE ITSELF REACHES THE PAGE, WITH ITS POPULATION — register item 894 ⑶ ──
+        //
+        // ⛔⛔⛔⛔⛔ Run 2's caller moved the ceiling and it folded 1 of 28 capacity prompts; runs
+        // 1, 5 and 6 are judged by their own document (4+1+0 delivered, 1+1+0 folded). A mouth
+        // summing all four prints `capacity 3 of 34` and answers the axis with the experiment's
+        // own definition of *full*.
+        //
+        // ⚠⚠ AND THE CONTROL ROADS ARE ON THE LINE, zeros and all: `capacity` alone cannot tell
+        // item 856's axis from *a reflection prompt is the longest thing this loop composes*, and
+        // a renderer that dropped the empty roads would publish exactly the capacity-only figure
+        // the split was built to replace.
+        assert!(
+            said.contains("over 4 production run(s) judged by their own document's ceiling:")
+                && said.contains("capacity 2 of 5")
+                && said.contains("ordinary 0 of 40")
+                && said.contains("milestone 0 of 0"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 894 ⑶: the rate item 856 is read from has to be ON THE PAGE \
+             with the population it is over, road by road and zeros included — otherwise a reader \
+             sums the per-run rows by hand, which is the `python3 -c` five re-judgements of that \
+             clause each performed. Got:\n{said}",
+        );
+        assert!(
+            !said.contains("capacity 3 of 34"),
+            "⛔⛔⛔ AND THE EXPERIMENT IS NOT IN THE RATE. Run 2's ceiling was moved to 20,000, so \
+             its 28 capacity prompts mean *we handed over early*; summing them answers this axis \
+             with the experiment's own definition of *full*. Got:\n{said}",
         );
 
         // ── ②c AND THE LANDINGS BEHIND THE WALL ARE SAID, WITH THE POPULATION THEY SIT IN ──
