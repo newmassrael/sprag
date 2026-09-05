@@ -2892,14 +2892,117 @@ pub struct DeliveredByRoad {
     /// ⚠ Private, so the only way in and out is by ROAD — [`FoldsByReason::under`]'s rule exactly:
     /// an index is a second spelling of the order this array happens to be in, and a caller that
     /// wrote one would be free to disagree with `ALL` about which row is which.
-    on: [u32; crate::deliver::Witnessed::ALL.len()],
+    on: [Arrivals; crate::deliver::Witnessed::ALL.len()],
+}
+
+/// ⛔⛔⛔⛔⛔ **THE DELIVERIES THAT ARRIVED ON ONE ROAD, AND WHAT THEY COST IN INJECTIONS** — one
+/// row of [`DeliveredByRoad`], and register item 909.
+///
+/// # ⛔⛔⛔⛔⛔ Why the cost had to move INTO this row rather than beside it
+///
+/// [`crate::deliver::Delivered::injections`] is carried by every delivery answer there is, and the
+/// driver threw it away the moment the delivery succeeded — so the number survived only in the
+/// sentence of a run that DIED. Register item 909 filed that as *856's last candidate variable
+/// cannot be counted*.
+///
+/// ⇒ ⚠⚠ **A count of injections with no count of deliveries beside it is not a rate**, which is
+/// this file's most repeated finding ([`FoldsUnder`], [`SaidUnder`] and
+/// [`crate::plugin::Deliveries`] each say it in their own words). Kept as a sibling table it would
+/// be a numerator a later writer can fill without its denominator; kept here it cannot be.
+///
+/// ⇒ ⭐ And the pairing is per DELIVERY rather than per run, which is what makes it answer item
+/// 856 at all: every delivery lands on exactly one road, and the roads a FOLD takes
+/// ([`crate::deliver::Witnessed::Account`], [`crate::deliver::Witnessed::LetGo`] — see
+/// `crate::plugin::Deliveries::folded`) are rows of this same table. So *how many injections did
+/// the folded deliveries take, against the ones that landed* is one subtraction on one table, and
+/// needs no new axis and no second counter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Arrivals {
+    /// How many deliveries arrived on this road — the denominator, and what this row counted
+    /// before register item 909 widened it.
+    pub deliveries: u32,
+    /// ⛔ How many injections those deliveries took IN TOTAL — the sum of
+    /// [`crate::deliver::Delivered::injections`] over them, and [`None`] where **nobody counted**.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AN `Option` AND NOT A ZERO, which item 909's own done-when demanded
+    ///
+    /// That item says it in as many words — *부재는 `null`, 절대 0 이 아니다* (register item 891) —
+    /// and a first draft of this field ignored it, carrying a bare `u32` and reading `injections ==
+    /// 0` beside real deliveries as *this row predates the column*. The argument was that
+    /// [`crate::deliver::deliver`] injects at least once, so the pair is unreachable.
+    ///
+    /// ⇒ ⛔⛔ **[`crate::deliver::Delivered::Stopped`] refutes it.** That answer is returned at the
+    /// TOP of the retry loop, before the counter is raised, so a run cancelled before its first
+    /// injection legitimately records one delivery on [`crate::deliver::Witnessed::Unasked`]
+    /// costing **zero** — and the predicate would have called that live row a relic. An absence
+    /// that shares a spelling with a measurement is the disease this whole register is about, and
+    /// it does not stop being one because the collision looks unlikely.
+    ///
+    /// ⚠⚠ **A SUM AND NOT A MAXIMUM**, [`WidthWithheld::withheld`]'s call: what item 856 compares
+    /// is the cost of a road over a whole run, and a maximum would report one delivery's retries
+    /// for a run that made sixty.
+    ///
+    /// ⚠ [`Some(0)`](Option::Some) on a road with deliveries is therefore a MEASUREMENT — every
+    /// one of them was stopped before a byte went out — and [`None`] is the only absence.
+    pub injections: Option<u32>,
+}
+
+impl Arrivals {
+    /// **NOTHING ON THIS ROAD** — the honest answer for a road no delivery took.
+    ///
+    /// ⚠ `Some(0)` and not [`None`]: this build COUNTS, and what it counted was nothing. `None` is
+    /// reserved for a row whose writer had no counter at all — see
+    /// [`injections`](Self::injections).
+    pub const NONE: Self = Self {
+        deliveries: 0,
+        injections: Some(0),
+    };
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS ROW'S COST IS AN ABSENCE RATHER THAN A ZERO** — register items 909
+    /// and 891, and the reason [`injections`](Self::injections) needs no third field beside it.
+    ///
+    /// [`crate::deliver::deliver`] injects AT LEAST ONCE per delivery, so `injections >=
+    /// deliveries` holds on every row a build that counts has ever written. **The pair this
+    /// returns true for is therefore unreachable** — it exists only where a row came out of a log
+    /// written before item 909, whose stored shape was a bare count
+    /// (`sprag_host::runs::PersistedArrivals::DeliveriesOnly`).
+    ///
+    /// ⚠⚠ So *nobody counted this* is a PREDICATE and not a comment, which is this workspace's
+    /// rule 10 — and a reader that skipped it would publish *nothing here was ever typed twice*
+    /// about the build least able to say so.
+    ///
+    /// ⚠ False for a road nothing arrived on: `0` of `0` is not an absence, it is a road no
+    /// delivery took, and [`NONE`](Self::NONE) is exactly that.
+    #[must_use]
+    pub const fn uncounted(self) -> bool {
+        self.injections.is_none()
+    }
+
+    /// **HOW MANY TIMES A PROMPT ON THIS ROAD HAD TO BE TYPED AGAIN** — register item 909, and the
+    /// number item 856 reads against the fold.
+    ///
+    /// ⚠⚠ [`None`] where nobody counted, so a reader CANNOT get *nothing was retyped* out of a row
+    /// that never said. The first draft returned a bare `u32` and answered `0` there, which is the
+    /// reassuring reading of an unmeasured value and is exactly what item 891 forbids — the
+    /// `Option` moves that from a rule a reader has to remember into one the compiler asks about.
+    ///
+    /// ⚠ Saturating rather than wrapping: a stopped delivery costs zero injections and still
+    /// counts as a delivery, so the subtraction can go negative and the answer there is *nothing
+    /// was retyped*, which is true.
+    #[must_use]
+    pub const fn retyped(self) -> Option<u32> {
+        match self.injections {
+            Some(injections) => Some(injections.saturating_sub(self.deliveries)),
+            None => None,
+        }
+    }
 }
 
 impl DeliveredByRoad {
     /// **NOTHING DELIVERED YET** — every road zero, which is what a run that has typed nothing has
     /// honestly counted.
     pub const NONE: Self = Self {
-        on: [0; crate::deliver::Witnessed::ALL.len()],
+        on: [Arrivals::NONE; crate::deliver::Witnessed::ALL.len()],
     };
 
     /// Where `road`'s row lives — the one place an index is derived, so
@@ -2917,28 +3020,44 @@ impl DeliveredByRoad {
     /// [`crate::deliver::Witnessed`] and files it, so this type has no opinion about which roads
     /// are landings and cannot come to disagree with
     /// [`crate::deliver::Witnessed::landing`] — the one authority.
-    pub fn record(&mut self, road: crate::deliver::Witnessed) {
+    /// ⛔⛔⛔ `injections` is PASSED rather than re-derived — register item 909, and
+    /// [`FoldsByReason::record`]'s rule verbatim: the caller has the
+    /// [`crate::deliver::Delivered`] in hand and reads the count off it, and a second reading here
+    /// would be a second authority on what a delivery cost.
+    pub fn record(&mut self, road: crate::deliver::Witnessed, injections: u32) {
         let row = &mut self.on[Self::at(road)];
-        *row = row.saturating_add(1);
+        row.deliveries = row.deliveries.saturating_add(1);
+        // ⚠ A LIVE record always leaves an answer, even onto a row restored without one: this
+        // build counted THIS delivery, and saying so is more honest than carrying the predecessor's
+        // silence forward over a number it does not cover.
+        row.injections = Some(
+            row.injections
+                .unwrap_or_default()
+                .saturating_add(injections),
+        );
     }
 
     /// **PUT A ROW BACK AS IT WAS WRITTEN DOWN** — for a host reading a run out of its durable log.
     ///
     /// ⚠⚠ Separate from [`record`](Self::record) for [`FoldsByReason::restore`]'s reason: `record`
     /// is the LIVE act, one delivery at a time, and this assigns a number somebody already counted.
-    pub fn restore(&mut self, road: crate::deliver::Witnessed, count: u32) {
-        self.on[Self::at(road)] = count;
+    /// ⚠⚠⚠ **THE WHOLE ROW, NOT ITS NUMBERS ONE BY ONE** — [`FoldsByReason::restore`]'s call
+    /// since register item 856(3), and register item 909 widened this the same way: two `u32`
+    /// parameters in a row are two chances for a caller to transpose them and the compiler would
+    /// say nothing.
+    pub fn restore(&mut self, road: crate::deliver::Witnessed, row: Arrivals) {
+        self.on[Self::at(road)] = row;
     }
 
-    /// How many deliveries arrived on `road`.
+    /// What `road`'s row says — how many deliveries arrived on it and what they cost.
     #[must_use]
-    pub fn on(&self, road: crate::deliver::Witnessed) -> u32 {
+    pub fn on(&self, road: crate::deliver::Witnessed) -> Arrivals {
         self.on[Self::at(road)]
     }
 
     /// Every row with its road, in [`crate::deliver::Witnessed::ALL`]'s order — **including the
     /// empty ones**, which is this type's whole rule 6 argument.
-    pub fn rows(&self) -> impl Iterator<Item = (crate::deliver::Witnessed, u32)> + '_ {
+    pub fn rows(&self) -> impl Iterator<Item = (crate::deliver::Witnessed, Arrivals)> + '_ {
         crate::deliver::Witnessed::ALL
             .into_iter()
             .map(|road| (road, self.on(road)))
@@ -2953,7 +3072,26 @@ impl DeliveredByRoad {
     /// them but to make the disagreement a red.
     #[must_use]
     pub fn total(&self) -> u32 {
-        self.on.iter().copied().fold(0, u32::saturating_add)
+        self.on
+            .iter()
+            .fold(0, |sum, row| sum.saturating_add(row.deliveries))
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT EVERY ONE OF THEM COST IN INJECTIONS** — register item 909, and
+    /// [`total`](Self::total)'s partner: `injections() - total()` is how many times this run had to
+    /// type a prompt AGAIN because the screen had not shown the last one.
+    ///
+    /// ⚠ Spelled here rather than summed at each reader, [`total`](Self::total)'s own stated
+    /// reason: two readers summing this differently is how one sentence and one gate come to
+    /// disagree about a run.
+    /// ⚠⚠ **WHOLE OR NOTHING** — [`None`] when ANY road's cost is unknown, because a sum over the
+    /// roads that happen to have said would be a total presented as the run's. That is the same
+    /// call `crate::plugins`' wire readers make, one layer up.
+    #[must_use]
+    pub fn injections(&self) -> Option<u32> {
+        self.on
+            .iter()
+            .try_fold(0u32, |sum, row| Some(sum.saturating_add(row.injections?)))
     }
 
     /// **HOW MANY OF THEM BECAME A QUESTION THE PEER HAS** — the number item 856 could not read off
@@ -2987,7 +3125,26 @@ impl DeliveredByRoad {
     fn counting(&self, landing: crate::deliver::Landing) -> u32 {
         self.rows()
             .filter(|(road, _)| road.landing() == landing)
-            .fold(0, |sum, (_, count)| sum.saturating_add(count))
+            .fold(0, |sum, (_, row)| sum.saturating_add(row.deliveries))
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT THE DELIVERIES WITH THIS LANDING COST IN INJECTIONS** — register item 909,
+    /// and the one method item 856's remaining question is asked through.
+    ///
+    /// ⇒ `injections_landing(NotAsked)` against `injections_landing(Asked)`, each over its own
+    /// `counting` — SPELLED and not linked, because that helper is private and this method is
+    /// public, which is `private_intra_doc_links` under `-D warnings` (register item 365, met again
+    /// here and refused by the commit hook before this sentence existed) — is *did a delivery that
+    /// had to be typed again end up folded*: a rate on each side, never a bare count, because the
+    /// roads carry wildly different traffic.
+    /// ⚠⚠ **WHOLE OR NOTHING**, [`injections`](Self::injections)' call and for its reason.
+    #[must_use]
+    pub fn injections_landing(&self, landing: crate::deliver::Landing) -> Option<u32> {
+        self.rows()
+            .filter(|(road, _)| road.landing() == landing)
+            .try_fold(0u32, |sum, (_, row)| {
+                Some(sum.saturating_add(row.injections?))
+            })
     }
 
     /// Whether anything has been counted at all — a run that has typed nothing, so the table has
@@ -8693,7 +8850,7 @@ impl OuterLoop {
     /// ⚠⚠ NOT named `witnessed`, though that is the field it writes: this workspace's rustdoc gate
     /// refuses a word that names two things (R349), and a reader meeting `self.witnessed` would
     /// have to know which of the two they were looking at.
-    fn record_delivery(&mut self, evidence: Option<crate::deliver::Witnessed>) {
+    fn record_delivery(&mut self, evidence: Option<crate::deliver::Witnessed>, injections: u32) {
         self.witnessed = evidence;
         let Some(evidence) = evidence else {
             return;
@@ -8732,7 +8889,7 @@ impl OuterLoop {
         // `Witnessed::landing` is the only thing that says which roads are landings — the same
         // separation `folded_away` won below, where a `==` at this call site let a new road join
         // the majority in silence.
-        self.roads.record(evidence);
+        self.roads.record(evidence, injections);
         // ⚠⚠⚠ THE ROADS WHERE THE PANE CANNOT ANSWER. `Account` means the agent named the question
         // and its screen never carried the text — see `Witnessed::Account`. Every other road leaves
         // the prompt somewhere a person can find it, so every other road is a delivery this count
@@ -12508,7 +12665,11 @@ impl OuterLoop {
             // nothing before a submit is precisely the one whose walk must not be read as *the
             // prompt is on that pane*; recording nothing here would leave it indistinguishable
             // from a pass that delivered nothing at all.
-            self.record_delivery(Some(crate::deliver::Witnessed::Unchecked));
+            // ⚠ ONE injection, and it is counted rather than assumed — register item 909. This
+            // road writes the bytes itself instead of going through `deliver`, so the number is
+            // the literal call above; a road that starts retrying here without saying so would be
+            // an injection count that quietly stops being the run's.
+            self.record_delivery(Some(crate::deliver::Witnessed::Unchecked), 1);
             // ⚠ AND WHAT IT WAS TYPED AT, beside the evidence for the same reason and at the same
             // moment — see `facing` above. The RAW reading: the diff against what this run has
             // already been told belongs where the sentence is written, not here.
@@ -12539,7 +12700,12 @@ impl OuterLoop {
         // did. A peer whose hooks report the question can still be `Painted`, on a prompt short
         // enough for its composer to show — so a walk that published the contract would say item
         // 421's road was taken on every delivery to a hooked agent.
-        self.record_delivery(crate::deliver::Witnessed::of(delivered));
+        // ⛔⛔⛔ AND WHAT IT COST — register item 909, read off the SAME answer the road is read
+        // off so the two can never describe different deliveries.
+        self.record_delivery(
+            crate::deliver::Witnessed::of(delivered),
+            delivered.injections(),
+        );
         // ⚠⚠ AND WHAT IT WAS TYPED AT — register item 745(C), recorded at the same moment as the
         // evidence above and BEFORE the three refusals below, which is the whole reason it is here
         // rather than at the reading: a prompt the composer folded away is a delivery that
@@ -23880,9 +24046,34 @@ mod tests {
                 deliveries.made,
                 roads.total(),
             );
+            // ⛔⛔⛔⛔⛔ **AND EVERY ROAD THIS BUILD WROTE SAYS WHAT IT COST** — register item 909.
+            //
+            // ⚠⚠⚠ **THE CLAIM IS `is_some`, NEVER `injections >= deliveries`.** A draft of this
+            // gate asserted the latter on the ground that `deliver` injects at least once per
+            // delivery — and `Delivered::Stopped` refutes it: that answer is returned at the TOP of
+            // the retry loop, BEFORE the counter is raised, so a run cancelled before its first
+            // injection legitimately records one delivery on `Witnessed::Unasked` costing ZERO.
+            // The assertion would have gone red on a healthy run, which is the shape rule 7 exists
+            // to find and this one was found by reading rather than by a fixture.
+            //
+            // ⇒ ⭐ And that is why the absence is an `Option` and not a zero — item 909's own
+            // done-when says so in as many words (*부재는 `null`, 절대 0 이 아니다*, register item
+            // 891). What this asserts is the thing that IS true of a counting build: it always has
+            // an answer, whatever the answer is.
+            for (road, arrived) in roads.rows() {
+                assert!(
+                    arrived.injections.is_some(),
+                    "⛔⛔⛔⛔⛔ REGISTER ITEM 909: road {road:?} carries deliveries and no injection \
+                     count at all. `None` is reserved for a row restored from a log written before \
+                     that column existed — a LIVE run reaching it means the aggregation was \
+                     skipped, and every mouth reading this row would then say *this row predates \
+                     that count* about a run this image had just driven. Roads {roads:?}, walked \
+                     {walked:?}",
+                );
+            }
             assert_eq!(
-                roads.on(crate::deliver::Witnessed::Account)
-                    + roads.on(crate::deliver::Witnessed::LetGo),
+                roads.on(crate::deliver::Witnessed::Account).deliveries
+                    + roads.on(crate::deliver::Witnessed::LetGo).deliveries,
                 deliveries.folded,
                 "⛔⛔⛔⛔⛔ REGISTER ITEMS 762 AND 856: the two FOLD roads and the fold total \
                  disagree, so `Witnessed::folded_away` and this table are two authorities on one \
@@ -23955,8 +24146,8 @@ mod tests {
         // `AiLoopSpec::driving`'s territory and not a `/bin/sh` peer's. The classification itself
         // is gated where it lives (`deliver::tests`) and across all three crossings with values
         // built by construction.
-        let folds = roads.on(crate::deliver::Witnessed::Account)
-            + roads.on(crate::deliver::Witnessed::LetGo);
+        let folds = roads.on(crate::deliver::Witnessed::Account).deliveries
+            + roads.on(crate::deliver::Witnessed::LetGo).deliveries;
         assert!(
             deliveries.made > 0 && roads.total() > folds,
             "⚠⚠⚠⚠⚠ THE STAGING: this run must deliver at least one prompt, and at least one of \

@@ -6312,8 +6312,16 @@ fn folds_by_reason_in(beside: &Value) -> Option<sprag_plugin::FoldsByReason> {
 /// are exactly the ones a surprise arrives on.
 fn delivered_by_road_json(roads: sprag_plugin::DeliveredByRoad) -> Value {
     let mut out = serde_json::Map::new();
-    for (road, count) in roads.rows() {
-        out.insert(road.word().to_owned(), json!(count));
+    for (road, row) in roads.rows() {
+        out.insert(
+            road.word().to_owned(),
+            // ⛔⛔⛔⛔⛔ AN OBJECT AND NO LONGER A BARE COUNT — register item 909. What a delivery
+            // COST travels beside how many arrived, because a rate whose numerator can be sent
+            // without its denominator is the one shape register item 889 exists to stop. The
+            // DURABLE log tolerates the old bare number and this wire does not — see
+            // `crate::runs::PersistedArrivals` for why the two calls are opposite.
+            json!({ "deliveries": row.deliveries, "injections": row.injections }),
+        );
     }
     Value::Object(out)
 }
@@ -6327,9 +6335,26 @@ fn delivered_by_road_json(roads: sprag_plugin::DeliveredByRoad) -> Value {
 fn delivered_by_road_in(beside: &Value) -> Option<sprag_plugin::DeliveredByRoad> {
     let table = beside.get(RUN_DELIVERED_BY_ROAD_KEY)?.as_object()?;
     let mut roads = sprag_plugin::DeliveredByRoad::NONE;
-    for (word, count) in table {
+    for (word, row) in table {
         let road = sprag_plugin::Witnessed::named(word)?;
-        roads.restore(road, small(Some(count))?);
+        let row = row.as_object()?;
+        // ⛔⛔⛔⛔⛔ **BOTH NUMBERS OR NEITHER** — register item 909 on this function's stated
+        // whole-or-nothing rule. A live driver that reports how many arrived and not what they
+        // cost has not counted the injections, and answering `0` for them would publish *nothing
+        // here was ever typed twice* about the build least able to say so. A peer old enough to
+        // send a bare number fails the `as_object` above, which is the same refusal a missing key
+        // gets: the caller falls back to the daemon's own cell.
+        roads.restore(
+            road,
+            sprag_plugin::Arrivals {
+                deliveries: small(row.get("deliveries"))?,
+                // ⚠ `Some(..?)` and never a bare `?`: this reader's whole rule is that a LIVE
+                // driver reporting arrivals without their cost has not counted them, so the
+                // absence is refused here rather than restored. `None` reaches this type only
+                // from the durable log, one crate over.
+                injections: Some(small(row.get("injections"))?),
+            },
+        );
     }
     Some(roads)
 }
@@ -8114,14 +8139,44 @@ pub fn delivered_by_road_sentence(run: &Value) -> Option<String> {
     // rule: a road this build cannot spell does not sort itself into the middle of a comparison.
     let mut counted = std::collections::BTreeMap::<&'static str, u64>::new();
     let mut roads: Vec<String> = Vec::new();
+    // ⛔⛔⛔⛔⛔ WHAT THOSE DELIVERIES COST, AND WHETHER ANYBODY COUNTED IT — register item 909.
+    // Accumulated beside the landing buckets rather than in a second pass, so the two can never be
+    // taken over different rows.
+    let mut retyped = 0_u32;
+    let mut uncounted = false;
     for road in sprag_plugin::Witnessed::ALL {
-        let Some(count) = table.get(road.word()).and_then(Value::as_u64) else {
+        let Some(row) = table.get(road.word()).and_then(Value::as_object) else {
             // ⚠⚠⚠ A ROAD THE ROW DOES NOT CARRY IS NOT A ZERO. An older daemon wrote a table this
             // build has a word for and it did not; reading the gap as `0` would publish *nothing
             // arrived this way* on behalf of a writer that never said so, which is rule 6's
             // reassuring reading of an unclassified value.
+            //
+            // ⚠⚠ AND A ROW THAT IS A BARE NUMBER FAILS HERE TOO — register item 909. That is the
+            // shape a log written before this column carried, and the DURABLE reader restores it
+            // (`crate::runs::PersistedArrivals::DeliveriesOnly`); a row reaching this mouth still
+            // in that shape came from a writer this build did not produce, and half a sentence
+            // about it would be worse than none.
             return None;
         };
+        let arrived = sprag_plugin::Arrivals {
+            deliveries: u32::try_from(row.get("deliveries").and_then(Value::as_u64)?)
+                .unwrap_or(u32::MAX),
+            // ⛔⛔⛔⛔⛔ **A STATED `null` IS AN ABSENCE; A MISSING KEY IS A REFUSAL** — register
+            // items 909 and 891, and the two are not the same reading. A row that SAYS `null` was
+            // written by this build about a predecessor's row and is telling the truth about it; a
+            // row that omits the key was written by something that does not know this column, and
+            // rule 6 says an unclassified value is a RED rather than a pass.
+            injections: match row.get("injections")? {
+                Value::Null => None,
+                counted => Some(u32::try_from(counted.as_u64()?).unwrap_or(u32::MAX)),
+            },
+        };
+        // ⚠⚠ ASKED BEFORE `retyped`, which is that method's own instruction: it answers `None` for
+        // a row nobody counted, and *nothing was typed twice* is the reassuring reading of exactly
+        // the rows item 909 was filed about.
+        uncounted |= arrived.uncounted();
+        retyped = retyped.saturating_add(arrived.retyped().unwrap_or_default());
+        let count = u64::from(arrived.deliveries);
         let bucket = match road.landing() {
             sprag_plugin::Landing::Asked => "landed",
             sprag_plugin::Landing::Unproven => "unproven",
@@ -8149,6 +8204,28 @@ pub fn delivered_by_road_sentence(run: &Value) -> Option<String> {
             said.push_str(&format!(", {count} {bucket}"));
         }
     }
+    // ⛔⛔⛔⛔⛔ **AND WHAT THEY COST, ON THE SAME SENTENCE AS THE LANDING** — register item 909's
+    // done-when ⑵, which asks for the number to be readable BESIDE the fold rather than anywhere.
+    //
+    // ⚠⚠⚠ **IT IS A RETRY COUNT AND NOT A PIECE COUNT** — see
+    // `sprag_plugin::Delivered::injections`, where the register's own premise is corrected against
+    // the store's arithmetic. What it says is *this prompt had to be typed again because the screen
+    // had not shown the last one*, which is the same screen failure a fold is, caught one step
+    // earlier — so a reader comparing it with the fold roads above is asking item 856's remaining
+    // question.
+    //
+    // ⚠⚠ THE ABSENCE IS SAID AND NEVER PRINTED AS A ZERO — register item 891. A row restored from
+    // a log older than this column reads `injections: 0` beside real deliveries, which is a pair no
+    // counting build can produce.
+    said.push_str(&match (uncounted, retyped) {
+        (true, _) => {
+            ", and nothing here says what they cost — this row predates that count".to_owned()
+        }
+        (false, 0) => ", none of which had to be typed twice".to_owned(),
+        (false, again) => {
+            format!(", {again} of which had to be typed again before the screen showed them")
+        }
+    });
     Some(format!("{said} — {}", roads.join(" · ")))
 }
 
@@ -10982,21 +11059,21 @@ mod tests {
         // Two proven landings, on the two roads that prove one differently: the pane painted it,
         // and the agent named the question off a screen that never carried it.
         for _ in 0..5 {
-            live.record(sprag_plugin::Witnessed::Painted);
+            live.record(sprag_plugin::Witnessed::Painted, 1);
         }
         for _ in 0..2 {
-            live.record(sprag_plugin::Witnessed::Account);
+            live.record(sprag_plugin::Witnessed::Account, 1);
         }
         // ⚠⚠ A FOLD THAT LANDED — register item 762's second road. It is inside `folded` and inside
         // `landed`, and a build that let either predicate stand in for the other pools the two.
-        live.record(sprag_plugin::Witnessed::LetGo);
+        live.record(sprag_plugin::Witnessed::LetGo, 1);
         // ⚠⚠⚠ AND THE TWO SHAPES `made - folded` SILENTLY COUNTED AS LANDINGS: a peer that paints
         // nothing, and a run that ended between the typing and the submit. They are the reason the
         // subtraction was never the number anybody read it as.
         for _ in 0..3 {
-            live.record(sprag_plugin::Witnessed::Unchecked);
+            live.record(sprag_plugin::Witnessed::Unchecked, 1);
         }
-        live.record(sprag_plugin::Witnessed::Unasked);
+        live.record(sprag_plugin::Witnessed::Unasked, 1);
 
         // ══ ① THE WIRE ═════════════════════════════════════════════════════════════════════════
         let beside = json!({ RUN_DELIVERED_BY_ROAD_KEY: delivered_by_road_json(live) });
@@ -13036,29 +13113,33 @@ mod tests {
 
         let mut counted = sprag_plugin::DeliveredByRoad::NONE;
         for _ in 0..5 {
-            counted.record(sprag_plugin::Witnessed::Painted);
+            counted.record(sprag_plugin::Witnessed::Painted, 1);
         }
         // ⚠⚠ THE THREE ROADS `made - folded` COUNTED AS LANDINGS AND SHOULD NOT HAVE: a peer that
         // paints nothing, and a run that ended between the typing and the submit. Without them in
         // the fixture the sentence below would be right for the wrong reason.
         for _ in 0..3 {
-            counted.record(sprag_plugin::Witnessed::Unchecked);
+            counted.record(sprag_plugin::Witnessed::Unchecked, 1);
         }
-        counted.record(sprag_plugin::Witnessed::Unasked);
+        // ⛔⛔⛔⛔⛔ AND ONE DELIVERY THAT HAD TO BE TYPED THREE TIMES — register item 909, and the
+        // only row in this fixture whose cost differs from its count. A build that carried the
+        // injections and dropped them would leave every OTHER row of this table agreeing, because
+        // one injection per delivery is what every other road here took.
+        counted.record(sprag_plugin::Witnessed::Unasked, 3);
 
         // ── ① THE NUMBERS REACH THE ROW ──
         let carried = row(counted);
         assert_eq!(
             carried[RUN_DELIVERED_BY_ROAD_KEY],
             json!({
-                "painted": 5,
-                "echoed": 0,
-                "account": 0,
-                "let_go": 0,
-                "emptied": 0,
-                "unchecked": 3,
-                "unasked": 1,
-                "unproven": 0,
+                "painted": {"deliveries": 5, "injections": 5},
+                "echoed": {"deliveries": 0, "injections": 0},
+                "account": {"deliveries": 0, "injections": 0},
+                "let_go": {"deliveries": 0, "injections": 0},
+                "emptied": {"deliveries": 0, "injections": 0},
+                "unchecked": {"deliveries": 3, "injections": 3},
+                "unasked": {"deliveries": 1, "injections": 3},
+                "unproven": {"deliveries": 0, "injections": 0},
             }),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the road table stops one function short of the row, so \
              no reader of a run can ask how many of its prompts became a question — which is the \
@@ -13083,6 +13164,133 @@ mod tests {
             "⛔⛔⛔⛔ AND IT KEEPS THE TWO NON-LANDINGS APART. *Nothing here can say* is a floor on \
              the count and *nothing was asked* is a run that ended mid-delivery; one number for \
              both is the pooling this item exists to end: {said:?}",
+        );
+
+        // ── ①b AND WHAT THOSE DELIVERIES COST, ON THE SAME SENTENCE — register item 909 ──
+        //
+        // ⛔⛔⛔⛔⛔ The register filed this as *the driver knows how many PIECES it split a prompt
+        // into and throws the number away when the delivery succeeds*. It splits nothing — see
+        // `sprag_plugin::Delivered::injections`, where the store's own arithmetic settles it — so
+        // what crosses here is a RETRY count: this prompt had to be typed again because the screen
+        // had not shown the last one. That is the same screen failure a fold is, one step earlier,
+        // and item 856's remaining question is whether the two move together.
+        //
+        // ⚠⚠ THE DONE-WHEN IS *the number is read on the SAME ROW as the fold*, so the assertion
+        // is on the sentence and not on the type: a build that carried the count to the wire and
+        // stopped there would pay nothing, which is this gate's own stated rule one item over.
+        assert!(
+            said.contains("2 of which had to be typed again before the screen showed them"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 909: nine deliveries took eleven injections here and the \
+             sentence a person reads says nothing about the two that had to be repeated. The \
+             number existed on every `Delivered` answer there is and died the moment a delivery \
+             SUCCEEDED — so it survived only in the failure text of a run that died, which is \
+             where the item's own sample had to be read from: {said:?}",
+        );
+
+        // ── ①c AND A ROW FROM BEFORE THAT COUNT SAYS SO RATHER THAN SAYING ZERO ──
+        //
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 891 THROUGH 909, AND THE SHAPE A FIRST DRAFT GOT WRONG. A log
+        // written before this column stored a bare number per road, and the absence it leaves is
+        // published as `null` — NOT as `0`.
+        //
+        // ⇒ ⛔⛔ The draft used `injections: 0` as the sentinel, on the argument that delivery
+        // injects at least once so the pair could not occur. `crate::deliver::Delivered::Stopped`
+        // refutes that: it is returned at the top of the retry loop BEFORE the counter is raised,
+        // so a run cancelled before its first injection legitimately records one delivery on
+        // `Witnessed::Unasked` costing zero — and the sentinel would have called that live row a
+        // relic. `Some(0)` is a measurement here; `None` is the only absence.
+        let older = json!({
+            RUN_DELIVERED_BY_ROAD_KEY: {
+                "painted": {"deliveries": 4, "injections": null},
+                "echoed": {"deliveries": 0, "injections": 0},
+                "account": {"deliveries": 0, "injections": 0},
+                "let_go": {"deliveries": 0, "injections": 0},
+                "emptied": {"deliveries": 0, "injections": 0},
+                "unchecked": {"deliveries": 0, "injections": 0},
+                "unasked": {"deliveries": 0, "injections": 0},
+                "unproven": {"deliveries": 0, "injections": 0},
+            }
+        });
+        let stale = delivered_by_road_sentence(&older).expect("a restored row can still be said");
+        assert!(
+            stale.contains("nothing here says what they cost")
+                && !stale.contains("had to be typed"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEMS 891 AND 909: a row whose cost nobody counted was told it \
+             cost nothing. The absence is a stated `null` and the mouth must say so — printing \
+             *none of which had to be typed twice* there is the reassuring answer to an unmeasured \
+             question, and it is the sentence this gate exists to forbid: {stale:?}",
+        );
+
+        // ── ①d AND A STOPPED DELIVERY IS A MEASUREMENT, NOT AN ABSENCE ──
+        //
+        // ⛔⛔⛔⛔⛔ THE CONTROL FOR ①c, and the reason `injections` is an `Option` at all.
+        // `Delivered::Stopped` is returned BEFORE the retry counter is raised, so a run cancelled
+        // ahead of its first injection records a delivery on `unasked` that cost ZERO — a real row
+        // this build wrote, about which *nothing had to be typed twice* is TRUE. A build that
+        // sentinelled the absence on `injections == 0` reports this run as a relic of a log written
+        // years ago, and every gate above it stays green.
+        let stopped = json!({
+            RUN_DELIVERED_BY_ROAD_KEY: {
+                "painted": {"deliveries": 0, "injections": 0},
+                "echoed": {"deliveries": 0, "injections": 0},
+                "account": {"deliveries": 0, "injections": 0},
+                "let_go": {"deliveries": 0, "injections": 0},
+                "emptied": {"deliveries": 0, "injections": 0},
+                "unchecked": {"deliveries": 0, "injections": 0},
+                "unasked": {"deliveries": 1, "injections": 0},
+                "unproven": {"deliveries": 0, "injections": 0},
+            }
+        });
+        let cancelled =
+            delivered_by_road_sentence(&stopped).expect("a stopped delivery is still a row");
+        assert!(
+            cancelled.contains("none of which had to be typed twice")
+                && !cancelled.contains("predates that count"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 909: a live run cancelled before its first injection was \
+             reported as a row from a build that could not count. `Some(0)` is what this image \
+             MEASURED — the delivery was stopped before a byte went out — and `None` is the only \
+             absence. A sentinel that cannot tell those apart makes the absence predicate lie \
+             about live runs: {cancelled:?}",
+        );
+
+        // ── ①e AND THE WRITER SAYS THE ABSENCE TOO, WHICH ①c ONLY ASSUMED ──
+        //
+        // ⛔⛔⛔⛔⛔ ①c hand-builds a row carrying `"injections": null` and checks the MOUTH. That
+        // gates one half of a round trip and assumes the other: a writer that serialised `None` as
+        // `0` would leave ①c green while every real row published the reassuring answer. This
+        // file's own neighbouring gate names that hazard — *two spellings of one shape are free to
+        // agree in a test and differ in production* — and an unasserted half is the same defect
+        // wearing one spelling.
+        //
+        // ⚠ `restore` and not `record`, because `record` is the LIVE act and always leaves an
+        // answer: the only way a `None` exists is a row read back out of a log written before the
+        // column, which is exactly what `restore` is for.
+        let mut restored = sprag_plugin::DeliveredByRoad::NONE;
+        restored.restore(
+            sprag_plugin::Witnessed::Painted,
+            sprag_plugin::Arrivals {
+                deliveries: 4,
+                injections: None,
+            },
+        );
+        let published = row(restored);
+        assert_eq!(
+            published[RUN_DELIVERED_BY_ROAD_KEY]["painted"],
+            json!({ "deliveries": 4, "injections": null }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEMS 891 AND 909: a row whose cost nobody counted was PUBLISHED \
+             as though it had cost nothing. `null` is the only spelling of the absence, and the \
+             mouth's own reading of it is gated one arm up — so a writer that emits `0` here makes \
+             that arm green about a shape production never produces. Row: {published}",
+        );
+        // ⚠⚠ AND THE TRIP CLOSES: what the writer emitted, read back by the mouth, still says the
+        // absence. Neither half is asserted against a hand-built literal alone.
+        let round_trip = delivered_by_road_sentence(&published)
+            .expect("a published row can be said back to a person");
+        assert!(
+            round_trip.contains("nothing here says what they cost"),
+            "⛔⛔⛔⛔ REGISTER ITEM 909: the writer and the mouth agree in a fixture and not with \
+             each other. What this run PUBLISHED must read back as the absence it is: \
+             {round_trip:?}",
         );
 
         // ── ③ AND A RUN THAT DELIVERED NOTHING PUTS NO TABLE ON ITS ROW ──
@@ -14876,15 +15084,15 @@ mod tests {
 
         let mut counted = sprag_plugin::DeliveredByRoad::NONE;
         for _ in 0..5 {
-            counted.record(sprag_plugin::Witnessed::Painted);
+            counted.record(sprag_plugin::Witnessed::Painted, 1);
         }
-        counted.record(sprag_plugin::Witnessed::LetGo);
+        counted.record(sprag_plugin::Witnessed::LetGo, 1);
         // ⚠⚠ THE TWO ROADS `made - folded` COUNTS AS LANDINGS AND MUST NOT BE. Without them the
         // sentence below would be right by arithmetic that is wrong.
         for _ in 0..3 {
-            counted.record(sprag_plugin::Witnessed::Unchecked);
+            counted.record(sprag_plugin::Witnessed::Unchecked, 1);
         }
-        counted.record(sprag_plugin::Witnessed::Unasked);
+        counted.record(sprag_plugin::Witnessed::Unasked, 1);
 
         // ── ① IT CROSSES, AND IT COMES BACK THE SAME TABLE ──
         let carried = progress_to_json(&progress(counted));

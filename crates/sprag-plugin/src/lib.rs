@@ -238,7 +238,7 @@ pub use driver::{
 };
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use outer::{
-    AiLoopEvent, AiLoopSpec, AiLoopState, Authored, Brief, Briefed, Briefing, Counted,
+    AiLoopEvent, AiLoopSpec, AiLoopState, Arrivals, Authored, Brief, Briefed, Briefing, Counted,
     DeliveredByRoad, DoneReason, FoldsByReason, FoldsUnder, HOLD_TAKES_EFFECT, HOLD_WITHIN_KEY,
     INNER_SESSION_ENDS, LoopPlace, Made, NotResumed, NotScreenable, Noticed, Occasion, OuterLoop,
     Pumped, ReflectReason, Retyped, STAND_DOWN_TAKES_EFFECT, SaidBySentence, SaidUnder, Unasked,

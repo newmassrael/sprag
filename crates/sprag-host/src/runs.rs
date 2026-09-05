@@ -3244,14 +3244,91 @@ impl From<PersistedFoldsByReason> for sprag_plugin::FoldsByReason {
 /// build cannot spell is DROPPED — a count restored under the wrong road is worse than one lost.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PersistedDeliveredByRoad {
-    /// One entry per road WORD, each a count.
+    /// One entry per road WORD, each a row.
     ///
     /// ⚠ Roads with no deliveries are written too: *nothing arrived this way* and *this build had
     /// no word for it* must not read alike, and the only thing that tells them apart is the row
     /// being present and zero. Two of the seven roads had no observed member at all when this was
     /// written, and they are the ones a surprise arrives on.
     #[serde(flatten)]
-    pub on: std::collections::BTreeMap<String, u32>,
+    pub on: std::collections::BTreeMap<String, PersistedArrivals>,
+}
+
+/// ⛔⛔⛔⛔⛔ **ONE ROAD'S STORED ROW, IN EITHER SHAPE A LOG OF THIS STORE CAN CARRY** — register
+/// item 909.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is an enum and not a struct with a defaulted field
+///
+/// Every other column added to this file arrived as an OPTIONAL FIELD with a default, which reads
+/// in both directions and moves no [`RUN_LOG_VERSION`]. **This one cannot**: the stored value used
+/// to be a bare NUMBER, and a struct cannot parse a number. A log written before item 909 holds
+/// `"delivered_by_road": {"painted": 3, …}`, and 238 such rows were in the live store at
+/// 2026-09-05T21:19:16Z — a type that refused them would not lose a column, it would fail the whole
+/// `RunLog` read and take every run record the running daemon holds with it.
+///
+/// ⇒ So the OLD SHAPE IS AN ARM. Serialisation always writes [`Counted`](Self::Counted); the bare
+/// number exists only to be read.
+///
+/// ⚠⚠ **AND THE ABSENCE STAYS SAYABLE, which is register item 891's whole demand.** Restoring a
+/// bare count yields `injections: 0` beside `deliveries > 0` — and that pair is IMPOSSIBLE for a
+/// build that counts, because `crate::plugins`' delivery path injects at least once per delivery.
+/// So the zero is not a measurement being mistaken for one: it is self-identifying, and
+/// `sprag_plugin::Arrivals::uncounted` is the predicate that says so rather than a comment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum PersistedArrivals {
+    /// This build's row — what arrived on the road and what it cost in injections.
+    ///
+    /// ⚠ FIRST, because `serde(untagged)` tries the arms in order and this is the one a current log
+    /// carries. The bare number below cannot be mistaken for it either way — an object is not a
+    /// number — but the order is the one that costs nothing on the common path.
+    Counted {
+        /// [`sprag_plugin::Arrivals::deliveries`].
+        deliveries: u32,
+        /// [`sprag_plugin::Arrivals::injections`] — register item 909.
+        injections: u32,
+    },
+    /// ⚠ **A LOG WRITTEN BEFORE REGISTER ITEM 909** — how many arrived, and nothing whatever about
+    /// what they cost. Never written by this build.
+    DeliveriesOnly(u32),
+}
+
+impl From<sprag_plugin::Arrivals> for PersistedArrivals {
+    fn from(live: sprag_plugin::Arrivals) -> Self {
+        // ⭐ THE TWO ARMS ARE EXACTLY `Some` AND `None` — register item 909. A row this build
+        // counted stores both numbers; one it restored from a log that had no counter stores the
+        // shape that log had, which is the bare count. So the absence survives a save as an
+        // absence rather than as a zero somebody would later read as a measurement.
+        match live.injections {
+            Some(injections) => Self::Counted {
+                deliveries: live.deliveries,
+                injections,
+            },
+            None => Self::DeliveriesOnly(live.deliveries),
+        }
+    }
+}
+
+impl From<PersistedArrivals> for sprag_plugin::Arrivals {
+    fn from(stored: PersistedArrivals) -> Self {
+        match stored {
+            PersistedArrivals::Counted {
+                deliveries,
+                injections,
+            } => Self {
+                deliveries,
+                injections: Some(injections),
+            },
+            // ⚠⚠ **`None` AND NOT A ZERO** — register items 891 and 909. A zero here would be a
+            // measurement a reader could act on, and what this log says is that its writer had no
+            // counter at all. The two are not the same fact and this build cannot make one of them
+            // up.
+            PersistedArrivals::DeliveriesOnly(deliveries) => Self {
+                deliveries,
+                injections: None,
+            },
+        }
+    }
 }
 
 impl From<sprag_plugin::DeliveredByRoad> for PersistedDeliveredByRoad {
@@ -3259,7 +3336,7 @@ impl From<sprag_plugin::DeliveredByRoad> for PersistedDeliveredByRoad {
         Self {
             on: live
                 .rows()
-                .map(|(road, count)| (road.word().to_owned(), count))
+                .map(|(road, row)| (road.word().to_owned(), row.into()))
                 .collect(),
         }
     }
@@ -3268,14 +3345,14 @@ impl From<sprag_plugin::DeliveredByRoad> for PersistedDeliveredByRoad {
 impl From<PersistedDeliveredByRoad> for sprag_plugin::DeliveredByRoad {
     fn from(stored: PersistedDeliveredByRoad) -> Self {
         let mut live = Self::NONE;
-        for (word, count) in stored.on {
+        for (word, row) in stored.on {
             // ⚠ A word this build has no arm for is DROPPED, this type's stated decision:
             // `Witnessed::ALL` is the only authority on which roads there are, and a count restored
             // under the wrong road is worse than a count lost.
             let Some(road) = sprag_plugin::Witnessed::named(&word) else {
                 continue;
             };
-            live.restore(road, count);
+            live.restore(road, row.into());
         }
         live
     }
@@ -8865,18 +8942,18 @@ mod tests {
         let progress = ProgressCell::default();
         let mut roads = sprag_plugin::DeliveredByRoad::NONE;
         for _ in 0..5 {
-            roads.record(sprag_plugin::Witnessed::Painted);
+            roads.record(sprag_plugin::Witnessed::Painted, 1);
         }
         // ⚠⚠ A FOLD THAT LANDED — register item 762's second road, inside `folded` and inside
         // `landed` at once. A restore that let one classification stand in for the other pools them.
-        roads.record(sprag_plugin::Witnessed::LetGo);
+        roads.record(sprag_plugin::Witnessed::LetGo, 1);
         // ⚠⚠⚠ AND THE TWO SHAPES `made - folded` COUNTED AS LANDINGS. They are the reason the
         // subtraction was never the number it was read as, so a restore that lost them would leave
         // a landing count that agrees with the wrong arithmetic.
         for _ in 0..3 {
-            roads.record(sprag_plugin::Witnessed::Unchecked);
+            roads.record(sprag_plugin::Witnessed::Unchecked, 1);
         }
-        roads.record(sprag_plugin::Witnessed::Unasked);
+        roads.record(sprag_plugin::Witnessed::Unasked, 1);
         lock(&progress).delivered_by_road = Some(roads);
         registry.submit(NewRun {
             id,
@@ -9138,7 +9215,7 @@ mod tests {
             folds.record(sprag_plugin::ReflectReason::Capacity.occasion(), true);
             moving.folds_by_reason = Some(folds);
             let mut roads = sprag_plugin::DeliveredByRoad::NONE;
-            roads.record(sprag_plugin::Witnessed::Painted);
+            roads.record(sprag_plugin::Witnessed::Painted, 1);
             moving.delivered_by_road = Some(roads);
             let mut said = sprag_plugin::SaidBySentence::NONE;
             said.record(sprag_plugin::Sentence::Brief);

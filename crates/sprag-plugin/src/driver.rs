@@ -3248,15 +3248,15 @@ mod tests {
 
         let mut counted = crate::outer::DeliveredByRoad::NONE;
         for _ in 0..5 {
-            counted.record(crate::deliver::Witnessed::Painted);
+            counted.record(crate::deliver::Witnessed::Painted, 1);
         }
         // ⚠⚠ THE ROADS THAT ARE NOT LANDINGS, so a crossing that carried only the interesting one
         // fails here — which is the whole disease this item was filed on.
         for _ in 0..3 {
-            counted.record(crate::deliver::Witnessed::Unchecked);
+            counted.record(crate::deliver::Witnessed::Unchecked, 1);
         }
-        counted.record(crate::deliver::Witnessed::Unasked);
-        counted.record(crate::deliver::Witnessed::Unasked);
+        counted.record(crate::deliver::Witnessed::Unasked, 1);
+        counted.record(crate::deliver::Witnessed::Unasked, 1);
 
         let cell: ProgressCell = ProgressCell::default();
         let heard: Arc<Mutex<Vec<Progress>>> = Arc::new(Mutex::new(Vec::new()));

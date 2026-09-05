@@ -923,6 +923,51 @@ pub enum Delivered {
 }
 
 impl Delivered {
+    /// ⛔⛔⛔⛔⛔ **HOW MANY TIMES THIS DELIVERY INJECTED THE WHOLE PROMPT** — register item 909,
+    /// and the number every variant has carried since [`deliver`] was written while nothing could
+    /// read it off a delivery that SUCCEEDED.
+    ///
+    /// # ⛔⛔⛔⛔⛔ IT IS A RETRY COUNT AND NOT A PIECE COUNT, and the register had it the other way
+    ///
+    /// Item 909 was filed as *the driver knows how many PIECES it split a prompt into*. It does not
+    /// split anything: [`deliver`] builds `KeyStroke::text(text)` **once, from the whole text**, and
+    /// each turn of its loop injects that same whole vector again because the last one did not show
+    /// up — bounded by [`DEFAULT_ATTEMPTS`], which is three.
+    ///
+    /// ⇒ ⭐ **The store's own arithmetic settles it.** The one row carrying the sentence says *"3
+    /// injections put 35103 bytes"*, and `35103 = 3 × 11701` exactly (measured
+    /// 2026-09-05T21:19:16Z over the loop's own store, run 235). Three copies of one 11,701-byte
+    /// prompt, not one prompt in three pieces.
+    ///
+    /// ⚠⚠ **The phrase the register read as *pieces* is about the SCREEN**, and it is
+    /// [`Delivery::confirm`]'s doc: *a long line wraps inside a prompt box and the border
+    /// characters land between the halves, so the pane's text contains the prompt in pieces and not
+    /// as one run.* That is why a needle exists at all; it says nothing about the injection.
+    ///
+    /// ⇒ ⛔ So what this number can be compared with a fold is not *was this prompt fragmented* but
+    /// **did this delivery have to be typed again because the screen had not shown it** — which is
+    /// the same screen failure a fold is, caught one step earlier. That is the axis register item
+    /// 856 can actually read off it, and this doc is where the correction lives rather than in a
+    /// round summary.
+    ///
+    /// ⚠ Exhaustive with no `_` arm, [`refused`](Self::refused)'s rule: an eleventh answer cannot
+    /// be added without somebody saying how many injections it took.
+    #[must_use]
+    pub const fn injections(self) -> u32 {
+        match self {
+            Self::Confirmed { attempts, .. }
+            | Self::OnScreenOnly { attempts, .. }
+            | Self::Reported { attempts, .. }
+            | Self::Released { attempts, .. }
+            | Self::Emptied { attempts, .. }
+            | Self::Unconfirmed { attempts, .. }
+            | Self::Unsubmitted { attempts, .. }
+            | Self::Unreported { attempts, .. }
+            | Self::Stopped { attempts, .. }
+            | Self::Unwitnessed { attempts, .. } => attempts,
+        }
+    }
+
     /// Whether the PROGRAM is known to be holding the text.
     ///
     /// ⚠ False for [`OnScreenOnly`](Self::OnScreenOnly), and that is the whole point of the

@@ -14715,11 +14715,16 @@ mod tests {
         // inside `made - folded` and are NOT landings (a peer that paints nothing, and a run that
         // ended between the typing and the submit), so a mouth that printed the subtraction would
         // say 9 of 10 where the truth is 6.
+        // ⛔⛔⛔⛔⛔ **EACH ROAD IS AN OBJECT SINCE REGISTER ITEM 909** — what arrived AND what it
+        // cost, because a rate whose numerator can be written without its denominator is the shape
+        // item 889 exists to stop. ⚠ `unasked` costs ZERO here and that is a MEASUREMENT, not a
+        // gap: `Delivered::Stopped` is returned above the retry counter, so a run cancelled before
+        // its first injection delivers on that road having injected nothing.
         run[sprag_host::plugins::RUN_DELIVERED_BY_ROAD_KEY] = serde_json::json!({
-            "painted": 5,
-            "echoed": 0,
-            "account": 0,
-            "let_go": 1,
+            "painted": {"deliveries": 5, "injections": 6},
+            "echoed": {"deliveries": 0, "injections": 0},
+            "account": {"deliveries": 0, "injections": 0},
+            "let_go": {"deliveries": 1, "injections": 1},
             // ⛔⛔⛔⛔⛔ **THE EIGHTH ROAD, AND ITS ABSENCE HERE WAS A RED THAT SHIPPED** — register
             // item 889 added `Emptied` and this hand-written table was not updated, so
             // `delivered_by_road_sentence` answered `None` — *whole or nothing* working exactly as
@@ -14730,10 +14735,10 @@ mod tests {
             // target: a package's binary targets are not in its lib run. Register item 833 already
             // recorded that shape — *"run the package with NO target filter"* — and it cost this
             // one again.
-            "emptied": 0,
-            "unchecked": 3,
-            "unasked": 1,
-            "unproven": 0,
+            "emptied": {"deliveries": 0, "injections": 0},
+            "unchecked": {"deliveries": 3, "injections": 3},
+            "unasked": {"deliveries": 1, "injections": 0},
+            "unproven": {"deliveries": 0, "injections": 0},
         });
         let said = render_run(&run);
         let lines: Vec<&str> = said.lines().collect();
