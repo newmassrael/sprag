@@ -3876,10 +3876,25 @@ impl RunLog {
                             .as_deref()
                             .and_then(sprag_plugin::driver::Disposition::of_outcome_word)
                         {
-                            Some(next) if next.opens_next().a_next_run_is_owed() => {
-                                NoWait::NothingFollowed
-                            }
-                            Some(_) => NoWait::SuccessionEnded,
+                            // ⛔⛔⛔⛔⛔ AN EXHAUSTIVE MATCH ON THE OPENER AND NOT
+                            // `a_next_run_is_owed`, because THREE answers come out of three arms
+                            // and a boolean cannot carry them: `nobody` closes the chain, `a
+                            // person` is owed one and has not come, and `this run's own opener` is
+                            // owed one ONLY WHERE THE LOG NAMES THAT PARTY — its own doc says so.
+                            // With no `_` arm a fourth opener has to decide here on the day it
+                            // exists rather than defaulting into *come back later*.
+                            Some(next) => match next.opens_next() {
+                                sprag_plugin::driver::Opener::Nobody => NoWait::SuccessionEnded,
+                                sprag_plugin::driver::Opener::APerson => NoWait::NothingFollowed,
+                                sprag_plugin::driver::Opener::ThisRunsOpener
+                                    if run.opened_by_session.is_none() =>
+                                {
+                                    NoWait::OpenerUnrecorded
+                                }
+                                sprag_plugin::driver::Opener::ThisRunsOpener => {
+                                    NoWait::NothingFollowed
+                                }
+                            },
                             // ⚠ Rule 6: unclassified is a RED, not a pass. `of_outcome_word`'s own
                             // doc says so, and reading it as either neighbour invents the answer.
                             None => NoWait::SuccessionUnsaid,
@@ -4201,6 +4216,34 @@ pub enum NoWait {
     /// item 872 ⑴'s own published answer, rather than of a list of words kept here — a second list
     /// is the *one value, two homes* defect that item's own doc was written against.
     SuccessionEnded,
+    /// **ITS ENDING OWES THE NEXT RUN TO *THIS RUN'S OWN OPENER*, AND THE LOG CARRIES NONE** — so
+    /// by that word's own definition nobody is owed anything.
+    ///
+    /// [`Opener::ThisRunsOpener`](sprag_plugin::driver::Opener::ThisRunsOpener) says it outright:
+    /// *"Not `anybody` and not `the daemon`: the party is a recorded fact of the run, and an
+    /// ending that answers this with no opener on record has nobody owed it."* The party's column
+    /// is [`PersistedRun::opened_by_session`], and a finished run keeps no `request` to re-derive
+    /// it from.
+    ///
+    /// ⛔⛔ **ITS OWN ARM RATHER THAN [`SuccessionEnded`](Self::SuccessionEnded)'s**, on
+    /// [`LeftEnd::Abandoned`]'s distinction exactly: that one is a chain a PERSON closed and it
+    /// can never reopen; this is a column register item 893 can put back, after which the same
+    /// ending owes a successor again. A reader deciding whether to wait needs those apart.
+    ///
+    /// ⛔⛔⛔⛔⛔ **Measured over the live store at 2026-09-05T15:33:48Z**, on the first row this
+    /// repository ever gave item 872 ⑶b a watched stop: run 233 ended `converged` on
+    /// `/home/coin/pinion` at 15:16:31Z with `opened_by_session` **null** and no request. The
+    /// report called it *nothing has followed it on that tree yet*, and nothing in that row could
+    /// say who would make that true.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND THE SAME STORE FALSIFIED THE STRONGER READING WITHIN THE HOUR**, which is why
+    /// this arm's sentence is about the RECORD and not about the future: at **15:41:13Z** run 234
+    /// began on that tree and `waits` measured *1348s*. Somebody opened it — the log simply never
+    /// said who could. So *nobody is owed one* would have been a claim about what will happen,
+    /// made from a column that is missing, and this workspace had it disproved in twenty-two
+    /// minutes. Register item 893's own framing, and the reason it is `ordinary`: the run does not
+    /// die, the RECORD does.
+    OpenerUnrecorded,
     /// The newest run of its tree has ended and **nothing here can say whether a successor is
     /// owed**: no outcome was recorded, or the word is one this build cannot classify.
     ///
@@ -4232,12 +4275,13 @@ pub enum NoWait {
 }
 
 impl NoWait {
-    /// Every way, as the population [`Waits::unmeasured`] is built from — a tenth reason added to
-    /// the type appears in every report without anybody widening a list.
-    pub const ALL: [Self; 9] = [
+    /// Every way, as the population [`Waits::unmeasured`] is built from — an eleventh reason added
+    /// to the type appears in every report without anybody widening a list.
+    pub const ALL: [Self; 10] = [
         Self::TreeUnknown,
         Self::NothingFollowed,
         Self::SuccessionEnded,
+        Self::OpenerUnrecorded,
         Self::SuccessionUnsaid,
         Self::StillRunning,
         Self::EndAbandoned,
@@ -4262,6 +4306,10 @@ impl NoWait {
             Self::SuccessionEnded => {
                 "nothing will ever follow it — its ending opens no next run at all, so this is \
                  where that tree's chain stops"
+            }
+            Self::OpenerUnrecorded => {
+                "its ending owes the next run to whoever opened it and the log names nobody, so \
+                 this record cannot say who would open one"
             }
             Self::SuccessionUnsaid => {
                 "nothing has followed it and nothing says whether anything is owed to — its \
@@ -11207,6 +11255,27 @@ mod tests {
         ) -> serde_json::Value {
             let mut row = run(id, Some(tree), true, from, to);
             row["outcome"] = serde_json::json!(outcome);
+            // ⛔⛔⛔⛔⛔ AND WHO OPENED IT, because `Opener::ThisRunsOpener` owes the next run to
+            // *the party on this run's own record* and answers NOBODY where that is absent. Every
+            // ended row here names one so the arms below are about the ENDING; the row that does
+            // not is called out where it sits.
+            row["opened_by_session"] = serde_json::json!("the conversation that asked");
+            row
+        }
+
+        /// The same ended row with **no opener on record** — the shape the live store handed this
+        /// item, and the only thing separating it from its neighbour.
+        fn ended_unopened(
+            id: u64,
+            tree: &str,
+            from: Option<u64>,
+            to: Option<u64>,
+            outcome: &str,
+        ) -> serde_json::Value {
+            let mut row = ended(id, tree, from, to, outcome);
+            row.as_object_mut()
+                .expect("a run row is an object")
+                .remove("opened_by_session");
             row
         }
 
@@ -11270,6 +11339,18 @@ mod tests {
                 //   *yet* is honest over it without asking; a build that asked anyway would file
                 //   every live loop in the store under *nothing says whether anything is owed*.
                 run(14, Some("/g"), false, Some(70), None),
+                // ⛔⛔⛔⛔⛔ AND THE ROW THE LIVE STORE HANDED THIS ITEM ON 2026-09-05T15:33:48Z:
+                //   the SAME `converged` as /a's newest, and no `opened_by_session`. Its ending
+                //   owes the next run to *whoever opened it* and the log names nobody, so nobody
+                //   is owed one — `Opener::ThisRunsOpener`'s own doc. Run 233 was exactly this and
+                //   the page called it *nothing has followed it on that tree yet*.
+                ended_unopened(15, "/h", Some(80), Some(90), "converged"),
+                // ⚠⚠ AND THE CONTROL THAT KEEPS THAT ARM FROM SPREADING: the same missing column
+                //   over an ending whose opener is A PERSON. A person is owed the next run however
+                //   little the log says about who asked for this one — `a_person opens the next
+                //   run, and until one has, nothing else is owed` — so this row keeps *yet*. A
+                //   build demanding a record here would declare nobody owed on every failure.
+                ended_unopened(16, "/i", Some(100), Some(110), "failed"),
             ]
         }))
         .expect("the log a predecessor leaves is what this reads");
@@ -11328,13 +11409,17 @@ mod tests {
         // ── ③ EVERY REASON REACHED, so none of the seven is decoration ──
         for (why, expected) in [
             (NoWait::TreeUnknown, 1),
-            // ⚠ FOUR, and each has EARNED the word *yet*: /a's newest `converged`, /c's
+            // ⚠ FIVE, and each has EARNED the word *yet*: /a's newest `converged`, /c's
             // `exhausted` and /e's `failed` — a next run is owed off all three, to this run's own
             // opener for the first two and to a PERSON for the third — plus /g's, which has not
-            // ended at all and is the shape every live row in the store has.
-            (NoWait::NothingFollowed, 4),
+            // ended at all, and /i's, which is `failed` with NO opener on record and is owed one
+            // anyway, because the party that word names is not read off the run.
+            (NoWait::NothingFollowed, 5),
             // ⛔ ONE: /b's newest was `cancelled`, and nothing opens a next run off that ending.
             (NoWait::SuccessionEnded, 1),
+            // ⛔ ONE: /h's newest `converged` exactly as /a's did, and carries no opener. The two
+            // differ by that column ALONE, which is why this arm cannot be read off the ending.
+            (NoWait::OpenerUnrecorded, 1),
             // ⚠ TWO: /d's newest recorded no ending at all, and /f's is a word this build cannot
             // classify. `Disposition::of_outcome_word` answers `None` to both and its own doc
             // calls that a RED — folded upward it promises a successor nobody owes.
@@ -11372,10 +11457,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("{arm:?} must be in the report's second population"))
         };
         for (arm, expected) in [
-            // 1, 2, 3, 5, 6, 8, 10, 11, 12, 13 carry `ran_to` and are finished. Runs 4 and 9 do
-            // not. Runs 0 and 7 never finished — and they are DIFFERENT arms, which is the split
-            // the live store forced: 7 may still end, 0 cannot, and only the log says so.
-            (LeftEnd::Watched, 10),
+            // 1, 2, 3, 5, 6, 8, 10, 11, 12, 13, 15, 16 carry `ran_to` and are finished. Runs 4 and
+            // 9 do not. Runs 0 and 7 never finished — and they are DIFFERENT arms, which is the
+            // split the live store forced: 7 may still end, 0 cannot, and only the log says so.
+            (LeftEnd::Watched, 12),
             // ⚠ TWO: run 7, and run 14 — the live store's own shape, newest of its tree and still
             // going.
             (LeftEnd::NotEndedYet, 2),

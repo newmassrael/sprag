@@ -13554,7 +13554,8 @@ mod tests {
                 //   was recorded here the verb said *yet* over a row with no evidence for it.
                 {"id": 2, "label": "ai_loop pane=2", "iterations": 1, "finished": true,
                  "place": ["working"], "tree": "/w", "ran_from": 13729, "ran_to": 13800,
-                 "outcome": "converged", "build": "newer"},
+                 "outcome": "converged", "opened_by_session": "the conversation that asked",
+                 "build": "newer"},
                 {"id": 3, "label": "ai_loop pane=3", "iterations": 1, "finished": true,
                  "place": ["working"], "build": "newer"},
                 // ⛔⛔⛔⛔⛔ AND A TREE WHOSE CHAIN HAS STOPPED: `cancelled` opens no next run at
@@ -13564,6 +13565,13 @@ mod tests {
                 {"id": 4, "label": "ai_loop pane=4", "iterations": 1, "finished": true,
                  "place": ["working"], "tree": "/x", "ran_from": 20, "ran_to": 40,
                  "outcome": "cancelled", "build": "newer"},
+                // ⛔⛔⛔⛔⛔ AND THE ROW THE LIVE STORE HANDED THIS AXIS ON 2026-09-05T15:33:48Z:
+                //   `converged` like run 2, and NO `opened_by_session`. That word owes the next
+                //   run to *the party on this run's own record* and answers nobody where there is
+                //   none, so this tree is owed nothing — and the page called it *yet*.
+                {"id": 6, "label": "ai_loop pane=6", "iterations": 1, "finished": true,
+                 "place": ["working"], "tree": "/z", "ran_from": 60, "ran_to": 70,
+                 "outcome": "converged", "build": "newer"},
                 // ⚠⚠ AND ONE WHOSE ENDING THIS BUILD CANNOT CLASSIFY — neither *come back* nor
                 //   *never*, and rule 6 says an unclassified row is a RED rather than either.
                 {"id": 5, "label": "ai_loop pane=5", "iterations": 1, "finished": true,
@@ -13593,7 +13601,10 @@ mod tests {
                 // one reading that is false — come back later — and the mouth is where that
                 // sentence is actually chosen.
                 && said.contains(NoWait::SuccessionEnded.describe())
-                && said.contains(NoWait::SuccessionUnsaid.describe()),
+                && said.contains(NoWait::SuccessionUnsaid.describe())
+                // ⛔ AND THE THIRD WAY: the ending owes a next run to a party the log never named.
+                // Runs 2 and 6 both `converged`; only run 2 says who asked for it.
+                && said.contains(NoWait::OpenerUnrecorded.describe()),
             "⛔⛔⛔⛔⛔ THE UNMEASURABLE HALF IS NOT ON THE PAGE. Today's real store is 229 rows of \
              exactly that (2026-09-05T07:53:28Z), so a verb printing only its stretches answers a \
              blank page for the machine it was built for — and a blank page reads as *no tree ever \
@@ -13620,7 +13631,7 @@ mod tests {
         // watched stops **0** — so *backfill item 890's column* is not a route to the number, and
         // a page carrying only the first axis reads as though it were.
         assert!(
-            said.contains("4 of 6 run(s) carry the watched stop a stretch is measured from")
+            said.contains("5 of 7 run(s) carry the watched stop a stretch is measured from")
                 && said.contains(LeftEnd::Unwatched.describe()),
             "⛔⛔⛔⛔⛔ THE SECOND AXIS IS NOT ON THE PAGE. `NoWait` is tried in order and stops at \
              `TreeUnknown`, which is every row of the real store, so without this line the report \
