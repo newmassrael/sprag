@@ -13248,6 +13248,267 @@ fn a_wedged_daemon_cannot_stall_a_request_verb() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **AND SO DOES EVERY OTHER VERB — the population is the TABLE** — register item 906.
+///
+/// # ⛔⛔⛔⛔⛔ The gate above walks ONE verb and its own doc claims the other twenty-five
+///
+/// It ends *"`ls` is the verb because it is the plainest read on the wire; the deadline is set in
+/// `connect`, so any of the twenty-six would do."* The reasoning is sound and it is **an argument,
+/// not a measurement** — and [`sprag_host::vocabulary::Verb::ALL`] now holds **75**, of which 69
+/// have a shell form. Nothing had ever checked the other 68, which is this workspace's hand-list
+/// failure (items 80 and 762) wearing a rationale.
+///
+/// ⇒ Item 906 was registered on a live daemon that wedged, stating that its failures came back
+/// `rc=0` and so *"자동화가 이 실패를 못 잡는다"*. **Swept 2026-09-05T18:57:57Z–19:00:01Z against a
+/// stand-in that accepts and never answers, every one of the 31 verbs that reached the wire exited
+/// `1` and named the silence, and none of the 69 took longer than 5.2 s.** That is the claim this
+/// gate now holds, so it is a fact about the product rather than an afternoon somebody spent.
+///
+/// # ⚠⚠⚠ Why the wire-reaching set is DISCOVERED and not listed
+///
+/// A verb is run with NO arguments, so the ones that need an argument refuse before they connect —
+/// and which ones those are is the vocabulary's business and changes. Asserting `!ok` over all 69
+/// would therefore be nearly vacuous. What separates them is the product's own sentence: a run
+/// whose stderr carries [`HOST_SILENT`] reached the wire, whatever its arguments. **The floor below
+/// is what stops that discovery from quietly emptying** — an argument check added in front of
+/// every verb would leave this gate green over a population of nothing.
+///
+/// # ⚠⚠ `HOME` is isolated and that is not tidiness
+///
+/// `install-hooks` and `uninstall-hooks` READ AND WRITE the agent settings under `$HOME`
+/// (`~/.claude/settings.json`, `~/.codex/config.toml`). A gate that walks the whole table runs
+/// them, and pointed at a person's real home it would edit the file this repository's own loop is
+/// driven through. Measured: under an isolated `HOME` both answer *not on this machine, skipped*.
+#[test]
+fn no_verb_of_this_vocabulary_stalls_or_reports_success_against_a_wedged_daemon() {
+    /// Below the 31 measured, with slack for a verb that grows a required argument — and far above
+    /// the ONE the gate beside this walks, which is the defect it exists to close.
+    const REACHED_THE_WIRE_AT_LEAST: usize = 20;
+
+    let sock = socket_path();
+    let _site = SocketSite(sock.clone());
+    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("a stand-in daemon");
+    std::thread::spawn(move || {
+        // HELD, never answered: a stream this thread dropped early would hand its client an EOF,
+        // which is an answer, and being ignored is the case under test.
+        //
+        // ⛔⛔⛔⛔⛔ **AND HELD FOR A BOUNDED TIME, WHICH IS WHAT MAKES THE FIRST ASSERTION BELOW
+        // REACHABLE AT ALL.** A stand-in that holds forever cannot be used to prove *nothing waits
+        // on a person*: strip the client's deadline and every run blocks, the joins block with
+        // them, and the gate HANGS rather than failing — an assertion no mutation can reach is one
+        // nobody knows the strength of. Dropping everything here gives a deadline-less client its
+        // EOF late enough that only a defect is still waiting for it.
+        listener
+            .set_nonblocking(true)
+            .expect("a listener this thread can stop accepting on");
+        let mut held = Vec::new();
+        let until = Instant::now() + Duration::from_secs(45);
+        while Instant::now() < until {
+            match listener.accept() {
+                Ok((stream, _)) => held.push(stream),
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+    });
+
+    let home = sock.with_extension("home");
+    std::fs::create_dir_all(&home).expect("a home of this test's own");
+    let home = home.to_string_lossy().into_owned();
+
+    let verbs: Vec<&'static str> = sprag_host::vocabulary::Verb::ALL
+        .iter()
+        .filter(|verb| verb.runs_in_shell())
+        .map(|verb| verb.name())
+        .collect();
+    assert!(
+        verbs.len() > 1,
+        "⚠⚠⚠⚠ THE CONTROL, FIRST: this gate exists because its neighbour walked a population of \
+         one. Walking {} is the same gate with a longer name.",
+        verbs.len(),
+    );
+
+    // ⚠ Concurrently, and that is load-bearing: each verb that reaches the wire waits out the
+    // client's own 5 s request deadline, so one after another is six minutes of suite time for an
+    // answer that arrives in six seconds. The stand-in answers nobody, so there is nothing for the
+    // runs to race over.
+    let started = Instant::now();
+    let batch: Vec<(&str, std::thread::JoinHandle<(CliRun, Duration)>)> = verbs
+        .iter()
+        .map(|verb| {
+            let (sock, home, verb) = (sock.clone(), home.clone(), *verb);
+            (
+                verb,
+                std::thread::spawn(move || {
+                    let at = Instant::now();
+                    let run = sprag_env(&sock, &[verb], &[("HOME", home.as_str())]);
+                    (run, at.elapsed())
+                }),
+            )
+        })
+        .collect();
+
+    let mut reached: Vec<&str> = Vec::new();
+    let mut succeeded_silently: Vec<&str> = Vec::new();
+    let mut slow: Vec<(&str, Duration)> = Vec::new();
+    for (verb, handle) in batch {
+        let (run, took) = handle.join().expect("a verb's run");
+        if took > Duration::from_secs(30) {
+            slow.push((verb, took));
+        }
+        if run.stderr.contains(HOST_SILENT) || run.stdout.contains(HOST_SILENT) {
+            reached.push(verb);
+            if run.ok {
+                succeeded_silently.push(verb);
+            }
+        }
+    }
+
+    // ══ ⛔⛔⛔⛔⛔ NONE OF THEM WAITS ON A PERSON — item 906's ⑵ ════════════════════════════════
+    assert!(
+        slow.is_empty() && started.elapsed() < Duration::from_secs(120),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 906: a verb waited on a wedged daemon instead of giving up. The \
+         deadline lives in `connect`, so a verb that builds its own connection escapes it — and \
+         the two verbs whose contract is to PARK clear the deadline when they park, which is \
+         after a call has been answered and not before. Slow: {slow:?}, whole batch \
+         {:?}",
+        started.elapsed(),
+    );
+
+    // ══ ⛔⛔⛔⛔⛔ AND NONE OF THEM CALLS IT SUCCESS — item 906's ⑶ ═════════════════════════════
+    assert!(
+        succeeded_silently.is_empty(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 906: {succeeded_silently:?} told a wedged daemon's silence and \
+         then exited 0, so a script cannot tell this machine from a working one. The item was \
+         registered believing this of `kill-window`, `windows` and `doctor`; measured, all three \
+         exit 1, and this gate is what keeps that true for the verbs nobody measures.",
+    );
+
+    // ══ ⚠⚠⚠ THE FLOOR: the assertion above is over a set this run DISCOVERED ═════════════════
+    assert!(
+        reached.len() >= REACHED_THE_WIRE_AT_LEAST,
+        "⚠⚠⚠⚠ only {} verb(s) reached the wire, so the assertion above was made over almost \
+         nothing — 31 did when this was measured (2026-09-05T19:00:01Z). A gate whose population \
+         can empty is the escape hatch this repository's rule 6 is about. Reached: {reached:?}",
+        reached.len(),
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **`kill-window` LEAVES THE DAEMON ANSWERING** — register item 906's ⑴, the
+/// reproduction that item asked for and could not run against the machine it happened on.
+///
+/// # 📊 What was observed, and what nobody could then ask
+///
+/// One `kill-window` on a live daemon did not return, and every client after it queued behind the
+/// same lock: the main thread spinning in `futex` at 20.6 % with ~50 threads asleep behind it. The
+/// item records the whole of what was known — *"`kill-window` 가 원인인지 «모른다»"* — because the
+/// call before it had killed a window's LAST PANE and succeeded (*"killed pane 933 — the window
+/// went with it"*), so two verbs that both retire a window took different paths, and only one
+/// wedged. It could not be pressed further there: three AI loops were living on that daemon and
+/// the item says so — *"소유자 화면과 산 런이 걸린 데몬에서 함부로 하지 마라. 격리 데몬이 필요하다."*
+///
+/// # ⚠⚠ This is that isolated daemon, and it REFUTES the plain path
+///
+/// Driven 2026-09-05T18:54Z–18:56Z by hand before it was written down, the wedge did not reproduce
+/// in three shapes: a bare `kill-window`; the item's own sequence, where a `kill-pane` takes a
+/// window with it and a `kill-window` follows immediately; and either of those under forty
+/// concurrent clients. This gate is the second and third of those, kept.
+///
+/// ⛔⛔ **What it does NOT claim.** The wedge was real and measured; what is refuted is *this verb
+/// wedges this daemon*, not *this daemon cannot wedge*. The one condition of the observation this
+/// cannot build is the one the item names last: the daemon had been PROMOTED minutes earlier and
+/// was driving three live loops. A gate that pretended otherwise would close the item by choosing a
+/// weaker question, which is the failure item 856 spent five rounds on.
+///
+/// ⚠ The concurrency is twelve and not forty: the storm exists to put other clients in the queue
+/// while the window dies, and forty of them buys nothing this cannot see while costing the suite
+/// every one of their handshakes.
+#[test]
+fn killing_a_window_leaves_the_daemon_answering_even_under_concurrent_clients() {
+    let (_host, sock) = spawn_host();
+
+    for name in ["alpha", "beta", "victim"] {
+        assert!(
+            sprag(&sock, &["new-window", "-t", "0", "-d", name]).ok,
+            "the fixture window {name} must exist before anything is killed",
+        );
+    }
+
+    // ⛔ THE CALL THAT PRECEDED THE OBSERVED WEDGE: a window retired through its last PANE rather
+    // than through `kill-window`. The item records it as having SUCCEEDED, so a reproduction that
+    // skipped it would not be the reported sequence at all.
+    assert!(sprag(&sock, &["select-window", "beta", "-t", "0"]).ok);
+    let panes = sprag(&sock, &["panes", "-t", "0"]).stdout;
+    let pane = panes
+        .lines()
+        .find_map(|row| row.split(':').next())
+        .expect("beta has a pane to kill")
+        .to_owned();
+    let took_the_window = sprag(&sock, &["kill-pane", &pane, "-t", "0"]);
+    assert!(
+        took_the_window.ok && took_the_window.stdout.contains("the window went with it"),
+        "the fixture must retire a window THROUGH ITS PANE, which is what preceded the wedge: {:?} \
+         {:?}",
+        took_the_window.stdout,
+        took_the_window.stderr,
+    );
+
+    // ⚠ The storm is started before the kill and joined after it, so the queue is occupied at the
+    // moment the window dies rather than around it.
+    let storm: Vec<std::thread::JoinHandle<()>> = (0..12)
+        .map(|_| {
+            let sock = sock.clone();
+            std::thread::spawn(move || {
+                for _ in 0..6 {
+                    let _ = sprag(&sock, &["panes", "-t", "0"]);
+                    let _ = sprag(&sock, &["ls"]);
+                }
+            })
+        })
+        .collect();
+
+    let started = Instant::now();
+    let killed = sprag(&sock, &["kill-window", "victim", "-t", "0"]);
+    let took = started.elapsed();
+    for client in storm {
+        let _ = client.join();
+    }
+
+    assert!(
+        killed.ok && took < Duration::from_secs(20),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 906 REPRODUCED: `kill-window` did not come back ({took:?}). On the \
+         machine this was registered from, that call never returned and every client after it \
+         queued behind one lock. If this is red, the wedge is in hand and the next question is \
+         WHICH lock — dump the daemon's threads before restarting it, because item 903 is about \
+         the diagnosis going away with the process. Said: {:?} / {:?}",
+        killed.stdout,
+        killed.stderr,
+    );
+
+    // ⛔⛔⛔⛔ AND THE DAEMON IS STILL THERE AFTERWARDS, which is the actual claim: the observed
+    // failure was not a slow call but a host that answered nothing ever again. Asked TWICE, on two
+    // fresh connections, because one answer could be a reply already in flight.
+    for probe in [["windows", "-t", "0"], ["ls", "-t", "0"]] {
+        let after = sprag(&sock, &probe);
+        assert!(
+            after.ok,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 906: the daemon stopped answering after a window was killed — \
+             `{}` said {:?} / {:?}. That is the reported failure exactly, and it is now in hand on \
+             a daemon nobody's work is living on.",
+            probe.join(" "),
+            after.stdout,
+            after.stderr,
+        );
+    }
+
+    // ⚠ AND IT DID THE WORK, so a daemon that answered by ignoring the request cannot pass: the
+    // window is gone and the two that were not named are not.
+    let left = sprag(&sock, &["windows", "-t", "0"]).stdout;
+    assert!(
+        !left.contains("victim") && left.contains("alpha"),
+        "the named window went and the others stayed: {left:?}",
+    );
+}
+
 /// A daemon that is UP but wedged cannot stall the agent that ran the hook.
 ///
 /// This is the failure a connect timeout cannot see: the socket accepts, so the connection succeeds,
