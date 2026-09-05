@@ -979,6 +979,33 @@ pub const RUN_PLACE_KEY: &str = "place";
 /// wire would be indistinguishable from an older daemon that never wrote it, and the two readings
 /// are the same one here — nothing was restarted — so the absence is honest rather than a default.
 pub const RUN_REBOOTED_KEY: &str = "rebooted";
+/// ⛔⛔⛔⛔⛔ **AND THE TALLIES THE RUN HAD ALREADY COUNTED WHEN THIS DRIVER PICKED IT UP** —
+/// register item 907, the THIRD member of [`RUN_PLACE_KEY`]'s family and written by the same one
+/// door.
+///
+/// # ⛔⛔⛔⛔⛔ A counter that only rises, going backwards on the row
+///
+/// `sprag_plugin::Plugin`'s five tallies each declare a RUN's level in their own docs and hold a
+/// DRIVER's: they are Rust fields on the loop, seeded at `NONE` by its one constructor. So a
+/// successor started every one of them at zero and its first report REPLACED the row's higher
+/// number — measured 2026-09-05, run 232 went from `budget 1 of 1 · ordinary 0 of 6` to
+/// `ordinary 0 of 1` in eleven minutes, while `banked` went the other way because it reads the
+/// document's own `turns` and rides the saved place's datamodel.
+///
+/// ⚠⚠ **THE ROW ALREADY HELD THE ANSWER AND NOBODY HANDED IT BACK.** `crate::runs` restores all
+/// five into the run's `Progress` cell at boot, and then the row publishes the driver's REPORT in
+/// preference to that cell (which is right — the cell of an out-of-process run never moves). This
+/// key closes the loop: the daemon reads the cell it just restored and hands it to the child, whose
+/// own report is then the continuation rather than a fresh start.
+///
+/// ⚠⚠ **A CLIENT MAY NOT SAY IT**, for [`RUN_PLACE_KEY`]'s reason exactly and stripped at the same
+/// door — a caller entitled to write it could hand any run any history, and every rate this
+/// repository computes is over these numbers.
+///
+/// ⚠ ABSENT is *this run had counted nothing*, which is what a first driver and a daemon older
+/// than this key both mean. There is no zero spelling to tell apart from a silence, because the
+/// tables' own emptiness already is one.
+pub const RUN_CARRIED_KEY: &str = "carried";
 /// **WHAT A DRIVER REPORTS FOR THE FACTS A ROW PUBLISHES BESIDE ITS STATE** — one key holding one
 /// object, register item 663.
 ///
@@ -2459,6 +2486,20 @@ pub fn drive_request(
             }
         }
     }
+    // ⛔⛔⛔⛔⛔ **AND THE RUN'S OWN TALLIES ARE TAKEN UP** — register item 907, in the same breath
+    // as the place and for its reason: this is the one moment a run's counters may be written by
+    // anything but the loop that counts them, because the loop has not counted anything yet.
+    //
+    // ⚠⚠ **READ EVEN WITH NO PLACE**, deliberately outside the block above. The two facts are
+    // independent — a run put back by a driver replacement carries a place, and a future door that
+    // hands a run on without one would still owe it its history — and `opt_carried` answers
+    // `NONE` for every request that does not carry the key, which is every ordinary `run` call.
+    //
+    // ⚠ NOT GUARDED ON EMPTINESS HERE: `Carried::NONE` writes exactly what the constructor already
+    // put there, so a first driver being handed one is the same run as one handed nothing. The
+    // WRITER is where the absence is decided (`carried_from`), because that is the side that knows
+    // whether there was a predecessor at all.
+    plugin.as_plugin().carrying(&opt_carried(request)?);
     // ⚠ THE OVERRIDE REPORT IS NOT READ HERE, and that is a claim rather than a drop — register
     // item 853. This is the DRIVER's own parse, in the child process, over the same map the daemon
     // already parsed at `run`: the row belongs to the daemon, which answered the question at submit
@@ -3102,10 +3143,16 @@ impl PluginsExternal {
         // run re-brief its agent — the same unpublished verb the line above refuses, one fact over.
         // Removed unconditionally and for the same reason: the only party entitled to say a boot
         // restarted a pane is the boot that restarted it.
+        // ⛔⛔⛔ **AND THE THIRD** — register item 907. `RUN_CARRIED_KEY` is *what this run has
+        // already counted*, and a client entitled to write it could hand any run any history —
+        // every fold rate this repository publishes is computed over exactly those numbers. Its
+        // one writer is `put_back`, which reads them out of the cell a restore filled from the
+        // log, and this is the other half of that pair on the two lines above's argument.
         let handed = {
             let mut handed = request.clone();
             handed.remove(RUN_PLACE_KEY);
             handed.remove(RUN_REBOOTED_KEY);
+            handed.remove(RUN_CARRIED_KEY);
             handed
         };
 
@@ -3313,6 +3360,15 @@ impl PluginsExternal {
                 )));
             }
         }
+        // ⛔⛔⛔⛔⛔ **AND THIS COPY TAKES UP THE RUN'S OWN TALLIES TOO** — register item 907, in
+        // the same breath as the place. The out-of-process arm below throws this plugin away and
+        // the child reads the same fact off `RUN_CARRIED_KEY`; the THREAD arm keeps it and drives
+        // it, so without this line a daemon told `RUN_DRIVER_PROCESS = off` would resume a run
+        // knowing less than one that spawns — the invisible divergence that option promises cannot
+        // happen, which is the argument the `rebooted` key is written on twenty lines down.
+        plugin
+            .as_plugin()
+            .carrying(&carried_in(&lock(&inherited.progress)));
         let name = plugin.name();
         // ⚠⚠⚠⚠⚠ **AND THE FORK IS THE SAME ONE A FRESH REQUEST TAKES** — `run`'s, and for its
         // reason: [`crate::options::RUN_DRIVER_PROCESS`] is the daemon's statement about where its
@@ -3371,6 +3427,20 @@ impl PluginsExternal {
                         handed.insert(RUN_REBOOTED_KEY.to_owned(), Value::Bool(true));
                     }
                     sprag_plugin::Resumed::Driver => {}
+                }
+                // ⛔⛔⛔⛔⛔ **AND THE TALLIES THE RUN HAD ALREADY COUNTED** — register item 907,
+                // the third member of this family and written here for the two above's reason
+                // exactly: these numbers came out of this daemon's own predecessor's log, a client
+                // may not say them, and the child that rebuilds the plugin cannot work them out.
+                //
+                // ⚠⚠ WITHOUT THIS THE CHILD COUNTS FROM ZERO AND ITS FIRST REPORT REPLACES THE
+                // ROW'S HIGHER NUMBER — a monotonic counter going backwards, which is what item
+                // 907 measured over run 232 and what item 856's whole population is made of.
+                //
+                // ⚠ ABSENT WHEN THE RUN HAD COUNTED NOTHING (`carried_from` answers `None`), on
+                // `RUN_REBOOTED_KEY`'s presence-is-the-claim rule one line up.
+                if let Some(carried) = carried_json(&carried_in(&lock(&inherited.progress))) {
+                    handed.insert(RUN_CARRIED_KEY.to_owned(), carried);
                 }
                 self.drive_in_a_process(spawn, inherited.id, &handed, honoured)?
             }
@@ -5761,6 +5831,99 @@ fn opt_rebooted(map: &Map<String, Value>) -> Result<sprag_plugin::Resumed, Invok
         Some(Value::Bool(false)) => Ok(sprag_plugin::Resumed::Driver),
         Some(_) => Err(InvokeError::TypeMismatch),
     }
+}
+
+/// ⛔⛔⛔⛔⛔ **THE FIVE TALLIES THIS REQUEST SAYS THE RUN HAD ALREADY COUNTED** —
+/// [`RUN_CARRIED_KEY`]'s only reader, register item 907.
+///
+/// [`sprag_plugin::Carried::NONE`] for a run starting from the top and for a daemon older than the
+/// key: a first driver and a silent predecessor mean the same thing, and each table's own emptiness
+/// already spells it.
+///
+/// # ⚠⚠ WHOLE OR NOTHING, and it is the tables that make that free
+///
+/// The five ride as one object of the same shapes the run log keeps, so a member the sender did not
+/// write decodes as that table's `Default` — *this build counted no such road* — which is exactly
+/// what a row from an older build already means one layer down. What is refused is a value that is
+/// not an object of those shapes: a malformed history is not a small one, and every rate this
+/// repository publishes is over these numbers.
+///
+/// # Errors
+///
+/// A value that is not an object, or one whose tables do not decode — [`opt_place`]'s rule for its
+/// own key.
+fn opt_carried(map: &Map<String, Value>) -> Result<sprag_plugin::Carried, InvokeError> {
+    /// The wire shape, which is the LOG's shape — one set of tables, two transports.
+    #[derive(serde::Deserialize)]
+    struct Wire {
+        #[serde(default)]
+        deliveries: Option<crate::runs::PersistedDeliveries>,
+        #[serde(default)]
+        folds_by_reason: crate::runs::PersistedFoldsByReason,
+        #[serde(default)]
+        delivered_by_road: crate::runs::PersistedDeliveredByRoad,
+        #[serde(default)]
+        said_by_sentence: crate::runs::PersistedSaidBySentence,
+        #[serde(default)]
+        width_withheld: crate::runs::PersistedWidthWithheld,
+    }
+    let held = match map.get(RUN_CARRIED_KEY) {
+        None | Some(Value::Null) => return Ok(sprag_plugin::Carried::NONE),
+        Some(held @ Value::Object(_)) => held,
+        Some(_) => return Err(InvokeError::TypeMismatch),
+    };
+    let wire: Wire = serde_json::from_value(held.clone()).map_err(|_| InvokeError::TypeMismatch)?;
+    Ok(sprag_plugin::Carried {
+        deliveries: wire
+            .deliveries
+            .map_or(sprag_plugin::Deliveries::NONE, Into::into),
+        folds_by_reason: wire.folds_by_reason.into(),
+        delivered_by_road: wire.delivered_by_road.into(),
+        said_by_sentence: wire.said_by_sentence.into(),
+        width_withheld: wire.width_withheld.into(),
+    })
+}
+
+/// ⛔⛔⛔⛔⛔ **THE SAME FIVE, AS A DAEMON HANDS THEM TO THE CHILD IT IS SPAWNING** —
+/// [`RUN_CARRIED_KEY`]'s only writer, register item 907, and [`opt_carried`]'s inverse.
+///
+/// [`None`] where the run had counted nothing, so the key is ABSENT rather than an object full of
+/// zeros — [`RUN_REBOOTED_KEY`]'s presence-is-the-claim rule, and the reason `opt_carried` needs no
+/// arm to tell an empty history from a missing one.
+///
+/// ⚠ Read out of the [`sprag_plugin::Progress`] cell, which is where `crate::runs` restored the
+/// row's own columns at boot. That cell is the daemon's copy of what the log said; the child's
+/// report is what will replace it, and this is what makes the replacement a continuation.
+///
+/// ⚠⚠ **THE ONE READER OF THAT CELL FOR THIS PURPOSE**, so the daemon's two resume arms — a child
+/// process and a thread — cannot come to disagree about what a run had counted. Each absent column
+/// is that table's empty value, which is what a log written before the column already means.
+fn carried_in(progress: &sprag_plugin::Progress) -> sprag_plugin::Carried {
+    sprag_plugin::Carried {
+        deliveries: progress
+            .deliveries
+            .unwrap_or(sprag_plugin::Deliveries::NONE),
+        folds_by_reason: progress.folds_by_reason.unwrap_or_default(),
+        delivered_by_road: progress.delivered_by_road.unwrap_or_default(),
+        said_by_sentence: progress.said_by_sentence.unwrap_or_default(),
+        width_withheld: progress.width_withheld.unwrap_or_default(),
+    }
+}
+
+/// The same tallies as the child reads them — [`opt_carried`]'s inverse, and [`None`] for a run
+/// that had counted nothing so the key is absent rather than an object full of zeros.
+fn carried_json(carried: &sprag_plugin::Carried) -> Option<Value> {
+    if carried.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "deliveries": crate::runs::PersistedDeliveries::from(carried.deliveries),
+        "folds_by_reason": crate::runs::PersistedFoldsByReason::from(carried.folds_by_reason),
+        "delivered_by_road":
+            crate::runs::PersistedDeliveredByRoad::from(carried.delivered_by_road),
+        "said_by_sentence": crate::runs::PersistedSaidBySentence::from(carried.said_by_sentence),
+        "width_withheld": crate::runs::PersistedWidthWithheld::from(carried.width_withheld),
+    }))
 }
 
 fn require_string_array(map: &Map<String, Value>, key: &str) -> Result<Vec<String>, InvokeError> {
@@ -20983,6 +21146,252 @@ mod tests {
             json!(true),
             "⛔⛔⛔ ITEM 774: this run was put back by this boot and its row does not say so, so the \
              clause that weighs it against the deliveries has nothing to stand on. Row: {row:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SECOND DRIVER OF A RUN IS HANDED WHAT THE FIRST ONE COUNTED** — register
+    /// item 907, and the door through which a monotonic counter stopped going backwards.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Two lifetimes on one row, and only one of them survived
+    ///
+    /// Five of a run's tallies declare a RUN's level in their own docs and hold a DRIVER's — they
+    /// are Rust fields on the loop, seeded at `NONE` by its one constructor. So a successor counted
+    /// from zero and its first report REPLACED the row's higher number. Measured 2026-09-05, run
+    /// 232 went from `budget 1 of 1 · ordinary 0 of 6` to `ordinary 0 of 1` in eleven minutes,
+    /// while `banked` went the other way because it reads the document's `turns` and rides the
+    /// saved place's datamodel. Re-measured over the live store at **2026-09-05T23:31:21Z** — 241
+    /// rows, 232 carrying a banked count — **3 rows report more turns banked than the iterations
+    /// that produce them** (run 199: 3 and 14; run 200: 3 and 9; run 104: 1 and 3).
+    ///
+    /// # ⚠⚠⚠ TWO DRIVERS IN SUCCESSION IS THE FIXTURE'S SHAPE, and it has to be
+    ///
+    /// Item 907's own done-when says so: a fixture with ONE driver cannot reach this defect at all,
+    /// and an arm nothing reaches is one this workspace has repeatedly found to be wrong. So the
+    /// predecessor here is a LOG carrying tallies — what a dead daemon leaves — and the successor
+    /// is a real `put_back` that starts a child and is caught handing it those numbers.
+    ///
+    /// ⚠⚠ **AND THE STRIP IS HALF THE CLAIM**, exactly as it is for the place one test up: a client
+    /// entitled to write this key could hand any run any history, and every fold rate this
+    /// repository publishes is computed over these five numbers.
+    #[test]
+    fn a_successor_driver_is_handed_the_tallies_its_predecessor_counted() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let asked = ai_loop_request(
+            pane,
+            json!({ "guardrails": { "max_iterations": 1, "max_seconds": 5 } }),
+        );
+        let asked = asked.as_object().expect("a request is an object").clone();
+
+        // ⚠⚠ THE PLACE THE PRODUCT'S OWN LOOP PRODUCES, on the neighbour test's argument: a
+        // fixture that spelled state names would round-trip its own invention.
+        let aside = Arc::new(Mutex::new(RunRegistry::default()));
+        let building =
+            PluginsExternal::new(Arc::clone(&workspace), aside, None, None, None, None, None);
+        let (mut built, label) =
+            plugin_from_request(&building, &asked).expect("the shipped document builds a loop");
+        built
+            .as_plugin()
+            .step(
+                &sprag_plugin::WorkspacePaneAccess::new(Arc::clone(&workspace)),
+                &sprag_plugin::RunContext::uncancellable(),
+            )
+            .expect("a live pane takes a pass");
+        let place = built
+            .as_plugin()
+            .place()
+            .expect("an ai_loop says where its machine is");
+
+        // ⛔⛔⛔⛔⛔ WHAT THE PREDECESSOR HAD COUNTED, in the log's own shapes. `made` above
+        // `folded` and a road with members is the shape the report reads; a fixture of zeros would
+        // be `Carried::NONE` and this gate would pass over a build that carried nothing.
+        let counted = sprag_plugin::Deliveries {
+            made: 9,
+            folded: 2,
+            ..sprag_plugin::Deliveries::NONE
+        };
+        let mut folds = sprag_plugin::FoldsByReason::NONE;
+        folds.record(
+            sprag_plugin::Occasion::Reflecting(sprag_plugin::ReflectReason::Budget),
+            true,
+        );
+        // ⚠⚠ **THE JSON A PREDECESSOR LEAVES, DECODED BY THE PRODUCT'S OWN READER** — the fold
+        // report's fixture rule one file over. A hand-built struct would assert this build's typing
+        // and would drift the day a column is added; every value here arrives through `serde` as a
+        // real key or a real absence, which is exactly what a dead daemon's file is.
+        let log: crate::runs::RunLog = serde_json::from_value(json!({
+            "version": crate::runs::RUN_LOG_VERSION,
+            "runs": [{
+                "id": 7,
+                "label": label.clone(),
+                "request": asked.clone(),
+                "iterations": 4,
+                "finished": false,
+                "document": sprag_plugin::STATECHARTS_FINGERPRINT,
+                "place": place.clone(),
+                "deliveries": crate::runs::PersistedDeliveries::from(counted),
+                "folds_by_reason": crate::runs::PersistedFoldsByReason::from(folds),
+            }],
+        }))
+        .expect("the log a predecessor leaves is what a boot reads");
+        let runs = Arc::new(Mutex::new(RunRegistry::default()));
+        lock(&runs).restore(&log);
+        let offered = lock(&runs).inheritance().resumed;
+        assert_eq!(
+            offered.len(),
+            1,
+            "⚠⚠ THE FIXTURE'S PREMISE: this predecessor's run must be one a boot offers back",
+        );
+
+        // ── THE CLAIM: the child is started holding what the predecessor counted ─────────────
+        let handed: Arc<Mutex<Vec<Map<String, Value>>>> = Arc::new(Mutex::new(Vec::new()));
+        let spawning = {
+            let handed = Arc::clone(&handed);
+            move |_: RunId, request: &Map<String, Value>| {
+                lock(&handed).push(request.clone());
+                std::process::Command::new("cat")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+            }
+        };
+        let successor = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&runs),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .driving_out_of_process(Arc::new(spawning));
+        successor
+            .put_back(&offered[0], sprag_plugin::Resumed::Boot)
+            .expect("a daemon can put an inherited run back");
+        let started = lock(&handed).clone();
+        assert!(
+            !started.is_empty(),
+            "⚠⚠ the fixture's premise: a driver was started, so `started[0]` is what it was handed",
+        );
+        let carried = opt_carried(&started[0]).expect("what a daemon writes, its child can read");
+        assert_eq!(
+            (carried.deliveries, carried.folds_by_reason),
+            (counted, folds),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 907: the successor was started KNOWING NOTHING of what this \
+             run had already counted, so its first report replaces the row's `made 9` with a \
+             smaller number — a counter that only rises, going backwards, with no column saying \
+             the new figure is a part. Item 856's whole population is these five. Handed: {:?}",
+            started[0].get(RUN_CARRIED_KEY),
+        );
+
+        // ── AND THE LAST HOP: THE CHILD TAKES IT UP, MEASURED THROUGH THE PRODUCT'S OWN DOOR ──
+        //
+        // ⛔⛔⛔⛔⛔ **THE ARM ABOVE PROVES THE DAEMON WROTE IT AND NOT THAT ANYBODY READS IT.**
+        // Measured on the round that wrote this: deleting the `carrying` call in `drive_request` —
+        // the one line that hands the decoded tallies to the plugin — left every assertion above
+        // GREEN. A wire that is written and not read is the same row as a wire that was never
+        // written, and this file's own history is full of facts that reached one side of a seam.
+        //
+        // ⚠⚠ **ASKED OF THE OUTCOME, WHICH IS WHAT A DRIVER ACTUALLY PUBLISHES.** `Driver` asks the
+        // plugin for its tallies after each step and puts them on the `Outcome`, so a run of ONE
+        // step over a real pane answers *what did this driver report* — the exact number the row
+        // would have taken. The claim is that it does not go BACKWARDS, which is item 907's whole
+        // sentence, so `>=` rather than an equality that would also pin the step's own delivery.
+        let world = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let quiet: sprag_plugin::ProgressSink = Arc::new(|_: &sprag_plugin::Progress| {});
+        let driven = drive_request(
+            &world,
+            &started[0],
+            &sprag_plugin::WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            &sprag_plugin::RunContext::uncancellable(),
+            Arc::clone(&quiet),
+        )
+        .expect("the request this daemon handed its child is one a driver takes");
+        assert!(
+            driven.outcome.deliveries.made >= counted.made,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 907: the child was HANDED what its run had counted and \
+             reported {} deliveries against the {} it inherited — a monotonic counter going \
+             backwards, which is the whole defect. The key reaching the request is not the claim; \
+             the successor's own report is.",
+            driven.outcome.deliveries.made,
+            counted.made,
+        );
+        // ⚠⚠⚠ THE CONTROL, and without it the assertion above passes on any build whose step
+        // happens to deliver enough: the SAME request with the history removed must report fewer.
+        let mut amnesiac = started[0].clone();
+        amnesiac.remove(RUN_CARRIED_KEY);
+        let forgetful = drive_request(
+            &world,
+            &amnesiac,
+            &sprag_plugin::WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            &sprag_plugin::RunContext::uncancellable(),
+            quiet,
+        )
+        .expect("the same request without a history is still a good one");
+        assert!(
+            forgetful.outcome.deliveries.made < counted.made,
+            "⚠⚠⚠ A CONTROL FAILED: a driver handed NO history reported {} deliveries, which is \
+             already at least the {} this fixture's predecessor had counted. The arm above would \
+             then be green over a build that carries nothing.",
+            forgetful.outcome.deliveries.made,
+            counted.made,
+        );
+
+        // ── AND THE STRIP: a CLIENT saying the same word is not obeyed ───────────────────────
+        let by_a_client: Arc<Mutex<Vec<Map<String, Value>>>> = Arc::new(Mutex::new(Vec::new()));
+        let spawning_for_a_client = {
+            let by_a_client = Arc::clone(&by_a_client);
+            move |_: RunId, request: &Map<String, Value>| {
+                lock(&by_a_client).push(request.clone());
+                std::process::Command::new("cat")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+            }
+        };
+        let mut client = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .driving_out_of_process(Arc::new(spawning_for_a_client));
+        let mut forged = asked.clone();
+        forged.insert(
+            RUN_CARRIED_KEY.to_owned(),
+            carried_json(&sprag_plugin::Carried {
+                deliveries: sprag_plugin::Deliveries {
+                    made: 4_000,
+                    ..sprag_plugin::Deliveries::NONE
+                },
+                ..sprag_plugin::Carried::NONE
+            })
+            .expect("a non-empty history renders"),
+        );
+        client
+            .invoke(RUN_ACTION, IntrospectValue::Json(Value::Object(forged)))
+            .expect("the request is otherwise a good one");
+        let claimed = lock(&by_a_client).clone();
+        assert!(
+            !claimed.is_empty() && claimed[0].get(RUN_CARRIED_KEY).is_none(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 907: a CLIENT wrote this run's history and the daemon handed \
+             it on. Every fold rate this repository publishes is computed over these numbers, so a \
+             caller entitled to write them can make any axis say anything. The place beside it is \
+             stripped for the same reason. Handed: {:?}",
+            claimed.first(),
         );
     }
 

@@ -1422,6 +1422,13 @@ impl Plugin for AiLoop {
         }
     }
 
+    /// ⛔ **AND THE TALLIES THE RUN ALREADY HAD, ON THE LINE ABOVE'S TERMS** — register item 907,
+    /// delegated for `deliveries`' reason exactly: the loop is the only thing that counts them, so
+    /// a copy out here would be a second authority on five numbers.
+    fn carrying(&mut self, carried: &crate::plugin::Carried) {
+        self.inner.carrying(carried);
+    }
+
     /// ⚠ DELEGATED and never re-counted here — register item 591. The driver that puts the prompts
     /// in is the only thing that sees what proved each one arrived, so a second tally at this layer
     /// would be a number that agrees with the first until the day it does not.

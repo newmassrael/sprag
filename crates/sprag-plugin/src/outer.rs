@@ -7987,6 +7987,40 @@ impl OuterLoop {
         Ok(())
     }
 
+    /// ⛔⛔⛔⛔⛔ **TAKE UP THE TALLIES THIS RUN ALREADY HAD** — register item 907, and
+    /// [`resume_at`](Self::resume_at)'s companion: the place puts the MACHINE back and this puts
+    /// the run's own counters back.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The five it writes are the five that did not survive
+    ///
+    /// A saved place carries the datamodel (`LoopPlace::held`), which is why
+    /// [`crate::plugin::Plugin::banked`] crosses a replacement — it reads the document's `turns`. These
+    /// five are Rust fields on this struct, seeded at `NONE` by the one constructor, so a successor
+    /// driver counted from zero and its first report replaced the row's higher number with a lower
+    /// one. Every counter here documents itself as *how many prompts **this run** has …*, and until
+    /// this method that sentence was false for any run that outlived a daemon.
+    ///
+    /// # ⚠⚠⚠ SET, never added to — and the call site is what makes that safe
+    ///
+    /// A successor is handed the WHOLE table and counts on from it. That is only correct while this
+    /// loop has counted nothing of its own, which is exactly when the daemon calls it: after
+    /// `resume_at`, before the first step. Adding instead would be right at any moment and wrong
+    /// about which moment — and a caller that called it twice would double every number.
+    ///
+    /// ⚠⚠ **IT DOES NOT TOUCH `witnessed`, `walked` OR THE JOURNAL.** Those are about the pass that
+    /// is about to happen, not about the run's history; a successor that inherited them would
+    /// publish its predecessor's last evidence as its own first step.
+    ///
+    /// ⚠ [`crate::plugin::Carried::NONE`] leaves every field exactly where the constructor put it,
+    /// so a FIRST driver being handed one is indistinguishable from one that was handed nothing.
+    pub const fn carrying(&mut self, carried: &crate::plugin::Carried) {
+        self.deliveries = carried.deliveries;
+        self.folds = carried.folds_by_reason;
+        self.roads = carried.delivered_by_road;
+        self.said = carried.said_by_sentence;
+        self.withheld = carried.width_withheld;
+    }
+
     /// **IS AN ORDER TO STAND DOWN STANDING, AS THE DOCUMENT ITSELF HOLDS IT?** — register item
     /// 604's probe, and a reader this machine did not have.
     ///
@@ -17008,6 +17042,96 @@ mod tests {
              run have reached its ceiling first*, and the session that could is the dearest one to \
              replace. Assigned rather than peaked, a run whose last session was cheap would report \
              a road closed that one of its own sessions had open.",
+        );
+
+        WorkspacePaneAccess::new(Arc::clone(&workspace))
+            .lifecycle()
+            .expect("lifecycle")
+            .close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE RUN'S OWN TALLIES ARE TAKEN UP, NOT RE-COUNTED FROM ZERO** — register
+    /// item 907, and the fifth thing a successor driver must be handed.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Five counters that say *this run* and hold *this driver*
+    ///
+    /// [`deliveries`](OuterLoop::deliveries) and its four neighbours are Rust fields on this
+    /// struct, seeded at `NONE` by the one constructor, and every one of them documents itself as
+    /// *how many prompts **this run** has …*. A daemon replacement therefore made a monotonic
+    /// counter go BACKWARDS on the row while [`crate::plugin::Plugin::banked`] went forwards, because that
+    /// one reads the document's `turns` and rides the saved place's datamodel — two lifetimes on
+    /// one row, and only one of them said so.
+    ///
+    /// # ⚠⚠⚠ The mutation this is written against
+    ///
+    /// ⑴ **Not calling it at all**, which is what every build before this one did: the successor
+    /// counts from zero and its first report replaces a larger number.
+    /// ⑵ **Adding instead of setting**, which is right at any other moment and wrong at this one —
+    /// a caller that offered the same history twice would double every figure.
+    /// ⑶ **Taking `witnessed` or the walk with it**: those are about the pass that is ABOUT to
+    /// happen, so a successor inheriting them publishes its predecessor's last evidence as its own
+    /// first step. The gate drives a delivery afterwards, which is what makes ⑶ reachable.
+    #[test]
+    fn a_loop_takes_up_the_tallies_its_run_already_had() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+
+        // ── ① A FIRST DRIVER IS HANDED NOTHING AND IS EXACTLY WHERE IT WAS ──
+        assert_eq!(
+            (loops.deliveries(), loops.folds_by_reason()),
+            (crate::plugin::Deliveries::NONE, FoldsByReason::NONE),
+            "⚠⚠⚠ THE CONTROL: a fresh loop counts nothing, so every assertion below is about what \
+             `carrying` put there rather than about what the constructor did",
+        );
+        loops.carrying(&crate::plugin::Carried::NONE);
+        assert_eq!(
+            (loops.deliveries(), loops.folds_by_reason()),
+            (crate::plugin::Deliveries::NONE, FoldsByReason::NONE),
+            "⚠⚠ AND `Carried::NONE` IS THE SAME RUN AS ONE HANDED NOTHING — a first driver must not \
+             be able to tell whether its daemon called this",
+        );
+
+        // ── ② A SUCCESSOR TAKES UP WHAT THE RUN HAD COUNTED ──
+        let made = crate::plugin::Deliveries {
+            made: 9,
+            folded: 2,
+            ..crate::plugin::Deliveries::NONE
+        };
+        let mut folds = FoldsByReason::NONE;
+        folds.record(Occasion::Reflecting(ReflectReason::Budget), true);
+        let mut roads = DeliveredByRoad::NONE;
+        roads.record(crate::deliver::Witnessed::Painted, 3);
+        loops.carrying(&crate::plugin::Carried {
+            deliveries: made,
+            folds_by_reason: folds,
+            delivered_by_road: roads,
+            ..crate::plugin::Carried::NONE
+        });
+        assert_eq!(
+            (
+                loops.deliveries(),
+                loops.folds_by_reason(),
+                loops.delivered_by_road()
+            ),
+            (made, folds, roads),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 907: a successor driver of a run must take up what that run \
+             had already counted. Without it the row's `made 9` is replaced by this driver's own \
+             smaller figure the first time it reports — a counter that only rises, going \
+             backwards, and item 856's whole population is these five.",
+        );
+
+        // ── ③ AND THE PASS THAT FOLLOWS IS THIS DRIVER'S OWN ──
+        //
+        // ⛔ The evidence slots are NOT part of a run's history: a successor that inherited them
+        // would publish its predecessor's last delivery as its own first step. Asked here rather
+        // than written in a doc, which is `columns_disagree`'s lesson two items over.
+        assert!(
+            loops.witnessed.is_none() && loops.walked.is_empty(),
+            "⛔⛔⛔⛔ REGISTER ITEM 907: `carrying` took the evidence of a pass that has not \
+             happened. The tallies are the RUN's and the witness is the PASS's, and a successor \
+             holding its predecessor's witness reports somebody else's act as its own",
         );
 
         WorkspacePaneAccess::new(Arc::clone(&workspace))

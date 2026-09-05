@@ -1024,6 +1024,76 @@ pub enum Resumed {
     Boot,
 }
 
+/// ⛔⛔⛔⛔⛔ **THE TALLIES A RUN ALREADY HAD WHEN A SUCCESSOR PICKED IT UP** —
+/// [`Plugin::carrying`]'s argument, register item 907.
+///
+/// # ⛔⛔⛔⛔⛔ Two lifetimes on one row, and only one of them said so
+///
+/// The five counters here declare a RUN's level in their own docs and hold a DRIVER's. A daemon
+/// replacement therefore made a monotonic counter go BACKWARDS on the row — measured 2026-09-05,
+/// run 232 went from `budget 1 of 1 · ordinary 0 of 6` to `ordinary 0 of 1` in eleven minutes, and
+/// `banked` went the other way because it lives in the document's datamodel and rides the saved
+/// place. Item 856's whole population is these counters, so every promotion silently reset the
+/// denominator it is trying to grow.
+///
+/// # ⚠⚠⚠ Why it is a struct and not five arguments
+///
+/// They are ONE fact — *what this run had already counted* — read out of one cell at one moment.
+/// Split across a signature, a later counter could be added and the two call sites would disagree
+/// about whether it travels; here a new field is a compile error at both. That is
+/// [`Resumed`]'s own argument (*a parameter and not a method somebody may forget to call*) applied
+/// one door along.
+///
+/// ⚠⚠ **EVERY FIELD IS THE WHOLE TABLE, NEVER A DELTA.** A successor is SET to these and counts on
+/// from them, so an arrival that is smaller than what the plugin already holds is a bug in the
+/// caller rather than something to reconcile here — the plugin is not counting yet when this is
+/// called, which is why [`Plugin::carrying`] insists on the moment.
+///
+/// ⚠ [`crate::driver::Driver`]'s `iterations` is deliberately NOT here: it is read by
+/// [`crate::driver::Guardrails::max_iterations`] as a BUDGET as well as recorded, so carrying it
+/// would change what a run is allowed to do rather than only what its row says. Item 907 is about
+/// the record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Carried {
+    /// What the run had delivered and how much of it was folded away — [`Plugin::deliveries`].
+    pub deliveries: Deliveries,
+    /// Those folds split by why the loop was reflecting — [`Plugin::folds_by_reason`].
+    pub folds_by_reason: crate::outer::FoldsByReason,
+    /// Every delivery split by what proved it — [`Plugin::delivered_by_road`].
+    pub delivered_by_road: crate::outer::DeliveredByRoad,
+    /// Every prompt split by which sentence it was — [`Plugin::said_by_sentence`].
+    pub said_by_sentence: crate::outer::SaidBySentence,
+    /// What the width would have withheld from the run's reflection answers —
+    /// [`Plugin::width_withheld`].
+    pub width_withheld: crate::outer::WidthWithheld,
+}
+
+impl Carried {
+    /// A run that had counted nothing — what a FIRST driver is handed, and the value against which
+    /// *nothing was carried* is a real answer rather than a silence.
+    pub const NONE: Self = Self {
+        deliveries: Deliveries::NONE,
+        folds_by_reason: crate::outer::FoldsByReason::NONE,
+        delivered_by_road: crate::outer::DeliveredByRoad::NONE,
+        said_by_sentence: crate::outer::SaidBySentence::NONE,
+        width_withheld: crate::outer::WidthWithheld::NONE,
+    };
+
+    /// Whether this carries nothing at all — a successor handed it starts exactly where a first
+    /// driver does, and a caller may skip the call.
+    ///
+    /// ⚠ Asked through each table's own `is_empty` rather than through a sum written here, which is
+    /// `Deliveries::attempted`'s rule and item 895's finding about re-spelled predicates.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.deliveries.is_empty()
+            && self.folds_by_reason.is_empty()
+            && self.delivered_by_road.is_empty()
+            && self.said_by_sentence.is_empty()
+            && self.width_withheld.is_empty()
+    }
+}
+
 /// A control plugin driven over the [`PaneAccess`] extension API.
 pub trait Plugin {
     /// Perceive the panes, act on them, and judge — one step.
@@ -1175,6 +1245,36 @@ pub trait Plugin {
     fn resume_at(&mut self, place: &[String], by: Resumed) -> Resumption {
         let _ = (place, by);
         Resumption::NoMachine
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND HAND IT THE TALLIES THE RUN ALREADY HAD** — register item 907, and
+    /// [`resume_at`](Self::resume_at)'s companion in every respect: same moment, same map, same
+    /// `&mut self`, and a plugin that keeps no such counts says nothing by doing nothing.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Five counters that declare a RUN's level and hold a DRIVER's
+    ///
+    /// [`deliveries`](Self::deliveries), [`folds_by_reason`](Self::folds_by_reason),
+    /// [`delivered_by_road`](Self::delivered_by_road), [`said_by_sentence`](Self::said_by_sentence)
+    /// and [`width_withheld`](Self::width_withheld) each document themselves as *how many prompts
+    /// **this run** has …*. They are Rust fields on the loop, so a successor driver starts every one
+    /// of them at zero and its first report overwrites the row with a smaller number — a counter
+    /// that only rises, going backwards, with no column saying the new number is a part.
+    ///
+    /// ⚠⚠ **[`banked`](Self::banked) IS THE DISCRIMINATOR AND IT SURVIVES**: it reads the document's
+    /// own `turns`, which rides the saved place's datamodel. Measured over this repository's live
+    /// store at **2026-09-05T23:31:21Z**, 241 rows, 232 carrying a banked count: **3 rows report
+    /// more turns banked than the iterations that produce them** (run 199: 3 iterations, 14 banked;
+    /// run 200: 3 and 9; run 104: 1 and 3). One lifetime survived the replacement and the other did
+    /// not, on the same row.
+    ///
+    /// ⚠⚠⚠ **WHAT IS CARRIED IS THE PREDECESSOR'S LAST REPORT, so a gap of at most one step is
+    /// possible** — a driver reports every step and can die after acting and before reporting. That
+    /// residue is bounded and stated; the alternative was losing the whole count.
+    ///
+    /// ⚠ Called by the daemon at both doors a run comes back through, immediately after
+    /// `resume_at` and before the first step, so a plugin is never counting while this writes.
+    fn carrying(&mut self, carried: &Carried) {
+        let _ = carried;
     }
 
     /// **EVERY TRANSITION THE LAST [`step`](Self::step) TOOK**, in order — see [`Edge`].
