@@ -249,6 +249,8 @@ pub enum Verb {
     Words,
     /// `disposition` — what happens next to a run that ended, per ending, asked of this build.
     Disposition,
+    /// `waits` — how long each working tree had nothing driving it, asked of the run logs on disk.
+    Waits,
     /// `my-runs` — which runs THIS conversation is on, asked by the caller about itself.
     MyRuns,
     /// `daemons` — WHICH daemons are running and on which sockets, asked of the machine.
@@ -584,7 +586,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 73] = [
+    pub const ALL: [Self; 74] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -657,6 +659,7 @@ impl Verb {
         Self::Doctor,
         Self::Words,
         Self::Disposition,
+        Self::Waits,
         Self::Daemons,
         Self::ShowGrammar,
         Self::DetachClient,
@@ -1315,6 +1318,25 @@ impl Verb {
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::NotBuilt,
             ),
+            // 🎯🎯🎯🎯🎯 **HOW LONG A TREE HAD NOTHING DRIVING IT** — register item 872 ⑶, and the
+            // clause item 827 measured by hand at 3 h 49 m and nothing has measured since.
+            //
+            // ⚠⚠ It reads the RUN LOGS ON DISK rather than a daemon, which is not a convenience:
+            // the delay this is about is bounded at one end by a daemon that is GONE, and a verb
+            // that needed a live one could never answer about the promotion that ended it. Item
+            // 867's reader — `.githooks/loop-read.sh` at push time, no daemon — is the same reader.
+            //
+            // ⚠ NOT BOUND TO A KEY and NOT AN AGENT TOOL, on `disposition`'s terms exactly: it
+            // answers, this client has no view for it, and an agent that wants the number can ask
+            // through a shell. Unlike `disposition` it is NOT compiled in — the answer is a
+            // property of what this machine has recorded, which is why it takes a LOG.
+            Self::Waits => (
+                "waits",
+                Group::Tool,
+                Shell::Runs("[LOG]"),
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::NotBuilt,
+            ),
             // ⛔⛔⛔⛔⛔ **WHICH RUNS THE CALLER IS ON, ASKED BY THE CALLER ABOUT ITSELF** —
             // register item 865's ⑷, and the one direction its other halves could not reach: ⑴⑵⑶
             // gave a RUN a mouth for its asker and ⑸ gave a PANE a mouth for its occupant, and all
@@ -1803,7 +1825,12 @@ mod tests {
             // ⚠ REGISTER ITEM 865's ⑷: `my-runs` is the THIRTEENTH, and it is the one on this list
             // measured wanting: the session that could not say whether a run was its own was an
             // AGENT, and it reached the answer through a shell because there is no tool.
-            (38, 13, 22),
+            // ⚠ REGISTER ITEM 872 ⑶: `waits` is the FOURTEENTH — how long a tree had nothing
+            // driving it is a property of the run LOGS ON DISK, and an agent that wanted it would
+            // be asking about the daemon that is gone rather than the one it lives in. A tool is a
+            // legitimate ask (a supervising agent judging whether a handover is slow) and nobody
+            // has built one; it reaches the number through a shell today.
+            (38, 14, 22),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1845,6 +1872,11 @@ mod tests {
                 // what happens next to THAT run, so a tool would ask twice — but *what does this
                 // build classify* is a legitimate ask with no tool behind it.
                 "disposition",
+                // ⚠ REGISTER ITEM 872 ⑶: a supervising agent judging whether a handover was slow
+                // is asking about run logs from a daemon that has ENDED, which no live-daemon tool
+                // is the right shape for. A legitimate ask with nothing built for it; it reaches
+                // the number through a shell today.
+                "waits",
             ],
             "the agent surface's remaining gap, by name",
         );
@@ -1991,7 +2023,11 @@ mod tests {
             // ⚠ REGISTER ITEM 865's ⑷: `my-runs` is the 65th. It takes no subject at all, which is
             // the only verb here of that shape: a caller may point at itself and may not name
             // somebody else.
-            (65, 3, 5),
+            // ⚠ REGISTER ITEM 872 ⑶: `waits` is the 66th, and the FOURTH needing no daemon — for
+            // `daemons`' kind of reason rather than `disposition`'s. The delay it measures is
+            // bounded at its left end by a daemon that is GONE, so a version that had to connect
+            // to one could never answer about the promotion that ended it.
+            (66, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -2094,7 +2130,11 @@ mod tests {
             // answers, and this client has no view for a table of endings.
             // ⚠ REGISTER ITEM 865's ⑷: `my-runs` is the 42nd. Its reader is a conversation asking
             // about ITSELF from a shell inside its own pane, and a pane presses no keys.
-            (25, 6, 42),
+            // ⚠ REGISTER ITEM 872 ⑶: `waits` is the 43rd, on `disposition`'s terms — it answers,
+            // and this client has no view for a table of handover delays. Sharper here: what it
+            // answers about is the daemon that ENDED, so a keystroke inside a live client is being
+            // pressed by the one party the question is not about.
+            (25, 6, 43),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );

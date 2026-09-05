@@ -3714,6 +3714,242 @@ impl RunLog {
             .filter_map(|run| run.driving.map(PaneId))
             .collect()
     }
+
+    /// 🎯🎯🎯🎯🎯 **HOW LONG EACH WORKING TREE HAD NOTHING DRIVING IT** — register item 872 ⑶, and
+    /// the reader [`PersistedRun::ran_from`] was built for and never got.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What this is the second half of
+    ///
+    /// Item 827 measured **3 h 49 m** between a loop run dying and the next one being launched, and
+    /// it measured it BY HAND, once. Item 872 ⑴⑵ then put on record who is owed the next run off
+    /// each ending and which endings a machine may never proceed past; ⑶ is *measure the delay
+    /// again, the same way*, and it has stood open through four re-judgements. Item 888 built the
+    /// two ends of the interval for it — that field's own doc names this clause as its reason —
+    /// and **nothing has ever read them**: `ran_from` and `ran_to` are written by
+    /// [`crate::durability`] and consumed by no surface, no row and no hook.
+    ///
+    /// ⇒ So the clause could only ever have been answered by somebody typing a `python3 -c` at the
+    /// store, which is this workspace's rule 10 exactly: a number nothing computes is a number that
+    /// gets taken once and then quoted until it is wrong. This is the command instead.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the population is the harder half, and why nothing is dropped
+    ///
+    /// **The default answer is silence, so an under-counted population fails GREEN**: a run this
+    /// cannot pair simply produces no stretch, and a report that printed only its stretches would
+    /// say *nothing to see* for a store where every single row is unpairable. **Measured over the
+    /// loop's own store at 2026-09-05T07:45:30Z: 228 rows, `ran_from` non-null 0, `ran_to` non-null
+    /// 0, `tree` absent from every row** — the live daemon predates all three columns, so today
+    /// this answers *0 measured, 228 unmeasured* and NAMES which wall each row is behind.
+    ///
+    /// That is the honest reading of a promotion wall and it is why every run lands in exactly one
+    /// bucket: [`Waits::measured`] holds the stretches, [`Waits::unmeasured`] holds a count under
+    /// each [`NoWait`], and the two add up to the log's own length. A gate holds that sum, so a
+    /// seventh reason cannot be quietly swallowed by an existing one.
+    ///
+    /// # ⚠⚠⚠ Grouped by TREE, because a gap across repositories is a number that means nothing
+    ///
+    /// One daemon drives three repositories and their runs interleave by id — measured
+    /// 2026-09-05T07:46:04Z, runs 224, 225 and 227 were watching-zenoh, pinion and sprag. Pairing
+    /// *the next id* would time one repository's death against another's birth. So the succession
+    /// is *within a tree, in id order*, which is the order one daemon issued them in.
+    ///
+    /// ⚠⚠ [`PersistedRun::document`] is NOT the grouping and cannot be: it is the statechart
+    /// fingerprint, and every `ai_loop` run in every repository carries the same one
+    /// (`f495708bb94944be` on all of them in the reading above). [`PersistedRun::tree`] — item
+    /// 890's column — is the only thing that says WHERE, which is why 872 ⑶ waited on that item too.
+    #[must_use]
+    pub fn waits_between_runs(&self) -> Waits {
+        // Grouped first so succession is asked WITHIN a tree. `BTreeMap` rather than a hash so the
+        // report is in a stable order a person can diff between two readings — the whole use of
+        // this is comparing today's number against item 827's.
+        let mut by_tree: std::collections::BTreeMap<&str, Vec<&PersistedRun>> =
+            std::collections::BTreeMap::new();
+        let mut unmeasured: std::collections::BTreeMap<NoWait, usize> =
+            NoWait::ALL.iter().map(|why| (*why, 0)).collect();
+        let mut blame = |why: NoWait| {
+            *unmeasured
+                .get_mut(&why)
+                .expect("NoWait::ALL seeded every arm") += 1;
+        };
+        for run in &self.runs {
+            match run.tree.as_deref() {
+                Some(tree) => by_tree.entry(tree).or_default().push(run),
+                // ⚠ FIRST, and it is a precedence rather than an accident: without a tree there is
+                // no set for this run to have a successor IN, so no later question can be asked of
+                // it. Every other arm below presumes the grouping happened.
+                None => blame(NoWait::TreeUnknown),
+            }
+        }
+        let mut measured = Vec::new();
+        for (tree, mut runs) in by_tree {
+            // The daemon issues ids in submit order, so within one tree this IS the succession.
+            runs.sort_by_key(|run| run.id);
+            for (index, run) in runs.iter().enumerate() {
+                let Some(next) = runs.get(index + 1) else {
+                    // ⚠ NOT A DEFECT: the newest run of a tree has nothing after it yet. It is
+                    // counted rather than skipped because *this log ends here* and *this log lost
+                    // something* must not read alike — the arm exists so the sum can be held.
+                    blame(NoWait::NothingFollowed);
+                    continue;
+                };
+                if !run.finished {
+                    blame(NoWait::StillRunning);
+                    continue;
+                }
+                let (Some(stopped), Some(started)) = (run.ran_to, next.ran_from) else {
+                    blame(if run.ran_to.is_none() {
+                        NoWait::EndUnwatched
+                    } else {
+                        NoWait::SuccessorStartUnwatched
+                    });
+                    continue;
+                };
+                let Some(seconds) = started.checked_sub(stopped) else {
+                    // ⛔ NOT SATURATED TO ZERO. Two runs can be on one tree at once, and a `0` here
+                    // would read as *the handover was instant* — the strongest possible claim, made
+                    // from the weakest possible evidence. It is its own arm and says so.
+                    blame(NoWait::SuccessorStartedFirst);
+                    continue;
+                };
+                measured.push(Wait {
+                    tree: tree.to_owned(),
+                    after: run.id,
+                    before: next.id,
+                    seconds,
+                });
+            }
+        }
+        Waits {
+            measured,
+            unmeasured: NoWait::ALL
+                .iter()
+                .map(|why| (*why, unmeasured[why]))
+                .collect(),
+        }
+    }
+}
+
+/// 🎯 **WHAT A LOG CAN AND CANNOT SAY ABOUT THE DELAY BETWEEN ITS RUNS** — the whole answer of
+/// [`RunLog::waits_between_runs`], register item 872 ⑶.
+///
+/// ⚠⚠ **THE TWO HALVES ARE ONE POPULATION**: every run in the log is either the left end of exactly
+/// one [`measured`](Self::measured) stretch or counted under exactly one
+/// [`unmeasured`](Self::unmeasured) reason, and [`Waits::runs`] is that sum. A reader that took the
+/// first half alone would read a store where nothing is measurable as a store with no delay in it,
+/// which is the reading this item exists to stop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Waits {
+    /// Every stretch this log can actually put a number on, tree by tree in name order.
+    pub measured: Vec<Wait>,
+    /// How many runs could not be a left end, under each [`NoWait`] — every arm, **including the
+    /// zeros**, in [`NoWait::ALL`]'s order.
+    ///
+    /// ⚠ The zeros are carried rather than filtered because the POPULATION is the enum: a reader
+    /// deciding what to print may drop an empty line, and a reader deciding whether the table is
+    /// whole may not. Item 856 ⑹ measured what a table that builds its own population does.
+    pub unmeasured: Vec<(NoWait, usize)>,
+}
+
+impl Waits {
+    /// How many runs this answer accounts for — the sum of both halves, and what a caller checks
+    /// against the log's own length.
+    #[must_use]
+    pub fn runs(&self) -> usize {
+        self.measured.len()
+            + self
+                .unmeasured
+                .iter()
+                .map(|(_, count)| count)
+                .sum::<usize>()
+    }
+
+    /// The longest stretch, which is the number item 827 reported as **3 h 49 m** — [`None`] when
+    /// nothing here is measurable, which is *nobody knows* and never *there was no delay*.
+    #[must_use]
+    pub fn longest(&self) -> Option<&Wait> {
+        self.measured.iter().max_by_key(|wait| wait.seconds)
+    }
+}
+
+/// One stretch during which a working tree had no run driving it — [`Waits::measured`]'s member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Wait {
+    /// The working tree that waited — [`PersistedRun::tree`], and the grouping this is within.
+    pub tree: String,
+    /// The run whose stop opened the stretch.
+    pub after: u64,
+    /// The run whose start closed it.
+    pub before: u64,
+    /// How long it lasted, in seconds — `ran_from` of the second minus `ran_to` of the first, both
+    /// of them moments a daemon WATCHED rather than inferred.
+    pub seconds: u64,
+}
+
+/// ⛔⛔⛔⛔⛔ **WHY A RUN IS NOT THE LEFT END OF A MEASURABLE STRETCH** — [`Waits::unmeasured`]'s
+/// population, and the half register item 872 ⑶ cannot be answered without.
+///
+/// # ⚠⚠⚠⚠⚠ It is a closed vocabulary because the alternative is a silent drop
+///
+/// A run that cannot be paired produces no stretch, and *no stretch* and *no delay* are the same
+/// silence. Naming each way is what lets a reader tell **the promotion wall** (`ran_from` and
+/// `ran_to` exist in this build and in no row yet) from **a real handover that was instant** — and
+/// today, over the loop's own store, every single row is behind a wall.
+///
+/// ⚠ The arms are tried in the order they are declared, and that order is a claim: a run with no
+/// tree has no set to have a successor in, so nothing further can be asked of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NoWait {
+    /// No [`PersistedRun::tree`] — a row from a daemon older than item 890's column, so nothing
+    /// says which repository it belongs to and it has no successor to be found.
+    TreeUnknown,
+    /// The newest run this log holds for its tree. Nothing has followed it, which is not a loss.
+    ///
+    /// ⚠ AHEAD of [`StillRunning`](Self::StillRunning), and the pair is why this order is a claim
+    /// rather than a listing: the newest run of a tree is usually BOTH, and *the chain ends here*
+    /// is what a reader can act on, where *it has not finished* would describe every healthy loop
+    /// in the store as a thing that failed to measure.
+    NothingFollowed,
+    /// It has not ended, so there is no left end yet — a run with a successor already beside it,
+    /// which is two runs on one tree at once.
+    StillRunning,
+    /// Finished, but no [`PersistedRun::ran_to`] — nobody was watching when it stopped. Item 888's
+    /// own residue: a run inherited already-finished, or one whose daemon died with it.
+    EndUnwatched,
+    /// A successor exists and carries no [`PersistedRun::ran_from`] — nobody watched it begin, so
+    /// the right end of the interval is missing rather than the left.
+    SuccessorStartUnwatched,
+    /// The next run on this tree began before this one stopped, so there was no stretch with
+    /// nothing driving it. ⛔ Counted here rather than reported as a zero: *the handover was
+    /// instant* is the strongest claim this data can make and two overlapping runs are the weakest
+    /// evidence for it.
+    SuccessorStartedFirst,
+}
+
+impl NoWait {
+    /// Every way, as the population [`Waits::unmeasured`] is built from — a seventh reason added to
+    /// the type appears in every report without anybody widening a list.
+    pub const ALL: [Self; 6] = [
+        Self::TreeUnknown,
+        Self::NothingFollowed,
+        Self::StillRunning,
+        Self::EndUnwatched,
+        Self::SuccessorStartUnwatched,
+        Self::SuccessorStartedFirst,
+    ];
+
+    /// What a reader is looking at, in one clause — ⛔ an exhaustive `match` with no `_` arm, so a
+    /// seventh way cannot reach a report wearing a sixth's sentence.
+    #[must_use]
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::TreeUnknown => "no working tree recorded, so nothing can be its successor",
+            Self::StillRunning => "still running, so it has no end to measure from",
+            Self::EndUnwatched => "nobody was watching when it stopped",
+            Self::NothingFollowed => "nothing has followed it on that tree yet",
+            Self::SuccessorStartUnwatched => "nobody was watching when the next one began",
+            Self::SuccessorStartedFirst => "the next one began before it stopped",
+        }
+    }
 }
 
 /// The run log's format version. A file written by a different one is IGNORED rather than guessed
@@ -9914,6 +10150,191 @@ mod tests {
             !crate::replaced_conversations(None)(PaneId(1010)),
             "⚠⚠ AND A DAEMON WITH NO PREDECESSOR TAKES NOTHING: a first boot has no loop to \
              protect and every pane it restores is somebody's own",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE DELAY BETWEEN A RUN ENDING AND THE NEXT ONE STARTING IS A NUMBER THIS BUILD
+    /// COMPUTES** — register item 872 ⑶, which has stood open through four re-judgements because
+    /// nothing ever read the two columns item 888 built for it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the unmeasurable half is asserted as hard as the measurable one
+    ///
+    /// The default answer here is SILENCE: a run this cannot pair yields no stretch, so a report of
+    /// stretches alone reads *nothing to see* for a store in which nothing is pairable — and that
+    /// is today's store exactly (2026-09-05T07:53:28Z: 229 runs, 229 of them unmeasurable). An
+    /// under-counted population therefore fails **green**, which is the shape this gate exists
+    /// against. Hence the sum: every run is the left end of one stretch or counted under one reason,
+    /// and both halves are checked against the log's own length.
+    ///
+    /// # ⚠⚠⚠ And the grouping is an assertion, not a detail
+    ///
+    /// One daemon drives three repositories and their runs interleave by id — measured
+    /// 2026-09-05T07:46:04Z, ids 224, 225 and 227 were watching-zenoh, pinion and sprag. A build
+    /// that paired *the next id* would time one repository's death against another's birth and
+    /// print a number that means nothing, which is worse than the silence it replaced. The second
+    /// tree here is that control.
+    #[test]
+    fn how_long_a_tree_had_nothing_driving_it_is_measured_and_what_cannot_be_is_named() {
+        /// One row, with only the words the record requires spelled out — everything this gate
+        /// varies rides on `#[serde(default)]`, which is the same compatibility the store's real
+        /// rows are made of.
+        fn run(
+            id: u64,
+            tree: Option<&str>,
+            finished: bool,
+            from: Option<u64>,
+            to: Option<u64>,
+        ) -> serde_json::Value {
+            let mut row = serde_json::json!({
+                "id": id, "label": format!("ai_loop pane={id}"),
+                "iterations": 3, "finished": finished, "place": ["working"],
+            });
+            if let Some(tree) = tree {
+                row["tree"] = serde_json::json!(tree);
+            }
+            if let Some(from) = from {
+                row["ran_from"] = serde_json::json!(from);
+            }
+            if let Some(to) = to {
+                row["ran_to"] = serde_json::json!(to);
+            }
+            row
+        }
+
+        let log: RunLog = serde_json::from_value(serde_json::json!({
+            "version": RUN_LOG_VERSION,
+            "runs": [
+                // ── THE HEADLINE, on tree /a: run 1 stopped at 100, run 2 began at 3629 ──
+                //    3529 seconds is 58m49s, which is the shape of item 827's own 3h49m.
+                run(1, Some("/a"), true, Some(40), Some(100)),
+                run(2, Some("/a"), true, Some(3629), Some(4000)),
+                // ⚠ THE INTERLEAVING CONTROL. By id this run sits between /a's chain and /b's, and
+                //   a build pairing *the next id* would time /a's death against /b's birth.
+                run(3, Some("/b"), true, Some(200), Some(300)),
+                // /a's third: pairs with run 2 (4000 → 4010), a ten-second handover.
+                run(4, Some("/a"), true, Some(4010), None),
+                // /b's second, which began BEFORE run 3 stopped — two runs on one tree at once.
+                run(5, Some("/b"), true, Some(250), Some(400)),
+                // /b's third: run 5 stopped at 400 and nobody watched this one begin.
+                run(6, Some("/b"), true, None, Some(500)),
+                // /c: a live run with a successor beside it — the only way to be StillRunning.
+                run(7, Some("/c"), false, Some(10), None),
+                run(8, Some("/c"), true, Some(20), Some(30)),
+                // /d: finished, nobody watched it stop, and something followed it.
+                run(9, Some("/d"), true, Some(1), None),
+                run(10, Some("/d"), true, Some(9), Some(11)),
+                // ⚠ AND THE ROW TODAY'S STORE IS ENTIRELY MADE OF: no tree at all.
+                run(11, None, true, Some(1), Some(2)),
+            ]
+        }))
+        .expect("the log a predecessor leaves is what this reads");
+
+        let waits = log.waits_between_runs();
+        let of = |why: NoWait| {
+            waits
+                .unmeasured
+                .iter()
+                .find(|(arm, _)| *arm == why)
+                .map(|(_, count)| *count)
+                .unwrap_or_else(|| panic!("{why:?} must be in the report's population"))
+        };
+
+        // ── ① THE HEADLINE: the stretch, its length, and which two runs bound it ──
+        assert_eq!(
+            waits.measured,
+            vec![
+                Wait {
+                    tree: "/a".to_owned(),
+                    after: 1,
+                    before: 2,
+                    seconds: 3529
+                },
+                Wait {
+                    tree: "/a".to_owned(),
+                    after: 2,
+                    before: 4,
+                    seconds: 10
+                },
+            ],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872 ⑶: the delay between a run stopping and the next one on \
+             the SAME tree starting is what item 827 measured by hand at 3 h 49 m and what four \
+             rounds recorded as unmeasurable. It is `ran_from` of the second minus `ran_to` of the \
+             first, both of them moments a daemon WATCHED — item 888 built them for this clause \
+             and nothing read them until now",
+        );
+        assert_eq!(
+            waits.longest().map(|wait| wait.seconds),
+            Some(3529),
+            "⚠⚠ and the LONGEST is the number this item is compared against — a report that could \
+             not name it would leave item 827's 3 h 49 m with nothing to be measured against",
+        );
+
+        // ── ② THE INTERLEAVING CONTROL, which is what stops a number that means nothing ──
+        assert!(
+            waits.measured.iter().all(|wait| wait.tree == "/a"),
+            "⛔⛔⛔⛔⛔ A STRETCH WAS MEASURED ACROSS TWO WORKING TREES. One daemon drives three \
+             repositories and their ids interleave — 224, 225 and 227 were watching-zenoh, pinion \
+             and sprag on 2026-09-05 — so pairing by id times one repository's death against \
+             another's birth. That is worse than the silence it replaces, because it looks like an \
+             answer. Got {:?}",
+            waits.measured,
+        );
+
+        // ── ③ EVERY REASON REACHED, so none of the six is decoration ──
+        for (why, expected) in [
+            (NoWait::TreeUnknown, 1),
+            (NoWait::NothingFollowed, 4),
+            (NoWait::StillRunning, 1),
+            (NoWait::EndUnwatched, 1),
+            (NoWait::SuccessorStartUnwatched, 1),
+            (NoWait::SuccessorStartedFirst, 1),
+        ] {
+            assert_eq!(
+                of(why),
+                expected,
+                "⛔⛔⛔ {why:?} — {}. An arm nothing can reach is an arm that will be wrong \
+                 without anybody finding out, and this workspace's rule 6 is that an unclassified \
+                 run is a RED and not a pass. Report: {:?}",
+                why.describe(),
+                waits.unmeasured,
+            );
+        }
+
+        // ── ④ THE SUM, which is what makes a silent drop impossible ──
+        assert_eq!(
+            waits.runs(),
+            log.runs.len(),
+            "⛔⛔⛔⛔⛔ RUNS WENT MISSING BETWEEN THE TWO HALVES. A run that is neither measured \
+             nor blamed has been dropped, and a dropped run is invisible in exactly the direction \
+             that reads as *no delay* — the report's whole subject. Measured {} + blamed {:?} \
+             against {} rows",
+            waits.measured.len(),
+            waits.unmeasured,
+            log.runs.len(),
+        );
+
+        // ── ⑤ AND THE SHAPE OF TODAY'S REAL STORE: a pre-890 log says so rather than saying nothing ──
+        //
+        // ⚠⚠ 2026-09-05T07:53:28Z, `sprag waits` over the loop's own store: 229 runs, 229 under
+        // `TreeUnknown`, 0 measured. Without this arm a build that answered *no stretches* for such
+        // a log would be indistinguishable from one that had measured them all at zero.
+        let pre_890: RunLog = serde_json::from_value(serde_json::json!({
+            "version": RUN_LOG_VERSION,
+            "runs": [run(1, None, true, None, None), run(2, None, true, None, None)],
+        }))
+        .expect("a log from before item 890's column");
+        let old = pre_890.waits_between_runs();
+        assert!(
+            old.measured.is_empty()
+                && old
+                    .unmeasured
+                    .iter()
+                    .find(|(why, _)| *why == NoWait::TreeUnknown)
+                    .is_some_and(|(_, count)| *count == 2),
+            "⛔⛔⛔⛔⛔ A LOG THAT PREDATES THE COLUMNS MUST SAY SO. This is the whole of the live \
+             store today — 229 rows, none of them able to name a tree — and a report that returned \
+             an empty answer for it would read as *no tree ever waited*, which is the strongest \
+             possible claim made from no evidence at all. Got {old:?}",
         );
     }
 }

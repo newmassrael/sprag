@@ -15006,7 +15006,11 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
         // daemon from OUTSIDE any pane — which for this verb is not a degraded case but a control:
         // a caller this daemon cannot place must be REFUSED rather than told it is on nothing, so
         // the sweep reads its refusal exit and not a fault.
-        (65, 5, 3),
+        // ⚠ REGISTER ITEM 872 ⑶: `waits` is the 66th, and the sweep drives it with NO daemon for
+        // `daemons`' reason rather than `disposition`'s — the delay it reports is bounded at its
+        // left end by a daemon that has ENDED, so needing a live one would rule out the promotion
+        // that ended it. Driven here before the count moved.
+        (66, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -15195,7 +15199,10 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         // ⚠ REGISTER ITEM 865 ⑷: `my-runs` is the 42nd in the third column, on `runs`' reason — it
         // answers, and this client has no view for it. Its reader is a conversation asking about
         // ITSELF from a shell inside its own pane, which presses no keys.
-        (15, 10, 42, 6),
+        // ⚠ REGISTER ITEM 872 ⑶: `waits` is the 43rd in the third column, on `disposition`'s
+        // reason with one of its own — what it answers about is the daemon that ENDED, so the
+        // client a key is pressed inside is the one party the question is not about.
+        (15, 10, 43, 6),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

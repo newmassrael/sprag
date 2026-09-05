@@ -108,6 +108,10 @@
 //!                                          per ending, its next step and what that means. NEEDS NO
 //!                                          DAEMON; naming one ending prints only that one, and an
 //!                                          ending nothing classifies is REFUSED, not answered
+//! sprag waits [LOG]                        print HOW LONG each working tree had no run driving it
+//!                                          — one line per stretch, plus a line per run the logs
+//!                                          cannot measure and why. NEEDS NO DAEMON (it reads the
+//!                                          run logs on disk); naming a LOG reads only that one
 //! sprag list-keys                          print the client keymap `config.toml` produces
 //! sprag bind-key [-nr] [-T TABLE] KEY ACTION…  give a key a meaning (tmux bind-key)
 //! sprag unbind-key [-n] [-T TABLE] KEY     take a key's meaning away (tmux unbind-key)
@@ -313,6 +317,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Doctor => doctor(args.collect()),
         Verb::Words => words(args.collect()),
         Verb::Disposition => disposition(args.collect()),
+        Verb::Waits => waits(args.collect()),
         Verb::Daemons => daemons(args.collect()),
         Verb::ShowGrammar => show_grammar(args.collect()),
         Verb::Orchestrate => orchestrate(args.collect()),
@@ -690,6 +695,145 @@ fn disposition(args: Vec<String>) -> io::Result<()> {
         println!("{row}");
     }
     Ok(())
+}
+
+/// 🎯🎯🎯🎯🎯 `waits [LOG]`: **HOW LONG EACH WORKING TREE HAD NOTHING DRIVING IT** — register item
+/// 872 ⑶, and the command item 827's number has never had.
+///
+/// # ⛔⛔⛔⛔⛔ The clause this answers, and why it stood open through four re-judgements
+///
+/// Item 827 measured **3 h 49 m** between a loop run dying and the next one being launched. It
+/// measured it by hand, once. Item 872 ⑴⑵ put on record who is owed the next run off each ending
+/// and which endings a machine may never proceed past, and ⑶ is *measure the delay again* — which
+/// four rounds each judged blocked, three of them for reasons the fourth refuted. Item 888 built
+/// both ends of the interval expressly for this clause and **no surface ever read them**.
+///
+/// ⇒ So the only way to answer ⑶ was a `python3 -c` over the store, which is this workspace's rule
+/// 10 exactly: a number nothing computes gets taken once and quoted until it is wrong. That is what
+/// this replaces.
+///
+/// # ⛔⛔⛔⛔⛔ IT PRINTS WHAT IT CANNOT MEASURE, AND THAT IS THE POINT
+///
+/// A run this cannot pair yields no stretch, so a report of stretches alone says *nothing to see*
+/// for a store in which nothing is measurable at all — and **that is today's store**: measured
+/// 2026-09-05T07:45:30Z, 228 rows carrying `ran_from` 0 times, `ran_to` 0 times and `tree` never.
+/// The live daemon predates all three columns. So the unmeasured half is printed as loudly as the
+/// measured one, under [`sprag_host::runs::NoWait`]'s own words, and a reader can tell *the promotion
+/// has not happened yet* from *the handovers were quick*.
+///
+/// ⚠⚠ **NEEDS NO DAEMON**, and not for convenience: the delay is bounded at its left end by a
+/// daemon that is GONE, so a verb that required a live one could never answer about the promotion
+/// that ended it. It reads the logs `crate`'s durability layer leaves on disk — item 867's reader,
+/// `.githooks/loop-read.sh`, works from the same directory for the same reason.
+///
+/// ⚠ Naming a LOG reads exactly that file, which is how a test drives this over a store it wrote.
+/// Naming none reads every `*.runs.json` in sprag's state directory, which is what a person asking
+/// about this machine means.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidInput`] for a second argument, and [`io::ErrorKind::NotFound`] when the
+/// named log cannot be read or the state directory holds none — ⛔ a REFUSAL rather than an empty
+/// table, on this workspace's rule 6: *no logs* and *no waiting* must never print alike.
+fn waits(args: Vec<String>) -> io::Result<()> {
+    if let Some(extra) = args.get(1) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("waits: unexpected argument {extra:?} (it takes [LOG], one at a time)"),
+        ));
+    }
+    let dir = sprag_host::state_dir();
+    let logs: Vec<std::path::PathBuf> = match args.first() {
+        Some(named) => vec![std::path::PathBuf::from(named)],
+        // Sorted so two readings of one machine are diffable — the whole use of this verb is
+        // comparing today's number with item 827's.
+        None => {
+            let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(std::ffi::OsStr::to_str)
+                        .is_some_and(|name| name.ends_with(".runs.json"))
+                })
+                .collect();
+            found.sort();
+            found
+        }
+    };
+    let read: Vec<(std::path::PathBuf, sprag_host::runs::RunLog)> = logs
+        .into_iter()
+        .filter_map(|path| sprag_host::load_runs(&path).map(|log| (path, log)))
+        .collect();
+    if read.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "waits: no readable run log{}. A log this build cannot parse is skipped rather \
+                 than guessed at, so an empty answer here means NOTHING WAS READ and never that \
+                 nothing waited.",
+                match args.first() {
+                    Some(named) => format!(" at {named}"),
+                    None => format!(" in {}", dir.display()),
+                }
+            ),
+        ));
+    }
+    println!(
+        "waits  — how long each working tree had NO run driving it, between one run's watched stop \
+         and the next one's watched start"
+    );
+    for line in waits_lines(&read) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// [`waits`]'s BODY, separated from the printing so a gate can read what it says — the split
+/// [`disposition_rows`] makes one verb over, and for its reason: the mouth is where item 856 ⑸
+/// measured a value crossing into nothing, and a renderer nothing drives is a renderer that goes
+/// green while saying anything at all.
+fn waits_lines(read: &[(std::path::PathBuf, sprag_host::runs::RunLog)]) -> Vec<String> {
+    // ⛔⛔⛔ EMPTY LOGS ARE COUNTED, NOT LISTED — and this line is here because running the verb at
+    // the real store printed it: a machine that has served TUI clients accumulates a `*.runs.json`
+    // per socket, and at 2026-09-05T07:52:53Z that was **68 empty logs against 1 with runs in it**,
+    // so the single line carrying the answer sat under sixty-eight carrying nothing.
+    //
+    // ⚠⚠ The COUNT stays, because *sixty-eight logs held nothing* and *there was one log* are
+    // different facts and a reader must not infer the first from an absence — item 856's rule
+    // pointing the other way. What is dropped is the repetition, never the population.
+    let mut lines = Vec::new();
+    let mut empty = 0usize;
+    for (path, log) in read {
+        let waits = log.waits_between_runs();
+        if waits.runs() == 0 {
+            empty += 1;
+            continue;
+        }
+        lines.push(format!("{}  {} run(s)", path.display(), waits.runs()));
+        for wait in &waits.measured {
+            lines.push(format!(
+                "  {} waited {}s after run {} until run {}",
+                wait.tree, wait.seconds, wait.after, wait.before
+            ));
+        }
+        // ⛔⛔⛔⛔⛔ AND WHAT COULD NOT BE MEASURED, AS LOUDLY. A report of stretches alone reads
+        // *nothing to see* for a store in which nothing is pairable, and that is today's store
+        // exactly: 229 runs, 229 of them behind a wall. The empty ARMS are dropped here at the
+        // mouth — item 856's `0 of 0` rule — and never in the answer, which carries all six.
+        for (why, count) in waits.unmeasured.iter().filter(|(_, count)| *count > 0) {
+            lines.push(format!(
+                "  {count} run(s) measure nothing: {}",
+                why.describe()
+            ));
+        }
+    }
+    if empty > 0 {
+        lines.push(format!("{empty} further log(s) held no runs at all"));
+    }
+    lines
 }
 
 /// ⛔⛔⛔⛔⛔ **WHICH DAEMONS ARE RUNNING, AND WHERE** — register item 825, and the verb that
@@ -13061,6 +13205,91 @@ mod tests {
 
         let extra = disposition(vec!["failed".to_owned(), "converged".to_owned()])
             .expect_err("⚠⚠ two endings at once is refused rather than half-honoured");
+        assert!(
+            extra.to_string().contains("one at a time"),
+            "⚠ and the refusal says what the shape is: {extra}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE MOUTH SAYS BOTH HALVES, AND REFUSES RATHER THAN PRINTING AN EMPTY TABLE** —
+    /// register item 872 ⑶, the crossing half.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the mouth needs a gate of its own
+    ///
+    /// `RunLog::waits_between_runs` is gated where it lives, over a log with every arm reached. Item
+    /// 856 ⑸ measured what that is not enough for: seven surfaces a value passes THROUGH, each
+    /// gated, and the call that puts it in replaced by a discard left the whole workspace green.
+    /// The renderer is that call here — it is where the unmeasurable half can quietly stop being
+    /// printed, which turns *229 runs behind a promotion wall* into a blank page.
+    ///
+    /// # ⛔ AND NO LOG READ IS A REFUSAL, NOT AN EMPTY ANSWER
+    ///
+    /// This workspace's rule 6. *Nothing was read* and *nothing waited* are opposite facts, and a
+    /// verb that printed a heading and stopped would say the second while meaning the first — to a
+    /// reader whose whole question is whether a delay is still there.
+    #[test]
+    fn what_a_tree_waited_is_printed_beside_what_could_not_be_measured() {
+        use sprag_host::runs::{NoWait, RunLog};
+
+        // A log holding one measurable stretch on one tree and one row from before item 890's
+        // column — the two halves this verb exists to print together.
+        let log: RunLog = serde_json::from_value(serde_json::json!({
+            "version": sprag_host::runs::RUN_LOG_VERSION,
+            "runs": [
+                {"id": 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
+                 "place": ["working"], "tree": "/w", "ran_from": 10, "ran_to": 100},
+                {"id": 2, "label": "ai_loop pane=2", "iterations": 1, "finished": true,
+                 "place": ["working"], "tree": "/w", "ran_from": 13729, "ran_to": 13800},
+                {"id": 3, "label": "ai_loop pane=3", "iterations": 1, "finished": true,
+                 "place": ["working"]},
+            ]
+        }))
+        .expect("the log a predecessor leaves is what this reads");
+        let here = std::path::PathBuf::from("/tmp/one.runs.json");
+        let lines = waits_lines(&[(here.clone(), log)]);
+        let said = lines.join("\n");
+
+        // ── ① THE STRETCH, WITH ITS NUMBER — item 827's own shape, 13,629s being 3h47m ──
+        assert!(
+            said.contains("/w waited 13629s after run 1 until run 2"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872 ⑶: the verb computed the delay and did not print it. Item \
+             827 measured 3 h 49 m by hand and four rounds recorded the clause as unmeasurable; a \
+             renderer that drops the number puts it back where it was. Got:\n{said}",
+        );
+
+        // ── ② AND WHAT IT COULD NOT MEASURE, WHICH IS THE HALF THAT GOES QUIET ──
+        assert!(
+            said.contains(NoWait::TreeUnknown.describe())
+                && said.contains(NoWait::NothingFollowed.describe()),
+            "⛔⛔⛔⛔⛔ THE UNMEASURABLE HALF IS NOT ON THE PAGE. Today's real store is 229 rows of \
+             exactly that (2026-09-05T07:53:28Z), so a verb printing only its stretches answers a \
+             blank page for the machine it was built for — and a blank page reads as *no tree ever \
+             waited*, which is the strongest claim there is made from no evidence. Got:\n{said}",
+        );
+
+        // ── ③ THE CONTROL: an arm nothing reached is NOT printed ──
+        //
+        // ⚠⚠ Without this, a renderer listing all six arms every time passes ② by saying
+        // everything — and a report where every line is always present is one nobody reads on the
+        // round it matters. Item 856's `0 of 0` rule.
+        assert!(
+            !said.contains(NoWait::SuccessorStartedFirst.describe()),
+            "⚠⚠ an arm no run reached must not appear: a table that always prints six lines has \
+             stopped distinguishing them. Got:\n{said}",
+        );
+
+        // ── ④ AND NOTHING READ IS A REFUSAL ──
+        let refused = waits(vec!["/nonexistent/nothing.runs.json".to_owned()])
+            .expect_err("⛔ a log that cannot be read is a REFUSAL, never an empty table");
+        assert_eq!(refused.kind(), io::ErrorKind::NotFound);
+        assert!(
+            refused.to_string().contains("NOTHING WAS READ"),
+            "⚠⚠ and it says which of the two silences this is, because *nothing was read* and \
+             *nothing waited* are opposite facts that print alike: {refused}",
+        );
+
+        let extra = waits(vec!["a".to_owned(), "b".to_owned()])
+            .expect_err("⚠⚠ two logs at once is refused rather than half-honoured");
         assert!(
             extra.to_string().contains("one at a time"),
             "⚠ and the refusal says what the shape is: {extra}",
