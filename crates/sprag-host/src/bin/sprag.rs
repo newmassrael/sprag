@@ -13754,6 +13754,14 @@ mod tests {
                 // ⚠⚠ AND THE CONTROL: behind the wall having never walked it, so nothing is lost.
                 {"id": 8, "label": "ai_loop pane=8", "iterations": 1, "finished": true,
                  "folds_by_reason": {"ordinary": {"delivered": 4, "folded": 0}}},
+                // ⛔⛔⛔⛔⛔ A CEILING RECORDED AND NOT IN FORCE. It answers item 859, so nothing
+                //    else keeps it out — and the document guards every edge into the `capacity`
+                //    road on `context_ceiling > 0`, so this run could never have reflected on
+                //    capacity. Run 233 carried this zero on 2026-09-05T15:33:48Z. Its 6 of 12
+                //    would quieten the ordinary road the axis is read against.
+                {"id": 9, "label": "ai_loop pane=9", "iterations": 1, "finished": true,
+                 "context_high_water": 417_509, "context_ceiling": 0, "overridden": [],
+                 "folds_by_reason": {"ordinary": {"delivered": 12, "folded": 6}}},
                 // ⛔⛔⛔⛔⛔ RUN 232's OWN SHAPE, byte for byte in the fields that decide: an
                 //    ORDINARY run carrying a fullness BELOW its own document's ceiling, whose
                 //    `capacity` road was never taken. This is what the very first row item 856 ⑴⒞
@@ -13842,6 +13850,15 @@ mod tests {
             "⛔⛔⛔ AND THE EXPERIMENT IS NOT IN THE RATE. Run 2's ceiling was moved to 20,000, so \
              its 28 capacity prompts mean *we handed over early*; summing them answers this axis \
              with the experiment's own definition of *full*. Got:\n{said}",
+        );
+        assert!(
+            said.contains(NoFullness::CeilingUnbounded.describe())
+                && !said.contains("ordinary 6 of 52"),
+            "⛔⛔⛔⛔⛔ NOR A RUN THAT HAD NO CEILING AT ALL. Run 9's `context_ceiling` is 0, which \
+             the document reads as unbounded — every edge into the `capacity` road is guarded \
+             `context_ceiling > 0` — so it could never supply the landing item 856 waits for, and \
+             its 6 folds of 12 would quieten the very control road the axis is read against. The \
+             live store held such a row on 2026-09-05T15:33:48Z. Got:\n{said}",
         );
 
         // ── ②c AND THE LANDINGS BEHIND THE WALL ARE SAID, WITH THE POPULATION THEY SIT IN ──

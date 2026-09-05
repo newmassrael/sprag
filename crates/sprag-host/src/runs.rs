@@ -4051,6 +4051,16 @@ impl RunLog {
                 });
                 continue;
             };
+            // ⛔⛔⛔⛔⛔ AND BEFORE WHOSE NUMBERS THEY WERE, WHETHER THERE IS A BOUND AT ALL. The
+            // document guards every edge into the `capacity` road on `context_ceiling > 0` and
+            // sends `<= 0` somewhere else entirely, so a zero is NO ceiling rather than a low one
+            // — a run carrying it could never take the road this axis is read from. Asked ahead of
+            // `Judged` because it holds whoever authored the number: a caller who moved the
+            // ceiling TO zero has made the axis just as inapplicable as a document that did.
+            if ceiling <= 0 {
+                blame(NoFullness::CeilingUnbounded);
+                continue;
+            }
             let Some(judged) = run.overridden.as_deref().and_then(Judged::of) else {
                 blame(NoFullness::ExperimentUnsaid);
                 continue;
@@ -4817,6 +4827,33 @@ pub enum NoFullness {
     /// How full it got is recorded and [`PersistedRun::context_ceiling`] is not, so the row states
     /// a reading and never what it was measured against — register item 856 ⑴b.
     CeilingUnrecorded,
+    /// **ITS CEILING IS RECORDED AND IS NOT IN FORCE** — `context_ceiling <= 0`, which the loop's
+    /// own document reads as *unbounded*, so **no capacity reflection could ever have fired on
+    /// this run.**
+    ///
+    /// ⛔⛔⛔⛔⛔ **THE DOCUMENT SAYS SO AND THE COUNT IS ITS OWN**, asked of `ai_loop.scxml`
+    /// rather than argued: every edge that can reach the `capacity` road is guarded
+    /// `context_ceiling > 0 && context > 0 && context >= context_ceiling` (**3** of them), and
+    /// four further edges are guarded `context_ceiling <= 0` and go somewhere else — measured
+    /// 2026-09-05T15:55:05Z. A zero is therefore not a small bound, it is NO bound.
+    ///
+    /// ⛔⛔ **So a row like this may not sit in the axis's denominator.** Item 856 waits for one
+    /// `capacity` prompt to LAND; a run that cannot take that road can never supply one, and
+    /// counting it makes the rate quieter without making it truer — this workspace's rule 5, and
+    /// its rule 6 in the same breath, since *unbounded* is precisely the escape hatch that would
+    /// nullify the gate.
+    ///
+    /// ⚠⚠ **REACHABLE, AND IT HAS ARRIVED.** Register item 894's own round measured that
+    /// `authored_number` accepts a zero and that it travels all the way to the row; on
+    /// 2026-09-05T15:33:48Z the live store held one — run 233, `context_ceiling` **0** beside a
+    /// peak of **417,509**. Today that row is excluded by accident, because its `overridden` is
+    /// silent and [`ExperimentUnsaid`](Self::ExperimentUnsaid) catches it first. One that answered
+    /// item 859 would walk straight into the rate.
+    ///
+    /// ⚠ And it removes a second nonsense the same row produces: with a ceiling of `0` every peak
+    /// is `>=` it, so [`FoldAtFullness::reached_its_ceiling`] reads *this session filled up* about
+    /// a session that had nothing to fill.
+    CeilingUnbounded,
     /// Both readings are there and [`PersistedRun::overridden`] answers nothing, so an EXPERIMENT
     /// cannot be told from an ordinary run — register item 859. ⛔ Counted here rather than assumed
     /// to be the document's: assuming would put a moved-ceiling run into the axis's own
@@ -4825,19 +4862,20 @@ pub enum NoFullness {
 }
 
 impl NoFullness {
-    /// Every way, as the population [`Folds::unmeasured`] is built from — a seventh reason added
+    /// Every way, as the population [`Folds::unmeasured`] is built from — an eighth reason added
     /// to the type appears in every report without anybody widening a list.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::SplitUnsaid,
         Self::SplitZeroed,
         Self::FullnessUnread,
         Self::CapacityUnjudgeable,
         Self::CeilingUnrecorded,
+        Self::CeilingUnbounded,
         Self::ExperimentUnsaid,
     ];
 
-    /// What a reader is looking at, in one clause — ⛔ an exhaustive `match` with no `_` arm, so a
-    /// seventh way cannot reach a report wearing a sixth's sentence.
+    /// What a reader is looking at, in one clause — ⛔ an exhaustive `match` with no `_` arm, so an
+    /// eighth way cannot reach a report wearing a seventh's sentence.
     #[must_use]
     pub const fn describe(self) -> &'static str {
         match self {
@@ -4857,6 +4895,10 @@ impl NoFullness {
                  its landings cannot be told from an experiment's"
             }
             Self::CeilingUnrecorded => "nothing recorded which ceiling it was judged by",
+            Self::CeilingUnbounded => {
+                "its ceiling is not in force — the document reads that as unbounded, so no \
+                 capacity reflection could ever have fired on it"
+            }
             Self::ExperimentUnsaid => {
                 "nothing says whether its numbers were its document's, so an experiment cannot be \
                  told from an ordinary run"
@@ -11642,6 +11684,14 @@ mod tests {
                 // ── ⑨ NO SPLIT AT ALL — a row from a daemon older than the table ──
                 { "id": 9, "label": "ai_loop pane=11", "iterations": 9, "finished": true,
                   "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [] },
+                // ── ⑨b A CEILING THAT IS RECORDED AND IS NOT IN FORCE ──
+                //    ⛔ It ANSWERS item 859 (`overridden: []`), so nothing else would keep it out
+                //    of the axis — and the document reads `context_ceiling <= 0` as unbounded, so
+                //    this run could never have reflected on capacity at all. Run 233 carried
+                //    exactly this zero on 2026-09-05T15:33:48Z beside a peak of 417,509.
+                { "id": 14, "label": "ai_loop pane=16", "iterations": 9, "finished": true,
+                  "context_high_water": 417_509, "context_ceiling": 0, "overridden": [],
+                  "folds_by_reason": { "ordinary": { "delivered": 12, "folded": 6 } } },
                 // ── ⑩ THE CONTROL GROUP THE AXIS IS READ AGAINST: reflected, never on capacity ──
                 //    Its peak is BELOW its ceiling, which is what an unfilled session looks like.
                 { "id": 10, "label": "ai_loop pane=12", "iterations": 9, "finished": true,
@@ -11764,6 +11814,10 @@ mod tests {
             // above and report as *no evidence*.
             (NoFullness::CapacityUnjudgeable, 3),
             (NoFullness::CeilingUnrecorded, 1),
+            // ⛔ ONE: run 14's ceiling is recorded, answers item 859, and is ZERO — no bound, so
+            // no capacity reflection was ever possible on it. Its 6 folds of 12 must not quiet
+            // the rate the axis is read from.
+            (NoFullness::CeilingUnbounded, 1),
             // ⚠ TWO: nobody answered, and a word this build cannot spell. `Overridden::restored`
             // folds them and states why — both are *this row cannot be told from an experiment*.
             (NoFullness::ExperimentUnsaid, 2),
