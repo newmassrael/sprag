@@ -250,6 +250,44 @@ pub fn met_while(reason: &str) -> Option<&'static str> {
 /// raises the count above the floor and reds.
 pub const PARENT_DECLARATION: &str = "@from-unclassified:";
 
+/// ⛔⛔⛔⛔⛔ **THE LINE THE LEDGER DECLARES ITS OWN COUNT OF PAID ITEMS THAT NAME NO COMMIT**:
+/// `@paid-uncommitted: <n>` — register item 902.
+///
+/// # ⛔⛔⛔⛔⛔ What went wrong, measured rather than argued
+///
+/// A round opened with the ledger's `@ns: paid` section for item 866(2) fully written — the
+/// argument, the mutation table, the numbers — while the code it describes was **720 uncommitted
+/// lines across eleven files**, and had never been through clippy, rustfmt or the rustdoc gate.
+/// The mark was correctly formed and correctly parsed. It was simply not TRUE about the product.
+///
+/// ⇒ ⭐ **No predicate inside the ledger can catch that, because the ledger does not look at the
+/// tree.** [`DECLARATION`]'s hazard is an item with no mark; this one's is a mark whose claim is
+/// false, which is strictly worse: an unmarked item is still in [`Reading::unclassified`] and still
+/// owed, while a wrongly-paid item leaves [`Reading::population`] and **cannot be found again**.
+///
+/// # ⚠⚠ Why a COMMIT ID and never *is the working tree clean*
+///
+/// This repository's tree has two writers (register item 196 — an unattended loop commits into it),
+/// so a dirty tree can never be attributed to a particular item: it says somebody is mid-round, not
+/// that item 866 is unpaid. A commit id is per-item, is what a reader chases anyway, and can be put
+/// to `git` — see [`Commits`]. The convention already exists and is already unevenly kept, which is
+/// what makes this a ratchet rather than a demand: it is read off the mark line, in backticks.
+///
+/// # ⚠ The ratchet direction, and rule 5
+///
+/// The floor may only fall. Every existing paid line that names nothing is held here, and the path
+/// to zero is to read them and fill in what each round actually committed — the same shape
+/// [`DECLARATION`] holds for unmarked items, and the same reason: a retroactive sweep of forty-odd
+/// items gets abandoned half-done, while a NEW paid mark that names no commit raises the count
+/// above the floor and reds on the round that wrote it.
+pub const PAID_DECLARATION: &str = "@paid-uncommitted:";
+
+/// The shortest and longest a commit id may be for [`named_commits`] to read it as one.
+///
+/// ⚠ SEVEN is git's own abbreviation floor, and it is what keeps this from reading ordinary
+/// backticked prose as a commit: `` `abcdef` `` is six and `` `held()` `` is not hex at all.
+const COMMIT_ID: std::ops::RangeInclusive<usize> = 7..=40;
+
 /// Where section A begins and ends. A number outside it is not this population's business.
 const SECTION_A: &str = "## A. ";
 /// Any other top-level section heading ends A.
@@ -381,6 +419,10 @@ pub struct Item {
     pub severity: Option<Severity>,
     /// What it says found it, if it says. See [`PARENT`].
     pub parent: Option<Parent>,
+    /// ⛔⛔⛔⛔⛔ **THE COMMIT IDS ITS MARK LINE NAMES** — register item 902. Empty for an item
+    /// whose mark names none, and empty for every item that is not [`Tag::Paid`], because only a
+    /// claim of payment can be checked against the repository. See [`PAID_DECLARATION`].
+    pub commits: Vec<String>,
     /// Whether any block of it names the loop — the alarm's input, never the population's.
     pub names_the_loop: bool,
     /// Whether the prose vocabulary reads it as closed — likewise only the alarm's input.
@@ -482,6 +524,23 @@ pub enum Fault {
         number: u32,
     },
     /// More items with no [`PARENT`] than the ledger declares.
+    /// More paid items name no commit than [`PAID_DECLARATION`] declares. Register item 902.
+    PaidRatchetGrew {
+        /// What this pass counted.
+        counted: usize,
+        /// What the ledger declared.
+        declared: usize,
+    },
+    /// [`PAID_DECLARATION`] appears other than exactly once.
+    PaidDeclaration {
+        /// How many lines carried it.
+        found: usize,
+    },
+    /// [`PAID_DECLARATION`] is present and states no number.
+    UnreadablePaidDeclaration {
+        /// The line as written.
+        line: String,
+    },
     ParentRatchetGrew {
         /// What this reading counted.
         counted: usize,
@@ -646,6 +705,22 @@ impl fmt::Display for Fault {
                 "`{}` states no number — a floor nobody can read is not a floor",
                 line.trim(),
             ),
+            Self::PaidRatchetGrew { counted, declared } => write!(
+                f,
+                "{counted} paid items name no commit, but the ledger declares {declared}: a `paid` \
+                 mark that names nothing is a claim about the repository that nothing checked, and \
+                 an item marked paid has already left the population",
+            ),
+            Self::PaidDeclaration { found } => write!(
+                f,
+                "found {found} `{PAID_DECLARATION}` lines, need exactly 1 — a ratchet with no \
+                 floor holds nothing",
+            ),
+            Self::UnreadablePaidDeclaration { line } => write!(
+                f,
+                "`{}` states no number — a floor nobody can read is not a floor",
+                line.trim(),
+            ),
         }
     }
 }
@@ -661,6 +736,8 @@ pub struct Reading {
     pub severity_declared: Option<usize>,
     /// What [`PARENT_DECLARATION`] said, when exactly one line said it.
     pub parent_declared: Option<usize>,
+    /// What [`PAID_DECLARATION`] said, when exactly one line said it. Register item 902.
+    pub paid_declared: Option<usize>,
     /// Everything that has to be fixed.
     pub faults: Vec<Fault>,
 }
@@ -919,11 +996,75 @@ impl Reading {
             .collect()
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE PAID ITEMS WHOSE MARK NAMES NO COMMIT** — the backlog
+    /// [`Fault::PaidRatchetGrew`] holds, register item 902.
+    ///
+    /// ⚠⚠ **PAID ONLY, and that is the whole population question here.** An OPEN item has nothing
+    /// to have committed and an `out` one was never this loop's; demanding an id of either would be
+    /// a ratchet that grows when a round does its job, which is the trap [`SEVERITY_DECLARATION`]
+    /// records avoiding.
+    #[must_use]
+    pub fn paid_unnamed(&self) -> Vec<u32> {
+        self.items
+            .iter()
+            .filter(|item| item.tag == Some(Tag::Paid) && item.commits.is_empty())
+            .map(|item| item.number)
+            .collect()
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE PAID ITEMS WHOSE NAMED COMMIT THIS TREE CANNOT RESOLVE** — the other
+    /// half of register item 902, and the half no document can answer on its own.
+    ///
+    /// # ⛔⛔ Why this is NOT a ratchet, when its neighbour is
+    ///
+    /// [`paid_unnamed`](Self::paid_unnamed) counts a convention that is unevenly kept, so it has a
+    /// backlog and a floor. An id that is WRITTEN and does not resolve has no backlog: it is either
+    /// a typo or a claim about a commit that was never made, and there is no round in which it is
+    /// acceptable. So every one of these is returned, and the caller reds on any.
+    ///
+    /// # ⚠⚠⚠ A FAILURE TO ASK IS NOT AN ANSWER
+    ///
+    /// If `commits` cannot be consulted at all — run outside a repository, `git` missing — this
+    /// returns that error rather than declaring every id unresolvable. Forty-odd item faults from
+    /// one broken environment would be a RED that teaches the reader to ignore this line, which is
+    /// how a gate dies. See [`Commits::resolves`].
+    ///
+    /// # Errors
+    ///
+    /// Whatever `commits` said when it could not answer at all.
+    pub fn paid_unresolved(&self, commits: &dyn Commits) -> Result<Vec<(u32, String)>, String> {
+        let mut found = Vec::new();
+        for item in self.items.iter().filter(|it| it.tag == Some(Tag::Paid)) {
+            for id in &item.commits {
+                if !commits.resolves(id)? {
+                    found.push((item.number, id.clone()));
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// Whether this reading is clean.
     #[must_use]
     pub fn is_green(&self) -> bool {
         self.faults.is_empty()
     }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHO ANSWERS WHETHER A COMMIT ID NAMES A COMMIT** — register item 902, injected
+/// rather than reached for, so [`read`] stays a function of its text alone.
+///
+/// ⚠ The ledger is not in the repository it talks about, and this crate must not decide where that
+/// repository is. The caller that knows both is the one that supplies this.
+pub trait Commits {
+    /// Whether `id` names a commit.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming why the question could not be PUT — never why one id failed. An id that
+    /// simply is not there is `Ok(false)`, and the difference is the whole of why this returns a
+    /// [`Result`]: see [`Reading::paid_unresolved`].
+    fn resolves(&self, id: &str) -> Result<bool, String>;
 }
 
 /// The `<data>` id a loop document declares its re-aim cap under.
@@ -1093,6 +1234,36 @@ fn mark_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(TAG)
 }
 
+/// ⛔⛔⛔⛔⛔ **THE COMMIT IDS A MARK LINE NAMES** — register item 902, and the whole of what this
+/// crate can read about whether a `paid` claim reached the repository.
+///
+/// A candidate is a BACKTICKED run of lowercase hex whose length is [`COMMIT_ID`]. Anything else on
+/// the line — dates, item numbers, the sentence saying what was done — is not a commit id and is
+/// not guessed at.
+///
+/// # ⚠⚠ READ FROM THE MARK LINE ALONE, deliberately, and that is the NARROW direction
+///
+/// A mark whose sentence wraps onto the next line and puts its hash there is counted as naming
+/// nothing. That is a false RED for that item and it is the safe way round: the fix is to move the
+/// hash onto the mark line, which is the convention this gate exists to hold. Reading the whole
+/// block would be the WIDE direction — every paid item quotes commits in its prose, so almost
+/// nothing would ever be counted and the ratchet would hold air.
+fn named_commits(value: &str) -> Vec<String> {
+    value
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|token| {
+            // ⚠ LOWERCASE ONLY, which is what `git` writes and therefore what a line copied from a
+            // real commit carries. `is_ascii_hexdigit` would also admit `DEADBEE`, and a prose
+            // token in capitals is far likelier to be an acronym than an id somebody typed by hand.
+            COMMIT_ID.contains(&token.len())
+                && token.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+        })
+        .map(ToString::to_string)
+        .collect()
+}
+
 /// The value of a [`SEVERITY`] line, by the same whole-line rule [`mark_value`] holds.
 fn severity_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(SEVERITY)
@@ -1204,14 +1375,29 @@ pub fn read(text: &str) -> Reading {
         |found| Fault::ParentDeclaration { found },
         |line| Fault::UnreadableParentDeclaration { line },
     );
+    // ⛔⛔⛔⛔⛔ AND THE FLOOR FOR PAID MARKS THAT NAME NO COMMIT — register item 902, read the
+    // same way its three neighbours are and for their reason. See [`PAID_DECLARATION`].
+    let paid_declared = declared_floor(
+        text,
+        PAID_DECLARATION,
+        &mut faults,
+        |found| Fault::PaidDeclaration { found },
+        |line| Fault::UnreadablePaidDeclaration { line },
+    );
 
     let mut items: Vec<Item> = Vec::new();
     for (number, bodies) in &blocks {
         let mut tag = None;
         let mut severity = None;
         let mut parent = None;
+        // ⛔⛔⛔⛔⛔ THE COMMIT IDS THE MARK LINE NAMES — register item 902, collected in the same
+        // walk and settled by the same topmost-block rule the mark itself is, because an id read
+        // off a block whose mark lost the tie would be evidence for a claim this item is not
+        // making. See [`named_commits`].
+        let mut commits: Vec<String> = Vec::new();
         for body in bodies {
             let mut in_block: Vec<Tag> = Vec::new();
+            let mut named: Vec<String> = Vec::new();
             let mut severities: Vec<Severity> = Vec::new();
             let mut parents: Vec<Parent> = Vec::new();
             for line in body {
@@ -1253,6 +1439,7 @@ pub fn read(text: &str) -> Reading {
                 let Some(value) = mark_value(line) else {
                     continue;
                 };
+                named.extend(named_commits(value));
                 match Tag::parse(value) {
                     Some(found) => in_block.push(found),
                     None => faults.push(Fault::UnknownTag {
@@ -1283,6 +1470,10 @@ pub fn read(text: &str) -> Reading {
             // Topmost block wins: the first body that states anything settles the item.
             if tag.is_none() {
                 tag = in_block.first().copied();
+                // ⚠ AND ITS IDS COME WITH IT, in the same breath and never a step later: a mark
+                // settled by one block and ids gathered from all of them would let a superseded
+                // block vouch for the block that beat it. Register item 902.
+                commits = std::mem::take(&mut named);
             }
         }
 
@@ -1305,6 +1496,7 @@ pub fn read(text: &str) -> Reading {
             tag,
             severity,
             parent,
+            commits,
             names_the_loop,
             reads_as_closed,
         });
@@ -1343,6 +1535,22 @@ pub fn read(text: &str) -> Reading {
         });
     }
 
+    // ⛔⛔⛔⛔⛔ AND THE PAID MARKS THAT NAME NO COMMIT — register item 902, held by the same
+    // ratchet its three neighbours are. See [`PAID_DECLARATION`] for why an item that has LEFT the
+    // population is the one whose claim most needs checking.
+    let unnamed = items
+        .iter()
+        .filter(|item| item.tag == Some(Tag::Paid) && item.commits.is_empty())
+        .count();
+    if let Some(floor) = paid_declared
+        && unnamed > floor
+    {
+        faults.push(Fault::PaidRatchetGrew {
+            counted: unnamed,
+            declared: floor,
+        });
+    }
+
     // ⚠ The chain is judged AFTER every item is known: a parent may be filed below its child, and
     // reading forward-only would call a legal chain dangling.
     let numbers: std::collections::BTreeSet<u32> = items.iter().map(|item| item.number).collect();
@@ -1362,6 +1570,7 @@ pub fn read(text: &str) -> Reading {
         declared,
         severity_declared,
         parent_declared,
+        paid_declared,
         faults,
     };
     // A cycle is only visible once the walk exists, and it must be a fault rather than a silent
@@ -1406,6 +1615,7 @@ mod tests {
 @ns-unclassified: 1
 @sev-unclassified: 0
 @from-unclassified: 3
+@paid-uncommitted: 1
 
 900. ⛔ **An open loop item**
      @ns: open — the loop's own driver
@@ -1488,6 +1698,160 @@ mod tests {
             reading.population(),
             vec![900],
             "the limb still owed is the item's state"
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A `paid` MARK IS COUNTED UNTIL IT NAMES A COMMIT** — register item 902's ⑴, and
+    /// the arm the whole ratchet stands on.
+    ///
+    /// Item 866(2) sat in the ledger marked `paid`, argued in full, while its 720 lines had never
+    /// been committed or seen a hook. The mark parsed perfectly; it was simply not true about the
+    /// repository, and an item marked paid has already left [`Reading::population`].
+    #[test]
+    fn a_paid_mark_is_counted_until_it_names_a_commit() {
+        assert_eq!(
+            read(LEDGER).paid_unnamed(),
+            vec![899],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 902: a `paid` mark naming no commit is a claim about the \
+             repository that nothing checked, and this is the only place it is counted",
+        );
+        let named = LEDGER.replace(
+            "     @ns: paid\n",
+            "     @ns: paid — 2026-09-02 `5243b28`\n",
+        );
+        assert!(
+            read(&named).paid_unnamed().is_empty(),
+            "⚠⚠ AND NAMING ONE CLEARS IT, or the ratchet has no zero and this workspace's rule 5 \
+             is broken by the predicate: {:?}",
+            read(&named).paid_unnamed(),
+        );
+    }
+
+    /// ⛔⛔ **AND ONLY A `paid` MARK IS ASKED** — an OPEN item has nothing to have committed, and an
+    /// `out` one was never this loop's. A ratchet that counted those would grow every time a round
+    /// opened an item, which is the trap [`SEVERITY_DECLARATION`] records avoiding.
+    #[test]
+    fn only_a_paid_mark_is_asked_for_a_commit() {
+        let counted = read(LEDGER).paid_unnamed();
+        assert!(
+            !counted.contains(&900) && !counted.contains(&898) && !counted.contains(&897),
+            "⛔⛔⛔ REGISTER ITEM 902: the open item, the out one and the unmarked one are not \
+             claims of payment and must not be in this population: {counted:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A BACKTICKED WORD THAT IS NOT A COMMIT ID IS NOT READ AS ONE** — register item
+    /// 902, holding the lesson register item 901 was opened by: a needle that matches inside
+    /// innocent text refuses innocent files, and two readings of *what is a commit id* would let a
+    /// `paid` mark clear itself by quoting a function name.
+    #[test]
+    fn only_a_hex_run_of_commit_length_is_read_as_a_commit() {
+        for innocent in [
+            "`held()`",
+            "`abcdef`",
+            "`0.0.1`",
+            "`Cargo.toml`",
+            "`DEADBEE`",
+        ] {
+            let ledger = LEDGER.replace(
+                "     @ns: paid\n",
+                &format!("     @ns: paid — closed by {innocent}\n"),
+            );
+            assert_eq!(
+                read(&ledger).paid_unnamed(),
+                vec![899],
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 902: {innocent} is not a commit id — six hex is under \
+                 git's own abbreviation floor, and the rest are not hex at all. A mark that clears \
+                 itself with one of these is the defect this gate exists to catch",
+            );
+        }
+        for real in ["`deadbee`", &format!("`{}`", "a".repeat(40))] {
+            let ledger = LEDGER.replace(
+                "     @ns: paid\n",
+                &format!("     @ns: paid — closed by {real}\n"),
+            );
+            assert!(
+                read(&ledger).paid_unnamed().is_empty(),
+                "⚠⚠ AND THE CONTROL: {real} is a commit id at both ends of the length this reader \
+                 admits, and refusing it would make the ratchet unclearable",
+            );
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A NEW `paid` MARK THAT NAMES NOTHING RAISES THE RATCHET** — register item 902,
+    /// and the whole point of a floor: the backlog is tolerated, adding to it is not.
+    #[test]
+    fn a_new_paid_mark_that_names_nothing_is_red() {
+        let ledger = LEDGER.replace(
+            "     @ns: out — a rendering defect, nothing to do with the loop",
+            "     @ns: paid — done, and nobody wrote down where",
+        );
+        assert!(
+            read(&ledger).faults.contains(&Fault::PaidRatchetGrew {
+                counted: 2,
+                declared: 1,
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 902: the floor may only fall. A round that marks something \
+             paid without naming the commit must go red on that round, because afterwards the item \
+             is out of the population and nobody looks at it again: {:?}",
+            read(&ledger).faults,
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A LEDGER THAT DECLARES NO FLOOR IS REFUSED** — this workspace's rule 6, and the
+    /// arm that stops the whole of register item 902 from being switched off by deleting one line.
+    #[test]
+    fn a_ledger_that_declares_no_paid_floor_is_red() {
+        let ledger = LEDGER.replace("@paid-uncommitted: 1\n", "");
+        assert!(
+            read(&ledger)
+                .faults
+                .contains(&Fault::PaidDeclaration { found: 0 }),
+            "⛔⛔⛔⛔⛔ RULE 6: an absent declaration must be a RED and never a ratchet that \
+             quietly holds nothing — deleting one line would otherwise retire this gate: {:?}",
+            read(&ledger).faults,
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND AN ID THIS TREE CANNOT RESOLVE IS RED WITH NO FLOOR AT ALL** — register item
+    /// 902's ⑵, the half no document can answer about itself.
+    ///
+    /// ⚠⚠⚠ AND A FAILURE TO **ASK** IS AN ERROR RATHER THAN FORTY FINDINGS: being unable to reach
+    /// `git` says nothing about any ledger line, and a RED that fires whenever the environment is
+    /// odd is one a reader learns to skip — which is how a gate dies while still passing.
+    #[test]
+    fn a_named_commit_that_does_not_resolve_is_red_and_a_broken_asker_is_not() {
+        struct Answers(Result<bool, String>);
+        impl Commits for Answers {
+            fn resolves(&self, _id: &str) -> Result<bool, String> {
+                self.0.clone()
+            }
+        }
+
+        let ledger = LEDGER.replace(
+            "     @ns: paid\n",
+            "     @ns: paid — 2026-09-02 `deadbee`\n",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.paid_unresolved(&Answers(Ok(false))).expect("asked"),
+            vec![(899, "deadbee".to_string())],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 902: an id that is WRITTEN and does not resolve has no \
+             backlog — it is a typo or a claim about a commit nobody made, and there is no round \
+             in which it is acceptable",
+        );
+        assert!(
+            reading
+                .paid_unresolved(&Answers(Ok(true)))
+                .expect("asked")
+                .is_empty(),
+            "⚠ THE CONTROL: an id that resolves is the state this gate wants and must be silent",
+        );
+        assert_eq!(
+            reading.paid_unresolved(&Answers(Err("no git here".to_owned()))),
+            Err("no git here".to_owned()),
+            "⚠⚠⚠ AND THE SHARPEST ARM: a broken asker must come back as ONE error about the \
+             instrument, never as a finding against the ledger — see the doc above",
         );
     }
 

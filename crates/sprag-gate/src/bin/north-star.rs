@@ -114,16 +114,98 @@ fn main() -> std::process::ExitCode {
             .parent_declared
             .map_or_else(|| "none".to_string(), |n| n.to_string()),
     );
+    // ⛔⛔⛔⛔⛔ AND THE PAID MARKS WHOSE CLAIM NOTHING CHECKED — register item 902, printed
+    // beside its three ratchet neighbours because it is the same kind of statement: a backlog with
+    // a floor that may only fall. See `north_star::PAID_DECLARATION`.
+    let unnamed = reading.paid_unnamed();
+    println!(
+        "paid-uncommitted {} (declared {})",
+        unnamed.len(),
+        reading
+            .paid_declared
+            .map_or_else(|| "none".to_string(), |n| n.to_string()),
+    );
     println!("items {} in section A", reading.items.len());
 
-    if reading.is_green() {
+    // ⛔⛔⛔⛔⛔ AND THE OTHER HALF, WHICH NEEDS THE REPOSITORY AND NOT THE DOCUMENT — register
+    // item 902. An id that is WRITTEN and does not resolve has no backlog and no floor: it is a
+    // typo or a claim about a commit nobody made, so any one of them is a RED on the spot.
+    //
+    // ⚠⚠ A FAILURE TO ASK IS ITS OWN FAULT and never forty item faults — see
+    // `north_star::Reading::paid_unresolved`. Being unable to reach `git` says nothing about any
+    // ledger line, and a RED that fires on a broken environment is one readers learn to skip.
+    let unresolved = match reading.paid_unresolved(&Repository) {
+        Ok(found) => found,
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    for (number, id) in &unresolved {
+        eprintln!("north-star: item {number} names commit {id}, which this tree cannot resolve");
+    }
+
+    if reading.is_green() && unresolved.is_empty() {
         return std::process::ExitCode::SUCCESS;
     }
-    eprintln!("\n{} fault(s):", reading.faults.len());
-    for fault in &reading.faults {
-        eprintln!("  {fault}");
+    if !reading.faults.is_empty() {
+        eprintln!("\n{} fault(s):", reading.faults.len());
+        for fault in &reading.faults {
+            eprintln!("  {fault}");
+        }
     }
     std::process::ExitCode::FAILURE
+}
+
+/// ⛔⛔⛔⛔⛔ **THE REPOSITORY THIS BINARY IS RUN INSIDE, AS THE ANSWER TO *DOES THIS COMMIT
+/// EXIST*** — register item 902, and the one place in this program that knows where the tree is.
+///
+/// ⚠⚠⚠ **`^{commit}` IS NOT DECORATION.** An id resolves for a blob or a tree too, and a ledger
+/// line naming a forty-hex blob would have been accepted as a commit. The suffix makes the question
+/// the one the ledger is actually asking.
+///
+/// # ⛔⛔⛔⛔⛔ Why `rev-parse --verify --quiet` and NOT `cat-file -e`, measured by mutation
+///
+/// The first build of this asked `git cat-file -e <id>^{commit}` and read status 1 as *absent* and
+/// anything else as *could not ask*. Driving it against a ledger line carrying a plausible but
+/// fictional id produced:
+///
+/// > `north-star: git could not be asked whether deadbee is a commit (exit status: 128): fatal:
+/// > Not a valid object name deadbee^{commit}`
+///
+/// **`cat-file` answers an unresolvable NAME with 128, the same code it uses for *this is not a
+/// repository*.** So the one case this gate exists to catch was reported as a broken environment.
+/// It was still a RED — but a red that names the wrong cause is the thing register item 901 was
+/// opened by: a reader who sees two misattributed refusals ignores the third, real one.
+///
+/// ⇒ `rev-parse --verify --quiet` splits them the way this code always claimed to: **1 for a name
+/// that does not resolve, 128 for a question that could not be put.**
+///
+/// ⚠⚠ AND A FAILURE TO RUN `git` AT ALL IS STILL AN ERROR, never `false`: see
+/// [`north_star::Commits::resolves`] for why that difference is the whole point.
+struct Repository;
+
+impl north_star::Commits for Repository {
+    fn resolves(&self, id: &str) -> Result<bool, String> {
+        let asked = std::process::Command::new("git")
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{id}^{{commit}}"),
+            ])
+            .output()
+            .map_err(|why| format!("cannot ask git whether {id} is a commit: {why}"))?;
+        match asked.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(format!(
+                "git could not be asked whether {id} is a commit ({}): {}",
+                asked.status,
+                String::from_utf8_lossy(&asked.stderr).trim(),
+            )),
+        }
+    }
 }
 
 /// ⛔⛔⛔⛔⛔ **THE DOCUMENT THIS REPOSITORY'S DEBT RUNS ARE DRIVEN BY**, read at build time.
