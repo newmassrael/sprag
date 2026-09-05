@@ -1036,15 +1036,21 @@ fn folds_lines(
                 row.fullest,
                 row.ceiling,
                 row.judged.describe(),
-                // ⚠ A row whose peak is BELOW the ceiling it reflected on is a defect in the
+                // ⚠ A row whose peak is BELOW the ceiling **it reflected on** is a defect in the
                 // recording rather than a fact about a session — the document turns on
                 // `context >= context_ceiling` and the peak is taken over those readings. Said
                 // rather than dropped: a reader comparing the two columns must be able to see them
                 // disagree.
-                if row.reached_its_ceiling() {
-                    String::new()
-                } else {
+                //
+                // ⛔⛔⛔⛔⛔ THE EMPHASIS IS THE FIX. This asked `reached_its_ceiling` alone, and
+                // on 2026-09-05T13:01:55Z it printed that warning over run 232 — the FIRST
+                // ordinary run this item ever got a fullness from, whose capacity road was
+                // untaken. A run that has not reflected is supposed to sit below its ceiling.
+                // `columns_disagree` asks both halves, so the mouth cannot hold half the rule.
+                if row.columns_disagree() {
                     " ⚠ ITS PEAK IS BELOW THAT CEILING, so the two columns disagree".to_owned()
+                } else {
+                    String::new()
                 },
                 if split.is_empty() {
                     "no prompt was asked on any road".to_owned()
@@ -13666,6 +13672,32 @@ mod tests {
                  "folds_by_reason": {"capacity": {"delivered": 28, "folded": 1}}},
                 {"id": 3, "label": "ai_loop pane=3", "iterations": 1, "finished": true,
                  "folds_by_reason": {"capacity": {"delivered": 3, "folded": 3}}},
+                // ⛔⛔⛔⛔⛔ RUN 232's OWN SHAPE, byte for byte in the fields that decide: an
+                //    ORDINARY run carrying a fullness BELOW its own document's ceiling, whose
+                //    `capacity` road was never taken. This is what the very first row item 856 ⑴⒞
+                //    ever produced looked like (2026-09-05T13:01:38Z), and the mouth called it a
+                //    recording defect. Nothing in this fixture had a peak below its ceiling, so
+                //    the arm was unreachable and only the live store could find it.
+                {"id": 4, "label": "ai_loop pane=4", "iterations": 5, "finished": false,
+                 "context_high_water": 303_328, "context_ceiling": 800_000, "overridden": [],
+                 "folds_by_reason": {"ordinary": {"delivered": 2, "folded": 0}}},
+                // ⚠⚠ AND ITS CONTROL, which is what keeps the fix from being *never warn*: the
+                //    SAME two columns disagreeing on a run that DID walk the capacity road. There
+                //    the document turned on `context >= context_ceiling` and the peak is a peak
+                //    over those readings, so a peak below the ceiling really is a recording defect.
+                {"id": 5, "label": "ai_loop pane=5", "iterations": 9, "finished": true,
+                 "context_high_water": 100_000, "context_ceiling": 800_000, "overridden": [],
+                 "folds_by_reason": {"capacity": {"delivered": 1, "folded": 1}}},
+                // ⚠⚠ AND THE THIRD WAY THE ROAD IS TAKEN, which is the half a `delivered > 0` test
+                //    drops: the reflection happened and the question NEVER GOT ASKED. The
+                //    transition is what says the session reached its ceiling; whether a prompt
+                //    came out of it is a later fact, and item 856 ⑶ exists because that half was
+                //    outside the delivered/folded pair entirely.
+                {"id": 6, "label": "ai_loop pane=6", "iterations": 9, "finished": true,
+                 "context_high_water": 90_000, "context_ceiling": 800_000, "overridden": [],
+                 "folds_by_reason": {"capacity": {"delivered": 0, "folded": 0,
+                                                  "unasked_after_a_fold": 1,
+                                                  "unasked_on_the_pane": 0}}},
             ]
         }))
         .expect("the log a predecessor leaves is what this reads");
@@ -13700,6 +13732,49 @@ mod tests {
             !said.contains("30 capacity landing(s)"),
             "⛔⛔⛔ AND NEVER THEIR SUM, which is the same sentence as ② said the way it actually \
              went wrong. Got:\n{said}",
+        );
+
+        // ── ②b THE CAVEAT FIRES ON A RECORDING DEFECT AND NOT ON A HEALTHY SESSION ──
+        //
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴⒞. Run 4 is the shape of the first ordinary row this item
+        // ever got a fullness from, and the mouth printed *the two columns disagree* over it
+        // (2026-09-05T13:01:55Z). A run that has not reflected on capacity is SUPPOSED to sit below
+        // its ceiling — that is every healthy run, every moment before its first reflection — so
+        // the warning was on the one row ⒞'s whole number rests on. Run 5 is the control: it DID
+        // walk that road, so there the disagreement is real.
+        let caveat = " ⚠ ITS PEAK IS BELOW THAT CEILING, so the two columns disagree";
+        let row_of = |id: u32| {
+            lines
+                .iter()
+                .find(|line| line.trim_start().starts_with(&format!("run {id}:")))
+                .unwrap_or_else(|| panic!("run {id} must have a row of its own in:\n{said}"))
+                .clone()
+        };
+        assert!(
+            !row_of(4).contains(caveat),
+            "⛔⛔⛔⛔⛔ A HEALTHY SESSION WAS CALLED A RECORDING DEFECT. Run 4 never took the \
+             `capacity` road, so its peak is below its ceiling for the only reason an unfinished \
+             run's peak ever is: it has not filled up. `reached_its_ceiling` only promises to \
+             agree WHERE THAT ROAD WAS TAKEN — its own doc says so — and the mouth read the answer \
+             without the condition. Got:\n{}",
+            row_of(4),
+        );
+        assert!(
+            row_of(5).contains(caveat),
+            "⛔⛔⛔ AND THE CONTROL, or the fix is *never warn*: run 5 walked the capacity road, \
+             where the document turns on `context >= context_ceiling` and the peak is taken over \
+             those readings — so a peak below the ceiling there is a defect in the recording and \
+             has to be said. Got:\n{}",
+            row_of(5),
+        );
+        assert!(
+            row_of(6).contains(caveat),
+            "⚠⚠ AND THE ROAD IS TAKEN BY THE UNASKED HALF TOO. Run 6's capacity reflection never \
+             produced a question, so `delivered` is 0 — but the document still transitioned on \
+             `context >= context_ceiling`, which is the whole reason the peak is promised to \
+             agree. A condition written as `delivered > 0` silences the warning on exactly the \
+             runs item 856 ⑶ was opened for. Got:\n{}",
+            row_of(6),
         );
 
         // ── ③ AND WHAT COULD NOT BE READ, WHICH IS THE HALF THAT GOES QUIET ──

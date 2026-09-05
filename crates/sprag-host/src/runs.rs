@@ -4445,11 +4445,49 @@ impl FoldAtFullness {
     /// ⚠⚠ It is NOT what tells an experiment from an ordinary run — [`judged`](Self::judged) is,
     /// and this is true of both by construction whenever the `capacity` road was taken at all
     /// (`ai_loop.scxml` turns on `context >= context_ceiling`, and [`fullest`](Self::fullest) is a
-    /// peak over those readings). It is carried so a reader can see the two columns AGREE, and a
-    /// row where they do not is a defect in the recording rather than a fact about a session.
+    /// peak over those readings).
+    ///
+    /// ⛔⛔⛔⛔⛔ **THAT CONDITION IS THE WHOLE MEANING OF THIS ANSWER, AND ASKING THIS ALONE READS
+    /// IT OFF.** `false` on a run that never took that road is *this session has not filled up
+    /// yet*, which is what a healthy long run looks like every moment before its first reflection.
+    /// Use [`columns_disagree`](Self::columns_disagree), which asks both halves.
     #[must_use]
     pub const fn reached_its_ceiling(&self) -> bool {
         self.fullest >= self.ceiling
+    }
+
+    /// Whether this run's document ever walked the `capacity` road at all — a prompt asked under
+    /// that reason, or one that hardened into `prompt.unasked` under it.
+    ///
+    /// ⚠ The unasked half counts: the transition is what says the session reached its ceiling, and
+    /// whether a question came out of it is a later fact.
+    #[must_use]
+    pub fn took_the_capacity_road(&self) -> bool {
+        let row = self.on_the_capacity_road();
+        row.delivered > 0 || !row.unasked.is_empty()
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER THE TWO COLUMNS DISAGREE WHERE THEY WERE EVER PROMISED TO AGREE** — the
+    /// question [`reached_its_ceiling`](Self::reached_its_ceiling) only half answers, and the one a
+    /// reader of a row actually has.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Measured on the first real row this item ever produced
+    ///
+    /// Item 856 ⑴⒞ waited five re-judgements for one ordinary run to carry a fullness. It arrived
+    /// **2026-09-05T13:01:38Z** — run 232, peak `303328` of a `800000` ceiling its own document
+    /// authored, `overridden []`, **`capacity` road `0 delivered · 0 unasked`** — and the mouth
+    /// printed *⚠ ITS PEAK IS BELOW THAT CEILING, so the two columns disagree* over it. That is
+    /// false: a session that has not reflected on capacity is SUPPOSED to sit below the ceiling,
+    /// and every ordinary run does until the moment it does not.
+    ///
+    /// ⇒ ⭐⭐⭐⭐⭐ **The condition was written down and not asked.** `reached_its_ceiling`'s doc
+    /// already said *whenever the `capacity` road was taken at all*; the renderer read the answer
+    /// without it. A sentence in a doc is not a guard, and the arm was never exercised — the
+    /// fixture's rows all reached their ceilings, so nothing could have found this but the real
+    /// store. This workspace's own rule, printed: an arm nothing reaches will be wrong.
+    #[must_use]
+    pub fn columns_disagree(&self) -> bool {
+        self.took_the_capacity_road() && !self.reached_its_ceiling()
     }
 }
 
