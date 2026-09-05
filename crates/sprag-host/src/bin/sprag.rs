@@ -1104,8 +1104,18 @@ fn folds_lines(
                     format!("{} {folded} of {delivered}", occasion.word())
                 })
                 .collect();
+            // ⛔⛔⛔⛔⛔ AND THE FULLNESS IT IS SUMMED ACROSS, on the same line. The question this
+            // rate exists to answer is *does a prompt fold because the session is full*, and a
+            // figure pooled over 75 % and 101 % of the ceiling answers a different one. The run
+            // count says how many; this says AT WHAT, and for this axis that is the half that
+            // decides how the line may be read.
+            let span = match folds.production_span() {
+                Some((lo, hi)) if lo == hi => format!(", peak {lo}"),
+                Some((lo, hi)) => format!(", peaks {lo}–{hi}"),
+                None => String::new(),
+            };
             lines.push(format!(
-                "  over {} production run(s) judged by their own document's ceiling: {}",
+                "  over {} production run(s) judged by their own document's ceiling{span}: {}",
                 folds.production_runs(),
                 split.join(" · "),
             ));
@@ -13836,7 +13846,9 @@ mod tests {
         // a renderer that dropped the empty roads would publish exactly the capacity-only figure
         // the split was built to replace.
         assert!(
-            said.contains("over 4 production run(s) judged by their own document's ceiling:")
+            said.contains(
+                "over 4 production run(s) judged by their own document's ceiling, peaks 90000–800000:"
+            )
                 && said.contains("capacity 2 of 5")
                 && said.contains("ordinary 0 of 40")
                 && said.contains("milestone 0 of 0"),

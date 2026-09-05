@@ -4569,6 +4569,36 @@ impl Folds {
             .collect()
     }
 
+    /// 🎯🎯🎯🎯🎯 **AND THE FULLNESS THAT RATE IS SUMMED ACROSS** — the lowest and highest peak
+    /// among the rows [`folded_by_road`](Self::folded_by_road) sums, and [`None`] when it sums
+    /// none.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A rate about fullness, pooled across fullness, is not an answer about fullness
+    ///
+    /// Item 856's axis is *does a prompt fold because the session is full*. The rate beside this
+    /// one pools every production run, and measured over the live store at
+    /// **2026-09-05T16:22:31Z** that was two runs whose peaks were **600,063** and **805,382** —
+    /// 75 % and 101 % of the same ceiling. Read without that span the line says *reflections fold
+    /// and ordinary prompts do not*, which is true and is not an answer to the question asked.
+    ///
+    /// ⇒ ⭐ It is this item's own most repeated failure one level up: a number published without
+    /// the population that decides how to read it. The run COUNT beside it says how many; this
+    /// says **at what**, and for an axis about fullness the second is the one that decides.
+    ///
+    /// ⚠ Raw peaks rather than a fraction: the rows each carry their own ceiling, and a single
+    /// percentage would be an average over denominators that may differ. The per-run lines above
+    /// hold each pairing, and this says the range they span.
+    #[must_use]
+    pub fn production_span(&self) -> Option<(i64, i64)> {
+        let peaks = || {
+            self.measured
+                .iter()
+                .filter(|row| row.judged == Judged::ByItsDocument)
+                .map(|row| row.fullest)
+        };
+        Some((peaks().min()?, peaks().max()?))
+    }
+
     /// **HOW MANY RUNS THAT RATE IS OVER** — the rows [`folded_by_road`](Self::folded_by_road)
     /// sums, and the number that has to travel beside it.
     ///
@@ -11782,6 +11812,23 @@ mod tests {
              over early* and belong to no rate about fullness. And every road stays in the answer, \
              zeros included, because the empty ones are what make the walked ones mean anything. \
              Rows: {:?}",
+            folds.measured,
+        );
+
+        // ── ②aa AND THE FULLNESS THAT RATE IS SUMMED ACROSS — register item 894 ⑶ / 856 ⒞ ──
+        //
+        // ⛔⛔⛔⛔⛔ Run 10 peaked at 40,000 and runs 1 and 3 at 800,000, so the rate above pools
+        // a fifth of a ceiling with a whole one. That is the question this axis asks, summed away.
+        // ⚠ Run 2's 24,000 must NOT set the floor: its ceiling was moved, so it is not in the rate
+        // and may not be in the rate's span either — one filter, two readers, is how they drift.
+        assert_eq!(
+            folds.production_span(),
+            Some((40_000, 800_000)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⒞: a rate about FULLNESS, published without the fullness \
+             it was summed across, says *reflections fold and ordinary prompts do not* — true, and \
+             not an answer to the question. This item's own most repeated failure is a number \
+             printed without the population that decides how to read it, and here the population \
+             is the span. Rows: {:?}",
             folds.measured,
         );
 
