@@ -80,6 +80,34 @@ started three hours forty-nine minutes later, while two other repositories were 
 re-launched inside three minutes -- the ending was readable the whole time and \
 what nobody could ask was what to do about it"
 
+# ⛔⛔⛔⛔⛔ WHY *WHO OPENS THE NEXT RUN* IS ONLY HALF AN ANSWER -- register items
+# 868(3) and 872, and the one instant they both claim.
+#
+# The disposition above says WHO opens what comes next. It cannot say WHETHER NOW,
+# because the thing that decides that is not a property of the ending at all: a
+# finished run is the only moment this tree is quiet, and a build of this
+# repository's own daemon needs exactly that quiet. Re-firing is what takes it.
+#
+# 📊 Both halves measured 2026-09-05 on this clone, and they DISAGREE by design:
+#   .../loop-read.sh --next      -> 33 ending(s) said `this_runs_opener`
+#   target/debug/sprag-promotable -> the daemon is 23 commit(s) behind this tree
+# On 2026-09-03 another repository's watcher opened a window that lasted MINUTES
+# and this side was not ready, which is the measurement item 868 was filed on. A
+# reader told only *whoever opened this run opens the next* answers that push by
+# opening one -- and opening one is what shuts the window.
+#
+# ⚠ SO IT IS RELAYED AND NOT DECIDED HERE. `Readiness::what_follows_an_ending`
+# holds the judgement; this file matches the label and prints what it said, on
+# `loop_read_disposition_table`'s rule -- a hook that kept its own copy is the
+# defect items 855 and 864 each paid for.
+LOOP_READ_MOMENT_COST="a window somebody else opened on 2026-09-03 lasted minutes \
+and this side was not ready, so it was missed -- and the one act that shuts such \
+a window is the very act the line above tells a reader to perform"
+
+# The label the promotion door prints its verdict under. ⚠ THE QUESTION AND NOT
+# THE ANSWER: matching a verdict word here would put the judgement in two places.
+LOOP_READ_MOMENT_LABEL="a run just ended, so"
+
 # WHERE THE DAEMON'S RUN LOGS ARE, derived the way the PRODUCT derives it.
 #
 # ⛔⛔ THE SAME THREE STEPS AS `durability::sprag_state_dir`, in the same order,
@@ -292,6 +320,82 @@ loop_read_disposition_table() {
     case "$said" in
         disposition*) printf '%s\n' "$said" ;;
     esac
+    return 0
+}
+
+# WHICH BUILD ANSWERS the *may this be re-fired now* question, or EMPTY where none
+# can. ⚠ The tree's build first, on `loop_read_sprag`'s measurement unchanged: a
+# promoted build answers about a different product than the one being pushed.
+loop_read_promotable() {
+    local candidate root
+    candidate="${LOOP_READ_PROMOTABLE:-}"
+    if [ -n "$candidate" ]; then
+        [ -x "$candidate" ] && printf '%s\n' "$candidate"
+        return 0
+    fi
+    root="$(loop_read_repo_root)"
+    for candidate in "$root/target/debug/sprag-promotable" \
+                     "$root/target/release/sprag-promotable"; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    command -v sprag-promotable 2>/dev/null || true
+    return 0
+}
+
+# ⛔⛔⛔⛔⛔ WHETHER THIS IS THE MOMENT TO OPEN THE NEXT RUN AT ALL -- the second
+# authority over the instant `loop_read_next_steps` names the party for.
+#
+# ⛔⛔⛔ A NON-ZERO EXIT IS THE ANSWER, NOT A FAILURE. `sprag-promotable` exits 1
+# for *not now*, which is what it says on nearly every real day, and its own doc
+# says so in as many words: *a `no` is not an error: it is an answer*. A relay
+# built on `|| return 0` -- which is exactly what the disposition relay beside it
+# does, and correctly, because THERE a non-zero means the verb was refused --
+# would fall silent on every push that had something to say. Measured 2026-09-05:
+# rc=1 with a full verdict on stdout, three runs out of three, in 0.06 s.
+#
+# ⚠⚠ TWO SILENCES, TWO SENTENCES. Run outside a repository the tool prints
+# NOTHING on stdout and explains itself on stderr (measured the same day, rc=1) --
+# that is *it could not answer here*. A build that answered something without this
+# label is *older than the question*, item 824's shape. Folding them names the
+# wrong repair, which is the defect every member of this file's family was
+# filed on.
+loop_read_promotion_moment() {
+    local promotable said line
+    promotable="$(loop_read_promotable)"
+    if [ -z "$promotable" ]; then
+        echo "loop-read: and WHETHER THIS IS THE MOMENT TO OPEN ONE COULD NOT BE" \
+             "ASKED -- no sprag-promotable build is reachable under" \
+             "$(loop_read_repo_root)/target or on PATH, and this hook keeps no copy" \
+             "of that judgement on purpose. ${LOOP_READ_MOMENT_COST}"
+        return 0
+    fi
+    # ⛔ NOT `|| return 0` -- see this function's own note. The verdict travels on
+    # stdout and the exit status is the door's separate answer to a different
+    # question (*may I promote right now*), which this line does not report.
+    said="$("$promotable" 2>/dev/null)" || true
+    if [ -z "$said" ]; then
+        echo "loop-read: and WHETHER THIS IS THE MOMENT TO OPEN ONE COULD NOT BE" \
+             "ASKED -- ${promotable} answered nothing here, which is what it does" \
+             "where it cannot read this tree's HEAD. That is NOT the same as it" \
+             "being older than the question. ${LOOP_READ_MOMENT_COST}"
+        return 0
+    fi
+    line="$(printf '%s\n' "$said" | command grep -F "$LOOP_READ_MOMENT_LABEL" || true)"
+    if [ -z "$line" ]; then
+        echo "loop-read: and WHETHER THIS IS THE MOMENT TO OPEN ONE COULD NOT BE" \
+             "ASKED -- ${promotable} answered without saying '${LOOP_READ_MOMENT_LABEL}'," \
+             "so the build that replied is older than the question (register item" \
+             "824). ${LOOP_READ_MOMENT_COST}"
+        return 0
+    fi
+    # The label is the question; everything after it is the product's answer, and
+    # this file adds no word of its own to it.
+    line="${line#*"$LOOP_READ_MOMENT_LABEL"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    echo "loop-read: and WHETHER THIS IS THE MOMENT TO OPEN ONE -- ${line}"
     return 0
 }
 
@@ -557,6 +661,14 @@ loop_read_gap() {
         # separate facts, and folding them is what every item in this file's family
         # (776, 779, 781, 790, 793) was filed on.
         loop_read_next_steps "$ended"
+        # ⛔⛔⛔⛔⛔ AND WHETHER NOW -- register item 868(3). The line above names
+        # the PARTY; this one names the MOMENT, and they are two authorities over
+        # one instant. Raised INSIDE this clause and nowhere else, because the
+        # question only arises when a run has ENDED: a report about runs that are
+        # merely stranded has no instant to decide about, and a warning that is
+        # always there is one nobody reads on the round it is true -- the reading
+        # item 868 built its own three answers to avoid.
+        loop_read_promotion_moment
     fi
     stranded="$(loop_read_stranded_only "$owed")"
     if [ -n "$stranded" ]; then
@@ -1079,8 +1191,144 @@ NEXTSTEPS
              "which is a REFUSED PUSH rather than a sentence"
         fail=$((fail + 1))
     fi
+    # (12f) ⛔⛔⛔⛔⛔ AND WHETHER NOW -- register item 868(3), the second
+    # authority over the instant (12a) names the party for.
+    #
+    # ⚠⚠ THE DOUBLES EXIT 1 ON PURPOSE. That is what the real tool answers on
+    # nearly every day, and a relay written like its disposition sibling
+    # (`|| return 0`) goes silent on exactly those days. The arm is the pairing of
+    # a non-zero status with a full verdict, so a build that read the status as a
+    # failure fails here and only here.
+    cat > "$tmp/bin/promotable" <<'MOMENT'
+#!/usr/bin/env bash
+echo "  may promote now                  NO"
+echo "  a run just ended, so             DOUBLE SAYS: RE-FIRE NOW, nothing is owed a promotion"
+exit 1
+MOMENT
+    cat > "$tmp/bin/promotable-owed" <<'OWED'
+#!/usr/bin/env bash
+echo "  a run just ended, so             DOUBLE SAYS: STAND DOWN, a window is open"
+exit 1
+OWED
+    cat > "$tmp/bin/promotable-old" <<'OLDDOOR'
+#!/usr/bin/env bash
+echo "  may promote now                  NO"
+exit 1
+OLDDOOR
+    cat > "$tmp/bin/promotable-mute" <<'MUTE'
+#!/usr/bin/env bash
+echo "sprag-promotable: cannot read HEAD: not a git repository" >&2
+exit 1
+MUTE
+    chmod +x "$tmp/bin/promotable" "$tmp/bin/promotable-owed" \
+             "$tmp/bin/promotable-old" "$tmp/bin/promotable-mute"
+
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag" \
+            LOOP_READ_PROMOTABLE="$tmp/bin/promotable" loop_read_gap)"
+    case "$said" in
+        *"WHETHER THIS IS THE MOMENT TO OPEN ONE -- DOUBLE SAYS: RE-FIRE NOW"*)
+            echo "  ok    a door that exits non-zero is still relayed -- that IS its answer"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  the moment beside the party said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⛔ AND THE OTHER VERDICT REACHES THE READER TOO. One arm alone stays green on
+    # a relay that prints a fixed sentence -- the defect item 867 names, a
+    # classification that makes no difference.
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag" \
+            LOOP_READ_PROMOTABLE="$tmp/bin/promotable-owed" loop_read_gap)"
+    case "$said" in
+        *"WHETHER THIS IS THE MOMENT TO OPEN ONE -- DOUBLE SAYS: STAND DOWN"*)
+            echo "  ok    the OTHER verdict reaches the reader as its own sentence"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  the second verdict said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⛔⛔ TWO SILENCES, TWO SENTENCES -- *answered nothing here* is not *older
+    # than the question*, and the remedies are different ones.
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag" \
+            LOOP_READ_PROMOTABLE="$tmp/bin/promotable-old" loop_read_gap)"
+    case "$said" in
+        *"MOMENT TO OPEN ONE COULD NOT BE ASKED"*"older than the question"*)
+            echo "  ok    a door that answers without the label is named as older"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  an older door said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag" \
+            LOOP_READ_PROMOTABLE="$tmp/bin/promotable-mute" loop_read_gap)"
+    case "$said" in
+        *"answered nothing here"*)
+            echo "  ok    a door that says nothing here is not called older than the question"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  a mute door said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag" \
+            LOOP_READ_PROMOTABLE="$tmp/bin/nosuch" loop_read_gap)"
+    case "$said" in
+        *"MOMENT TO OPEN ONE COULD NOT BE ASKED"*"no sprag-promotable build is reachable"*)
+            echo "  ok    with no door to ask, the report says so instead of falling silent"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  with no door to ask, the report said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⛔⛔⛔⛔⛔ AND IT EXITS 0 UNDER `set -euo pipefail` -- arm (12e)'s lesson,
+    # which this file paid a REFUSED PUSH for. This clause has a `grep` that
+    # matches nothing on three of its five paths.
+    bash -c 'set -euo pipefail; . "$1"; LOOP_READ_SPRAG="$2" LOOP_READ_PROMOTABLE="$3" \
+             loop_read_gap >/dev/null' \
+        _ "$here/loop-read.sh" "$tmp/bin/sprag" "$tmp/bin/promotable-old"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  ok    the moment clause exits 0 under set -euo pipefail"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  the moment clause exits ${rc} under set -euo pipefail," \
+             "which is a REFUSED PUSH rather than a sentence"
+        fail=$((fail + 1))
+    fi
+
     loop_read_seen 'probe#60' >/dev/null
     loop_read_seen 'probe#61' >/dev/null
+
+    # (12g) ⛔⛔⛔ AND NOT WHEN NOTHING ENDED. A run that is merely STRANDED has no
+    # instant to decide about, and item 868 measured what an always-present warning
+    # costs: it is one nobody reads on the round it is true.
+    #
+    # ⛔⛔⛔⛔⛔ **THE STATE HAS TO BE OWED, OR THIS ARM IS VACUOUS.** The first
+    # draft marked every ending read and asserted on the empty report -- and it
+    # stayed green under the mutation it exists to catch, because `loop_read_gap`
+    # returns at *nothing owed* long before either clause. A report with a
+    # STRANDING and no ending is the only state that reaches the clause and must
+    # still be silent, so that is what is staged here. ⚠ The premise is asserted
+    # first: without it a state that owed nothing would pass this arm again.
+    while read -r key; do
+        [ -n "$key" ] || continue
+        loop_read_seen "$key" >/dev/null
+    done <<KEYS
+$(loop_read_keys)
+KEYS
+    rm -f "$tmp/state/sprag/other.runs.json"
+    cat > "$tmp/state/sprag/probe.runs.json" <<'STRANDEDONLY'
+{"version":1,"runs":[{"id":70,"finished":false,"outcome":null,"driving":null}]}
+STRANDEDONLY
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag" \
+            LOOP_READ_PROMOTABLE="$tmp/bin/promotable" loop_read_gap)"
+    case "$said" in
+        *"ARE OPEN WITH NOTHING DRIVING THEM"*"probe#70"*)
+            echo "  ok    THE PREMISE: a stranding with no ending is owed and reported"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  the premise for the silence arm did not hold: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    case "$said" in
+        *"MOMENT TO OPEN ONE"*)
+            echo "  FAIL  the moment was reported with no ending owed: $said"
+            fail=$((fail + 1)) ;;
+        *)  echo "  ok    with a stranding but no ending, the moment is not raised"
+            pass=$((pass + 1)) ;;
+    esac
 
     # (11) The pre-push hook calls this instrument -- the reach item 798 asks for
     # is a sentence at the push, and a hook that stopped calling it is silence.
@@ -1113,7 +1361,15 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         --baseline)  loop_read_baseline ;;
         --seen)      shift; loop_read_seen "${1:-}" ;;
         --owed)      loop_read_owed ;;
-        --next)      loop_read_next_steps "$(loop_read_ended_only "$(loop_read_owed)")" ;;
+        # ⚠ BOTH AUTHORITIES, because this is the form a person TYPES to ask what
+        # happens next -- and the party is only half of that answer (item 868(3)).
+        # The moment is raised on the same condition `loop_read_gap` raises it on:
+        # something ended. Nothing ended, nothing to decide.
+        --next)      loop_read_ended="$(loop_read_ended_only "$(loop_read_owed)")"
+                     if [ -n "$loop_read_ended" ]; then
+                         loop_read_next_steps "$loop_read_ended"
+                         loop_read_promotion_moment
+                     fi ;;
         --gap|"")    loop_read_gap ;;
         *) echo "usage: loop-read.sh [--gap|--owed|--next|--baseline|--seen KEY|--selftest]" >&2
            exit 2 ;;

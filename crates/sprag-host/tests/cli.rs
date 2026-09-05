@@ -19333,6 +19333,28 @@ fn the_push_time_reader_says_what_happens_next_in_the_products_own_words() {
             .is_ok_and(|status| status.success()),
         "the marker lives in a git dir, so these arms run inside a throwaway repository",
     );
+    // ⛔⛔⛔ AND IT NEEDS A COMMIT, because the second instrument this hook relays reads `HEAD`.
+    // Without one `sprag-promotable` answers NOTHING here — which is a real state it has a
+    // sentence for, and not the one the arm below is about. ⚠ The identity is given on the
+    // command line so this never depends on whoever's `git config` is in scope.
+    assert!(
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=sprag gate",
+                "-c",
+                "user.email=gate@example.invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "a HEAD for the promotion door to read",
+            ])
+            .current_dir(&repo)
+            .status()
+            .is_ok_and(|status| status.success()),
+        "the promotion door reads this tree's HEAD, so the throwaway repository has one",
+    );
 
     // ⚠ The run log is written twice ON PURPOSE: the baseline swallows whatever is on disk when it
     // is laid, so the endings this gate is about have to arrive AFTER it. That is the instrument's
@@ -19354,6 +19376,12 @@ fn the_push_time_reader_says_what_happens_next_in_the_products_own_words() {
             // THE BUILD UNDER TEST, named rather than found: the hook prefers its own tree's
             // `target/`, and this binary is the one cargo just built from the source in the commit.
             .env("LOOP_READ_SPRAG", env!("CARGO_BIN_EXE_sprag"))
+            // AND THE SECOND INSTRUMENT, named the same way and for the same reason — the hook
+            // relays two authorities over one instant and this gate is about both of them.
+            .env(
+                "LOOP_READ_PROMOTABLE",
+                env!("CARGO_BIN_EXE_sprag-promotable"),
+            )
             .output()
             .expect("the hook runs");
         assert!(
@@ -19447,6 +19475,62 @@ fn the_push_time_reader_says_what_happens_next_in_the_products_own_words() {
         OutcomeState::Converged.disposition().unattended(),
         "⛔ REGISTER ITEM 872(2): the ending that wants a person and the one that does not carry \
          the same permission, so nothing an executor reads separates them",
+    );
+
+    // ⛔⛔⛔⛔⛔ AND THE OTHER AUTHORITY OVER THE SAME INSTANT REACHES THE PUSH — register item
+    // 868(3), and the half the three columns above cannot supply.
+    //
+    // # ⛔⛔⛔⛔⛔ Why a party is only half of *what fires the next run*
+    //
+    // Every column above answers about the ENDING: who is owed the next run and whether a machine
+    // may open it alone. None of them can answer *now?*, because that is not a property of the
+    // ending at all — a finished run is the only moment this tree is quiet, and a build of this
+    // repository's own daemon needs exactly that quiet. Measured 2026-09-05 on this clone: 33
+    // endings said `this_runs_opener` while the daemon sat 23 commits behind, and the reader said
+    // nothing about the second fact. **On the day a window is open, a reader told only the party
+    // answers the push by opening a run — and opening one is what shuts the window**, which is
+    // verbatim the failure item 868 was filed on.
+    //
+    // # ⚠⚠ The verdict is ASKED OF THE TYPE, and the ARM is derived rather than guessed
+    //
+    // This environment has no `--window-open`, so condition ⑴ is `Unknowable`; it is the one
+    // condition `mended_by_standing_down` answers `false` for, and an unmet condition a stand-down
+    // cannot mend is `ReFire` by that function's first branch. So the arm is a derivation from the
+    // product's own rules, not a sentence copied into this file — the defect items 855 and 864
+    // each paid for.
+    let expected = sprag_host::promotion::WhatFollowsAnEnding::ReFire(String::new());
+    assert!(
+        said.contains(expected.word()),
+        "⛔ REGISTER ITEM 868(3): the push named who is owed the next run and never said whether \
+         this is the moment to open one. The hook relays `sprag-promotable`'s verdict line \
+         verbatim, so a missing verdict is either a label that moved or a clause that stopped \
+         running.\n  wanted: {}\n  it said: {said}",
+        expected.word(),
+    );
+    // ⛔⛔ AND IT IS THE PRODUCT'S SENTENCE, not the label the hook matched on. A relay that
+    // printed its own summary would satisfy the arm above and tell a reader nothing they could
+    // act on — so the REASON has to arrive too, and the reason names the condition that is out of
+    // reach here.
+    assert!(
+        said.contains("a window somebody else opened"),
+        "⛔ REGISTER ITEM 868(3): the verdict reached the push without the reason it was composed \
+         from, so a reader is told to re-fire and not why holding back would buy nothing. \
+         `Readiness::what_follows_an_ending` names the condition it could not reach.\n  it said: \
+         {said}",
+    );
+    // ⛔⛔⛔⛔ AND THE TWO AUTHORITIES ARE TOLD APART, the control for the pair above: a reader
+    // that folded them would print one sentence and this gate would pass on it. The party clause
+    // and the moment clause are separate lines with separate labels, and item 872's own family
+    // (776, 779, 781, 790, 793) is entirely about what folding two facts into one sentence costs.
+    let lines: Vec<&str> = said
+        .lines()
+        .filter(|line| line.contains(expected.word()))
+        .collect();
+    assert!(
+        lines.len() == 1 && !lines[0].contains("ended '"),
+        "⛔ REGISTER ITEM 868(3) and 872: the moment has to be its OWN line. Folded onto an \
+         ending's row it would be read as a property of that ending, and it is a property of the \
+         instant — every ending on the push shares one.\n  lines carrying it: {lines:?}",
     );
     // ⚠ THE CONTROL: the two endings did not get the SAME answer. Without it every assertion above
     // is satisfied by one row printed twice.
