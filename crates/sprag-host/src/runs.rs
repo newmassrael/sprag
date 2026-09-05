@@ -7139,6 +7139,118 @@ mod tests {
         );
     }
 
+    /// 🎯🎯🎯🎯🎯 **AND ALL THREE CROSS ON A RUN THAT HAS ALREADY ENDED — THE ONLY POPULATION
+    /// ITEM 856 ⒞ EVER READS** — register items 894 and 859.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Both gates above restore a run that is STILL RUNNING
+    ///
+    /// `"finished": false` in each of their fixtures, and item 856's rate is computed over runs
+    /// that have ENDED — `a_run_whose_cell_never_moved_persists_the_pair_its_driver_reported`'s
+    /// own doc says so in those words. So the arm the live store will actually present was
+    /// reachable by neither. Measured over the loop's own log at **2026-09-05T14:59:11Z**: of 234
+    /// rows, the only build that ever wrote these columns is `e528943fd830`, it wrote them on
+    /// **3** rows, and **every one of those rows is unfinished** — so the store cannot answer this
+    /// question either, and nothing but a gate can.
+    ///
+    /// ⚠⚠ `restore` takes a different path for a finished row (`RunState::Done` with a whole
+    /// rebuilt [`Outcome`]) and that path drops column after column by design — `answered`,
+    /// `screened`, `deliveries`, `checks` each carry a comment saying why. Whether these three are
+    /// in that set or beside it was a fact about which branch a reader had traced, and this makes
+    /// it a fact a command answers.
+    ///
+    /// ⛔⛔ **AND `overridden` HAD NO ROUND TRIP AT ALL.** Its two neighbours each got one when
+    /// item 894 built them; this one was published by item 859 into the same log and nothing ever
+    /// read it back out. It is the column that decides `Judged`, so losing it does not make a row
+    /// unreadable — it makes an EXPERIMENT read as an ordinary run, which is the contamination
+    /// item 856 filed 859 to stop.
+    #[test]
+    fn a_run_that_has_already_ended_brings_all_three_of_item_856s_columns_back() {
+        let saved: RunLog = serde_json::from_str(
+            r#"{"version":1,"runs":[
+                {"id":1,"label":"ai_loop pane=1","iterations":9,"cost":null,"unit":null,
+                 "finished":true,"outcome":"converged","ceiling":null,"output":null,
+                 "context_ceiling":800000,"context_high_water":612000,
+                 "overridden":["max_seconds"]},
+                {"id":2,"label":"ai_loop pane=2","iterations":9,"cost":null,"unit":null,
+                 "finished":true,"outcome":"cancelled","ceiling":null,"output":null},
+                {"id":3,"label":"ai_loop pane=3","iterations":9,"cost":null,"unit":null,
+                 "finished":true,"outcome":"exhausted","ceiling":null,"output":null,
+                 "context_ceiling":20000,"context_high_water":24000,"overridden":[]}]}"#,
+        )
+        .expect("a log of ENDED runs is what a successor daemon actually reads");
+        let mut successor = RunRegistry::default();
+        successor.restore(&saved);
+        let back = successor.persistable();
+
+        // ── ① THE ROUND TRIP, all three columns, through `Done` rather than through `Running` ──
+        //
+        // ⚠ The triple is NAMED rather than spelled at the binding: item 856's axis is these three
+        // together — a reading, the bound it was judged against, and whose numbers those were —
+        // and a reader of the comparison below should see three answers, not a shape.
+        type Columns = (Option<i64>, Option<i64>, Option<Vec<String>>);
+        let read: Vec<Columns> = back
+            .runs
+            .iter()
+            .map(|run| {
+                (
+                    run.context_high_water,
+                    run.context_ceiling,
+                    run.overridden.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            read,
+            vec![
+                (
+                    Some(612_000),
+                    Some(800_000),
+                    Some(vec!["max_seconds".to_owned()])
+                ),
+                (None, None, None),
+                (Some(24_000), Some(20_000), Some(Vec::new())),
+            ],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⒞: the three columns its axis is built out of have to \
+             survive the restart on a run that has ENDED, because that is the only kind it ever \
+             reads — a run is read after it is over and its daemon is gone by then. A build that \
+             dropped any of them here would put every future row behind item 894's wall while \
+             both gates above stayed green, and `sprag folds` would go on reporting the count \
+             this store has reported all along: nothing measurable.",
+        );
+
+        // ── ② AND THE THREE SILENCES STAY THREE DIFFERENT ANSWERS ──
+        //
+        // ⛔ Run 3 took NONE of its document's numbers and says so with an empty list; run 2's log
+        // answers nothing at all. `Overridden::joined`'s own rule is that those must not fold —
+        // `Some([])` is *its document set every number it authored* and `None` is *nobody said*,
+        // and only the first belongs in this axis's own denominator.
+        assert_ne!(
+            read[1].2, read[2].2,
+            "⛔⛔⛔⛔ REGISTER ITEM 859: *nobody answered* and *the caller took nothing* came back \
+             as one answer. Folded, every pre-field run joins the axis's control group and every \
+             experiment leaves it — the contamination item 856 filed 859 to stop, arriving \
+             through the restore rather than through the door. Got {read:?}",
+        );
+
+        // ── ③ AND THE FIXTURE IS REALLY THE ENDED POPULATION ──
+        //
+        // ⚠⚠ Without this the gate silently becomes its neighbours: a fixture edited to
+        // `"finished": false` would satisfy ① and ② and measure the branch they already cover.
+        assert!(
+            back.runs.iter().all(|run| run.finished)
+                && back.runs.len() == saved.runs.len()
+                && back
+                    .runs
+                    .iter()
+                    .filter(|run| run.overridden.is_some())
+                    .count()
+                    == 2,
+            "⚠⚠⚠ THE POPULATION IS THE CLAIM: three rows in, three ENDED rows out, two of them \
+             answering item 859. Got {:?}",
+            back.runs,
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **AND A RUN WHOSE CELL NEVER MOVED KEEPS WHAT ITS DRIVER REPORTED** — register
     /// item 894, and **a correction to the two gates above rather than a third of their kind.**
     ///
