@@ -1031,7 +1031,12 @@ fn folds_lines(
                 })
                 .collect();
             lines.push(format!(
-                "  run {}: {} read of a {} ceiling, {}{} — {}",
+                // ⛔⛔⛔⛔⛔ **PEAKED AT, NOT READ** — `context_high_water` is a MAXIMUM and its own
+                // doc says so; the mouth said *read*, which names a level. Measured over the live
+                // store, the same two `budget` folds of run 232 were printed beside **435,382**
+                // (2026-09-05T15:18:51Z), **574,713** (16:16:50Z) and **678,379** (16:54:37Z) —
+                // one set of folds, three fullnesses, decided by when somebody looked.
+                "  run {}: peaked at {} of a {} ceiling, {}{} — {}",
                 row.id,
                 row.fullest,
                 row.ceiling,
@@ -1086,6 +1091,22 @@ fn folds_lines(
                  sentence and is not added to the line above",
                 folds.landings_at_a_moved_ceiling(),
             ));
+        }
+        // ⛔⛔⛔⛔⛔ AND WHAT A ROW IS NOT, said ONCE and above the counts it qualifies — register
+        // item 856 ⒞. The split beside each fullness is the run's WHOLE LIFE and the fullness is a
+        // PEAK, so a row pairs every fold a run ever made with the highest reading it ever took.
+        // A reader who takes that as *these folds happened at this fullness* is reading a number
+        // that moves on its own: the same two folds of run 232 were printed at 435,382, 574,713
+        // and 678,379 on one afternoon. Item 856's remaining question is whether the fold rate
+        // varies WITH fullness, and no row here can answer it — which is a thing the report has to
+        // say rather than a thing its reader has to know.
+        if !folds.measured.is_empty() {
+            lines.push(
+                "  each split above is that run's whole life and each fullness is its PEAK, so a \
+                 row does not say at what fullness a fold happened — nothing here bands folds by \
+                 fullness"
+                    .to_owned(),
+            );
         }
         // 🎯🎯🎯🎯🎯 AND THE RATE ITSELF, ROAD BY ROAD — register item 894 ⑶, whose deliverable is
         // *read item 856's ratio over production runs with no ceiling moved for it*. The rows
@@ -13807,7 +13828,15 @@ mod tests {
 
         // ── ① THE ROW: a fullness, the ceiling beside it, and whose ceiling it was ──
         assert!(
-            said.contains("run 1: 800000 read of a 800000 ceiling, its document's ceiling")
+            said.contains("run 1: peaked at 800000 of a 800000 ceiling, its document's ceiling")
+                // ⛔⛔⛔⛔⛔ AND THE ROW SAYS WHAT IT IS NOT. The fullness is a maximum and the
+                // split is the run's whole life, so a row pairs every fold with the highest
+                // reading — the same two folds of run 232 printed at 435,382, 574,713 and 678,379
+                // in one afternoon. Item 856 ⒞'s remaining question is whether the rate varies
+                // WITH fullness; a page that let a row be read as a per-fold pairing would answer
+                // it with an artefact of when somebody looked.
+                && said.contains("each fullness is its PEAK")
+                && said.contains("nothing here bands folds by fullness")
                 && said.contains("capacity 1 of 4")
                 // ⚠⚠ AND THE OTHER ROAD, which is the CONTROL and the half a renderer would drop
                 // first: *long prompts fold* is a live rival explanation for every capacity fold,
