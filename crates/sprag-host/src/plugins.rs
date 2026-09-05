@@ -789,6 +789,19 @@ pub const RUN_UNREPORTED_KEY: &str = "unreported";
 /// at that pane*. This is earned by register item 669's rule instead — the `Released` contract was
 /// built for that item, shipped, and no run could say whether it had ever answered once.
 pub const RUN_RELEASED_KEY: &str = "released";
+/// ⛔⛔⛔⛔⛔ The answer key carrying **HOW MANY PROMPTS THIS RUN PUT ON A PANE AND COULD NOT
+/// ACCOUNT FOR** — [`sprag_plugin::Deliveries::unaccounted`], and register item 910.
+///
+/// ⚠⚠⚠ **IT IS BESIDE THE OTHER FOUR AND INSIDE NONE OF THEM.** No question was asked, so it is
+/// outside [`RUN_DELIVERED_KEY`]; the text may or may not be on that pane, so it is neither
+/// [`RUN_UNSUBMITTED_KEY`] (*go and look*) nor [`RUN_UNREPORTED_KEY`] (*do not*). Its own remedy is
+/// the third one — **ask the peer, because its screen cannot answer** — which is
+/// `sprag_plugin::Deliveries::unsubmitted`'s stated rule for earning a number.
+///
+/// ⚠ MEASURED 2026-09-05T20:29:23Z over this loop's own store: **17 runs finished having delivered
+/// nothing**, and until this key existed every one of them published the same four zeros a run that
+/// never typed a byte does.
+pub const RUN_UNACCOUNTED_KEY: &str = "unaccounted";
 /// The answer key carrying **WHETHER ANYTHING INDEPENDENT VERIFIED THIS RUN'S MILESTONES** —
 /// register item 601, a sentence and absent for a run that put no claim to a checker.
 ///
@@ -6020,6 +6033,11 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         RUN_RELEASED_KEY: progress.deliveries.map(|it| it.released),
         RUN_UNSUBMITTED_KEY: progress.deliveries.map(|it| it.unsubmitted),
         RUN_UNREPORTED_KEY: progress.deliveries.map(|it| it.unreported),
+        // ⛔⛔⛔⛔⛔ AND THE PROMPTS THIS RUN COULD NOT ACCOUNT FOR — register item 910. Beside the
+        // four above because they are ONE value, and it is the only one of the five a run can END
+        // on: without it a driver that died on its opening brief reported the same nothing a
+        // driver that never typed reports.
+        RUN_UNACCOUNTED_KEY: progress.deliveries.map(|it| it.unaccounted),
         // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1). Composed from
         // `FoldsByReason::rows`, which walks `ReflectReason::ALL`, so a seventh reason arrives here
         // with a row rather than being silently left out of a hand-written list.
@@ -6231,6 +6249,9 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                 "folded": row.folded,
                 "unasked_after_a_fold": row.unasked.after_a_fold,
                 "unasked_on_the_pane": row.unasked.on_the_pane,
+                // ⛔⛔⛔⛔⛔ REGISTER ITEM 910 — the third road, and the only one of the three that
+                // can be the LAST thing a run ever recorded.
+                "unasked_never_took": row.unasked.never_took,
             }),
         );
     }
@@ -6271,6 +6292,11 @@ fn folds_by_reason_in(beside: &Value) -> Option<sprag_plugin::FoldsByReason> {
                 unasked: sprag_plugin::Unasked {
                     after_a_fold: small(row.get("unasked_after_a_fold"))?,
                     on_the_pane: small(row.get("unasked_on_the_pane"))?,
+                    // ⛔⛔⛔⛔⛔ REQUIRED ON THIS FUNCTION'S WHOLE-OR-NOTHING RULE — register item
+                    // 910. A live driver reporting the other two roads and not this one has not
+                    // counted the road a run DIES on, and zeros for it would publish *nothing of
+                    // this run went unaccounted for* about the build least able to say so.
+                    never_took: small(row.get("unasked_never_took"))?,
                 },
             },
         );
@@ -6325,6 +6351,8 @@ fn said_by_sentence_json(said: sprag_plugin::SaidBySentence) -> Value {
                 "sent": row.sent,
                 "unasked_after_a_fold": row.unasked.after_a_fold,
                 "unasked_on_the_pane": row.unasked.on_the_pane,
+                // ⛔⛔⛔ REGISTER ITEM 910, on the fold table's call one function over.
+                "unasked_never_took": row.unasked.never_took,
             }),
         );
     }
@@ -6350,6 +6378,8 @@ fn said_by_sentence_in(beside: &Value) -> Option<sprag_plugin::SaidBySentence> {
                 unasked: sprag_plugin::Unasked {
                     after_a_fold: small(row.get("unasked_after_a_fold"))?,
                     on_the_pane: small(row.get("unasked_on_the_pane"))?,
+                    // ⛔⛔⛔ REQUIRED, on the fold table's rule one function over — item 910.
+                    never_took: small(row.get("unasked_never_took"))?,
                 },
             },
         );
@@ -6413,6 +6443,11 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             // submit* about a build that could not have said otherwise. That reading is the one the
             // whole item is about: it is what every run said before this key existed.
             released: small(beside.get(RUN_RELEASED_KEY))?,
+            // ⛔⛔⛔⛔⛔ AND THE SIXTH IS `?` TOO, on the block's whole-or-nothing rule and register
+            // item 910. A driver that reports five counters and not this one has not counted the
+            // one road a run can DIE on, and answering `0` would publish *this run accounted for
+            // every prompt it typed* about a build with no way to say otherwise.
+            unaccounted: small(beside.get(RUN_UNACCOUNTED_KEY))?,
         })
     })();
     // ⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1), whole or nothing for the
@@ -6902,6 +6937,12 @@ pub(crate) fn run_to_json(run: &RunSummary, seat: Option<u64>, look: LiveLook) -
         // row carrying part of it is what that type exists to prevent. ⚠ It needs no clause of its
         // own in the predicate: a fold is a delivery, so `released > 0` implies `made > 0`.
         entry[RUN_RELEASED_KEY] = json!(deliveries.released);
+        // ⛔⛔⛔⛔⛔ AND THE PROMPTS NOTHING COULD ACCOUNT FOR — register item 910, published under
+        // the same predicate for the same reason: it is one value. ⚠ And it WIDENS that predicate
+        // rather than riding on it — `Deliveries::is_empty` asks `attempted()`, which this counter
+        // now enters, so a run whose only prompt was unaccounted for stops reading as a run that
+        // typed nothing. That reading is the whole of item 910.
+        entry[RUN_UNACCOUNTED_KEY] = json!(deliveries.unaccounted);
     }
     // ⛔⛔⛔⛔ AND THE SPLIT OF THE SAME FOLDS — register item 856(1). Its own predicate rather
     // than the triple's above, because the populations are different: a run may deliver a hundred
@@ -7789,6 +7830,7 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
         released: count(run, RUN_RELEASED_KEY),
         unsubmitted: count(run, RUN_UNSUBMITTED_KEY),
         unreported: count(run, RUN_UNREPORTED_KEY),
+        unaccounted: count(run, RUN_UNACCOUNTED_KEY),
     };
     // ⛔⛔⛔⛔⛔ **AND WHETHER ANYBODY COUNTED THAT SUB-COUNT AT ALL** — register item 669, and the
     // one place `count`'s zero-for-absent would lie. Every other key here reads `0` for a row that
@@ -7857,6 +7899,38 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
         return Some(match delivered_clause(deliveries, witnessed) {
             Some(delivered) => format!("{wedged}. {delivered}"),
             None => wedged,
+        });
+    }
+    // ⛔⛔⛔⛔⛔ **AND A PROMPT NOTHING COULD ACCOUNT FOR IS SAID LAST OF THE THREE AND BEFORE THE
+    // ZERO-DENOMINATOR RETURN** — register item 910, and item 617's placement argument applied to
+    // the road it left out. A run that ends here has `made == 0` by construction, so the return
+    // below was swallowing the ONE run shape this item is about: 17 of them in the live store at
+    // 2026-09-05T20:29:23Z, every one publishing the silence of a run that never typed a byte.
+    //
+    // ⚠⚠ **AND ITS INSTRUCTION IS NEITHER OF THE OTHER TWO.** `unsubmitted` says *go and look at
+    // that pane* and `unreported` says *do not*; this one says the screen cannot settle it either
+    // way, because `PaneError::NeverTook` names three panes that produce this trace and only the
+    // peer's own account tells the first from the last.
+    //
+    // ⚠ It is READ AFTER them rather than before, which is the opposite of their ordering rule and
+    // for the same reason: a run that both wedged and lost one has a prompt sitting somewhere a
+    // person can reach, and that remedy is the actionable one.
+    if deliveries.unaccounted > 0 {
+        let unaccounted = format!(
+            "⚠ {} of this run's {} prompts went onto that pane's pseudoterminal and nothing \
+             confirmed them — do not read the screen for an answer: a composer that folded the \
+             paste, a pane too narrow for the confirmation and a peer that painted nothing all \
+             leave this trace, and only the peer's own account of what it received tells them \
+             apart",
+            deliveries.unaccounted,
+            deliveries.attempted(),
+        );
+        if deliveries.made == 0 {
+            return Some(unaccounted);
+        }
+        return Some(match delivered_clause(deliveries, witnessed) {
+            Some(delivered) => format!("{unaccounted}. {delivered}"),
+            None => unaccounted,
         });
     }
     if deliveries.made == 0 {
@@ -10296,6 +10370,7 @@ mod tests {
                 one(
                     0,
                     Some(crate::runs::PersistedDeliveries {
+                        unaccounted: 0,
                         made: 0,
                         folded: 0,
                         unsubmitted: 1,
@@ -10422,6 +10497,46 @@ mod tests {
             "⛔⛔⛔⛔ REGISTER ITEM 762: a run with both readings dropped the swallowed one, which is \
              the half a reader gets wrong: {both:?}",
         );
+
+        // ══ ⛔⛔⛔⛔⛔ AND THE THIRD REMEDY, WHICH SENDS NOBODY TO A PANE — register item 910 ══
+        //
+        // A prompt whose confirmation never came leaves a trace three different panes produce, and
+        // `PaneError::NeverTook` says so itself: a composer that FOLDED the paste, a pane too
+        // narrow to carry the confirmation, and a peer that took the bytes and painted nothing —
+        // *"Only the peer itself can tell the first from the last"*. So neither instruction above
+        // is true of it, which is what earns it a count of its own rather than a share of theirs.
+        //
+        // ⛔ AND THE RUN THAT ENDS THIS WAY HAS `made == 0` BY CONSTRUCTION, so before item 910
+        // this sentence returned `None` for it — the same silence a run that never typed a byte
+        // gets, over 17 runs of the live store at 2026-09-05T20:29:23Z.
+        let unaccounted = delivery_sentence(&json!({
+            RUN_DELIVERED_KEY: 0,
+            RUN_FOLDED_KEY: 0,
+            RUN_UNSUBMITTED_KEY: 0,
+            RUN_UNREPORTED_KEY: 0,
+            RUN_UNACCOUNTED_KEY: 1,
+        }))
+        .expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: a run that died before it delivered anything must SAY \
+             so. `None` here is the sentence of a run that never composed a prompt, and this run \
+             put bytes on a pseudoterminal and counted them",
+        );
+        assert!(
+            !unaccounted.contains("go and look at that pane")
+                && !unaccounted.contains("do NOT go and look at that pane")
+                && unaccounted.contains("only the peer's own account"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: this road's remedy is NEITHER of the other two. Sending \
+             a reader to the pane is wrong (the text may be folded away) and telling them not to \
+             is wrong too (it may be sitting there plainly) — what settles it is the peer's own \
+             report of what it received. A sentence borrowing either instruction repeats item \
+             762's measured cost on a third road: {unaccounted:?}",
+        );
+        assert!(
+            unaccounted.contains(" 1 of this run's 1 prompts"),
+            "⛔⛔⛔ AND THE DENOMINATOR TRAVELS WITH IT — register item 669's rule on this road. \
+             `attempted()` must contain this count, or a run whose ONLY prompt was lost prints \
+             *1 of 0*, which is not a ratio: {unaccounted:?}",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **A PROMPT THAT WAS NEVER ASKED ARRIVES WITH ITS DENOMINATOR** — register item
@@ -10514,6 +10629,7 @@ mod tests {
         // which is the reassuring direction and therefore the dangerous one.
         assert_eq!(
             sprag_plugin::Deliveries {
+                unaccounted: 0,
                 made: 9,
                 folded: 3,
                 released: 2,
@@ -10558,6 +10674,10 @@ mod tests {
             RUN_UNSUBMITTED_KEY,
             RUN_UNREPORTED_KEY,
             RUN_RELEASED_KEY,
+            // ⛔ THE SIXTH — register item 910, and the key whose invented zero would read *this
+            // run accounted for every prompt it typed* about the one run shape the item is filed
+            // on: a run that died before it delivered anything.
+            RUN_UNACCOUNTED_KEY,
         ];
         // ⚠ Distinct values, so a read that took one key's number for another's is a red here and
         // not an agreement by coincidence.
@@ -10567,6 +10687,7 @@ mod tests {
             RUN_UNSUBMITTED_KEY: 3,
             RUN_UNREPORTED_KEY: 2,
             RUN_RELEASED_KEY: 1,
+            RUN_UNACCOUNTED_KEY: 5,
         });
 
         // ══ THE PREMISE: the complete report is read, and read CORRECTLY ═══════════════════════
@@ -10578,6 +10699,7 @@ mod tests {
                 unsubmitted: 3,
                 unreported: 2,
                 released: 1,
+                unaccounted: 5,
             }),
             "⚠⚠⚠⚠⚠ THE PREMISE: a report carrying every count must be read, and each number must \
              land in its own field — without this the refusals below are satisfied by a reader that \
@@ -10585,10 +10707,10 @@ mod tests {
         );
         assert_eq!(
             counts.len(),
-            5,
-            "⚠⚠ AND THE LIST IS THE POPULATION: a sixth count added to the read and not to this \
-             list would be exempt from every refusal below, which is how the fourth and fifth \
-             arrived unwatched",
+            6,
+            "⚠⚠ AND THE LIST IS THE POPULATION: a seventh count added to the read and not to this \
+             list would be exempt from every refusal below, which is how the fourth, fifth and \
+             sixth arrived unwatched",
         );
 
         // ══ AND EACH ONE MISSING REFUSES THE WHOLE VALUE ═══════════════════════════════════════
@@ -10599,6 +10721,7 @@ mod tests {
                 RUN_UNSUBMITTED_KEY: 3,
                 RUN_UNREPORTED_KEY: 2,
                 RUN_RELEASED_KEY: 1,
+                RUN_UNACCOUNTED_KEY: 5,
             });
             beside
                 .as_object_mut()
@@ -12510,6 +12633,9 @@ mod tests {
                 "folded": 3,
                 "unasked_after_a_fold": 0,
                 "unasked_on_the_pane": 0,
+                // ⛔ REGISTER ITEM 910 — the third road, spelled here so a key dropped from the
+                // publication is a red at the row a person reads and not only at the type.
+                "unasked_never_took": 0,
             }),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856(1): the split stops one function short of the row, so no \
              reader of a run can ask what its folding depended on. Deleting this publication was \
@@ -12550,6 +12676,7 @@ mod tests {
                 "folded": 0,
                 "unasked_after_a_fold": 0,
                 "unasked_on_the_pane": 1,
+                "unasked_never_took": 0,
             }),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856(3): a run that hardened WITHOUT FOLDING has no row on its \
              own table. Its whole reflection produced no delivery, so a table keyed on deliveries \
@@ -20847,6 +20974,7 @@ mod tests {
                             walked: Vec::new(),
                         }],
                         deliveries: Some(sprag_plugin::Deliveries {
+                            unaccounted: 0,
                             made: 5,
                             folded: 2,
                             unsubmitted: 1,
@@ -20984,6 +21112,7 @@ mod tests {
         assert_eq!(
             saved.deliveries,
             Some(crate::runs::PersistedDeliveries {
+                unaccounted: 0,
                 made: 5,
                 folded: 2,
                 unsubmitted: 1,
@@ -21044,6 +21173,7 @@ mod tests {
         {
             let mut moving = lock(&cell);
             moving.deliveries = Some(sprag_plugin::Deliveries {
+                unaccounted: 0,
                 made: 7,
                 folded: 0,
                 released: 0,

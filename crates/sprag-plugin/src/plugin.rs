@@ -494,6 +494,34 @@ pub struct Deliveries {
     /// this workspace had no number for it — the register entry that diagnosed the run said so
     /// itself (*"안 쟀다 … 이 항목의 수는 「닿았는데 기록 못 된 것」"*).
     pub unreported: u32,
+    /// ⛔⛔⛔⛔⛔ **HOW MANY PROMPTS THIS RUN PUT ON A PANE'S PSEUDOTERMINAL AND COULD NOT ACCOUNT
+    /// FOR** — [`crate::deliver::Delivered::Unconfirmed`], and register item 910.
+    ///
+    /// # ⛔⛔⛔⛔⛔ THE FIFTH NUMBER, AND THE ROAD A RUN DIES ON BEFORE IT DELIVERS ANYTHING
+    ///
+    /// This struct's own rule is that *a third road that turns out to matter earns its own field
+    /// with its own measurement*, and register item 617 declined this one on a stated premise: the
+    /// prompt *never reached the pane at all*, so it is in no denominator. **The refusal's own
+    /// sentence contradicts that premise** — `crate::access::PaneError::NeverTook` names item 421's
+    /// three candidate panes and two of them have the text plainly arrived, one of them a composer
+    /// that FOLDED the paste away. What the product can say is that the confirmation never came;
+    /// what it states it CANNOT say is which of the three that was.
+    ///
+    /// ⇒ ⛔ **So the measurement it was declined for want of is the run log itself.** Measured
+    /// 2026-09-05T20:29:23Z over this loop's own store: **17 runs finished having delivered
+    /// nothing**, every one of them with a fold split that is present and all zero, and the one row
+    /// carrying a failure sentence (run 235) names exactly this road. A run that ends here ends on
+    /// its OPENING BRIEF — an `crate::outer::Occasion::Ordinary` — so every prompt this number was
+    /// missing came off the CONTROL road of register item 856's axis and off no other.
+    ///
+    /// ⚠⚠ **NOT PART OF [`made`](Self::made)**, on [`unsubmitted`](Self::unsubmitted)'s argument:
+    /// no question was asked, and putting it in the fold ratio's denominator would dilute it with
+    /// prompts nobody answered. It IS part of [`attempted`](Self::attempted) and of
+    /// [`never_asked`](Self::never_asked), because the run paid for that turn and did not get it.
+    ///
+    /// ⚠ **AND IT IS NOT [`folded`](Self::folded).** A fold is one of three shapes that leaves this
+    /// trace; counting it as one would be item 910's own error in the opposite direction.
+    pub unaccounted: u32,
 }
 
 impl Deliveries {
@@ -510,6 +538,7 @@ impl Deliveries {
         released: 0,
         unsubmitted: 0,
         unreported: 0,
+        unaccounted: 0,
     };
 
     /// Whether EVERY prompt this run delivered was folded away — the reading that says *do not go
@@ -560,24 +589,35 @@ impl Deliveries {
     ///
     /// ⚠⚠ [`folded`](Self::folded) and [`released`](Self::released) are NOT added: both are
     /// sub-counts of `made`, and adding a subset to its container counts those prompts twice.
+    ///
+    /// ⛔⛔⛔ **[`unaccounted`](Self::unaccounted) IS ADDED — register item 910.** Its bytes went
+    /// onto the pane's pseudoterminal, so it is a prompt this run put to its pane however it ended,
+    /// which is exactly what this method's headline says it counts. Leaving it out made a run that
+    /// died on that road report `attempted() == 0` — *this run typed nothing* about a run whose own
+    /// failure sentence counts the injections it made.
     #[must_use]
     pub const fn attempted(self) -> u32 {
         self.made
             .saturating_add(self.unsubmitted)
             .saturating_add(self.unreported)
+            .saturating_add(self.unaccounted)
     }
 
     /// ⛔⛔⛔ **HOW MANY OF THOSE NEVER BECAME A QUESTION** — register item 669's numerator, beside
     /// the denominator above and never apart from it.
     ///
-    /// ⚠ The two roads are SUMMED here and told apart everywhere a reader must act
+    /// ⚠ The roads are SUMMED here and told apart everywhere a reader must act
     /// ([`delivery_sentence`](crate::plugin::Deliveries) has a separate sentence for each, because
-    /// one says *go and look at that pane* and the other says *do not*). What this answers is the
-    /// RATE question, where the remedy does not enter: a prompt that never became a question is a
-    /// turn the loop paid for and did not get, whichever road it took.
+    /// one says *go and look at that pane*, one says *do not*, and the third
+    /// ([`unaccounted`](Self::unaccounted), register item 910) says **ask the peer, its screen
+    /// cannot answer**). What this answers is the RATE question, where the remedy does not enter: a
+    /// prompt that never became a question is a turn the loop paid for and did not get, whichever
+    /// road it took.
     #[must_use]
     pub const fn never_asked(self) -> u32 {
-        self.unsubmitted.saturating_add(self.unreported)
+        self.unsubmitted
+            .saturating_add(self.unreported)
+            .saturating_add(self.unaccounted)
     }
 
     /// ⛔⛔⛔⛔⛔ **WHETHER ANYTHING WAS COUNTED AT ALL** — register item 895, and the one predicate

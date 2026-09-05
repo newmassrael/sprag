@@ -2374,7 +2374,7 @@ pub struct FoldsUnder {
 /// ⛔⛔⛔⛔⛔ **WHICH ROAD A QUESTION THAT WAS NEVER ASKED TOOK** — register item 856(3), and
 /// register item 762's split read one order further on.
 ///
-/// The two roads carry OPPOSITE remedies, which is why this is a type and not a `bool`: a folded
+/// The roads carry DIFFERENT remedies, which is why this is a type and not a `bool`: a folded
 /// paste sends its reader to the agent's own record (*do not go to the pane, what is sitting there
 /// is a placeholder*), and a prompt left in the composer sends them to the pane (*go and look, the
 /// text is there*). `crate::plugin::Deliveries::unsubmitted`'s own doc is the rule — **two remedies
@@ -2387,6 +2387,35 @@ pub enum UnaskedRoad {
     /// The text arrived on the pane and the submit never became a question —
     /// [`crate::deliver::Delivered::Unsubmitted`]. **No fold happened.**
     OnThePane,
+    /// ⛔⛔⛔⛔⛔ **THE PANE NEVER CONFIRMED THE PROMPT AT ALL** —
+    /// [`crate::deliver::Delivered::Unconfirmed`], and register item 910.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The road with no counter is the only road a run can DIE on before delivering
+    ///
+    /// Register item 617 left this answer out of every tally on the ground that it is *a prompt
+    /// that never reached the pane at all*, so neither remedy above fits it. **The refusal's own
+    /// sentence says otherwise**: `crate::access::PaneError::NeverTook` lists item 421's three
+    /// candidates and *two of them have the text plainly arrived* — a composer that FOLDED the
+    /// paste away, and a pane too narrow to carry the confirmation on one row. Only the third
+    /// never took the bytes, and the sentence ends *"Only the peer itself can tell the first from
+    /// the last"*.
+    ///
+    /// ⇒ So the premise that kept it uncounted is the one thing the product states it cannot know,
+    /// and the cost has a DIRECTION: this refusal ends the run, a run that ends here delivered
+    /// nothing, and the only prompt a run can die on before delivering anything is its OPENING
+    /// BRIEF — an [`Occasion::Ordinary`]. **Every prompt lost this way was therefore lost from the
+    /// control road of item 856's axis, and from nowhere else.** Measured 2026-09-05T20:29:23Z over
+    /// this loop's own store: 17 runs finished having delivered nothing, and the split of every one
+    /// of them is present and all zero.
+    ///
+    /// ⚠⚠ **ITS REMEDY IS THE THIRD ONE AND THAT IS WHAT EARNS IT A ROAD** — neither *go and look*
+    /// nor *do not*: **ask the peer, because its screen cannot answer.** An agent whose hooks
+    /// report the prompt it received settles this and a screen never will.
+    ///
+    /// ⚠ It is NOT counted as a fold. A fold is one of three shapes that leaves this trace and
+    /// this build cannot say which — counting it as one would flatter the axis in the opposite
+    /// direction, which is the same error item 910 was filed on.
+    NeverTook,
 }
 
 /// ⛔⛔⛔⛔⛔ **THE `prompt.unasked` EVENTS UNDER ONE REFLECT REASON, SPLIT BY WHETHER A FOLD
@@ -2424,16 +2453,22 @@ pub struct Unasked {
     /// [`UnaskedRoad::OnThePane`] — **it hardened with no fold at all**, which is the half nothing
     /// could count.
     pub on_the_pane: u32,
+    /// ⛔⛔⛔⛔⛔ [`UnaskedRoad::NeverTook`] — **the pane never confirmed it, so this run ended on
+    /// it** — register item 910. See that road for why it was in no tally at all, and for why a
+    /// prompt lost here always came off the `ordinary` road.
+    pub never_took: u32,
 }
 
 impl Unasked {
     /// **THE DENOMINATOR** — every `prompt.unasked` under this reason, whichever road it took.
     ///
-    /// ⚠ Spelled here rather than added up at each reader, so the two fields cannot come to be
+    /// ⚠ Spelled here rather than added up at each reader, so the three fields cannot come to be
     /// summed one way in a sentence and another way in a gate.
     #[must_use]
     pub const fn total(&self) -> u32 {
-        self.after_a_fold.saturating_add(self.on_the_pane)
+        self.after_a_fold
+            .saturating_add(self.on_the_pane)
+            .saturating_add(self.never_took)
     }
 
     /// Whether this reason hardened at all.
@@ -2685,6 +2720,7 @@ impl FoldsByReason {
             unasked: Unasked {
                 after_a_fold: 0,
                 on_the_pane: 0,
+                never_took: 0,
             },
         }; Occasion::ALL.len()],
     };
@@ -2733,6 +2769,7 @@ impl FoldsByReason {
         let counter = match road {
             UnaskedRoad::AfterAFold => &mut row.after_a_fold,
             UnaskedRoad::OnThePane => &mut row.on_the_pane,
+            UnaskedRoad::NeverTook => &mut row.never_took,
         };
         *counter = counter.saturating_add(1);
     }
@@ -3045,6 +3082,7 @@ impl SaidBySentence {
             unasked: Unasked {
                 after_a_fold: 0,
                 on_the_pane: 0,
+                never_took: 0,
             },
         }; crate::act::Sentence::ALL.len()],
     };
@@ -3088,6 +3126,7 @@ impl SaidBySentence {
         let counter = match road {
             UnaskedRoad::AfterAFold => &mut row.unasked.after_a_fold,
             UnaskedRoad::OnThePane => &mut row.unasked.on_the_pane,
+            UnaskedRoad::NeverTook => &mut row.unasked.never_took,
         };
         *counter = counter.saturating_add(1);
     }
@@ -12540,18 +12579,37 @@ impl OuterLoop {
                     self.deliveries.unreported = self.deliveries.unreported.saturating_add(1);
                     Some(crate::outer::UnaskedRoad::AfterAFold)
                 }
-                // ⚠ `Unconfirmed` has no counter and that is register item 617's own decision: it
-                // is a prompt that never reached the pane at all, so it is in no denominator here.
-                // ⚠⚠ AND IT IS IN NO ROAD EITHER, on that same decision: a prompt that never
-                // arrived is not a question left somewhere, so neither remedy fits it and putting
-                // it under one would send a reader to a pane holding nothing.
+                // ⛔⛔⛔⛔⛔ **`Unconfirmed` HAS A COUNTER AND A ROAD SINCE REGISTER ITEM 910**, and
+                // what changed is not a preference but the premise item 617 declined it on: *a
+                // prompt that never reached the pane at all*. `PaneError::NeverTook` — the very
+                // error this arm builds — lists item 421's three candidate panes and says two of
+                // them have **the text plainly arrived**, one being a composer that FOLDED the
+                // paste away; only the third took the bytes and painted nothing, and the sentence
+                // ends *"Only the peer itself can tell the first from the last"*. So *it never
+                // arrived* is the one reading the product states it cannot take.
+                //
+                // ⇒ ⛔ And the omission had a DIRECTION. This refusal ENDS the run, a run that ends
+                // here has delivered nothing, and the only prompt a run can die on before
+                // delivering anything is its opening brief — an `Occasion::Ordinary`. Every prompt
+                // lost here was therefore lost from the CONTROL road of item 856's axis and from
+                // no other, so the instrument went blind in precisely the direction that flatters
+                // the axis. Measured 2026-09-05T20:29:23Z: 17 finished runs delivered nothing and
+                // every one of their splits is present and all zero.
+                //
+                // ⚠⚠ `UnaskedRoad::NeverTook` and NOT one of the two above, because the remedies
+                // differ, which is `Deliveries::unsubmitted`'s stated rule for earning a road: this
+                // one sends nobody to a pane at all — it says ask the PEER, whose account is the
+                // only thing that can settle which of the three panes this was.
+                Delivered::Unconfirmed { .. } => {
+                    self.deliveries.unaccounted = self.deliveries.unaccounted.saturating_add(1);
+                    Some(crate::outer::UnaskedRoad::NeverTook)
+                }
                 // The six below are not refusals and cannot arrive. ⚠⚠ `Emptied` is among them
                 // since register item 889 and that is the whole repair: it is the answer the road
                 // above USED to give when the account did not come, and every one of this
                 // repository's 52 `unsubmitted` refusals was on it. A run reaching this arm with
                 // `Emptied` would be counting a delivery that landed.
-                Delivered::Unconfirmed { .. }
-                | Delivered::Confirmed { .. }
+                Delivered::Confirmed { .. }
                 | Delivered::OnScreenOnly { .. }
                 | Delivered::Reported { .. }
                 | Delivered::Released { .. }
@@ -23144,6 +23202,7 @@ mod tests {
                 delivered: 2,
                 folded: 1,
                 unasked: Unasked {
+                    never_took: 0,
                     after_a_fold: 0,
                     on_the_pane: 1,
                 },
@@ -23159,6 +23218,7 @@ mod tests {
                 delivered: 1,
                 folded: 0,
                 unasked: Unasked {
+                    never_took: 0,
                     after_a_fold: 1,
                     on_the_pane: 0,
                 },
@@ -23271,6 +23331,7 @@ mod tests {
         assert_eq!(
             both.under(ReflectReason::Capacity.occasion()).unasked,
             Unasked {
+                never_took: 0,
                 after_a_fold: 1,
                 on_the_pane: 2,
             },
@@ -24063,6 +24124,7 @@ mod tests {
                 delivered: 0,
                 folded: 0,
                 unasked: Unasked {
+                    never_took: 0,
                     after_a_fold: 0,
                     on_the_pane: 1,
                 },
@@ -24119,6 +24181,191 @@ mod tests {
             "⚠⚠⚠⚠ THE FIXTURE'S OWN CONTROL: this peer must answer the prompts before the \
              reflection, or the refusal under test is not *the composer took this one* but *this \
              peer takes nothing*, and the two are different runs: {deliveries:?}, walked {walked:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THAT DIES BEFORE ITS FIRST DELIVERY LEAVES A LINE IN THE SPLIT, AND THE
+    /// LINE NAMES THE ROAD** — register item 910, driven on a real pane.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The one road with no counter is the only road a run can DIE on
+    ///
+    /// `Delivered::Unconfirmed` was in no tally at all. Register item 617 declined it on a stated
+    /// premise — *a prompt that never reached the pane at all* — and the refusal's own sentence
+    /// contradicts it: [`crate::access::PaneError::NeverTook`] names three panes that produce this
+    /// trace and says **two of them have the text plainly arrived**, one being a composer that
+    /// FOLDED the paste away, ending *"Only the peer itself can tell the first from the last"*.
+    ///
+    /// ⇒ ⛔ And the omission had a DIRECTION. This refusal ends the run; a run that ends here has
+    /// delivered nothing; the only prompt a run can die on before delivering anything is its
+    /// OPENING BRIEF, which is an [`Occasion::Ordinary`]. So every prompt the instrument lost was
+    /// lost from the CONTROL road of item 856's axis and from no other — the blindness pointed the
+    /// one way that makes that axis look better evidenced than it is. Measured
+    /// 2026-09-05T20:29:23Z over this loop's own store: 17 finished runs delivered nothing, and
+    /// `sprag folds` reported all 17 inside a bucket of 216 whose other 199 members are the
+    /// opposite fact.
+    ///
+    /// # ⚠⚠⚠ Why no gate in this workspace could have caught it
+    ///
+    /// Every stand-in peer in [`crate::testing`] PAINTS what it is handed, so a run driven by one
+    /// can reach `Unsubmitted` and `Unreported` and never `Unconfirmed` —
+    /// [`crate::testing::standin_agent_painting_nothing`] is the peer that was missing, and its own
+    /// doc carries the measurement. Without it the counting arm could be a discard and this
+    /// workspace would be green, which is the shape item 856 ⑸ measured and this file has now paid
+    /// for twice.
+    ///
+    /// ⚠ It asserts the ROAD and not only the count: the two roads beside it carry opposite
+    /// remedies (*go and look at that pane* against *do not*), and this one carries a third — ask
+    /// the peer, whose account is the only thing that can settle which pane this was.
+    #[test]
+    fn a_run_that_dies_before_delivering_says_which_road_its_prompt_was_on() {
+        /// Enough passes to prime and be refused; a run still moving after this has not staged it.
+        const PASSES: usize = 60;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = crate::testing::standin_agent_painting_nothing();
+        let access = crate::testing::supervised_unhooked(&workspace);
+        let mut loops = with_bound(
+            OuterLoop::new(
+                Arc::clone(&lua),
+                pane,
+                &AiLoopSpec {
+                    ready_when: Some(ReadyWhen::Settles("claude".to_string())),
+                    // ⛔⛔⛔⛔⛔ THE DOOR THE REFUSAL COMES THROUGH: a run that does not read its
+                    // prompt back off the pane cannot produce `Unconfirmed` at all, so a fixture
+                    // driving `false` here is green whatever the counting arm does.
+                    shows_the_prompt: true,
+                    ..spec(None)
+                },
+            )
+            .expect("the document's datamodel must carry its four authored strings"),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "die on the opening brief".to_string(),
+                milestone: "reach it".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                working_rules: None,
+                unverified_rules: None,
+                context_ceiling: None,
+                reflect_after_refusals: None,
+                reaim_max: None,
+                milestone_check: None,
+                successor_check: None,
+                reask_max: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                reflect_every: None,
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let refused = loop {
+            assert!(
+                walked.len() < PASSES,
+                "⚠⚠⚠⚠⚠ THE STAGING: this run must reach a refusal, or every claim below is about \
+                 a run that never happened. Walked {walked:?}",
+            );
+            match loops.pump(&access, &run) {
+                Ok(Pumped::Moved {
+                    from, raised, to, ..
+                }) => walked.push(format!("{from:?} --{raised:?}--> {to:?}")),
+                Ok(other) => panic!("this run must keep moving: {other:?}, walked {walked:?}"),
+                Err(refused) => break refused,
+            }
+        };
+        let folds = loops.folds_by_reason();
+        let deliveries = loops.deliveries();
+        let said = loops.said_by_sentence();
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+
+        // ══ THE PREMISE: this is the refusal under test, and the run delivered NOTHING ══════════
+        assert!(
+            matches!(refused, PaneError::NeverTook { .. }) && deliveries.made == 0,
+            "⚠⚠⚠⚠⚠ THE STAGING: this peer must take the bytes and paint nothing, which is the \
+             refusal item 910 is about — a composer holding a painted prompt is a different \
+             failure with a different remedy. And the run must have delivered NOTHING, or the \
+             claims below are about a run that is not the shape the item measured. Got \
+             {refused:?}, deliveries {deliveries:?}, walked {walked:?}",
+        );
+
+        // ══ ① THE SPLIT HAS A LINE, AND THE RUN THAT LEFT IT DELIVERED NOTHING ═════════════════
+        //
+        // ⛔ `delivered` and `folded` are 0 and MUST be: no question was asked, so counting one
+        // here would put a prompt nobody answered into item 856's fold ratio. The row exists only
+        // because the loss was written down — which is the whole of item 910, since before it a
+        // run of this shape published a table indistinguishable from a build that never counted.
+        assert_eq!(
+            folds.under(Occasion::Ordinary),
+            FoldsUnder {
+                delivered: 0,
+                folded: 0,
+                unasked: Unasked {
+                    after_a_fold: 0,
+                    on_the_pane: 0,
+                    never_took: 1,
+                },
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: a run that died before its first delivery left NO line \
+             in the split, so `sprag folds` reported it beside 199 rows whose all-zero table means \
+             *this build never counted a road* — the opposite fact. And the road it must be on is \
+             `ordinary`: the only prompt such a run ever put anywhere is its opening brief, which \
+             is exactly item 856's control road. Split: {folds:?}, walked {walked:?}",
+        );
+        assert!(
+            !folds.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: the table still reads EMPTY, so `Sampled::Zeroed` files \
+             this run under *measures nothing* however carefully the row was written. The predicate \
+             is what moves it into the population that can be compared. Split: {folds:?}",
+        );
+
+        // ══ ② AND THE RUN'S OWN TOTAL SAYS THE SAME NUMBER, AT THE ONE SITE THAT RAISES BOTH ═══
+        //
+        // ⚠⚠ Two counters written at two sites is the drift `record_delivery` and `Deliveries`
+        // both argue against, and here it would be invisible: a split with a line and a total
+        // without one publishes a rate over a population the run never had.
+        assert_eq!(
+            (deliveries.unaccounted, deliveries.attempted(), said.sent()),
+            (1, 1, 1),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: the run's own totals must carry this prompt too. \
+             `attempted()` is *every prompt this run put to its pane however it ended*, and its \
+             bytes went onto a pseudoterminal — a run reporting 0 there says it typed nothing, \
+             which is the silence 17 rows of the live store publish. Deliveries {deliveries:?}, \
+             said {said:?}",
+        );
+
+        // ══ ③ AND IT IS NOT FILED AS A FOLD, WHICH IS THE SAME ERROR FACING THE OTHER WAY ══════
+        //
+        // ⛔⛔⛔⛔⛔ Item 910 states this trap in as many words: a fold is one of three shapes that
+        // leaves this trace and the product cannot say which, so counting the loss as a fold would
+        // move item 856's numerator on evidence nobody has. The item's own done-when forbids both
+        // directions, and a build that widened `folded` here would satisfy assertion ① by
+        // accident.
+        assert_eq!(
+            (
+                deliveries.folded,
+                deliveries.unsubmitted,
+                deliveries.unreported
+            ),
+            (0, 0, 0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: this loss is NOT a fold and not either of the two \
+             refusals beside it. `PaneError::NeverTook` names three panes that leave this trace — \
+             a composer that folded the paste, a pane too narrow, and a peer that painted nothing \
+             — and says only the peer itself can tell them apart. Deliveries {deliveries:?}",
         );
     }
 
@@ -24257,6 +24504,7 @@ mod tests {
             SaidUnder {
                 sent: 1,
                 unasked: Unasked {
+                    never_took: 0,
                     after_a_fold: 0,
                     on_the_pane: 1,
                 },
@@ -24342,6 +24590,7 @@ mod tests {
         assert_eq!(
             folds.under(Occasion::Ordinary).unasked,
             Unasked {
+                never_took: 0,
                 after_a_fold: 0,
                 on_the_pane: 1,
             },

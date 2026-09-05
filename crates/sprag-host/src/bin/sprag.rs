@@ -1205,6 +1205,41 @@ fn folds_lines(
                 folds.readable_runs(),
                 split.join(" · "),
             ));
+            // ⛔⛔⛔⛔⛔ AND THE PROMPTS THOSE SAME ROWS COULD NOT ACCOUNT FOR — register item 910,
+            // over `readable` exactly so the two lines share a population. It is NOT added to
+            // either half above: in the numerator every one would be a fold, in the denominator
+            // alone every one would be a landing, and the item names both as the same error facing
+            // opposite ways. Printed so a reader BOUNDS the rate instead of being handed a point —
+            // a road reading `f of d` with `u` unaccounted has a true rate somewhere in
+            // `f/(d+u) … (f+u)/(d+u)`.
+            //
+            // ⛔⛔ Withheld when the whole column is zero rather than printed as zeros, and the
+            // line says WHY: over this store that zero is *no row here was written by a build that
+            // counts the road*, which is item 891's absence and not a measurement of none.
+            let unaccounted: Vec<String> = folds
+                .unaccounted_by_road()
+                .into_iter()
+                .filter(|(_, lost)| *lost > 0)
+                .map(|(occasion, lost)| format!("{} {lost}", occasion.word()))
+                .collect();
+            lines.push(if unaccounted.is_empty() {
+                "  and NO row of that population counts a prompt it could not account for — over a \
+                 store whose rows predate that counter this is an ABSENCE and not a zero, so the \
+                 denominators above are lower bounds"
+                    .to_owned()
+            } else {
+                format!(
+                    "  and those rows put {} further prompt(s) at a pane and could not account for \
+                     them, by road: {} — neither folds nor landings, so each road's true rate is \
+                     bounded rather than the figure above",
+                    folds
+                        .unaccounted_by_road()
+                        .into_iter()
+                        .map(|(_, lost)| lost)
+                        .sum::<u32>(),
+                    unaccounted.join(" · "),
+                )
+            });
         }
         // ⛔⛔⛔⛔⛔ AND HOW MANY ROWS THAT COMPARISON HAD TO LEAVE OUT, which is not the same
         // sentence as *measures nothing*: a split that is short of its run's deliveries still
@@ -1243,6 +1278,38 @@ fn folds_lines(
             lines.push(format!(
                 "  {count} run(s) measure nothing: {}",
                 why.describe()
+            ));
+        }
+        // ⛔⛔⛔⛔⛔ AND HOW THE RUNS THAT DELIVERED NOTHING CAME TO — register item 910, and the
+        // half `NoFullness::DeliveredNothing` alone cannot say. *The driver met a failure* means an
+        // ordinary prompt may have been typed at a pane and lost; *a person cancelled it* means
+        // none was ever put. One is a hole in item 856's control-road denominator and the other is
+        // not, so ONE number over the seventeen would be a choice between the two errors item 910
+        // names rather than an escape from either.
+        //
+        // ⚠ Printed under the bucket it partitions and only when that bucket has members, so the
+        // total can be checked against the line above it by eye.
+        if folds.delivered_nothing() > 0 {
+            let how: Vec<String> = folds
+                .endings
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(how, count)| format!("{count} where {}", how.describe()))
+                .collect();
+            lines.push(format!(
+                "  of those {} that delivered nothing: {}",
+                folds.delivered_nothing(),
+                how.join("; "),
+            ));
+            // ⛔⛔ AND THE BOUND ITSELF, said as a bound. At most this many ordinary prompts are
+            // missing from the control road's denominator — at most, because a run can meet a
+            // driver failure without having composed anything, and how many of the losses were
+            // FOLDS is what the product states it cannot tell from a screen.
+            lines.push(format!(
+                "  ⇒ at most {} ordinary prompt(s) were asked and lost there, so every `ordinary` \
+                 denominator above is short by between 0 and that — and NONE of them may be counted \
+                 as a fold, which is the same error facing the other way",
+                folds.lost_a_prompt_at_most(),
             ));
         }
     }
@@ -13997,6 +14064,37 @@ mod tests {
                  "context_high_water": 500_000, "context_ceiling": 800_000, "overridden": [],
                  "deliveries": {"made": 50, "folded": 6},
                  "folds_by_reason": {"milestone": {"delivered": 10, "folded": 6}}},
+                // ⛔⛔⛔⛔⛔ TWO RUNS THAT DELIVERED NOTHING, AND THEY ARE NOT ONE FACT — register
+                //    item 910. Run 11 met a DRIVER FAILURE, so an ordinary prompt may have been
+                //    typed at a pane and lost; run 12 was cancelled by a PERSON, so none was ever
+                //    put. Both used to be reported inside one bucket beside run 13 below — whose
+                //    all-zero split means the opposite thing entirely — and on the live store that
+                //    bucket held 17 of the first kind and 199 of the third
+                //    (2026-09-05T20:33:04Z).
+                {"id": 11, "label": "ai_loop pane=11", "iterations": 0, "finished": true,
+                 "outcome": "failed",
+                 "deliveries": {"made": 0, "folded": 0},
+                 "folds_by_reason": {"ordinary": {"delivered": 0, "folded": 0}}},
+                {"id": 12, "label": "ai_loop pane=12", "iterations": 1, "finished": true,
+                 "outcome": "cancelled", "cancelled_by": "person",
+                 "deliveries": {"made": 0, "folded": 0},
+                 "folds_by_reason": {"ordinary": {"delivered": 0, "folded": 0}}},
+                // ⚠⚠ AND THE THIRD FACT THAT USED TO SHARE THEIR BUCKET: a run that DID deliver
+                //    and whose build had no counter for the road. 199 of the live store's 216.
+                {"id": 13, "label": "ai_loop pane=13", "iterations": 9, "finished": true,
+                 "deliveries": {"made": 7, "folded": 2},
+                 "folds_by_reason": {"ordinary": {"delivered": 0, "folded": 0}}},
+                // ⛔⛔⛔⛔⛔ AND THE SAME DEATH ON A BUILD THAT COUNTS THE ROAD — item 910's repair
+                //    at the mouth. Its split is not empty, so it leaves the silent bucket for the
+                //    road table, where its `never_took` bounds the ordinary rate instead of
+                //    vanishing out of that road's denominator.
+                {"id": 14, "label": "ai_loop pane=14", "iterations": 0, "finished": true,
+                 "outcome": "failed",
+                 "deliveries": {"made": 0, "folded": 0, "unaccounted": 1},
+                 "folds_by_reason": {"ordinary": {"delivered": 0, "folded": 0,
+                                                  "unasked_after_a_fold": 0,
+                                                  "unasked_on_the_pane": 0,
+                                                  "unasked_never_took": 1}}},
             ]
         }))
         .expect("the log a predecessor leaves is what this reads");
@@ -14087,7 +14185,7 @@ mod tests {
         // force — neither can be on the axis, and both still say which road their prompts took.
         // ⚠ It must be a SUPERSET and say so: `capacity 3 of 34` is right HERE and wrong above.
         assert!(
-            said.contains("and by ROAD ALONE over 9 run(s) whose split is TOTAL for its run")
+            said.contains("and by ROAD ALONE over 10 run(s) whose split is TOTAL for its run")
                 && said.contains("no fullness attached and no ceiling told apart")
                 && said.contains("capacity 7 of 45"),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the split exists to compare ROADS, and a page that can \
@@ -14212,6 +14310,46 @@ mod tests {
              agree. A condition written as `delivered > 0` silences the warning on exactly the \
              runs item 856 ⑶ was opened for. Got:\n{}",
             row_of(6),
+        );
+
+        // ── ②b AND THE RUNS THAT DELIVERED NOTHING ARE SPLIT BY HOW — register item 910 ──
+        //
+        // ⛔⛔⛔⛔⛔ The item's done-when is exactly this line: the runs that delivered nothing are
+        // printed SPLIT — *the driver met a failure* against *a person cancelled it* — because one
+        // may have put an ordinary prompt at a pane and lost it and the other cannot have. One
+        // number over them chooses between the two errors the item names instead of escaping
+        // either, and the bound below is what says so in the mouth's own words.
+        assert!(
+            said.contains("of those 2 that delivered nothing")
+                && said.contains("1 where the driver met a failure")
+                && said.contains("1 where a person cancelled it")
+                && said.contains("at most 1 ordinary prompt(s) were asked and lost"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: the page prints how many runs delivered nothing and not \
+             HOW, so a reader cannot tell an ordinary prompt that was asked and lost from one that \
+             was never asked. On the live store that is 4 driver failures against 13 endings that \
+             put no prompt anywhere (2026-09-05T20:29:23Z), and item 856's control-road \
+             denominator is short by the first number and by no part of the second. Got:\n{said}",
+        );
+        // ⚠⚠ AND THE THREE FACTS THAT USED TO SHARE ONE BUCKET ARE THREE LINES. Run 13 delivered
+        // and never counted a road; runs 11 and 12 delivered nothing. A page that prints one line
+        // for both is the page that reported the live store's 17 inside a bucket of 216.
+        assert!(
+            said.contains(NoFullness::DeliveredNothing.describe())
+                && said.contains(NoFullness::NeverCounted.describe()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: *delivered nothing* and *never counted* are printed as \
+             one arm, whose own doc said the row could not say which — and the row says which, in \
+             `deliveries.made`, and always has. Got:\n{said}",
+        );
+        // ⛔⛔⛔ AND THE PROMPTS NO ROAD COULD ACCOUNT FOR ARE ON THE PAGE, BOUNDING THE RATE.
+        // Run 14 died the same way run 11 did on a build that counts it, so its loss is a NUMBER
+        // rather than a silence — and it is neither a fold nor a landing, which is why the line
+        // says the denominators above are bounds and not figures.
+        assert!(
+            said.contains("could not account for them, by road: ordinary 1"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: a prompt this run put at a pane and could not account \
+             for is in no road's rate, so `ordinary f of d` reads as though d were every ordinary \
+             prompt ever asked. Printed beside it, a reader bounds the rate; left out, the \
+             instrument goes blind in the one direction that flatters item 856's axis. Got:\n{said}",
         );
 
         // ── ③ AND WHAT COULD NOT BE READ, WHICH IS THE HALF THAT GOES QUIET ──

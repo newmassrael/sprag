@@ -3444,6 +3444,7 @@ mod tests {
         let cell: ProgressCell = Arc::new(Mutex::new(Progress {
             iterations: 7,
             deliveries: Some(Deliveries {
+                unaccounted: 0,
                 made: 3,
                 folded: 0,
                 released: 0,

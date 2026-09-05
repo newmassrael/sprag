@@ -1529,6 +1529,55 @@ done"
     (workspace, pane)
 }
 
+/// ⛔⛔⛔⛔⛔ **A STAND-IN AGENT WHOSE PANE NEVER SHOWS THE PROMPT AT ALL** — register item 910,
+/// and the run shape 17 of this loop's own runs died in.
+///
+/// # ⛔⛔⛔⛔⛔ It is [`standin_agent_wedging_on_its_reflection`]'s peer with ECHO OFF
+///
+/// That fixture's own doc names this peer without providing it: *a run with `shows_the_prompt:
+/// true` refuses any delivery it cannot first READ BACK off the pane, so a peer that paints
+/// nothing produces «the prompt never got there» — the other refusal, with the opposite remedy*.
+/// **Every stand-in in this module paints**, so no gate in this workspace had ever driven a run to
+/// `Delivered::Unconfirmed`, and the arm that counts it could be a discard with the suite green.
+///
+/// ⇒ ⛔ And the refusal lands on the PRIMING prompt, which is not incidental: it is the whole of
+/// item 910. A run refused there has delivered nothing, so its opening brief — an
+/// [`crate::outer::Occasion::Ordinary`] — is the only prompt it ever put anywhere, and that road
+/// is item 856's CONTROL road. Measured 2026-09-05T20:29:23Z: 17 finished runs of this store
+/// delivered nothing, and the split of every one of them is present and all zero.
+///
+/// ⚠⚠ `stty -echo` AND `-icanon`: without `-echo` the line discipline paints the prompt and the
+/// delivery is confirmed, which stages the opposite fixture; without `-icanon` a long authored
+/// prompt would sit in the kernel's canonical buffer and the gate would be measuring `MAX_CANON`.
+///
+/// ⚠ It keeps READING rather than exiting, so the refusal is a pane that took the bytes and
+/// painted nothing rather than a `PeerGone` — the third of the three panes
+/// `crate::access::PaneError::NeverTook` names, and the only one a fixture can be.
+pub(crate) fn standin_agent_painting_nothing() -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let script = "\
+stty -echo -icanon; printf 'AGENT-READY\\n'; \
+while read line; do :; done"
+        .to_string();
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        AGENT_READY,
+    );
+    (workspace, pane)
+}
+
 /// ⛔⛔⛔⛔⛔ **A STAND-IN AGENT THAT ANSWERS `answers` PROMPTS AND THEN STOPS ANSWERING** —
 /// register item 889, and the peer no fixture in this module could stand in for.
 ///

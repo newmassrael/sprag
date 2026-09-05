@@ -2966,8 +2966,20 @@ pub enum Sampled {
     /// **A NUMBER**, so something was counting and this run is in the population.
     Counted,
     /// **PRESENT AND ALL ZERO.** *Counted nothing* for a row written by a build that had the
-    /// counter, and *never counted* for one written before item 891 — and the row cannot say
-    /// which. Never pooled with either neighbour; see the type.
+    /// counter, and *never counted* for one written before item 891. Never pooled with either
+    /// neighbour; see the type.
+    ///
+    /// ⛔⛔⛔⛔⛔ **THIS USED TO END *and the row cannot say which*, AND THAT WAS FALSE FOR AT
+    /// LEAST ONE TALLY** — register item 910. For [`Tally::FoldsByReason`] the row says which, in
+    /// `PersistedDeliveries::made`: a run that delivered and wrote an empty split is a build with
+    /// no counter for the road, and one that delivered nothing is a run that DIED before its first
+    /// prompt. `NoFullness::DeliveredNothing` and its two neighbours are that reading, and the
+    /// sentence stood here while a report pooled 17 rows of the second kind with 199 of the first
+    /// (2026-09-05T20:33:04Z).
+    ///
+    /// ⚠ It stays ONE answer here, which is the point: this enum says what the TABLE said, and
+    /// what tells the two apart is a different column. A reader that wants the distinction asks
+    /// the reader that holds both.
     Zeroed,
     /// **ABSENT.** Nobody was counting, said out loud — register item 891, and available only from
     /// that fix onward.
@@ -3040,6 +3052,18 @@ pub struct PersistedDeliveries {
     /// reads the key's PRESENCE, not this field, and says nothing about a row that cannot say.
     #[serde(default)]
     pub released: u32,
+    /// ⛔⛔⛔⛔⛔ [`sprag_plugin::Deliveries::unaccounted`] — register item 910, and the column
+    /// whose absence is the whole item: a run that DIED before delivering anything wrote a row
+    /// stating no prompt of any kind.
+    ///
+    /// ⚠⚠ `#[serde(default)]` for its neighbours' reason, and the residue is the same shape
+    /// [`released`](Self::released) states: a missing key reads as *no prompt of this run went
+    /// unaccounted for*, and the runs whose records predate this field are exactly the ones that
+    /// died of it — 17 of them at 2026-09-05T20:29:23Z. So the DEFAULT is not what tells those two
+    /// apart; `Folds::delivered_nothing` is, by asking [`PersistedDeliveries::made`] whether the
+    /// row's all-zero split means *delivered nothing* or *never counted*.
+    #[serde(default)]
+    pub unaccounted: u32,
 }
 
 impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
@@ -3050,6 +3074,7 @@ impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
             unsubmitted: live.unsubmitted,
             unreported: live.unreported,
             released: live.released,
+            unaccounted: live.unaccounted,
         }
     }
 }
@@ -3062,6 +3087,7 @@ impl From<PersistedDeliveries> for sprag_plugin::Deliveries {
             unsubmitted: stored.unsubmitted,
             unreported: stored.unreported,
             released: stored.released,
+            unaccounted: stored.unaccounted,
         }
     }
 }
@@ -3123,6 +3149,15 @@ pub struct PersistedFoldsUnder {
     /// 194 and 197 are two such runs measured in this repository's own log.
     #[serde(default)]
     pub unasked_on_the_pane: u32,
+    /// ⛔⛔⛔⛔⛔ [`sprag_plugin::Unasked::never_took`] — register item 910, and the row that
+    /// decides whether a run which DIED before delivering anything says which road it was on.
+    ///
+    /// ⚠ `#[serde(default)]` on its neighbours' call, and here the default is what item 891's rule
+    /// makes readable rather than misleading: a stored row missing this key was written by a build
+    /// with no counter for the road, and `Folds` reports those rows under their own arm instead of
+    /// summing their zero into a denominator.
+    #[serde(default)]
+    pub unasked_never_took: u32,
 }
 
 impl From<sprag_plugin::FoldsByReason> for PersistedFoldsByReason {
@@ -3138,6 +3173,7 @@ impl From<sprag_plugin::FoldsByReason> for PersistedFoldsByReason {
                             folded: row.folded,
                             unasked_after_a_fold: row.unasked.after_a_fold,
                             unasked_on_the_pane: row.unasked.on_the_pane,
+                            unasked_never_took: row.unasked.never_took,
                         },
                     )
                 })
@@ -3175,6 +3211,12 @@ impl From<PersistedFoldsByReason> for sprag_plugin::FoldsByReason {
                     unasked: sprag_plugin::Unasked {
                         after_a_fold: row.unasked_after_a_fold,
                         on_the_pane: row.unasked_on_the_pane,
+                        // ⛔⛔⛔⛔⛔ REGISTER ITEM 910, on item 856(3)'s argument one road over: a
+                        // run that died on this road did so BEFORE its first delivery, so the
+                        // whole of what its row can say is this number. A crossing that dropped it
+                        // would leave the split saying nothing at all about the one run shape the
+                        // item was filed on.
+                        never_took: row.unasked_never_took,
                     },
                 },
             );
@@ -3323,6 +3365,9 @@ pub struct PersistedSaidUnder {
     /// every observed `prompt.unasked` in this repository's log has taken.
     #[serde(default)]
     pub unasked_on_the_pane: u32,
+    /// ⛔ [`sprag_plugin::Unasked::never_took`] — register item 910, on its neighbours' call.
+    #[serde(default)]
+    pub unasked_never_took: u32,
 }
 
 impl From<sprag_plugin::SaidBySentence> for PersistedSaidBySentence {
@@ -3337,6 +3382,7 @@ impl From<sprag_plugin::SaidBySentence> for PersistedSaidBySentence {
                             sent: row.sent,
                             unasked_after_a_fold: row.unasked.after_a_fold,
                             unasked_on_the_pane: row.unasked.on_the_pane,
+                            unasked_never_took: row.unasked.never_took,
                         },
                     )
                 })
@@ -3362,6 +3408,7 @@ impl From<PersistedSaidBySentence> for sprag_plugin::SaidBySentence {
                     unasked: sprag_plugin::Unasked {
                         after_a_fold: row.unasked_after_a_fold,
                         on_the_pane: row.unasked_on_the_pane,
+                        never_took: row.unasked_never_took,
                     },
                 },
             );
@@ -4016,6 +4063,12 @@ impl RunLog {
         let mut uncomparable = 0usize;
         // ⛔ THE FULLNESS QUESTION'S OWN POPULATION — every row that recorded one, bound or not.
         let mut at_a_fullness = Vec::new();
+        // ⛔⛔⛔⛔⛔ HOW THE RUNS THAT DELIVERED NOTHING CAME TO — register item 910, seeded over
+        // `Ended::ALL` on `unmeasured`'s argument exactly: an arm with no member this time is the
+        // one a surprise arrives on, and a report assembled from observed keys alone cannot say
+        // that nothing ended that way.
+        let mut endings: std::collections::BTreeMap<Ended, usize> =
+            Ended::ALL.iter().map(|how| (*how, 0)).collect();
         for run in &self.runs {
             // ⚠ FIRST, and it is a precedence rather than an accident: without a split there is no
             // fold to put a fullness beside, so no later question can be asked of this row.
@@ -4024,8 +4077,29 @@ impl RunLog {
                     blame(NoFullness::SplitUnsaid);
                     continue;
                 }
+                // ⛔⛔⛔⛔⛔ **AND THE ALL-ZERO SPLIT IS THREE FACTS, NOT ONE** — register item
+                // 910. `deliveries.made` decides which: a run that put prompts at a pane and wrote
+                // an empty split is a build with no counter for the road, and one that put none
+                // delivered nothing. The single arm this replaced said *the row cannot say which*
+                // and held 216 rows of which 199 were the first kind (2026-09-05T20:33:04Z), so
+                // the 17 runs item 910 is about were reported inside a bucket that was 92 % their
+                // opposite.
                 Sampled::Zeroed => {
-                    blame(NoFullness::SplitZeroed);
+                    blame(match run.deliveries {
+                        Some(counted) if counted.made == 0 => {
+                            // ⛔ AND SUCH A ROW SAYS ONE THING MORE, which is the half item 910
+                            // asks for: *the driver met a failure* means an ordinary prompt may
+                            // have been typed and lost, and *a person cancelled it* means none was
+                            // ever put. One belongs in the control road's denominator; the other
+                            // does not.
+                            *endings
+                                .get_mut(&Ended::of(run))
+                                .expect("Ended::ALL seeded every arm") += 1;
+                            NoFullness::DeliveredNothing
+                        }
+                        Some(_) => NoFullness::NeverCounted,
+                        None => NoFullness::DeliveriesUnsaid,
+                    });
                     continue;
                 }
                 Sampled::Counted => {}
@@ -4152,6 +4226,7 @@ impl RunLog {
             uncomparable,
             stranded,
             at_a_fullness,
+            endings,
         }
     }
 }
@@ -4599,9 +4674,72 @@ pub struct Folds {
     /// business and not this line's. Kept apart rather than widened, exactly as
     /// [`readable`](Self::readable) is kept apart from `measured`.
     pub at_a_fullness: Vec<RoadsAtFullness>,
+    /// ⛔⛔⛔⛔⛔ **HOW EACH RUN UNDER [`NoFullness::DeliveredNothing`] CAME TO DELIVER NOTHING** —
+    /// every [`Ended`] arm INCLUDING the zeros, register item 910.
+    ///
+    /// ⚠ The zeros are carried on [`unmeasured`](Self::unmeasured)'s argument verbatim: the
+    /// population is the enum, and an arm with no member this time is exactly the one a surprise
+    /// arrives on. A table assembled from the words a store happens to hold cannot say that nothing
+    /// ended a given way.
+    ///
+    /// ⚠⚠ It is a partition of that ONE arm and of nothing else — its total is the count reported
+    /// under `DeliveredNothing`, and a reader who summed it against any other bucket would be
+    /// counting rows twice.
+    pub endings: std::collections::BTreeMap<Ended, usize>,
 }
 
 impl Folds {
+    /// ⛔⛔⛔⛔⛔ **HOW MANY RUNS DELIVERED NOTHING ON AN ENDING THAT COULD HAVE LOST AN ORDINARY
+    /// PROMPT** — register item 910, and the number item 856's control-road denominator is short
+    /// by, bounded above.
+    ///
+    /// ⚠⚠ **AN UPPER BOUND AND NEVER A FOLD COUNT.** Each of these runs met a driver failure with
+    /// nothing delivered, so at most one ordinary prompt of each was typed at a pane and lost; how
+    /// many of those were FOLDS is what `sprag_plugin::UnaskedRoad::NeverTook`'s own doc says the
+    /// product cannot tell. Item 910 states the trap in as many words: counting all of them as
+    /// folds is the same error as counting none.
+    #[must_use]
+    pub fn lost_a_prompt_at_most(&self) -> usize {
+        self.endings
+            .iter()
+            .filter(|(how, _)| how.may_have_lost_a_prompt())
+            .map(|(_, count)| count)
+            .sum()
+    }
+
+    /// **HOW MANY RUNS DELIVERED NOTHING ALTOGETHER** — the total [`endings`](Self::endings)
+    /// partitions, spelled here so a reader cannot sum it one way in a sentence and another in a
+    /// gate.
+    #[must_use]
+    pub fn delivered_nothing(&self) -> usize {
+        self.endings.values().sum()
+    }
+
+    /// ⛔⛔⛔⛔⛔ **HOW MANY PROMPTS THIS ANSWER'S READABLE ROWS PUT AT A PANE AND COULD NOT ACCOUNT
+    /// FOR, ROAD BY ROAD** — register item 910's own column, in
+    /// [`sprag_plugin::Occasion::ALL`]'s order including the zeros.
+    ///
+    /// ⚠⚠ **IT IS NOT ADDED TO EITHER HALF OF A ROAD'S RATE.** `folded of delivered` is a rate over
+    /// prompts that ARRIVED; these arrived at a pseudoterminal and nothing confirmed them. Summed
+    /// into the numerator it would call every one a fold, and into the denominator alone it would
+    /// call every one a landing — the two errors item 910 names, one on each side. Published beside
+    /// the rate so a reader can bound it instead of being handed a point.
+    #[must_use]
+    pub fn unaccounted_by_road(&self) -> Vec<(sprag_plugin::Occasion, u32)> {
+        sprag_plugin::Occasion::ALL
+            .into_iter()
+            .map(|occasion| {
+                (
+                    occasion,
+                    self.readable
+                        .iter()
+                        .map(|split| split.under(occasion).unasked.never_took)
+                        .fold(0u32, u32::saturating_add),
+                )
+            })
+            .collect()
+    }
+
     /// 🎯🎯🎯🎯🎯 **THE SAME SPLIT OVER EVERY ROW WHOSE TABLE CAN BE READ AT ALL** — road by road,
     /// with NO fullness attached, in [`sprag_plugin::Occasion::ALL`]'s order including the zeros.
     ///
@@ -5085,13 +5223,42 @@ impl Judged {
 pub enum NoFullness {
     /// No split at all — [`Sampled::Unsaid`], a row from a daemon older than the table.
     SplitUnsaid,
-    /// A split that is present and all zero — [`Sampled::Zeroed`]. *Delivered nothing* for a build
-    /// that had the counter and *never counted* for one written before register item 891, and the
-    /// row cannot say which.
+    /// ⛔⛔⛔⛔⛔ **A SPLIT PRESENT AND ALL ZERO OVER A RUN THAT DELIVERED NOTHING** —
+    /// [`Sampled::Zeroed`] with [`PersistedDeliveries::made`] at zero, and register item 910.
+    ///
+    /// # ⛔⛔⛔⛔⛔ *The row cannot say which* was this arm's own sentence, and it was false
+    ///
+    /// This used to be ONE arm reading *delivered nothing and never counted at once*. The row says
+    /// which, and has always said it: a run whose split is all zero **and which made deliveries**
+    /// is a build that did not count roads, and one that made none delivered nothing. Measured
+    /// 2026-09-05T20:33:04Z over this loop's own store, the single arm held **216 rows — 199 of
+    /// them `made > 0`** — so the 17 runs item 910 is about were reported inside a bucket 92 %
+    /// composed of the opposite fact.
+    ///
+    /// ⇒ ⛔ And the direction is item 910's: a run that delivered nothing died on its OPENING
+    /// BRIEF, which is an `sprag_plugin::Occasion::Ordinary`, so every row hidden here was hidden
+    /// off the CONTROL road of item 856's axis and off no other.
+    ///
+    /// ⚠ [`Folds::endings`] is what such a row says next — *how* it delivered nothing — because
+    /// *it died on a driver failure* and *a person cancelled it* are opposite claims about whether
+    /// an ordinary prompt was ever asked at all.
+    DeliveredNothing,
+    /// **A SPLIT PRESENT AND ALL ZERO OVER A RUN THAT DID DELIVER** — [`Sampled::Zeroed`] with
+    /// [`PersistedDeliveries::made`] above zero: a build that put prompts at a pane and had no
+    /// counter for the road they went on. 199 of the 216 at 2026-09-05T20:33:04Z.
     ///
     /// ⚠ Its own arm rather than either neighbour's, which is register item 895's whole finding:
     /// measured over 220 stored rows, folding it would decide 209 of them by fiat.
-    SplitZeroed,
+    NeverCounted,
+    /// ⛔ **A SPLIT PRESENT AND ALL ZERO OVER A ROW THAT STATES NO DELIVERY COUNT AT ALL** — the
+    /// only shape in which the old arm's sentence was true, kept as its own arm rather than pooled
+    /// with either neighbour.
+    ///
+    /// ⚠⚠ **ZERO IN THIS STORE TODAY, AND THAT IS WHY IT IS HERE** — measured
+    /// 2026-09-05T20:33:04Z, 0 of 238 rows. This workspace's rule 6: a shape nobody classified is
+    /// RED and not a pass, so the reading that used to swallow 216 rows keeps a home of its own
+    /// instead of being deleted along with the rows it was wrong about.
+    DeliveriesUnsaid,
     /// It delivered prompts and no [`PersistedRun::context_high_water`] — **the promotion wall**,
     /// register item 894 — and its `capacity` road was never walked, so nothing says how full that
     /// session was and no landing this axis is looking for was inside it to lose.
@@ -5153,9 +5320,11 @@ pub enum NoFullness {
 impl NoFullness {
     /// Every way, as the population [`Folds::unmeasured`] is built from — an eighth reason added
     /// to the type appears in every report without anybody widening a list.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::SplitUnsaid,
-        Self::SplitZeroed,
+        Self::DeliveredNothing,
+        Self::NeverCounted,
+        Self::DeliveriesUnsaid,
         Self::FullnessUnread,
         Self::CapacityUnjudgeable,
         Self::CeilingUnrecorded,
@@ -5171,9 +5340,18 @@ impl NoFullness {
             Self::SplitUnsaid => {
                 "no fold split recorded at all, so there is no fold to put a fullness beside"
             }
-            Self::SplitZeroed => {
-                "a fold split present and all zero, which is *delivered nothing* and *never \
-                 counted* at once"
+            Self::DeliveredNothing => {
+                "a fold split present and all zero over a run that DELIVERED NOTHING — the \
+                 endings below say how, and an ordinary prompt asked and lost is not the same \
+                 fact as one never asked"
+            }
+            Self::NeverCounted => {
+                "a fold split present and all zero over a run that DID deliver, so that build \
+                 never counted the road its prompts went on"
+            }
+            Self::DeliveriesUnsaid => {
+                "a fold split present and all zero beside no delivery count at all, so this row \
+                 alone cannot say whether it delivered nothing or never counted"
             }
             Self::FullnessUnread => {
                 "nothing recorded how full that session ever got, and it never walked the \
@@ -5192,6 +5370,126 @@ impl NoFullness {
                 "nothing says whether its numbers were its document's, so an experiment cannot be \
                  told from an ordinary run"
             }
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **HOW A RUN THAT DELIVERED NOTHING CAME TO DELIVER NOTHING** — register item 910, and
+/// what [`NoFullness::DeliveredNothing`] says next.
+///
+/// # ⛔⛔⛔⛔⛔ The two halves of that bucket ask OPPOSITE things of item 856's denominator
+///
+/// A run delivering nothing died on the first prompt it ever composed, and the first prompt of any
+/// run is its OPENING BRIEF — an `sprag_plugin::Occasion::Ordinary`. So the whole bucket sits on
+/// item 856's CONTROL road. But *the driver met a failure* means that ordinary prompt was typed at
+/// a pane and lost, while *a person cancelled it* and *the peer stopped to ask* mean no ordinary
+/// prompt was ever put at all. **One belongs in that road's denominator and the others do not**,
+/// and a report that printed one number for the seventeen would be choosing between the two errors
+/// item 910 names rather than avoiding both.
+///
+/// # ⚠⚠ Exhaustive over `sprag_plugin::OutcomeState::WIRE_WORDS`, with the unspellable said aloud
+///
+/// This workspace's rule 6: a word this build has no arm for is RED and not a pass, so
+/// [`Unspellable`](Self::Unspellable) is a reported arm rather than a silent `_`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Ended {
+    /// ⛔ **THE DRIVER MET A FAILURE** — `failed`. An ordinary prompt MAY have been typed at a pane
+    /// and lost here, and [`PersistedRun::failure`] is the only thing that says which; a row older
+    /// than register item 903 carries no sentence at all.
+    OnADriverFailure,
+    /// **THE PEER STOPPED TO ASK AND NOTHING ANSWERED** — `blocked`. No prompt was put at a pane.
+    Blocked,
+    /// **A PERSON SAID STOP** — `cancelled` with [`Canceller::Person`]. Whatever the run was about
+    /// to ask, nobody asked it.
+    CancelledByAPerson,
+    /// **THE DAEMON SHUT DOWN UNDER IT** — `cancelled` with [`Canceller::Shutdown`], or with
+    /// nothing recorded. ⚠ Its own arm because NOBODY decided anything about this run, which is
+    /// [`Canceller`]'s whole stated split.
+    CancelledByAShutdown,
+    /// **IT ENDED ON ITS OWN TERMS HAVING DELIVERED NOTHING** — `converged`, `exhausted` or
+    /// `taken_over`. ⚠ Not a contradiction and not folded into the failures: a run can converge
+    /// before it has anything to say.
+    OnItsOwnTerms,
+    /// **THE ROW NAMES NO ENDING**, which is a log written before the word was stored.
+    Unsaid,
+    /// ⛔ **A WORD THIS BUILD HAS NO ARM FOR.** Rule 6: reported, never swallowed.
+    Unspellable,
+}
+
+impl Ended {
+    /// Every arm, so a report printing this partition cannot leave one out.
+    pub const ALL: [Self; 7] = [
+        Self::OnADriverFailure,
+        Self::Blocked,
+        Self::CancelledByAPerson,
+        Self::CancelledByAShutdown,
+        Self::OnItsOwnTerms,
+        Self::Unsaid,
+        Self::Unspellable,
+    ];
+
+    /// **HOW THIS ROW ENDED** — read off the row's own words and never guessed.
+    ///
+    /// ⚠ `cancelled_by` is consulted ONLY under `cancelled`: the store holds rows whose ending is
+    /// `converged` beside a `shutdown` canceller (runs 173 and 226 at 2026-09-05T20:29:23Z), and a
+    /// classifier that read the canceller first would report those as cancelled runs.
+    #[must_use]
+    pub fn of(run: &PersistedRun) -> Self {
+        let Some(word) = run.outcome.as_deref() else {
+            return Self::Unsaid;
+        };
+        match word {
+            "failed" => Self::OnADriverFailure,
+            "blocked" => Self::Blocked,
+            "cancelled" => match run.cancelled_by {
+                Some(Canceller::Person) => Self::CancelledByAPerson,
+                Some(Canceller::Shutdown) | None => Self::CancelledByAShutdown,
+            },
+            "converged" | "exhausted" | "taken_over" => Self::OnItsOwnTerms,
+            _ => Self::Unspellable,
+        }
+    }
+
+    /// What a reader is looking at — ⛔ exhaustive with no `_` arm.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::OnADriverFailure => {
+                "the driver met a failure, so an ordinary prompt may have been typed at a pane and \
+                 lost — the row's own failure sentence is the only thing that says"
+            }
+            Self::Blocked => "the peer stopped to ask and nothing answered, so no prompt was put",
+            Self::CancelledByAPerson => "a person cancelled it before it asked anything",
+            Self::CancelledByAShutdown => {
+                "the daemon shut down under it, so nobody decided anything about this run"
+            }
+            Self::OnItsOwnTerms => "it ended on its own terms having delivered nothing",
+            Self::Unsaid => "the row names no ending at all",
+            Self::Unspellable => {
+                "it names an ending word this build has no arm for, which is a build skew and not \
+                 a measurement"
+            }
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER AN ORDINARY PROMPT WAS PUT AT A PANE AND LOST ON THIS ENDING** — the one
+    /// question item 856's control-road denominator needs answered, and the reason this type is not
+    /// a count.
+    ///
+    /// ⚠⚠ **`false` IS NOT *nothing was lost*, IT IS *nothing was put*.** The three cancelling and
+    /// blocking endings stopped the run before it composed; the failing one did not, and its own
+    /// `Deliveries::unaccounted` (register item 910) is what states the size. This predicate says
+    /// which rows that number may be read off, never how big it is.
+    #[must_use]
+    pub const fn may_have_lost_a_prompt(self) -> bool {
+        match self {
+            Self::OnADriverFailure => true,
+            Self::Blocked
+            | Self::CancelledByAPerson
+            | Self::CancelledByAShutdown
+            | Self::OnItsOwnTerms
+            | Self::Unsaid
+            | Self::Unspellable => false,
         }
     }
 }
@@ -8252,6 +8550,7 @@ mod tests {
         let id = registry.reserve();
         let progress = ProgressCell::default();
         lock(&progress).deliveries = Some(sprag_plugin::Deliveries {
+            unaccounted: 0,
             made: 14,
             folded: 3,
             // ⚠ THE THIRD COUNT TRAVELS TOO — register item 617, and it is set to a value distinct
@@ -8432,6 +8731,7 @@ mod tests {
                 // distinguishes a run that folded from one that never did — which is the whole
                 // reading runs 194 and 197 were invisible to.
                 unasked: sprag_plugin::Unasked {
+                    never_took: 0,
                     after_a_fold: 1,
                     on_the_pane: 1,
                 },
@@ -8462,6 +8762,7 @@ mod tests {
                 delivered: 2,
                 folded: 1,
                 unasked: sprag_plugin::Unasked {
+                    never_took: 0,
                     after_a_fold: 0,
                     on_the_pane: 1,
                 },
@@ -8495,6 +8796,9 @@ mod tests {
             let row = row.as_object_mut().expect("each reason carries a row");
             row.remove("unasked_after_a_fold");
             row.remove("unasked_on_the_pane");
+            // ⛔ REGISTER ITEM 910 — the third road joins the pair this fixture strips, so the
+            // premise below keeps meaning what it says: a log written before ANY of them existed.
+            row.remove("unasked_never_took");
         }
         // ⚠⚠ THE PREMISE IS ASKED OF THE FOLD TABLE AND NOT OF THE WHOLE DOCUMENT, which it used
         // to be — register item 889. `said_by_sentence` carries the same two field names on its
@@ -8736,6 +9040,7 @@ mod tests {
                 sprag_plugin::SaidUnder {
                     sent: 28,
                     unasked: sprag_plugin::Unasked {
+                        never_took: 0,
                         after_a_fold: 1,
                         on_the_pane: 1,
                     },
@@ -8822,6 +9127,7 @@ mod tests {
         {
             let mut moving = lock(&progress);
             moving.deliveries = Some(sprag_plugin::Deliveries {
+                unaccounted: 0,
                 made: 9,
                 folded: 2,
                 released: 1,
@@ -9121,6 +9427,7 @@ mod tests {
 
         // ── The two shapes the wrong predicates get wrong, both filed as their own items ──────
         let wedged = stored(Some(sprag_plugin::Deliveries {
+            unaccounted: 0,
             made: 0,
             folded: 0,
             released: 0,
@@ -9128,6 +9435,7 @@ mod tests {
             unreported: 0,
         }));
         let swallowed = stored(Some(sprag_plugin::Deliveries {
+            unaccounted: 0,
             made: 0,
             folded: 0,
             released: 0,
@@ -9149,6 +9457,7 @@ mod tests {
 
         // ── And the three arms are DISTINCT, driven through a real stored row each ────────────
         let counted = stored(Some(sprag_plugin::Deliveries {
+            unaccounted: 0,
             made: 3,
             folded: 1,
             released: 0,
@@ -11976,10 +12285,73 @@ mod tests {
                   "overridden": ["a_bound_a_later_build_authored"],
                   "deliveries": { "made": 3, "folded": 0 },
                   "folds_by_reason": { "capacity": { "delivered": 3, "folded": 0 } } },
-                // ── ⑧ A SPLIT PRESENT AND ALL ZERO — 214 of today's 229 rows ──
+                // ── ⑧ A SPLIT PRESENT AND ALL ZERO BESIDE NO DELIVERY COUNT AT ALL ──
+                //    ⛔ The ONE shape in which the old single arm's sentence — *delivered nothing
+                //    and never counted at once* — was true. Register item 910 measured 0 rows of
+                //    this shape in the live store (2026-09-05T20:33:04Z) and it keeps an arm
+                //    anyway, because rule 6 says an unclassified row is RED and not a pass.
                 { "id": 8, "label": "ai_loop pane=10", "iterations": 9, "finished": true,
                   "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [],
                   "folds_by_reason": { "capacity": { "delivered": 0, "folded": 0 } } },
+                // ── ⑧b A SPLIT ALL ZERO OVER A RUN THAT DID DELIVER — 199 of today's 216 ──
+                //    ⛔⛔⛔⛔⛔ REGISTER ITEM 910. Pooled with the seven below it, this row's fact
+                //    (*that build had no counter for the road*) and theirs (*this run delivered
+                //    nothing*) are one bucket — and the bucket is 92 % this shape, so the runs the
+                //    item is about were reported inside their own opposite.
+                { "id": 23, "label": "ai_loop pane=25", "iterations": 9, "finished": true,
+                  "deliveries": { "made": 9, "folded": 2 },
+                  "folds_by_reason": { "capacity": { "delivered": 0, "folded": 0 } } },
+                // ── ⑧c…⑧i THE SEVEN ENDINGS A RUN THAT DELIVERED NOTHING CAN HAVE ──
+                //    ⛔⛔⛔⛔⛔ REGISTER ITEM 910, and the reason one number over them would be
+                //    wrong: only the FAILING ending could have typed an ordinary prompt at a pane
+                //    and lost it. The others stopped the run before it composed, so counting them
+                //    into item 856's control-road denominator invents prompts, and counting them
+                //    as folds is the same error facing the other way.
+                { "id": 16, "label": "ai_loop pane=18", "iterations": 0, "finished": true,
+                  "outcome": "failed",
+                  "failure": "the prompt could not be read back off the pane",
+                  "deliveries": { "made": 0, "folded": 0 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
+                { "id": 17, "label": "ai_loop pane=19", "iterations": 1, "finished": true,
+                  "outcome": "cancelled", "cancelled_by": "person",
+                  "deliveries": { "made": 0, "folded": 0 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
+                { "id": 18, "label": "ai_loop pane=20", "iterations": 1, "finished": true,
+                  "outcome": "cancelled", "cancelled_by": "shutdown",
+                  "deliveries": { "made": 0, "folded": 0 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
+                { "id": 19, "label": "ai_loop pane=21", "iterations": 1, "finished": true,
+                  "outcome": "blocked",
+                  "deliveries": { "made": 0, "folded": 0 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
+                //    ⚠ `converged` BESIDE a shutdown canceller is the live store's own shape (runs
+                //    173 and 226): a classifier that read the canceller first would call this a
+                //    cancelled run, so the ending word is asked FIRST and the canceller only under
+                //    `cancelled`.
+                { "id": 20, "label": "ai_loop pane=22", "iterations": 2, "finished": true,
+                  "outcome": "converged", "cancelled_by": "shutdown",
+                  "deliveries": { "made": 0, "folded": 0 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
+                { "id": 21, "label": "ai_loop pane=23", "iterations": 1, "finished": true,
+                  "deliveries": { "made": 0, "folded": 0 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
+                { "id": 22, "label": "ai_loop pane=24", "iterations": 1, "finished": true,
+                  "outcome": "an_ending_a_later_build_authored",
+                  "deliveries": { "made": 0, "folded": 0 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
+                // ── ⑧j AND THE SAME DEATH ON A BUILD THAT COUNTS THE ROAD — item 910's repair ──
+                //    ⛔⛔⛔⛔⛔ Identical to ⑧c in every stored fact but one: this row carries
+                //    `unasked_never_took`, so its split is NOT empty, it is COUNTED rather than
+                //    zeroed, and it leaves the silent bucket for the road table — where it finally
+                //    says WHICH ROAD the run died on. ⚠ Its `delivered()` is 0 and so is `made`,
+                //    so the split is total for the run and the row may be compared road with road.
+                { "id": 24, "label": "ai_loop pane=26", "iterations": 0, "finished": true,
+                  "outcome": "failed",
+                  "deliveries": { "made": 0, "folded": 0, "unaccounted": 1 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0,
+                                                     "unasked_after_a_fold": 0,
+                                                     "unasked_on_the_pane": 0,
+                                                     "unasked_never_took": 1 } } },
                 // ── ⑨ NO SPLIT AT ALL — a row from a daemon older than the table ──
                 { "id": 9, "label": "ai_loop pane=11", "iterations": 9, "finished": true,
                   "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [] },
@@ -12131,7 +12503,7 @@ mod tests {
                     .collect::<Vec<_>>(),
             ),
             (
-                12,
+                13,
                 1,
                 vec![("budget", 8, 8), ("capacity", 11, 51), ("ordinary", 6, 56)],
             ),
@@ -12251,12 +12623,67 @@ mod tests {
             folds.unmeasured,
         );
 
-        // ── ③ EVERY REASON REACHED, so none of the six is decoration ──
+        // ── ②af THE PROMPTS NO ROAD COULD ACCOUNT FOR — register item 910 ──
+        //
+        // ⛔⛔⛔⛔⛔ Run 24 died on its opening brief and its row SAYS SO: `ordinary` carries one
+        // `never_took`. It is neither a fold nor a landing, so it enters neither half of that
+        // road's rate — summed into the numerator every such prompt becomes a fold, and into the
+        // denominator alone every one becomes a landing, which are the two errors item 910 names.
+        // What it does is BOUND the rate: `ordinary` reads `6 of 56` above, so the true ordinary
+        // fold rate over this population lies between 6/57 and 7/57.
+        assert_eq!(
+            (
+                folds
+                    .unaccounted_by_road()
+                    .into_iter()
+                    .filter(|(_, lost)| *lost > 0)
+                    .map(|(occasion, lost)| (occasion.word(), lost))
+                    .collect::<Vec<_>>(),
+                folds.unaccounted_by_road().len(),
+            ),
+            (vec![("ordinary", 1)], sprag_plugin::Occasion::ALL.len()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: a run that dies before delivering anything dies on its \
+             OPENING BRIEF, which is an ordinary prompt — so the road this instrument goes blind \
+             on is exactly item 856's CONTROL road, and the blindness flatters the axis. A build \
+             that leaves this column out publishes `ordinary f of d` as though d were every \
+             ordinary prompt ever asked. ⚠ And every road stays in the answer, zeros included, or \
+             a road that has never lost one cannot be told from a road nobody counted. \
+             Report: {:?}",
+            folds.unaccounted_by_road(),
+        );
+
+        // ── ②ag AND THE ROW SAYING IT IS IN THE ROAD TABLE AT ALL, which is the whole repair ──
+        //
+        // ⛔⛔⛔⛔⛔ Before item 910 this row's split was empty — `delivered` 0 and no `unasked` —
+        // so `Sampled::Zeroed` filed it under *measures nothing* beside 199 rows of the opposite
+        // fact. The counter is what moves it into the population that can be compared.
+        assert!(
+            folds.readable.iter().any(|split| split
+                .under(sprag_plugin::Occasion::Ordinary)
+                .unasked
+                .never_took
+                == 1),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: the run that died before delivering anything must leave \
+             a LINE in the split. A build where it leaves none reports it as a run that measures \
+             nothing, which is indistinguishable from a build that never counted roads at all — \
+             and that is the bucket 199 of the live store's 216 such rows are in. \
+             Readable: {:?}",
+            folds.readable,
+        );
+
+        // ── ③ EVERY REASON REACHED, so none of the nine is decoration ──
         for (why, expected) in [
             (NoFullness::SplitUnsaid, 1),
-            (NoFullness::SplitZeroed, 1),
-            // ⚠ ONE: run 12, which is behind the wall and never walked the capacity road.
-            (NoFullness::FullnessUnread, 1),
+            // ⛔⛔⛔⛔⛔ REGISTER ITEM 910: the old single `SplitZeroed` arm is these THREE, and
+            // the row's own `deliveries.made` is what tells them apart. Measured over the live
+            // store at 2026-09-05T20:33:04Z the one arm held 216 rows — 199 `NeverCounted`, 17
+            // `DeliveredNothing`, 0 `DeliveriesUnsaid`.
+            (NoFullness::DeliveredNothing, 7),
+            (NoFullness::NeverCounted, 1),
+            (NoFullness::DeliveriesUnsaid, 1),
+            // ⚠ TWO: run 12, behind the wall and never on the capacity road, and run 24, whose
+            // split is COUNTED (item 910) and which records no fullness.
+            (NoFullness::FullnessUnread, 2),
             // ⚠ THREE: runs 4, 11 and 13, behind the same wall having walked it — 13 by the
             // unasked half alone, which a `delivered > 0` classifier would file under the arm
             // above and report as *no evidence*.
@@ -12280,6 +12707,52 @@ mod tests {
                 folds.unmeasured,
             );
         }
+
+        // ── ③b AND HOW EACH OF THOSE DELIVERED NOTHING — register item 910's own partition ──
+        //
+        // ⛔⛔⛔⛔⛔ The bucket above says HOW MANY delivered nothing and cannot say whether an
+        // ordinary prompt was ever put at a pane. These seven rows are one of each ending, and
+        // only the first could have lost one: item 910's done-when is that the report SPLITS them
+        // rather than choosing between counting all of them and counting none.
+        //
+        // ⚠ EVERY arm including the zeros, `unmeasured`'s rule verbatim — an ending nothing
+        // reached this time is the one a surprise arrives on, and a table built from the words a
+        // store happens to hold cannot say that nothing ended a given way.
+        assert_eq!(
+            (
+                folds
+                    .endings
+                    .iter()
+                    .map(|(how, count)| (*how, *count))
+                    .collect::<Vec<_>>(),
+                folds.delivered_nothing(),
+                folds.lost_a_prompt_at_most(),
+            ),
+            (
+                Ended::ALL
+                    .into_iter()
+                    .map(|how| (how, 1))
+                    .collect::<Vec<_>>(),
+                7,
+                1,
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 910: *the driver met a failure* and *a person cancelled it* \
+             are opposite claims about whether an ordinary prompt was ever asked, and a report \
+             publishing ONE number over the seventeen runs that delivered nothing chooses between \
+             the two errors the item names instead of escaping either. ⛔ AND THE BOUND IS AN \
+             UPPER ONE: `lost_a_prompt_at_most` counts only the failing ending, and even there a \
+             loss is *at most one prompt*, never a fold — which of three panes produced it is what \
+             this product states it cannot tell. Endings: {:?}",
+            folds.endings,
+        );
+        assert!(
+            folds.lost_a_prompt_at_most() < folds.delivered_nothing(),
+            "⚠⚠⚠ THE CONTROL FOR THE ARM ABOVE: a build that counted every run delivering \
+             nothing as a lost ordinary prompt would satisfy the equality with the two numbers \
+             pooled, and that is item 910's own stated trap — widening the population until the \
+             gate is green. Endings: {:?}",
+            folds.endings,
+        );
 
         // ── ④ THE SUM, which is what makes a silent drop impossible ──
         assert_eq!(
