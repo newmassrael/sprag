@@ -4010,6 +4010,8 @@ impl RunLog {
         // it — a second pass over the log would be a second population, and this report's whole
         // discipline is that its halves are one.
         let mut stranded = 0u32;
+        // ⛔ THE WIDER HALF — every readable fold table, kept whether or not it reaches the axis.
+        let mut readable = Vec::new();
         for run in &self.runs {
             // ⚠ FIRST, and it is a precedence rather than an accident: without a split there is no
             // fold to put a fullness beside, so no later question can be asked of this row.
@@ -4035,6 +4037,11 @@ impl RunLog {
             // ⚠ Converted BEFORE the axis is asked for, because the questions below it are asked
             // of rows that never reach the axis at all — see `on_the_capacity_road`.
             let split: sprag_plugin::FoldsByReason = stored.into();
+            // ⛔⛔⛔⛔⛔ AND KEPT BEFORE ANY OF THEM, which is the point: the ROAD question does not
+            // need a fullness, and on 2026-09-05 the rows that could answer it outnumbered the
+            // rows on the axis ten to one. Every `continue` below this line drops a table that
+            // still had something to say.
+            readable.push(split);
             let (Some(fullest), Some(ceiling)) = (run.context_high_water, run.context_ceiling)
             else {
                 blame(if run.context_high_water.is_some() {
@@ -4079,6 +4086,7 @@ impl RunLog {
                 .iter()
                 .map(|why| (*why, unmeasured[why]))
                 .collect(),
+            readable,
             stranded,
         }
     }
@@ -4473,6 +4481,14 @@ pub struct Folds {
     /// deciding what to print may drop an empty line, and a reader deciding whether the table is
     /// whole may not. Item 856 ⑹ measured what a table that builds its own population does.
     pub unmeasured: Vec<(NoFullness, usize)>,
+    /// **EVERY FOLD TABLE THIS BUILD COULD READ AT ALL**, whatever the row said about fullness —
+    /// the population [`split_everywhere`](Self::split_everywhere) sums, and a SUPERSET of
+    /// [`measured`](Self::measured).
+    ///
+    /// ⚠ Kept as the splits alone rather than the rows: what this half answers is *which road*,
+    /// and a row's fullness is exactly the thing it does not have. Carrying the rest would invite
+    /// a reader to pair them again.
+    pub readable: Vec<sprag_plugin::FoldsByReason>,
     /// ⛔⛔⛔⛔⛔ **THE `capacity` LANDINGS THIS ANSWER HOLDS AND MAY NOT JUDGE** — how big item
     /// 894's wall is, summed over the rows counted under [`NoFullness::CapacityUnjudgeable`].
     ///
@@ -4488,6 +4504,58 @@ pub struct Folds {
 }
 
 impl Folds {
+    /// 🎯🎯🎯🎯🎯 **THE SAME SPLIT OVER EVERY ROW WHOSE TABLE CAN BE READ AT ALL** — road by road,
+    /// with NO fullness attached, in [`sprag_plugin::Occasion::ALL`]'s order including the zeros.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The axis rate drops the rows that carry the comparison
+    ///
+    /// [`folded_by_road`](Self::folded_by_road) sums only [`measured`](Self::measured) — rows that
+    /// can be put on the fullness axis — and on 2026-09-05 that was **2** rows of a store holding
+    /// **21** with a readable split. The other nineteen hold the biggest sample item 856 has ever
+    /// had of the question its split was built for: *does the fold rate depend on WHICH ROAD a
+    /// prompt was asked on*. Measured at **2026-09-05T17:07:44Z** by hand, and that hand is the
+    /// `python3 -c` item 856 ⒝ retired one level down:
+    ///
+    /// | road | delivered | folded | landed |
+    /// |---|---:|---:|---:|
+    /// | `budget` | 16 | **16** | 0 |
+    /// | `milestone` | 48 | 30 | 18 |
+    /// | `capacity` | 33 | 4 | **29** |
+    /// | `ordinary` | 139 | **0** | 139 |
+    ///
+    /// ⇒ ⭐ The road the axis says should fold MOST folds LEAST among the reflections, and the one
+    /// that fires on a turn count rather than on fullness folds every time.
+    ///
+    /// ⛔⛔ **THIS IS NOT THE AXIS'S RATE AND MUST NOT BE READ AS ONE.** It pools runs whose
+    /// ceiling a caller moved with runs judged by their own document, and rows that record no
+    /// fullness at all — every distinction [`refutations`](Self::refutations) and
+    /// [`folded_by_road`](Self::folded_by_road) exist to keep. What it answers is the ROAD
+    /// question over the widest population this store supports, which is a different sentence from
+    /// *how full was the session*.
+    #[must_use]
+    pub fn split_everywhere(&self) -> Vec<(sprag_plugin::Occasion, u32, u32)> {
+        sprag_plugin::Occasion::ALL
+            .into_iter()
+            .map(|occasion| {
+                let (folded, delivered) = self
+                    .readable
+                    .iter()
+                    .map(|split| split.under(occasion))
+                    .fold((0, 0), |(folded, delivered), row| {
+                        (folded + row.folded, delivered + row.delivered)
+                    });
+                (occasion, folded, delivered)
+            })
+            .collect()
+    }
+
+    /// **HOW MANY RUNS [`split_everywhere`](Self::split_everywhere) IS OVER** — every row whose
+    /// fold table this build can read, whatever it says about fullness.
+    #[must_use]
+    pub fn readable_runs(&self) -> usize {
+        self.readable.len()
+    }
+
     /// How many runs this answer accounts for — the sum of both halves, and what a caller checks
     /// against the log's own length.
     #[must_use]
@@ -11813,6 +11881,39 @@ mod tests {
              zeros included, because the empty ones are what make the walked ones mean anything. \
              Rows: {:?}",
             folds.measured,
+        );
+
+        // ── ②ab AND THE ROAD QUESTION OVER EVERY READABLE TABLE, WHICH IS THE WIDER HALF ──
+        //
+        // ⛔⛔⛔⛔⛔ The rate above needs a fullness. Measured over the live store on
+        // 2026-09-05T17:07:44Z that left **2** rows of **21**, and the other nineteen held the
+        // biggest sample item 856 has of the question its split exists for. Here: run 2's 28
+        // capacity prompts (moved ceiling), run 4's 3 (no fullness at all), run 14's 12 ordinary
+        // (ceiling not in force) and run 11's 5 all belong to this half and to no other.
+        //
+        // ⚠⚠ AND IT IS A SUPERSET, never a replacement: `folded_by_road` keeps the experiment out
+        // and this one lets it in ON PURPOSE, because *which road* does not care whose ceiling it
+        // was. Two answers to two questions, and the mouth says which is which.
+        assert_eq!(
+            (
+                folds.readable_runs(),
+                folds
+                    .split_everywhere()
+                    .into_iter()
+                    .filter(|(_, _, delivered)| *delivered > 0)
+                    .map(|(occasion, folded, delivered)| (occasion.word(), folded, delivered))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                12,
+                vec![("budget", 8, 8), ("capacity", 11, 51), ("ordinary", 6, 56)],
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the split was built to compare ROADS, and the rate that \
+             can only be summed over rows carrying a fullness throws away most of the sample that \
+             comparison has. A build that published only the narrow figure answers the road \
+             question from two runs while nineteen sit unread. ⚠ And it must be a SUPERSET — the \
+             experiment belongs here and not in the axis's own rate. Report: {:?}",
+            folds.split_everywhere(),
         );
 
         // ── ②aa AND THE FULLNESS THAT RATE IS SUMMED ACROSS — register item 894 ⑶ / 856 ⒞ ──

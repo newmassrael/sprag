@@ -1141,6 +1141,26 @@ fn folds_lines(
                 split.join(" · "),
             ));
         }
+        // 🎯🎯🎯🎯🎯 AND THE ROAD QUESTION OVER EVERY READABLE TABLE — register item 856's split,
+        // asked of the population that can actually answer it. The rate above needs a fullness and
+        // on 2026-09-05 that left 2 rows of 21; these nineteen carry no fullness and still say
+        // which road a prompt was asked on. ⛔ It is NOT the axis's rate: it pools moved ceilings
+        // with the document's own and rows that record no fullness at all — the line says so.
+        if folds.readable_runs() > 0 {
+            let split: Vec<String> = folds
+                .split_everywhere()
+                .into_iter()
+                .map(|(occasion, folded, delivered)| {
+                    format!("{} {folded} of {delivered}", occasion.word())
+                })
+                .collect();
+            lines.push(format!(
+                "  and by ROAD ALONE over {} run(s) whose split can be read at all, no fullness \
+                 attached and no ceiling told apart: {}",
+                folds.readable_runs(),
+                split.join(" · "),
+            ));
+        }
         // ⛔⛔⛔⛔⛔ AND THE LANDINGS THIS LOG HOLDS AND THE AXIS MAY NOT USE — printed OUTSIDE the
         // branch above, because the store where it matters most is exactly the one whose readable
         // half is empty. On 2026-09-05T13:41:36Z that was this loop's own log: 3 rows behind item
@@ -13900,6 +13920,22 @@ mod tests {
              `context_ceiling > 0` — so it could never supply the landing item 856 waits for, and \
              its 6 folds of 12 would quieten the very control road the axis is read against. The \
              live store held such a row on 2026-09-05T15:33:48Z. Got:\n{said}",
+        );
+
+        // ── ②bc AND THE ROAD QUESTION OVER EVERY READABLE TABLE — the wider half, register 856 ──
+        //
+        // ⛔⛔⛔⛔⛔ The rate above needs a fullness; over the live store on 2026-09-05T17:07:44Z
+        // that was 2 rows of 21. Run 3 here carries no fullness and run 9's ceiling is not in
+        // force — neither can be on the axis, and both still say which road their prompts took.
+        // ⚠ It must be a SUPERSET and say so: `capacity 3 of 34` is right HERE and wrong above.
+        assert!(
+            said.contains("and by ROAD ALONE over 9 run(s) whose split can be read at all")
+                && said.contains("no fullness attached and no ceiling told apart")
+                && said.contains("capacity 7 of 45"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the split exists to compare ROADS, and a page that can \
+             only sum the rows carrying a fullness answers that from a fraction of its sample \
+             while the rest sits unread. The wider figure has to be on the page AND has to say it \
+             pools what the axis keeps apart. Got:\n{said}",
         );
 
         // ── ②c AND THE LANDINGS BEHIND THE WALL ARE SAID, WITH THE POPULATION THEY SIT IN ──
