@@ -1322,9 +1322,12 @@ pub trait Plugin {
     /// [`deliveries`](Self::deliveries) offers `made - folded` as the landing count and it is not
     /// one: two of the five roads inside that subtraction are a run ending mid-delivery and a peer
     /// that paints nothing, neither of which is a question anybody asked.
-    /// [`folds_by_reason`](Self::folds_by_reason) counts only what was asked during a reflection.
-    /// Measured over runs 194-198 and 201 of this repository, the third instrument — the run log —
-    /// agreed with the persisted fold count **12 of 12** and reached **16 of 127** landings.
+    /// [`folds_by_reason`](Self::folds_by_reason) splits by the OCCASION a prompt was asked under,
+    /// which is a different cut of the same deliveries rather than a smaller set of them — see
+    /// [`crate::outer::Occasion::Ordinary`], whose stated job is to be the difference between that
+    /// split and this total. Measured over runs 194-198 and 201 of this repository, the third
+    /// instrument — the run log — agreed with the persisted fold count **12 of 12** and reached
+    /// **16 of 127** landings.
     ///
     /// ⚠ The default is [`crate::outer::DeliveredByRoad::NONE`]: every road present and zero,
     /// which is the honest answer for a plugin that has typed nothing. It is not *nothing landed*.
@@ -1341,8 +1344,9 @@ pub trait Plugin {
     /// # ⛔⛔⛔⛔⛔ The three answers above cannot be asked that question
     ///
     /// [`deliveries`](Self::deliveries) is the run's total and splits by nothing.
-    /// [`folds_by_reason`](Self::folds_by_reason) is denominated in REFLECTIONS, so a brief that
-    /// went unasked is outside its population by construction.
+    /// [`folds_by_reason`](Self::folds_by_reason) splits by OCCASION, which puts a brief and a turn
+    /// prompt in one row together ([`crate::outer::Occasion::Ordinary`]) and so cannot tell them
+    /// apart — the two carry different rates, which is what this one exists to publish.
     /// [`delivered_by_road`](Self::delivered_by_road) says what PROVED a delivery, which is a fact
     /// about the evidence rather than about the sentence. Measured over this repository's whole
     /// loop log, the brief goes unasked at **0.23 %** and the turn prompt at **3.48 %** — a
@@ -1664,6 +1668,72 @@ impl StandingOrder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⛔⛔⛔⛔⛔ **NO DOC ON THIS TRAIT MAY SAY THE FOLD SPLIT IS REFLECTIONS ONLY** — register
+    /// item 856, and a sentence that had already misled a reader by the time it was found.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It was true once, the type moved, and the prose did not
+    ///
+    /// [`crate::outer::Occasion`] carried nothing but reflections when these docs were written.
+    /// Item 856 ⑶ added [`Ordinary`](crate::outer::Occasion::Ordinary) — *the loop was NOT
+    /// reflecting: its opening brief, its turn prompts, its account at the end* — whose own doc
+    /// states its job as being **the difference between the split and the total**. From that
+    /// commit the two sentences here were false, and nothing could go red over them.
+    ///
+    /// ⇒ ⭐ **Measured, not imagined: on 2026-09-05 a round read one of them, concluded that a
+    /// folded brief was outside this instrument's population by construction, and wrote that into
+    /// the register as the reason item 856's axis could not be judged.** It was wrong, and the
+    /// only thing that found it was reading the type an hour later. This workspace's rule 10 —
+    /// prose nobody measures — with a cost attached.
+    ///
+    /// ⛔⛔ **THE NEEDLES ARE SYNTHESISED AT RUN TIME** and never spelled here, because a gate that
+    /// contains the string it forbids matches itself — item 872 ⑵ walked into exactly that while
+    /// building the same shape of ratchet, three times in one round.
+    ///
+    /// ⚠ Whitespace is normalised before the search: `rustfmt` wraps a doc line wherever it likes,
+    /// so a line-by-line reading would let the sentence back in by breaking it across two.
+    #[test]
+    fn no_doc_here_says_the_fold_split_counts_reflections_alone() {
+        let source = include_str!("plugin.rs");
+        let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        // ⚠ Assembled from parts. Each is harmless alone and none is the sentence.
+        let claims = [
+            [
+                "counts",
+                "only",
+                "what",
+                "was",
+                "asked",
+                "during",
+                "a",
+                "reflection",
+            ]
+            .join(" "),
+            ["is", "denominated", "in", "REFLECTIONS"].join(" "),
+            ["outside", "its", "population", "by", "construction"].join(" "),
+        ];
+        let said: Vec<&String> = claims
+            .iter()
+            .filter(|claim| flat.contains(*claim))
+            .collect();
+        assert!(
+            said.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856: a doc on this trait says the fold split covers only \
+             reflections. `Occasion::Ordinary` has been in that split since item 856 ⑶ and its own \
+             doc calls itself the difference between the split and the run's totals — so the \
+             sentence is false, and it has already cost one round a wrong conclusion about why \
+             this item could not be judged. If the split is ever narrowed back, narrow the TYPE \
+             and this gate goes red with it. Found: {said:?}",
+        );
+        // ⚠⚠ THE CONTROL: the ratchet must be reading a real file. A build where `include_str!`
+        // resolved to something else, or the search normalised the text away, would pass the
+        // assertion above by saying nothing about anything.
+        assert!(
+            flat.contains(&["fn", "folds_by_reason"].join(" "))
+                && flat.contains(&["fn", "said_by_sentence"].join(" ")),
+            "⚠⚠⚠ the ratchet read a file that is not this one, so its silence means nothing",
+        );
+    }
 
     /// ⚠⚠ **THE PUBLISHED VERDICT LIST IS HELD TO THE ONE THAT IS SERVED.**
     ///
