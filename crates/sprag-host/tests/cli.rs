@@ -19560,3 +19560,166 @@ fn the_push_time_reader_says_what_happens_next_in_the_products_own_words() {
         "⛔ a failed run was told the converged run's next step: {said}",
     );
 }
+
+/// 🎯🎯🎯🎯🎯 **A DAEMON OF THIS BUILD LEAVES A LOG WHOSE RUNS CAN BE PAIRED** — register item
+/// 872 ⑶b, and the question four re-judgements answered *promotion* without ever putting.
+///
+/// # ⛔⛔⛔⛔⛔ What was assumed, and why it needed a daemon rather than an argument
+///
+/// Item 872 ⑶ wants the delay between one run stopping and the next starting. `sprag waits`
+/// computes it, and over the LIVE store it answers **229 runs, 229 unmeasurable** (measured
+/// 2026-09-05T09:12:15Z: `tree` 0/229, `ran_from` 0/229, `ran_to` 0/229) because the daemon driving
+/// that loop predates all three columns. Every round since has recorded that as *blocked on the
+/// promotion* — an assumption about a BUILD, argued from a store an older one wrote.
+///
+/// `the_stretch_is_computed_from_stamps_the_daemons_own_saver_wrote` answers half of it at the unit
+/// level by driving `stamp_run_times` directly. What it cannot reach is the half that made the
+/// assumption plausible: *does a real daemon, submitting real runs, actually put those three
+/// columns in the file it leaves?* Nothing between `RunRegistry::submit` and the bytes on disk was
+/// driven end to end, so *this build has the columns* and *a daemon writes them* were one sentence
+/// with one gate under it.
+///
+/// ⚠⚠ **CANCELLED RATHER THAN CONVERGED, deliberately.** What the stamps need is a terminal
+/// outcome, not a particular one, and a convergence would make this gate wait on a sentinel
+/// crossing a pseudoterminal — a timing story to debug on the day it goes red. A cancel is a verb
+/// this test issues and waits for by name.
+///
+/// ⚠ It asserts the rows are PAIRABLE and never how long the stretch was: the two runs are seconds
+/// apart here and `now_unix_secs` has one-second resolution, so a magnitude would be a number about
+/// this test's own scheduling rather than about the product.
+#[test]
+fn a_current_builds_daemon_leaves_a_log_whose_runs_can_be_paired() {
+    let sock = socket_path();
+    // ⚠ `scratch_root`, not the bare `std::env::temp_dir()` its neighbours still spell — item 794's
+    // ratchet caught this line, exactly as it caught the same copied line two rounds ago. With
+    // `TMPDIR` set-and-empty the std call resolves into this repository's own working tree.
+    let state = sprag_scratch::scratch_root().join(format!(
+        "sprag-waits-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving -- {}",
+        why_not_serving(&sock),
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "work", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
+        }),
+    )
+    .expect("new_session answers");
+    let pane = conn
+        .call(
+            "scene/query",
+            json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .expect("the session's pane");
+
+    // TWO runs on ONE pane, so both carry the same `tree` and the second is the first's successor —
+    // the only shape `RunLog::waits_between_runs` pairs, by design: one daemon drives several
+    // repositories and pairing across them times one repository's death against another's birth.
+    for id in ["0", "1"] {
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": "work",
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+                "args": {
+                    "plugin": "orchestrator",
+                    "pane": pane,
+                    "stimulus": "x",
+                    "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+                    "opened_by": pane,
+                    "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+                },
+            }),
+        )
+        .expect("the run is submitted");
+        assert!(
+            wait_for(Duration::from_secs(20), || sprag(
+                &sock,
+                &["runs", "-t", "work"]
+            )
+            .stdout
+            .contains("running")),
+            "run {id} never reached running: {}",
+            sprag(&sock, &["runs", "-t", "work"]).stdout,
+        );
+        let cancelled = sprag(&sock, &["cancel-run", id, "-t", "work"]);
+        assert!(cancelled.ok, "{}", cancelled.stderr);
+    }
+    drop(conn);
+
+    // ⚠⚠ THE FILE IS FOUND BY SCANNING THIS TEST'S OWN STATE DIR — `runs_path` would resolve
+    // `XDG_STATE_HOME` in THIS process, which is the developer's, and point the wait at a file some
+    // other daemon on this machine wrote. The gate above records that exact miss.
+    let runs_dir = state.join("sprag");
+    let read = || {
+        std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".runs.json"))
+            .filter_map(|entry| sprag_host::load_runs(&entry.path()))
+            .find(|log| log.runs.len() >= 2)
+    };
+    assert!(
+        wait_for(Duration::from_secs(30), || read()
+            .is_some_and(|log| log.runs.iter().all(|run| run.finished))),
+        "the daemon never persisted both runs as finished under {}",
+        runs_dir.display(),
+    );
+    let log = read().expect("the log this daemon wrote");
+
+    // ── ① THE THREE COLUMNS, WHICH THE LIVE STORE HAS AT 0/229 ──
+    assert!(
+        log.runs.iter().all(|run| run.tree.is_some()),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 872 ⑶b: a daemon of THIS build left runs that cannot say which \
+         working tree they were for, so nothing can be anybody's successor. That column reads \
+         0/229 on the live store and every round has called it *the old daemon* — this gate is \
+         what makes that an answer instead of an assumption. Wrote: {:?}",
+        log.runs,
+    );
+    assert!(
+        log.runs
+            .iter()
+            .all(|run| run.ran_from.is_some() && run.ran_to.is_some()),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 888, FOR ITEM 872 ⑶b: a daemon of this build left runs missing an \
+         end of the interval — `ran_from`'s own doc says it exists for that clause. Without both \
+         ends the stretch is unmeasurable however new the daemon is. Wrote: {:?}",
+        log.runs,
+    );
+
+    // ── ② AND THEY PAIR, WHICH IS THE WHOLE CLAIM ──
+    let waits = log.waits_between_runs();
+    assert!(
+        !waits.measured.is_empty(),
+        "⛔⛔⛔⛔⛔ THE ROWS CARRY EVERY COLUMN AND STILL DO NOT PAIR. That is a defect in the \
+         pairing rather than in the store, and it is the one this gate exists to tell apart from \
+         the promotion wall — over the live store the two look identical, because both answer 0 \
+         measured. Report: {waits:?}, runs: {:?}",
+        log.runs,
+    );
+    assert_eq!(
+        waits.runs(),
+        log.runs.len(),
+        "⚠⚠⚠ and every run is accounted for on the real road too: {waits:?}",
+    );
+
+    drop(guard);
+}

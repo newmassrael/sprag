@@ -60,7 +60,12 @@ const DIAGNOSIS: &str = "why_not_serving";
 /// twice — and `--bin`/`--test` are TARGET filters applied to EVERY package named, so `sprag-gate`
 /// (which has no target called `cli` or `sprag`) contributed no tests at all. The commit hook runs
 /// `cargo test -p sprag-gate` with no filter, and that is where this went red.
-const WAITS_REGISTERED: usize = 45;
+///
+/// ⚠ AND BY ONE ON 2026-09-05: register item 872 ⑶b added a gate that spawns a daemon of its own to
+/// ask whether a CURRENT build leaves a run log whose rows can be paired — the assumption four
+/// rounds had recorded as *blocked on the promotion* without ever putting it to a daemon. Seventh
+/// time the ratchet has named the change rather than anybody remembering to.
+const WAITS_REGISTERED: usize = 46;
 
 /// This gate's own source, which must SPELL the needle in order to hunt for it.
 ///
