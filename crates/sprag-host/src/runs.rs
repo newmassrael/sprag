@@ -3739,7 +3739,24 @@ impl RunLog {
     /// say *nothing to see* for a store where every single row is unpairable. **Measured over the
     /// loop's own store at 2026-09-05T07:45:30Z: 228 rows, `ran_from` non-null 0, `ran_to` non-null
     /// 0, `tree` absent from every row** — the live daemon predates all three columns, so today
-    /// this answers *0 measured, 228 unmeasured* and NAMES which wall each row is behind.
+    /// this answers *0 measured, 228 unmeasured* and names a wall for every row.
+    ///
+    /// ⛔⛔ **A WALL, not THE wall, and that word was wrong here until 2026-09-05T12:11:19Z.** This
+    /// doc claimed the report "NAMES which wall each row is behind"; [`NoWait`] is tried in a
+    /// declared order, so it names the FIRST. Re-measured at that moment the live store held 231
+    /// rows, all of them `TreeUnknown` and all of them ALSO without the watched stop a stretch
+    /// starts from (212 finished with `ran_to` unset, 19 not finished) — **two walls reported as
+    /// one**, and a reader could take it as *fill in item 890's column and the number appears*.
+    /// [`Waits::left_ends`] is the second axis that says otherwise, and [`LeftEnd`] holds why it
+    /// cannot be folded into the first.
+    ///
+    /// ⚠⚠ **AND THE STORE MOVED TWELVE MINUTES LATER, which is why every number here carries its
+    /// moment.** The promotion of 2026-09-05 12:2x UTC put the daemon at `e528943`, and at
+    /// **12:42:19Z** this reads *233 run(s) · 231 no working tree · 2 nothing has followed it on
+    /// that tree yet · 0 of 233 carry the watched stop — 2 have not ended, 19 left unfinished by a
+    /// daemon this log has since replaced, 212 finished with nobody watching*. Two rows left
+    /// `TreeUnknown` for the first time, and the 21 that had not ended split 2/19. Re-running this
+    /// takes a NEW measurement of a live store; it does not check the old one.
     ///
     /// That is the honest reading of a promotion wall and it is why every run lands in exactly one
     /// bucket: [`Waits::measured`] holds the stretches, [`Waits::unmeasured`] holds a count under
@@ -3757,6 +3774,46 @@ impl RunLog {
     /// fingerprint, and every `ai_loop` run in every repository carries the same one
     /// (`f495708bb94944be` on all of them in the reading above). [`PersistedRun::tree`] — item
     /// 890's column — is the only thing that says WHERE, which is why 872 ⑶ waited on that item too.
+    /// ⛔⛔⛔⛔⛔ **WHICH RUNS THIS LOG HAS PROOF THE DAEMON WALKED AWAY FROM** — the ids a LATER
+    /// row of a DIFFERENT build has outlived, which is [`LeftEnd::of`]'s second argument and the
+    /// only evidence a log carries that nothing is watching a row any more.
+    ///
+    /// # ⚠⚠⚠⚠ Why the build and not the clock
+    ///
+    /// *This row has not moved in a long time* is the reading that suggests itself and it is not
+    /// evidence: a machine that slept, a loop whose agent is thinking, and a daemon that died two
+    /// promotions ago all look identical to a timestamp. A build word is a FACT the daemon wrote
+    /// about itself — register item 897 made every image say which one it is — and a different one
+    /// appearing later in the same log is the log stating, in its own record, that the daemon
+    /// changed. Nothing here is inferred from wall time.
+    ///
+    /// # ⚠⚠ It UNDER-counts, deliberately, and the direction is the safe one
+    ///
+    /// A daemon restarted at the SAME build leaves rows this cannot name, so a row it omits may
+    /// still be abandoned. The alternative — treating *no later run of mine* as *still alive* —
+    /// would name live runs dead, and the report's whole use is telling a reader whether waiting
+    /// will help. ⚠ A row whose own `build` is [`None`] (a daemon older than that column) is never
+    /// named: there is nothing to compare, and a missing word must not read as a different one.
+    #[must_use]
+    pub fn daemons_replaced_since(&self) -> std::collections::BTreeSet<u64> {
+        let mut replaced = std::collections::BTreeSet::new();
+        // ⚠ The rows are in the order the daemon appended them, which is what makes *later* mean
+        // anything here — the same order `waits_between_runs` re-sorts by id within a tree.
+        for (index, run) in self.runs.iter().enumerate() {
+            let Some(build) = run.build.as_deref() else {
+                continue;
+            };
+            if self.runs[index + 1..]
+                .iter()
+                .filter_map(|later| later.build.as_deref())
+                .any(|later| later != build)
+            {
+                replaced.insert(run.id);
+            }
+        }
+        replaced
+    }
+
     #[must_use]
     pub fn waits_between_runs(&self) -> Waits {
         // Grouped first so succession is asked WITHIN a tree. `BTreeMap` rather than a hash so the
@@ -3771,6 +3828,22 @@ impl RunLog {
                 .get_mut(&why)
                 .expect("NoWait::ALL seeded every arm") += 1;
         };
+        // ⛔⛔⛔⛔⛔ WHICH ROWS A LATER DAEMON HAS OUTLIVED, taken ONCE for the whole log and
+        // shared by both axes — the two must not each derive it, for the reason the two spellings
+        // of *has it a left end* were collapsed below.
+        let replaced = self.daemons_replaced_since();
+        // ⛔⛔⛔⛔⛔ THE SECOND AXIS, and it is taken over EVERY row before the grouping is asked —
+        // that is the whole of why it exists. The loop below stops at `TreeUnknown` for a row with
+        // no tree, and at 2026-09-05T12:11:19Z every one of the live store's 231 rows was such a
+        // row, so the first axis could say only *no tree*. This one still answers, and its answer
+        // there is `Watched 0` — no stretch can start in that log whatever a tree column says.
+        let mut left_ends: std::collections::BTreeMap<LeftEnd, usize> =
+            LeftEnd::ALL.iter().map(|arm| (*arm, 0)).collect();
+        for run in &self.runs {
+            *left_ends
+                .get_mut(&LeftEnd::of(run, replaced.contains(&run.id)))
+                .expect("LeftEnd::ALL seeded every arm") += 1;
+        }
         for run in &self.runs {
             match run.tree.as_deref() {
                 Some(tree) => by_tree.entry(tree).or_default().push(run),
@@ -3792,16 +3865,31 @@ impl RunLog {
                     blame(NoWait::NothingFollowed);
                     continue;
                 };
-                if !run.finished {
-                    blame(NoWait::StillRunning);
-                    continue;
-                }
-                let (Some(stopped), Some(started)) = (run.ran_to, next.ran_from) else {
-                    blame(if run.ran_to.is_none() {
-                        NoWait::EndUnwatched
-                    } else {
-                        NoWait::SuccessorStartUnwatched
-                    });
+                // ⛔⛔⛔⛔⛔ THE TWO AXES MEET HERE, and it is ONE reading rather than two that
+                // agree. `LeftEnd` asks whether this run carries a watched stop; so did the three
+                // lines this replaces, in their own spelling. Two spellings of *has it a left end*
+                // is a place for them to drift, and the drift is invisible in the worst direction:
+                // a stretch printed off a stop the second axis calls unwatched, both halves
+                // confident. Asked once, the contradiction cannot be built.
+                let stopped = match LeftEnd::of(run, replaced.contains(&run.id)) {
+                    LeftEnd::NotEndedYet => {
+                        blame(NoWait::StillRunning);
+                        continue;
+                    }
+                    LeftEnd::Abandoned => {
+                        blame(NoWait::EndAbandoned);
+                        continue;
+                    }
+                    LeftEnd::Unwatched => {
+                        blame(NoWait::EndUnwatched);
+                        continue;
+                    }
+                    LeftEnd::Watched => run
+                        .ran_to
+                        .expect("LeftEnd::Watched is exactly a finished run whose ran_to is set"),
+                };
+                let Some(started) = next.ran_from else {
+                    blame(NoWait::SuccessorStartUnwatched);
                     continue;
                 };
                 let Some(seconds) = started.checked_sub(stopped) else {
@@ -3824,6 +3912,10 @@ impl RunLog {
             unmeasured: NoWait::ALL
                 .iter()
                 .map(|why| (*why, unmeasured[why]))
+                .collect(),
+            left_ends: LeftEnd::ALL
+                .iter()
+                .map(|arm| (*arm, left_ends[arm]))
                 .collect(),
         }
     }
@@ -3949,6 +4041,14 @@ pub struct Waits {
     /// deciding what to print may drop an empty line, and a reader deciding whether the table is
     /// whole may not. Item 856 ⑹ measured what a table that builds its own population does.
     pub unmeasured: Vec<(NoWait, usize)>,
+    /// ⛔⛔⛔ **THE SECOND AXIS** — how many runs carry the watched stop a stretch starts from,
+    /// under each [`LeftEnd`], every arm including the zeros, over **every run in the log**.
+    ///
+    /// ⚠⚠ This is a SECOND partition of the SAME population, not a subdivision of the first: it is
+    /// asked of runs that measured a stretch as well as runs that did not, and it sums to
+    /// [`Waits::runs`] on its own. [`LeftEnd`] holds why it cannot be a seventh [`NoWait`] — the
+    /// first axis stops at `TreeUnknown` and today's store is entirely made of that row.
+    pub left_ends: Vec<(LeftEnd, usize)>,
 }
 
 impl Waits {
@@ -3962,6 +4062,41 @@ impl Waits {
                 .iter()
                 .map(|(_, count)| count)
                 .sum::<usize>()
+    }
+
+    /// How many runs the second axis accounts for — [`left_ends`](Self::left_ends) summed, which
+    /// must equal [`runs`](Self::runs). ⚠ A gate holds the two against each other: an axis that
+    /// counted a different population would print a fraction whose denominator is a different
+    /// store's, and both numbers would look reasonable.
+    #[must_use]
+    pub fn left_ends_counted(&self) -> usize {
+        self.left_ends.iter().map(|(_, count)| count).sum()
+    }
+
+    /// How many runs could be the left end of a stretch **if the grouping said nothing at all** —
+    /// [`LeftEnd::Watched`]'s count.
+    ///
+    /// ⇒ ⭐ **Zero is the decisive reading of register item 872 ⑶b**, and it is the one this store
+    /// gives: no stretch can exist in this log whatever any tree column later says, so the number
+    /// that clause wants cannot come from these rows and waits on runs a live daemon watches.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The promotion came, and this is STILL zero — which is the sharper reading
+    ///
+    /// The daemon driving this loop went from `7181c74` to `e528943` on 2026-09-05 at 12:2x UTC,
+    /// and the store answered within two minutes: **at 2026-09-05T12:27:22Z, 233 rows, `tree`
+    /// non-null 2, `ran_from` non-null 2, `ran_to` non-null 0** — the first rows this repository
+    /// has ever held that a successor could pair with. This number did not move, and the reason it
+    /// did not is the one that matters: a stretch starts at a stop, and a run that has just STARTED
+    /// has none. ⇒ ⭐⭐⭐⭐⭐ So *the wall is the promotion* was necessary and NOT sufficient, which
+    /// five re-judgements of item 872 ⑶ wrote as one word. What is left is the loop's own next
+    /// handover on a tree — one run of this build ending, and its successor beginning — and no
+    /// round can hurry it.
+    #[must_use]
+    pub fn watched_left_ends(&self) -> usize {
+        self.left_ends
+            .iter()
+            .find(|(arm, _)| *arm == LeftEnd::Watched)
+            .map_or(0, |(_, count)| *count)
     }
 
     /// The longest stretch, which is the number item 827 reported as **3 h 49 m** — [`None`] when
@@ -4013,6 +4148,13 @@ pub enum NoWait {
     /// It has not ended, so there is no left end yet — a run with a successor already beside it,
     /// which is two runs on one tree at once.
     StillRunning,
+    /// It has not ended and it never will: a later row of this log was opened by a different build,
+    /// so the daemon that would have watched it stop is gone. See [`LeftEnd::Abandoned`], which
+    /// holds the whole argument and the count that forced the split.
+    ///
+    /// ⚠ IMMEDIATELY AFTER [`StillRunning`](Self::StillRunning) because that is the pair it was
+    /// wrongly inside, and the two are separated by a fact about the LOG rather than about the run.
+    EndAbandoned,
     /// Finished, but no [`PersistedRun::ran_to`] — nobody was watching when it stopped. Item 888's
     /// own residue: a run inherited already-finished, or one whose daemon died with it.
     EndUnwatched,
@@ -4027,28 +4169,156 @@ pub enum NoWait {
 }
 
 impl NoWait {
-    /// Every way, as the population [`Waits::unmeasured`] is built from — a seventh reason added to
+    /// Every way, as the population [`Waits::unmeasured`] is built from — an eighth reason added to
     /// the type appears in every report without anybody widening a list.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::TreeUnknown,
         Self::NothingFollowed,
         Self::StillRunning,
+        Self::EndAbandoned,
         Self::EndUnwatched,
         Self::SuccessorStartUnwatched,
         Self::SuccessorStartedFirst,
     ];
 
-    /// What a reader is looking at, in one clause — ⛔ an exhaustive `match` with no `_` arm, so a
-    /// seventh way cannot reach a report wearing a sixth's sentence.
+    /// What a reader is looking at, in one clause — ⛔ an exhaustive `match` with no `_` arm, so an
+    /// eighth way cannot reach a report wearing a seventh's sentence.
     #[must_use]
     pub fn describe(self) -> &'static str {
         match self {
             Self::TreeUnknown => "no working tree recorded, so nothing can be its successor",
             Self::StillRunning => "still running, so it has no end to measure from",
+            Self::EndAbandoned => {
+                "left unfinished by a daemon this log has since replaced, so nothing will ever \
+                 watch it stop"
+            }
             Self::EndUnwatched => "nobody was watching when it stopped",
             Self::NothingFollowed => "nothing has followed it on that tree yet",
             Self::SuccessorStartUnwatched => "nobody was watching when the next one began",
             Self::SuccessorStartedFirst => "the next one began before it stopped",
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHETHER A RUN CARRIES THE END A STRETCH IS MEASURED FROM** — the second axis
+/// [`Waits`] reports on.
+///
+/// # ⛔⛔⛔⛔⛔ Why a second axis rather than a seventh [`NoWait`]
+///
+/// [`NoWait`] is tried in a declared order and [`NoWait::TreeUnknown`] is FIRST, so a run with no
+/// tree is blamed there and **nothing further is asked of it**. That precedence is right for the
+/// questions below it — they are all about a run's PLACE IN A SET, and a run with no set has no
+/// place in one. It is wrong for this question, which is about the run BY ITSELF.
+///
+/// **Measured over the loop's own store at 2026-09-05T12:11:19Z**: 231 rows, every one of them
+/// blamed `TreeUnknown`, and *also* 212 of them finished with `ran_to` unset and 19 not finished at
+/// all — **`ran_to` non-null 0 across the whole store**. So each of those rows sits behind TWO
+/// walls and the report named one. A reader could not tell *item 890's column is what stands
+/// between me and the number* from *nothing in this store can ever yield the number*, and only the
+/// second is true: backfilling `tree` on all 231 would still measure nothing, because a stretch
+/// starts at a stop somebody WATCHED and not one of them has one.
+///
+/// ⇒ ⭐ That is register item 872 ⑶b's own question — *so what is the number* — answered as far as
+/// it can be answered WITHOUT the promotion: not *the wall is the tree column*, but *the wall is
+/// two deep and only runs a live daemon watches lift it*.
+///
+/// # ⚠⚠ The pair separates what neither half separates alone
+///
+/// This is the shape item 872 ⑴ already paid for, where `Unattended` and `Opener` each merge a
+/// pair the other splits. Here: the set axis merges *watched stop* and *no stop at all* under
+/// `TreeUnknown`, and this axis merges *no tree* and *no successor* under [`Watched`](Self::Watched).
+/// Neither ordering can be re-arranged into the other, because the columns arrived in different
+/// builds — `tree` is item 890's and `ran_to` is item 888's — so a row carrying one and not the
+/// other is a row the store can really hold.
+///
+/// ⚠ The RIGHT end of a stretch is deliberately not here: it belongs to the SUCCESSOR, and the set
+/// axis already blames its absence on the predecessor as [`NoWait::SuccessorStartUnwatched`]. A run
+/// owns its own stop and nothing else.
+///
+/// # ⛔⛔⛔⛔⛔ Why this stopped being *asked of the run alone* — the promotion of 2026-09-05
+///
+/// It was, and the first thing the promoted daemon printed is what took it away. Three arms make
+/// *has not finished* one fact, and the phrase it deserves is *not yet*: a reader is told to come
+/// back. Read against the live store **at 2026-09-05T12:35:11Z** — 233 rows, 21 not finished —
+/// that sentence was true of **2** of them and false of **19**, whose daemons died in twelve
+/// separate promotions going back to run 15 and which no daemon will ever watch stop. The report
+/// said *21 have not ended* and invited the reading *wait, and they will*.
+///
+/// ⇒ ⭐⭐⭐⭐⭐ **So the run alone cannot answer it, and no column on the run can**: whether
+/// anything is still watching is a fact about the LOG, and [`Abandoned`](Self::Abandoned) is the
+/// arm that reads it. That is why [`of`](Self::of) takes a second argument, and the argument is
+/// derived rather than guessed — see [`RunLog::daemons_replaced_since`].
+///
+/// ⇒ 🎯 **And it is register item 872 ⑶b's own subject rather than a neighbour's.** The stretch
+/// this file measures is a HANDOVER, and the handover with the longest gap in this store is a
+/// PROMOTION — where the outgoing daemon dies mid-run. At the next promotion run 232 (the first
+/// row this repository ever held with a `tree` and a `ran_from`) becomes exactly such a row, and
+/// without this arm the first axis would call it *still running* for as long as the log exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LeftEnd {
+    /// Finished, and [`PersistedRun::ran_to`] says when a daemon watched it stop — the only arm a
+    /// [`Waits::measured`] stretch can start from.
+    Watched,
+    /// It has not finished, and this log holds no proof that the daemon which opened it is gone —
+    /// so there is no stop YET for anybody to have watched, and coming back later is the right
+    /// advice. ⚠ AHEAD of [`Unwatched`](Self::Unwatched) and for [`NoWait::StillRunning`]'s reason:
+    /// *the chain has not ended here* and *the chain ended and nobody saw* are different facts, and
+    /// the first must not be reported as the second.
+    NotEndedYet,
+    /// It has not finished, and a LATER row of this log was opened by a different build — so the
+    /// daemon that would have watched it stop has been replaced and never will.
+    ///
+    /// ⛔⛔ **This is not a slower [`NotEndedYet`](Self::NotEndedYet)**, which is the whole reason
+    /// it is its own arm: `NotEndedYet` can become [`Watched`](Self::Watched) and this can never.
+    /// A predicate that counts them together has a population with a role in it that cannot reach
+    /// zero, and a reader waiting for that count to fall waits for ever.
+    Abandoned,
+    /// Finished, and nothing recorded when — item 888's own residue: a run inherited already
+    /// finished, or one whose daemon died along with it.
+    Unwatched,
+}
+
+impl LeftEnd {
+    /// Every arm, which is the population [`Waits::left_ends`] is built from — a fifth appears in
+    /// every report without anybody widening a list.
+    pub const ALL: [Self; 4] = [
+        Self::Watched,
+        Self::NotEndedYet,
+        Self::Abandoned,
+        Self::Unwatched,
+    ];
+
+    /// Which one this run is — ⛔ an exhaustive `match` with no `_` arm, and the ordering is
+    /// [`RunLog::waits_between_runs`]'s own: unfinished is asked before the stamp, so the two axes
+    /// cannot come to disagree about a row that is both.
+    ///
+    /// `replaced` is *this log has since recorded a run from a different build*, which is the only
+    /// evidence a log carries that the daemon which opened this row is gone. It comes from
+    /// [`RunLog::daemons_replaced_since`] and is **never** inferred from a clock: a row can be
+    /// stale because the machine slept.
+    #[must_use]
+    pub fn of(run: &PersistedRun, replaced: bool) -> Self {
+        match (run.finished, replaced, run.ran_to) {
+            (false, false, _) => Self::NotEndedYet,
+            (false, true, _) => Self::Abandoned,
+            (true, _, Some(_)) => Self::Watched,
+            (true, _, None) => Self::Unwatched,
+        }
+    }
+
+    /// What a reader is looking at, in one clause — ⛔ exhaustive, so a fifth arm cannot reach a
+    /// report wearing a fourth's sentence.
+    ///
+    /// ⚠ Each is a PREDICATE about runs, so `{count} run(s) {describe}` reads as a sentence. Every
+    /// arm has to fit that one slot: written with their own subjects, the first reading of the real
+    /// store printed *212 they finished with nobody watching*.
+    #[must_use]
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Watched => "carry the stop a daemon watched",
+            Self::NotEndedYet => "have not ended",
+            Self::Abandoned => "were left unfinished by a daemon this log has since replaced",
+            Self::Unwatched => "finished with nobody watching",
         }
     }
 }
@@ -10536,9 +10806,23 @@ mod tests {
             from: Option<u64>,
             to: Option<u64>,
         ) -> serde_json::Value {
+            built(id, tree, finished, from, to, "b1")
+        }
+
+        /// The same row, saying WHICH DAEMON wrote it — the fact `daemons_replaced_since` reads,
+        /// and the only evidence in a log that a run's daemon is gone rather than slow.
+        fn built(
+            id: u64,
+            tree: Option<&str>,
+            finished: bool,
+            from: Option<u64>,
+            to: Option<u64>,
+            build: &str,
+        ) -> serde_json::Value {
             let mut row = serde_json::json!({
                 "id": id, "label": format!("ai_loop pane={id}"),
                 "iterations": 3, "finished": finished, "place": ["working"],
+                "build": build,
             });
             if let Some(tree) = tree {
                 row["tree"] = serde_json::json!(tree);
@@ -10555,6 +10839,14 @@ mod tests {
         let log: RunLog = serde_json::from_value(serde_json::json!({
             "version": RUN_LOG_VERSION,
             "runs": [
+                // ⛔⛔⛔⛔⛔ FIRST, AND IT IS A DEAD DAEMON'S ROW — the arm the promotion of
+                //    2026-09-05 forced out of `StillRunning`. It never finished and it never will:
+                //    every row after it was written by a different build, which is this log's own
+                //    proof that the daemon which would have watched it stop is gone. ⚠ It is FIRST
+                //    because the evidence is *a later row of another build*, so its position is
+                //    what makes it abandoned and run 7's position is what keeps run 7 merely
+                //    unfinished — the two cannot be told apart by any column on the run itself.
+                built(0, Some("/e"), false, Some(5), None, "b0"),
                 // ── THE HEADLINE, on tree /a: run 1 stopped at 100, run 2 began at 3629 ──
                 //    3529 seconds is 58m49s, which is the shape of item 827's own 3h49m.
                 run(1, Some("/a"), true, Some(40), Some(100)),
@@ -10576,6 +10868,9 @@ mod tests {
                 run(10, Some("/d"), true, Some(9), Some(11)),
                 // ⚠ AND THE ROW TODAY'S STORE IS ENTIRELY MADE OF: no tree at all.
                 run(11, None, true, Some(1), Some(2)),
+                // /e's second — the successor run 0 needs, so that the abandoned row is asked the
+                // first axis's question at all rather than dropping out at `NothingFollowed`.
+                run(12, Some("/e"), true, Some(9000), Some(9100)),
             ]
         }))
         .expect("the log a predecessor leaves is what this reads");
@@ -10631,11 +10926,12 @@ mod tests {
             waits.measured,
         );
 
-        // ── ③ EVERY REASON REACHED, so none of the six is decoration ──
+        // ── ③ EVERY REASON REACHED, so none of the seven is decoration ──
         for (why, expected) in [
             (NoWait::TreeUnknown, 1),
-            (NoWait::NothingFollowed, 4),
+            (NoWait::NothingFollowed, 5),
             (NoWait::StillRunning, 1),
+            (NoWait::EndAbandoned, 1),
             (NoWait::EndUnwatched, 1),
             (NoWait::SuccessorStartUnwatched, 1),
             (NoWait::SuccessorStartedFirst, 1),
@@ -10650,6 +10946,65 @@ mod tests {
                 waits.unmeasured,
             );
         }
+
+        // ── ③b THE SECOND AXIS, asked of every row before any grouping is ──
+        //
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 872 ⑶b. The arms above are tried in order and `TreeUnknown` is
+        // first, so a row with no tree is told in that one word — and at 2026-09-05T12:11:19Z the
+        // live store was 231 such rows, every one of them ALSO without a watched stop. Two walls,
+        // one of them reported. This axis is the other one, and it is answerable with no tree, no
+        // successor and no promotion.
+        let end = |arm: LeftEnd| {
+            waits
+                .left_ends
+                .iter()
+                .find(|(seen, _)| *seen == arm)
+                .map(|(_, count)| *count)
+                .unwrap_or_else(|| panic!("{arm:?} must be in the report's second population"))
+        };
+        for (arm, expected) in [
+            // 1, 2, 3, 5, 6, 8, 10, 11, 12 carry `ran_to` and are finished. Runs 4 and 9 do not.
+            // Runs 0 and 7 never finished — and they are DIFFERENT arms, which is the split the
+            // live store forced: 7 may still end, 0 cannot, and only the log says so.
+            (LeftEnd::Watched, 9),
+            (LeftEnd::NotEndedYet, 1),
+            (LeftEnd::Abandoned, 1),
+            (LeftEnd::Unwatched, 2),
+        ] {
+            assert_eq!(
+                end(arm),
+                expected,
+                "⛔⛔⛔ {arm:?} — {}. Every arm is reached here, because an arm nothing exercises \
+                 is one that will be wrong without anybody finding out. Second axis: {:?}",
+                arm.describe(),
+                waits.left_ends,
+            );
+        }
+        assert_eq!(
+            waits.left_ends_counted(),
+            log.runs.len(),
+            "⛔⛔⛔⛔⛔ THE SECOND AXIS COUNTED A DIFFERENT POPULATION FROM THE FIRST. It is a \
+             second partition of the SAME rows, not a subdivision of the unmeasured half, and a \
+             fraction whose denominator came from somewhere else reads exactly as reasonable as \
+             one that did not. Counted {} against {} rows: {:?}",
+            waits.left_ends_counted(),
+            log.runs.len(),
+            waits.left_ends,
+        );
+        // ⚠⚠ AND THE CORRESPONDENCE BETWEEN THE AXES CARRIES NO ASSERTION HERE, deliberately.
+        //
+        // Item 872 ⑴ nailed its own pair together with one (`opens_next() == ThisRunsOpener` ⇔
+        // `a_machine_may_act()`). The same nail was written here and then measured: mutating
+        // `waits_between_runs` to build a stretch off an unwatched stop reddened assertion ① —
+        // which pins `measured` exactly — and the nail never ran. **An assertion another one
+        // always reaches first is decoration**, and this workspace's own rule is that an arm
+        // nothing can reach will be wrong without anybody finding out.
+        //
+        // ⇒ So the correspondence moved out of the gate and into the CODE: `waits_between_runs`
+        // asks `LeftEnd::of` for the left end rather than re-reading `finished` and `ran_to` in its
+        // own spelling, so a stretch off a run this axis calls unwatched is not a thing the build
+        // can express. `StillRunning` ⇔ `NotEndedYet` and `EndUnwatched` ⇔ `Unwatched` are that one
+        // reading, seen from the two sides.
 
         // ── ④ THE SUM, which is what makes a silent drop impossible ──
         assert_eq!(
@@ -10686,6 +11041,22 @@ mod tests {
              store today — 229 rows, none of them able to name a tree — and a report that returned \
              an empty answer for it would read as *no tree ever waited*, which is the strongest \
              possible claim made from no evidence at all. Got {old:?}",
+        );
+        // ⛔⛔⛔⛔⛔ ⑤b AND HOW DEEP THAT WALL IS, which is the whole of register item 872 ⑶b.
+        //
+        // Both rows above are `TreeUnknown`, and the first axis has nothing further to say about
+        // them. The second axis does: neither carries `ran_to`, so **neither could be a left end
+        // even if item 890's column were filled in for both**. Measured over the real store at
+        // 2026-09-05T12:11:19Z, that is the shape of all 231 rows — `ran_to` non-null 0 — and it is
+        // what turns *the tree column is the wall* into *only new runs lift this*.
+        assert_eq!(
+            (old.watched_left_ends(), old.left_ends_counted()),
+            (0, 2),
+            "⛔⛔⛔⛔⛔ A PRE-COLUMN LOG MUST SAY THAT BACKFILLING THE GROUPING WOULD BUY NOTHING. \
+             Zero watched stops means no stretch can start in this log whatever any tree column \
+             later says, and a report that named only `TreeUnknown` invites exactly the opposite \
+             reading. Second axis: {:?}",
+            old.left_ends,
         );
     }
 

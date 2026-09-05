@@ -830,6 +830,33 @@ fn waits_lines(
                 why.describe()
             ));
         }
+        // ⛔⛔⛔⛔⛔ AND THE SECOND AXIS, because the first one stops at the first wall. Every
+        // reason above `TreeUnknown` presumes a grouping, so a log whose rows carry no tree is
+        // told entirely in that one word — and **that is this machine's store**: measured
+        // 2026-09-05T12:11:19Z, 231 rows, 231 of them `TreeUnknown`, and separately 0 of them
+        // carrying the watched stop a stretch is measured FROM. Printing only the first invites
+        // the reading *backfill item 890's column and the number appears*, which is false: no
+        // grouping can make a left end out of a run nobody watched stop.
+        //
+        // ⚠ Said for every log with runs in it, including one where the count is the whole
+        // population — *all of them can be a left end* is what makes a report of no stretches mean
+        // the successors are missing rather than the ends.
+        let rest: Vec<String> = waits
+            .left_ends
+            .iter()
+            .filter(|(arm, count)| *arm != sprag_host::runs::LeftEnd::Watched && *count > 0)
+            .map(|(arm, count)| format!("{count} {}", arm.describe()))
+            .collect();
+        lines.push(format!(
+            "  {} of {} run(s) carry the watched stop a stretch is measured from{}",
+            waits.watched_left_ends(),
+            waits.runs(),
+            if rest.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", rest.join(", "))
+            },
+        ));
     }
     if empty > 0 {
         lines.push(format!("{empty} further log(s) held no runs at all"));
@@ -13461,19 +13488,25 @@ mod tests {
     /// reader whose whole question is whether a delay is still there.
     #[test]
     fn what_a_tree_waited_is_printed_beside_what_could_not_be_measured() {
-        use sprag_host::runs::{NoWait, RunLog};
+        use sprag_host::runs::{LeftEnd, NoWait, RunLog};
 
-        // A log holding one measurable stretch on one tree and one row from before item 890's
-        // column — the two halves this verb exists to print together.
+        // A log holding one measurable stretch on one tree, one row from before item 890's column,
+        // and one row a dead daemon walked away from — the halves this verb exists to print
+        // together. ⚠ Run 0 is FIRST and carries its own build word: what makes it abandoned is
+        // that a LATER row names a different build, so its position in the log is the evidence.
         let log: RunLog = serde_json::from_value(serde_json::json!({
             "version": sprag_host::runs::RUN_LOG_VERSION,
             "runs": [
+                {"id": 0, "label": "ai_loop pane=0", "iterations": 1, "finished": false,
+                 "place": ["working"], "tree": "/w", "ran_from": 1, "build": "older"},
                 {"id": 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
-                 "place": ["working"], "tree": "/w", "ran_from": 10, "ran_to": 100},
+                 "place": ["working"], "tree": "/w", "ran_from": 10, "ran_to": 100,
+                 "build": "newer"},
                 {"id": 2, "label": "ai_loop pane=2", "iterations": 1, "finished": true,
-                 "place": ["working"], "tree": "/w", "ran_from": 13729, "ran_to": 13800},
+                 "place": ["working"], "tree": "/w", "ran_from": 13729, "ran_to": 13800,
+                 "build": "newer"},
                 {"id": 3, "label": "ai_loop pane=3", "iterations": 1, "finished": true,
-                 "place": ["working"]},
+                 "place": ["working"], "build": "newer"},
             ]
         }))
         .expect("the log a predecessor leaves is what this reads");
@@ -13508,6 +13541,45 @@ mod tests {
             !said.contains(NoWait::SuccessorStartedFirst.describe()),
             "⚠⚠ an arm no run reached must not appear: a table that always prints six lines has \
              stopped distinguishing them. Got:\n{said}",
+        );
+
+        // ── ③b AND THE SECOND AXIS REACHES THE PAGE — register item 872 ⑶b ──
+        //
+        // ⛔⛔⛔⛔⛔ Run 3 above is the row today's whole store is made of: no tree, so the first
+        // axis says `TreeUnknown` and stops. It is ALSO a run nobody watched stop, and that is the
+        // fact deciding whether the number item 872 ⑶ wants can ever come out of such rows. It
+        // cannot. Measured over the live store 2026-09-05T12:11:19Z: 231 rows, `TreeUnknown` 231,
+        // watched stops **0** — so *backfill item 890's column* is not a route to the number, and
+        // a page carrying only the first axis reads as though it were.
+        assert!(
+            said.contains("2 of 4 run(s) carry the watched stop a stretch is measured from")
+                && said.contains(LeftEnd::Unwatched.describe()),
+            "⛔⛔⛔⛔⛔ THE SECOND AXIS IS NOT ON THE PAGE. `NoWait` is tried in order and stops at \
+             `TreeUnknown`, which is every row of the real store, so without this line the report \
+             names one wall where there are two and the reader is invited to fill in a column that \
+             would change nothing. Got:\n{said}",
+        );
+        // ── ③c AND THE WALL THAT WILL NEVER LIFT IS TOLD APART FROM THE ONE THAT MIGHT ──
+        //
+        // ⛔⛔⛔⛔⛔ Run 0 has not finished and never will: a later row of this log names a
+        // different build, so the daemon that would have watched it stop is gone. Read against the
+        // live store at 2026-09-05T12:35:11Z that is 19 rows of 21 — twelve promotions' worth,
+        // back to run 15 — and the page used to call all 21 *have not ended*, which invites the
+        // one reading that is false: come back later.
+        assert!(
+            said.contains(LeftEnd::Abandoned.describe())
+                && said.contains(NoWait::EndAbandoned.describe()),
+            "⛔⛔⛔⛔⛔ A ROW NOTHING WILL EVER WATCH STOP WAS REPORTED AS ONE THAT HAS NOT ENDED \
+             YET, on one axis or both. `LeftEnd::NotEndedYet` can become `Watched` and \
+             `Abandoned` cannot, so merging them puts a role in the population that no waiting \
+             empties — this workspace's rule 5, printed. Got:\n{said}",
+        );
+        assert!(
+            !said.contains(LeftEnd::NotEndedYet.describe()),
+            "⚠⚠ and its empty arms drop at the mouth like the first axis's — item 856's `0 of 0` \
+             rule, held on both axes rather than on whichever was written first. ⚠⚠ It is ALSO the \
+             control for ③c: with `Abandoned` folded back into `NotEndedYet` this line reddens, so \
+             the two arms cannot pass for each other in either direction. Got:\n{said}",
         );
 
         // ── ④ AND NOTHING READ IS A REFUSAL ──
