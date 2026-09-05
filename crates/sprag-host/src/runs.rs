@@ -4014,6 +4014,8 @@ impl RunLog {
         let mut readable = Vec::new();
         // ⛔ AND THE ROWS THAT HALF MAY NOT SUM: a split that is not total for its run.
         let mut uncomparable = 0usize;
+        // ⛔ THE FULLNESS QUESTION'S OWN POPULATION — every row that recorded one, bound or not.
+        let mut at_a_fullness = Vec::new();
         for run in &self.runs {
             // ⚠ FIRST, and it is a precedence rather than an accident: without a split there is no
             // fold to put a fullness beside, so no later question can be asked of this row.
@@ -4086,6 +4088,21 @@ impl RunLog {
             } else {
                 uncomparable += 1;
             }
+            // ⛔⛔⛔⛔⛔ THE FULLNESS QUESTION'S POPULATION, DECIDED HERE — before a bound is asked
+            // about at all, because *does the rate move with fullness* needs a FULLNESS and nothing
+            // else. Every `continue` below drops rows that have one: measured
+            // 2026-09-05T19:59:26Z, run 236 peaked at 947,887 — the fullest session this store
+            // holds — and its `context_ceiling` of 0 kept it out of every rate this report printed.
+            //
+            // ⚠ Gated on `comparable` for [`readable`]'s reason and no other: roads may only be set
+            // beside each other when the split accounts for every delivery the run made.
+            if let (true, Some(fullest)) = (comparable, run.context_high_water) {
+                at_a_fullness.push(RoadsAtFullness {
+                    id: run.id,
+                    fullest,
+                    folds: split,
+                });
+            }
             let (Some(fullest), Some(ceiling)) = (run.context_high_water, run.context_ceiling)
             else {
                 blame(if run.context_high_water.is_some() {
@@ -4134,6 +4151,7 @@ impl RunLog {
             readable,
             uncomparable,
             stranded,
+            at_a_fullness,
         }
     }
 }
@@ -4556,6 +4574,31 @@ pub struct Folds {
     /// is empty is not left to conclude that nothing here ever walked that road, when the log in
     /// front of them holds 29 prompts that did.
     pub stranded: u32,
+    /// 🎯🎯🎯🎯🎯 **EVERY RUN THAT RECORDED HOW FULL ITS SESSION GOT, WHATEVER BOUND IT RAN UNDER**
+    /// — the population item 856's own question is asked over, and a SUPERSET of
+    /// [`measured`](Self::measured).
+    ///
+    /// # ⛔⛔⛔⛔⛔ The axis's population was excluding the runs that answer it
+    ///
+    /// [`measured`](Self::measured) needs a ceiling IN FORCE, and rightly: the `capacity` road only
+    /// exists where the document has a bound to cross, so a run with `context_ceiling <= 0` could
+    /// never supply the landing that road is read for. **That reasoning is about ONE ROAD, and it
+    /// was being applied to the whole row.** A run with no bound still records how full it got and
+    /// still sends briefs, turn prompts and `milestone` reflections — and whether THOSE fold as a
+    /// session fills is the question item 856 exists to ask.
+    ///
+    /// ⇒ **Measured 2026-09-05T19:59:26Z, the two rows that answer it best were both outside**:
+    /// run 236 peaked at **947,887** — the fullest session this store has ever recorded, fuller
+    /// than anything in `measured` — and folded **0 of 7**; run 233 peaked at 417,509 and folded 2
+    /// of 4 `milestone` prompts. Both carry `context_ceiling: 0`, so the axis saw neither. A rate
+    /// whose exclusion rule drops its own widest evidence is this workspace's rule 6, and item 856
+    /// has now paid for that shape four times.
+    ///
+    /// ⚠ It carries NO ceiling and NO [`Judged`], because neither is needed to ask this: those two
+    /// tell a `capacity` landing from an experiment's, which is [`refutations`](Self::refutations)'
+    /// business and not this line's. Kept apart rather than widened, exactly as
+    /// [`readable`](Self::readable) is kept apart from `measured`.
+    pub at_a_fullness: Vec<RoadsAtFullness>,
 }
 
 impl Folds {
@@ -4754,6 +4797,49 @@ impl Folds {
             .filter(|row| row.judged == Judged::ByItsDocument && row.comparable)
     }
 
+    /// 🎯🎯🎯🎯🎯 **THE RATE ROAD BY ROAD OVER EVERY RUN THAT RECORDED A FULLNESS**, with the
+    /// span of fullness it is summed across — item 856's own question, asked at last.
+    ///
+    /// # ⚠⚠ Why it is the ROADS and not one number
+    ///
+    /// *Does the fold rate move with fullness* cannot be asked of a pooled rate, because the roads
+    /// fold at wildly different rates and a run's road MIX moves independently of how full it got.
+    /// Holding the road fixed and letting the fullness vary is the comparison the split was built
+    /// for; [`split_everywhere`](Self::split_everywhere) is the same table with the fullness
+    /// dropped, and this one is that table over the rows that have one.
+    ///
+    /// ⛔ **The span is published with it for [`production_span`](Self::production_span)'s reason,
+    /// which item 856 has paid for repeatedly**: a rate about fullness, printed without the
+    /// fullness it was summed across, answers a different question than the one it appears to.
+    #[must_use]
+    pub fn by_road_at_a_fullness(&self) -> Vec<(sprag_plugin::Occasion, u32, u32)> {
+        sprag_plugin::Occasion::ALL
+            .into_iter()
+            .map(|occasion| {
+                let (folded, delivered) = self
+                    .at_a_fullness
+                    .iter()
+                    .map(|row| row.folds.under(occasion))
+                    .fold((0, 0), |(folded, delivered), row| {
+                        (folded + row.folded, delivered + row.delivered)
+                    });
+                (occasion, folded, delivered)
+            })
+            .collect()
+    }
+
+    /// **THE LOWEST AND HIGHEST PEAK [`by_road_at_a_fullness`](Self::by_road_at_a_fullness) IS
+    /// SUMMED ACROSS**, and [`None`] when it is summed across nothing.
+    ///
+    /// ⚠ Raw peaks and not a fraction, for [`production_span`](Self::production_span)'s reason
+    /// doubled: these rows need not carry a ceiling at all, so there is no denominator to be a
+    /// percentage of.
+    #[must_use]
+    pub fn fullness_span(&self) -> Option<(i64, i64)> {
+        let peaks = || self.at_a_fullness.iter().map(|row| row.fullest);
+        Some((peaks().min()?, peaks().max()?))
+    }
+
     /// **HOW MANY RUNS [`stranded`](Self::stranded) SITS IN** — the count under
     /// [`NoFullness::CapacityUnjudgeable`], read here so no mouth re-derives it from the map.
     ///
@@ -4781,6 +4867,25 @@ impl Folds {
             .map(FoldAtFullness::landed_on_the_capacity_road)
             .sum()
     }
+}
+
+/// 🎯 **ONE RUN'S ROADS BESIDE HOW FULL ITS SESSION GOT** — [`Folds::at_a_fullness`]'s member.
+///
+/// Deliberately thinner than [`FoldAtFullness`]: no ceiling and no [`Judged`], because the question
+/// it serves — *does the fold rate move with fullness, with the road held fixed* — needs neither. A
+/// run that never had a bound answers it exactly as well as one that did, and the row that carries
+/// a bound it can be judged against is the sibling type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoadsAtFullness {
+    /// The run.
+    pub id: u64,
+    /// **HOW FULL ITS SESSION EVER GOT** — a PEAK, never a level. See
+    /// [`FoldAtFullness::fullest`], whose caveat is this one's too: the split beside it is the
+    /// run's whole life, so this pairs every fold with the highest reading rather than with the
+    /// reading it happened at.
+    pub fullest: i64,
+    /// Its whole split, every road — the control group is the point, exactly as it is one type up.
+    pub folds: sprag_plugin::FoldsByReason,
 }
 
 /// One run whose fold split can be read against how full its session got — [`Folds::measured`]'s
@@ -12054,6 +12159,60 @@ mod tests {
              it. Setting such a row aside from the axis as well is how this instrument would lose \
              the 29 landings it exists to announce. Rows: {:?}",
             folds.measured.iter().map(|row| row.id).collect::<Vec<_>>(),
+        );
+
+        // ── ②ad THE AXIS'S OWN QUESTION IS ASKED OF EVERY ROW THAT RECORDED A FULLNESS ──
+        //
+        // ⛔⛔⛔⛔⛔ **THE TWO ROWS THAT ANSWER IT BEST WERE THE TWO THE AXIS DROPPED.** `measured`
+        // needs a ceiling IN FORCE, because it also serves the `capacity` road and that road only
+        // exists where the document has a bound to cross. That is right about ONE ROAD and was
+        // being applied to the whole row — so run 14 (a fullness of 417,509 and NO bound) and run 5
+        // (a fullness of 700,000 and no ceiling recorded at all) were in no rate this report
+        // printed, though each carries a split and a fullness and answers *does the rate move with
+        // fullness* exactly as well as a bounded row does.
+        //
+        // ⇒ Measured over the live store at 2026-09-05T19:59:26Z: run 236 peaked at **947,887**,
+        // the fullest session the store holds, folded **0 of 7**, and was outside every printed
+        // figure because its ceiling was `0`.
+        //
+        // ⚠ Run 15 is OUT of this one and in `measured`: roads may only be set beside each other
+        // where the split accounts for every delivery, which is the same rule `readable` keeps.
+        let at_a_fullness: Vec<u64> = folds.at_a_fullness.iter().map(|row| row.id).collect();
+        assert_eq!(
+            (
+                at_a_fullness,
+                folds.fullness_span(),
+                folds
+                    .by_road_at_a_fullness()
+                    .into_iter()
+                    .filter(|(_, _, delivered)| *delivered > 0)
+                    .map(|(occasion, folded, delivered)| (occasion.word(), folded, delivered))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                vec![1, 2, 3, 5, 6, 7, 14, 10],
+                Some((24_000, 800_000)),
+                vec![("budget", 8, 8), ("capacity", 7, 43), ("ordinary", 6, 52)],
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴⒞: this is the item's OWN question and the population it \
+             is asked over. A build that keeps requiring a ceiling in force answers it from the \
+             bounded rows alone — which on the live store meant leaving out the fullest session \
+             ever recorded. ⚠ And a build that pooled it with the rate above would answer a \
+             DIFFERENT question: that one tells a `capacity` landing from an experiment's and this \
+             one does not care, because no road but `capacity` needs a bound to exist. Rows: {:?}",
+            folds.at_a_fullness,
+        );
+
+        // ── ②ae AND THE CAPACITY RATE DID NOT GAIN THEM — one filter, two readers ──
+        assert!(
+            folds.production_runs() < folds.at_a_fullness.len()
+                && !folds.measured.iter().any(|row| row.id == 14),
+            "⛔⛔⛔⛔ REGISTER ITEM 856: the two populations must stay apart. Run 14 has no bound in \
+             force, so no `capacity` reflection could ever have fired on it and it may not sit in \
+             the rate that counts them — while it belongs in the fullness question, which asks \
+             nothing about bounds. production_runs={} at_a_fullness={}",
+            folds.production_runs(),
+            folds.at_a_fullness.len(),
         );
 
         // ── ②aa AND THE FULLNESS THAT RATE IS SUMMED ACROSS — register item 894 ⑶ / 856 ⒞ ──

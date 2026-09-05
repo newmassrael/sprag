@@ -1156,6 +1156,36 @@ fn folds_lines(
                 split.join(" · "),
             ));
         }
+        // 🎯🎯🎯🎯🎯 AND THE AXIS'S OWN QUESTION, over every row that recorded a fullness — register
+        // item 856. The rate above needs a ceiling IN FORCE because it also serves the `capacity`
+        // road, and that requirement was throwing away the widest evidence there is: measured
+        // 2026-09-05T19:59:26Z, run 236 peaked at 947,887 — the fullest session in this store — and
+        // was outside every printed rate because its ceiling was 0.
+        //
+        // ⚠⚠ It is ROAD BY ROAD and never pooled, because a run's road MIX moves independently of
+        // how full it got: a reflection-heavy run folds more at any fullness, and a single figure
+        // reads that as the axis moving. Holding the road fixed and letting the fullness vary is
+        // the whole reason the split exists.
+        if !folds.at_a_fullness.is_empty() {
+            let split: Vec<String> = folds
+                .by_road_at_a_fullness()
+                .into_iter()
+                .map(|(occasion, folded, delivered)| {
+                    format!("{} {folded} of {delivered}", occasion.word())
+                })
+                .collect();
+            let span = match folds.fullness_span() {
+                Some((lo, hi)) if lo == hi => format!("at a fullness of {lo}"),
+                Some((lo, hi)) => format!("across fullnesses {lo}–{hi}"),
+                None => "across no fullness at all".to_owned(),
+            };
+            lines.push(format!(
+                "  and BY ROAD {span}, over {} run(s) that recorded one whether or not a ceiling \
+                 was in force: {}",
+                folds.at_a_fullness.len(),
+                split.join(" · "),
+            ));
+        }
         // 🎯🎯🎯🎯🎯 AND THE ROAD QUESTION OVER EVERY READABLE TABLE — register item 856's split,
         // asked of the population that can actually answer it. The rate above needs a fullness and
         // on 2026-09-05 that left 2 rows of 21; these nineteen carry no fullness and still say
@@ -14064,6 +14094,32 @@ mod tests {
              only sum the rows carrying a fullness answers that from a fraction of its sample \
              while the rest sits unread. The wider figure has to be on the page AND has to say it \
              pools what the axis keeps apart. Got:\n{said}",
+        );
+
+        // ── ②bc2 AND ITEM 856's OWN QUESTION IS ON THE PAGE, ROAD BY ROAD, WITH ITS SPAN ──
+        //
+        // ⛔⛔⛔⛔⛔ This is the line the item was opened for and never had: *does the fold rate
+        // move with fullness*. It could not be read off the two rates above — the first needs a
+        // ceiling IN FORCE (because it also serves the `capacity` road) and so drops run 9, whose
+        // ceiling is `0`; the second drops the fullness altogether. **Run 9 carries a fullness of
+        // 417,509 and folded 6 of 12, and no printed figure had it.** Over the live store the same
+        // rule was hiding run 236 at a fullness of **947,887**, the fullest session recorded.
+        //
+        // ⚠⚠ ROAD BY ROAD and never pooled: a run's road MIX moves independently of how full it
+        // got, so one figure reads a reflection-heavy run as the axis moving. Holding the road
+        // fixed is the entire reason the split exists, and this is the only line that does it with
+        // a fullness attached.
+        assert!(
+            said.contains(
+                "and BY ROAD across fullnesses 24000–800000, over 6 run(s) that recorded one \
+                 whether or not a ceiling was in force"
+            ) && said.contains("capacity 3 of 33")
+                && said.contains("ordinary 6 of 54"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴⒞: the axis's own question has to be ANSWERED ON THE \
+             PAGE, over every row that recorded a fullness and with the span it is summed across. \
+             A reader who has to filter the rows themselves is running the `python3 -c` this verb \
+             was written to retire, and a page that prints the rate without the span answers a \
+             question nobody asked. Got:\n{said}",
         );
 
         // ── ②bd AND THE ROW THAT COULD NOT JOIN THAT COMPARISON IS SAID, NOT DROPPED ──
