@@ -1089,6 +1089,98 @@ mod tests {
         );
     }
 
+    /// 🎯🎯🎯🎯🎯 **A RUN A DAEMON INHERITED STILL HAS ITS STOP WATCHED, AND THAT IS THE PAIR
+    /// ITEM 872 ⑶b IS WAITING FOR** — the arm nothing reached, over the exact shape the live store
+    /// is holding right now.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this is not covered by either gate above it
+    ///
+    /// `an_ending_older_than_the_column_that_records_it_is_not_dated_now` drives a run that ends
+    /// inside a tick, and `a_run_this_daemon_did_not_start_has_no_beginning_to_report` drives an
+    /// inherited run that keeps going. **Neither drives an inherited run that ENDS**, and the two
+    /// stamps meet only there: `ran_from` has to survive the handover through
+    /// `Some(already) => Some(already)` while `ran_to` is written for the first time by a daemon
+    /// that never opened the run. A build where inheritance dropped `ran_from`, or where
+    /// `watched_it_stop` keyed on *this daemon opened it*, leaves both of those gates green.
+    ///
+    /// # ⚠⚠ And that is the live population, not a hypothetical
+    ///
+    /// Measured **2026-09-05T13:41:36Z**: the loop's store holds three runs with a `tree`, and the
+    /// daemon that opened two of them (231 at 12:23:24Z, 232 at 12:23:54Z) was replaced at
+    /// 13:35:08Z — register item 906's deadlock recovery — while both runs carried on under a new
+    /// driver. So **every row item 872 ⑶b can currently get its first number from is an inherited
+    /// one.** If a daemon cannot watch an inherited run stop, `ran_to` is 0 not because the number
+    /// has not arrived but because nothing in that population can ever produce it, and the clause
+    /// would be waiting on a value with no path — this workspace's rule 5, asked of the arm the
+    /// answer actually depends on rather than of the column.
+    ///
+    /// ⇒ ⭐ It asserts the PAIRING and not a magnitude, on
+    /// `a_current_builds_daemon_leaves_a_log_whose_runs_can_be_paired`'s rule: the seconds here are
+    /// this fixture's own arithmetic, and the claim is that a stretch exists at all.
+    #[test]
+    fn a_run_inherited_across_a_daemon_replacement_still_has_its_stop_watched() {
+        // The predecessor daemon's log: one run it opened and stamped, still going, on a tree.
+        let mut theirs = a_run(231, 40, false);
+        theirs.tree = Some("/home/coin/watching-zenoh".to_owned());
+        theirs.ran_from = Some(1_000);
+        let older = a_log(vec![theirs.clone()]);
+
+        // ── ① THE SUCCESSOR DAEMON'S FIRST TICK, with the run still running ───────────────────
+        let mut mine = a_log(vec![theirs.clone()]);
+        stamp_run_times(&mut mine, Some(&older), Some(2_000));
+        assert_eq!(
+            (mine.runs[0].ran_from, mine.runs[0].ran_to),
+            (Some(1_000), None),
+            "⛔⛔⛔ A HANDOVER MUST NOT RE-DATE A BEGINNING NOR INVENT AN ENDING. The predecessor \
+             watched this run start at 1000 and it has not stopped: {:?}",
+            mine.runs[0],
+        );
+
+        // ── ② AND THE TICK IT ENDS ON, under a daemon that never opened it ────────────────────
+        let settled = mine.clone();
+        let mut ended = a_log(vec![{
+            let mut it = theirs.clone();
+            it.finished = true;
+            it
+        }]);
+        stamp_run_times(&mut ended, Some(&settled), Some(3_000));
+        assert_eq!(
+            (ended.runs[0].ran_from, ended.runs[0].ran_to),
+            (Some(1_000), Some(3_000)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872 ⑶b: the stop of an INHERITED run has to be watched, or \
+             every row this clause can get its first number from is a row that can never produce \
+             one. `watched_it_stop` asks `before.finished` and must not ask *did I open this*; \
+             `ran_from` has to survive the handover rather than be re-taken. Got: {:?}",
+            ended.runs[0],
+        );
+
+        // ── ③ AND THE SUCCESSOR CLOSES THE STRETCH, which is the whole claim ──────────────────
+        let mut next = a_run(234, 1, false);
+        next.tree = theirs.tree.clone();
+        let mut chain = a_log(vec![ended.runs[0].clone(), next]);
+        stamp_run_times(&mut chain, Some(&ended), Some(3_600));
+        let waits = chain.waits_between_runs();
+        assert_eq!(
+            waits
+                .measured
+                .iter()
+                .map(|wait| (wait.after, wait.before, wait.seconds))
+                .collect::<Vec<_>>(),
+            vec![(231, 234, 600)],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 872 ⑶b: the two ends exist and STILL do not pair. That is a \
+             defect in the pairing rather than in the store, and over the live store the two look \
+             identical because both answer 0. Report: {waits:?}",
+        );
+        assert!(
+            waits.measured.len() == 1
+                && crate::runs::LeftEnd::of(&chain.runs[0], false) == crate::runs::LeftEnd::Watched,
+            "⚠⚠ AND THE LEFT END IS `Watched` BY NAME: `Waits::measured` and `LeftEnd` are two \
+             readings of one fact, and a build where they disagreed would print a stretch under a \
+             row it also calls unfinished. Got: {:?}",
+            chain.runs[0],
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **AND BOTH NEW STAMPS ARE CLEARED BEFORE TWO RECORDS ARE COMPARED** — register
     /// item 888, and **the one defect that would make the whole clock useless.**
     ///
