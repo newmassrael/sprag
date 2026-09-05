@@ -13526,11 +13526,26 @@ mod tests {
                 {"id": 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
                  "place": ["working"], "tree": "/w", "ran_from": 10, "ran_to": 100,
                  "build": "newer"},
+                // ⚠ /w's NEWEST, and it says how it ended: `converged` owes a next run, so
+                //   *nothing has followed it YET* is a word this row has earned. Before an ending
+                //   was recorded here the verb said *yet* over a row with no evidence for it.
                 {"id": 2, "label": "ai_loop pane=2", "iterations": 1, "finished": true,
                  "place": ["working"], "tree": "/w", "ran_from": 13729, "ran_to": 13800,
-                 "build": "newer"},
+                 "outcome": "converged", "build": "newer"},
                 {"id": 3, "label": "ai_loop pane=3", "iterations": 1, "finished": true,
                  "place": ["working"], "build": "newer"},
+                // ⛔⛔⛔⛔⛔ AND A TREE WHOSE CHAIN HAS STOPPED: `cancelled` opens no next run at
+                //   all, so telling this reader to come back is telling them to wait for ever —
+                //   the same reading `LeftEnd::Abandoned` was split out to remove on the second
+                //   axis. 36 of the live store's 212 finished runs end this way.
+                {"id": 4, "label": "ai_loop pane=4", "iterations": 1, "finished": true,
+                 "place": ["working"], "tree": "/x", "ran_from": 20, "ran_to": 40,
+                 "outcome": "cancelled", "build": "newer"},
+                // ⚠⚠ AND ONE WHOSE ENDING THIS BUILD CANNOT CLASSIFY — neither *come back* nor
+                //   *never*, and rule 6 says an unclassified row is a RED rather than either.
+                {"id": 5, "label": "ai_loop pane=5", "iterations": 1, "finished": true,
+                 "place": ["working"], "tree": "/y", "ran_from": 30, "ran_to": 50,
+                 "outcome": "an_ending_a_later_build_authored", "build": "newer"},
             ]
         }))
         .expect("the log a predecessor leaves is what this reads");
@@ -13549,7 +13564,13 @@ mod tests {
         // ── ② AND WHAT IT COULD NOT MEASURE, WHICH IS THE HALF THAT GOES QUIET ──
         assert!(
             said.contains(NoWait::TreeUnknown.describe())
-                && said.contains(NoWait::NothingFollowed.describe()),
+                && said.contains(NoWait::NothingFollowed.describe())
+                // ⛔⛔⛔⛔⛔ AND THE TWO WAYS *yet* IS NOT THE WORD. A page that says only
+                // *nothing has followed it yet* over a tree whose chain has stopped invites the
+                // one reading that is false — come back later — and the mouth is where that
+                // sentence is actually chosen.
+                && said.contains(NoWait::SuccessionEnded.describe())
+                && said.contains(NoWait::SuccessionUnsaid.describe()),
             "⛔⛔⛔⛔⛔ THE UNMEASURABLE HALF IS NOT ON THE PAGE. Today's real store is 229 rows of \
              exactly that (2026-09-05T07:53:28Z), so a verb printing only its stretches answers a \
              blank page for the machine it was built for — and a blank page reads as *no tree ever \
@@ -13576,7 +13597,7 @@ mod tests {
         // watched stops **0** — so *backfill item 890's column* is not a route to the number, and
         // a page carrying only the first axis reads as though it were.
         assert!(
-            said.contains("2 of 4 run(s) carry the watched stop a stretch is measured from")
+            said.contains("4 of 6 run(s) carry the watched stop a stretch is measured from")
                 && said.contains(LeftEnd::Unwatched.describe()),
             "⛔⛔⛔⛔⛔ THE SECOND AXIS IS NOT ON THE PAGE. `NoWait` is tried in order and stops at \
              `TreeUnknown`, which is every row of the real store, so without this line the report \

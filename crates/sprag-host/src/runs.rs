@@ -3862,7 +3862,29 @@ impl RunLog {
                     // ⚠ NOT A DEFECT: the newest run of a tree has nothing after it yet. It is
                     // counted rather than skipped because *this log ends here* and *this log lost
                     // something* must not read alike — the arm exists so the sum can be held.
-                    blame(NoWait::NothingFollowed);
+                    //
+                    // ⛔⛔⛔⛔⛔ AND *YET* HAS TO BE EARNED, which is the same split `LeftEnd`
+                    // needed on the other axis: a run whose ending opens NO next run is one
+                    // nothing will ever follow, and telling a reader to come back is telling them
+                    // to wait for ever. The question is put to item 872 ⑴'s own published answer
+                    // rather than to a list of words kept here.
+                    blame(if !run.finished {
+                        NoWait::NothingFollowed
+                    } else {
+                        match run
+                            .outcome
+                            .as_deref()
+                            .and_then(sprag_plugin::driver::Disposition::of_outcome_word)
+                        {
+                            Some(next) if next.opens_next().a_next_run_is_owed() => {
+                                NoWait::NothingFollowed
+                            }
+                            Some(_) => NoWait::SuccessionEnded,
+                            // ⚠ Rule 6: unclassified is a RED, not a pass. `of_outcome_word`'s own
+                            // doc says so, and reading it as either neighbour invents the answer.
+                            None => NoWait::SuccessionUnsaid,
+                        }
+                    });
                     continue;
                 };
                 // ⛔⛔⛔⛔⛔ THE TWO AXES MEET HERE, and it is ONE reading rather than two that
@@ -4160,6 +4182,32 @@ pub enum NoWait {
     /// is what a reader can act on, where *it has not finished* would describe every healthy loop
     /// in the store as a thing that failed to measure.
     NothingFollowed,
+    /// **THE NEWEST RUN OF ITS TREE, AND NOTHING WILL EVER FOLLOW IT** — it ended under a
+    /// disposition whose [`Opener`](sprag_plugin::driver::Opener) is `nobody`, so the product's own
+    /// answer is *nothing opens a next run off this ending*.
+    ///
+    /// ⛔⛔⛔⛔⛔ **This is not a slower [`NothingFollowed`](Self::NothingFollowed)**, and the two
+    /// are the same pair [`LeftEnd::Abandoned`] was split out of on the other axis for the same
+    /// reason: *yet* invites *wait, and one will come*, and here nobody is coming. A reader
+    /// watching this count fall waits for ever, and a predicate that pooled them has a population
+    /// with a role in it that cannot reach zero.
+    ///
+    /// ⚠ Measured over this store at **2026-09-05T14:34:55Z**: of 212 finished runs, `cancelled`
+    /// **36** and `taken_over` **0** answer `nobody` — **17 %** of endings — against 83 whose
+    /// ending a machine may open a successor off and 93 that owe one to a person. So the pooled
+    /// arm was not a corner: one ending in six is final.
+    ///
+    /// ⚠⚠ Asked of [`Disposition::of_outcome_word`](sprag_plugin::driver::Disposition), which is
+    /// item 872 ⑴'s own published answer, rather than of a list of words kept here — a second list
+    /// is the *one value, two homes* defect that item's own doc was written against.
+    SuccessionEnded,
+    /// The newest run of its tree has ended and **nothing here can say whether a successor is
+    /// owed**: no outcome was recorded, or the word is one this build cannot classify.
+    ///
+    /// ⛔ Counted rather than read as either neighbour, on this workspace's rule 6: an
+    /// unclassified row is a RED and not a pass. Folded upward it would promise a successor that
+    /// may never come; folded downward it would declare a finality the row never states.
+    SuccessionUnsaid,
     /// It has not ended, so there is no left end yet — a run with a successor already beside it,
     /// which is two runs on one tree at once.
     StillRunning,
@@ -4184,11 +4232,13 @@ pub enum NoWait {
 }
 
 impl NoWait {
-    /// Every way, as the population [`Waits::unmeasured`] is built from — an eighth reason added to
+    /// Every way, as the population [`Waits::unmeasured`] is built from — a tenth reason added to
     /// the type appears in every report without anybody widening a list.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::TreeUnknown,
         Self::NothingFollowed,
+        Self::SuccessionEnded,
+        Self::SuccessionUnsaid,
         Self::StillRunning,
         Self::EndAbandoned,
         Self::EndUnwatched,
@@ -4209,6 +4259,14 @@ impl NoWait {
             }
             Self::EndUnwatched => "nobody was watching when it stopped",
             Self::NothingFollowed => "nothing has followed it on that tree yet",
+            Self::SuccessionEnded => {
+                "nothing will ever follow it — its ending opens no next run at all, so this is \
+                 where that tree's chain stops"
+            }
+            Self::SuccessionUnsaid => {
+                "nothing has followed it and nothing says whether anything is owed to — its \
+                 ending was never recorded, or is a word this build cannot classify"
+            }
             Self::SuccessorStartUnwatched => "nobody was watching when the next one began",
             Self::SuccessorStartedFirst => "the next one began before it stopped",
         }
@@ -10969,6 +11027,24 @@ mod tests {
             row
         }
 
+        /// The same row, finished and SAYING HOW — the fact
+        /// [`sprag_plugin::driver::Disposition::of_outcome_word`] reads, and the only thing that
+        /// can earn the word *yet* for the newest run of a tree.
+        ///
+        /// ⚠ Before this existed no finished row in this fixture carried an outcome, so every one
+        /// of the five `NothingFollowed` rows was promising a successor on no evidence at all.
+        fn ended(
+            id: u64,
+            tree: &str,
+            from: Option<u64>,
+            to: Option<u64>,
+            outcome: &str,
+        ) -> serde_json::Value {
+            let mut row = run(id, Some(tree), true, from, to);
+            row["outcome"] = serde_json::json!(outcome);
+            row
+        }
+
         let log: RunLog = serde_json::from_value(serde_json::json!({
             "version": RUN_LOG_VERSION,
             "runs": [
@@ -10987,23 +11063,48 @@ mod tests {
                 // ⚠ THE INTERLEAVING CONTROL. By id this run sits between /a's chain and /b's, and
                 //   a build pairing *the next id* would time /a's death against /b's birth.
                 run(3, Some("/b"), true, Some(200), Some(300)),
-                // /a's third: pairs with run 2 (4000 → 4010), a ten-second handover.
-                run(4, Some("/a"), true, Some(4010), None),
+                // /a's third: pairs with run 2 (4000 → 4010), a ten-second handover. ⚠ It is also
+                //   /a's NEWEST, and it `converged` — an ending whose next run is owed, so *yet*
+                //   is the honest word over it.
+                ended(4, "/a", Some(4010), None, "converged"),
                 // /b's second, which began BEFORE run 3 stopped — two runs on one tree at once.
                 run(5, Some("/b"), true, Some(250), Some(400)),
-                // /b's third: run 5 stopped at 400 and nobody watched this one begin.
-                run(6, Some("/b"), true, None, Some(500)),
+                // /b's third: run 5 stopped at 400 and nobody watched this one begin. ⛔ AND IT IS
+                //   `cancelled` — the product's own answer is *nothing opens a next run off this
+                //   ending*, so /b's chain STOPS here and a reader told to come back waits for
+                //   ever. 36 of the live store's 212 finished runs are this ending.
+                ended(6, "/b", None, Some(500), "cancelled"),
                 // /c: a live run with a successor beside it — the only way to be StillRunning.
                 run(7, Some("/c"), false, Some(10), None),
-                run(8, Some("/c"), true, Some(20), Some(30)),
+                ended(8, "/c", Some(20), Some(30), "exhausted"),
                 // /d: finished, nobody watched it stop, and something followed it.
                 run(9, Some("/d"), true, Some(1), None),
+                // ⚠ /d's newest carries NO outcome — half of `SuccessionUnsaid`, and the shape
+                //   every row written before that column existed has.
                 run(10, Some("/d"), true, Some(9), Some(11)),
+                // ⚠ AND THE OTHER HALF: a finished run whose ending is a word THIS build cannot
+                //   classify. `of_outcome_word` answers `None` for both, and rule 6 says an
+                //   unclassified row is a RED rather than either neighbour's pass.
                 // ⚠ AND THE ROW TODAY'S STORE IS ENTIRELY MADE OF: no tree at all.
                 run(11, None, true, Some(1), Some(2)),
                 // /e's second — the successor run 0 needs, so that the abandoned row is asked the
                 // first axis's question at all rather than dropping out at `NothingFollowed`.
-                run(12, Some("/e"), true, Some(9000), Some(9100)),
+                // ⚠⚠ AND IT `failed`, which is the arm that keeps this split from being *a machine
+                //    may act*: no machine may proceed past a failure, and a PERSON is still owed
+                //    the next run — so *yet* is honest here and the two columns cross.
+                ended(12, "/e", Some(9000), Some(9100), "failed"),
+                // ⚠ AND THE OTHER HALF OF `SuccessionUnsaid`: a finished run whose ending is a word
+                //   THIS build cannot classify. `of_outcome_word` answers `None` for that and for
+                //   an absent one alike, and rule 6 says an unclassified row is a RED rather than
+                //   either neighbour's pass.
+                ended(13, "/f", Some(50), Some(60), "an_ending_a_later_build_authored"),
+                // ⛔⛔⛔⛔⛔ AND THE SHAPE THE LIVE STORE IS ENTIRELY MADE OF — the newest run of
+                //   its tree, STILL RUNNING. Measured 2026-09-05T14:33:41Z, all three of the
+                //   loop's tree-bearing rows are exactly this, so it is the one row item 872 ⑶b
+                //   can get its first number from. An unfinished run has no ending to classify and
+                //   *yet* is honest over it without asking; a build that asked anyway would file
+                //   every live loop in the store under *nothing says whether anything is owed*.
+                run(14, Some("/g"), false, Some(70), None),
             ]
         }))
         .expect("the log a predecessor leaves is what this reads");
@@ -11062,7 +11163,17 @@ mod tests {
         // ── ③ EVERY REASON REACHED, so none of the seven is decoration ──
         for (why, expected) in [
             (NoWait::TreeUnknown, 1),
-            (NoWait::NothingFollowed, 5),
+            // ⚠ FOUR, and each has EARNED the word *yet*: /a's newest `converged`, /c's
+            // `exhausted` and /e's `failed` — a next run is owed off all three, to this run's own
+            // opener for the first two and to a PERSON for the third — plus /g's, which has not
+            // ended at all and is the shape every live row in the store has.
+            (NoWait::NothingFollowed, 4),
+            // ⛔ ONE: /b's newest was `cancelled`, and nothing opens a next run off that ending.
+            (NoWait::SuccessionEnded, 1),
+            // ⚠ TWO: /d's newest recorded no ending at all, and /f's is a word this build cannot
+            // classify. `Disposition::of_outcome_word` answers `None` to both and its own doc
+            // calls that a RED — folded upward it promises a successor nobody owes.
+            (NoWait::SuccessionUnsaid, 2),
             (NoWait::StillRunning, 1),
             (NoWait::EndAbandoned, 1),
             (NoWait::EndUnwatched, 1),
@@ -11096,11 +11207,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("{arm:?} must be in the report's second population"))
         };
         for (arm, expected) in [
-            // 1, 2, 3, 5, 6, 8, 10, 11, 12 carry `ran_to` and are finished. Runs 4 and 9 do not.
-            // Runs 0 and 7 never finished — and they are DIFFERENT arms, which is the split the
-            // live store forced: 7 may still end, 0 cannot, and only the log says so.
-            (LeftEnd::Watched, 9),
-            (LeftEnd::NotEndedYet, 1),
+            // 1, 2, 3, 5, 6, 8, 10, 11, 12, 13 carry `ran_to` and are finished. Runs 4 and 9 do
+            // not. Runs 0 and 7 never finished — and they are DIFFERENT arms, which is the split
+            // the live store forced: 7 may still end, 0 cannot, and only the log says so.
+            (LeftEnd::Watched, 10),
+            // ⚠ TWO: run 7, and run 14 — the live store's own shape, newest of its tree and still
+            // going.
+            (LeftEnd::NotEndedYet, 2),
             (LeftEnd::Abandoned, 1),
             (LeftEnd::Unwatched, 2),
         ] {
