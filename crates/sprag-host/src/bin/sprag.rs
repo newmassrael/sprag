@@ -1087,6 +1087,24 @@ fn folds_lines(
                 folds.landings_at_a_moved_ceiling(),
             ));
         }
+        // ⛔⛔⛔⛔⛔ AND THE LANDINGS THIS LOG HOLDS AND THE AXIS MAY NOT USE — printed OUTSIDE the
+        // branch above, because the store where it matters most is exactly the one whose readable
+        // half is empty. On 2026-09-05T13:41:36Z that was this loop's own log: 3 rows behind item
+        // 894's wall carrying 29 capacity landings, and every mouth on this verb said only that 18
+        // runs "measure nothing".
+        //
+        // ⛔⛔ It is NOT a third landing count and is never added to the two above: nothing on
+        // those rows says whose ceiling the session reflected on. The run count travels WITH it so
+        // a `0` here can never be the bare zero this verb withholds its other counts to avoid.
+        if folds.unjudgeable_runs() > 0 {
+            lines.push(format!(
+                "  {} capacity landing(s) sit in {} run(s) this axis cannot use — nothing recorded \
+                 how full those sessions got, so whose ceiling they reflected on is unknown and \
+                 neither count above may claim them",
+                folds.stranded,
+                folds.unjudgeable_runs(),
+            ));
+        }
         // ⛔⛔⛔⛔⛔ AND WHAT COULD NOT BE READ, AS LOUDLY — today that is every run in the store.
         for (why, count) in folds.unmeasured.iter().filter(|(_, count)| *count > 0) {
             lines.push(format!(
@@ -13672,6 +13690,15 @@ mod tests {
                  "folds_by_reason": {"capacity": {"delivered": 28, "folded": 1}}},
                 {"id": 3, "label": "ai_loop pane=3", "iterations": 1, "finished": true,
                  "folds_by_reason": {"capacity": {"delivered": 3, "folded": 3}}},
+                // ⛔⛔⛔⛔⛔ BEHIND THE SAME WALL AND HOLDING LANDINGS — the shape of runs 214 and
+                //    215, which is what this mouth was silent about. Nine capacity prompts, one
+                //    folded ⇒ EIGHT landings this axis may not use and a reader must still be
+                //    told about, or an empty readable half reads as *nothing ever took that road*.
+                {"id": 7, "label": "ai_loop pane=7", "iterations": 1, "finished": true,
+                 "folds_by_reason": {"capacity": {"delivered": 9, "folded": 1}}},
+                // ⚠⚠ AND THE CONTROL: behind the wall having never walked it, so nothing is lost.
+                {"id": 8, "label": "ai_loop pane=8", "iterations": 1, "finished": true,
+                 "folds_by_reason": {"ordinary": {"delivered": 4, "folded": 0}}},
                 // ⛔⛔⛔⛔⛔ RUN 232's OWN SHAPE, byte for byte in the fields that decide: an
                 //    ORDINARY run carrying a fullness BELOW its own document's ceiling, whose
                 //    `capacity` road was never taken. This is what the very first row item 856 ⑴⒞
@@ -13732,6 +13759,23 @@ mod tests {
             !said.contains("30 capacity landing(s)"),
             "⛔⛔⛔ AND NEVER THEIR SUM, which is the same sentence as ② said the way it actually \
              went wrong. Got:\n{said}",
+        );
+
+        // ── ②c AND THE LANDINGS BEHIND THE WALL ARE SAID, WITH THE POPULATION THEY SIT IN ──
+        assert!(
+            said.contains("8 capacity landing(s) sit in 2 run(s) this axis cannot use"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴⒞ / 894: runs 3 and 7 walked the capacity road behind \
+             the promotion wall and run 7 left eight landings there. Every mouth on this verb \
+             said only that N runs *measure nothing*, and on 2026-09-05T13:41:36Z that hid 29 \
+             landings in this loop's own store — so a reader of a report with no readable rows \
+             concluded the road had never been taken. Got:\n{said}",
+        );
+        assert!(
+            !said.contains("11 capacity landing(s) refute")
+                && !said.contains("35 further landing(s)"),
+            "⛔⛔⛔ AND THEY ARE NOT ADDED TO EITHER COUNT ABOVE: a row that cannot say whose \
+             ceiling it reflected on may not refute this axis, which is the whole reason it is in \
+             the unmeasured half. Got:\n{said}",
         );
 
         // ── ②b THE CAVEAT FIRES ON A RECORDING DEFECT AND NOT ON A HEALTHY SESSION ──
@@ -13809,6 +13853,16 @@ mod tests {
              that reads as *the axis survived*. The population has to be stated instead — rule 6 \
              at the mouth, and the failure this item has walked into more than any other. \
              Got:\n{wall}",
+        );
+        // ⚠⚠ AND THE STRANDED LINE IS THE ONE COUNT THAT SURVIVES THAT WITHHOLDING, because it is
+        // what the reader of an unreadable store most needs: this row DID walk the capacity road.
+        // Its zero is safe only because the population travels beside it.
+        assert!(
+            wall.contains("0 capacity landing(s) sit in 1 run(s) this axis cannot use"),
+            "⛔⛔⛔⛔ A STORE WHOSE READABLE HALF IS EMPTY IS EXACTLY WHERE THIS LINE EARNS ITS \
+             KEEP — printing it only beside the two withheld counts would silence it on the one \
+             machine item 856 ⑴⒞ is measured over. And the run count is what keeps its zero from \
+             being the bare zero the arm above refuses. Got:\n{wall}",
         );
 
         // ── ⑤ AND NOTHING READ IS A REFUSAL ──
