@@ -57,6 +57,91 @@
 
 use std::fmt;
 
+/// ⛔⛔⛔⛔⛔ **THE IMAGES A PROMOTION MOVES** — register item 868's ⑶ counts FOUR, so a promotion
+/// that moved three would leave a daemon serving one image and a CLI another.
+///
+/// # ⚠⚠ Why the list is here and not at each reader
+///
+/// It had two readers the moment item 897 was taken — the door that checks them and the gate that
+/// holds them to saying so — and a second spelling is how a fifth binary gets built, promoted and
+/// never asked. `sprag_gate::sibling_bin` derives every path from one of these names, so a name
+/// added here has to be a binary that exists or the gate says so.
+pub const IMAGES: [&str; 4] = ["sprag", "sprag-term", "sprag-gui", "sprag-mcp"];
+
+/// ⛔⛔⛔⛔⛔ **THE ONE SHAPE AN IMAGE SAYS ITS BUILD IN** — register item 897, and the sentence
+/// three of these four could not say at all.
+///
+/// # 📊 What was measured, 2026-09-05T11:33Z, over the promoted copies
+///
+/// ```text
+/// sprag       : sprag 0.0.1 (7181c7483168)
+/// sprag-term  : Error: … PanePtyError { context: "spawn command" … }   ← reads the FLAG as a command
+/// sprag-gui   : (nothing)
+/// sprag-mcp   : (nothing)
+/// ```
+///
+/// ⇒ [`Condition::BinariesThatSayHead`] asks all four and answers [`Answer::Unknowable`] for one that
+/// cannot say, so **the verdict had no path to YES in any build of this product** — this
+/// workspace's rule 5 read backwards, and the reason item 897 is what stands between the debt loop
+/// and every clause waiting on a promotion (items 856 ⑴, 872 ⑶b, 894 ⑶, 895 ⑷).
+///
+/// # ⚠⚠ Why a function and not four `println!`s
+///
+/// [`said_build`] reads the build out of the PARENTHESES, so the shape is a contract between the
+/// binaries and the door. Four spellings of a contract is three chances to drift, and the drift is
+/// invisible: a binary that answered `sprag-gui 0.0.1 build 7181c74` would look right to a person
+/// and be unreadable to the instrument.
+///
+/// ⚠ The version is [`env!`]`("CARGO_PKG_VERSION")` of THIS crate, which the workspace pins for
+/// every member — so the four cannot disagree about the number either.
+#[must_use]
+pub fn version_line(image: &str) -> String {
+    format!(
+        "{image} {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        crate::wire::BUILD
+    )
+}
+
+/// **WHETHER THIS ARGUMENT ASKS AN IMAGE WHAT IT IS** — asked of the vocabulary rather than spelled
+/// here, so `sprag --version` and `sprag-gui --version` cannot come to mean different flags.
+///
+/// ⚠ [`crate::vocabulary::Verb::Version`] already owns the spellings (`version`, `-V`, `--version`)
+/// and a gate already holds that `-h`/`--help` and `-V`/`--version` parse to the same two verbs. A
+/// second list here would be the *one question, two answers* shape this module's own `all_of` was
+/// written against.
+#[must_use]
+pub fn asks_its_build(arg: &str) -> bool {
+    crate::vocabulary::Verb::parse(arg) == Some(crate::vocabulary::Verb::Version)
+}
+
+/// **WHAT `binary --version` SAYS ITS BUILD IS** — the parenthesised hash of [`version_line`], or
+/// why it could not be read.
+///
+/// # ⚠⚠ It is the DOOR's reader and the GATE's, which is the point
+///
+/// Register item 897's ⑷ is *the instrument can answer for all four*, and an instrument whose
+/// parser lives in a binary can only be held by running that binary. Moved here so the gate that
+/// makes the four SAY it uses the very reader that will ASK them — a shape they satisfy in the test
+/// and not at the door would satisfy nothing.
+///
+/// ⚠ Read off the parentheses rather than by splitting on spaces: the leading words are the image's
+/// name and number, and either may gain a word.
+///
+/// # Errors
+///
+/// The spawn failure, or a sentence saying the line carried no readable build.
+pub fn said_build(binary: &std::path::Path) -> Result<String, String> {
+    let out = std::process::Command::new(binary)
+        .arg("--version")
+        .output()
+        .map_err(|error| error.to_string())?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    let (_, after) = said.split_once('(').ok_or("no build in its version line")?;
+    let (build, _) = after.split_once(')').ok_or("its build is not closed")?;
+    Ok(build.trim().to_owned())
+}
+
 /// ⛔⛔⛔⛔⛔ **WHEN A CONDITION HAS TO BE TRUE** — register item 868's own correction, and the
 /// half that was missing when it was filed.
 ///

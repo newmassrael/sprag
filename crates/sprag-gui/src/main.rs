@@ -1483,6 +1483,23 @@ impl WidgetView for TerminalViewer {
 }
 
 fn main() {
+    // ⛔⛔⛔⛔⛔ **IT SAYS WHICH BUILD IT IS, BEFORE IT OPENS A WINDOW** — register item 897.
+    //
+    // Measured 2026-09-05T11:33Z: this binary answered `--version` with NOTHING — argv reached
+    // `pinion_shell::run` and nothing there claims the flag — so `sprag-promotable`'s condition ⑶
+    // answered *cannot be asked* about it in every build of this product, and the promotion verdict
+    // had no path to YES (this workspace's rule 5).
+    //
+    // ⚠⚠ FIRST, ahead of the tracing subscriber and the GPU shell, on `sprag`'s argument for the
+    // same verb: the question *which build is this* is asked of a tool that is behaving oddly, and
+    // an answer that needs a window to open cannot answer it for a build whose window does not.
+    if std::env::args()
+        .skip(1)
+        .any(|arg| sprag_host::promotion::asks_its_build(&arg))
+    {
+        println!("{}", sprag_host::promotion::version_line("sprag-gui"));
+        return;
+    }
     // Production logging (memory: production-logging-tracing): install sprag's
     // leveled `tracing` subscriber FIRST — env-filtered by `SPRAG_LOG` (default
     // `warn`) — so it is authoritative over pinion's `run()` fallback

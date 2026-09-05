@@ -182,7 +182,44 @@ fn drive_order<I: Iterator<Item = String>>(mut args: I) -> io::Result<Option<Dri
     }))
 }
 
+/// ⛔⛔⛔⛔⛔ **EVERY OPTION THIS IMAGE UNDERSTANDS AT THAT POINT** — register item 897's ⑵, and
+/// the list an unrecognised flag is refused against rather than being spawned as a program.
+///
+/// # ⚠⚠⚠ Why it is TWO words and not the six this binary can be handed
+///
+/// [`drive_order`] runs FIRST and takes four more (`--drive`, `-t`/`--session`, `-w`/`--window`).
+/// Reaching the scan at all therefore means it answered [`None`] — **there was no `--drive`** — and
+/// a driver's companion flags without it name a run nobody asked for. So `sprag-term -t work` is
+/// malformed, and listing `-t` here would let it through the scan and straight into
+/// [`parse_args`]' last arm, which spawns it as a PROGRAM. That is the very defect this scan
+/// exists to remove, kept alive by a list that was too generous.
+///
+/// ⚠ `--size` is listed by its flag alone: what follows it is its argument, and the scan stops at
+/// the first unrecognised word rather than pairing them.
+const RECOGNISED: [&str; 2] = ["--daemon", "--size"];
+
 fn main() -> io::Result<()> {
+    // ⛔⛔⛔⛔⛔ **AND BEFORE EVEN THAT, IT SAYS WHICH BUILD IT IS** — register item 897.
+    //
+    // Measured 2026-09-05T11:33Z on the promoted copy: `sprag-term --version` answered
+    // `Error: … PanePtyError { context: "spawn command" }`, because `parse_args`' last arm reads
+    // any unrecognised first argument as the program to run. So the ONE binary the promotion door
+    // most needs to interrogate — the daemon's own image — could not state its build, and
+    // `sprag-promotable`'s condition ⑶ answered `cannot be asked` in every build of this product.
+    // That is a verdict with no path to YES (this workspace's rule 5), and every clause waiting on
+    // a promotion — items 856 ⑴, 872 ⑶b, 894 ⑶, 895 ⑷ — was waiting behind it.
+    //
+    // ⚠⚠ FIRST, ahead of `name_this_image` and the driver split, on `sprag`'s own argument for the
+    // same verb: *which build is this* is the first question asked of a tool behaving oddly, so an
+    // answer that needs a healthy daemon — or a renamed process — cannot answer it.
+    if std::env::args()
+        .skip(1)
+        .take_while(|arg| arg != "--")
+        .any(|arg| sprag_host::promotion::asks_its_build(&arg))
+    {
+        println!("{}", sprag_host::promotion::version_line("sprag-term"));
+        return Ok(());
+    }
     // ⛔⛔⛔⛔⛔ **BEFORE ANYTHING ELSE, THIS IMAGE SAYS WHAT IT IS** — register item 763.
     //
     // A driver is started from a HANDLE to the daemon's own image rather than from the name that
@@ -206,6 +243,41 @@ fn main() -> io::Result<()> {
             order.window.as_deref(),
             order.run,
         );
+    }
+
+    // ⛔⛔⛔⛔⛔ **AND AN UNRECOGNISED FLAG IS REFUSED RATHER THAN SPAWNED** — register item 897's
+    // ⑵, which is the sharp half: `--version` was one instance of a whole class. [`parse_args`]
+    // reads the first unknown argument as a COMMAND, so every mistyped flag became a program name
+    // and what a person was shown was a spawn error naming their own typo — a refusal that sends
+    // the reader to look for a missing program when what is missing is a flag.
+    //
+    // ⚠⚠⚠ **AFTER THE DRIVER SPLIT, and a gate caught it being before.** The first draft put this
+    // at the top of `main`, and `sprag-term --drive` (no id) then answered *unknown option* instead
+    // of `drive_order`'s *`--drive` takes the run id* — this scan telling a DAEMON's argv to go and
+    // read a usage line. The order is the claim [`RECOGNISED`] rests on: reaching here means there
+    // was no drive order, so a driver's companion flags are malformed rather than understood.
+    //
+    // ⚠⚠ ONLY BEFORE `--`, which is the whole reason that separator exists: after it a caller has
+    // SAID the rest is a command, so `sprag-term -- --version` still spawns a program of that name
+    // and is meant to. The gate holds both halves, because a refusal with no such control would be
+    // satisfied by refusing everything.
+    if let Some(flag) = std::env::args()
+        .skip(1)
+        .take_while(|arg| arg != "--")
+        .find(|arg| arg.starts_with('-') && !RECOGNISED.contains(&arg.as_str()))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "sprag-term: unknown option {flag:?} — it takes {}, `--version`, or `--` followed \
+                 by the command to run in its pane. Without `--`, an unrecognised word is read as \
+                 that command, which is how {flag:?} would have been spawned as a program. ({} and \
+                 its companions are a DRIVER's argv, written by the daemon, and mean nothing \
+                 without it.)",
+                RECOGNISED.join(", "),
+                sprag_host::drive::DRIVE_FLAG,
+            ),
+        ));
     }
 
     let args = parse_args();

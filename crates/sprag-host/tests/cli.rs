@@ -20064,3 +20064,239 @@ fn a_current_builds_daemon_leaves_a_log_saying_which_ceiling_its_runs_were_judge
     let _ = sprag(&sock, &["cancel-run", "0", "-t", "work"]);
     drop(guard);
 }
+
+/// 🎯🎯🎯🎯🎯 **EVERY IMAGE A PROMOTION MOVES SAYS WHICH BUILD IT IS, IN THE SHAPE THE DOOR
+/// PARSES** — register item 897, and the condition that had no path to a `YES` in any build.
+///
+/// # ⛔⛔⛔⛔⛔ What was measured, and why it is not a cosmetic gap
+///
+/// **2026-09-05T11:33Z**, the promoted copies, asked `--version`:
+///
+/// ```text
+/// sprag       : sprag 0.0.1 (7181c7483168)
+/// sprag-term  : Error: … PanePtyError { context: "spawn command" }   ← read the FLAG as a command
+/// sprag-gui   : (nothing)
+/// sprag-mcp   : (nothing)
+/// ```
+///
+/// `sprag_host::promotion::Condition::BinariesThatSayHead` asks all four and answers `Unknowable`
+/// for one that cannot say — which holds the verdict back, correctly. So **`may promote now` could
+/// never be YES**, in any build of this product, for a reason no rebuild could remove: this
+/// workspace's rule 5 (*is there a path for this value to be reached at all?*) failing on the one
+/// instrument that stands between the debt loop and every clause waiting on a promotion — items
+/// 856 ⑴, 872 ⑶b, 894 ⑶ and 895 ⑷ all sit behind it.
+///
+/// # ⚠⚠ It uses the DOOR's OWN READER, which is what makes this item's ⑷ structural
+///
+/// `promotion::said_build` is the function `sprag-promotable` calls. A gate that parsed the line
+/// itself would hold the four to a shape of the TEST's choosing and leave the door free to want a
+/// different one — the *one question, two answers* shape this repository keeps paying for. Item
+/// 897's ⑷ is *the instrument can answer for all four*, and this asks it.
+#[test]
+fn every_image_a_promotion_moves_says_which_build_it_is() {
+    use sprag_host::promotion;
+
+    // ⚠⚠ THE POPULATION IS THE PRODUCT'S, not a list typed here — `promotion::IMAGES` is what the
+    // door iterates, so a fifth image added there arrives in this gate with no edit. And every path
+    // is derived through `sibling_bin`, which PANICS on a stale binary: a gate that asked an image
+    // built before the fix would be measuring the wrong code (register item 763's instrument).
+    let images: Vec<(&str, PathBuf)> = promotion::IMAGES
+        .into_iter()
+        .map(|name| {
+            let bin = if name == "sprag" {
+                PathBuf::from(env!("CARGO_BIN_EXE_sprag"))
+            } else {
+                sprag_gate::sibling_bin(env!("CARGO_BIN_EXE_sprag"), name)
+            };
+            (name, bin)
+        })
+        .collect();
+    assert_eq!(
+        images.len(),
+        promotion::IMAGES.len(),
+        "⚠ the population is `promotion::IMAGES` and nothing may quietly leave it",
+    );
+
+    for (name, bin) in &images {
+        // ── ① IT ANSWERS AT ALL, AND IN THE ONE SHAPE ──────────────────────────────────────
+        let said = Command::new(bin)
+            .arg("--version")
+            .output()
+            .unwrap_or_else(|why| panic!("{name} could not be run at all: {why}"));
+        let line = String::from_utf8_lossy(&said.stdout)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            said.status.success(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 897: `{name} --version` failed instead of answering. \
+             Measured 2026-09-05, `sprag-term` did exactly this — it read the FLAG as the program \
+             to spawn — so the daemon's own image, the one the promotion door most needs to \
+             interrogate, could not state its build. stdout: {line:?}, stderr: {:?}",
+            String::from_utf8_lossy(&said.stderr),
+        );
+        assert_eq!(
+            line,
+            promotion::version_line(name),
+            "⛔⛔⛔⛔ REGISTER ITEM 897: {name} says its build in a shape of its own. The line is a \
+             CONTRACT with `promotion::said_build`, which reads the build out of the parentheses — \
+             four spellings of it is three chances to drift somewhere a person reads as fine and an \
+             instrument cannot parse at all.",
+        );
+
+        // ── ② AND THE DOOR'S OWN READER GETS THIS BUILD OUT OF IT — item 897's ⑷ ────────────
+        assert_eq!(
+            promotion::said_build(bin).as_deref(),
+            Ok(sprag_host::wire::BUILD),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 897 ⑷: `sprag-promotable` asks each image this way, and for \
+             {name} it could not read an answer — which it reports as *cannot be asked*, the state \
+             that pinned `may promote now` at NO for ever. The build it must read is this image's \
+             own stamp, so a gate passing here is the door being able to answer.",
+        );
+    }
+
+    // ── ③ AND AN UNRECOGNISED FLAG IS REFUSED, NEVER SPAWNED — item 897's ⑵ ────────────────
+    //
+    // ⛔ `--version` was one instance of a class: every mistyped flag became a program name, and
+    // what a person was shown was a spawn error naming their own typo.
+    let term = sprag_gate::sibling_bin(env!("CARGO_BIN_EXE_sprag"), "sprag-term");
+    let refused = Command::new(&term)
+        .arg("--nosuchflag")
+        .output()
+        .expect("sprag-term runs");
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        !refused.status.success() && said.contains("unknown option") && said.contains("nosuchflag"),
+        "⛔⛔⛔⛔ REGISTER ITEM 897 ⑵: an unrecognised flag has to be REFUSED by name. Spawning it \
+         answers a question nobody asked and hides the real one — the reader is told a program is \
+         missing when what is missing is a flag. Got: {said:?}",
+    );
+    assert!(
+        !said.contains("PanePtyError"),
+        "⛔⛔⛔ AND THE REFUSAL IS NOT THE SPAWN FAILING — that error is the defect wearing an \
+         error message. Got: {said:?}",
+    );
+    // ⚠⚠ THE CONTROL, without which the arm above is satisfied by refusing everything: after `--`
+    // the caller has SAID the rest is a command, so the same word is spawned and fails as one.
+    let after = Command::new(&term)
+        .args(["--", "--nosuchflag"])
+        .output()
+        .expect("sprag-term runs");
+    let spawned = format!(
+        "{}{}",
+        String::from_utf8_lossy(&after.stdout),
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert!(
+        !spawned.contains("unknown option"),
+        "⚠⚠⚠ A CONTROL FAILED: `--` is how a caller says *the rest is a command*, and a scan that \
+         refused past it would take that away — `sprag-term -- --version` must still try to run a \
+         program of that name. Got: {spawned:?}",
+    );
+    // ⚠ AND THE DRIVER'S OWN FLAG IS NOT SWALLOWED BY THE SCAN: `--drive` with no id is refused by
+    // `drive_order`, which runs FIRST, so its sentence is the one a reader gets.
+    let drive = Command::new(&term)
+        .arg(sprag_host::drive::DRIVE_FLAG)
+        .output()
+        .expect("sprag-term runs");
+    let drove = format!(
+        "{}{}",
+        String::from_utf8_lossy(&drive.stdout),
+        String::from_utf8_lossy(&drive.stderr)
+    );
+    assert!(
+        drove.contains("run id") && !drove.contains("unknown option"),
+        "⚠⚠ THE DRIVER PATH IS AHEAD OF THE SCAN and has to stay there: a daemon writes that argv, \
+         and a scan that answered first would tell it to go and read a usage line. Got: {drove:?}",
+    );
+}
+
+/// 🎯🎯🎯🎯🎯 **AND THE DOOR ITSELF CAN NOW ASK ALL FOUR** — register item 897's ⑷, driven against
+/// a promotion staged in a home of this test's own.
+///
+/// # ⛔⛔⛔⛔⛔ Why the gate beside this one is not enough
+///
+/// That one holds the four to SAYING their build. What item 897 is filed on is what the door DOES
+/// with the answer, and the door asks the PROMOTED COPIES — `$HOME/.local/share/sprag-loop/bin` —
+/// which are whatever the last promotion left. So on this machine it still answers *cannot be
+/// asked* about three of them (measured 2026-09-05T11:44:50Z, after the fix), correctly, because
+/// those copies predate it. A gate that read the real home would therefore be measuring the last
+/// promotion rather than this build, and would keep saying so for as long as nobody promotes.
+///
+/// ⇒ So a promotion is STAGED: a home of this test's own, the four binaries this build produced
+/// copied into it, and `sprag-promotable` run against that. `home()` reads `$HOME`, which is the
+/// one door into that decision, so nothing here reaches past the product's own resolution.
+///
+/// # ⚠⚠ What is asserted is that the ABSENCE is gone, not that the verdict is YES
+///
+/// `Unknowable` — *cannot be asked* — is the state that pinned the verdict for ever: no rebuild
+/// could remove it, which is this workspace's rule 5 failing on the instrument itself. What
+/// replaces it is a COMPARISON, and whether that comparison holds depends on which commit the copy
+/// was built at. It is deliberately not asserted here: this suite's own binaries carry the stamp of
+/// whatever tree built them, and a build made where git cannot be asked stamps `unknown` (measured:
+/// the pre-commit hook builds in a mirror with no `.git`). Pinning `met` would make this gate red
+/// on a fact about the BUILDER rather than about the product.
+#[test]
+fn the_door_can_ask_every_image_once_a_promotion_has_moved_them() {
+    use sprag_host::promotion;
+
+    let staged = sprag_scratch::scratch_root().join(format!(
+        "sprag-promoted-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let bin = staged.join(".local/share/sprag-loop/bin");
+    let _ = std::fs::remove_dir_all(&staged);
+    std::fs::create_dir_all(&bin).expect("a home of this test's own");
+
+    // ── THE CONTROL FIRST: an empty promotion is exactly the state item 897 measured ─────────
+    let door = |home: &Path| -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_sprag-promotable"))
+            .env("HOME", home)
+            .output()
+            .expect("the door runs");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let empty = door(&staged);
+    assert!(
+        empty.contains("cannot say"),
+        "⚠⚠⚠ THE CONTROL: with nothing promoted, the door must say it cannot ask — otherwise the \
+         arm below passes on a reader that answers the same thing however it is fed. Got:\n{empty}",
+    );
+
+    // ── AND WITH THIS BUILD'S FOUR IMAGES IN PLACE, NOTHING IS UNASKABLE ────────────────────
+    for name in promotion::IMAGES {
+        let from = if name == "sprag" {
+            PathBuf::from(env!("CARGO_BIN_EXE_sprag"))
+        } else {
+            sprag_gate::sibling_bin(env!("CARGO_BIN_EXE_sprag"), name)
+        };
+        std::fs::copy(&from, bin.join(name))
+            .unwrap_or_else(|why| panic!("a promotion is a copy of {name}: {why}"));
+    }
+    let said = door(&staged);
+    let row = said
+        .lines()
+        .find(|line| line.contains("binaries that say HEAD"))
+        .unwrap_or_default();
+    assert!(
+        !row.contains("cannot say") && !row.contains("cannot be asked"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 897 ⑷: after a promotion of THIS build the door still cannot ask \
+         an image what it is. *Cannot be asked* is the answer that pinned `may promote now` at NO \
+         in every build of this product — no rebuild removes it — so this row becoming a COMPARISON \
+         is the whole of what this item buys. Row: {row:?}\nWhole answer:\n{said}",
+    );
+    for name in promotion::IMAGES {
+        assert!(
+            row.contains("met") || row.contains(&format!("{name} says")),
+            "⛔⛔⛔ AND EVERY IMAGE IS ACCOUNTED FOR IN IT — {name} appears in neither an `met` row \
+             nor a comparison, so the door read four images and reported on fewer. Row: {row:?}",
+        );
+    }
+    let _ = std::fs::remove_dir_all(&staged);
+}

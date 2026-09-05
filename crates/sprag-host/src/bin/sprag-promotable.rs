@@ -31,7 +31,7 @@
 //! build. `Readiness::what_follows_an_ending` settles it from the rows rather than by preference,
 //! and this prints the verdict with the reason it was composed from. It says; it fires nothing.
 
-use sprag_host::promotion::{Answer, BehindTheDoor, Readiness, all_of};
+use sprag_host::promotion::{Answer, BehindTheDoor, Readiness, all_of, said_build};
 use sprag_host::runs::RunLog;
 
 /// The one thing a person can tell this process that it cannot see — condition ⑴.
@@ -47,8 +47,12 @@ const WINDOW_OPEN: &str = "--window-open";
 /// What this repository's promoted binaries live under.
 const PROMOTED: &str = ".local/share/sprag-loop/bin";
 
-/// The binaries a promotion moves — item 868's ⑶ counts FOUR, so a missing one is not a pass.
-const BINARIES: [&str; 4] = ["sprag", "sprag-term", "sprag-gui", "sprag-mcp"];
+/// The binaries a promotion moves — [`sprag_host::promotion::IMAGES`], read rather than retyped.
+///
+/// ⚠ It was a list HERE until register item 897 gave it a second reader (the gate that holds all
+/// four to saying their build). Two spellings of *which images a promotion moves* is how a fifth
+/// one gets built, promoted, and never asked.
+use sprag_host::promotion::IMAGES as BINARIES;
 
 fn main() -> std::process::ExitCode {
     let mut window_open = false;
@@ -198,20 +202,6 @@ fn home() -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default()
-}
-
-/// What `binary --version` says its build is — the parenthesised hash of `sprag 0.0.1 (<build>)`.
-fn said_build(binary: &std::path::Path) -> Result<String, String> {
-    let out = std::process::Command::new(binary)
-        .arg("--version")
-        .output()
-        .map_err(|error| error.to_string())?;
-    let said = String::from_utf8_lossy(&out.stdout);
-    // ⚠ READ OFF THE PARENTHESES rather than by splitting on spaces: the version line's leading
-    // words are the crate's name and number, and either may gain a word.
-    let (_, after) = said.split_once('(').ok_or("no build in its version line")?;
-    let (build, _) = after.split_once(')').ok_or("its build is not closed")?;
-    Ok(build.trim().to_owned())
 }
 
 /// Whether a stated build names this tree's `HEAD`. ⚠ Either may be the shorter prefix, so the

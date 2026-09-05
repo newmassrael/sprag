@@ -159,6 +159,23 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 
 fn main() {
+    // ⛔⛔⛔⛔⛔ **IT SAYS WHICH BUILD IT IS, BEFORE IT BECOMES A SERVER** — register item 897.
+    //
+    // Measured 2026-09-05T11:33Z: this binary answered `--version` with NOTHING — it never looked
+    // at argv — so `sprag-promotable`'s condition ⑶ answered *cannot be asked* about it in every
+    // build, and the promotion verdict had no path to YES (this workspace's rule 5). A person
+    // debugging an agent's tools could not learn which image was serving them either.
+    //
+    // ⚠⚠ FIRST, and on stdout deliberately: stdout is the MCP wire, and this process is not one
+    // yet. A `--version` that had to become a server first could not answer for a server that
+    // fails to start, which is the state the question is asked in.
+    if std::env::args()
+        .skip(1)
+        .any(|arg| sprag_host::promotion::asks_its_build(&arg))
+    {
+        println!("{}", sprag_host::promotion::version_line("sprag-mcp"));
+        return;
+    }
     init_tracing();
     tracing::info!(target: "sprag_mcp", "sprag-mcp starting (stdio)");
     if let Err(error) = serve() {

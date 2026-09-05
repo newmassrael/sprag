@@ -1621,12 +1621,12 @@ fn print_usage() {
 /// while the server is healthy cannot answer the question it exists for), so the PAIR is
 /// [`doctor`]'s to report — a command that already requires a daemon and whose whole job is saying
 /// what is wrong with the machine.
+/// ⚠⚠ **THE SENTENCE IS COMPOSED IN ONE PLACE** — register item 897. It was spelled here while
+/// this was the only image that could say anything at all; three more say it now, and four
+/// spellings of a shape the promotion door PARSES is three chances to drift somewhere a person
+/// would not notice.
 fn print_version() {
-    println!(
-        "sprag {} ({})",
-        env!("CARGO_PKG_VERSION"),
-        sprag_host::wire::BUILD
-    );
+    println!("{}", sprag_host::promotion::version_line("sprag"));
 }
 
 /// Env override: the `sprag-gui` binary [`attach`] launches (else the sibling of this exe — they
