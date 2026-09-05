@@ -35,8 +35,16 @@
 //! Item 868's ⑶ prescribed *바이너리 mtime vs HEAD 커밋 시각*. **That prescription is refuted by
 //! this repository's own north star**, which says to check a binary by a symbol unique to the
 //! newest fix *rather than by its mtime* — an mtime moves when nothing changed and stands still
-//! when a file is copied. And no symbol grep is needed either: **every one of these binaries states
-//! its build**, so the condition is a string comparison against `HEAD` with nothing inferred.
+//! when a file is copied. And no symbol grep is needed either for a binary that will answer: it
+//! states its build, so the condition is a string comparison against `HEAD` with nothing inferred.
+//!
+//! ⛔⛔⛔⛔⛔ **BUT ONLY ONE OF THE FOUR ANSWERS, AND AN EARLIER DRAFT OF THIS PARAGRAPH SAID
+//! *every one of these binaries states its build*.** This tool's own first output refuted it in
+//! the hour it was written — `sprag-term` reads `--version` as a command to spawn, `sprag-gui`
+//! and `sprag-mcp` print nothing, so **three of the four cannot be asked at all** (register item
+//! 897). That is why [`all_of`] has a third arm rather than two: the sentence a module writes
+//! about its own subject is unmeasured until the module is run against it, which is this
+//! workspace's rule 10 caught inside the instrument built to end a different silence.
 //!
 //! # ⛔⛔⛔⛔⛔ AND ONE CONDITION ONLY A PERSON CAN ANSWER, WHICH MUST NOT READ AS *MET*
 //!
