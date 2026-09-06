@@ -14134,6 +14134,76 @@ mod tests {
     /// supervisor that can call this peer's turns over, which is `sprag-plugin`'s own gate against
     /// its `supervised` fixture. What is measured HERE is the door, and a gate that also waited for
     /// an ending would be two claims wearing one name.
+    ///
+    /// # ⛔⛔⛔⛔⛔ IT ASKS THE PANE'S **CONTENT**, AND IT USED TO ASK ITS RENDERING — item 837
+    ///
+    /// This gate stood RED for four days and three re-measurements (2026-09-02, 09-03, 09-05,
+    /// re-measured again **2026-09-06T05:36:22Z**: `0 passed; 1 failed`). Nothing was wrong with
+    /// the product. The gate read `PaneAccess::pane_collapsed` — **the VISIBLE 24 rows** — and this
+    /// repository's loop kept adding working rules to its own kind document, so the brief grew
+    /// (1823 → 2558 → 2646 bytes) until its FIRST line scrolled off the grid. The screen printed in
+    /// the failure began at rule (8).
+    ///
+    /// ⚠⚠⚠ **THE REGISTER LEFT THE DECISION OPEN AND THE PRODUCT'S OWN DOOR HAD ALREADY MADE IT.**
+    /// Item 837 asks whether the claim is *the brief was DELIVERED* or *the brief is VISIBLE*.
+    /// This gate's own sentence answers it — *"that string is the whole chain from a wire request
+    /// to a prompt in a pseudoterminal"* — and [`PaneAccess::pane_full_lines`]'s doc names this
+    /// exact caller: *anything that publishes a model's words, MATCHES A MARKER or relays to a
+    /// peer is asking about CONTENT*, because **the width belongs to whichever client attached**.
+    /// A rendered read made a wire-delivery claim depend on somebody else's window. That is
+    /// register item 866 one crate over, and the same repair.
+    ///
+    /// # ⚠⚠⚠ THREE SURFACES, AND THE TWO WRONG ONES FAIL FOR **DIFFERENT** REASONS
+    ///
+    /// Both wrong answers are staged on purpose by ONE constant — a north star longer than the
+    /// pane's whole visible grid — so neither of them is reached by luck:
+    ///
+    /// | surface | what it holds | why it cannot answer |
+    /// |---|---|---|
+    /// | `pane_collapsed` | the visible rows, joined with no separator | the marker is **taller than the grid**, so it can never be wholly on screen |
+    /// | `pane_full_text` | scrollback + grid, joined per RENDERED ROW | the width **breaks the marker** and `"\n"` lands inside it |
+    /// | `pane_full_lines` | scrollback + grid, one entry per LOGICAL LINE | ✅ the line the child wrote, rejoined |
+    ///
+    /// ⛔⛔⛔ **AND THE HAZARD IS STAGED BY THIS FIXTURE'S OWN CONSTANT, NEVER BY THE BRIEF'S SIZE.**
+    /// That is not tidiness: register item 762 is open and wants the working rules replaced by a
+    /// REFERENCE, which would SHRINK the brief — and a premise resting on the brief overflowing
+    /// would go red the day that item is paid. A gate that gets more expensive when its neighbour
+    /// is repaid is a gate nobody will repay the neighbour past. The variable moved here is the
+    /// caller's north star, which is item 866's method exactly: *move the answer, never the pane*.
+    ///
+    /// ⚠ **A LONG NORTH STAR IS NOT CONTRIVED.** The one this repository's own debt loop is driven
+    /// with is a paragraph, and it crosses this same wire.
+    ///
+    /// ⛔ **NO SPACES IN IT**, measured against `Screen::full_lines`: a row's share is `trim_end`ed
+    /// before the shares are rejoined, so a space sitting exactly on a row boundary is lost and a
+    /// `contains` on the rejoined line would fail for a reason that is not this gate's.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND A **SECOND RED WAS HIDING BEHIND THE FIRST** — found paying item 837
+    ///
+    /// The byte assertion at the end of this test read `briefed.contains("1251 bytes")` — the sum
+    /// `33 + 14 + 9` plus a rules block of **1,195**. This repository's own debt kind is where
+    /// those rules live and it adds one every few rounds: they were **2,590** at the
+    /// re-measurement, so that literal had been wrong for four days and **nobody could see it**,
+    /// because the screen assertion above failed first and the test never reached it.
+    ///
+    /// ⇒ Same disease, same repair: the total is DERIVED — the three strings read back out of the
+    /// request this test sent, plus the rules read out of the kind document. What item 762 put
+    /// there is untouched (the row must count the FOURTH part), and what is gone is a number that
+    /// went stale the moment somebody edited a document in another crate.
+    ///
+    /// # ⚠⚠⚠ FOUR MUTATIONS, MEASURED 2026-09-06, each on a different claim
+    ///
+    /// | mutation | what went red |
+    /// |---|---|
+    /// | the claim reads `pane_collapsed` again (the shape item 837 registered) | the claim — the pane holds rule (8) onward |
+    /// | the claim reads `pane_full_text` (rendered ROWS) | the claim — the text is all there and a `"\n"` sits inside the marker |
+    /// | `owed` drops the rules block (the pre-762 three-part sum) | the byte assertion — `2036` against a row saying `4626` |
+    /// | the staged marker shrinks to 69 cells | the PREMISE — `80 × 24 = 1920 cells`, named off the pane itself |
+    ///
+    /// ⇒ The second is the one that makes reading LOGICAL lines a measured choice: with a marker
+    /// that fitted on a row, `pane_full_text` and `pane_full_lines` answer alike and the difference
+    /// between them would be a preference. The fourth is the one that keeps the first two honest —
+    /// a premise that cannot fail is an escape hatch wearing a gate's name.
     #[test]
     fn a_loop_started_over_the_wire_prompts_its_agent_with_what_the_caller_briefed() {
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
@@ -14149,11 +14219,32 @@ mod tests {
             None,
         );
 
+        // ⚠⚠⚠ THE CALLER'S NORTH STAR, LONGER THAN THE PANE'S WHOLE VISIBLE GRID — see this gate's
+        // doc for why the length is the fixture's own constant and not the brief's. The repeated
+        // clause carries no space, for the `trim_end` reason recorded there.
+        let north_star = format!(
+            "SPRAG-NORTH-STAR-CROSSED-THE-WIRE{}",
+            "-AND-ARRIVED-WHOLE".repeat(110),
+        );
+        // ⚠ THE PREMISE for every cell count below: this marker is ASCII, so a byte, a `char` and a
+        // cell are one number. A non-ASCII one would make the three disagree and the arithmetic
+        // silently wrong — which is the shape register item 866 had to redo its own measurement in.
+        assert!(
+            north_star.is_ascii(),
+            "⚠ the staged marker must stay ASCII or bytes, chars and cells stop agreeing",
+        );
+        // ⚠⚠ THE REQUEST IS KEPT, because the byte assertion far below is about the strings THIS
+        // request sent and must read them rather than restate them — see there.
+        let request = ai_loop_request(pane, json!({ "north_star": north_star.clone() }));
+        let sent = |key: &str| {
+            request
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .len()
+        };
         let started = external
-            .invoke(
-                RUN_ACTION,
-                IntrospectValue::Json(ai_loop_request(pane, json!({}))),
-            )
+            .invoke(RUN_ACTION, IntrospectValue::Json(request.clone()))
             .expect("a well-formed ai_loop run");
         let IntrospectValue::Int(id) = started else {
             panic!("a run answers its id: {started:?}");
@@ -14162,20 +14253,64 @@ mod tests {
 
         let access = sprag_plugin::WorkspacePaneAccess::new(Arc::clone(&workspace));
         let began = Instant::now();
-        let mut screen = String::new();
+        // ⛔⛔⛔⛔⛔ THE **CONTENT** SURFACE — register item 837, and `pane_full_lines`' own doc names
+        // this caller. What is claimed is that the caller's string crossed the wire and reached a
+        // pseudoterminal; a rendered read answers a question about somebody's window instead, and
+        // that is what stood this gate red for four days while the product was correct.
+        let mut held: Vec<String> = Vec::new();
         while began.elapsed() < Duration::from_secs(20) {
-            screen = access.pane_collapsed(pane).unwrap_or_default();
-            if screen.contains("SPRAG-NORTH-STAR-CROSSED-THE-WIRE") {
+            held = access.pane_full_lines(pane).unwrap_or_default();
+            if held.iter().any(|line| line.contains(&north_star)) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+
+        // ── THE PREMISES: BOTH WRONG SURFACES MUST BE UNABLE TO ANSWER, FOR DIFFERENT REASONS ──
+        //
+        // ⚠ Read at this moment and not before, because they are statements about the pane this run
+        // has just been driving. A gate that asserted them over an empty pane would be green before
+        // the brief was typed.
+        let rendered = access.pane_full_text(pane).unwrap_or_default();
+        let visible = access.pane_rows(pane).unwrap_or_default().len();
+        let widest = rendered
+            .lines()
+            .map(|row| row.chars().count())
+            .max()
+            .unwrap_or(0);
         assert!(
-            screen.contains("SPRAG-NORTH-STAR-CROSSED-THE-WIRE"),
-            "⚠⚠⚠ the caller's own north star must be on the agent's screen — that string is the \
-             whole chain from a wire request to a prompt in a pseudoterminal. Screen: {screen:?}, \
-             run: {:?}",
-            // ⚠ The run's own record, because a screen that is missing the prompt cannot say WHY:
+            north_star.chars().count() > widest * visible,
+            "⚠⚠⚠ THE PREMISE: the marker has to be longer than the pane's WHOLE visible grid \
+             ({widest} × {visible} = {} cells), or it could sit on the rendered screen and the two \
+             assertions below would be green for a build that never left `pane_collapsed`. This is \
+             the fixture's own constant — grow it, never the pane. Marker is {} cell(s)",
+            widest * visible,
+            north_star.chars().count(),
+        );
+        let collapsed = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !collapsed.contains(&north_star),
+            "⚠⚠⚠ THE PREMISE for the VISIBLE surface: a marker taller than the grid cannot be \
+             wholly on screen, so `pane_collapsed` must NOT find it. A green here means the pane \
+             outgrew the marker and this gate stopped staging item 837's hazard. Screen: \
+             {collapsed:?}",
+        );
+        assert!(
+            !rendered.contains(&north_star),
+            "⚠⚠⚠ THE PREMISE for the RENDERED surface: the width breaks this marker, so \
+             `pane_full_text` — which joins per rendered ROW — has a newline sitting inside it and \
+             must NOT find it. This is what makes reading LOGICAL lines a measured choice rather \
+             than a preference; register item 866 measured the same thing costing 90% of a \
+             reflection's answer. Rendered: {rendered:?}",
+        );
+
+        // ⛔⛔⛔⛔⛔ AND THE CLAIM.
+        assert!(
+            held.iter().any(|line| line.contains(&north_star)),
+            "⚠⚠⚠ the caller's own north star must have reached the agent's pane WHOLE — that \
+             string is the chain from a wire request to a prompt in a pseudoterminal, and the \
+             surface that answers it is the CONTENT one. Held: {held:?}, run: {:?}",
+            // ⚠ The run's own record, because a pane that is missing the prompt cannot say WHY:
             // a refused barrier and a machine that never left `idle` look identical from here.
             lock(&registry).snapshot().first().map(|run| run_to_json(
                 run,
@@ -14207,27 +14342,61 @@ mod tests {
         // level is measured in pieces, and a chain measured in pieces is one that can be broken at
         // a join nobody owns.
         //
-        // ⚠⚠ THE NUMBERS ARE THIS REQUEST'S OWN: the strings `ai_loop_request` sends, whose lengths
-        // nothing here restates — 33 + 14 + 9 — PLUS the 1,195 bytes of rules this repository's own
-        // debt kind holds every run to. If somebody edits that fixture's prose or those rules this
-        // goes red and the arithmetic is the repair, which is the honest coupling.
+        // ⚠⚠ THE NUMBERS ARE THIS REQUEST'S OWN AND ARE **DERIVED, NEVER TYPED** — register item
+        // 837, which is what a typed total costs. The old form asserted `1251 bytes`, the sum of
+        // `33 + 14 + 9` and a rules block of 1,195; those rules are this repository's own debt kind
+        // and it adds one every few rounds, so the literal was wrong the moment it was written down
+        // and had been for four days (2,590 bytes at the re-measurement) — **behind the screen
+        // assertion above, which failed first and hid it.** A second red nobody could see is worse
+        // than the first, and the repair is that neither number is a literal here any more.
         //
-        // ⛔⛔⛔⛔⛔ AND THE TOTAL MOVED FROM 56 TO 1,251 WHEN REGISTER ITEM 762 COUNTED THE FOURTH
-        // PART — the same request, the same prompt, a number that had been short by twenty-two
-        // times its own size. The part named to shorten moved with it: `north_star` (33 bytes) to
-        // `working_rules` (1,195), which is the answer a reader can actually act on and the one
-        // this row could not previously give.
+        // ⛔⛔⛔⛔⛔ WHAT THE ASSERTION IS FOR IS UNCHANGED — register item 762: the row must count
+        // the FOURTH part. The total moved from 56 to a four-part sum the day that item landed, and
+        // a build that went back to three would report a prompt short by the whole of the block a
+        // caller cannot shorten. Deriving the sum keeps that claim and drops the coupling to how
+        // long this repository's rules happen to be TODAY.
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let rules = sprag_plugin::kind::LoopKind::debt(script)
+            .expect("this repository's kind document must open")
+            .working_rules()
+            .expect("and it holds the rules every run of it is briefed with")
+            .len();
+        let owed = sent("north_star") + sent("milestone") + sent("reference") + rules;
         let briefed = entry
             .get(RUN_BRIEFED_KEY)
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
         assert!(
-            briefed.contains("1251 bytes") && briefed.contains("working_rules"),
+            briefed.contains(&format!("{owed} bytes")),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 719 / 762: `orchestrate` took this brief and the row it points \
-             its caller at must say how big the prompt REALLY is. A `56 bytes` here is the \
-             three-part sum — the caller's own strings, with the kind's 1,195-byte rules block \
-             typed into every session and counted nowhere. Said: {briefed:?} in {entry:?}",
+             its caller at must say how big the prompt REALLY is — the caller's three strings PLUS \
+             the kind's rules block, typed into every session and once counted nowhere. Owed \
+             {owed} = {} + {} + {} + {rules}. Said: {briefed:?} in {entry:?}",
+            sent("north_star"),
+            sent("milestone"),
+            sent("reference"),
+        );
+        // ⚠⚠ AND THE PART IT NAMES TO SHORTEN, on a premise rather than on a hope: `largest` must
+        // be able to name the block a caller CANNOT shorten, which is the whole of item 762's
+        // finding. That is only a claim about this run while the rules really are the biggest part,
+        // so the size relation is asserted first — and it names its own repair, because the day
+        // item 762 replaces those rules with a reference this is where a reader is sent.
+        assert!(
+            rules > north_star.len(),
+            "⚠⚠⚠ THE PREMISE: the kind's rules ({rules} B) must outweigh this gate's staged north \
+             star ({} B), or `largest` correctly names a part the CALLER can shorten and the line \
+             below is asserting the wrong half of item 762. The repair is to re-size the marker \
+             above, never to widen this",
+            north_star.len(),
+        );
+        assert!(
+            briefed.contains("working_rules"),
+            "⛔⛔⛔⛔ REGISTER ITEM 762: the part named to shorten first must be able to be the one \
+             the caller did not write. A row that can only ever name the caller's own strings tells \
+             somebody to shorten what they can reach while the bigger half is out of sight. Said: \
+             {briefed:?}",
         );
         // ⛔⛔⛔ **AND NOT ONLY AS PROSE INSIDE THAT NAME** — register item 540.
         //
