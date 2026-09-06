@@ -61,6 +61,22 @@ cd "$repo_root"
 . "$repo_root/.githooks/content-gate.sh"
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/ident-gate.sh"
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/tree-drift.sh"
+
+# ⛔⛔⛔⛔ FINGERPRINT THE TREE BEFORE ANY GATE READS IT — register item 925.
+#
+# Everything below compiles the WORKING TREE, not the index, and takes minutes doing it.
+# A session that edits while it waits gets a compile error that is REAL, correctly
+# reported, and about code the author was midway through writing — and until this line
+# nothing anywhere said so. Measured 2026-09-06: a push was lost to exactly that and read
+# as a defect in what was being pushed.
+#
+# ⚠ It arms a `trap ... EXIT`, so the report prints on the failing paths too — which are
+# the only paths where it matters. The trap preserves this hook's own exit status.
+# ⚠⚠ It SAYS; it does not block. Two writers share this tree (item 196), and refusing on
+# somebody else's edit would stand their round down for the length of these gates.
+tree_drift_begin "pre-commit" "$repo_root"
 
 # The identity this commit would carry, FIRST and ahead of anything that costs.
 # It is also the one refusal here a revert does not undo: the remote is public

@@ -48,6 +48,22 @@ cd "$repo_root"
 . "$repo_root/.githooks/hosted-read.sh"
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/loop-read.sh"
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/tree-drift.sh"
+
+# ⛔⛔⛔⛔ FINGERPRINT THE TREE BEFORE ANY GATE READS IT — register item 925, and THIS is
+# the hook the item was filed against.
+#
+# Measured 2026-09-06, paying item 843: the ratchet lane went red with `no variant named
+# `UnrunnableRed``, because the tree at that instant held a line USING a variant the
+# session had not written yet. The hook was right, `origin/main` never moved, and the
+# reader had no way to tell that from a defect in the change being pushed.
+#
+# ⚠ It arms a `trap ... EXIT`, so the report prints on the failing paths too — which are
+# the only paths where it matters. The trap preserves this hook's own exit status.
+# ⚠⚠ It SAYS; it does not block. Two writers share this tree (item 196), and refusing on
+# somebody else's edit would stand their round down for the length of these gates.
+tree_drift_begin "pre-push" "$repo_root"
 
 # ── HOW LONG THIS CLONE HAS GONE WITHOUT READING A HOSTED RESULT ─────────────
 #
