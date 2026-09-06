@@ -2136,9 +2136,42 @@ mod tests {
             // a fact. ⛔ And the handicap that used to turn this over is now an ARM of the gate
             // (`slow_to_arm`) rather than a property of the runner.
             //
-            // ⚠ The stolen byte's file is left in `/tmp` under the pane's own pid. A draft that
-            // removed it before the `exec` was measured red too, and the two reds are the same
-            // one: what broke was never the `rm`.
+            // ⚠ The stolen byte's file is LEFT BEHIND by the script. A draft that removed it
+            // before the `exec` was measured red too, and the two reds are the same one: what
+            // broke was never the `rm`.
+            //
+            // ⛔ SO THE NAME COMES FROM THE SEAM AND RUST HANDS IT IN — register item 931. The
+            // script used to spell `S=/tmp/sprag-standin-$$` and name the file after the PANE's
+            // pid, which no Rust here can ever read back: nothing in the workspace knew the
+            // prefix, so nothing could collect it, and **745 of these files were standing in this
+            // machine's scratch root AT 2026-09-06T16:31:43Z**. It also read no `TMPDIR`, so a run
+            // isolated by a caller's own root wrote into the machine's real one anyway.
+            // `scratch_for` puts THIS process's pid where `owner_in` reads it and sweeps the same
+            // prefix's dead owners on the way: the FIRST run of this fixture through the seam took
+            // the count to **1**, and that one is kept because its pid reads as alive. The path is
+            // interpolated the way `armed` below already is.
+            //
+            // ⚠⚠ AND THE NAME NOW HAS TO SURVIVE A SHELL, WHICH THE HARDCODED ONE NEVER HAD TO.
+            // Two things follow, and the first was learned from a red rather than reasoned:
+            //
+            //   * **The tail is a counter.** A first draft spelled it `{:?}` of the thread id, the
+            //     way `armed` below does, and this gate went red — the name reached the INNER
+            //     `sh -c` spliced in unquoted, and `ThreadId(9)`'s parentheses are a syntax error
+            //     there (`sh: 1: Syntax error: "(" unexpected`), so the stand-in never started,
+            //     the barrier never cleared, and the reaped arm read `Exhausted(Duration)` with a
+            //     prompt already delivered. A counter is also the honest uniqueness: `asked` runs
+            //     several times on ONE thread, so pid-and-thread would name the same file twice.
+            //   * **The inner shell quotes it itself.** `S` is exported and the inner script says
+            //     `of="$S"`, rather than the outer shell splicing the value into the middle of a
+            //     single-quoted word. The root is the machine's now, so it is whatever `TMPDIR`
+            //     says — a space in it used to be impossible and is merely unlikely.
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let standin = sprag_scratch::scratch_for(
+                "sprag-standin",
+                &NEXT
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    .to_string(),
+            );
             let armed = std::env::temp_dir().join(format!(
                 "sprag-armed-{}-{:?}",
                 std::process::id(),
@@ -2146,8 +2179,8 @@ mod tests {
             ));
             let _ = std::fs::remove_file(&armed);
             let script = format!(
-                "S=/tmp/sprag-standin-$$; \
-                 sh -c '{slow} exec dd bs=1 count=1 of='\"$S\"' 2>/dev/null' {STANDIN_READS_TTY} & \
+                "S='{standin}'; export S; \
+                 sh -c '{slow} exec dd bs=1 count=1 of=\"$S\" 2>/dev/null' {STANDIN_READS_TTY} & \
                  until [ -e '{armed}' ]; do sleep 0.01; done; \
                  {how} printf 'TOOL-UP\\n'; \
                  {} \
@@ -2158,6 +2191,7 @@ mod tests {
                     ""
                 },
                 armed = armed.display(),
+                standin = standin.display(),
             );
             let (access, pane) = sh_access(&script, 40, 8);
             let watched = ArmingIsAFact {

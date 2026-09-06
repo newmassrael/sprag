@@ -6464,12 +6464,19 @@ impl Smoke {
             .parent()
             .ok_or_else(|| io::Error::other("the smoke binary has no directory"))?
             .to_path_buf();
-        // SHORT paths: an AF_UNIX address is capped at 108 bytes, and a path under the target
-        // directory of a deep checkout is comfortably past it.
-        let unique = std::process::id();
-        let host_sock = PathBuf::from(format!("/tmp/sp{unique}h.sock"));
-        let gui_sock = PathBuf::from(format!("/tmp/sp{unique}g.sock"));
-        let state = PathBuf::from(format!("/tmp/sp{unique}state"));
+        // SHORT names: an AF_UNIX address is capped at 108 bytes, and a path under the target
+        // directory of a deep checkout is comfortably past it. Hence `spsm` rather than a spelt-out
+        // one — the four characters are the whole reason this run's names are abbreviations.
+        //
+        // ⛔ THE ROOT IS THE MACHINE'S, ASKED THROUGH THE SEAM — register item 931. These three
+        // lines used to spell it, which did two things at once: `TMPDIR` was not read, so a caller
+        // that had isolated this run by naming its own root was overruled in silence; and the name
+        // appeared in neither scratch ratchet, both of which read the code with its string literals
+        // blanked. `scratch_for` also mints the pid in the one place `owner_in` reads it, so a
+        // smoke killed before `Drop` runs is collected by the next run rather than standing.
+        let host_sock = sprag_scratch::scratch_for("spsm", "h.sock");
+        let gui_sock = sprag_scratch::scratch_for("spsm", "g.sock");
+        let state = sprag_scratch::scratch_for("spsm", "state");
         std::fs::create_dir_all(&state)?;
         install_notify_stand_in(&state)?;
 

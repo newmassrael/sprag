@@ -450,6 +450,168 @@ fn per_run_name_sites() -> Vec<String> {
     sites
 }
 
+// ⛔⛔⛔⛔⛔ THE THIRD AXIS: A ROOT THE MACHINE WAS NEVER ASKED FOR — register item 931, and the one
+// shape BOTH ratchets above are blind to BY CONSTRUCTION.
+//
+// [`call_sites`] and [`per_run_name_lines`] each read [`outside_strings`], which blanks every
+// double-quoted span before the predicate is applied. That is right for them — this repository's
+// reasoning quotes the very calls it hunts — and it means a path SPELLED OUT inside a literal is
+// invisible to both. A `format!` that writes the root down calls neither `env::temp_dir()` nor
+// `scratch_root()`, so neither number moved while four such sites were minting names, and 745
+// `sprag-standin-<pid>` files stood in this machine's scratch root AT 2026-09-06T16:31:43Z with
+// nothing in the workspace able to name them.
+//
+// # Two harms, not one
+//
+//   * `TMPDIR` is never read, so a harness that isolated a run by naming its own root is undone in
+//     silence: the run writes into the machine's real scratch directory whatever it was told.
+//   * The name carries no prefix any seam knows, so `sprag_scratch::reap_predecessors` can never
+//     be asked about it. That is the second axis's harm arriving by a road the second axis cannot
+//     see.
+//
+// # ⚠⚠ WHY THE POPULATION IS A MINTED NAME AND NOT EVERY SPELLED ROOT
+//
+// Item 931's own done-when asks that question before answering it, and it was answered by ASKING
+// THIS GATE rather than a second script — the lesson `HARNESS_SITES_REGISTERED`'s own doc records,
+// applied to the axis being built. Force [`mints_a_name`] to `true` and read the list
+// [`no_scratch_path_is_spelled_where_the_machine_should_have_been_asked`] prints: **79** code lines
+// under `crates/` spell a scratch root, and today every one of them is a VALUE — a fixture path, an
+// expected argv, a shell-quoting sample, a socket address nothing ever binds, a `const` a test
+// hands every arm so the arm says which root it would have used. **Four were minting names** when
+// item 931 was opened, and they are the four this axis took. Forbidding a value would make this
+// number a count of something else, which is a mistake item 794's first draft made once already.
+//
+// The line between them is the one rule 5 draws for the axis above: a FIXED spelled path is one
+// entry, reused by every run, and cannot grow. A spelled path carrying a component this RUN mints
+// — a `format!` interpolation, the shell's own pid, an `mktemp` template — is unbounded AND
+// uncollectable. So the population is *a spelled root with a minted name under it*, and it reaches
+// zero exactly as the axis above did: one `scratch_for` call per site.
+//
+// # ⚠⚠⚠ RULE 6 — WHAT THIS CANNOT SEE, MEASURED RATHER THAN LEFT TO BE DISCOVERED
+//
+// It is a gate on a SPELLING, as both axes above are (`env::temp_dir()`, `scratch_root()`), and it
+// reads ONE code line: the root and the mint have to be in the same breath. Two neighbours are
+// therefore out of reach, and both were measured before being accepted:
+//
+//   * **The expression, wrapped.** Keyed the way the axis above is keyed — the root, then
+//     [`EXPRESSION_LINES`] of span — the same tree answers **five** sites rather than four, and the
+//     fifth is `sprag.rs:14628`'s `.find(|line| line.contains(<a fixed json path>))`, which spells
+//     a FIXED path: the chain continues on the next line into an `unwrap_or_else` whose panic
+//     message interpolates a name, and the span borrows that brace. A span costs a false red here
+//     and buys a shape this workspace does not hold.
+//   * **The root bound to a name first** — a `const` holding the root, and a mint somewhere else in
+//     the file. A detector for it was written and run: **23** lines bind a spelled root, and the
+//     "minting uses" it finds for them are almost entirely OTHER identifiers of the same name —
+//     `dir`, `here`, `named`, `state`, `sequence`, `kept` — because a name-based reader has no
+//     scope. Closing that road needs the compiler, not a line filter, and a gate whose population
+//     is dominated by collisions is one nobody reads.
+//
+// ⇒ Both are recorded in the register under item 931 with the commands that produce those numbers,
+// so the next reader re-derives them rather than trusting this paragraph.
+
+/// The roots `TMPDIR` can answer.
+///
+/// ⚠ **THE ORDER HERE DECIDES NOTHING** — [`literal_root_at`] takes the EARLIEST position, so a
+/// `/var/tmp` is read from its own first character rather than as a shorter root with four
+/// characters in front of it, whichever way round this array is written. A first draft of this doc
+/// said "longest first", which would have been a sentence nothing enforced, and
+/// [`the_literal_root_detector_answers_both_ways`] asserts the position instead.
+///
+/// ⚠ `XDG_RUNTIME_DIR`'s per-user runtime directory is deliberately NOT here, though this workspace
+/// spells it on 32 code lines. The harm this axis names is *the machine was not asked*, and the
+/// machine is asked about a scratch root through `TMPDIR`; the runtime directory is a different
+/// variable with its own resolver (`sprag_rpc::resolve_socket_path`) and would be its own axis.
+/// Every one of those 32 lines is a fixed value today — measured with this file's own predicate, 0
+/// minted — so nothing is riding through on the omission.
+const LITERAL_ROOTS: [&str; 2] = ["/var/tmp", "/tmp"];
+
+/// Where a scratch root is spelled out on `line`, if one is.
+fn literal_root_at(line: &str) -> Option<usize> {
+    LITERAL_ROOTS
+        .iter()
+        .filter_map(|root| line.find(root))
+        .min()
+}
+
+/// Whether a spelled path, read from its root onward, carries a component THIS RUN mints.
+///
+/// ⚠ A DOUBLED BRACE IS `format!`'s ESCAPED ONE AND NOT AN INTERPOLATION. The distinction is
+/// load-bearing rather than pedantic: `scratch-litter`'s usage message spells the shell expansion a
+/// person should run, braces doubled so `format!` prints them, and reading that as a minted name
+/// would red this gate on the one instrument in the workspace whose whole subject is scratch
+/// litter.
+///
+/// Pure, so [`the_literal_root_detector_answers_both_ways`] can drive every arm from a fixture
+/// instead of hoping the tree happens to hold one of each.
+fn mints_a_name(tail: &str) -> bool {
+    // The shell's own pid, an `mktemp` template, and Rust's answer spelled beside the root rather
+    // than into it. Named in words here; spelling them is [`LITERAL_MARKS`]' job.
+    if LITERAL_MARKS.iter().any(|mark| tail.contains(mark)) {
+        return true;
+    }
+    let bytes = tail.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'{' {
+            if bytes.get(at + 1) == Some(&b'{') {
+                at += 2;
+                continue;
+            }
+            return true;
+        }
+        at += 1;
+    }
+    false
+}
+
+/// The non-brace marks of a name minted per run: the shell's pid, an `mktemp` template, and Rust's
+/// process id spelled next to the root.
+const LITERAL_MARKS: [&str; 3] = ["$$", "XXXXXX", "process::id()"];
+
+/// The line numbers in `text` at which a scratch root is SPELLED and a name minted under it.
+fn literal_root_lines(text: &str) -> Vec<usize> {
+    code_lines(text)
+        .filter_map(|(number, line)| {
+            let at = literal_root_at(line)?;
+            mints_a_name(&line[at..]).then_some(number)
+        })
+        .collect()
+}
+
+/// Every minted name under a spelled root, as `"[where] path:line: text"`.
+///
+/// ⚠ The `Where` is carried into the message rather than into a second constant, for the reason
+/// [`per_run_name_sites`] gives: this axis reached zero in the round that opened it, and inventing
+/// a boundary no measurement supports would be a number about a division somebody assumed.
+fn literal_root_sites() -> Vec<String> {
+    let mut sites = Vec::new();
+    for (name, text) in rust_files() {
+        // The seam spells a root in the test that proves it refuses a relative one; that is what it
+        // is for, and it is the same exemption [`call_sites`] makes for the same crate.
+        if Path::new(&name).starts_with("crates/sprag-scratch") {
+            continue;
+        }
+        let inline_harness_from = test_module_starts_at(&text);
+        let file = where_it_lives(&name);
+        let numbered: Vec<(usize, &str)> = code_lines(&text).collect();
+        for number in literal_root_lines(&text) {
+            let line = numbered
+                .iter()
+                .find(|(at, _)| *at == number)
+                .map_or("", |(_, line)| *line);
+            let placed = match file {
+                Where::Harness => Where::Harness,
+                Where::Product if inline_harness_from.is_some_and(|start| number > start) => {
+                    Where::Harness
+                }
+                Where::Product => Where::Product,
+            };
+            sites.push(format!("{placed:?} {name}:{number}: {line}"));
+        }
+    }
+    sites
+}
+
 /// ⛔ **THE GATE.** No product line takes a scratch root from the operating system directly.
 ///
 /// The one place that may is `sprag-scratch`, which asks the question this gate exists to enforce
@@ -617,6 +779,127 @@ fn the_per_run_detector_answers_both_ways() {
         per_run_name_lines(&unreadable),
         vec![1],
         "an expression the gate could not delimit is counted rather than waved through — rule 6",
+    );
+}
+
+/// ⛔⛔ **AND NO SCRATCH PATH IS SPELLED WHERE THE MACHINE SHOULD HAVE BEEN ASKED** — register
+/// item 931.
+///
+/// The two gates above hunt a CALL, and a path written down calls nothing. Four sites in this
+/// workspace wrote one: three sockets and a state directory in the GUI's live smoke, and a
+/// stand-in reader's file inside a shell script the plugin driver hands a pane. None of the four
+/// appeared in either number, and the last of them had left 745 files standing in this machine's
+/// scratch root by 2026-09-06 — a count nothing in the workspace could produce, because no name in
+/// it knew the prefix. Converting it took them: the first run through the seam swept the prefix and
+/// the same `find` answered **1**, and that one is kept because its pid reads as alive, which is
+/// `may_reap`'s documented safe direction rather than a failure to collect.
+///
+/// ⚠ An emptiness rather than a count, for the reason item 930's block above gives: what a reader
+/// gets is the FILE AND LINE of a new site instead of a number somebody has to update.
+#[test]
+fn no_scratch_path_is_spelled_where_the_machine_should_have_been_asked() {
+    let sites = literal_root_sites();
+    assert!(
+        sites.is_empty(),
+        "⛔ ITEM 931: {} line(s) spell a scratch root and mint a name under it in the same breath. \
+         Neither ratchet above can see this — both read `outside_strings`, which blanks the very \
+         literal the path is written in — so the site is counted nowhere, `TMPDIR` is not read (a \
+         harness that isolated a run by naming its own root is undone in silence), and no seam \
+         knows the prefix, so `reap_predecessors` can never be asked about what it leaves. Call \
+         `sprag_scratch::scratch_for(<prefix>, <tail>)` and use the path it answers; where the \
+         name is minted inside a SHELL script, let Rust take it from the seam and interpolate the \
+         result, which is what the line above `agent.rs`'s stand-in already does for its arming \
+         file:\n{}",
+        sites.len(),
+        sites.join("\n"),
+    );
+}
+
+/// ⛔⛔⛔ **AND THAT DETECTOR ANSWERS BOTH WAYS** — register item 908's lesson: an emptiness nothing
+/// can raise is a green about nothing.
+///
+/// ⚠⚠ **EVERY FIXTURE IS ASSEMBLED AT RUN TIME FROM THE TWO ROOT CONSTANTS BELOW**, and that is
+/// not a style choice — it is the mirror image of the `concat!` rule on the detector above. This
+/// axis reads the raw code line INCLUDING its string contents, so a fixture that spelled a root and
+/// mint together would be a site of the very population this file asserts is empty, and the gate
+/// would red on its own test data. A root with nothing minted under it is not in the population, so
+/// the two constants are safe to write down and the mint is added by `format!`.
+#[test]
+fn the_literal_root_detector_answers_both_ways() {
+    /// A spelled root, alone: the shape all 79 of this workspace's spelled roots have today, and
+    /// not a site.
+    const ROOT: &str = "/tmp";
+    /// The other root `TMPDIR` can answer, which two of this workspace's tests use on purpose so
+    /// an arm says which root it would have used.
+    const VAR_ROOT: &str = "/var/tmp";
+
+    for (why, minted) in [
+        (
+            "an interpolation in the spelled path is the plain case",
+            format!("let s = PathBuf::from(format!(\"{ROOT}/sp{{u}}h.sock\"));"),
+        ),
+        (
+            "a shell's own pid, in a script a literal hands a pane",
+            format!("\"S={ROOT}/sprag-standin-$$; \\"),
+        ),
+        (
+            "an `mktemp` template under a spelled root",
+            format!("Command::new(\"mktemp\").arg(\"{VAR_ROOT}/sprag-x.XXXXXX\");"),
+        ),
+        (
+            "a pid spelled beside the root rather than into it",
+            format!("let s = PathBuf::from(\"{ROOT}\").join(name_for(std::process::id()));"),
+        ),
+    ] {
+        assert_eq!(literal_root_lines(&minted), vec![1], "{why}: {minted}");
+    }
+
+    for (why, clean) in [
+        (
+            "a fixed value is what all 79 spelled roots are today",
+            format!("assert_eq!(shell_quote(\"{ROOT}/my report.pdf\"), quoted);"),
+        ),
+        (
+            "a bare root, handed on rather than named under",
+            format!("let root = PathBuf::from(\"{ROOT}\");"),
+        ),
+        (
+            "an address nothing ever binds — `Host::for_daemon`'s gate says so in its own comment",
+            format!("let sock = Path::new(\"{ROOT}/sprag-904-gate.sock\");"),
+        ),
+        (
+            "the root a test hands every arm so the arm says which one it used",
+            format!("const SCRATCH: &str = \"{VAR_ROOT}\";"),
+        ),
+        (
+            "a shell-injection sample, whose substitution is the SUBJECT of the assertion",
+            format!("assert_eq!(shell_quote(\"{ROOT}/$(reboot)\"), quoted);"),
+        ),
+        (
+            "⛔ `scratch-litter`'s usage message, braces doubled so `format!` prints them — read as \
+             a mint, this gate would red on the one instrument whose subject is scratch litter",
+            format!(
+                "\"On this machine that is `{ROOT}`, or whatever `TMPDIR` names:\\n    \
+                 scratch-litter \\\"${{{{TMPDIR:-{ROOT}}}}}\\\"\"",
+            ),
+        ),
+        (
+            "a comment, which is where this repository's reasoning quotes the shape it hunts",
+            format!("// let s = PathBuf::from(format!(\"{ROOT}/sp{{u}}h.sock\"));"),
+        ),
+    ] {
+        assert!(
+            literal_root_lines(&clean).is_empty(),
+            "{why} — counting one would make this axis a number about something else, which is \
+             item 931's own warning: {clean}",
+        );
+    }
+
+    assert_eq!(
+        literal_root_at(&format!("x = \"{VAR_ROOT}/y\";")),
+        Some(5),
+        "the longer root is found where it starts, not four characters in — a `/var/tmp` read as a \
+         shorter root would report a path that is not the one written down",
     );
 }
 

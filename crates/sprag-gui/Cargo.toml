@@ -81,6 +81,12 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # Decode the panes-slot inline-image RGBA (base64) the host carries (R1404, crate::wire).
 base64 = { workspace = true }
+# ⛔ REGISTER ITEM 931, and a normal dependency rather than a dev one because the caller is the
+# `sprag-smoke` BIN: it booted its daemon, its client and its state directory under a SPELLED
+# `/tmp`, which reads no `TMPDIR` and shows up in neither scratch ratchet — both of those read the
+# code with its string literals blanked. `scratch_for` answers the machine's own root and mints the
+# pid where `owner_in` reads it, so a smoke killed before its teardown is collected by the next run.
+sprag-scratch = { workspace = true }
 
 [build-dependencies]
 # Compiles app.pinion.xml -> OUT_DIR/app.rs (the Vello renderer scaffold).
