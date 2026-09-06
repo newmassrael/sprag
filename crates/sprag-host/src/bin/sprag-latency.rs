@@ -691,8 +691,11 @@ fn socket_host() -> Option<(SocketHost, sprag_rpc::HostConn)> {
         eprintln!("Build it first: cargo build --release -p sprag-host --bins");
         return None;
     }
-    let sock =
-        sprag_scratch::scratch_root().join(format!("sprag-latency-{}.sock", std::process::id()));
+    // ⚠ The pid moves in front of the suffix — `sprag-latency-<pid>-0.sock` and not
+    // `sprag-latency-<pid>.sock` — because `sprag_scratch::owner_in` reads the pid only as a whole
+    // segment directly after the prefix, and a `.` ends the segment where a `-` continues it.
+    // Nothing derives this path: it is handed on through `SPRAG_HOST_RPC_SOCK` and connected to.
+    let sock = sprag_scratch::scratch_for("sprag-latency", "0.sock");
     let _ = std::fs::remove_file(&sock);
     let child = std::process::Command::new(&daemon)
         .arg("--size")
@@ -888,9 +891,11 @@ fn read_every_foreground_pgid(host: &HostState) -> usize {
 fn mute_reader() -> sprag_host::MuteReader<'static> {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     sprag_host::MuteReader::new(
+        // ⚠ The sweep this now does is the reason the `OnceLock` is warmed before the first
+        // `Instant::now()` in `main` — see the block there. Initialising it inside a timed row
+        // would have measured `/tmp`.
         DIR.get_or_init(|| {
-            let dir = sprag_scratch::scratch_root()
-                .join(format!("sprag-latency-mute-{}", std::process::id()));
+            let dir = sprag_scratch::scratch_for("sprag-latency-mute", "");
             let _ = std::fs::create_dir_all(&dir);
             dir
         }),
@@ -1023,11 +1028,7 @@ fn chatty_host(
     daemon: &std::path::Path,
     program: &str,
 ) -> Option<(SocketHost, sprag_rpc::HostConn)> {
-    let sock = sprag_scratch::scratch_root().join(format!(
-        "sprag-latency-poll-{}-{}.sock",
-        std::process::id(),
-        program.len(),
-    ));
+    let sock = sprag_scratch::scratch_for("sprag-latency-poll", &format!("{}.sock", program.len()));
     let _ = std::fs::remove_file(&sock);
     let child = std::process::Command::new(daemon)
         .arg("--size")
@@ -2125,6 +2126,23 @@ fn main() -> ExitCode {
         turns[which] ^= 1;
         clock.with(|state| state.reload(churn[turns[which]].clone()));
     };
+
+    // ⛔⛔⛔⛔⛔ WARM THE READER BEFORE ANYTHING IS TIMED — register item 930, found by measurement
+    // rather than by reading.
+    //
+    // [`mute_reader`] keeps its directory in a `OnceLock`, and the FIRST call in this program was
+    // the one inside `churn_pass` below, two lines after `Instant::now()`. `fn pass` is the only
+    // other caller and it does not run until 30 lines further down. So the first timed row paid
+    // that initialisation — a `create_dir_all` syscall — while `quiet_pass` did not, and the ratio
+    // printed from the pair says in so many words *"which is the evaluation and nothing else"*.
+    // A mkdir is the SAME ORDER as the quantity: these rows report **1.96-8.38 us**.
+    //
+    // ⚠⚠ And it is what made item 930 answerable at all. `sprag_scratch::scratch_for` SWEEPS the
+    // scratch root, measured at **20-40 ms** over this machine's 16,055 entries (2026-09-06
+    // 15:29:17Z) — 3,600x to 15,000x the row. With the init left where it was, converting the site
+    // below would not have perturbed the measurement; it would have replaced it with a reading of
+    // how full `/tmp` is. Hoisting is what lets the site take the seam like every other one.
+    let _ = mute_reader();
 
     // A pass timed on its own, so the differential rows below have a hold time to be read against:
     // whatever a reader can wait for, it cannot be longer than one window's share of this.

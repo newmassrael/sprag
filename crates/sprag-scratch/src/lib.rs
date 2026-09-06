@@ -484,6 +484,68 @@ mod tests {
         assert_eq!(owner_in("sprag-promoted-", "sprag-promoted"), None);
     }
 
+    /// ⛔⛔⛔⛔⛔ **A PREFIX MUST NOT EAT ITS OWN SIBLINGS** — register item 930, driven on the real
+    /// names one binary puts in one root.
+    ///
+    /// `sprag-latency` writes four shapes beside each other: its own socket, a `-mute-` directory,
+    /// a `-poll-` socket, and TWO FIXED-NAME FILES it reads back as input. A sweep under the short
+    /// prefix sees all five. If `owner_in` were looser — if it took the first digits anywhere, or
+    /// allowed the pid to follow a word — the instrument would delete the manifests it is about to
+    /// read, and it would do it only on the runs where those files happened to be stale.
+    ///
+    /// ⚠ Driven here rather than reasoned about in a comment: this pair of prefixes was checked by
+    /// hand in a shell first, which is a second implementation of the rule and therefore no check
+    /// at all (this workspace's rule 10). The rule has one implementation and this asks it.
+    #[test]
+    fn a_prefix_does_not_reach_into_its_siblings() {
+        let short = "sprag-latency";
+        assert_eq!(owner_in("sprag-latency-12345-0.sock", short), Some(12345));
+        for kept in [
+            "sprag-latency-mute-12345",
+            "sprag-latency-poll-12345-7.sock",
+            "sprag-latency-manifests.toml",
+            "sprag-latency-no-such-manifests.toml",
+        ] {
+            assert_eq!(
+                owner_in(kept, short),
+                None,
+                "{kept:?} carries no owner UNDER {short:?}, and a sweep there must leave it: two \
+                 of these are files the binary reads back as input",
+            );
+        }
+        // ⛔⛔⛔⛔⛔ AND A DOT DOES NOT CONTINUE THE SEGMENT — the case that made item 930 rename a
+        // socket. `sprag-latency-<pid>.sock` was the name before, and it is UNREADABLE here: `.`
+        // ends the run of digits without being the `-` this rule requires, so the owner is None
+        // and the socket could never be collected. That is why the site now asks for the tail
+        // `"0.sock"` and gets `sprag-latency-<pid>-0.sock`.
+        //
+        // ⚠⚠ THIS ASSERTION EXISTS BECAUSE A MUTATION CAME BACK GREEN. Adding `Some('.')` to the
+        // accepting arm of `owner_in` changed nothing any test could see: every name checked above
+        // fails earlier, on having no digits at all. A rule this file's own callers were renamed
+        // for was going unmeasured.
+        assert_eq!(
+            owner_in("sprag-latency-12345.sock", short),
+            None,
+            "a dot is not a segment separator, so this shape can never be reaped — which is the \
+             whole reason the site was renamed",
+        );
+
+        // ...and each sibling is readable under the prefix that actually built it.
+        assert_eq!(
+            owner_in("sprag-latency-mute-12345", "sprag-latency-mute"),
+            Some(12345)
+        );
+        assert_eq!(
+            owner_in("sprag-latency-poll-12345-7.sock", "sprag-latency-poll"),
+            Some(12345)
+        );
+        assert_eq!(
+            owner_in("sprag-live-turn-12345-99", "sprag-live-turn"),
+            Some(12345),
+            "the tag belongs in the PREFIX, which is why `live_agent` passes it there",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE SAFETY PROPERTY — register item 196.** Two writers share this machine, and
     /// the debt loop runs suites unattended. Every answer except *provably gone* keeps the
     /// directory, and this drives all of them rather than the happy path.

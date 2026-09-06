@@ -125,54 +125,93 @@ use sprag_gate::sources::outside_strings;
 /// `sprag-cli-it`, `sprag-rt`, `sprag-loop-tree`, `sprag-other-tree`, `sprag-no-tree`,
 /// `sprag-not-a-tree`, `sprag-sweep-mute`, `sprag-checker`, `sprag-695`, `sprag-619` and
 /// `sprag-mcp`'s six. Each now takes its name from `sprag_scratch::scratch_for`, which mints it and
-/// sweeps the same prefix's dead owners in one call — see [`PER_RUN_NAMES_REGISTERED`] for why the
-/// conversion alone would not have been the fix.
+/// sweeps the same prefix's dead owners in one call — see the block below this constant for why
+/// the conversion alone would not have been the fix.
 const HARNESS_SITES_REGISTERED: usize = 135;
 
-/// ⛔⛔⛔⛔⛔ **THE SECOND AXIS: A NAME NOBODY CAN EVER COLLECT** — register item 795, and the thing
-/// converting a site to `scratch_root()` does NOT do.
-///
-/// # Why this is a second population and not a wider [`HARNESS_SITES_REGISTERED`]
-///
-/// The file's header asks that question of the shell gate before answering it; the same question is
-/// owed here, and it was measured rather than argued:
-///
-/// | | that ratchet | this one |
-/// |---|---|---|
-/// | population | lines calling `env::temp_dir()` | lines calling `scratch_root()` and minting a per-run name |
-/// | predicate | is the root usable where it is taken | can what is put there ever be collected |
-///
-/// The intersection is empty by construction — a converted site LEAVES the first population and
-/// ENTERS this one — and that is precisely why both counts live in one file. Read alone, the first
-/// number falling looks like the litter being paid down. Measured 2026-09-06T14:24Z, in the same
-/// scratch root, it was not: `sprag-869-<pid>` had been converted for item 794 and stood at **124
-/// directories**, because a name carries the pid of the run that made it, so that run's own
-/// `remove_dir_all` matches only itself and its `Drop` never runs when it is killed.
-///
-/// # ⚠ Rule 5 — is there a path by which this reaches zero?
-///
-/// Yes, and it is why the population is *per-run* names rather than every `scratch_root()` caller.
-/// A caller that joins a FIXED name, or that wants the root itself to hand on, has no predecessor
-/// problem and could never be zero; including it would have made a ratchet that is red forever and
-/// therefore read by nobody. Every site in THIS population is one `scratch_for` call away, and when
-/// the number reaches 0 this constant and its test go with it.
-///
-/// # 26 → 4, 2026-09-06, register item 795's second axis opened and its harness half paid
-///
-/// The gate was written with this constant at 0 on purpose — the idiom
-/// [`HARNESS_SITES_REGISTERED`]'s own doc records — and printed **26**. Fourteen of those were
-/// harness (`#[cfg(test)]` modules and `tests/` files) and went the same round: `sprag-tab`,
-/// `sprag-tui-pty`, `sprag-tui-cfg`, `sprag-mine`, `sprag-waits`, `sprag-folds`, `sprag-contract`,
-/// `sprag-loop-read-it`, `sprag-916`, `sprag-leftovers-*`, `sprag-survey-*`, `sprag-mute-gaps`,
-/// `sprag-mute-twice`, `sprag-folds-outside`, `sprag-roads`, five `sprag-*-count` counters and
-/// `pty.rs`'s `sprag-{what}`.
-///
-/// ⛔⛔ **THE FOUR THAT REMAIN ARE PRODUCT, AND THAT IS WHY THEY DID NOT MOVE HERE.** `scratch_for`
-/// SWEEPS, and a sweep inside `sprag-latency`'s binary or `live_agent`'s spawn is a running program
-/// deleting directories in the machine's scratch root — a behaviour change to a shipped process,
-/// not a fixture edit, and it is owed its own measurement of what a stranger's leftovers cost
-/// there. Registered rather than waved through, which is the whole point of holding it exactly.
-const PER_RUN_NAMES_REGISTERED: usize = 4;
+// ⛔⛔⛔⛔⛔ THE SECOND AXIS: A NAME NOBODY CAN EVER COLLECT — register items 795 and 930, and the
+// thing converting a site to `scratch_root()` does NOT do.
+//
+// ⚠ A BLOCK COMMENT AND NOT A DOC ONE, because what it used to document is gone. It stood on
+// `PER_RUN_NAMES_REGISTERED` until item 930 took that population to zero; a doc comment with no
+// item under it attaches itself to whatever comes next, which is how this file first learned the
+// rule (`clippy::empty_line_after_doc_comments`, on the very edit that deleted the constant).
+//
+// # Why this is a second population and not a wider `HARNESS_SITES_REGISTERED`
+//
+// The file's header asks that question of the shell gate before answering it; the same question is
+// owed here, and it was measured rather than argued:
+//
+// | | that ratchet | this one |
+// |---|---|---|
+// | population | lines calling `env::temp_dir()` | lines calling `scratch_root()` and minting a per-run name |
+// | predicate | is the root usable where it is taken | can what is put there ever be collected |
+//
+// The intersection is empty by construction — a converted site LEAVES the first population and
+// ENTERS this one — and that is precisely why both live in one file. Read alone, the first number
+// falling looks like the litter being paid down. Measured 2026-09-06T14:24Z, in the same scratch
+// root, it was not: `sprag-869-<pid>` had been converted for item 794 and stood at **124
+// directories**, because a name carries the pid of the run that made it, so that run's own
+// `remove_dir_all` matches only itself and its `Drop` never runs when it is killed.
+//
+// # ⚠ Rule 5 — is there a path by which this reaches zero?
+//
+// Yes, and it is why the population is *per-run* names rather than every `scratch_root()` caller.
+// A caller that joins a FIXED name, or that wants the root itself to hand on, has no predecessor
+// problem and could never be zero; including it would have made a gate that is red forever and
+// therefore read by nobody. Every site in THIS population is one `scratch_for` call away, and on
+// 2026-09-06 the last of them took it.
+//
+// # 26 -> 4 -> 0, 2026-09-06, register items 795 and 930
+//
+// The gate was written with a floor of 0 on purpose — the idiom `HARNESS_SITES_REGISTERED`'s own
+// doc records — and printed **26**. Fourteen were harness and went the same day, leaving four that
+// the round registered rather than moved, on the argument that `scratch_for` SWEEPS and a sweep
+// inside a shipped process is a behaviour change owed its own measurement.
+//
+// ⛔⛔⛔ THAT ARGUMENT WAS HALF WRONG, AND MEASURING IT IS WHAT ITEM 930 PAID. Re-derived
+// 2026-09-06T15:27Z:
+//
+//   * `live_agent.rs` is declared `#[cfg(test)] mod live_agent;` in `sprag-host/src/lib.rs`, so
+//     the whole module is harness and nothing ships it. This file's classifier called it PRODUCT
+//     because `test_module_starts_at` looks for `#[cfg(test)]` INSIDE the file and this one's gate
+//     is on the DECLARATION. That is the conservative direction the classifier's own doc asks for
+//     — a shape it does not recognise arrives as a line to read — and the line was read.
+//   * `sprag-latency` is a benchmark a person runs by hand. Its three sites are all setup — two
+//     spawn a daemon, one is a `OnceLock` — and nothing in this tree invokes the binary: across
+//     the 338 tracked files it appears in no `*.sh`, `*.yml`, `*.toml`, `.githooks/` file or
+//     `Makefile`, and in no `.rs` line that spawns it. Every other mention is prose quoting rows.
+//     ⚠⚠ THE FIRST DRAFT OF THIS BULLET SAID *"nothing under `.githooks`, `scripts` or
+//     `.github`"* — AND `scripts/` DOES NOT EXIST IN THIS REPOSITORY. A grep of a path that is
+//     not there answers "none" for the same reason it answers "none" when there is genuinely
+//     nothing, so a third of that evidence was *not looked*. The claim above names file TYPES
+//     over the tracked set instead, which is a population anybody can count.
+//
+// ⚠⚠ The one real cost was in the `OnceLock`, and it was not the one the argument named: its first
+// call sat two lines inside a timed row reporting **1.96-8.38 us**, while a sweep of this machine's
+// 16,055-entry scratch root measures **20-40 ms**. Hoisting that initialisation out of the timed
+// region — which also removed a `create_dir_all` that only one side of a printed ratio was paying
+// — is what let the site take the seam. See `sprag-latency.rs`'s own block.
+//
+// # ⛔⛔⛔⛔⛔ AND THE TEST DID NOT GO WITH THE CONSTANT
+//
+// Item 930's done-when said to delete both when the number reached 0, by analogy with
+// `HARNESS_SITES_REGISTERED`. THE ANALOGY DOES NOT HOLD AND THE PRESCRIPTION WAS WRONG — and the
+// first draft of THIS paragraph got the reason half right, which is worth the four lines.
+//
+// It said the harness ratchet may be deleted at 0 *"because the gate above it still holds the
+// population, so it never stops being watched"*. Asked of the file rather than remembered:
+//
+//   `grep -n 'call_sites()' <this file>`  ->  three hits, two of them assertions
+//   line 450: `no_product_code_takes_a_scratch_root_unchecked`  filters `Where::Product` ONLY
+//   line 481: `the_harness_half_cannot_grow_without_being_read` filters `Where::Harness` ONLY
+//
+// ⇒ the sibling watches the PRODUCT half and nothing else. Delete the harness ratchet at 0 and a
+// new harness `env::temp_dir()` site arrives in silence — so NEITHER ratchet may be deleted with
+// its test, and this axis, which has no sibling at all, certainly may not. The CONSTANT went — a
+// floor of zero is not a floor, it is a number that can only rot upward — and the test became an
+// emptiness assertion, the same shape as `no_product_code_takes_a_scratch_root_unchecked`, which
+// reds on the FILE AND LINE of a new site rather than on a count somebody has to update.
 
 /// The tree this ratchet counts — through the one door, register item 809.
 ///
@@ -468,8 +507,7 @@ fn the_harness_half_cannot_grow_without_being_read() {
     );
 }
 
-/// ⛔⛔ **A PER-RUN NAME COMES FROM THE SEAM THAT CAN COLLECT IT** — register item 795's second
-/// axis, held exactly for [`HARNESS_SITES_REGISTERED`]'s reason.
+/// ⛔⛔ **EVERY PER-RUN NAME COMES FROM THE SEAM THAT CAN COLLECT IT** — register items 795 and 930.
 ///
 /// `sprag_scratch::scratch_for` mints the name AND sweeps the same prefix's dead owners, which is
 /// the only arrangement in which the two can agree on the prefix. They have to: `owner_in` reads
@@ -478,22 +516,24 @@ fn the_harness_half_cannot_grow_without_being_read() {
 /// service. A site that builds the name itself and sweeps somewhere else is one edit away from
 /// deleting a running suite's scratch, and a site that builds the name and never sweeps at all is
 /// what put 13,898 directories in this machine's scratch root.
+///
+/// ⚠ **A count became an emptiness on 2026-09-06**, when item 930 took the last four. The constant
+/// this held against is gone; the reasoning is on the doc block where it stood. What a reader gets
+/// now is the FILE AND LINE of a new site, which is what they would have had to go and find.
 #[test]
-fn a_per_run_name_is_minted_by_the_seam_that_can_collect_it() {
+fn every_per_run_name_is_minted_by_the_seam_that_can_collect_it() {
     let sites = per_run_name_sites();
-    assert_eq!(
-        sites.len(),
-        PER_RUN_NAMES_REGISTERED,
-        "⛔ ITEM 795's second axis moved: {} site(s) build a per-run scratch name on top of \
-         `scratch_root()`, against {PER_RUN_NAMES_REGISTERED} recorded. Taking the ROOT from \
-         `sprag_scratch` says the root is usable; it says nothing about who removes the directory \
-         when the run that made it is killed, and nothing ever does — the name carries that run's \
-         pid, so its own `remove_dir_all` matches only itself. Call \
+    assert!(
+        sites.is_empty(),
+        "⛔ ITEM 795's second axis: {} site(s) build a per-run scratch name on top of \
+         `scratch_root()`. Taking the ROOT from `sprag_scratch` says the root is usable; it says \
+         nothing about who removes the directory when the run that made it is killed, and nothing \
+         ever does — the name carries that run's pid, so its own `remove_dir_all` matches only \
+         itself and its `Drop` never runs when it is killed. Call \
          `sprag_scratch::scratch_for(<prefix>, <tail>)` instead: it mints the name with the pid \
-         where the reaper reads it and sweeps that prefix's dead owners in the same call. If it \
-         SHRANK, that is item 795 being paid down: set this constant to {} and say so in the \
-         register.\n{}",
-        sites.len(),
+         where the reaper reads it and sweeps that prefix's dead owners in the same call. ⚠ If the \
+         site cannot afford the sweep where it stands — item 930's one real case was a `OnceLock` \
+         initialising inside a timed row — move the initialisation, do not skip the seam:\n{}",
         sites.len(),
         sites.join("\n"),
     );

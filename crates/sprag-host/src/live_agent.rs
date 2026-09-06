@@ -93,8 +93,12 @@ impl Scratch {
         // ⚠ The root through `sprag_scratch` rather than `std::env::temp_dir()`: the latter answers
         // a RELATIVE path when `TMPDIR` is set-and-empty, and `create_dir_all` below would then
         // succeed against the process's own working directory without a word (register item 794).
-        let path = sprag_scratch::scratch_root()
-            .join(format!("sprag-live-{tag}-{}-{nanos}", std::process::id(),));
+        //
+        // ⚠⚠ And `scratch_for`, so the sweep happens — register item 930. [`Drop`] below removes
+        // this run's own, and a run that is KILLED never reaches it; the name carries that run's
+        // pid, so nothing else could ever match it. The tag goes in the PREFIX rather than the
+        // tail because `owner_in` reads the pid only directly after the prefix it is given.
+        let path = sprag_scratch::scratch_for(&format!("sprag-live-{tag}"), &format!("{nanos}"));
         std::fs::create_dir_all(&path).expect("a scratch directory for the live agent");
         Self(path)
     }
