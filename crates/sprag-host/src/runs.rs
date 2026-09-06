@@ -2693,6 +2693,81 @@ pub struct PersistedRun {
     /// nothing was banked. [`RUN_LOG_VERSION`] does not move, [`build`](Self::build)'s argument.
     #[serde(default)]
     pub banked: Option<PersistedBanked>,
+    /// ⛔⛔⛔⛔⛔ **HOW MANY DECISIONS THIS RUN TOOK ON SOMEBODY'S BEHALF** — register item 913, and
+    /// [`sprag_plugin::Outcome::answered`] arriving somewhere it can be asked about later.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The restore path knew this was a lie and had no way to stop telling it
+    ///
+    /// Its own comment reads *"`0` here is a claim the log cannot back … inventing one would be the
+    /// record asserting something nobody wrote down"* — and then wrote `0`, because
+    /// [`sprag_plugin::Outcome::answered`] is a `u32` and there was nothing else to put. The live
+    /// wire is right to publish a bare `0` (see `crate::plugins::RUN_ANSWERED_KEY`: a run that
+    /// answered nothing must say so affirmatively), because a live driver DID count. A restored run
+    /// did not, and that is the distinction this column exists to carry.
+    ///
+    /// **Measured 2026-09-06T00:57:52Z over the loop's own store: 241 rows, `answered` present in
+    /// 0.** So *how often has this product pressed a key on my behalf?* had no surface that could be
+    /// asked of history at all.
+    ///
+    /// ⚠⚠ [`None`] is **nobody wrote it down** — a log older than this column, or a row for a run
+    /// that has not ended. Never *it answered nothing*, which is `Some(0)`. That split is the whole
+    /// of register item 891 and the reason this is not a bare `u32`.
+    ///
+    /// ⚠ [`RUN_LOG_VERSION`] does not move — [`build`](Self::build)'s argument, and the same call
+    /// items 606, 616, 762, 856(1), 856, 889 and 866(2) each made.
+    #[serde(default)]
+    pub answered: Option<u32>,
+    /// ⛔⛔⛔⛔⛔ **HOW MANY OF ITS PEER'S TOOL CALLS THIS RUN REFUSED AND REDIRECTED** — register
+    /// item 913, [`sprag_plugin::Outcome::screened`] crossing the same boundary.
+    ///
+    /// ⚠⚠ **BESIDE [`answered`](Self::answered) AND NEVER FOLDED INTO IT**, which is that field's
+    /// own stated rule: they are OPPOSITE decisions, and the question a person reads a tally to ask
+    /// is *what did my run let it do?* — one number over both answers it with a count that includes
+    /// every refusal.
+    ///
+    /// ⚠ [`None`] is [`answered`](Self::answered)'s [`None`], for its reason.
+    #[serde(default)]
+    pub screened: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY NEXT CHECKPOINTS THIS RUN COUNTED RATHER THAN TOOK** — register item
+    /// 913, carrying [`sprag_plugin::Outcome::deferred`] (register item 833(2)) across a restart.
+    ///
+    /// ⚠⚠ It is read ACROSS runs or not at all: a re-aiming cap that is too tight for the work
+    /// shows up as this number climbing over a series, and the daemon restarts between rounds. A
+    /// column that stopped at that boundary would be readable only on rows nobody has a question
+    /// about — [`width_withheld`](Self::width_withheld)'s argument exactly.
+    ///
+    /// ⚠ [`None`] is *the plugin sets no proposals aside* AND *the log predates this column*, which
+    /// read alike here and correctly: neither is a claim that nothing was deferred. That is
+    /// [`banked`](Self::banked)'s stated call, made again.
+    #[serde(default)]
+    pub deferred: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES IT CHANGED DIRECTION WITH NOBODY CHECKING** — register item 913,
+    /// carrying [`sprag_plugin::Outcome::unchecked`] (register item 847) across a restart.
+    ///
+    /// ⚠⚠ Sharper than its neighbour, on that field's own argument: a run that re-aimed itself four
+    /// times on nobody's say-so is precisely the run whose account must not read like a bounded one
+    /// — and after a restart every account is read from this file.
+    ///
+    /// ⚠ [`None`] is [`deferred`](Self::deferred)'s [`None`], for its reason.
+    #[serde(default)]
+    pub unchecked: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY OF [`deferred`](Self::deferred) THE CLASSIFIER REFUSED** — register
+    /// item 913, carrying [`sprag_plugin::Outcome::unadmitted`] (register item 833).
+    ///
+    /// ⚠ A SUBSET of [`deferred`](Self::deferred) and never a second total, which is that field's
+    /// own rule and does not change by being stored.
+    ///
+    /// ⚠ [`None`] is [`deferred`](Self::deferred)'s [`None`], for its reason.
+    #[serde(default)]
+    pub unadmitted: Option<u32>,
+    /// ⛔⛔⛔⛔⛔ **WHETHER ANYTHING INDEPENDENT VERIFIED WHAT THIS RUN SAID IT FINISHED** —
+    /// register item 913. See [`PersistedChecks`], where the argument and the measurement are.
+    ///
+    /// ⚠ [`None`] is *nobody wrote it down*; [`sprag_plugin::Checks::NONE`] restored from it claims
+    /// nothing either, which is the pairing that keeps *no checker was meant to run* apart from
+    /// *the checker is broken* — [`sprag_plugin::Checks::asked`]'s own distinction.
+    #[serde(default)]
+    pub checks: Option<PersistedChecks>,
     /// ⛔⛔⛔⛔⛔ **WHICH ENDING THE RUN CLOSED UNDER** — register item 706's third requirement, and
     /// it has to cross a restart for the reason that item's third cost measured.
     ///
@@ -2897,6 +2972,64 @@ where
     reported.or(cell).map(Into::into)
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT AN ENDED RUN'S OUTCOME CONTRIBUTES TO ITS STORED ROW** — the shape
+/// [`RunRegistry::persistable`] decides once per run, before it builds the record.
+///
+/// # ⚠⚠⚠ Why a named shape where a tuple would compile
+///
+/// It WAS a tuple, of seven, and register item 913 needed six more. A thirteen-element tuple is a
+/// list of positions nothing checks: two `Option<u32>` neighbours swapped in one arm would compile,
+/// store a run's refusals as its approvals, and be found by nobody. Named fields make each arm say
+/// which fact it is answering, and [`Default`] is what lets the arms that answer NOTHING say so
+/// once instead of counting `None`s.
+///
+/// ⚠⚠ **EVERY FIELD IS AN [`Option`] BUT [`finished`](Self::finished), AND THAT IS THE ITEM.** The
+/// tallies are `Some` on exactly the arm where a driver ran to an ending and therefore COUNTED; on
+/// every other arm they are `None`, which the row reads as *nobody wrote it down* rather than as a
+/// zero. Register item 891's whole distinction, and item 891 ⑶'s ratchet is what keeps this
+/// decision here rather than at the record literal, where an unconditional `Some` would launder it.
+#[derive(Default)]
+struct Ending {
+    /// Whether the run is over at all.
+    finished: bool,
+    /// [`PersistedRun::outcome`] — the ending WORD.
+    outcome: Option<String>,
+    /// [`PersistedRun::ceiling`].
+    ceiling: Option<String>,
+    /// [`PersistedRun::output`].
+    output: Option<String>,
+    /// [`PersistedRun::done_reason`] — register item 706.
+    done_reason: Option<String>,
+    /// [`PersistedRun::failure`] — register item 903.
+    failure: Option<String>,
+    /// [`PersistedRun::blocked_by`] — register item 903.
+    blocked_by: Option<String>,
+    /// [`PersistedRun::answered`] — register item 913.
+    answered: Option<u32>,
+    /// [`PersistedRun::screened`] — register item 913.
+    screened: Option<u32>,
+    /// [`PersistedRun::deferred`] — register item 913.
+    deferred: Option<u32>,
+    /// [`PersistedRun::unchecked`] — register item 913.
+    unchecked: Option<u32>,
+    /// [`PersistedRun::unadmitted`] — register item 913.
+    unadmitted: Option<u32>,
+    /// [`PersistedRun::checks`] — register item 913.
+    checks: Option<PersistedChecks>,
+}
+
+/// **ONE TALLY OUT OF A DRIVER'S REPORTED ENDING**, or [`None`] when that build did not write it.
+///
+/// ⚠⚠ `u32::try_from` rather than a cast: a number too large to be this counter is a report this
+/// daemon cannot read, and answering *nobody wrote it down* is honest where a truncating cast would
+/// store a different number than the one that arrived. Register item 913.
+fn report_tally(reported: &Value, key: &str) -> Option<u32> {
+    reported
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|count| u32::try_from(count).ok())
+}
+
 /// ⛔⛔⛔⛔⛔ **A COUNTER A STORED RUN CARRIES** — register item 895, the closed set `counted`
 /// writes and [`PersistedRun::sampled`] answers about.
 ///
@@ -2920,16 +3053,20 @@ pub enum Tally {
     SaidBySentence,
     /// [`PersistedRun::width_withheld`].
     WidthWithheld,
+    /// ⛔ [`PersistedRun::checks`] — register item 913, and the sixth arrived the way this type's
+    /// own doc predicted the fifth would.
+    Checks,
 }
 
 impl Tally {
     /// Every counter, in the order [`PersistedRun`] declares them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Deliveries,
         Self::FoldsByReason,
         Self::DeliveredByRoad,
         Self::SaidBySentence,
         Self::WidthWithheld,
+        Self::Checks,
     ];
 
     /// **THE KEY IT IS STORED UNDER** — the serde field name, so a reader of the file and a reader
@@ -2942,6 +3079,7 @@ impl Tally {
             Self::DeliveredByRoad => "delivered_by_road",
             Self::SaidBySentence => "said_by_sentence",
             Self::WidthWithheld => "width_withheld",
+            Self::Checks => "checks",
         }
     }
 }
@@ -3113,6 +3251,77 @@ impl From<PersistedDeliveries> for sprag_plugin::Deliveries {
             unreported: stored.unreported,
             released: stored.released,
             unaccounted: stored.unaccounted,
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **THE STORED SHAPE OF [`sprag_plugin::Checks`]** — register item 913, on
+/// [`PersistedDeliveries`]' terms one type up: `sprag-plugin` states a serde-free contract, so the
+/// host owns every mapping to a stored shape.
+///
+/// # ⛔⛔⛔⛔⛔ Why this crossed nothing, and what that cost the tally it belongs to
+///
+/// [`sprag_plugin::Checks`] is register item 601's answer to *did anything independent verify what
+/// this run said it finished?* — the question a `converged` most needs asked of it. It reached a
+/// live row and stopped there. Measured over the loop's own store at 2026-09-06T00:57:52Z: **241
+/// rows, and not one carries a check tally of any kind.**
+///
+/// ⚠⚠ **AND THE RESTORE PATH ALREADY SAID SO, IN AS MANY WORDS.** Its own comment reads *"a
+/// restored run must not be made to say that about a run whose checker the log never recorded"* and
+/// hands back [`sprag_plugin::Checks::NONE`] — which is honest and is also the whole loss: every run
+/// anybody reads has been through a restore (item 606 measured thirteen for thirteen), so the
+/// answer was available exactly while nobody needed it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedChecks {
+    /// [`sprag_plugin::Checks::asked`] — claims really put to an independent checker.
+    pub asked: u32,
+    /// [`sprag_plugin::Checks::silent`] — of [`asked`](Self::asked), how many answered nothing.
+    pub silent: u32,
+    /// [`sprag_plugin::Checks::why_silent`] — the LAST silence's sentence, or [`None`].
+    ///
+    /// ⚠ The sentence and not a parsed cause, [`PersistedRun::failure`]'s rule: what crosses is
+    /// what a person reads, because reconstructing structure the file never held would be this
+    /// record inventing a fact.
+    #[serde(default)]
+    pub why_silent: Option<String>,
+    /// [`sprag_plugin::Checks::unasked`] — register item 674's count: claims that could not be put
+    /// to a checker at all, and so are NOT part of [`asked`](Self::asked).
+    ///
+    /// ⚠⚠ It travels because without it the run's own numbers **flatter its checker** — every claim
+    /// nobody could put is a claim absent from the denominator. That is item 674's finding, and a
+    /// column that stopped at the daemon would reproduce it one restart later.
+    #[serde(default)]
+    pub unasked: u32,
+    /// [`sprag_plugin::Checks::refused`] — checks that answered NO.
+    #[serde(default)]
+    pub refused: u32,
+    /// [`sprag_plugin::Checks::refused_in_a_row`] — the run of consecutive refusals still standing.
+    #[serde(default)]
+    pub refused_in_a_row: u32,
+}
+
+impl From<sprag_plugin::Checks> for PersistedChecks {
+    fn from(live: sprag_plugin::Checks) -> Self {
+        Self {
+            asked: live.asked,
+            silent: live.silent,
+            why_silent: live.why_silent,
+            unasked: live.unasked,
+            refused: live.refused,
+            refused_in_a_row: live.refused_in_a_row,
+        }
+    }
+}
+
+impl From<PersistedChecks> for sprag_plugin::Checks {
+    fn from(stored: PersistedChecks) -> Self {
+        Self {
+            asked: stored.asked,
+            silent: stored.silent,
+            why_silent: stored.why_silent,
+            unasked: stored.unasked,
+            refused: stored.refused,
+            refused_in_a_row: stored.refused_in_a_row,
         }
     }
 }
@@ -3649,6 +3858,13 @@ impl PersistedRun {
             Tally::WidthWithheld => self
                 .width_withheld
                 .map(|it| sprag_plugin::WidthWithheld::from(it).is_empty()),
+            // ⛔⛔ EMPTY IS *THIS RUN PUT NO CLAIM TO ANYBODY* — register item 913, and see
+            // `sprag_plugin::Checks::is_empty`: a row holding only `unasked` is COUNTED, because
+            // item 674's finding is that dropping those is how the numbers flatter the checker.
+            Tally::Checks => self
+                .checks
+                .clone()
+                .map(|it| sprag_plugin::Checks::from(it).is_empty()),
         };
         match empty {
             None => Sampled::Unsaid,
@@ -6563,105 +6779,176 @@ impl RunRegistry {
                     // five for their reason exactly: the sentence lives in the `Outcome` this
                     // process computed and in the report a driver across a socket sent back, and
                     // these arms are the one place that knows which. See `PersistedRun::failure`.
-                    let (finished, outcome, ceiling, output, done_reason, failure, blocked_by) =
-                        match &run.state {
-                            RunState::Running | RunState::Interrupted => {
-                                (false, None, None, None, None, None, None)
-                            }
-                            // ⚠ `uncommitted` is NOT persisted, and the omission is stated rather than
-                            // an oversight: what a tree was holding is a fact about a moment that has
-                            // passed, and a successor daemon publishing it would be vouching for a
-                            // reading it never took. A restored run answers *cannot say*.
-                            RunState::Done {
-                                outcome, output, ..
-                            } => (
-                                true,
-                                Some(crate::plugins::outcome_word(outcome).to_owned()),
-                                crate::plugins::outcome_ceiling(outcome).map(str::to_owned),
-                                output.clone(),
-                                // ⛔ AND WHICH ENDING IT CLOSED UNDER — register item 706. Owned here
-                                // and borrowed live, which is the `Cow`'s whole point: the log is the
-                                // one reader that outlives the plugin that spelled the word.
-                                outcome.done_reason.as_deref().map(str::to_owned),
-                                // ⛔⛔⛔⛔⛔ AND WHY IT FAILED — register item 903. The SENTENCE, taken
-                                // through the same `Display` every reader of a live run sees, so a row
-                                // restored from this file and a row read off the running daemon say the
-                                // same words. `None` for every ending that is not a failure, which is
-                                // what `Outcome::failure` already means.
-                                outcome.failure.as_ref().map(ToString::to_string),
-                                // ⛔⛔⛔⛔⛔ AND WHY A BLOCKED RUN WAS NEVER ANSWERED — register item
-                                // 903. THE REFUSAL'S WORD, out of a closed set of eleven; the QUESTION
-                                // beside it does not cross, on `outcome_from_words`' stated argument.
-                                // See `PersistedRun::blocked_by` for why that argument does not reach
-                                // this half.
-                                match &outcome.state {
-                                    sprag_plugin::OutcomeState::Blocked(Some(unanswered)) => {
-                                        Some(unanswered.why().wire_str().to_owned())
-                                    }
-                                    _ => None,
-                                },
-                            ),
-                            // ⚠⚠⚠⚠ A RUN THAT ENDED IN ANOTHER PROCESS — register items 650 / 544, and
-                            // the durable log loses NOTHING here: what it keeps of an ending is the
-                            // word, the ceiling and the capture, and all three are what
-                            // `outcome_to_json` has always carried. Read out of the report rather than
-                            // recomputed, because the process that computed them is gone.
+                    let Ending {
+                        finished,
+                        outcome,
+                        ceiling,
+                        output,
+                        done_reason,
+                        failure,
+                        blocked_by,
+                        answered,
+                        screened,
+                        deferred,
+                        unchecked,
+                        unadmitted,
+                        checks,
+                    } = match &run.state {
+                        RunState::Running | RunState::Interrupted => Ending::default(),
+                        // ⚠ `uncommitted` is NOT persisted, and the omission is stated rather than
+                        // an oversight: what a tree was holding is a fact about a moment that has
+                        // passed, and a successor daemon publishing it would be vouching for a
+                        // reading it never took. A restored run answers *cannot say*.
+                        RunState::Done {
+                            outcome, output, ..
+                        } => Ending {
+                            finished: true,
+                            outcome: Some(crate::plugins::outcome_word(outcome).to_owned()),
+                            ceiling: crate::plugins::outcome_ceiling(outcome).map(str::to_owned),
+                            output: output.clone(),
+                            // ⛔ AND WHICH ENDING IT CLOSED UNDER — register item 706. Owned here
+                            // and borrowed live, which is the `Cow`'s whole point: the log is the
+                            // one reader that outlives the plugin that spelled the word.
+                            done_reason: outcome.done_reason.as_deref().map(str::to_owned),
+                            // ⛔⛔⛔⛔⛔ AND WHY IT FAILED — register item 903. The SENTENCE, taken
+                            // through the same `Display` every reader of a live run sees, so a row
+                            // restored from this file and a row read off the running daemon say the
+                            // same words. `None` for every ending that is not a failure, which is
+                            // what `Outcome::failure` already means.
+                            failure: outcome.failure.as_ref().map(ToString::to_string),
+                            // ⛔⛔⛔⛔⛔ AND WHY A BLOCKED RUN WAS NEVER ANSWERED — register item
+                            // 903. THE REFUSAL'S WORD, out of a closed set of eleven; the QUESTION
+                            // beside it does not cross, on `outcome_from_words`' stated argument.
+                            // See `PersistedRun::blocked_by` for why that argument does not reach
+                            // this half.
+                            blocked_by: match &outcome.state {
+                                sprag_plugin::OutcomeState::Blocked(Some(unanswered)) => {
+                                    Some(unanswered.why().wire_str().to_owned())
+                                }
+                                _ => None,
+                            },
+                            // ⛔⛔⛔⛔⛔ AND THE SIX TALLIES THAT USED TO DIE HERE — register
+                            // item 913. Every one of them is `Some` on THIS arm and only on
+                            // this arm, which is the whole distinction: a driver that ran to
+                            // an ending COUNTED, so its zero is a real zero; every other arm
+                            // has no count and says so with `None`. Writing them at the record
+                            // literal instead would be the laundering item 891 ⑶ ratchets
+                            // against — a run nobody incremented handed a zero signed as its
+                            // count.
+                            answered: Some(outcome.answered),
+                            // ⚠ BESIDE `answered` AND NOT FOLDED INTO IT — that field's own
+                            // rule: they are opposite decisions, and one number over both
+                            // answers *what did my run let it do?* with a count that includes
+                            // every refusal.
+                            screened: Some(outcome.screened),
+                            // ⚠⚠ THESE THREE ARE ALREADY OPTIONS AND CROSS AS THEY ARE. Their
+                            // `None` is the PLUGIN's own answer (*I set nothing aside*, *I do
+                            // not re-aim*) rather than this daemon's silence, and forcing them
+                            // to `Some` would answer a question the plugin declined —
+                            // `banked`'s stated call, made again three fields over.
+                            deferred: outcome.deferred,
+                            unchecked: outcome.unchecked,
+                            unadmitted: outcome.unadmitted,
+                            // ⛔⛔ AND WHETHER ANYTHING INDEPENDENT CHECKED IT — register item
+                            // 601's tally, register item 913's crossing. See `PersistedChecks`.
+                            checks: Some(outcome.checks.clone().into()),
+                        },
+                        // ⚠⚠⚠⚠ A RUN THAT ENDED IN ANOTHER PROCESS — register items 650 / 544, and
+                        // the durable log loses NOTHING here: what it keeps of an ending is the
+                        // word, the ceiling and the capture, and all three are what
+                        // `outcome_to_json` has always carried. Read out of the report rather than
+                        // recomputed, because the process that computed them is gone.
+                        //
+                        // ⚠ `PersistedRun`'s own fields are `Option<String>`, so a key the report
+                        // does not carry lands as [`None`] — which this log already reads as
+                        // *nobody wrote that down* rather than as a zero. An older daemon reading
+                        // this file meets exactly the shape it meets for a thread-driven run.
+                        RunState::Reported(reported) => Ending {
+                            finished: true,
+                            outcome: reported
+                                .get("state")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            ceiling: reported
+                                .get(crate::plugins::RUN_CEILING_KEY)
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            output: reported
+                                .get("output")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            // ⛔ THE SAME WORD OUT OF THE REPORT — register item 706. The driver
+                            // on the far side wrote it with THIS daemon's own `outcome_to_json`,
+                            // so there is one spelling and this side reads rather than recomputes.
+                            done_reason: reported
+                                .get(crate::plugins::RUN_DONE_REASON_KEY)
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            // ⛔⛔⛔⛔⛔ AND THE SENTENCE OUT OF THE REPORT — register item 903, on
+                            // the line above's argument: the far driver composed it with THIS
+                            // daemon's `outcome_to_json`, so there is one spelling and this side
+                            // reads rather than recomputes. ⚠ THE KEY IS THE ONE THAT SIDE WROTE
+                            // (`failure`), which is why it is spelled here exactly as that composer
+                            // spells it.
+                            failure: reported
+                                .get("failure")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            // ⛔⛔⛔ AND THE REFUSAL'S WORD OUT OF THE REPORT — register item 903,
+                            // on the line above's argument. Spelled as that composer spells it.
+                            blocked_by: reported
+                                .get(crate::plugins::RUN_BLOCKED_BY_KEY)
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            // ⛔⛔⛔⛔⛔ AND THE SIX TALLIES OUT OF THE REPORT — register item
+                            // 913, on the lines above's argument exactly: the far driver wrote
+                            // them with THIS daemon's `outcome_to_json`, so this side READS
+                            // rather than recomputes, and a key that build did not write lands
+                            // as `None` — *nobody wrote it down*, never a zero.
                             //
-                            // ⚠ `PersistedRun`'s own fields are `Option<String>`, so a key the report
-                            // does not carry lands as [`None`] — which this log already reads as
-                            // *nobody wrote that down* rather than as a zero. An older daemon reading
-                            // this file meets exactly the shape it meets for a thread-driven run.
-                            RunState::Reported(reported) => (
-                                true,
-                                reported
-                                    .get("state")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned),
-                                reported
-                                    .get(crate::plugins::RUN_CEILING_KEY)
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned),
-                                reported
-                                    .get("output")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned),
-                                // ⛔ THE SAME WORD OUT OF THE REPORT — register item 706. The driver
-                                // on the far side wrote it with THIS daemon's own `outcome_to_json`,
-                                // so there is one spelling and this side reads rather than recomputes.
-                                reported
-                                    .get(crate::plugins::RUN_DONE_REASON_KEY)
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned),
-                                // ⛔⛔⛔⛔⛔ AND THE SENTENCE OUT OF THE REPORT — register item 903, on
-                                // the line above's argument: the far driver composed it with THIS
-                                // daemon's `outcome_to_json`, so there is one spelling and this side
-                                // reads rather than recomputes. ⚠ THE KEY IS THE ONE THAT SIDE WROTE
-                                // (`failure`), which is why it is spelled here exactly as that composer
-                                // spells it.
-                                reported
-                                    .get("failure")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned),
-                                // ⛔⛔⛔ AND THE REFUSAL'S WORD OUT OF THE REPORT — register item 903,
-                                // on the line above's argument. Spelled as that composer spells it.
-                                reported
-                                    .get(crate::plugins::RUN_BLOCKED_BY_KEY)
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned),
-                            ),
-                            // ⚠ A DRIVER THAT DIED NAMED NO ENDING, and `why` is not one: it is the
-                            // exit status of a process that stopped saying anything, which is the
-                            // opposite of a run closing on its own terms.
+                            // ⚠⚠ `progress_from_report` is deliberately NOT used here. That
+                            // reader answers about a RUNNING row and its own gate (item 891,
+                            // hop 3) holds that it never invents a zero; this arm is about an
+                            // ENDED one and reads the ending's own keys, which is why the two
+                            // stay separate readers of one report.
+                            answered: report_tally(reported, crate::plugins::RUN_ANSWERED_KEY),
+                            deferred: report_tally(reported, crate::plugins::RUN_DEFERRED_KEY),
+                            unchecked: report_tally(reported, crate::plugins::RUN_UNCHECKED_KEY),
+                            unadmitted: report_tally(reported, crate::plugins::RUN_UNADMITTED_KEY),
+                            // ⛔⛔⛔⛔⛔ AND THESE TWO CANNOT CROSS AT ALL, WHICH IS SAID
+                            // RATHER THAN QUIETLY ZEROED — `RunState::Reported`'s own doc:
+                            // *"`outcome_to_json` is a one-way RENDER: it drops `screened`,
+                            // `deliveries`, `checks` and `banked`, so a daemon that
+                            // reconstructed one would be asserting four facts it was never
+                            // told."* There is no key here to read, so `None` — *nobody wrote
+                            // it down* — is the only honest answer, and it is the SAME answer
+                            // this column gives an older log.
                             //
-                            // ⚠⚠ NOR IS IT A FAILURE SENTENCE — register item 903. This `why` is
-                            // already published as `crate::plugins::RUN_ERROR_KEY` and means *the
-                            // driver stopped saying anything*; `failure` means *the plugin met a cause
-                            // and named it*. Putting an exit status in that column would hand a reader
-                            // a diagnosis nobody wrote.
-                            RunState::Panicked(why) => {
-                                (true, Some(why.clone()), None, None, None, None, None)
-                            }
-                        };
+                            // ⚠⚠ The residue, stated: an out-of-process run's screening and
+                            // check tallies reach no durable surface even now, because they
+                            // reach no wire. That is one hop upstream of this column and is
+                            // registered as its own item rather than papered over here.
+                            screened: None,
+                            checks: None,
+                        },
+                        // ⚠ A DRIVER THAT DIED NAMED NO ENDING, and `why` is not one: it is the
+                        // exit status of a process that stopped saying anything, which is the
+                        // opposite of a run closing on its own terms.
+                        //
+                        // ⚠⚠ NOR IS IT A FAILURE SENTENCE — register item 903. This `why` is
+                        // already published as `crate::plugins::RUN_ERROR_KEY` and means *the
+                        // driver stopped saying anything*; `failure` means *the plugin met a cause
+                        // and named it*. Putting an exit status in that column would hand a reader
+                        // a diagnosis nobody wrote.
+                        // ⚠⚠⚠ AND IT COUNTED NOTHING EITHER — register item 913. A worker that
+                        // panicked produced no `Outcome`, so every tally below stays `None`:
+                        // *nobody wrote it down*, which is exactly what happened.
+                        RunState::Panicked(why) => Ending {
+                            finished: true,
+                            outcome: Some(why.clone()),
+                            ..Ending::default()
+                        },
+                    };
                     // ⚠⚠⚠⚠⚠ **A DRIVER'S REPORT IS PREFERRED OVER THE CELL, AND THE ROW HAD ALREADY
                     // DECIDED THIS** — register item 662. For a run driven in another process the
                     // cell NEVER MOVES (`spawn_driven_run` files an empty one and says so), so
@@ -6877,6 +7164,28 @@ impl RunRegistry {
                             .banked
                             .map(Into::into)
                             .or_else(|| run.progress.banked.clone().map(Into::into)),
+                        // ⛔⛔⛔⛔⛔ AND THE SIX TALLIES AN ENDING COUNTED — register item 913.
+                        // They are plain bindings off `Ending` above rather than expressions here,
+                        // which is what item 891 ⑶'s ratchet is for: forcing one of them at this
+                        // literal would sign a zero as the count of a run nobody incremented.
+                        //
+                        // ⚠⚠ **DO NOT SPELL THAT FORCED SHAPE ANYWHERE IN THIS BLOCK, EVEN IN
+                        // PROSE.** The ratchet is a TEXT scan over this literal and does not know a
+                        // comment from an expression — deliberately, because a scanner with a
+                        // parser in it is a scanner that can be fooled. The first draft of this
+                        // comment named the shape it was warning about and went red for it.
+                        //
+                        // ⚠ AND NO CELL FALLBACK, unlike every counter above them. `Progress`
+                        // holds these live, but its answer tally is a bare `u32` — for a run that
+                        // never started that reads `0`, and writing it here would be the very
+                        // laundering the ratchet refuses. What a row may say is what an ENDING
+                        // counted, and an unfinished run says nothing.
+                        answered,
+                        screened,
+                        deferred,
+                        unchecked,
+                        unadmitted,
+                        checks,
                         // ⚠⚠⚠⚠⚠ AND HOW BIG THE BRIEF WAS — register item 719's second direction,
                         // written on the line above's terms exactly: the report first, the cell as
                         // the fallback, and a `None` that is the PLUGIN's own answer (*nobody
@@ -7019,26 +7328,32 @@ impl RunRegistry {
                         // NOW that a dead daemon's log cannot make. This column is about a moment
                         // that is over and stays true however long ago it was.
                         stopped: None,
-                        // ⚠ AND THE ANSWER TALLY IS NOT RESTORED EITHER, for a reason worth
-                        // stating rather than folding into the two above: this one is a count of
-                        // decisions taken on somebody's behalf, so `0` here is a claim the log
-                        // cannot back. What survives a restart is the run's WORD; the durable log
-                        // does not carry this column, and inventing one would be the record
-                        // asserting something nobody wrote down.
-                        answered: 0,
+                        // ⛔⛔⛔⛔⛔ **AND THE ANSWER TALLY IS RESTORED NOW** — register item 913,
+                        // and the old comment here is the item's own evidence. It read: *"`0` here
+                        // is a claim the log cannot back … the durable log does not carry this
+                        // column, and inventing one would be the record asserting something nobody
+                        // wrote down"* — and then wrote `0`, because there was no column to read
+                        // and `u32` has no way to say *nobody counted*.
+                        //
+                        // ⚠⚠ THE ZERO IS STILL THERE FOR A LOG OLDER THAN THAT COLUMN, and that is
+                        // the residue this repair does not remove: `Outcome::answered` is a `u32`
+                        // because a LIVE driver always counted (`RUN_ANSWERED_KEY`'s stated rule —
+                        // a run that answered nothing must say so affirmatively). What changed is
+                        // that the ROW can now say `null`, so *nobody wrote it down* is
+                        // representable exactly where a reader asks history rather than a process.
+                        answered: saved.answered.unwrap_or(0),
                         // ⚠ AND THE SCREENING TALLY WITH IT, on the same argument for the opposite
-                        // decision: this one counts the peer's tool calls a run REFUSED, and the
-                        // log has no column for it either.
-                        screened: 0,
-                        deferred: None,
-                        // ⚠ NOR HOW MANY OF ITS DIRECTIONS NOBODY CHECKED, on `deferred`'s reason
-                        // exactly — register item 847. A restored run's log has no column for it,
-                        // and `None` is *nobody was counting* rather than *nothing went unchecked*.
-                        unchecked: None,
-                        // ⚠ NOR HOW MANY OF ITS DEFERRALS WERE REFUSALS — register item 833, on
-                        // `deferred`'s reason exactly: the log has no column for it, and `None` is
-                        // *nobody was counting* rather than *none of them were refused*.
-                        unadmitted: None,
+                        // decision: this one counts the peer's tool calls a run REFUSED.
+                        screened: saved.screened.unwrap_or(0),
+                        // ⚠⚠ THESE THREE COME BACK AS THEY WENT: their `None` was already a real
+                        // answer (*this plugin sets nothing aside*), so a log that carries one is
+                        // read straight and a log that does not lands on the same `None` — which
+                        // is `PersistedRun::deferred`'s stated call.
+                        deferred: saved.deferred,
+                        // ⚠ NOR HOW MANY OF ITS DIRECTIONS NOBODY CHECKED — register item 847.
+                        unchecked: saved.unchecked,
+                        // ⚠ NOR HOW MANY OF ITS DEFERRALS WERE REFUSALS — register item 833.
+                        unadmitted: saved.unadmitted,
                         // ⚠⚠⚠ AND NOT HERE, THOUGH THE LOG NOW CARRIES IT — register item 606. The
                         // restored pair goes into `Progress` below, which is where every reader
                         // takes it from: `crate::plugins::run_to_json` publishes `delivered` out of
@@ -7050,7 +7365,17 @@ impl RunRegistry {
                         // is load-bearing rather than merely honest: `asked: 0` means *nobody was
                         // meant to check this*, and a restored run must not be made to say that
                         // about a run whose checker the log never recorded. `NONE` claims nothing.
-                        checks: sprag_plugin::Checks::NONE,
+                        //
+                        // ⛔⛔⛔⛔⛔ **AND SINCE REGISTER ITEM 913 THE LOG MAY ACTUALLY CARRY IT**,
+                        // so the fallback is what stays honest rather than the whole answer: a row
+                        // that recorded the tally is read straight, and one that did not still
+                        // lands on `NONE`. The sentence above is unchanged in force — it now
+                        // describes the case where the column really is absent instead of every
+                        // case there is.
+                        checks: saved
+                            .checks
+                            .clone()
+                            .map_or(sprag_plugin::Checks::NONE, Into::into),
                         // ⚠⚠⚠⚠⚠ **AND THIS ONE IS RESTORED, WHICH IS THE WHOLE OF ITEM 616.** It is
                         // the outcome `stand_down_sentence` reads, so without it a restored run
                         // tells the person their ending cannot say what was kept — on exactly the
@@ -7923,6 +8248,15 @@ mod tests {
             said_by_sentence: None,
             width_withheld: None,
             banked: None,
+            // ⚠ AND REGISTER ITEM 913's SIX, ABSENT DELIBERATELY: what this gate reads is which
+            // columns EXIST on the record, and a fixture that filled them all would pass even if
+            // the five it is about were spelled wrong.
+            answered: None,
+            screened: None,
+            deferred: None,
+            unchecked: None,
+            unadmitted: None,
+            checks: None,
             briefed: None,
             request: None,
             tree: None,
@@ -9869,6 +10203,11 @@ mod tests {
             row.delivered_by_road = Some(sprag_plugin::DeliveredByRoad::NONE.into());
             row.said_by_sentence = Some(sprag_plugin::SaidBySentence::NONE.into());
             row.width_withheld = Some(sprag_plugin::WidthWithheld::NONE.into());
+            // ⛔ AND THE SIXTH — register item 913. `an_outcome()` already fills it through the
+            // `Done` arm, and it is set here anyway so this block stays the one list of what the
+            // row must HOLD: a column filled only by the fixture's other half is a column the
+            // difference below would credit to nobody.
+            row.checks = Some(sprag_plugin::Checks::NONE.into());
             row
         };
         let full = serde_json::to_value(holding.clone()).expect("a record serialises");
@@ -9879,6 +10218,7 @@ mod tests {
             row.delivered_by_road = None;
             row.said_by_sentence = None;
             row.width_withheld = None;
+            row.checks = None;
             serde_json::to_value(row).expect("and so does the cleared one")
         };
         let mut columns: Vec<&str> = full
@@ -9898,6 +10238,640 @@ mod tests {
              gets taken with a fresh hand-written filter — which is this item — and item 891 ⑶ \
              measured that a new key lands in the same place within half a day of the last one \
              being fixed.",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY FACT AN ENDING CARRIES EITHER REACHES A ROW OR SAYS WHY IT CANNOT** —
+    /// register item 913, and the shape the round before it learned to ask for.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Naming a column is not filling it, and HAVING a column is not either
+    ///
+    /// Register item 912 found a gate that mapped an ending to `done_reason` and checked only that
+    /// the column EXISTED, so a plugin that never wrote it passed. This is the same question one
+    /// level out: [`sprag_plugin::Outcome`] is what a run knows about itself when it stops, and
+    /// **nothing anywhere asked whether those facts reach the file.** Measured over the loop's own
+    /// store at 2026-09-06T00:57:52Z, 241 rows: `answered` present in **0**, `screened` **0**,
+    /// `deferred` **0**, `unchecked` **0**, `unadmitted` **0**, and no check tally of any kind.
+    ///
+    /// ⚠⚠ **THE RESTORE PATH HAD ALREADY WRITTEN THE ITEM DOWN AND COULD NOT ACT ON IT.** Its
+    /// comment read *"`0` here is a claim the log cannot back … inventing one would be the record
+    /// asserting something nobody wrote down"* — and then wrote `0`, because there was no column to
+    /// read from. A sentence is not a gate; this is.
+    ///
+    /// # ⚠⚠⚠ How it is exhaustive when a struct has no `ALL`
+    ///
+    /// By DESTRUCTURING [`sprag_plugin::Outcome`] with no `..`. A field added to that type stops
+    /// this file compiling (`E0027`) until somebody has said which row column carries it — or
+    /// stated, in a sentence, why it cannot cross. That is this workspace's rule 6 moved to the
+    /// cheapest moment there is, and it is the same device
+    /// `every_bundled_plugin_says_which_ending_it_converged_on` uses over an enum.
+    ///
+    /// ⚠⚠ **THE EXEMPTIONS ARE COUNTED, NOT MERELY SPELLED** — register item 903's rule for this
+    /// shape. An exemption nobody counts is how a partition stops being one, and the number here is
+    /// what a fact quietly joining the dropped list has to move.
+    #[test]
+    fn every_fact_an_ending_carries_either_reaches_a_row_or_says_why_it_cannot() {
+        /// Where one of an ending's facts goes.
+        enum Crosses {
+            /// It reaches the durable row, in these columns.
+            Into(&'static [&'static str]),
+            /// It cannot cross, and this says why.
+            Dropped(&'static str),
+        }
+
+        // ⛔⛔⛔⛔⛔ **AN ENDING WHERE EVERY FACT IS DISTINCTIVE**, because a fixture of zeros and
+        // `None`s would let this gate pass on a build that stored none of them: a null column and
+        // an absent one look alike from here, which is item 912's finding turned on this gate
+        // itself. Every value below is chosen so its column CANNOT be null by accident.
+        let ending = sprag_plugin::Outcome {
+            state: sprag_plugin::OutcomeState::Converged,
+            iterations: 6,
+            cost: Some(sprag_plugin::Cost::Bytes(4242)),
+            failure: Some(sprag_plugin::PaneError::Recorded(
+                "the prompt could not be read back off the pane".to_owned(),
+            )),
+            stopped: None,
+            answered: 3,
+            screened: 5,
+            deferred: Some(7),
+            unchecked: Some(9),
+            unadmitted: Some(11),
+            deliveries: sprag_plugin::Deliveries::NONE,
+            checks: sprag_plugin::Checks {
+                asked: 13,
+                ..sprag_plugin::Checks::NONE
+            },
+            banked: Some(sprag_plugin::Banked {
+                completed: 15,
+                unit: std::borrow::Cow::Borrowed("turn"),
+            }),
+            briefed: Some(sprag_plugin::Briefing {
+                north_star: 17,
+                milestone: 0,
+                reference: 0,
+                working_rules: 0,
+            }),
+            done_reason: Some(std::borrow::Cow::Borrowed("no_successor")),
+        };
+        // ⛔ NO `..` — a field added to `Outcome` is a compile error here until it is classified.
+        let sprag_plugin::Outcome {
+            state,
+            iterations,
+            cost,
+            failure,
+            stopped,
+            answered,
+            screened,
+            deferred,
+            unchecked,
+            unadmitted,
+            deliveries,
+            checks,
+            banked,
+            briefed,
+            done_reason,
+        } = ending.clone();
+        // ⚠ BOUND SO THE DESTRUCTURING IS NOT DEAD CODE: every name is used, which is what keeps
+        // the pattern honest rather than a shape clippy would invite somebody to shorten with `..`.
+        let facts: Vec<(&'static str, bool, Crosses)> = vec![
+            // ⚠⚠ THE WORD ONLY. `state` also decides `ceiling` and `blocked_by`, but those are
+            // ENDING-SPECIFIC — one outcome cannot be converged and exhausted and blocked at once,
+            // so a fixture asserting all three non-null is impossible and one asserting they
+            // merely EXIST is the hole this whole gate is about.
+            // `every_ending_names_a_column_that_says_why_it_happened` is the authority on that
+            // half, over `OutcomeState`'s own arms; this one holds what EVERY ending carries.
+            (
+                "state",
+                !format!("{state:?}").is_empty(),
+                Crosses::Into(&["outcome"]),
+            ),
+            (
+                "iterations",
+                iterations < u32::MAX,
+                Crosses::Into(&["iterations"]),
+            ),
+            (
+                "cost",
+                cost.is_none() || cost.is_some(),
+                // ⚠ The amount and its unit, because a number whose noun lives in the reader is a
+                // number the reader has to already know the plugin for.
+                Crosses::Into(&["cost", "unit"]),
+            ),
+            (
+                "failure",
+                failure.is_none() || failure.is_some(),
+                Crosses::Into(&["failure"]),
+            ),
+            // ⚠⚠ THE ONE FACT THAT GENUINELY CANNOT CROSS, and the restore path says so in its own
+            // words: this one describes a job that is STILL RUNNING somewhere, which is a claim
+            // about NOW that a dead daemon's log cannot make. Every other column here is about a
+            // moment that is over and stays true however long ago it was.
+            (
+                "stopped",
+                stopped.is_none() || stopped.is_some(),
+                Crosses::Dropped(
+                    "it says a job is still running, which is a claim about NOW and not about the \
+                     moment this row records",
+                ),
+            ),
+            (
+                "answered",
+                answered < u32::MAX,
+                Crosses::Into(&["answered"]),
+            ),
+            (
+                "screened",
+                screened < u32::MAX,
+                Crosses::Into(&["screened"]),
+            ),
+            (
+                "deferred",
+                deferred.is_none() || deferred.is_some(),
+                Crosses::Into(&["deferred"]),
+            ),
+            (
+                "unchecked",
+                unchecked.is_none() || unchecked.is_some(),
+                Crosses::Into(&["unchecked"]),
+            ),
+            (
+                "unadmitted",
+                unadmitted.is_none() || unadmitted.is_some(),
+                Crosses::Into(&["unadmitted"]),
+            ),
+            // ⚠ The pair and the three splits it is summed by — items 606, 856(1), 856 and 866(2).
+            (
+                "deliveries",
+                !deliveries.is_empty() || deliveries.is_empty(),
+                Crosses::Into(&[
+                    "deliveries",
+                    "folds_by_reason",
+                    "delivered_by_road",
+                    "said_by_sentence",
+                    "width_withheld",
+                ]),
+            ),
+            (
+                "checks",
+                !checks.is_empty() || checks.is_empty(),
+                Crosses::Into(&["checks"]),
+            ),
+            (
+                "banked",
+                banked.is_none() || banked.is_some(),
+                Crosses::Into(&["banked"]),
+            ),
+            (
+                "briefed",
+                briefed.is_none() || briefed.is_some(),
+                Crosses::Into(&["briefed"]),
+            ),
+            (
+                "done_reason",
+                done_reason.is_none() || done_reason.is_some(),
+                Crosses::Into(&["done_reason"]),
+            ),
+        ];
+
+        // ⚠⚠ THE COLUMNS ARE CHECKED AGAINST THE RECORD'S OWN SHAPE, never a hand-written list —
+        // `every_ending_names_a_column_that_says_why_it_happened`'s rule: a column named here that
+        // the row does not have would be a gate vouching for a field nobody stores.
+        let shape = {
+            let mut registry = RunRegistry::default();
+            let id = registry.reserve();
+            // ⛔⛔⛔⛔⛔ **AND THE CELL THE DRIVER LEFT BEHIND, because several of an ending's
+            // facts cross by THAT road and not the outcome's** — register item 606, stated in the
+            // restore path's own words: *"the restored pair goes into `Progress` below, which is
+            // where every reader takes it from"*. `iterations`, `cost`, `banked`, `briefed` and
+            // the five delivery tables are all read `reported.or(cell)` at the persist site.
+            //
+            // ⚠⚠ **THIS IS NOT A CONVENIENCE, IT IS WHAT AN ENDED RUN ACTUALLY LOOKS LIKE.** The
+            // first draft of this gate filled only the outcome and went red on four facts it had
+            // wrongly said were dropped — a fixture that is not a real run measures the fixture.
+            // The values match the ending's, because two roads carrying one fact must not be able
+            // to disagree about it.
+            let progress = ProgressCell::default();
+            {
+                let mut cell = lock(&progress);
+                cell.iterations = ending.iterations;
+                cell.cost = ending.cost;
+                cell.banked = ending.banked.clone();
+                cell.briefed = ending.briefed;
+                cell.deliveries = Some(sprag_plugin::Deliveries {
+                    made: 19,
+                    ..sprag_plugin::Deliveries::NONE
+                });
+                cell.folds_by_reason = Some(sprag_plugin::FoldsByReason::NONE);
+                cell.delivered_by_road = Some(sprag_plugin::DeliveredByRoad::NONE);
+                cell.said_by_sentence = Some(sprag_plugin::SaidBySentence::NONE);
+                cell.width_withheld = Some(sprag_plugin::WidthWithheld::NONE);
+            }
+            registry.submit(NewRun {
+                id,
+                label: "ai_loop pane=2".to_owned(),
+                plugin: crate::plugins::PluginName::AiLoop,
+                request: None,
+                opened_by: None,
+                opened_by_session: None,
+                tree: None,
+                overridden: None,
+                state: Arc::new(Mutex::new(RunState::Done {
+                    outcome: Box::new(ending.clone()),
+                    output: None,
+                    uncommitted: None,
+                })),
+                run: Box::new(EndedRun::restored(false, None, None)),
+                progress,
+            });
+            serde_json::to_value(registry.persistable().runs.remove(0))
+                .expect("a record serialises")
+        };
+        let held = shape.as_object().expect("a record is an object");
+
+        let mut dropped = Vec::new();
+        for (fact, read, crosses) in &facts {
+            assert!(
+                read,
+                "⚠ THE PREMISE: `{fact}` must be readable off the ending"
+            );
+            match crosses {
+                Crosses::Dropped(why) => {
+                    assert!(
+                        !why.is_empty(),
+                        "⛔ `{fact}` claims it cannot cross and says nothing about why — an \
+                         exemption with no sentence is the silence rule 6 is about",
+                    );
+                    dropped.push(*fact);
+                }
+                Crosses::Into(columns) => {
+                    assert!(
+                        !columns.is_empty(),
+                        "⛔⛔⛔⛔⛔ REGISTER ITEM 913: `{fact}` crosses into NO column, which is \
+                         the whole item — the fact exists while the daemon lives and is gone by \
+                         the time anybody reads the run",
+                    );
+                    for column in *columns {
+                        assert!(
+                            held.contains_key(*column),
+                            "⛔⛔⛔⛔⛔ REGISTER ITEM 913: `{fact}` is said to cross into \
+                             `{column}` and the stored record HAS NO SUCH COLUMN. A gate vouching \
+                             for a field nobody stores is worse than no gate: it answers *yes, \
+                             that is recorded* for a fact that dies with its daemon. Row: {shape}",
+                        );
+                        // ⛔⛔⛔⛔⛔ **AND IT IS FILLED, WHICH IS THE HALF ITEM 912 FOUND MISSING
+                        // ONE LEVEL DOWN.** A column that exists and is never written passes
+                        // `contains_key` while telling a reader nothing — that is exactly what
+                        // item 903's gate could not see, and rebuilding it here would make this
+                        // gate green for the six columns item 913 was filed over. The ending above
+                        // gives every fact a distinctive value, so a null here means the fact did
+                        // not cross.
+                        assert!(
+                            !held[*column].is_null(),
+                            "⛔⛔⛔⛔⛔ REGISTER ITEM 913: `{fact}` reached `{column}` as NULL for \
+                             an ending that carried it. The column exists and nothing fills it, \
+                             which is the shape item 912 measured one level down: a reader is \
+                             told *that is recorded* and finds nothing there. Row: {shape}",
+                        );
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            dropped,
+            vec!["stopped"],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 913: exactly ONE of an ending's facts cannot reach the file, \
+             and it is the one that describes a process still running. A list that GREW is a fact \
+             that stopped crossing — which is how all six of item 913's columns went missing \
+             without anything going red — and one that SHRANK is an exemption somebody paid off \
+             and should have deleted here. Dropped: {dropped:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SIX TALLIES SURVIVE THE FILE AND COME BACK AS THEMSELVES** — register item
+    /// 913, and the half the gate above structurally cannot see.
+    ///
+    /// # ⚠⚠⚠ A column that serialises and restores wrongly is this item arriving again
+    ///
+    /// `every_fact_an_ending_carries_either_reaches_a_row_or_says_why_it_cannot` calls
+    /// `persistable` and reads the value in one process, so it would pass on a build whose columns
+    /// travelled in fields `serde` never wrote, or which restored them into the wrong place. This
+    /// drives the actual FILE — encode, decode, restore — which is the distinction
+    /// `the_conversation_that_asked_survives_the_run_log_and_an_older_log_still_loads` exists for
+    /// one column over.
+    ///
+    /// ⚠⚠ **AND THE OLDER LOG STILL LOADS, WHICH IS WHY [`RUN_LOG_VERSION`] DOES NOT MOVE.** A
+    /// bump would discard every run a running daemon holds to gain nothing; the six columns are
+    /// `#[serde(default)]` and a log written before them reads [`None`] — *nobody counted* — which
+    /// is exactly the value this item exists to make representable.
+    #[test]
+    fn the_six_tallies_survive_the_run_log_and_an_older_log_still_loads() {
+        let counted = |id: u64| PersistedRun {
+            id,
+            label: "ai_loop pane=3".to_owned(),
+            iterations: 4,
+            finished: true,
+            outcome: Some("converged".to_owned()),
+            // ⚠ DISTINCT VALUES, none of them zero and none of them equal: a round trip that
+            // crossed two columns over would pass on a fixture of matching numbers.
+            answered: Some(3),
+            screened: Some(5),
+            deferred: Some(7),
+            unchecked: Some(9),
+            unadmitted: Some(11),
+            checks: Some(PersistedChecks {
+                asked: 13,
+                silent: 2,
+                why_silent: Some("the checker said nothing".to_owned()),
+                unasked: 1,
+                refused: 4,
+                refused_in_a_row: 2,
+            }),
+            cost: None,
+            unit: None,
+            moved_at: None,
+            ended_at: None,
+            ran_from: None,
+            ran_to: None,
+            ceiling: None,
+            output: None,
+            done_reason: None,
+            failure: None,
+            blocked_by: None,
+            build: None,
+            which_run: None,
+            driver: None,
+            driving: None,
+            opened_by_session: None,
+            at: None,
+            place: None,
+            document: None,
+            context_ceiling: None,
+            context_high_water: None,
+            context_break_even: None,
+            overridden: None,
+            stood_down: None,
+            stood_down_by: None,
+            cancelled_by: None,
+            deliveries: None,
+            folds_by_reason: None,
+            delivered_by_road: None,
+            said_by_sentence: None,
+            width_withheld: None,
+            banked: None,
+            briefed: None,
+            request: None,
+            tree: None,
+        };
+        let encoded = serde_json::to_string(&RunLog {
+            version: RUN_LOG_VERSION,
+            runs: vec![counted(1)],
+        })
+        .expect("a log encodes");
+        let decoded: RunLog = serde_json::from_str(&encoded).expect("and decodes");
+        assert_eq!(
+            decoded.runs,
+            vec![counted(1)],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 913: the six tallies did not come back as themselves. A \
+             column that encodes and decodes wrongly is this item arriving again by the other \
+             road — the fact reaches the file and a reader still cannot have it. Encoded: \
+             {encoded}",
+        );
+
+        // ── AND A LOG WRITTEN BEFORE THE COLUMNS STILL LOADS, READING `null` ──────────────────
+        //
+        // ⛔ `RUN_LOG_VERSION` does not move, so this file must not be thrown away — and what it
+        // must NOT do is read as zeros, which is the whole of register item 891 and the reason
+        // these are `Option<u32>` rather than `u32`.
+        let older = format!(
+            "{{\"version\":{RUN_LOG_VERSION},\"runs\":[{{\"id\":2,\"label\":\"ai_loop \
+             pane=3\",\"iterations\":4,\"finished\":true}}]}}"
+        );
+        let restored: RunLog =
+            serde_json::from_str(&older).expect("⚠ AN OLDER LOG MUST STILL LOAD");
+        let row = &restored.runs[0];
+        assert_eq!(
+            (
+                row.answered,
+                row.screened,
+                row.deferred,
+                row.unchecked,
+                row.unadmitted,
+                row.checks.clone(),
+            ),
+            (None, None, None, None, None, None),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 891, MET AGAIN AT 913: a log older than these columns must \
+             read *nobody counted* and NEVER a zero. A `0` here would sign a count for a run this \
+             build never watched — the exact laundering the restore path's own comment said it \
+             could not avoid before the columns existed",
+        );
+        assert_eq!(
+            row.sampled(Tally::Checks),
+            Sampled::Unsaid,
+            "⚠⚠ AND THE POPULATION PREDICATE SAYS SO TOO: an older row is `Unsaid`, not `Zeroed`. \
+             Folding the two is what item 895's middle arm exists to prevent",
+        );
+
+        // ── AND THE WHOLE ROAD: persist → file → RESTORE → the ending a reader gets back ──────
+        //
+        // ⛔⛔⛔⛔⛔ **THIS IS ITEM 913's DONE-WHEN ⑵, AND THE HALF ABOVE CANNOT REACH IT.** That
+        // one encodes a record and decodes it, so it would pass on a build whose `restore` dropped
+        // every column on the floor — which is precisely the state this item found the product in,
+        // one hop earlier. `which_ending_closed_a_run_is_a_word_on_the_row_and_survives_the_daemon`
+        // is the shape the item names, and this is that shape over six columns instead of one.
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        let ended = sprag_plugin::Outcome {
+            answered: 3,
+            screened: 5,
+            deferred: Some(7),
+            unchecked: Some(9),
+            unadmitted: Some(11),
+            checks: sprag_plugin::Checks {
+                asked: 13,
+                ..sprag_plugin::Checks::NONE
+            },
+            ..an_outcome()
+        };
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            tree: None,
+            overridden: None,
+            state: Arc::new(Mutex::new(RunState::Done {
+                outcome: Box::new(ended),
+                output: None,
+                uncommitted: None,
+            })),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress: ProgressCell::default(),
+        });
+        let on_disk = serde_json::to_string(&registry.persistable()).expect("the log encodes");
+        let read_back: RunLog = serde_json::from_str(&on_disk).expect("and decodes");
+        let mut successor = RunRegistry::default();
+        successor.restore(&read_back);
+        let restored = successor.snapshot();
+        let RunState::Done { outcome, .. } = &restored[0].state else {
+            panic!(
+                "a finished run comes back finished: {:?}",
+                restored[0].state
+            );
+        };
+        assert_eq!(
+            (
+                outcome.answered,
+                outcome.screened,
+                outcome.deferred,
+                outcome.unchecked,
+                outcome.unadmitted,
+                outcome.checks.asked,
+            ),
+            (3, 5, Some(7), Some(9), Some(11), 13),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 913 ⑵: the six tallies did not survive the restart. Item 606 \
+             measured that EVERY run anybody reads has been through one — thirteen live runs, all \
+             restored — so a column that dies here is a column readable only while nobody is \
+             asking. ⚠ And the restore path's own comment used to say it was writing a zero it \
+             could not back; a `0` coming out of this assertion means it still is. From {on_disk}",
+        );
+        // ⚠⚠ AND THE FOUR THE WIRE CARRIES ARE ASSERTED THROUGH THE RENDERER, not off the struct —
+        // `which_ending_closed_a_run_is_a_word_on_the_row_and_survives_the_daemon`'s rule: the row
+        // is what a person reads, and a restore that filled the fields without reaching the wire
+        // would be green against the fields and silent for every reader.
+        //
+        // ⛔ `screened` and `checks` are NOT in this list and that is register item 914, stated
+        // rather than hidden: `outcome_to_json` does not publish them at all, so there is no wire
+        // to assert them on. They cross into the FILE (above) and no further.
+        let after = crate::plugins::outcome_to_json(outcome);
+        assert_eq!(
+            (
+                after
+                    .get(crate::plugins::RUN_ANSWERED_KEY)
+                    .and_then(Value::as_u64),
+                after
+                    .get(crate::plugins::RUN_DEFERRED_KEY)
+                    .and_then(Value::as_u64),
+                after
+                    .get(crate::plugins::RUN_UNCHECKED_KEY)
+                    .and_then(Value::as_u64),
+                after
+                    .get(crate::plugins::RUN_UNADMITTED_KEY)
+                    .and_then(Value::as_u64),
+            ),
+            (Some(3), Some(7), Some(9), Some(11)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 913 ⑵: a restored ending must reach the WIRE with what the \
+             file held, or the repair is green against a struct nobody reads. Restored {after}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THAT ENDED IN ANOTHER PROCESS RECORDS WHAT ARRIVED AND INVENTS NOTHING**
+    /// — register item 913, and the arm where the honest answer is the *absence* of a column.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Two of the six cannot cross a driver boundary at all, and that must be VISIBLE
+    ///
+    /// [`RunState::Reported`]'s own doc says why: *"`outcome_to_json` is a one-way RENDER: it drops
+    /// `screened`, `deliveries`, `checks` and `banked`, so a daemon that reconstructed one would be
+    /// asserting four facts it was never told."* So for a run driven out of process the log can
+    /// carry `answered`, `deferred`, `unchecked` and `unadmitted` — those ARE published — and must
+    /// leave `screened` and `checks` null.
+    ///
+    /// ⚠⚠ **A `Some(0)` ON THIS ARM WOULD BE THE LAUNDERING ITEM 891 ⑶ RATCHETS AGAINST, WHERE
+    /// THAT RATCHET CANNOT SEE IT.** It greps the `PersistedRun { … }` literal, and this decision
+    /// is made one scope earlier in `Ending`; nothing was watching it until this gate.
+    ///
+    /// ⚠ The residue, stated rather than hidden: those two tallies still reach NO durable surface
+    /// for an out-of-process run, because they reach no wire. That is one hop upstream and is its
+    /// own item — this gate holds that the log says *nobody wrote it down* rather than `0`.
+    #[test]
+    fn a_run_that_ended_in_another_process_records_what_arrived_and_invents_nothing() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            tree: None,
+            overridden: None,
+            // ⚠ EXACTLY WHAT `outcome_to_json` WRITES — the four tallies it publishes and not one
+            // key more, because a fixture carrying a `screened` the renderer cannot produce would
+            // be measuring a wire that does not exist.
+            state: Arc::new(Mutex::new(RunState::Reported(Box::new(
+                serde_json::json!({
+                    "state": "converged",
+                    crate::plugins::RUN_ANSWERED_KEY: 3,
+                    crate::plugins::RUN_DEFERRED_KEY: 7,
+                    crate::plugins::RUN_UNCHECKED_KEY: 9,
+                    crate::plugins::RUN_UNADMITTED_KEY: 11,
+                }),
+            )))),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress: ProgressCell::default(),
+        });
+        let row = registry.persistable().runs.remove(0);
+        assert_eq!(
+            (row.answered, row.deferred, row.unchecked, row.unadmitted),
+            (Some(3), Some(7), Some(9), Some(11)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 913: the four tallies the far driver DID publish must be \
+             read off its report rather than recomputed or dropped — it wrote them with THIS \
+             daemon's own renderer, so there is one spelling and this side reads it",
+        );
+        assert_eq!(
+            (row.screened, row.checks.clone()),
+            (None, None),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 913: `screened` and `checks` are NOT published by \
+             `outcome_to_json`, so there is nothing here to read — and `None` is the only honest \
+             answer. A zero would be this record signing a count for a run it was never told \
+             about, which is item 891's whole subject arriving where its ratchet cannot look",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN WHOSE CLAIMS NOBODY COULD PUT TO A CHECKER IS STILL IN THE POPULATION** —
+    /// register item 674's finding, held as a population predicate since item 913 stored the table.
+    ///
+    /// If a row carrying only [`sprag_plugin::Checks::unasked`] reads as [`Sampled::Zeroed`], every
+    /// claim nobody could put drops out of the denominator — and *the checker answered all of them*
+    /// stays true by losing the ones it never saw. That is the exact way the numbers come to
+    /// flatter the checker, and it is why `is_empty` counts that field.
+    #[test]
+    fn a_check_tally_holding_only_claims_nobody_could_put_is_still_counted() {
+        let row = |checks: PersistedChecks| PersistedRun {
+            checks: Some(checks),
+            ..an_empty_row()
+        };
+        assert_eq!(
+            (
+                row(PersistedChecks {
+                    asked: 0,
+                    silent: 0,
+                    why_silent: None,
+                    unasked: 1,
+                    refused: 0,
+                    refused_in_a_row: 0,
+                })
+                .sampled(Tally::Checks),
+                row(PersistedChecks {
+                    asked: 0,
+                    silent: 0,
+                    why_silent: None,
+                    unasked: 0,
+                    refused: 0,
+                    refused_in_a_row: 0,
+                })
+                .sampled(Tally::Checks),
+            ),
+            (Sampled::Counted, Sampled::Zeroed),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 674, HELD AS A POPULATION: a claim nobody could put to a \
+             checker is EVIDENCE about this run, and a row holding only those must stay in the \
+             denominator. Dropping it is how *the checker answered all of them* stays true by \
+             losing the ones it never saw. ⚠ And the control beside it: a table that really is \
+             empty is `Zeroed`, or this assertion would be satisfied by a predicate that counts \
+             everything",
         );
     }
 
@@ -10874,6 +11848,63 @@ mod tests {
         }
     }
 
+    /// A stored row holding NOTHING, for a gate that varies exactly one column.
+    ///
+    /// ⚠⚠ **DELIBERATELY NOT A [`Default`] IMPL ON [`PersistedRun`].** A derive would let every
+    /// fixture in this file absorb a new column silently, and this workspace's rule is the
+    /// opposite: a column added to the record should make its authors decide. This helper is used
+    /// by the gates that are about ONE column, where the other forty are noise.
+    fn an_empty_row() -> PersistedRun {
+        PersistedRun {
+            id: 1,
+            label: "ai_loop pane=3".to_owned(),
+            iterations: 0,
+            finished: true,
+            outcome: None,
+            answered: None,
+            screened: None,
+            deferred: None,
+            unchecked: None,
+            unadmitted: None,
+            checks: None,
+            cost: None,
+            unit: None,
+            moved_at: None,
+            ended_at: None,
+            ran_from: None,
+            ran_to: None,
+            ceiling: None,
+            output: None,
+            done_reason: None,
+            failure: None,
+            blocked_by: None,
+            build: None,
+            which_run: None,
+            driver: None,
+            driving: None,
+            opened_by_session: None,
+            at: None,
+            place: None,
+            document: None,
+            context_ceiling: None,
+            context_high_water: None,
+            context_break_even: None,
+            overridden: None,
+            stood_down: None,
+            stood_down_by: None,
+            cancelled_by: None,
+            deliveries: None,
+            folds_by_reason: None,
+            delivered_by_road: None,
+            said_by_sentence: None,
+            width_withheld: None,
+            banked: None,
+            briefed: None,
+            request: None,
+            tree: None,
+        }
+    }
+
     /// The conversation the run in the gate above was started from — an opaque id, exactly as
     /// `Pane::agent_session` carries one, because nothing in this layer parses it.
     const A_CONVERSATION: &str = "13cac637-d86c-4fa3-8411-785d552cee16";
@@ -10935,6 +11966,13 @@ mod tests {
                 width_withheld: None,
                 // ⚠ `None` is what an OLDER LOG reads as, which is what these fixtures are about.
                 banked: None,
+                // ⚠ And register item 913's six, on that sentence exactly.
+                answered: None,
+                screened: None,
+                deferred: None,
+                unchecked: None,
+                unadmitted: None,
+                checks: None,
                 briefed: None,
                 // ⚠ Item 706's field, absent on the line above's argument.
                 done_reason: None,
@@ -11196,6 +12234,13 @@ mod tests {
             width_withheld: None,
             // ⚠ `None` is what an OLDER LOG reads as, which is what this fixture is about.
             banked: None,
+            // ⚠ And register item 913's six, on that sentence exactly.
+            answered: None,
+            screened: None,
+            deferred: None,
+            unchecked: None,
+            unadmitted: None,
+            checks: None,
             briefed: None,
             // ⚠ Item 706's field, absent on the line above's argument.
             done_reason: None,
@@ -11321,6 +12366,13 @@ mod tests {
             said_by_sentence: None,
             width_withheld: None,
             banked: None,
+            // ⚠ Register item 913's six, absent for the reason every field around them is.
+            answered: None,
+            screened: None,
+            deferred: None,
+            unchecked: None,
+            unadmitted: None,
+            checks: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
             // that never closed names no ending.
@@ -11437,6 +12489,13 @@ mod tests {
             said_by_sentence: None,
             width_withheld: None,
             banked: None,
+            // ⚠ Register item 913's six, absent for the reason every field around them is.
+            answered: None,
+            screened: None,
+            deferred: None,
+            unchecked: None,
+            unadmitted: None,
+            checks: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
             // that never closed names no ending.
@@ -11898,6 +12957,13 @@ mod tests {
                 width_withheld: None,
                 // ⚠ Nor how much it banked — item 616's field, absent for that field's reason.
                 banked: None,
+                // ⚠ Nor register item 913's six, absent for the same one.
+                answered: None,
+                screened: None,
+                deferred: None,
+                unchecked: None,
+                unadmitted: None,
+                checks: None,
                 briefed: None,
                 // ⚠ Nor which ending it closed under — item 706's field, on the same argument.
                 done_reason: None,

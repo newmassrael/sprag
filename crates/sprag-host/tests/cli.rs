@@ -4482,6 +4482,14 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 said_by_sentence: None,
                 width_withheld: None,
                 banked: None,
+                // ⚠ Register item 913's six, absent on the line above's argument: an older log
+                // carries none of them, and absent reads as *nobody counted*.
+                answered: None,
+                screened: None,
+                deferred: None,
+                unchecked: None,
+                unadmitted: None,
+                checks: None,
                 briefed: None,
                 done_reason: None,
                 // ⚠ Item 903's two columns, absent on the line above's argument: an older log

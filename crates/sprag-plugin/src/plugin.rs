@@ -769,6 +769,29 @@ impl Checks {
     pub const fn none_answered(&self) -> bool {
         self.asked > 0 && self.silent == self.asked
     }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS TALLY COUNTED ANYTHING AT ALL** — [`Deliveries::is_empty`]'s
+    /// counterpart, and what a stored row's population question is answered from since register
+    /// item 913 put this table in the durable log.
+    ///
+    /// ⚠⚠ **EMPTY IS *THIS RUN PUT NO CLAIM TO ANYBODY*, WHICH IS A REAL AND COMMON ANSWER** — a
+    /// loop whose author declared no checker, every plugin that is not the loop. It is NOT *the
+    /// checker is broken*: that is [`none_answered`](Self::none_answered), and conflating the two
+    /// is what [`asked`](Self::asked)'s own doc exists to prevent.
+    ///
+    /// ⚠ [`unasked`](Self::unasked) counts, and that is register item 674's whole point: a claim
+    /// nobody could put to a checker is evidence about this run, so a row carrying only those is
+    /// COUNTED rather than empty — dropping it from the population is exactly the way the numbers
+    /// come to flatter the checker.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.asked == 0
+            && self.silent == 0
+            && self.unasked == 0
+            && self.refused == 0
+            && self.refused_in_a_row == 0
+            && self.why_silent.is_none()
+    }
 }
 
 /// **WHAT A RUN COMPLETED AND KEPT, WHATEVER WORD IT ENDED WITH**, in the plugin's own unit.

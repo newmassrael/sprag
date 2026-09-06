@@ -9497,6 +9497,14 @@ mod tests {
             said_by_sentence: None,
             width_withheld: None,
             banked: None,
+            // ⚠ Register item 913's six, absent on `banked`'s reason one line up: what an older
+            // log reads as, which is *nobody counted* and never a zero.
+            answered: None,
+            screened: None,
+            deferred: None,
+            unchecked: None,
+            unadmitted: None,
+            checks: None,
             briefed: None,
             done_reason: None,
             // ⚠ Item 903's two columns, absent on the line above's argument.
@@ -10054,6 +10062,13 @@ mod tests {
                 // ⚠ And item 616's, for that reason exactly — absent reads as *nobody counted*,
                 // which is the honest answer for a log written before the column existed.
                 banked: None,
+                // ⚠ And register item 913's six, on that sentence exactly.
+                answered: None,
+                screened: None,
+                deferred: None,
+                unchecked: None,
+                unadmitted: None,
+                checks: None,
                 briefed: None,
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
                 // reads as *nobody wrote that down* rather than as a run that ended for no reason.
@@ -10249,6 +10264,14 @@ mod tests {
             said_by_sentence: None,
             width_withheld: None,
             banked: None,
+            // ⚠ Register item 913's six, absent on `banked`'s reason one line up: what an older
+            // log reads as, which is *nobody counted* and never a zero.
+            answered: None,
+            screened: None,
+            deferred: None,
+            unchecked: None,
+            unadmitted: None,
+            checks: None,
             briefed: None,
             done_reason: None,
             // ⚠ Item 903's two columns, absent on the line above's argument.
@@ -10680,6 +10703,13 @@ mod tests {
                 said_by_sentence: None,
                 width_withheld: None,
                 banked: None,
+                // ⚠ And register item 913's six, on `banked`'s reason one line up.
+                answered: None,
+                screened: None,
+                deferred: None,
+                unchecked: None,
+                unadmitted: None,
+                checks: None,
                 briefed: None,
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
                 // reads as *nobody wrote that down* rather than as a run that ended for no reason.
@@ -21016,6 +21046,13 @@ mod tests {
                     said_by_sentence: None,
                     width_withheld: None,
                     banked: None,
+                    // ⚠ Register item 913's six, absent for that same reason.
+                    answered: None,
+                    screened: None,
+                    deferred: None,
+                    unchecked: None,
+                    unadmitted: None,
+                    checks: None,
                     briefed: None,
                     // ⚠ Item 706's field, absent for the reason every field above it is.
                     done_reason: None,

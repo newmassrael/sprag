@@ -827,6 +827,14 @@ mod tests {
             said_by_sentence: None,
             width_withheld: None,
             banked: None,
+            // ⚠ Register item 913's six, absent for the reason every field around them is: this
+            // fixture varies the stamping arms, so a tally filled here would assert its own input.
+            answered: None,
+            screened: None,
+            deferred: None,
+            unchecked: None,
+            unadmitted: None,
+            checks: None,
             cancelled_by: None,
             briefed: None,
         }
