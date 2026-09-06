@@ -1028,6 +1028,29 @@ fn folds_lines(
             continue;
         }
         lines.push(format!("{}  {} run(s)", path.display(), folds.runs()));
+        // ⛔⛔⛔⛔⛔ AND THE PREDICATE THAT CHOSE THOSE ROWS, SAID BEFORE ANY NUMBER TAKEN OVER THEM
+        // — register item 895 ⑷. Every rate below is over the rows
+        // `sprag_host::runs::PersistedRun::sampled` admitted for the fold split, and that was true
+        // in a doc comment and nowhere a reader could see it: a round quoting `ordinary 2 of 388`
+        // had no predicate to attach to it, and item 895's own finding is four readers of this one
+        // store inventing four filters, two of which counted one population 8 against 10.
+        //
+        // ⚠⚠ IT IS `sprag-samples`' LINE FOR `folds_by_reason` OVER THE SAME FILE, which is what
+        // makes it checkable rather than decorative — the two instruments must agree row for row,
+        // and a gate holds them together.
+        //
+        // ⚠ `counted` here is *in the population* and NOT *on the axis*: the rates below drop
+        // admitted rows for want of a fullness, and the gap between this number and the production
+        // run count one screen down IS the promotion wall.
+        lines.push(format!(
+            "  its population is the fold split, asked of each row rather than filtered here: {}",
+            folds
+                .population()
+                .into_iter()
+                .map(|(arm, count)| format!("{} {count}", arm.word()))
+                .collect::<Vec<_>>()
+                .join(" · "),
+        ));
         for row in &folds.measured {
             // ⛔ THE EMPTY OCCASIONS ARE DROPPED HERE AT THE MOUTH and never in the answer, which
             // carries all of `Occasion::ALL`: `0 of 0` on a road nothing was ever asked on reads as
@@ -14666,7 +14689,10 @@ mod tests {
         );
 
         // ── ⑥ AND A SWEPT ANSWER NAMES THE DIRECTORY IT IS ABOUT — `waits`' measurement, verbatim ──
-        let swept = folds_lines(&[(here, log)], Some(std::path::Path::new("/state/sprag")));
+        let swept = folds_lines(
+            &[(here, log.clone())],
+            Some(std::path::Path::new("/state/sprag")),
+        );
         assert!(
             swept.first().is_some_and(
                 |line| line.contains("/state/sprag") && line.contains("XDG_STATE_HOME")
@@ -14680,6 +14706,57 @@ mod tests {
             !said.contains("XDG_STATE_HOME"),
             "⚠⚠ AND A NAMED LOG CARRIES NO SUCH WARNING: the caller said where. Got:\n{said}",
         );
+
+        // ── ⑦ AND THE PAGE NAMES THE POPULATION ITS RATES WERE TAKEN OVER — item 895 ⑷ ──
+        //
+        // ⛔⛔⛔⛔⛔ The answer computes that partition and a mouth that drops it leaves every rate
+        // below unattributable — which is the state this verb shipped in, and the state item 895
+        // says is not a measurement. Over this fixture the partition is `counted 6 · zeroed 3 ·
+        // unsaid 0`: runs 11, 12 and 13 carry a split that is present and all zero, run 14 carries
+        // the same death with a counter for the road and is therefore COUNTED, and every arm
+        // prints whatever it holds.
+        //
+        // ⚠⚠ IT IS ASSERTED ABOVE THE FIRST RUN ROW, not appended: a predicate printed under the
+        // numbers it qualifies is read after they have been quoted.
+        let population = lines
+            .iter()
+            .position(|line| line.contains("its population is the fold split"))
+            .expect(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 895 ⑷: the page must NAME the predicate its rows were \
+                 chosen by. Every rate below is over the rows `PersistedRun::sampled` admitted, \
+                 and a page that does not say so hands a reader a number with no predicate to \
+                 attach to it — item 895's own definition of what is not a measurement",
+            );
+        let first_row = lines
+            .iter()
+            .position(|line| line.contains("run 1: peaked at"))
+            .expect("the fixture's headline row prints");
+        assert!(
+            population < first_row,
+            "⚠⚠ THE PREDICATE COMES FIRST. Got the population line at {population} and the first \
+             run row at {first_row}:\n{said}",
+        );
+        for arm in ["counted", "zeroed", "unsaid"] {
+            assert!(
+                lines[population].contains(arm),
+                "⚠⚠ EVERY ARM INCLUDING A ZERO — this workspace's rule 6, and `unsaid` is the one \
+                 that is zero for every row written before register item 891 and would therefore \
+                 be the arm a report assembled from populated arms leaves out. Missing {arm:?} \
+                 in: {}",
+                lines[population],
+            );
+        }
+        // ⛔ AND IT IS THE ANSWER'S OWN COUNT, not a phrase — a mouth that printed the words with
+        // numbers of its own would satisfy every assertion above.
+        for (arm, count) in log.folds_against_fullness().population() {
+            assert!(
+                lines[population].contains(&format!("{} {count}", arm.word())),
+                "⛔⛔⛔ the page must print the answer's own partition, and `{}` says {count}. \
+                 Got: {}",
+                arm.word(),
+                lines[population],
+            );
+        }
     }
 
     /// ⛔⛔⛔⛔⛔ **THE TWO ENDS A CONVERSATION CAN BE ON ARE TOLD APART, AND A SHELL STILL GETS THE

@@ -5339,6 +5339,50 @@ impl Folds {
         self.rated().count()
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE POPULATION PREDICATE THIS WHOLE REPORT WAS TAKEN OVER, IN ITS OWN WORDS** —
+    /// register item 895 ⑷, every arm of [`Sampled`] and in [`Sampled::ALL`]'s order.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Item 856's baseline was already read through item 895's predicate and said so nowhere
+    ///
+    /// [`RunLog::folds_against_fullness`] opens by asking [`PersistedRun::sampled`] and every
+    /// number below it is over the rows that answer admitted. That was stated in a doc comment and
+    /// measured by nobody, so the rate a round quotes — `ordinary 2 of 388` — carried no predicate
+    /// a reader could attach to it, which is exactly the condition item 895 names: **a number
+    /// nobody can attach a predicate to is not a measurement.** Four readers of this one store had
+    /// already invented four filters, and two counts of one population came out 8 against 10.
+    ///
+    /// ⇒ This is that partition, derived from [`NoFullness::sampled`] rather than re-counted here.
+    /// It is the SAME three numbers `sprag-samples` prints for [`Tally::FoldsByReason`] over the
+    /// same file, and a gate holds the two together: a build that went back to a hand-written
+    /// filter moves a row across [`NoFullness::sampled`]'s map and the equality breaks.
+    ///
+    /// ⚠⚠ **EVERY ARM INCLUDING A ZERO**, this workspace's rule 6 and `sprag-samples`' own rule:
+    /// [`Sampled::Unsaid`] is zero for every row written before register item 891 and is precisely
+    /// the arm that would go missing from a report assembled out of the arms that happen to be
+    /// populated.
+    ///
+    /// ⚠ [`Sampled::Counted`] here is *in the population*, NOT *on the axis*:
+    /// [`production_runs`](Self::production_runs) is far smaller, because the fullness questions
+    /// drop admitted rows afterwards. The two travel together in the report for that reason — the
+    /// gap between them is the promotion wall, and one number cannot show it.
+    #[must_use]
+    pub fn population(&self) -> [(Sampled, usize); 3] {
+        Sampled::ALL.map(|arm| {
+            let blamed: usize = self
+                .unmeasured
+                .iter()
+                .filter(|(why, _)| why.sampled() == arm)
+                .map(|(_, count)| count)
+                .sum();
+            // ⚠ THE MEASURED ROWS ARE `Counted` BY CONSTRUCTION, never by a second test: they are
+            // the rows that passed the `Sampled::Counted` arm at the top of
+            // `RunLog::folds_against_fullness` and were never blamed afterwards. Asking them again
+            // here would be a second reader of the one question this method reports on.
+            let measured = usize::from(arm == Sampled::Counted) * self.measured.len();
+            (arm, blamed + measured)
+        })
+    }
+
     /// ⛔⛔⛔⛔⛔ **AND HOW MANY OF THOSE RUNS COULD HAVE TAKEN THE `capacity` ROAD AT ALL** —
     /// register item 908, over exactly the population
     /// [`folded_by_road`](Self::folded_by_road) sums.
@@ -5978,6 +6022,45 @@ impl NoFullness {
                 "nothing says whether its numbers were its document's, so an experiment cannot be \
                  told from an ordinary run"
             }
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHICH POPULATION ANSWER PUT A ROW IN THIS BUCKET** — register item 895 ⑷, and
+    /// the sentence every arm above already carried in PROSE.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A link in a doc comment is not a predicate, and this one decided a baseline
+    ///
+    /// Four arms of this enum name a [`Sampled`] answer in their own documentation — *no split at
+    /// all — [`Sampled::Unsaid`]*, and three that say [`Sampled::Zeroed`]. Nothing read those
+    /// words. So the claim that item 856's baseline is taken over item 895's population held only
+    /// as long as somebody remembered it: a reader quoting a rate off [`Folds::folded_by_road`]
+    /// had no way to attach a predicate to it, which is the one thing item 895 says makes a number
+    /// not a measurement.
+    ///
+    /// ⇒ [`Folds::population`] folds this over [`ALL`](Self::ALL) so the report states the
+    /// partition its rows came from, and a gate holds that partition against
+    /// [`PersistedRun::sampled`]'s own count over the same log. A build that stopped asking
+    /// `sampled` — the re-spelled filter item 895 exists to stop — moves a row across this map and
+    /// the two stop agreeing.
+    ///
+    /// ⚠⚠ **AN EXHAUSTIVE `match` WITH NO `_`**, this file's rule for a vocabulary: a tenth reason
+    /// added above cannot reach a report having silently inherited a ninth's population.
+    ///
+    /// ⚠ Every arm below [`DeliveriesUnsaid`](Self::DeliveriesUnsaid) is [`Sampled::Counted`], and
+    /// that is not a default: those rows were ADMITTED by the population predicate and dropped
+    /// afterwards, by a fullness question this enum's later arms ask. *In the population* and *on
+    /// the axis* are two different sentences, and pooling them is what would make the promotion
+    /// wall read as a store that never counted a road.
+    #[must_use]
+    pub const fn sampled(self) -> Sampled {
+        match self {
+            Self::SplitUnsaid => Sampled::Unsaid,
+            Self::DeliveredNothing | Self::NeverCounted | Self::DeliveriesUnsaid => Sampled::Zeroed,
+            Self::FullnessUnread
+            | Self::CapacityUnjudgeable
+            | Self::CeilingUnrecorded
+            | Self::CeilingUnbounded
+            | Self::ExperimentUnsaid => Sampled::Counted,
         }
     }
 }
@@ -15119,6 +15202,50 @@ mod tests {
                 folds.unmeasured,
             );
         }
+
+        // ── ③a AND THE POPULATION PREDICATE THIS WHOLE REPORT WAS TAKEN OVER — item 895 ⑷ ──
+        //
+        // ⛔⛔⛔⛔⛔ `folds_against_fullness` opens by asking `PersistedRun::sampled`, and that was
+        // written in a doc comment and measured by NOTHING. Item 895's finding is four readers of
+        // one store each inventing a filter, two of which counted one population 8 against 10 —
+        // so *this rate is over item 895's population* was a claim resting on whoever last read
+        // the source. This is the claim as arithmetic: the report's own partition against the
+        // predicate's count over the same rows, arm for arm.
+        //
+        // ⇒ **A build that went back to a hand-written filter breaks this and nothing else.**
+        // `run.folds_by_reason.is_some()` — the obvious re-spelling — admits every present-and-all-
+        // zero split, which is 216 of the live store's 245 rows (2026-09-06T07:25:00Z) and 12 of
+        // this fixture's rows; they cross `NoFullness::sampled`'s map from `Zeroed` to `Counted`
+        // and the two sides stop agreeing.
+        //
+        // ⚠⚠ THE RIGHT-HAND SIDE IS COUNTED OFF THE LOG AND NOT OFF THE REPORT, deliberately: a
+        // check derived from the same walk would agree with itself no matter what that walk did.
+        let stated = folds.population();
+        let asked = Sampled::ALL.map(|arm| {
+            (
+                arm,
+                log.runs
+                    .iter()
+                    .filter(|run| run.sampled(Tally::FoldsByReason) == arm)
+                    .count(),
+            )
+        });
+        assert_eq!(
+            stated, asked,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 895 ⑷: the report must state the population it was taken \
+             over, and it must be the population `PersistedRun::sampled` names. A number a reader \
+             cannot attach a predicate to is not a measurement — and item 856's baseline is quoted \
+             out of this report every round.",
+        );
+        // ⚠ AND IT PARTITIONS THE WHOLE LOG, so a row cannot leave the population silently — the
+        // one fatal defect of this instrument, and `Folds::runs` alone cannot catch it because a
+        // row dropped before the buckets would be missing from both sides of that sum.
+        assert_eq!(
+            stated.iter().map(|(_, count)| count).sum::<usize>(),
+            log.runs.len(),
+            "⛔⛔⛔⛔⛔ EVERY ROW IS IN EXACTLY ONE ARM — the check `sprag-samples` prints for a \
+             reader, held here for the report that quotes it. Stated: {stated:?}",
+        );
 
         // ── ③b AND HOW EACH OF THOSE DELIVERED NOTHING — register item 910's own partition ──
         //
