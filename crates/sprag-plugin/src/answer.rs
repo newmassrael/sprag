@@ -37,7 +37,7 @@
 //! [`Consents::covers`] authorised, and it converges the moment it has answered. A caller cannot
 //! use it to drive a pane, which is what makes it safe to point at a pane that is already blocked.
 //!
-//! # ⚠⚠ The three endings, and why none of them needed a new word
+//! # ⚠⚠ The three endings, and why none of them needed a new OUTCOME word
 //!
 //! * **It answered** — [`Verdict::Answered`] and then [`Verdict::Converged`]. The run reports
 //!   `converged` with [`Outcome::answered`](crate::driver::Outcome::answered) `1`.
@@ -49,6 +49,27 @@
 //!   answered nothing"* is a claim a reader gets affirmatively rather than by not finding a key.
 //!   ⚠ Inventing a sixth outcome word for it would move a value space every journal reader decodes
 //!   whole, to say something two fields already say together.
+//!
+//! # ⛔⛔⛔⛔⛔ TWO OF THOSE THREE CONVERGE, AND THE ROW SAID ONE WORD FOR BOTH — register item 912
+//!
+//! The paragraph above is right that no sixth `OutcomeState` was wanted and wrong about what that
+//! settled. `converged` is what BECAME of the run; it is not what the run converged ON — and the
+//! two endings that reach it here are opposites a reader has to act on differently: *your consent
+//! answered the dialog you quoted* against *by the time this ran, nobody was asking*. Measured over
+//! the loop's own store at 2026-09-06T00:11:08Z: **four `answer` runs converged, at three separate
+//! builds including the current one, and not one of them named an ending** — while every `ai_loop`
+//! run converging since id 56 named one, 39 for 39.
+//!
+//! That is register item 706's defect one plugin over, and item 903's gate had already promised the
+//! column — `every_ending_names_a_column_that_says_why_it_happened` maps
+//! [`OutcomeState::Converged`](crate::driver::OutcomeState::Converged) to `done_reason` — while
+//! checking only that the column EXISTS on the record. A plugin that never fills it passes that
+//! gate, which is this workspace's rule 6: an ending nobody classified is a RED, not a pass.
+//!
+//! So [`Closed`] is this plugin's own closed vocabulary and [`Plugin::ended_because`] publishes it.
+//! ⚠ The word is READ FROM THE LATCH THE CONVERGING STEP SET, never from what this plugin meant to
+//! do — `OuterLoop::closing_because`'s rule, which is what makes it a report and not a claim. A run
+//! that answered and was then cancelled has taken NO ending here, and its latch is empty.
 
 use sprag_terminal::PaneId;
 
@@ -57,6 +78,90 @@ use crate::consent::Consents;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness};
 use crate::run::RunContext;
+
+sprag_vt::closed_set! {
+/// ⛔⛔⛔⛔⛔ **WHICH OF [`Answer`]'s TWO CONVERGING ENDINGS CLOSED THE RUN** — register item 912,
+/// and the vocabulary [`Plugin::ended_because`] publishes for this plugin.
+///
+/// # ⚠⚠⚠ Why a word, when the module doc argues no new word was needed
+///
+/// That argument is about [`OutcomeState`](crate::driver::OutcomeState), and it holds: both endings
+/// below are genuinely `converged`, and a sixth outcome word would move a value space every journal
+/// reader decodes whole. What it does not settle is the question a reader actually asks of an
+/// `answer` run — *did my consent land?* — which the outcome word cannot answer because it is the
+/// same word either way. Register item 594 measured that exact collapse one field over, and item
+/// 706's repair is the one reused here: the fact already exists, in the step's own note, as prose.
+/// **Lifting the word out of the sentence and giving it a key is the whole of it.**
+///
+/// ⚠⚠ [`Outcome::answered`](crate::driver::Outcome::answered) is NOT this, and folding the two
+/// would be the second authority [`Plugin::ended_because`]'s doc warns about. That counter says how
+/// many decisions this run took on somebody's behalf and is published on EVERY terminal state — a
+/// cancelled run that had already answered carries `1`. This says which ending CLOSED the run, and
+/// a run that was cancelled took none. Read together they separate *it answered and stopped* from
+/// *it answered and something else stopped it*; read as one they cannot.
+///
+/// ⚠ The vocabulary is this plugin's own and no driver interprets it —
+/// [`Plugin::ended_because`]'s rule, and the reason this type lives here rather than beside the
+/// trait.
+///
+/// ⚠ A [`closed_set!`](sprag_vt::closed_set) rather than a bare enum with a hand-written `ALL`,
+/// which is what [`DoneReason`](crate::outer::DoneReason) still is: the array is COUNTED from the
+/// variant list, so a third ending cannot be added and left out of the gate below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Closed {
+    /// **THE CONSENT ANSWERED THE QUESTION, AND THIS RUN WAS ASKED FOR EXACTLY ONE.** The
+    /// dialog the caller quoted is gone, an option they named was taken, and
+    /// [`Outcome::answered`](crate::driver::Outcome::answered) is `1`.
+    Answered,
+    /// **NOBODY WAS ASKING BY THE TIME THIS RAN, SO THERE WAS NOTHING TO ANSWER.** Not one byte
+    /// was typed and [`Outcome::answered`](crate::driver::Outcome::answered) is `0`.
+    ///
+    /// ⚠⚠ **THE READER'S REMEDY IS THE OPPOSITE OF [`Answered`](Self::Answered)'s**, which is
+    /// why this is a word and not a zero to be inferred: a supervisor who read `blocked`,
+    /// decided, and called is being told their decision did not land, and the reason is a RACE
+    /// — the person sitting at that pane answered first, or the peer moved on. Nothing here
+    /// failed; nothing here acted either.
+    NothingToAnswer,
+}
+}
+
+impl Closed {
+    /// **THE WORD THIS PLUGIN PUBLISHES** as [`Outcome::done_reason`](crate::driver::Outcome::done_reason).
+    ///
+    /// ⚠ Non-empty and distinct across the arms, and a gate says so rather than this line —
+    /// [`DoneReason::word`](crate::outer::DoneReason::word)'s arrangement, for its reason: a word
+    /// that collided or emptied would read back as some other ending, or as no ending at all.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Answered => "answered",
+            Self::NothingToAnswer => "nothing_to_answer",
+        }
+    }
+
+    /// The ending named by `word`, or [`None`] for a word outside the closed set.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|closed| closed.word() == word)
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
+    /// word, for [`DoneReason::describe`](crate::outer::DoneReason::describe)'s reason.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Answered => {
+                "the option this run was consented to take was taken and the dialog is gone, so \
+                 the decision landed — this run was asked for exactly one answer and gave it"
+            }
+            Self::NothingToAnswer => {
+                "nothing was asking by the time this run reached the pane, so NOTHING WAS TYPED \
+                 and the decision did not land — the person at that pane answered first, or the \
+                 peer moved on; read the pane again before deciding whether to call once more"
+            }
+        }
+    }
+}
 
 /// A one-shot answer to whatever ONE pane's peer is asking, on a [`Consent`](crate::consent::Consent) the caller wrote.
 ///
@@ -76,6 +181,21 @@ pub struct Answer {
     /// round again would make it stand watch over a pane nobody asked it to watch — answering a
     /// SECOND dialog the caller never saw, on a consent written for the first.
     given: bool,
+    /// ⛔⛔⛔⛔⛔ **WHICH ENDING THIS RUN CLOSED UNDER, ONCE IT HAS** — register item 912, and
+    /// [`None`] for every run still going and every run something else stopped.
+    ///
+    /// ⚠⚠⚠ **SET AT THE TWO SITES THAT PUBLISH [`Verdict::Converged`] AND NOWHERE ELSE**, which is
+    /// what keeps it a report. Latching it where the answer is TAKEN would have been one line
+    /// shorter and wrong: a run that answers and is then cancelled ended on nobody's terms, and
+    /// [`Outcome::done_reason`](crate::driver::Outcome::done_reason) reserves [`None`] for exactly
+    /// that case. The driver reads this immediately after each step and keeps the last non-`None`,
+    /// so a word written early would outlive the ending it was about.
+    ///
+    /// ⚠⚠ **NOT DERIVABLE FROM [`given`](Self::given), which is why it is a second field rather
+    /// than a second reading of one.** That latch says *the answer was taken* and is true for a
+    /// whole step before anything converges; this says *this run is over, on this ground*. The pair
+    /// `(given, closed)` has three reachable states and each is a different fact.
+    closed: Option<Closed>,
 }
 
 impl Answer {
@@ -96,6 +216,7 @@ impl Answer {
             // one-clause shape at this door for the same reason.
             door: Readiness::new(None, None, Some(consent), crate::readiness::Attended::NoOne),
             given: false,
+            closed: None,
         }
     }
 }
@@ -107,6 +228,11 @@ impl Plugin for Answer {
             // question before it reported an answer, so there is no further evidence to collect —
             // and a second look would be this plugin forming an opinion about a dialog that
             // appeared after the one it was sent to answer.
+            //
+            // ⛔ AND THE ENDING IS NAMED HERE, at the step that takes it — register item 912. The
+            // note below has always said which of the two this is; `Closed` is that same fact with
+            // a key on it, so a reader asking *did my consent land* stops parsing a sentence.
+            self.closed = Some(Closed::Answered);
             return Ok(Step::new(Cost::Bytes(0), Verdict::Converged)
                 .noting("the answer was taken, and this run was asked for exactly one"));
         }
@@ -131,12 +257,20 @@ impl Plugin for Answer {
         match reached {
             // The peer is not asking. Nothing was typed and nothing is charged — see the module
             // doc for why the run still converges and what says it answered nothing.
-            Reached::Yes => Ok(
-                Step::new(Cost::Bytes(0), Verdict::Converged).noting(format!(
-                    "pane {} is not asking anything, so there was nothing to answer",
-                    self.pane.0
-                )),
-            ),
+            //
+            // ⛔ AND THE OTHER ENDING IS NAMED HERE — register item 912, the sibling of the latch
+            // at the top of this method. These are the only two places this plugin converges, and
+            // naming the ending at each is what makes *nothing was asking* reach a row rather than
+            // stopping at a note nobody parses.
+            Reached::Yes => {
+                self.closed = Some(Closed::NothingToAnswer);
+                Ok(
+                    Step::new(Cost::Bytes(0), Verdict::Converged).noting(format!(
+                        "pane {} is not asking anything, so there was nothing to answer",
+                        self.pane.0
+                    )),
+                )
+            }
             // ⚠⚠ UNREACHABLE FROM HERE, AND SAID SO RATHER THAN CLAIMED TESTED. This barrier is
             // built with NO readiness condition, so `Readiness::reached` never enters the wait
             // that produces this answer: it either finds the peer asking (and answers), or reports
@@ -203,6 +337,16 @@ impl Plugin for Answer {
     /// this product ending work it never started.
     fn driving(&self) -> Option<PaneId> {
         None
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHICH OF THIS PLUGIN'S TWO CONVERGING ENDINGS CLOSED THE RUN** — register item
+    /// 912, and [`None`] until one of them has.
+    ///
+    /// ⚠ Read off the latch the converging step set, never recomputed from `given` or from the
+    /// pane: this plugin's whole subject is a dialog that may already be gone, so a reading taken
+    /// after the fact would be about a different screen. See [`Closed`].
+    fn ended_because(&self) -> Option<&'static str> {
+        self.closed.map(Closed::word)
     }
 }
 
@@ -309,6 +453,17 @@ mod tests {
         let Verdict::Answered(answered) = &first.verdict else {
             panic!("`Yes` is option 1's whole label, so exactly one option carries it: {first:?}");
         };
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 912, AND THE HALF THAT IS EASIEST TO GET WRONG: the answer has
+        // been TAKEN and this run has still ended on nobody's terms. A latch set here would ride
+        // the driver's `or_else` all the way to a cancelled run's row, where
+        // `Outcome::done_reason` reserves `None` for exactly this case.
+        assert_eq!(
+            plugin.ended_because(),
+            None,
+            "⚠⚠⚠ the answer was taken and the run is NOT over — a run cancelled in this gap closed \
+             under no ending of this plugin's, and naming one would publish an ending that never \
+             happened: {first:?}",
+        );
         assert_eq!(answered.chose.number, 1);
         assert_eq!(
             first.cost,
@@ -346,6 +501,16 @@ mod tests {
              what the pane is showing now would mean it had looked: {:?}",
             second.note,
         );
+        // ⛔⛔⛔⛔⛔ AND THE ENDING REACHES A KEY, NOT ONLY THAT SENTENCE — register item 912. The
+        // note above has always carried this fact; what a consumer asking *did my consent land*
+        // had was a string to parse and a spelling to keep in step by hand, which is register item
+        // 594's cost arriving one plugin over.
+        assert_eq!(
+            plugin.ended_because(),
+            Some(Closed::Answered.word()),
+            "⚠⚠⚠ the run converged HAVING ANSWERED and must say so in the column item 903's gate \
+             already promised a converged run: {second:?}",
+        );
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
@@ -363,13 +528,31 @@ mod tests {
     fn a_pane_that_is_not_asking_is_left_alone() {
         let (access, pane) = crate::testing::silent_peer();
         let run = RunContext::uncancellable();
-        let step = Answer::new(pane, consent_to("Yes"))
+        let mut plugin = Answer::new(pane, consent_to("Yes"));
+        let step = plugin
             .step(&access, &run)
             .expect("a pane with no question is not an error");
         assert_eq!(
             step.verdict,
             Verdict::Converged,
             "there was nothing to answer: {step:?}",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE ROW SAYS WHICH OF THE TWO CONVERGING ENDINGS THIS IS — register item
+        // 912, and this is the arm the item was filed over. A supervisor who read `blocked`,
+        // decided, and called is being told their decision DID NOT LAND, and until this word
+        // existed that arrived as `converged` — byte-identical to the run that answered.
+        assert_eq!(
+            plugin.ended_because(),
+            Some(Closed::NothingToAnswer.word()),
+            "⚠⚠⚠ NOTHING WAS TYPED and the run still reports `converged`. The outcome word is the \
+             same one the answering run publishes, so this is the only place the difference can \
+             reach a reader: {step:?}",
+        );
+        assert_ne!(
+            Closed::NothingToAnswer.word(),
+            Closed::Answered.word(),
+            "⚠⚠ THE CONTROL: two endings sharing a word would report *your consent landed* for a \
+             run that typed nothing, which is the defect this pair exists to end",
         );
         assert_eq!(
             step.cost,
@@ -435,5 +618,64 @@ mod tests {
     #[test]
     fn an_answer_run_has_no_job_of_its_own_to_stop() {
         assert_eq!(Answer::new(PaneId(7), consent_to("Yes")).driving(), None);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY ENDING THIS PLUGIN CAN CLOSE UNDER HAS A WORD OF ITS OWN, AND THE WORD
+    /// READS BACK** — register item 912, and the vocabulary half of it.
+    ///
+    /// # ⚠⚠ What each clause is FOR, rather than a list of properties
+    ///
+    /// * **Non-empty**, because an empty word reaches
+    ///   [`Outcome::done_reason`](crate::driver::Outcome::done_reason) as `Some("")` and every
+    ///   reader that tests truthiness reads it back as *no ending at all* —
+    ///   [`DoneReason::word`](crate::outer::DoneReason::word) carries the same clause for the same
+    ///   reason, learned against a Lua datamodel where `''` is TRUE.
+    /// * **Distinct**, because two endings sharing a word is precisely the collapse this type was
+    ///   built to end: it would report *your consent landed* for a run that typed nothing.
+    /// * **Round-trips through [`Closed::named`]**, because the word survives the daemon in a
+    ///   durable log and comes back as a string; a reader that cannot turn it back into an ending
+    ///   has a key it can print and not one it can ask questions of.
+    /// * **An unknown word is [`None`]** rather than the closest arm, which is
+    ///   `outcome_from_words`'s rule: naming a neighbour would send somebody to fix a thing that
+    ///   was never wrong.
+    ///
+    /// ⚠ The POPULATION is [`Closed::ALL`], which `closed_set!` counts from the variant list — so
+    /// a third ending cannot be added and left out of this gate, which is the residue a
+    /// hand-written array leaves.
+    #[test]
+    fn every_ending_this_plugin_converges_under_has_a_word_of_its_own_that_reads_back() {
+        let words: std::collections::BTreeSet<&str> = Closed::ALL
+            .iter()
+            .map(|closed| Closed::word(*closed))
+            .collect();
+        assert_eq!(
+            words.len(),
+            Closed::ALL.len(),
+            "⛔⛔⛔ TWO ENDINGS SHARE A WORD, which is the collapse this vocabulary exists to end: \
+             {words:?}",
+        );
+        for closed in Closed::ALL {
+            assert!(
+                !closed.word().is_empty(),
+                "⛔ an empty word reads back as NO ending at all: {closed:?}",
+            );
+            assert_eq!(
+                Closed::named(closed.word()),
+                Some(closed),
+                "⛔⛔ the word survives the daemon as a string and has to come back as an ENDING, \
+                 or a reader has a key it can print and not one it can ask about: {closed:?}",
+            );
+            assert!(
+                !closed.describe().is_empty(),
+                "⚠ and a reader who does not know the word needs the sentence: {closed:?}",
+            );
+        }
+        assert_eq!(
+            Closed::named("converged"),
+            None,
+            "⚠⚠ AND A WORD FROM OUTSIDE THIS SET IS NOT THE NEAREST ARM. `converged` is the \
+             OUTCOME word every one of these endings publishes, and answering it here would fold \
+             the two vocabularies this plugin keeps apart",
+        );
     }
 }

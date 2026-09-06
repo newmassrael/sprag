@@ -358,6 +358,80 @@ pub struct Agent {
     /// **THE PROMPT THAT IS ALREADY IN THE PANE**, and everything the capture of its reply needs —
     /// `None` before this adapter has asked anything. See [`InFlight`].
     asked: Option<InFlight>,
+    /// ⛔⛔⛔⛔⛔ **WHICH ENDING THIS RUN CLOSED UNDER, ONCE IT HAS** — register item 912, and
+    /// [`None`] for every run still going and every run something else stopped.
+    ///
+    /// ⚠ Set at the ONE site that publishes [`Verdict::Converged`], from the same `waited` this
+    /// adapter composes its note out of — so the word and the sentence cannot come to disagree.
+    /// See [`Closed`].
+    closed: Option<Closed>,
+}
+
+sprag_vt::closed_set! {
+/// ⛔⛔⛔⛔⛔ **WHICH ENDING AN [`Agent`] CONVERGED ON** — register item 912, and the vocabulary
+/// [`Plugin::ended_because`] publishes for this plugin.
+///
+/// # ⛔⛔⛔ The two were already split in the SENTENCE and nowhere a reader can ask
+///
+/// This adapter converges on the peer's turn being over, and a turn ends two ways: the child exits,
+/// which is what makes a capture complete, or the per-turn timeout runs out and the text is
+/// whatever happened to be on screen mid-reply. The note has said which since the caveat was added
+/// — *"which may be a PARTIAL reply"* — and that is prose, on a run whose capture is published AS
+/// THE MODEL'S ANSWER. A consumer weighing whether it holds a whole answer had a string to parse.
+///
+/// ⚠ The vocabulary is this plugin's own and no driver interprets it —
+/// [`Plugin::ended_because`]'s rule.
+///
+/// ⚠ A [`closed_set!`](sprag_vt::closed_set), so the array below is COUNTED from the variant list
+/// and a third ending cannot be added and left out of the gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Closed {
+    /// **THE PEER FINISHED, AND THE CAPTURE IS WHOLE.** The turn ended the way the caller's
+    /// [`DoneWhen`](crate::completion::DoneWhen) said it would.
+    Replied,
+    /// ⚠⚠ **THE PER-TURN TIMEOUT RAN OUT WHILE THE PEER WAS STILL TALKING**, so what was
+    /// captured is the screen mid-reply and MAY BE PARTIAL.
+    ///
+    /// The run still converges — there is a capture and it is the best this adapter can offer
+    /// — but the reader's remedy is a different one: raise `timeout`, or name a
+    /// [`DoneWhen`](crate::completion::DoneWhen) the peer actually reaches.
+    Unfinished,
+}
+}
+
+impl Closed {
+    /// **THE WORD THIS PLUGIN PUBLISHES** as
+    /// [`Outcome::done_reason`](crate::driver::Outcome::done_reason).
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Replied => "replied",
+            Self::Unfinished => "unfinished",
+        }
+    }
+
+    /// The ending named by `word`, or [`None`] for a word outside the closed set.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|closed| closed.word() == word)
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
+    /// word.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Replied => {
+                "the peer's turn ended the way the caller said it would, so the captured text is a \
+                 whole reply and can be read as the model's answer"
+            }
+            Self::Unfinished => {
+                "the per-turn timeout ran out while the peer was still replying, so the capture is \
+                 THE SCREEN MID-REPLY and may be missing its end — raise `timeout`, or name a \
+                 `done_when` the peer actually reaches, before reading it as the model's answer"
+            }
+        }
+    }
 }
 
 /// A prompt that IS IN THE PANE and whose reply has not been captured yet.
@@ -425,6 +499,7 @@ impl Agent {
             spec,
             response: None,
             asked: None,
+            closed: None,
         }
     }
 
@@ -1010,14 +1085,23 @@ impl Plugin for Agent {
         // text is whatever happened to be on screen mid-reply. Both were reported with the same
         // sentence, so a truncated capture was indistinguishable from a whole one.
         let characters = text.chars().count();
-        let mut note = if waited == Over::NotYet {
-            format!(
+        // ⛔ AND THE ENDING IS THE SENTENCE'S OWN — register item 912. `waited` is read ONCE and
+        // both the word and the caveat below are rendered from the answer, so the key a consumer
+        // reads and the prose a person reads cannot come to disagree; a second test of `waited`
+        // beside this one is exactly the drift this crate keeps paying for.
+        let closed = if waited == Over::NotYet {
+            Closed::Unfinished
+        } else {
+            Closed::Replied
+        };
+        self.closed = Some(closed);
+        let mut note = match closed {
+            Closed::Unfinished => format!(
                 "the peer had not finished after {:?}; captured the {characters} characters on \
                  screen, which may be a PARTIAL reply",
                 self.spec.timeout,
-            )
-        } else {
-            format!("captured a {characters}-character reply")
+            ),
+            Closed::Replied => format!("captured a {characters}-character reply"),
         };
         // ⚠⚠⚠ AND WHEN THE END-OF-INPUT COULD NOT ARRIVE, SAY THAT INSTEAD OF BLAMING THE PEER.
         //
@@ -1080,6 +1164,12 @@ impl Plugin for Agent {
     /// matters.
     fn driving(&self) -> Option<PaneId> {
         Some(self.pane)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHICH ENDING THIS RUN CONVERGED ON** — register item 912, and [`None`] until it
+    /// has. See [`Closed`].
+    fn ended_because(&self) -> Option<&'static str> {
+        self.closed.map(Closed::word)
     }
 }
 
@@ -2705,6 +2795,17 @@ mod tests {
                 .is_some_and(|reply| reply.contains("PARTIAL-REPLY")),
             "and it still captures what the peer did say",
         );
+        // ⛔⛔⛔⛔⛔ AND THE CAVEAT REACHES A KEY, NOT ONLY THAT SENTENCE — register item 912. The
+        // paragraph above says the two endings *"were reported with the same sentence"* and the
+        // repair stopped at the sentence: a consumer deciding whether it holds a whole answer was
+        // left parsing prose for the word PARTIAL. Item 903's gate had already promised a
+        // converged run the `done_reason` column; this is what fills it.
+        assert_eq!(
+            outcome.done_reason.as_deref(),
+            Some(Closed::Unfinished.word()),
+            "⚠⚠⚠ a capture the clock cut short and a whole reply publish the SAME outcome word, \
+             so this column is the only place the difference can reach a reader: {outcome:?}",
+        );
     }
 
     #[test]
@@ -2725,6 +2826,19 @@ mod tests {
         let captured = agent.captured().expect("a captured reply");
         assert!(captured.contains("one:x"), "captured: {captured:?}");
         assert!(captured.contains("two:x"), "captured: {captured:?}");
+        // ⛔⛔⛔⛔⛔ THE CONTROL FOR ITEM 912's OTHER ARM: this peer EXITED, so the capture is
+        // whole and the run must say a different word than the one a clock-cut capture publishes.
+        // A build that hardcoded either would satisfy one of these two gates and fail the other.
+        assert_eq!(
+            outcome.done_reason.as_deref(),
+            Some(Closed::Replied.word()),
+            "⚠⚠⚠ the peer finished the way the caller's `done_when` said it would: {outcome:?}",
+        );
+        assert_ne!(
+            Closed::Replied.word(),
+            Closed::Unfinished.word(),
+            "⚠⚠ and the two words differ, or the pair says nothing",
+        );
     }
 
     /// ⚠⚠ **THE RUN'S DEADLINE REACHES INSIDE A STEP**, which is the only thing that makes it a

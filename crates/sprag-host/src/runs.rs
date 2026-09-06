@@ -5689,10 +5689,32 @@ pub enum Ended {
     /// nothing recorded. ⚠ Its own arm because NOBODY decided anything about this run, which is
     /// [`Canceller`]'s whole stated split.
     CancelledByAShutdown,
-    /// **IT ENDED ON ITS OWN TERMS HAVING DELIVERED NOTHING** — `converged`, `exhausted` or
-    /// `taken_over`. ⚠ Not a contradiction and not folded into the failures: a run can converge
-    /// before it has anything to say.
-    OnItsOwnTerms,
+    /// **IT CONVERGED AND SAID WHAT ON** — `converged` with [`PersistedRun::done_reason`]. ⚠ Not a
+    /// contradiction and not folded into the failures: a run can converge before it has anything
+    /// to say, and this arm is the one where a reader can find out how.
+    ConvergedOnANamedEnding,
+    /// ⛔⛔⛔⛔⛔ **IT CONVERGED AND NOTHING SAYS ON WHAT GROUND** — `converged` with no
+    /// [`PersistedRun::done_reason`], and register item 912's whole subject.
+    ///
+    /// `converged` is what BECAME of the run; it is not what the run converged ON, and every
+    /// plugin that closes itself has more than one way to. Item 903's own gate maps this ending to
+    /// the `done_reason` column and checks that the column EXISTS — so a plugin that never fills
+    /// it lands here, telling a reader *it ended on its own terms* and nothing else.
+    ///
+    /// ⚠⚠ **A ROW IN THIS ARM IS NOT ALWAYS TODAY'S DEFECT.** A log older than register item 706
+    /// carries no such word at all, and the live store's fifteen `ai_loop` members are exactly
+    /// that (every one a run id ≤ 40, against 39 for 39 named from id 56 on, measured
+    /// 2026-09-06T00:11:08Z). What the arm is for is that the two are COUNTABLE apart from the
+    /// runs that did say — which is what one word for both denied.
+    ConvergedNamingNothing,
+    /// **A CEILING ENDED IT** — `exhausted`. It ended on its own terms in the sense that nothing
+    /// went wrong, and [`PersistedRun::ceiling`] is its ground: item 903's gate maps this ending to
+    /// that column, and `done_reason` is documented as [`None`] for it.
+    SpentACeiling,
+    /// **A PERSON TOOK THE PANE** — `taken_over`. ⚠ Its own arm because its ground is the ENDING
+    /// WORD itself: item 903's gate is the one place that says so, as a decision somebody wrote
+    /// down rather than a column left empty.
+    TakenOverByAPerson,
     /// **THE ROW NAMES NO ENDING**, which is a log written before the word was stored.
     Unsaid,
     /// ⛔ **A WORD THIS BUILD HAS NO ARM FOR.** Rule 6: reported, never swallowed.
@@ -5701,12 +5723,18 @@ pub enum Ended {
 
 impl Ended {
     /// Every arm, so a report printing this partition cannot leave one out.
-    pub const ALL: [Self; 7] = [
+    ///
+    /// ⚠ In declaration order, which the derived [`Ord`] follows — the report's map iterates by it
+    /// and a gate compares the two lists directly.
+    pub const ALL: [Self; 10] = [
         Self::OnADriverFailure,
         Self::Blocked,
         Self::CancelledByAPerson,
         Self::CancelledByAShutdown,
-        Self::OnItsOwnTerms,
+        Self::ConvergedOnANamedEnding,
+        Self::ConvergedNamingNothing,
+        Self::SpentACeiling,
+        Self::TakenOverByAPerson,
         Self::Unsaid,
         Self::Unspellable,
     ];
@@ -5728,7 +5756,24 @@ impl Ended {
                 Some(Canceller::Person) => Self::CancelledByAPerson,
                 Some(Canceller::Shutdown) | None => Self::CancelledByAShutdown,
             },
-            "converged" | "exhausted" | "taken_over" => Self::OnItsOwnTerms,
+            // ⛔⛔⛔⛔⛔ REGISTER ITEM 912: the three endings a run reaches on its own terms have
+            // three DIFFERENT grounds, and item 903's gate already named the column each is
+            // written in — `done_reason`, `ceiling`, and for `taken_over` the ending word itself.
+            // One arm over them said *it ended on its own terms* and left a reader with nowhere to
+            // ask how, which is exactly the collapse item 594 measured one field over.
+            //
+            // ⚠ `done_reason` is consulted ONLY under `converged`, on the same rule the canceller
+            // is read under `cancelled`: it is documented as `None` for an exhausted run, so a
+            // classifier that asked it first would report those as unsaid.
+            "converged" => match run.done_reason.as_deref() {
+                Some(named) if !named.is_empty() => Self::ConvergedOnANamedEnding,
+                // ⚠⚠ AN EMPTY WORD IS NOT A WORD. `Some("")` reaches a truthiness test as *there
+                // is an ending* and reads back as nothing, which is the shape
+                // `sprag_plugin::answer::Closed`'s own gate refuses at the other end.
+                Some(_) | None => Self::ConvergedNamingNothing,
+            },
+            "exhausted" => Self::SpentACeiling,
+            "taken_over" => Self::TakenOverByAPerson,
             _ => Self::Unspellable,
         }
     }
@@ -5746,7 +5791,23 @@ impl Ended {
             Self::CancelledByAShutdown => {
                 "the daemon shut down under it, so nobody decided anything about this run"
             }
-            Self::OnItsOwnTerms => "it ended on its own terms having delivered nothing",
+            Self::ConvergedOnANamedEnding => {
+                "it converged having delivered nothing, and its `done_reason` says on what ground \
+                 — read that word before deciding whether the run was finished or merely over"
+            }
+            Self::ConvergedNamingNothing => {
+                "it converged having delivered nothing and NOTHING SAYS ON WHAT GROUND — either \
+                 the plugin that drove it names no endings, which is a defect, or the log predates \
+                 the column, which is a skew; the row's `build` is what tells the two apart"
+            }
+            Self::SpentACeiling => {
+                "a ceiling ended it before it delivered anything, and `ceiling` says which knob \
+                 buys the next run more room"
+            }
+            Self::TakenOverByAPerson => {
+                "a person took the pane, which is the whole event — the ending word is its own \
+                 reason and no column beside it could say more"
+            }
             Self::Unsaid => "the row names no ending at all",
             Self::Unspellable => {
                 "it names an ending word this build has no arm for, which is a build skew and not \
@@ -5770,7 +5831,10 @@ impl Ended {
             Self::Blocked
             | Self::CancelledByAPerson
             | Self::CancelledByAShutdown
-            | Self::OnItsOwnTerms
+            | Self::ConvergedOnANamedEnding
+            | Self::ConvergedNamingNothing
+            | Self::SpentACeiling
+            | Self::TakenOverByAPerson
             | Self::Unsaid
             | Self::Unspellable => false,
         }
@@ -7776,6 +7840,15 @@ mod tests {
         fn why_column(state: &OutcomeState) -> Result<&'static str, &'static str> {
             match state {
                 // The plugin closed itself and named the ending out of its own vocabulary.
+                //
+                // ⛔⛔⛔⛔⛔ NAMING A COLUMN IS NOT FILLING IT, and this gate cannot see the
+                // difference — register item 912. What it reads is which columns EXIST on the
+                // record (see the fixture below), so a plugin that has endings and publishes none
+                // passes here while telling a reader nothing, which is what `answer` did at every
+                // build it ever had. The gate that holds the other half is
+                // `crate::plugins::tests::every_bundled_plugin_says_which_ending_it_converged_on`,
+                // which walks `PluginName::ALL` with no `_` arm; `Ended::ConvergedNamingNothing` is
+                // where a row that slips through both lands, counted rather than pooled.
                 OutcomeState::Converged => Ok("done_reason"),
                 // A guardrail stopped it, and WHICH one is the remedy.
                 OutcomeState::Exhausted(_) => Ok("ceiling"),
@@ -12639,8 +12712,35 @@ mod tests {
                 //    173 and 226): a classifier that read the canceller first would call this a
                 //    cancelled run, so the ending word is asked FIRST and the canceller only under
                 //    `cancelled`.
-                { "id": 20, "label": "ai_loop pane=22", "iterations": 2, "finished": true,
+                //    ⛔⛔⛔⛔⛔ AND IT NAMES NO ENDING, which is register item 912's own row: this
+                //    is the shape all four `answer` runs in the live store have
+                //    (2026-09-06T00:11:08Z), at three separate builds including the current one.
+                //    `converged` is what BECAME of the run and says nothing about what it
+                //    converged ON.
+                { "id": 20, "label": "answer pane=22", "iterations": 2, "finished": true,
                   "outcome": "converged", "cancelled_by": "shutdown",
+                  "deliveries": { "made": 0, "folded": 0 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
+                //    ⛔⛔⛔⛔⛔ THE CONTROL FOR IT — register item 912. Same ending word, same
+                //    zero deliveries, and this one SAYS on what ground. Without it the arm above
+                //    would be *every converged run*, and a build that never wrote the column would
+                //    look exactly like a build in which nothing ever named one.
+                { "id": 25, "label": "answer pane=27", "iterations": 2, "finished": true,
+                  "outcome": "converged", "done_reason": "nothing_to_answer",
+                  "deliveries": { "made": 0, "folded": 0 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
+                //    ⚠⚠ A CEILING ENDED IT, and its ground is `ceiling` rather than `done_reason`
+                //    — item 903's gate is the authority on which column each ending is written in,
+                //    and `Outcome::done_reason` is documented as `None` for exactly this one.
+                { "id": 26, "label": "ai_loop pane=28", "iterations": 3, "finished": true,
+                  "outcome": "exhausted", "ceiling": "iterations",
+                  "deliveries": { "made": 0, "folded": 0 },
+                  "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
+                //    ⚠⚠ AND A PERSON TOOK THE PANE, whose ground is the ENDING WORD ITSELF. Its
+                //    own arm because item 903's gate wrote that down as a decision rather than
+                //    leaving a column empty and calling it classified.
+                { "id": 27, "label": "orchestrator pane=29", "iterations": 1, "finished": true,
+                  "outcome": "taken_over",
                   "deliveries": { "made": 0, "folded": 0 },
                   "folds_by_reason": { "ordinary": { "delivered": 0, "folded": 0 } } },
                 { "id": 21, "label": "ai_loop pane=23", "iterations": 1, "finished": true,
@@ -13073,7 +13173,10 @@ mod tests {
             // the row's own `deliveries.made` is what tells them apart. Measured over the live
             // store at 2026-09-05T20:33:04Z the one arm held 216 rows — 199 `NeverCounted`, 17
             // `DeliveredNothing`, 0 `DeliveriesUnsaid`.
-            (NoFullness::DeliveredNothing, 7),
+            // ⛔ TEN SINCE REGISTER ITEM 912: the three endings a run reaches on its own terms
+            // were one arm, so this bucket held one row for all of them; it now holds one per
+            // ending, and the converged pair (25 named, 20 not) is the item's own control.
+            (NoFullness::DeliveredNothing, 10),
             (NoFullness::NeverCounted, 1),
             (NoFullness::DeliveriesUnsaid, 1),
             // ⚠ TWO: run 12, behind the wall and never on the capacity road, and run 24, whose
@@ -13106,9 +13209,16 @@ mod tests {
         // ── ③b AND HOW EACH OF THOSE DELIVERED NOTHING — register item 910's own partition ──
         //
         // ⛔⛔⛔⛔⛔ The bucket above says HOW MANY delivered nothing and cannot say whether an
-        // ordinary prompt was ever put at a pane. These seven rows are one of each ending, and
-        // only the first could have lost one: item 910's done-when is that the report SPLITS them
+        // ordinary prompt was ever put at a pane. These ten rows are one of each ending, and only
+        // the first could have lost one: item 910's done-when is that the report SPLITS them
         // rather than choosing between counting all of them and counting none.
+        //
+        // ⛔⛔⛔⛔⛔ AND FOUR OF THE TEN ARE REGISTER ITEM 912's. *It ended on its own terms* was
+        // ONE arm over three endings whose grounds live in three different columns, so a reader
+        // who found a run there had nowhere to ask how it got there. The pair that matters is runs
+        // 20 and 25: same ending word, same zero deliveries, and only one of them says on what
+        // ground. Pooled, a build in which nothing ever named an ending is indistinguishable from
+        // one in which everything did.
         //
         // ⚠ EVERY arm including the zeros, `unmeasured`'s rule verbatim — an ending nothing
         // reached this time is the one a surprise arrives on, and a table built from the words a
@@ -13128,7 +13238,7 @@ mod tests {
                     .into_iter()
                     .map(|how| (how, 1))
                     .collect::<Vec<_>>(),
-                7,
+                10,
                 1,
             ),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 910: *the driver met a failure* and *a person cancelled it* \
@@ -13139,6 +13249,34 @@ mod tests {
              loss is *at most one prompt*, never a fold — which of three panes produced it is what \
              this product states it cannot tell. Endings: {:?}",
             folds.endings,
+        );
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 912's OWN CONTROL, and it is what stops the split above being
+        // satisfied by a classifier that reads the ending WORD alone. Runs 20 and 25 differ in one
+        // stored fact — whether `done_reason` is there — and they must land in different arms; a
+        // build that answered off `outcome` would put both in one and pass every assertion above.
+        assert_eq!(
+            (
+                Ended::of(
+                    log.runs
+                        .iter()
+                        .find(|run| run.id == 25)
+                        .expect("the converged row that names its ending"),
+                ),
+                Ended::of(
+                    log.runs
+                        .iter()
+                        .find(|run| run.id == 20)
+                        .expect("the converged row that names none"),
+                ),
+            ),
+            (
+                Ended::ConvergedOnANamedEnding,
+                Ended::ConvergedNamingNothing,
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 912: two rows with the same `outcome` and opposite answers \
+             to *on what ground*. A reader of the arm they used to share was told `converged` — \
+             byte-identical for a run whose plugin named an ending and one whose plugin has never \
+             named one at any build",
         );
         assert!(
             folds.lost_a_prompt_at_most() < folds.delivered_nothing(),

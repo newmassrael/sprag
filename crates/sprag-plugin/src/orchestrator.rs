@@ -98,6 +98,67 @@ pub struct Orchestrator {
     /// What makes THIS step's turn over, armed at the step that typed it — `None` for a run that
     /// declared no [`Turn`] and so ends its steps on [`OBSERVE_TIMEOUT`].
     done: Option<Completion>,
+    /// ⛔⛔⛔⛔⛔ **WHICH ENDING THIS RUN CLOSED UNDER, ONCE IT HAS** — register item 912, and
+    /// [`None`] for every run still going and every run something else stopped.
+    ///
+    /// ⚠ Set at the ONE site that publishes [`Verdict::Converged`] and nowhere else, which is what
+    /// keeps it a report rather than an intention. See [`Closed`].
+    closed: Option<Closed>,
+}
+
+sprag_vt::closed_set! {
+/// ⛔⛔⛔⛔⛔ **WHICH ENDING AN [`Orchestrator`] CONVERGED ON** — register item 912, and the
+/// vocabulary [`Plugin::ended_because`] publishes for this plugin.
+///
+/// # ⚠⚠ Why a closed set for a plugin that has exactly one way to converge
+///
+/// Because the alternative is a bare `&'static str` at the converging site, and this repository has
+/// paid for that shape twice: a word that only one line spells is a word no gate can enumerate, and
+/// a SECOND ending arriving later would be added beside it rather than made to compile. One arm
+/// today, and the day this plugin learns another the reader below stops compiling until somebody
+/// says what it is — which is this workspace's rule 6 held by the compiler.
+///
+/// ⚠ The vocabulary is this plugin's own and no driver interprets it —
+/// [`Plugin::ended_because`]'s rule.
+///
+/// ⚠ A [`closed_set!`](sprag_vt::closed_set), so the array below is COUNTED from the variant list
+/// and a second ending cannot be added and left out of the gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Closed {
+    /// **THE SENTINEL APPEARED ON THE PANE.** The thing the caller declared they were waiting
+    /// for is on the screen, which is the only reason this plugin ever stops of its own accord.
+    Sentinel,
+}
+}
+
+impl Closed {
+    /// **THE WORD THIS PLUGIN PUBLISHES** as
+    /// [`Outcome::done_reason`](crate::driver::Outcome::done_reason).
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Sentinel => "sentinel",
+        }
+    }
+
+    /// The ending named by `word`, or [`None`] for a word outside the closed set.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|closed| closed.word() == word)
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
+    /// word.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Sentinel => {
+                "the text the caller declared as their sentinel appeared on the pane, so this run \
+                 stopped because it saw what it was watching for — read the pane against what the \
+                 sentinel was supposed to prove, since any line containing it will have ended this"
+            }
+        }
+    }
 }
 
 impl Orchestrator {
@@ -119,6 +180,7 @@ impl Orchestrator {
             // see [`Plugin::step`]. A cursor invented here would be a claim about a pane this
             // plugin has not looked at yet.
             spoken: 0,
+            closed: None,
         }
     }
 
@@ -621,6 +683,10 @@ impl Plugin for Orchestrator {
             .as_ref()
             .is_some_and(|sentinel| observed.contains(sentinel.as_str()))
         {
+            // ⛔ AND THE ENDING IS NAMED WHERE THE VERDICT IS CHOSEN — register item 912. This is
+            // the only place this plugin converges, so it is the only place the word can be read
+            // off what happened rather than off what the run was for.
+            self.closed = Some(Closed::Sentinel);
             Verdict::Converged
         } else {
             Verdict::Continue
@@ -696,6 +762,12 @@ impl Plugin for Orchestrator {
     /// a pane do something.
     fn driving(&self) -> Option<PaneId> {
         Some(self.pane)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHICH ENDING THIS RUN CONVERGED ON** — register item 912, and [`None`] until it
+    /// has. See [`Closed`].
+    fn ended_because(&self) -> Option<&'static str> {
+        self.closed.map(Closed::word)
     }
 }
 
@@ -1238,6 +1310,30 @@ mod tests {
             outcome.iterations >= 1,
             "iterations: {}",
             outcome.iterations
+        );
+        // ⛔⛔⛔⛔⛔ AND THE ROW SAYS WHAT IT CONVERGED ON — register item 912. Item 903's gate
+        // maps `OutcomeState::Converged` to the `done_reason` column and checks only that the
+        // column EXISTS, so a plugin that never filled it passed while telling a reader nothing:
+        // rule 6, an ending nobody classified is a RED and not a pass.
+        assert_eq!(
+            outcome.done_reason.as_deref(),
+            Some(Closed::Sentinel.word()),
+            "⚠⚠⚠ this plugin stops of its own accord for exactly one reason and the run must say \
+             so, in the column a converged run has already been promised: {outcome:?}",
+        );
+        // ⚠⚠ THE VOCABULARY IS WALKED HERE TOO, because a word that emptied or stopped reading
+        // back would satisfy the assertion above while publishing an ending no reader can ask
+        // about. `ALL` is `closed_set!`'s, counted from the variant list.
+        for closed in Closed::ALL {
+            assert!(!closed.word().is_empty(), "⛔ empty: {closed:?}");
+            assert_eq!(Closed::named(closed.word()), Some(closed), "{closed:?}");
+            assert!(!closed.describe().is_empty(), "{closed:?}");
+        }
+        assert_eq!(
+            Closed::named("converged"),
+            None,
+            "⚠⚠ the OUTCOME word is not one of this plugin's endings — see \
+             `sprag_plugin::answer::Closed`'s gate for why a stranger is never the nearest arm",
         );
     }
 

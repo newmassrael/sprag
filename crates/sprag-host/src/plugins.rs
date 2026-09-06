@@ -12393,6 +12393,163 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **EVERY BUNDLED PLUGIN EITHER NAMES THE ENDINGS IT CONVERGES ON OR SAYS IT NEVER
+    /// CONVERGES** — register item 912, and the hole item 903's own gate could not see.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Naming a column is not filling it
+    ///
+    /// `crate::runs::tests::every_ending_names_a_column_that_says_why_it_happened` maps
+    /// [`OutcomeState::Converged`](sprag_plugin::OutcomeState) to `done_reason` and checks that the
+    /// column EXISTS on [`PersistedRun`](crate::runs::PersistedRun). A plugin that never writes it
+    /// passes that gate while telling a reader nothing — and one did, at every build:
+    ///
+    /// ```text
+    /// python3 -c "
+    /// import json,collections
+    /// rows=json.load(open('~/.local/share/sprag-loop/state/sprag/sprag-loop.runs.json'))['runs']
+    /// c=collections.Counter(((r.get('label') or '?').split(' ')[0], r.get('done_reason') is not None)
+    ///                       for r in rows if r.get('outcome')=='converged')
+    /// print(sorted(c.items()))"
+    /// ```
+    /// ⇒ **AT 2026-09-06T00:10:54Z**: `('ai_loop', True) 39`, `('ai_loop', False) 15`,
+    /// `('answer', False) 4`. Every `ai_loop` miss is a run id ≤ 40 and every hit is ≥ 56 — a build
+    /// older than register item 706, which is a skew and not a defect. **The four `answer` runs are
+    /// at three separate builds including the current one, and there is no build at which that
+    /// plugin ever named an ending.**
+    ///
+    /// # ⚠⚠⚠ So the population is the TYPE's — `every_form_that_names_a_pane_refuses_one_this_
+    /// pool_does_not_hold`'s argument, one field over
+    ///
+    /// The match below has no `_`: a seventh plugin stops this file compiling until somebody has
+    /// said whether it converges, which is rule 6 moved to the cheapest moment there is. And the
+    /// two that never converge are a SENTENCE with their COUNT asserted rather than a silence — an
+    /// exemption nobody counts is how a list stops being a partition.
+    ///
+    /// # ⚠⚠ Why the words are read from the plugin's own set and not written here
+    ///
+    /// A list retyped here would be a second authority on a vocabulary the plugin owns, free to go
+    /// stale in the direction that reads as *this plugin has fewer endings than it has*. What this
+    /// gate holds is that each converging plugin HAS a closed set and that its words are usable —
+    /// non-empty, distinct, and readable back; that the plugin actually publishes one when it
+    /// converges is measured where the plugin lives, by driving it.
+    #[test]
+    fn every_bundled_plugin_says_which_ending_it_converged_on() {
+        /// What a bundled plugin does about ending on its own terms.
+        enum Converging {
+            /// It converges, and these are every word it may publish as `done_reason` — read from
+            /// the plugin's own closed set, never retyped.
+            Names(Vec<&'static str>),
+            /// It never converges of its own accord, and this says why.
+            Never(&'static str),
+        }
+
+        // ⛔ NO `_` ARM, AND THERE MUST NEVER BE ONE: an unclassified plugin is a build error.
+        fn converging(named: PluginName) -> Converging {
+            match named {
+                PluginName::Orchestrator => Converging::Names(
+                    sprag_plugin::OrchestratorClosed::ALL
+                        .iter()
+                        .map(|closed| closed.word())
+                        .collect(),
+                ),
+                PluginName::Agent => Converging::Names(
+                    sprag_plugin::AgentClosed::ALL
+                        .iter()
+                        .map(|closed| closed.word())
+                        .collect(),
+                ),
+                PluginName::Answer => Converging::Names(
+                    sprag_plugin::AnswerClosed::ALL
+                        .iter()
+                        .map(|closed| closed.word())
+                        .collect(),
+                ),
+                PluginName::AiLoop => Converging::Names(
+                    sprag_plugin::DoneReason::ALL
+                        .iter()
+                        .map(|ending| ending.word())
+                        .collect(),
+                ),
+                // ⚠⚠ A RELAY HAS NOTHING OF ITS OWN TO REACH. It carries one pane's output into
+                // another's input for as long as the run lasts, and what ends it is always a
+                // guardrail, a cancel or a failure — never a goal met. `Verdict::Converged` does
+                // not appear in `sprag_plugin::pipe` at all.
+                PluginName::Pipe => {
+                    Converging::Never("a relay runs until something stops it; it reaches no goal")
+                }
+                // ⚠⚠ AND A DIALOGUE ENDS ON ITS TURN BUDGET, which is a ceiling and not an ending
+                // of its own. `Verdict::Converged` does not appear in `sprag_plugin::dialogue`.
+                PluginName::Dialogue => Converging::Never(
+                    "two endpoints run against each other until the turns run out, which is a \
+                     ceiling rather than a goal",
+                ),
+            }
+        }
+
+        let mut never = Vec::new();
+        let mut naming = 0;
+        for named in PluginName::ALL {
+            let word = named.wire_str();
+            match converging(named) {
+                Converging::Never(why) => {
+                    assert!(
+                        !why.is_empty(),
+                        "⛔ `{word}` claims it never converges and says nothing about why — an \
+                         exemption with no sentence is the silence rule 6 is about",
+                    );
+                    never.push((word, why));
+                }
+                Converging::Names(words) => {
+                    assert!(
+                        !words.is_empty(),
+                        "⛔⛔⛔⛔⛔ `{word}` CONVERGES AND NAMES NO ENDING. That is the whole of \
+                         register item 912: the run publishes `converged`, item 903's gate has \
+                         already promised a reader the `done_reason` column, and this plugin \
+                         leaves it empty at every build",
+                    );
+                    let distinct: std::collections::BTreeSet<&str> =
+                        words.iter().copied().collect();
+                    assert_eq!(
+                        distinct.len(),
+                        words.len(),
+                        "⛔⛔ `{word}` SPELLS TWO ENDINGS THE SAME, so a reader is told one fact \
+                         about two opposite outcomes — the collapse register item 594 measured: \
+                         {words:?}",
+                    );
+                    for ending in &words {
+                        assert!(
+                            !ending.is_empty(),
+                            "⛔ `{word}` publishes an EMPTY ending word, which every reader that \
+                             tests truthiness reads back as no ending at all",
+                        );
+                        assert!(
+                            !ending.contains(' '),
+                            "⚠⚠ `{word}` publishes `{ending}` — a SENTENCE, not a word. The whole \
+                             repair register item 706 made was lifting the word OUT of prose, and \
+                             a value with a space in it puts a consumer back to parsing",
+                        );
+                    }
+                    naming += 1;
+                }
+            }
+        }
+
+        assert_eq!(
+            naming, 4,
+            "⚠⚠⚠ FOUR OF THE SIX CONVERGE — `orchestrator`, `agent`, `answer` and `ai_loop`. A \
+             number that DROPPED is a plugin that stopped naming its endings, which is exactly the \
+             state item 912 found `answer` in",
+        );
+        assert_eq!(
+            never.iter().map(|(word, _)| *word).collect::<Vec<_>>(),
+            vec!["pipe", "dialogue"],
+            "⚠⚠⚠⚠ AND THE EXEMPTIONS ARE NAMED AND COUNTED, never merely absent — register item \
+             903's rule for this shape. A plugin that quietly joined this list would be one whose \
+             converged runs say nothing, reported here as *nothing to see*. Reasons: {:?}",
+            never,
+        );
+    }
+
     /// A repository with one commit in it, and a real one: the question this stages is what
     /// `git diff HEAD` answers, and nothing can stand in for that.
     ///

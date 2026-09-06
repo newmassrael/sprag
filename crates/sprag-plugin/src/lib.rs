@@ -221,9 +221,12 @@ pub use access::{
     Supervised, WorkspacePaneAccess, Written,
 };
 pub use act::{Act, Asked, Asks, Does, Refused as ActRefused, Sentence, Serving};
-pub use agent::{Agent, AgentSpec};
+pub use agent::{Agent, AgentSpec, Closed as AgentClosed};
 pub use ai_loop::{AiLoop, NotStarted};
-pub use answer::Answer;
+// ⚠ RENAMED ON THE WAY OUT, `ActRefused`'s precedent one line up: three plugins each own a closed
+// set of the endings they converge under (register item 912) and `Closed` alone would say which
+// nowhere. The module path keeps the short name where the argument for it lives.
+pub use answer::{Answer, Closed as AnswerClosed};
 pub use completion::{Completion, DoneWhen, Over, Turn};
 pub use consent::{Answered, Consent, Consents, Refusal, Taken, Unanswered};
 pub use deliver::{
@@ -236,7 +239,7 @@ pub use driver::{
     Ceiling, Driver, Guardrails, JOURNAL_LIMIT, Outcome, OutcomeState, Progress, ProgressCell,
     ProgressSink, StepRecord, Stopped,
 };
-pub use orchestrator::{OrchestrationSpec, Orchestrator};
+pub use orchestrator::{Closed as OrchestratorClosed, OrchestrationSpec, Orchestrator};
 pub use outer::{
     AiLoopEvent, AiLoopSpec, AiLoopState, Arrivals, Authored, Brief, Briefed, Briefing, Counted,
     DeliveredByRoad, DoneReason, FoldsByReason, FoldsUnder, HOLD_TAKES_EFFECT, HOLD_WITHIN_KEY,
