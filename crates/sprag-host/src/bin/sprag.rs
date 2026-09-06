@@ -3821,6 +3821,85 @@ fn one_pane_at_most<'a>(rest: &'a [String], command: &str) -> io::Result<Option<
 /// callers whose own prose it makes true. A pane of ANOTHER window is still reachable — by id or by
 /// name — through [`resolve_pane`]'s session-wide fall-through, which is register item 686's path
 /// and is what keeps this narrowing from being a re-narrowing.
+/// ⛔⛔⛔⛔⛔ **WHAT `resize-pane -x -y` SAYS, AS A PURE FUNCTION OF WHAT THE PANE TURNED OUT TO
+/// BE** — register item 899.
+///
+/// # ⛔⛔⛔⛔⛔ It used to answer SUCCESS about a thing that had not happened
+///
+/// Measured 2026-09-05 by the supervisor: `resize-pane … -x 105 -y 65` printed *"resized pane 987
+/// to 105x65"* while `sprag panes` said `987: 70x65` and `stty` agreed — **three surfaces and only
+/// the ANSWER was a success.** The old line was `println!("resized … to {cols}x{rows}")` composed
+/// from the REQUEST, after `.map(|_: Value| ())` had thrown the daemon's answer away, so no input
+/// to the sentence could ever disagree with what the caller typed.
+///
+/// # ⛔⛔⛔ The mechanism, measured rather than guessed — and it is the COMMON path
+///
+/// `RESIZE_ACTION` really does resize the pane: `Workspace::resize` calls `PanePty::resize`, which
+/// sets the emulator and the winsize. Then **the dispatch retiles the window** —
+/// `crate::window::retile` runs at the tail of every mux action — and a tiled window re-derives
+/// every pane's rectangle from the layout and the attached client's area, which puts the pane
+/// straight back. So for any tiled window with a client attached, the size a caller asks for is
+/// overwritten before the caller is told it was applied. Two smaller paths reach the same place:
+/// `PanePty::resize` clamps with `cols.max(1)`, and a window pinned by `resize-window` bounds
+/// what any share can be.
+///
+/// ⇒ ⭐ **So the verb reports what it OBSERVES.** The debt register's own advice already told
+/// PEOPLE this —
+/// *ask the pty, not the resize answer* — and item 899 is that advice being owed by the product
+/// instead of by every reader who has been bitten once.
+///
+/// ⚠ `got` is [`None`] when the pane could not be read back at all; the sentence says that rather
+/// than falling back to the request, which would be the original defect wearing a smaller hat.
+fn resized_sentence(pane: Option<u64>, asked: (u64, u64), got: Option<(u64, u64)>) -> String {
+    let named = pane.map_or_else(
+        || "the active pane".to_owned(),
+        |pane| format!("pane {pane}"),
+    );
+    let (cols, rows) = asked;
+    match got {
+        Some(got) if got == asked => format!("resized {named} to {cols}x{rows}"),
+        // ⚠⚠ THE FACT, NOT A CAUSE. Three different mechanisms land here (a retile off the
+        // layout, the `max(1)` clamp, a pinned window) and this end cannot tell them apart — a
+        // sentence that guessed would send a reader to fix the wrong one. What it CAN say is the
+        // pair, which is what makes the failure actionable at all.
+        Some((was_cols, was_rows)) => format!(
+            "{named} is {was_cols}x{was_rows}, not the {cols}x{rows} asked for — a pane in a tiled \
+             window is sized by its layout, so the size it is given is re-derived; \
+             `sprag resize-window` is what bounds the whole window"
+        ),
+        None => {
+            format!("asked for {named} to be {cols}x{rows} and could not read back what it became")
+        }
+    }
+}
+
+/// The `(cols, rows)` the daemon says a pane is NOW, or [`None`] when it cannot be read.
+///
+/// ⚠ Through [`PANES_SLOT`] — the same listing `sprag panes` prints, so what this verb reports and
+/// what a reader can check it against are one answer rather than two. Register item 899's
+/// measurement is precisely a case where three surfaces were asked and only the odd one out was
+/// consulted by the code.
+fn pane_size(conn: &mut HostConn, session: Option<&str>, pane: Option<u64>) -> Option<(u64, u64)> {
+    let listed: Value = query_slot(conn, here_params(session, mux_action_path(PANES_SLOT))).ok()?;
+    let panes = listed.as_array()?;
+    let entry = match pane {
+        Some(id) => panes
+            .iter()
+            .find(|entry| entry["id"].as_u64() == Some(id))?,
+        // ⚠ No id means the daemon resolved the ACTIVE pane, and this listing does not say which
+        // that is — so a single-pane window can still be read and anything else answers *cannot
+        // say*, which `resized_sentence` reports rather than papering over.
+        None => match panes.as_slice() {
+            [only] => only,
+            _ => return None,
+        },
+    };
+    // ⚠ THE WIRE'S OWN TYPE, carried whole rather than narrowed to `u16` here: the request is
+    // parsed as `u64` too, so one numeric type runs end to end and a comparison between what was
+    // asked and what happened cannot be decided by a conversion nobody looked at.
+    Some((entry["cols"].as_u64()?, entry["rows"].as_u64()?))
+}
+
 fn pane_ids(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<u64>> {
     let listed: Value = query_slot(conn, here_params(session, mux_action_path(PANES_SLOT)))?;
     Ok(listed
@@ -9592,11 +9671,19 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
             error
         }
     })?;
+    // ⛔⛔⛔⛔⛔ AND THE PANE IS ASKED WHAT IT BECAME — register item 899. The old line printed
+    // `{cols}x{rows}` straight off the REQUEST, so it could not disagree with the caller whatever
+    // happened; `resized_sentence` holds the argument and the measurement.
+    //
+    // ⚠ READ AFTER THE INVOKE RETURNS, which is the ordering that matters: the daemon retiles at
+    // the tail of the dispatch, so a size read inside the action would be the pre-retile one — the
+    // very number that turned out to be a lie.
     println!(
-        "resized {} to {cols}x{rows}",
-        pane.map_or_else(
-            || "the active pane".to_owned(),
-            |pane| format!("pane {pane}")
+        "{}",
+        resized_sentence(
+            pane,
+            (cols, rows),
+            pane_size(&mut conn, session.as_deref(), pane)
         ),
     );
     Ok(())
@@ -15290,6 +15377,68 @@ mod tests {
         assert_eq!(
             swap_sentence(SwapHow::Swapped, toward(PaneDir::Up), 3, None),
             "swapped pane 3",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE EXACT-SIZE `resize-pane` REPORTS WHAT THE PANE BECAME, NEVER WHAT WAS
+    /// ASKED** — register item 899.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was green: a sentence no observation could contradict
+    ///
+    /// The verb printed `resized pane N to {cols}x{rows}` straight off its own arguments, having
+    /// thrown the daemon's answer away with `.map(|_: Value| ())`. **Measured 2026-09-05: it said
+    /// *"resized pane 987 to 105x65"* while `sprag panes` said `987: 70x65` and `stty` agreed** —
+    /// three surfaces, and the only one that reported success was the one composed from the
+    /// request. A gate over that old line could not have failed: there was no input to it that a
+    /// pane could disagree with.
+    ///
+    /// ⚠⚠ **AND THE DIVERGENCE IS THE COMMON PATH, not a corner.** `crate::window::retile` runs at
+    /// the tail of every mux action, so a tiled window with a client attached re-derives each
+    /// pane's rectangle from its layout immediately after the resize lands — the pane is put back
+    /// before the caller is told anything. `PanePty::resize`'s `max(1)` clamp and a window pinned
+    /// by `resize-window` reach the same place by shorter roads.
+    ///
+    /// ⚠ Pinned as a pure function for the reason its neighbour below states: the disagreeing case
+    /// needs a tiled window with an attached client to reproduce live, so the wording would
+    /// otherwise be tested by whichever case happened to be reachable — which is exactly how the
+    /// old sentence survived.
+    #[test]
+    fn resize_pane_says_what_the_pane_became_rather_than_what_was_asked() {
+        assert_eq!(
+            resized_sentence(Some(987), (105, 65), Some((105, 65))),
+            "resized pane 987 to 105x65",
+            "the shape a script greps, and the ONLY case that may say `resized`",
+        );
+        let disagreed = resized_sentence(Some(987), (105, 65), Some((70, 65)));
+        assert!(
+            disagreed.contains("70x65") && disagreed.contains("105x65"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 899: the measured case must carry BOTH numbers — what the \
+             pane is and what was asked. One alone is what the old line had, and it is why three \
+             surfaces disagreed with a success. Got: {disagreed}",
+        );
+        assert!(
+            !disagreed.starts_with("resized"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 899: a request the pane did not take still opened with the \
+             word for one that did. A reader greps this line, and `resized …` at the front is the \
+             claim the whole item is about. Got: {disagreed}",
+        );
+        // ⛔ AND THE CLAMP, which is the same lie by a shorter road: `PanePty::resize` raises a
+        // zero to one, so the old line promised a `0x0` pane that cannot exist.
+        let clamped = resized_sentence(Some(3), (0, 0), Some((1, 1)));
+        assert!(
+            !clamped.starts_with("resized"),
+            "⛔⛔⛔ REGISTER ITEM 899: `-x 0` is clamped to 1 by `PanePty::resize` and the verb \
+             claimed the pane was 0x0. Got: {clamped}",
+        );
+        // ⛔⛔ AND *CANNOT SAY* IS ITS OWN ANSWER — item 891's distinction at a sentence. Falling
+        // back to the request here would be this very defect wearing a smaller hat, and it is the
+        // arm a reader meets when the pane cannot be listed at all.
+        let unread = resized_sentence(None, (80, 24), None);
+        assert!(
+            !unread.starts_with("resized") && unread.contains("could not read back"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 899: with nothing read back the verb reported success. \
+             *Nobody could look* and *it worked* are different sentences and only one of them is \
+             ever safe to guess. Got: {unread}",
         );
     }
 

@@ -9783,6 +9783,75 @@ fn layout_and_panes_answer_about_a_window_the_caller_is_not_on() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **`resize-pane -x -y` REPORTS WHAT THE PANE BECAME** — register item 899, driven end
+/// to end because the pure sentence gate structurally cannot see this.
+///
+/// # ⛔⛔⛔⛔⛔ The unit gate pins the words; nothing pinned that an OBSERVATION reaches them
+///
+/// `resize_pane_says_what_the_pane_became_rather_than_what_was_asked` drives `resized_sentence`
+/// directly, so it stays green on a build whose caller passes the REQUEST in as the observation —
+/// measured 2026-09-06T04:30:38Z, where that mutation left the unit gate passing and was caught
+/// only by `-D warnings` noticing the read-back had gone unused. A deliberate version of that edit
+/// would keep the function alive and say nothing. **This is the gate that reads the printed line.**
+///
+/// # ⚠⚠ Why a two-pane pinned window is the fixture and not a bigger number
+///
+/// The divergence item 899 measured is a TILED pane being re-derived: `crate::window::retile` runs
+/// at the tail of every mux action, so asking one pane of a split for the whole window's width is
+/// applied and then immediately undone by the layout. A single-pane window would take the size and
+/// the assertion would be about nothing.
+#[test]
+fn the_cli_says_what_a_resized_pane_became_not_what_was_asked() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    let (_host, sock) = spawn_host_env(&env);
+    let pinned = sprag_env(
+        &sock,
+        &["resize-window", "-t", "0", "-x", "101", "-y", "30"],
+        &env,
+    );
+    assert!(pinned.ok, "resize-window succeeded: {}", pinned.stderr);
+    let split = sprag(&sock, &["split-window", "-h", "--", "cat"]);
+    assert!(split.ok, "split-window succeeded: {}", split.stderr);
+
+    // ⚠ THE WHOLE WINDOW'S WIDTH FOR ONE PANE OF TWO — a request the layout cannot keep, which is
+    // the shape the supervisor measured: asked 105, got 70, and was told 105.
+    let asked = sprag(&sock, &["resize-pane", "0", "-x", "101", "-y", "30"]);
+    assert!(asked.ok, "resize-pane -x -y succeeded: {}", asked.stderr);
+    let said = asked.stdout.trim().to_owned();
+    assert!(
+        !said.starts_with("resized"),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 899: the verb answered SUCCESS for a size the pane does not \
+         have. This is the defect exactly: `sprag panes` and `stty` both disagreed with a line \
+         that said `resized … to 105x65`, because the line was composed from the request. Said: \
+         {said:?}",
+    );
+    assert!(
+        said.contains("101x30"),
+        "⛔⛔⛔ REGISTER ITEM 899: the line must still name what was ASKED — a reader who typed \
+         it needs to see both halves to know which one to change. Said: {said:?}",
+    );
+    // ⛔⛔ AND THE NUMBER IT NAMES IS THE ONE THE PANE LISTING GIVES, not a third answer this verb
+    // composed for itself. Item 899's whole finding is three surfaces disagreeing, so a fourth
+    // would be the same defect with one more voice.
+    let listed = sprag(&sock, &["panes"]);
+    assert!(listed.ok, "panes succeeded: {}", listed.stderr);
+    let width = listed
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("0:"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .map(str::to_owned)
+        .unwrap_or_default();
+    assert!(
+        !width.is_empty() && said.contains(&width),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 899: `resize-pane` and `panes` name different sizes for one \
+         pane at one instant. The verb reads that listing precisely so the two cannot drift. \
+         resize said {said:?}; panes said {:?}",
+        listed.stdout,
+    );
+}
+
 /// `resize-pane -L|-R|-U|-D` over the socket — **the first gesture other than a pointer drag in
 /// `sprag-gui` that has ever moved a split's share**, driven end to end against a real daemon.
 ///
