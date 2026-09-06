@@ -1733,6 +1733,106 @@ done"
     (workspace, pane)
 }
 
+/// 🎯🎯🎯🎯🎯 **A STAND-IN AGENT THAT NAMES A CHECKPOINT ONCE AND THEN HAS NOTHING TO ADD** —
+/// register item 898, and the hazard neither sibling above can stage.
+///
+/// # ⛔⛔⛔⛔⛔ What no peer in this module could produce, and what it left unmeasured
+///
+/// [`OuterLoop::proposed`](crate::outer::OuterLoop) reads TWO surfaces: the pane's screen ROWS, to
+/// say an answer arrived AT ALL, and its logical LINES, to say what the answer WAS. The second is
+/// register item 866 and a gate holds it. **The first was held by nothing**, because every peer
+/// here answers every reflection it is asked: [`standin_agent`] never names a successor at all and
+/// [`standin_agent_reflecting`] names one every time, so on both of them the two surfaces agree and
+/// deleting the freshness read leaves the suite green (measured 2026-09-06, `589 passed; 0 failed`).
+///
+/// ⇒ The hazard needs a run where they DISAGREE: an answer sitting in the scrollback from an
+/// EARLIER reflection while the current one produced none. This peer is that run — it answers the
+/// first reflection in [`standin_agent_reflecting`]'s four-row shape and every later one with a
+/// line carrying no label at all. A build that read only the logical lines then picks the first
+/// answer up again with `rfind` and reports it as this reflection's, and the run that should have
+/// ended for want of a successor **turns over instead** — the failure item 898 describes as quiet,
+/// because the milestone stops moving and nothing says so.
+///
+/// ⚠⚠ **IT STILL ANSWERS**, which is [`standin_agent`]'s own measured rule: a peer that ignores a
+/// prompt never ends the turn, and four gates once died of that rather than of the thing they were
+/// about. What changes after the first reflection is what it SAYS, never whether it speaks.
+///
+/// ⚠ **THE FIRST REFLECTION IS ITS SIBLING'S, ROW FOR ROW** — the wrapped echo
+/// ([`REFLECTION_ECHO_SLICE`]) and the row it thought better of ([`REFLECTION_PROVISIONAL`]) are
+/// painted here too. The answer this gate is about is the one a stale read would pick up, so it has
+/// to be an answer the reader accepts on the terms it normally does.
+///
+/// # ⛔⛔⛔ THE COUNTER LIVES IN A FILE, for [`standin_agent_reflecting_afresh`]'s measured reason
+///
+/// A reflection that moves the checkpoint can replace the session, and a counter held in a shell
+/// variable goes back to zero on the very step that makes it matter — that fixture records the
+/// draft that did, and the idiom it borrowed from `standin_agent_refusing`: a life that must
+/// outlive a respawn keeps its state on disk.
+///
+/// ⚠ `counter` is the caller's to make and to REMOVE. One file, so a panic leaks nothing a person
+/// has to go and find.
+pub(crate) fn standin_agent_reflecting_once(
+    prompts_before_done: u32,
+    next_milestone: &str,
+    next_reference: &str,
+    counter: &std::path::Path,
+) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let script = "\
+stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
+COUNTED='COUNTER_PATH'; \
+bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
+while read line; do \
+  printf '%s\\n' \"$line\"; \
+  case \"$line\" in \
+    *'MILESTONE_LABEL'*) \
+      r=0; [ -s \"$COUNTED\" ] && r=$(cat \"$COUNTED\"); \
+      r=$((r+1)); printf '%s' \"$r\" > \"$COUNTED\"; \
+      if [ \"$r\" -eq 1 ]; then \
+        printf '%s\\n' 'MILESTONE_LABEL ECHO_SLICE'; \
+        printf '%s\\n' 'MILESTONE_LABEL PROVISIONAL'; \
+        printf '%s\\n' 'MILESTONE_LABEL NEXT_MILESTONE'; \
+        printf '%s\\n' 'REFERENCE_LABEL NEXT_REFERENCE'; \
+      else \
+        printf '%s\\n' 'SAID_NOTHING'; \
+      fi; \
+      bump; continue;; \
+  esac; \
+  case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
+  n=$((n+1)); \
+  if [ $n -ge TURNS_BEFORE_DONE ]; then printf 'MILESTONE REACHED\\n'; \
+  else printf 'ACK %s\\n' \"$n\"; fi; \
+  bump; \
+done"
+        .replace("COUNTER_PATH", &counter.display().to_string())
+        .replace("STOP_QUESTION", STOP_QUESTION)
+        .replace("ECHO_SLICE", REFLECTION_ECHO_SLICE)
+        .replace("PROVISIONAL", REFLECTION_PROVISIONAL)
+        .replace("SAID_NOTHING", REFLECTION_WITHOUT_AN_ANSWER)
+        .replace("MILESTONE_LABEL", REFLECTION_MILESTONE_LABEL)
+        .replace("REFERENCE_LABEL", REFLECTION_REFERENCE_LABEL)
+        .replace("NEXT_MILESTONE", next_milestone)
+        .replace("NEXT_REFERENCE", next_reference)
+        .replace("TURNS_BEFORE_DONE", &prompts_before_done.to_string());
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        AGENT_READY,
+    );
+    (workspace, pane)
+}
+
 /// **A STAND-IN AGENT THAT SAYS THE WHOLE JOB IS FINISHED WHEN A REFLECTION ASKS** — the peer the
 /// run's OTHER ending is measured against, and the first thing in this tree ever to say
 /// `north_star_marker`.
@@ -2262,6 +2362,18 @@ pub(crate) const REFLECTION_ECHO_SLICE: &str =
 /// [`standin_agent_reflecting`]. ⚠ It must NOT appear in the prompt, or the echo rule would reject
 /// it and the last-match rule would go untested again.
 pub(crate) const REFLECTION_PROVISIONAL: &str = "a checkpoint it thought better of";
+
+/// **WHAT AN AGENT WITH NOTHING LEFT TO NAME REPLIES TO A REFLECTION** — see
+/// [`standin_agent_reflecting_once`], register item 898.
+///
+/// ⚠⚠ IT IS AN ANSWER AND NOT A SILENCE, which is the whole distinction the peer stages: the turn
+/// ENDS, the pane paints a fresh row, and what that row does not carry is the label. A peer that
+/// said nothing at all would be testing a lost turn instead ([`standin_agent`]'s own measured
+/// reason for always replying).
+///
+/// ⚠ It must not OPEN with either reflection label, or the reader would take it as the answer and
+/// the run would adopt this sentence as its next checkpoint.
+pub(crate) const REFLECTION_WITHOUT_AN_ANSWER: &str = "ACK there is nothing further to point at";
 
 // ── ⚠⚠⚠ THREE DIALOGS CAPTURED FROM A LIVE `claude` 2.1.232 **WHILE IT WAS WORKING** (R383's
 //    probes), by `sprag_host::live_agent::what_a_live_agent_asks_while_it_works`. Not composed.

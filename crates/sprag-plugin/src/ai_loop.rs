@@ -9324,6 +9324,312 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A REFLECTION THAT ANSWERED NOTHING DOES NOT ADOPT THE LAST ONE'S ANSWER** —
+    /// register item 898, and the arm of `OuterLoop::proposed` no gate in this suite was measuring.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was green, and why every peer here was blind to it
+    ///
+    /// `proposed` reads two surfaces. The pane's screen ROWS say an answer arrived AT ALL — only
+    /// rows whose text CHANGED since this turn's prompt went in are looked at — and the pane's
+    /// logical LINES say what the answer WAS, which is register item 866 and has a gate. **Delete
+    /// the first read and the suite stays green**: measured 2026-09-06, `591 tests`, `589 passed;
+    /// 0 failed`, with the freshness `?` replaced by `unwrap_or_default()`.
+    ///
+    /// It was green because the two surfaces never disagreed on any peer this module had.
+    /// [`standin_agent`](crate::testing::standin_agent) names a successor at no reflection, so the
+    /// lines hold nothing to pick up; [`standin_agent_reflecting`](crate::testing::standin_agent_reflecting)
+    /// names one at every reflection, so a fresh answer is always there to be read. **The hazard is
+    /// the pair**: an answer named ONCE, and a later reflection that produced none, with the first
+    /// answer still on the pane for `rfind` to pick up as though this reflection had just said it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND WHICH ROAD REACHES IT IS NOT THE ONE THE REGISTER NAMED — measured here
+    ///
+    /// Item 898 describes the danger as a run that should end and keeps turning, reached by an
+    /// agent that names a successor once and nothing afterwards. **The obvious staging of that does
+    /// not reach it**, and the premise assertion below is what said so (2026-09-06): a reflection
+    /// whose proposal is ADOPTED goes `reviewing → restarting`, which respawns the pane — every
+    /// door out of `reviewing` bar one replaces the session — so the first answer is on a pane that
+    /// has been CLOSED and there is nothing stale to read. The gate's first draft drove exactly
+    /// that run and its premise went red holding the new pane's whole scrollback.
+    ///
+    /// ⇒ The road that reaches it is the one where the run stays put: a proposal the budget
+    /// REFUSES sends `reflecting` back to ITSELF to ask again (register item 840's arm), on the
+    /// same pane, with the first answer still in its scrollback. So this gate spends the depth cap
+    /// (`reaim_max = 0`) and allows one re-ask, which is the shipped shape of a run that found
+    /// something it may not take — this repository's own loop, most rounds.
+    ///
+    /// ⇒ And what a stale read costs there is the ENDING'S OWN WORD. The real build reads nothing,
+    /// takes the livelock guard's exit and closes `no_successor`; a build without the freshness
+    /// read is handed the first answer again, calls that a proposal, and closes `capped` — telling
+    /// a reader that **an agent which named nothing had its successor refused by a budget**. Item
+    /// 898 calls the symptom quiet, and this is quieter than it expected: not a missing ending but a
+    /// false one, published on the row as a fact.
+    ///
+    /// # ⚠⚠⚠ THE TWO CASES ARE HELD APART, and that is item 898's own done-when ⑶
+    ///
+    /// *The agent answered nothing* and *the agent answered the same thing again* are different
+    /// findings with opposite right answers, and a repair that conflated them would be worse than
+    /// the defect:
+    ///
+    /// * **NOTHING NAMED**: a reader that takes the line off the scrollback INVENTS an answer for a
+    ///   turn that produced none, and the run's ending word becomes false. That is arm ①.
+    /// * **THE SAME THING NAMED AGAIN**: taking the line off the scrollback would cost nothing,
+    ///   because it is a repeat of what the run has already been given. Item 898's own words —
+    ///   *값이 같으니 손실이 없다* — and MEASURED here rather than assumed: `RowTrail::fresh` asks
+    ///   whether a row's TEXT changed, this peer reprints the same rows into the same positions, so
+    ///   the repeat reads as nothing too and the run ends the same way. That is arm ②.
+    ///
+    /// ⇒ **SO THE TWO ARE HELD APART ON THE PANE AND NOT BY THE ENDING**, which is the one shape
+    /// that could be honest here: the runs differ by exactly ONE occurrence of one string on the
+    /// logical lines — once in arm ①, twice in arm ② — and each arm asserts that number by itself.
+    /// A single assertion covering both could only say what is true of both, which is to say
+    /// nothing about the split; and an arm claiming the endings DIFFER would be asserting a
+    /// difference this product does not make and should not.
+    ///
+    /// ⚠ Why `no_successor` is the true word for arm ② as well, so that assertion is a claim rather
+    /// than a pinned defect: the re-ask asks for a checkpoint DIFFERENT from the one just refused,
+    /// and an agent that repeats itself has named none. The proposal is not lost with it — it was
+    /// counted at the first reflection, and `deferred` carries that fact on the row independently.
+    ///
+    /// # ⚠⚠⚠ THREE MUTATIONS, MEASURED 2026-09-06, and each says something different
+    ///
+    /// | mutation | what went red |
+    /// |---|---|
+    /// | the freshness `?` → `unwrap_or_default()` (the arm item 898 names) | arm ①: `capped`, and the walk said *"the reflection DID name a next checkpoint"* about an agent that named none |
+    /// | `judged.fresh(…)` → `pane_full_lines(…)` — both reads on ONE surface | arm ①, the same way: one surface cannot answer both questions |
+    /// | `RowTrail::fresh` returns EVERY row (the mark ignored) | **arm ② alone**, at `capped` — arm ① stayed green |
+    ///
+    /// ⇒ The third is the one that pays item 898's ⑶. Arm ① cannot see it: the answer it would have
+    /// to find is in the SCROLLBACK, and no reading of the visible grid reaches it whatever the
+    /// mark says. Only the run that answered twice puts the label back on the grid, so a mark that
+    /// stopped meaning anything shows up there and nowhere else — **two assertions, two findings,
+    /// neither able to stand in for the other.**
+    #[test]
+    fn a_reflection_that_answered_nothing_does_not_adopt_the_last_one() {
+        /// What the peer names at its FIRST reflection, and the string a stale read would pick up
+        /// again at its second. ⚠ NO APOSTROPHE: the fixture interpolates it into a single-quoted
+        /// `sh` script. ⚠ It must not appear in `reflect_prompt`, or the echo discount would take
+        /// it off and the hazard would never be staged.
+        const NEXT: &str = "the second debt this run found while paying the first";
+        /// And what it says the replacement should read.
+        const READ_NEXT: &str = "the measured section of that entry";
+        /// The step ceiling of both walks. ⚠ A BOUND ON THE GATE, never on the claim: each arm
+        /// asserts by name that it reached a second reflection, so a run that needs more steps than
+        /// this goes red on that premise rather than quietly passing.
+        const STEPS: u32 = 200;
+        /// How many working prompts before the peer says the done marker — the neighbours' number,
+        /// so the first milestone is reached the way every other gate here reaches it.
+        const PROMPTS: u32 = 2;
+
+        /// The brief BOTH arms are driven with, and the arrangement that keeps the run on ONE pane.
+        ///
+        /// ⚠⚠⚠ `reaim_max = 0` IS WHAT STAGES THE HAZARD, not a convenience. A proposal the run may
+        /// TAKE moves the milestone, and `reviewing` replaces the session — which throws the
+        /// scrollback away and with it everything a stale read could find. A proposal the run may
+        /// not take sends `reflecting` back to itself, on the same pane. ⚠ Zero is a real author's
+        /// choice and the neighbours use it: *do exactly what I pointed you at and register
+        /// everything else*.
+        ///
+        /// ⚠⚠ `reask_max = 1` IS WHAT MAKES THE SECOND REFLECTION HAPPEN AT ALL — one guess, then
+        /// the run closes. It is also what makes the two builds land on DIFFERENT words rather than
+        /// one of them merely turning longer: at the second ask a stale read has spent the last
+        /// guess, so it closes `capped` where the honest read closes `no_successor`.
+        fn briefed() -> Brief {
+            Brief {
+                reaim_max: Some(crate::outer::Counted::Of(0)),
+                reask_max: Some(1),
+                ..brief_for(40)
+            }
+        }
+
+        /// Drive a run to its ending and answer with the outcome, the walk, and — the premise this
+        /// gate cannot do without — WHAT THE PANES STILL HELD when it stopped. The panes are read
+        /// BEFORE they are closed, which is the only moment that reading exists.
+        fn walked(
+            loops: &mut AiLoop,
+            access: &crate::access::WorkspacePaneAccess,
+        ) -> (crate::driver::Outcome, Vec<String>, Vec<String>) {
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: STEPS,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(120)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(loops, access, &RunContext::uncancellable());
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            let held: Vec<String> = access
+                .pane_ids()
+                .iter()
+                .flat_map(|id| access.pane_full_lines(*id).unwrap_or_default())
+                .collect();
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            (outcome, walk, held)
+        }
+
+        /// How many times a walk entered `reflecting` — the anti-vacuity premise of both arms. One
+        /// reflection proves nothing here: the whole claim is about what the SECOND one reads.
+        fn reflections(walk: &[String]) -> usize {
+            walk.iter()
+                .filter(|note| note.contains("--> Reflecting"))
+                .count()
+        }
+
+        /// How many times `answer` sits on the pane's logical lines BEHIND the milestone label —
+        /// the number that tells the two arms apart, read off the surface `OuterLoop::proposed`
+        /// reads its content from.
+        ///
+        /// ⚠ The LOGICAL lines and not the rendered rows, which is register item 866's whole
+        /// finding: a row is the width's answer, so counting rows here would make this premise
+        /// depend on how wide the fixture's pane happens to be.
+        fn said_by(held: &[String], answer: &str) -> usize {
+            held.iter()
+                .filter_map(|line| {
+                    line.trim()
+                        .strip_prefix(crate::testing::REFLECTION_MILESTONE_LABEL)
+                })
+                .filter(|rest| rest.trim() == answer)
+                .count()
+        }
+
+        // ── ARM ①: NAMED ONCE, THEN NOTHING ───────────────────────────────────────────────────
+        //
+        // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item 794.
+        // The bare call answers a RELATIVE path when `TMPDIR` is set-and-empty, and the peer's
+        // counter would then be written inside the repository. The name carries the pid and a
+        // nanosecond count so two runs of this suite cannot share it.
+        let counter = sprag_scratch::scratch_root().join(format!(
+            "sprag-reflect-once-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.subsec_nanos()),
+        ));
+        let _ = std::fs::remove_file(&counter);
+        let (workspace, pane) =
+            crate::testing::standin_agent_reflecting_once(PROMPTS, NEXT, READ_NEXT, &counter);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &briefed(), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let (once_end, once_walk, once_held) = walked(&mut loops, &access);
+        let _ = std::fs::remove_file(&counter);
+
+        // ⚠ THE PREMISE: two reflections, or the gate is about a run that was never asked twice.
+        assert!(
+            reflections(&once_walk) >= 2,
+            "⚠⚠ THE PREMISE for arm ①: the run has to be asked what is next TWICE — the first \
+             answer is what a stale read would pick up and the second is the one that named \
+             nothing. Entered `reflecting` {} time(s), walked {once_walk:?}",
+            reflections(&once_walk),
+        );
+        // ⚠⚠⚠ AND THE PREMISE THE WHOLE GATE RESTS ON, AS A NUMBER: the answer is on the pane's
+        // logical lines EXACTLY ONCE. Both halves of that are load-bearing.
+        //
+        // * **AT LEAST once**, or nothing was there for a stale read to find and arm ① is green
+        //   having staged no hazard. This gate's first draft failed exactly here (2026-09-06): it
+        //   let the proposal be ADOPTED, `reviewing` replaced the session, and the assertion came
+        //   back holding a brand new pane's whole scrollback.
+        // * **AT MOST once**, which is what separates this arm from ② below. One occurrence means
+        //   the second reflection contributed NO answer, so a reader that took this line would be
+        //   inventing one. Two would be arm ②'s run, where taking it costs nothing because it is a
+        //   repeat — and a gate that could not tell the two runs apart on the pane would be
+        //   asserting one thing about both.
+        assert_eq!(
+            said_by(&once_held, NEXT),
+            1,
+            "⚠⚠⚠ THE PREMISE for arm ①: this peer names its checkpoint at the FIRST reflection and \
+             nothing at the second, so the pane must hold that answer exactly once — no occurrence \
+             means there was nothing stale to read and the hazard was never staged; two means the \
+             peer answered twice and this is arm ② wearing arm ①'s assertions. Held {once_held:?}",
+        );
+
+        // ⛔⛔⛔⛔⛔ AND THE CLAIM.
+        assert_eq!(
+            once_end.state,
+            OutcomeState::Converged,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 898: this run reached its checkpoint, was asked what came \
+             next twice, and its agent named nothing the second time — so the livelock guard must \
+             END it. A run in any other state was handed the FIRST reflection's answer off the \
+             scrollback and went on turning over an agent that had stopped proposing. Walked \
+             {once_walk:?}",
+        );
+        assert_eq!(
+            once_end.done_reason.as_deref(),
+            Some(crate::outer::DoneReason::NoSuccessor.word()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 898, AND THIS IS THE SHARP HALF: the ending's own WORD. \
+             `no_successor` says an agent had no next checkpoint to name, which is what happened. \
+             A build without the freshness read picks the first answer up again, calls it this \
+             reflection's proposal, and closes `capped` — publishing on the row that a budget \
+             refused a successor **nobody named**. Walked {once_walk:?}",
+        );
+
+        // ── ARM ②: NAMED THE SAME THING AGAIN — THE CONTROL ───────────────────────────────────
+        //
+        // ⚠⚠⚠ THE SAME BRIEF AND THE SAME NUMBER OF TURNS, so the ONLY difference between the two
+        // arms is what the peer says at its second reflection. An arm that also moved the budget or
+        // the cap would leave the two endings explainable by something other than the answer.
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(PROMPTS, NEXT, READ_NEXT);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &briefed(), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let (again_end, again_walk, again_held) = walked(&mut loops, &access);
+
+        assert!(
+            reflections(&again_walk) >= 2,
+            "⚠⚠ THE PREMISE for arm ②: this peer has to be ASKED a second time before what it \
+             answers the second time can mean anything. Entered `reflecting` {} time(s), walked \
+             {again_walk:?}",
+            reflections(&again_walk),
+        );
+        // ⚠⚠⚠ AND THE NUMBER THAT MAKES THIS A DIFFERENT RUN FROM ①, on the same surface and by the
+        // same reader: TWO. This peer answered the second reflection as well, with the same words,
+        // so the line a stale read would have taken is one the run had ALREADY been given. That is
+        // item 898's *값이 같으니 손실이 없다* as a predicate rather than as prose — the whole
+        // difference between a reader inventing an answer and a reader declining a repeat.
+        assert_eq!(
+            said_by(&again_held, NEXT),
+            2,
+            "⚠⚠⚠ THE PREMISE for arm ②: this peer answers EVERY reflection, so its checkpoint must \
+             be on the pane twice — one occurrence is arm ①'s run and this arm would then be \
+             asserting about the same finding twice rather than about the split. Held \
+             {again_held:?}",
+        );
+        // ⛔⛔⛔⛔⛔ AND ITS ENDING IS THE SAME WORD, WHICH IS THE CLAIM AND NOT AN OVERSIGHT.
+        //
+        // ⚠⚠⚠ MEASURED 2026-09-06, and it is what item 898 predicted: the repeat reads as nothing
+        // too. `RowTrail::fresh` asks whether a row's TEXT changed, and this peer reprints the same
+        // rows into the same positions, so no row carrying the label is fresh (`opens=[]` against
+        // twelve changed rows, read off `proposed` itself).
+        //
+        // ⚠⚠ AND `no_successor` IS THE TRUE WORD FOR IT, which is why this arm asserts rather than
+        // registers. The re-ask asks for a checkpoint DIFFERENT from the one just refused; an agent
+        // that repeats itself has named none, and *there was nothing left to ask this agent for* is
+        // exactly that. What the row does NOT lose is the proposal itself: it was counted at the
+        // first reflection and `deferred` carries it independently of this word.
+        //
+        // ⛔ WHAT THIS ARM IS FOR is that the two runs above are held apart by the PANE and not by
+        // the ending: they differ in one occurrence of one string, and a later change that made a
+        // repeat adoptable would turn this red where arm ① would stay green and quietly stop being
+        // about freshness at all.
+        assert_eq!(
+            again_end.done_reason.as_deref(),
+            Some(crate::outer::DoneReason::NoSuccessor.word()),
+            "⛔⛔⛔⛔ REGISTER ITEM 898 ⑶: this agent was asked for a DIFFERENT checkpoint and named \
+             the one already refused, which is no answer to the question asked — so this run ends \
+             the same way arm ① does, and the two are told apart on the pane rather than by their \
+             endings. A different word here means a repeat has become adoptable, and arm ①'s claim \
+             then rests on something other than the read it is about. Walked {again_walk:?}",
+        );
+    }
+
     /// ⚠⚠⚠ **THE WALK SAYS WHICH OF THE TWO ENDINGS CLOSED THE RUN** — register item 267, which is
     /// 261's and 265's class a third time and the one their method would not have found.
     ///
