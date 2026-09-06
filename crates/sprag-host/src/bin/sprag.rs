@@ -323,6 +323,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Disposition => disposition(args.collect()),
         Verb::Waits => waits(args.collect()),
         Verb::Folds => folds(args.collect()),
+        Verb::Leftovers => leftovers(args.collect()),
         Verb::Daemons => daemons(args.collect()),
         Verb::ShowGrammar => show_grammar(args.collect()),
         Verb::Orchestrate => orchestrate(args.collect()),
@@ -1046,6 +1047,131 @@ fn folds(args: Vec<String>) -> io::Result<()> {
         println!("{line}");
     }
     Ok(())
+}
+
+/// 🎯🎯🎯🎯🎯 `leftovers`: **WHAT DEAD DAEMONS LEFT IN THE STATE DIRECTORY, AND WHETHER IT MAY GO**
+/// — register item 905.
+///
+/// # ⛔⛔⛔⛔⛔ 69 run logs, 68 of them holding no run, and the oldest a week old
+///
+/// Every TUI client opens its own daemon, and a daemon keys three artefacts on its socket's stem —
+/// the run log, the workspace snapshot, and a `.history/` of each pane's scrollback. The client
+/// dies and the files stay. Measured over the loop's own state directory at
+/// **2026-09-06T09:22:21Z**: 69 `*.runs.json`, **68 empty**, and 69 snapshots beside them.
+///
+/// ⇒ It costs no disk worth naming. It costs READABILITY, and item 905 was found that way: the
+/// first run of `sprag waits` at the real store printed 68 blank rows above its answer.
+///
+/// # ⛔⛔⛔ IT ANSWERS AND DOES NOT ACT, which is the whole of what item 905 asks for
+///
+/// That item's done-when is *a predicate decides what may be deleted* — and its own ⛔ is that a
+/// live daemon's files may never go. A verb that swept would make that mistake exactly once, with
+/// nothing left to read afterwards. So the verdict is printed, per stem, with the reason, and the
+/// removal is a person's command with the paths in front of them.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::InvalidInput`] for any argument: the population is the state directory, and
+/// naming one file would answer a question nobody has.
+fn leftovers(args: Vec<String>) -> io::Result<()> {
+    if let Some(extra) = args.first() {
+        return Err(bad_input(&format!(
+            "leftovers: unexpected argument {extra:?} (it takes none — the population is the \
+             state directory)"
+        )));
+    }
+    let state = sprag_host::state_dir();
+    let runtime = sprag_rpc::survey::runtime_dir();
+    // ⛔ THE MOMENT IS TAKEN AT THE READ — register item 918. This directory is one a live daemon
+    // writes to, so running this again is a new census rather than a check of the last one.
+    let at = sprag_host::moment::Reading::now();
+    for line in leftovers_lines(&sprag_host::leftovers::survey(&state, &runtime), &state, at) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// [`leftovers`]'s BODY, separated from the printing so a gate can read what it says —
+/// [`folds_lines`]' split, for its reason.
+fn leftovers_lines(
+    found: &[sprag_host::leftovers::Residue],
+    state: &std::path::Path,
+    at: sprag_host::moment::Reading,
+) -> Vec<String> {
+    use sprag_host::leftovers::LeftBehind;
+
+    // ⚠ THE DIRECTORY AND THE MOMENT ON THE HEADING — `waits_lines`' rule for the first and item
+    // 918's for the second: this path is derived from `XDG_STATE_HOME` and MOVES with it, and the
+    // counts under it are true of an instant.
+    let mut lines = vec![format!(
+        "{}  {} stem(s)  read at {at}",
+        state.display(),
+        found.len(),
+    )];
+    for residue in found {
+        lines.push(format!(
+            "  {:<12} {}  — {}",
+            residue.what.word(),
+            residue.stem,
+            residue.what.describe(),
+        ));
+    }
+    // ⛔⛔⛔⛔⛔ AND THE TALLY BY VERDICT, EVERY ARM INCLUDING THE ZEROS — this workspace's rule 6.
+    // An arm with no member today is where the surprise arrives: measured 2026-09-06T09:23:37Z, the
+    // only stem with a live socket was also the only one holding runs, so four of these six arms
+    // were empty in the one directory anybody has looked at.
+    let counted = |want: &LeftBehind| -> usize {
+        found
+            .iter()
+            .filter(|residue| residue.what.word() == want.word())
+            .count()
+    };
+    lines.push(format!(
+        "  by verdict: {}",
+        [
+            LeftBehind::Serving,
+            LeftBehind::Listening(String::new()),
+            LeftBehind::HoldsRuns(0),
+            LeftBehind::HoldsPanes(0),
+            LeftBehind::Spent,
+            LeftBehind::Unreadable(String::new()),
+        ]
+        .iter()
+        .map(|arm| format!("{} {}", arm.word(), counted(arm)))
+        .collect::<Vec<_>>()
+        .join(" · "),
+    ));
+    // 🎯 AND WHAT A PERSON WOULD TYPE, with the paths in front of them — the verb does not act, so
+    // the removal has to be readable rather than implied.
+    let removable: Vec<&sprag_host::leftovers::Residue> = found
+        .iter()
+        .filter(|residue| residue.what.may_remove())
+        .collect();
+    if removable.is_empty() {
+        lines.push(
+            "  nothing here may be removed — every stem is being written to, holds runs, holds \
+             panes, or could not be read"
+                .to_owned(),
+        );
+    } else {
+        lines.push(format!(
+            "  {} stem(s) may be removed, and NOTHING here removes them — that is a person's \
+             command, with these paths:",
+            removable.len(),
+        ));
+        for residue in removable {
+            lines.push(format!(
+                "    rm -rf {}",
+                residue
+                    .holds
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ));
+        }
+    }
+    lines
 }
 
 /// [`folds`]'s BODY, separated from the printing so a gate can read what it says — [`waits_lines`]'
@@ -14214,6 +14340,115 @@ mod tests {
             "⚠⚠ AND A NAMED LOG CARRIES NO SUCH WARNING: the caller said where, so a note about a \
              derivation that did not happen would make the one certain case read as the doubtful \
              one. Got:\n{said}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE LEFTOVERS PAGE NEVER OFFERS TO REMOVE SOMETHING THAT IS STILL HELD** —
+    /// register item 905, at the mouth.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the mouth needs a gate when the verdict is already a type
+    ///
+    /// `LeftBehind::may_remove` is gated where it lives. Item 856 ⑸ measured what that is not
+    /// enough for: a value crossing into a renderer and being dropped leaves the whole workspace
+    /// green. Here the crossing carries a `rm -rf` line, so a renderer that printed the wrong
+    /// stem's paths would be handing a person the command that destroys the thing the type just
+    /// refused to destroy.
+    ///
+    /// ⚠⚠ The page is asserted to print a removal line for the spent stem AND NO removal line for
+    /// any other — *it printed something* is not the question when the something is a delete.
+    #[test]
+    fn the_leftovers_page_offers_to_remove_only_what_is_spent() {
+        use sprag_host::leftovers::{LeftBehind, Residue};
+
+        let of = |stem: &str, what: LeftBehind| Residue {
+            stem: stem.to_owned(),
+            what,
+            holds: vec![
+                std::path::PathBuf::from(format!("/state/sprag/{stem}.runs.json")),
+                std::path::PathBuf::from(format!("/state/sprag/{stem}.snapshot.json")),
+            ],
+        };
+        let found = [
+            of("live-one", LeftBehind::Serving),
+            of("with-runs", LeftBehind::HoldsRuns(246)),
+            of("with-panes", LeftBehind::HoldsPanes(1)),
+            of(
+                "unreadable-one",
+                LeftBehind::Unreadable("truncated".to_owned()),
+            ),
+            of("spent-one", LeftBehind::Spent),
+        ];
+        let said = leftovers_lines(
+            &found,
+            std::path::Path::new("/state/sprag"),
+            sprag_host::moment::Reading::at(1_788_681_668),
+        );
+        let page = said.join("\n");
+
+        // ⛔⛔⛔⛔⛔ THE ONE STEM THAT MAY GO, AND ONLY IT, IS IN A REMOVAL LINE.
+        let removals: Vec<&String> = said.iter().filter(|line| line.contains("rm -rf")).collect();
+        assert_eq!(
+            removals.len(),
+            1,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 905: exactly one stem here is spent, so exactly one removal \
+             line may be printed. Every other line offers to delete a live daemon's records, a \
+             session tree, or a file this build merely could not read. Got:\n{page}",
+        );
+        assert!(
+            removals[0].contains("spent-one") && !removals[0].contains("with-panes"),
+            "⛔⛔⛔ AND IT NAMES THE SPENT STEM'S OWN PATHS — a renderer that paired a verdict with \
+             a neighbour's paths hands a person the command the type refused to run. Got: {}",
+            removals[0],
+        );
+        for stem in ["live-one", "with-runs", "with-panes", "unreadable-one"] {
+            assert!(
+                !page.contains(&format!("rm -rf /state/sprag/{stem}")),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 905: `{stem}` is a KEEP and the page offered to remove \
+                 it. Got:\n{page}",
+            );
+        }
+        // ⚠⚠ EVERY ARM IS TALLIED INCLUDING THE ZEROS — rule 6, and here it is load-bearing: four
+        // of these six arms were empty in the only directory anybody has surveyed
+        // (2026-09-06T09:23:37Z), so an arm printed only when populated is one a reader stops
+        // knowing to ask for.
+        let tally = said
+            .iter()
+            .find(|line| line.contains("by verdict:"))
+            .expect("the page tallies its verdicts");
+        for word in [
+            "serving",
+            "listening",
+            "holds-runs",
+            "holds-panes",
+            "spent",
+            "unreadable",
+        ] {
+            assert!(
+                tally.contains(word),
+                "⚠⚠ the tally must carry `{word}` even at zero: {tally}",
+            );
+        }
+        // ⚠ AND THE MOMENT, item 918's rule: this is a census of a directory a daemon writes to.
+        assert!(
+            said.first().is_some_and(
+                |head| head.contains("2026-09-06T08:01:08Z") && head.contains("/state/sprag")
+            ),
+            "⚠⚠ the heading names the directory and when it was read — the path is derived from \
+             XDG_STATE_HOME and the counts are true of an instant. Got: {said:?}",
+        );
+        // ⛔ AND A PAGE WITH NOTHING REMOVABLE SAYS SO rather than printing an empty list, which
+        // would read as *the sweep ran*.
+        let nothing = leftovers_lines(
+            &found[..1],
+            std::path::Path::new("/state/sprag"),
+            sprag_host::moment::Reading::at(1_788_681_668),
+        );
+        assert!(
+            nothing
+                .iter()
+                .any(|line| line.contains("nothing here may be removed")),
+            "⚠⚠ *no removals* and *nothing to report* must not print alike — item 856's rule. \
+             Got: {nothing:?}",
         );
     }
 

@@ -254,6 +254,9 @@ pub enum Verb {
     /// `folds` — how full each session was when it folded the prompts it was sent, asked of the
     /// run logs on disk.
     Folds,
+    /// `leftovers` — what dead daemons left in the state directory and whether it may go, asked of
+    /// the files on disk and of the sockets beside them.
+    Leftovers,
     /// `my-runs` — which runs THIS conversation is on, asked by the caller about itself.
     MyRuns,
     /// `daemons` — WHICH daemons are running and on which sockets, asked of the machine.
@@ -589,7 +592,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 75] = [
+    pub const ALL: [Self; 76] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -664,6 +667,7 @@ impl Verb {
         Self::Disposition,
         Self::Waits,
         Self::Folds,
+        Self::Leftovers,
         Self::Daemons,
         Self::ShowGrammar,
         Self::DetachClient,
@@ -1360,6 +1364,30 @@ impl Verb {
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::NotBuilt,
             ),
+            // ⛔⛔⛔⛔⛔ **WHAT DEAD DAEMONS LEFT BEHIND, AND WHETHER IT MAY GO** — register item
+            // 905. Every TUI client mints its own socket and every socket mints state files that
+            // outlive it: measured 2026-09-06T09:22:21Z, 69 run logs of which 68 hold no run.
+            //
+            // ⚠⚠ IT ANSWERS AND DOES NOT ACT, on `waits`' and `folds`' terms and for a sharper
+            // reason of its own: the verdict is the whole content of item 905, and the one mistake
+            // here that cannot be undone is deleting a live daemon's records. A verb that swept by
+            // default would make that mistake once and leave nothing to read afterwards.
+            //
+            // ⚠ It reads the FILES ON DISK and knocks on the SOCKETS beside them, so it needs no
+            // daemon of its own — and could not use one, since the daemons it is asking about are
+            // the ones that are gone.
+            //
+            // ⚠ NOT BOUND TO A KEY and NOT AN AGENT TOOL, on `folds`' terms: it answers, this
+            // client has no view for it, and an agent that wants the census can ask through a
+            // shell. It takes no argument — the population is the state directory, and naming one
+            // file would answer a question nobody has.
+            Self::Leftovers => (
+                "leftovers",
+                Group::Tool,
+                Shell::Runs(""),
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::NotBuilt,
+            ),
             // ⛔⛔⛔⛔⛔ **WHICH RUNS THE CALLER IS ON, ASKED BY THE CALLER ABOUT ITSELF** —
             // register item 865's ⑷, and the one direction its other halves could not reach: ⑴⑵⑶
             // gave a RUN a mouth for its asker and ⑸ gave a PANE a mouth for its occupant, and all
@@ -1858,7 +1886,13 @@ mod tests {
             // SUPERVISING a loop rather than the one living in it. Item 856's own measurement is
             // that the only continuous reader of these runs is a supervising agent, so this gap is
             // the sharpest one on the list; it reaches the number through a shell today.
-            (38, 15, 22),
+            // ⚠ REGISTER ITEM 905: `leftovers` is the SIXTEENTH, on `waits`' and `folds`' terms
+            // and one step further out — it asks about daemons that are GONE and about the files
+            // they left, which is the one subject an agent living inside a daemon cannot see from
+            // where it stands. A supervising agent deciding whether a machine's state directory
+            // has become unreadable is a legitimate ask; nobody has built the tool, and the census
+            // reaches a shell today.
+            (38, 16, 22),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1910,6 +1944,12 @@ mod tests {
                 // reader of a loop's runs is the agent watching it, and an instrument reaching only
                 // a person's terminal has turned away from it. Nothing is built; a shell answers.
                 "folds",
+                // ⚠ REGISTER ITEM 905, on `folds`' terms one step further out: the census is about
+                // daemons that are GONE and the files keyed on their sockets, which an agent
+                // living inside a daemon cannot see from where it stands. A supervising agent
+                // deciding whether a machine's state directory has become unreadable is a
+                // legitimate ask; nothing is built, and a shell answers.
+                "leftovers",
             ],
             "the agent surface's remaining gap, by name",
         );
@@ -2064,7 +2104,13 @@ mod tests {
             // 856's rate is computed over runs that have ENDED and item 606 measured that every
             // run a reader meets is a RESTORED record, so the population it answers about exists
             // only in a file.
-            (67, 3, 5),
+            // ⚠ REGISTER ITEM 905: `leftovers` is the 68th, and the SIXTH needing no daemon — the
+            // furthest out of the six. `waits` and `folds` read files a gone daemon left; this one
+            // asks whether a daemon is there AT ALL for each stem those files are keyed on, so the
+            // daemons it is about are by definition the ones that cannot be connected to. It is
+            // also the only verb here whose answer a person ACTS on with `rm`, which is why it
+            // prints the command rather than running it.
+            (68, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -2175,7 +2221,12 @@ mod tests {
             // there is no view for a table of fold rates, and what it answers about is a run that
             // has ENDED under a daemon that has been restarted since (item 606 measured thirteen
             // live runs and every one was a restored record).
-            (25, 6, 44),
+            // ⚠ REGISTER ITEM 905: `leftovers` is the 45th, on `folds`' terms and with the same
+            // sharpening `waits` carries — it answers, this client has no view for a census of a
+            // directory, and the daemons it is about are the ones that are GONE. A keystroke is
+            // pressed inside a live client, which is the one stem the census will never offer to
+            // remove.
+            (25, 6, 45),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );

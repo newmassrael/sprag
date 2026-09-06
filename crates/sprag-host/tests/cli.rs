@@ -15498,7 +15498,11 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
         // ⚠ REGISTER ITEM 856 ⑴: `folds` is the 67th, driven with NO daemon on `waits`' reason —
         // item 856's rate is over runs that have ENDED, and item 606 measured that every run a
         // reader meets is a RESTORED record, so a live daemon is not what holds the answer.
-        (67, 5, 3),
+        // ⚠ REGISTER ITEM 905: `leftovers` is the 68th, driven with NO daemon and the furthest out
+        // of the six that can be — `waits` and `folds` read what a gone daemon LEFT; this one asks
+        // whether a daemon is there at all for each stem, so the parties it reports on are by
+        // definition unconnectable. Driven here before the count moved.
+        (68, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -15693,7 +15697,11 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         // ⚠ REGISTER ITEM 856 ⑴: `folds` is the 44th, on `waits`' reason verbatim — it answers,
         // there is no view for a table of fold rates, and the runs it reads ended under a daemon
         // that has been restarted since.
-        (15, 10, 44, 6),
+        // ⚠ REGISTER ITEM 905: `leftovers` is the 45th, on `folds`' reason with the same
+        // sharpening `waits` carries — it answers, there is no view for a census of a directory,
+        // and the daemons it is about are the ones that are GONE. The client a key is pressed
+        // inside is the one stem it will never offer to remove.
+        (15, 10, 45, 6),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

@@ -74,6 +74,11 @@ pub mod keyhelp;
 pub mod keymap;
 /// **Debt 64c's measurement**: the ai-loop path driven against a LIVE agent CLI, through this
 /// crate's own detector. Opt-in and test-only — it costs an agent's real turns to run.
+// What a dead daemon left in the state directory, and whether it may go — register item 905. The
+// unit is the socket STEM and not the run log: a daemon keys three artefacts on it, and the one
+// row that separates *no runs* from *nothing to lose* is a stem with an empty log and a pane in
+// its snapshot.
+pub mod leftovers;
 #[cfg(test)]
 mod live_agent;
 // When a live store was READ, in the words the register quotes numbers in. Its own module because
