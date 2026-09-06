@@ -383,22 +383,23 @@ fn main() -> io::Result<()> {
         .daemon
         .then(|| sprag_host::load_runs(&runs_file))
         .flatten();
-    // ⚠ The RULE is `sprag_host::replaced_conversations`, not three lines here: a decision spelled
-    // at a call site is one no mutation can reach, which is what this daemon's boot has to avoid
-    // being. This line is a call and holds no judgement of its own.
-    let host = Host::new((args.cols, args.rows))
-        .with_pane_env(sprag_host::pane_env_source(&sock))
-        .with_pane_args(sprag_host::pane_args_source())
-        .with_pane_identity(sprag_host::pane_identity_source())
-        .with_replaced_conversations(sprag_host::replaced_conversations(inherited.as_ref()));
-    // Every pane this daemon births lands in the subtree taken above, so a person's session cannot
-    // be starved by whichever neighbour spawned the most threads. A host with no tree spawns
-    // exactly as it always did.
+    // ⛔⛔⛔⛔⛔ THE WHOLE DECISION IS `Host::for_daemon`'s — register item 904, and the comment
+    // that used to stand here is what asked for it: *"a decision spelled at a call site is one no
+    // mutation can reach, which is what this daemon's boot has to avoid being."* It was written
+    // about one of these sources and was true of all five, so all five moved to where a gate can
+    // reach them; `every_source_a_daemons_host_owes_is_planted_by_the_one_that_builds_it` is that
+    // gate, and this line now holds no judgement of its own.
+    //
+    // ⚠⚠ IT DRIVES FOUR OF THE FIVE, said here rather than left to be discovered: the tree is
+    // owed CONDITIONALLY (a machine with no delegated cgroup owes none) and the gate states, and
+    // counts, why it cannot drive that arm. The residue is registered rather than hidden.
+    //
+    // ⚠ `shares` is a PARAMETER rather than a second builder call here for the reason above. The
+    // `#[cfg]` stays because taking the subtree is what is platform-specific, not installing it.
     #[cfg(target_os = "linux")]
-    let host = match shares {
-        Some(tree) => host.with_shares(tree),
-        None => host,
-    };
+    let host = Host::for_daemon((args.cols, args.rows), &sock, inherited.as_ref(), shares);
+    #[cfg(not(target_os = "linux"))]
+    let host = Host::for_daemon((args.cols, args.rows), &sock, inherited.as_ref(), None);
     // The persistent snapshot path, used only in the daemon arms below.
     let snap_path = snapshot_path(&sock);
     // Self-cleaning lifetime: when the LAST live pane across all sessions exits, the daemon has

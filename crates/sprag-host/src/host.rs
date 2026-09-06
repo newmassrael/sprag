@@ -1988,6 +1988,61 @@ impl Host {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE HOST A DAEMON SERVES FROM, WITH EVERY SOURCE A DAEMON OWES ITS PANES** —
+    /// register item 904.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this is a function and not five lines in `sprag-term`'s `main`
+    ///
+    /// It WAS five lines there, and the boot's own comment beside them said what was wrong with
+    /// that: *"a decision spelled at a call site is one no mutation can reach, which is what this
+    /// daemon's boot has to avoid being."* That sentence was written about one of the five and was
+    /// true of all of them — `main` is not reachable from a test, so **every one of these sources
+    /// had a gate for *if installed it works* and none for *it is installed***. Deleting a line
+    /// left the product running, every gate green, and the defect visible only after a restart.
+    ///
+    /// Three of the five are lines that UNDO a filed defect if they go: `pane_identity` is item
+    /// 619's (a restored agent comes back anonymous), `replaced_conversations` is item 869's (a
+    /// loop's inner pane is resumed into a conversation nobody will read), and `homes` is R337's (a
+    /// restored pane is the one unweighted pane in the daemon). So a missing line is not a new bug;
+    /// it is a repaid one coming back silently.
+    ///
+    /// # ⚠⚠ What `None` means here, and why the GUI is not a caller
+    ///
+    /// A host that serves NO socket installs neither the address nor the instrumentation, on
+    /// purpose — [`with_pane_env`](Self::with_pane_env)'s stated rule, *publishing an address is a
+    /// promise to serve it*. That host is the GUI's in-process one and it calls [`new`](Self::new),
+    /// which is why the absence has to stay representable. This constructor is the other case, and
+    /// naming it is what lets a gate say *this one owes all of them*.
+    ///
+    /// ⚠ `shares` is [`None`] on a platform with no delegated subtree, and on one where taking it
+    /// failed — a host with no tree spawns exactly as it always did. It is a PARAMETER rather than
+    /// a second builder call at the boot for this function's whole reason: a decision left at the
+    /// call site is the one no mutation reaches.
+    ///
+    /// ⚠⚠ `inherited` is the PREDECESSOR's run log and is read before this is called, which is the
+    /// only ordering that works — the restore asks item 869's question while deciding what command
+    /// to build, so a log read afterwards would arrive with the panes already resumed.
+    #[must_use]
+    pub fn for_daemon(
+        default_size: (u16, u16),
+        socket: &std::path::Path,
+        inherited: Option<&crate::runs::RunLog>,
+        shares: Option<Arc<sprag_terminal::share::Tree>>,
+    ) -> Self {
+        // ⚠ EVERY VALUE IS A CALL TO A NAMED RULE, never a judgement spelled here — the boot's own
+        // discipline, kept: this function decides WHICH sources a daemon owes, and each source
+        // decides what it is.
+        let host = Self::new(default_size)
+            .with_pane_env(pane_env_source(socket))
+            .with_pane_args(pane_args_source())
+            .with_pane_identity(pane_identity_source())
+            .with_replaced_conversations(replaced_conversations(inherited));
+        match shares {
+            Some(tree) => host.with_shares(tree),
+            None => host,
+        }
+    }
+
     /// This host's [samplers](crate::Samplers), shared with whatever else serves those questions —
     /// see the field for why there is exactly one set per host.
     #[must_use]
@@ -4008,6 +4063,189 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    /// ⛔⛔⛔⛔⛔ **EVERY SOURCE A DAEMON'S HOST OWES IS PLANTED BY THE ONE THAT BUILDS IT** —
+    /// register item 904.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Four gates for *if installed it works* and none for *it is installed*
+    ///
+    /// Every one of these sources had the first: a pane that cannot name itself, an agent that
+    /// cannot report, a restored agent that comes back anonymous, a loop pane resumed into a
+    /// conversation nobody reads, a pane placed nowhere in the machine — each is a filed item with
+    /// a gate over its EFFECT. **Nothing asked whether the boot installs them.** So a deleted line
+    /// left the product running, every gate green, and the defect visible only after a restart —
+    /// and three of the five would have silently reopened items 619, 869 and R337.
+    ///
+    /// It could not be asked before, because the decision lived in `sprag-term`'s `main`, which no
+    /// test reaches. [`Host::for_daemon`] is where it lives now, and that is what makes the
+    /// question askable at all.
+    ///
+    /// # ⚠⚠⚠ The population is the TYPE's, not a list — register item 915's lesson, applied
+    ///
+    /// [`Host`] is destructured with **no `..`**: a field added to it stops this file compiling
+    /// (`E0027`) until somebody has said whether a daemon owes it. That is the repair item 915 made
+    /// one type over, and the reason it is the right shape here is item 904's own done-when: *a
+    /// hand list means the fifth source goes silently missing* — which is this workspace's rule 6.
+    ///
+    /// ⚠⚠ **AND THE EXEMPTIONS ARE COUNTED** — item 903's rule. A source quietly joining the
+    /// *a daemon does not owe this* list has to move a number.
+    ///
+    /// ⚠ It asserts each source is PLANTED, never that it behaves — the behaviour is what the four
+    /// existing gates already hold, and re-testing it here would make this gate about the sources
+    /// rather than about the boot.
+    #[test]
+    fn every_source_a_daemons_host_owes_is_planted_by_the_one_that_builds_it() {
+        // ⚠⚠ THE REAL CONSTRUCTOR, driven with the real arguments — a fixture that built a `Host`
+        // by hand would measure the fixture, which is register item 915's finding turned on this
+        // gate before it was written. The socket path need not exist: `pane_env_source` records
+        // where to report, and nothing here connects.
+        let built = Host::for_daemon(
+            (80, 24),
+            std::path::Path::new("/tmp/sprag-904-gate.sock"),
+            None,
+            // ⚠⚠ NO TREE, and the reason is stated at `homes` below rather than hidden here: this
+            // machine may have no delegated cgroup at all, and building one to hand over would mean
+            // spelling `sprag_terminal::share`'s own cgroup file names in this crate.
+            None,
+        );
+        // ⛔ NO `..` — a field added to `Host` is a compile error here until it is classified.
+        let Host {
+            registry,
+            samplers,
+            pane_hooks,
+            pane_env,
+            pane_args,
+            pane_identity,
+            homes,
+            replaced_conversations,
+        } = &built;
+        /// Whether a daemon's host owes this field a value at birth.
+        enum Owed {
+            /// It must be planted, and this is how the built host says it was.
+            Planted(bool),
+            /// A daemon does not owe it, and this says why.
+            Not(&'static str),
+        }
+        let fields: Vec<(&'static str, Owed)> = vec![
+            (
+                "registry",
+                // ⚠ NOT A SOURCE. It is the sessions themselves — what the host IS, not something
+                // installed into it — and `Host::new` cannot produce one without it.
+                Owed::Not("it is the host's own sessions, not a source installed into them"),
+            ),
+            (
+                "samplers",
+                // ⚠ NOT A SOURCE EITHER, and the difference is direction: everything else here is
+                // handed DOWN to panes at birth, and this is sampled UP from them on demand.
+                Owed::Not("it is sampled from the panes on demand, never installed into them"),
+            ),
+            (
+                "pane_hooks",
+                // ⛔⛔ THE ONE OPTION A DAEMON GENUINELY DOES NOT OWE, and it must stay that way:
+                // it wires a pane born through `HostClient::new_pane` to an IN-PROCESS display.
+                // A daemon has no display in its process — its clients are on the far side of a
+                // socket and repaint from the scene version — so planting one here would be this
+                // gate demanding a value with nothing to put in it.
+                Owed::Not(
+                    "it wires a pane to an in-process display, and a daemon's clients are across \
+                     a socket",
+                ),
+            ),
+            // ⛔ WHERE THIS DAEMON LISTENS AND WHICH PANE THIS IS, without which a process inside
+            // a pane can only be scraped, never report.
+            ("pane_env", Owed::Planted(pane_env.is_some())),
+            // ⛔ AND HOW TO REPORT — the instrumentation on every agent launch. Its absence is the
+            // half `pane_env` cannot cover: a pane that knows the address and carries no reporter.
+            ("pane_args", Owed::Planted(pane_args.is_some())),
+            // ⛔⛔ AND WHAT THAT LAUNCH IS CALLED — register item 619's line. Without it a restored
+            // agent is anonymous, and a SECOND restart cannot resume it at all.
+            ("pane_identity", Owed::Planted(pane_identity.is_some())),
+            // ⛔⛔ AND WHICH CONVERSATIONS A RESTORE MUST NOT COME BACK TO — register item 869's
+            // line, whose absence spends a loop's one context-shedding move on a conversation
+            // nobody will read.
+            (
+                "replaced_conversations",
+                Owed::Planted(replaced_conversations.is_some()),
+            ),
+            (
+                "homes",
+                // ⛔⛔⛔⛔⛔ WHERE ITS PANES LIVE IN THE MACHINE — R337's line, and the ONE
+                // source here a daemon owes CONDITIONALLY: a machine with no delegated cgroup
+                // legitimately has none, which is a different role from the four above, where an
+                // absence is always a defect. `Host::for_daemon` takes it as a parameter so the
+                // decision is still in one place, and this arm is not driven.
+                //
+                // ⚠⚠ **THE RESIDUE, STATED RATHER THAN HIDDEN, AND REGISTERED**: nothing holds
+                // that the boot passes a tree it was given. Driving it here would mean building a
+                // `sprag_terminal::share::Tree`, whose only constructor adopts a real cgroup —
+                // `Tree::adopt` reads `cgroup.procs` and `cgroup.controllers`, whose names are
+                // that module's private constants, so a fixture would be a second speller of a
+                // vocabulary `share.rs` owns. `pane_placement.rs` faces the same wall from the
+                // other side and RETURNS EARLY when the machine has no delegation, so those gates
+                // are silent here too.
+                Owed::Not(
+                    "a machine with no delegated cgroup owes no tree, and the arm that has one \
+                     cannot be driven without spelling `share.rs`'s private cgroup file names",
+                ),
+            ),
+        ];
+        // ⛔⛔⛔⛔⛔ **THE FOUR EXEMPT NAMES ARE READ HERE, AND THAT IS WHAT MAKES THE PATTERN A
+        // GATE RATHER THAN A SHAPE.** The enforcement is a chain of two, and neither half is
+        // enough alone: `E0027` says a field added to `Host` must be BOUND, and `-D warnings`'
+        // `unused_variables` says a bound name must be READ — so a field can reach neither list
+        // without somebody deciding. Register item 915 learned this the hard way one type over,
+        // where a first draft bound twelve names and read none of them.
+        //
+        // ⚠⚠ MEASURED ON THIS GATE, not assumed: the mutation that dropped one source from the
+        // classification while leaving its binding went red as `unused variable`, and the same run
+        // reported `pane_hooks` — which this assertion did not yet read. The mutation found the
+        // hole before clippy was ever pointed at the finished gate.
+        assert!(
+            std::ptr::eq(Arc::as_ptr(registry), Arc::as_ptr(&built.registry))
+                && std::ptr::eq(samplers, built.samplers())
+                && pane_hooks.is_none()
+                && homes.tree_root().is_none(),
+            "⚠ THE PREMISE: every name the pattern binds must be readable off the built host — \
+             `pane_hooks` and `homes` are the two a daemon does not get, and each must say so \
+             rather than merely be absent from the list above",
+        );
+
+        let mut unplanted = Vec::new();
+        let mut exempt = Vec::new();
+        for (name, owed) in &fields {
+            match owed {
+                Owed::Not(why) => {
+                    assert!(
+                        !why.is_empty(),
+                        "⛔ `{name}` claims a daemon does not owe it and says nothing about why — \
+                         an exemption with no sentence is the silence rule 6 is about",
+                    );
+                    exempt.push(*name);
+                }
+                Owed::Planted(planted) => {
+                    if !planted {
+                        unplanted.push(*name);
+                    }
+                }
+            }
+        }
+        assert!(
+            unplanted.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 904: `Host::for_daemon` did not plant {unplanted:?}. A \
+             daemon that boots without one of these runs, passes every gate, and shows the gap \
+             only after a restart — and for `pane_identity`, `replaced_conversations` and `homes` \
+             the gap is a REPAID item coming back: 619, 869 and R337 respectively.",
+        );
+        assert_eq!(
+            exempt,
+            vec!["registry", "samplers", "pane_hooks", "homes"],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 904: the list of what a daemon does NOT owe changed. One \
+             that GREW is a source that stopped being planted while this gate went on passing — \
+             which is exactly the shape the item was filed over — and one that SHRANK is a field \
+             somebody started planting and should have moved into the list above. Exempt: \
+             {exempt:?}",
+        );
+    }
 
     /// A long-lived `cat` pane (echoes stdin, keeps the PTY open across assertions).
     fn cat() -> CommandBuilder {
