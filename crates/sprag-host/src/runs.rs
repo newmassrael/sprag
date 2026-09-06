@@ -72,11 +72,31 @@ pub enum RunState {
     /// # ⚠⚠⚠⚠⚠ Why this is a fifth state and not a [`Done`](Self::Done) with a rebuilt `Outcome`
     ///
     /// An [`Outcome`] has no way back from the wire. `crate::plugins::outcome_to_json` is a one-way
-    /// RENDER: it drops `screened`, `deliveries`, `checks` and `banked`, so a daemon that
-    /// "reconstructed" one would be asserting four facts it was never told. A `Done` built that way
+    /// RENDER: it drops `screened`, `deliveries` and `checks`, so a daemon that
+    /// "reconstructed" one would be asserting facts it was never told. A `Done` built that way
     /// would be **indistinguishable from a real one and quietly wrong** — an out-of-process run
     /// losing what an in-process one keeps, which is the invisible divergence
     /// [`crate::options::RUN_DRIVER_PROCESS`] promises cannot happen.
+    ///
+    /// # ⛔⛔⛔⛔⛔ That list was WRONG BY TWO for as long as it stood — register item 914
+    ///
+    /// It used to name four, `banked` among them. Counting the keys `outcome_to_json` writes —
+    /// rather than reading this sentence — says otherwise, and the two roads are not the same
+    /// block:
+    ///
+    /// | fact | where it is published |
+    /// |---|---|
+    /// | `banked` | **the ENDING**, by `outcome_to_json` itself |
+    /// | `checks` | **the PROGRESS block** (`RUN_CHECKS_KEY`), read back by `progress_from_report` |
+    /// | `deliveries` | the progress block, on `checks`' road |
+    /// | `screened` | ⛔ **NEITHER.** This is the one that really cannot cross, and item 914 is it |
+    ///
+    /// ⚠⚠ **THE COST OF THE STALE SENTENCE IS MEASURED, NOT HYPOTHETICAL**: register item 913 read
+    /// it, believed it, and left the check tally unfilled for every out-of-process run — narrower
+    /// than the product allowed, for a whole round. **A claim a doc makes about another module is a
+    /// claim nothing runs.** What settles this one is counting the keys at the site that writes
+    /// them, which is what `every_fact_an_ending_carries_either_reaches_a_row_or_says_why_it_cannot`
+    /// now does structurally.
     ///
     /// So the honest shape is a state that says *this ending was reported, not computed here*, and
     /// carries exactly what arrived. Every reader that weighs an outcome then has to say what it
@@ -7185,7 +7205,23 @@ impl RunRegistry {
                         deferred,
                         unchecked,
                         unadmitted,
-                        checks,
+                        // ⛔⛔⛔⛔⛔ THE CHECK TALLY TAKES A SECOND ROAD WHERE IT HAS ONE —
+                        // register item 914's measurement, which corrected this round's own first
+                        // answer. The ENDING's tally is authoritative and comes first; behind it
+                        // is the driver's last PROGRESS report, which carries `RUN_CHECKS_KEY`
+                        // and is the only road an out-of-process run has.
+                        //
+                        // ⚠⚠ **THE DOC THAT SAID OTHERWISE WAS WRONG, AND BELIEVING IT IS WHAT
+                        // MADE THE FIRST DRAFT NARROW.** `RunState::Reported` claims the render
+                        // drops four facts; counting the keys says two of the four are published —
+                        // `banked` by `outcome_to_json` itself and this one on the progress block.
+                        // That sentence is corrected where it lives.
+                        //
+                        // ⚠ NO CELL FALLBACK BEHIND EITHER, on its neighbours' rule one comment
+                        // up: `Progress::checks` is a bare `Checks`, so for a run whose cell never
+                        // moved it reads as *nothing was ever asked* — a zero this daemon would be
+                        // signing on nobody's behalf.
+                        checks: checks.or_else(|| reported.checks.map(Into::into)),
                         // ⚠⚠⚠⚠⚠ AND HOW BIG THE BRIEF WAS — register item 719's second direction,
                         // written on the line above's terms exactly: the report first, the cell as
                         // the fallback, and a `None` that is the PLUGIN's own answer (*nobody
@@ -10824,10 +10860,94 @@ mod tests {
         assert_eq!(
             (row.screened, row.checks.clone()),
             (None, None),
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 913: `screened` and `checks` are NOT published by \
-             `outcome_to_json`, so there is nothing here to read — and `None` is the only honest \
-             answer. A zero would be this record signing a count for a run it was never told \
-             about, which is item 891's whole subject arriving where its ratchet cannot look",
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 913: `screened` is NOT published on either block, and this \
+             fixture's driver sent no progress report for `checks` to come off — so `None` is the \
+             only honest answer for both. A zero would be this record signing a count for a run it \
+             was never told about, which is item 891's whole subject arriving where its ratchet \
+             cannot look",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND ITS CHECK TALLY STILL CROSSES, BY THE ROAD THE ENDING DOES NOT USE** —
+    /// register item 914's measurement, and the correction it made to register item 913's own
+    /// first answer.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Item 913 believed a doc sentence and left this unfilled for a whole round
+    ///
+    /// [`RunState::Reported`]'s doc used to say `outcome_to_json` drops four facts, `checks` among
+    /// them. It is right that the ENDING carries no check tally — and wrong that there is none to
+    /// be had: `crate::plugins::RUN_CHECKS_KEY` is published on the **progress** block and read
+    /// back by `progress_from_report`, which is the road `deliveries`, `banked` and `briefed`
+    /// already travel. So an out-of-process run whose driver reported progress CAN record what its
+    /// checker came to, and item 913's first draft answered `None` for all of them.
+    ///
+    /// ⚠⚠ This is the pair that makes it a claim rather than a coincidence: the run's ending
+    /// carries no tally, its progress report does, and the row takes the second — while `screened`,
+    /// which is on NEITHER block, stays [`None`]. A build that filled both from one source would
+    /// pass one of those and fail the other.
+    #[test]
+    fn an_out_of_process_run_records_the_check_tally_its_progress_report_carried() {
+        let mut registry = RunRegistry::default();
+        let id = registry.reserve();
+        // ⚠⚠⚠ **THE ORDER IS THE REAL ONE AND `report` ENFORCES IT.** A driver reports progress
+        // while it RUNS and its ending arrives after — `report` refuses a run whose ending is
+        // already in hand (`Unreported::Ended`, its own stated arm), so a fixture that set the
+        // ending first would be staging a sequence this product does not allow. The first draft
+        // did exactly that and the door said `Ended`.
+        let state = Arc::new(Mutex::new(RunState::Running));
+        registry.submit(NewRun {
+            id,
+            label: "ai_loop pane=2".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            opened_by: None,
+            opened_by_session: None,
+            tree: None,
+            overridden: None,
+            state: Arc::clone(&state),
+            run: Box::new(EndedRun::restored(false, None, None)),
+            progress: ProgressCell::default(),
+        });
+        // ⚠⚠ THE LAST PROGRESS REPORT THAT DRIVER SENT, in the shape `crate::plugins` publishes it
+        // — whole, because `progress_from_report` refuses a tally it cannot read entire rather than
+        // filling a zero it was not told (register items 499 and 674).
+        registry
+            .report(
+                id,
+                // ⚠⚠ THE BLOCK IS NAMED BY THE PRODUCT, NOT BY THIS FIXTURE —
+                // `crate::plugins::REPORTED_BESIDE_KEY`. The first draft spelled `"state"` out of
+                // its own head and the tally arrived nowhere: a fixture that invents a wire shape
+                // measures the fixture. Spelled through the constant so the two cannot drift.
+                serde_json::json!({ crate::plugins::REPORTED_BESIDE_KEY: {
+                    crate::plugins::RUN_CHECKS_KEY: {
+                        "asked": 13,
+                        "silent": 2,
+                        "why_silent": "the checker said nothing",
+                        "refused": 4,
+                        "refused_in_a_row": 2,
+                        "unasked": 1,
+                    }
+                } }),
+            )
+            .expect("a running run takes a progress report");
+        // ⚠ AND THEN THE ENDING, exactly as `driver_ending` builds it from the driver's stdout —
+        // carrying no check tally, which is the half the old doc sentence got right.
+        *lock(&state) = RunState::Reported(Box::new(serde_json::json!({ "state": "converged" })));
+        let row = registry.persistable().runs.remove(0);
+        assert_eq!(
+            row.checks.clone().map(|it| (it.asked, it.unasked)),
+            Some((13, 1)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 914: the ending carries no check tally and the PROGRESS \
+             report does, so the row must take the second road. Item 913 read a doc sentence that \
+             said there was no such road and left this `None` for every out-of-process run — which \
+             is every run in the live store. Row: {row:?}",
+        );
+        assert_eq!(
+            row.screened, None,
+            "⚠⚠⚠ AND THE CONTROL THAT KEEPS THIS HONEST: `screened` is on NEITHER block, so it \
+             stays `None` while its neighbour crosses. A build that filled both from one source \
+             would satisfy the assertion above and be wrong here — and one that filled neither \
+             would be item 913's first draft, which is what this gate exists to have caught",
         );
     }
 
