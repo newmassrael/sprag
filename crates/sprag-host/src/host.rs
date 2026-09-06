@@ -4125,6 +4125,15 @@ mod tests {
             Planted(bool),
             /// A daemon does not owe it, and this says why.
             Not(&'static str),
+            /// ⛔⛔⛔⛔⛔ A daemon owes it CONDITIONALLY, and the gate that drives that condition
+            /// is named here — register item 916.
+            ///
+            /// It is a third arm rather than an [`Owed::Not`] with a longer sentence because the
+            /// two say opposite things to the next reader: `Not` is *nothing holds this and
+            /// nothing should*, and this is *something holds this, over there*. Item 916 was
+            /// exactly what a `Not` hid — an arm nobody drove, wearing the word for an arm nobody
+            /// needs to.
+            Elsewhere(&'static str),
         }
         let fields: Vec<(&'static str, Owed)> = vec![
             (
@@ -4169,23 +4178,19 @@ mod tests {
             ),
             (
                 "homes",
-                // ⛔⛔⛔⛔⛔ WHERE ITS PANES LIVE IN THE MACHINE — R337's line, and the ONE
-                // source here a daemon owes CONDITIONALLY: a machine with no delegated cgroup
-                // legitimately has none, which is a different role from the four above, where an
-                // absence is always a defect. `Host::for_daemon` takes it as a parameter so the
-                // decision is still in one place, and this arm is not driven.
+                // ⛔⛔⛔⛔⛔ WHERE ITS PANES LIVE IN THE MACHINE — R337's line, owed
+                // CONDITIONALLY: a machine with no delegated cgroup legitimately has none, so
+                // THIS fixture (which hands over no tree) must find none, and that is what is
+                // asserted. The other direction — a tree handed over reaches the panes — is
+                // `a_daemon_given_a_share_tree_hands_it_to_the_panes_that_will_live_in_it`.
                 //
-                // ⚠⚠ **THE RESIDUE, STATED RATHER THAN HIDDEN, AND REGISTERED**: nothing holds
-                // that the boot passes a tree it was given. Driving it here would mean building a
-                // `sprag_terminal::share::Tree`, whose only constructor adopts a real cgroup —
-                // `Tree::adopt` reads `cgroup.procs` and `cgroup.controllers`, whose names are
-                // that module's private constants, so a fixture would be a second speller of a
-                // vocabulary `share.rs` owns. `pane_placement.rs` faces the same wall from the
-                // other side and RETURNS EARLY when the machine has no delegation, so those gates
-                // are silent here too.
-                Owed::Not(
-                    "a machine with no delegated cgroup owes no tree, and the arm that has one \
-                     cannot be driven without spelling `share.rs`'s private cgroup file names",
+                // ⚠⚠ **IT USED TO BE AN `Owed::Not` AND ITEM 916 PAID THAT OFF.** The wall was
+                // that `Tree::adopt`'s two inputs were private constants, so no other crate could
+                // present a root to adopt; they are `share::PROCS` and `share::CONTROLLERS` now.
+                // An exemption somebody retires and leaves in place is a gate vouching for a hole
+                // that is no longer there.
+                Owed::Elsewhere(
+                    "a_daemon_given_a_share_tree_hands_it_to_the_panes_that_will_live_in_it",
                 ),
             ),
         ];
@@ -4212,6 +4217,7 @@ mod tests {
 
         let mut unplanted = Vec::new();
         let mut exempt = Vec::new();
+        let mut elsewhere = Vec::new();
         for (name, owed) in &fields {
             match owed {
                 Owed::Not(why) => {
@@ -4221,6 +4227,19 @@ mod tests {
                          an exemption with no sentence is the silence rule 6 is about",
                     );
                     exempt.push(*name);
+                }
+                Owed::Elsewhere(gate) => {
+                    // ⛔⛔⛔⛔⛔ AND THE NAMED GATE HAS TO EXIST — register item 916. A pointer to
+                    // a gate nobody wrote is worse than an exemption: it reads as *covered* and
+                    // is not. The name is looked up in THIS FILE's own source rather than trusted,
+                    // which is the device item 891 ⑶'s ratchet uses one module over.
+                    assert!(
+                        include_str!("host.rs").contains(&format!("fn {gate}(")),
+                        "⛔⛔⛔⛔⛔ REGISTER ITEM 916: `{name}` says `{gate}` drives it and this \
+                         file declares no such test. A field pointed at a gate that does not \
+                         exist is unclassified wearing the word for classified.",
+                    );
+                    elsewhere.push(*name);
                 }
                 Owed::Planted(planted) => {
                     if !planted {
@@ -4237,14 +4256,108 @@ mod tests {
              the gap is a REPAID item coming back: 619, 869 and R337 respectively.",
         );
         assert_eq!(
-            exempt,
-            vec!["registry", "samplers", "pane_hooks", "homes"],
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 904: the list of what a daemon does NOT owe changed. One \
-             that GREW is a source that stopped being planted while this gate went on passing — \
-             which is exactly the shape the item was filed over — and one that SHRANK is a field \
-             somebody started planting and should have moved into the list above. Exempt: \
-             {exempt:?}",
+            (exempt, elsewhere),
+            (vec!["registry", "samplers", "pane_hooks"], vec!["homes"]),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 904: the lists of what a daemon does NOT owe, and of what \
+             another gate holds for it, changed. One that GREW is a source that stopped being \
+             planted while this gate went on passing — exactly the shape the item was filed over \
+             — and one that SHRANK is a field somebody started planting and should have moved \
+             into the list above. ⚠ `homes` moved from the first list to the second when item 916 \
+             paid its exemption off, and moving it BACK would be that hole re-opening under a \
+             word that says it is covered.",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE TREE IT WAS GIVEN REACHES ITS PANES** — register item 916, the one arm
+    /// the gate above counts as an exemption rather than driving.
+    ///
+    /// # ⛔⛔⛔⛔⛔ It was silent from BOTH sides, which is why it needed its own item
+    ///
+    /// Item 904 moved the daemon's five installs into [`Host::for_daemon`] and gated four of them.
+    /// The fifth — where a pane lives in the machine, R337's line — could not be driven, and the
+    /// gates that exist for its EFFECT could not either: `tests/pane_placement.rs` asks
+    /// `delegated()` first and **returns early on a machine with no delegated cgroup**, which is
+    /// every machine this suite normally runs on. So dropping the argument left nothing red, and
+    /// what comes back is a restored pane that is the one unweighted pane in the daemon.
+    ///
+    /// # ⛔⛔⛔ The question item 916 registered, answered by measurement: a Tree must NOT be
+    /// nameable without being taken
+    ///
+    /// The item asked whether [`sprag_terminal::share::Tree`] should gain a constructor that names
+    /// a root without adopting it, so a gate could hold one cheaply. **Counted, the type says no:**
+    /// of its nine methods, `root` alone reads nothing from the filesystem — `place`, `charge`,
+    /// `grant`, `granted`, `migrate`, `release` and `sweep` all require the adoption to have
+    /// happened. A named-but-untaken `Tree` would be a value on which seven of nine are wrong, and
+    /// `place`'s own doc says what that produces: *a pane that looks placed and is weighted by
+    /// nothing*. The invariant is the type's whole content.
+    ///
+    /// ⇒ So the wall was never the constructor. It was that [`Tree::adopt`]'s two inputs were
+    /// spelled in private constants, so no other crate could PRESENT a root to adopt. Publishing
+    /// them (`share::PROCS`, `share::CONTROLLERS`) is one speller rather than two, which is the
+    /// rule this repository applies to every wire key it makes `pub`.
+    ///
+    /// ⚠⚠ **AND THE ROOT BELOW IS A SUPPORTED SHAPE, NOT A LIE**: a cgroup whose parent delegated
+    /// no controller. `enable_controllers` returns early on it and `adopt` takes it, which is
+    /// exactly what a machine with cgroups and nothing delegated offers.
+    #[test]
+    fn a_daemon_given_a_share_tree_hands_it_to_the_panes_that_will_live_in_it() {
+        // ⚠ A root shaped the way `Tree::adopt` reads one, spelled with the PRODUCT's own names —
+        // a fixture that typed "cgroup.procs" here would be the second speller item 916 is about.
+        // ⚠ THROUGH `sprag_scratch`, never `std::env::temp_dir` — register item 794's ratchet,
+        // which refused the first draft of this line: a bare read writes into this repository's
+        // own directory when `TMPDIR` is set-and-empty, and `git status` cannot see it.
+        let root = sprag_scratch::scratch_root().join(format!("sprag-916-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("a root to adopt");
+        for name in [
+            sprag_terminal::share::PROCS,
+            sprag_terminal::share::CONTROLLERS,
+        ] {
+            std::fs::write(root.join(name), b"").expect("an empty cgroup file");
+        }
+        let tree = Arc::new(
+            sprag_terminal::share::Tree::adopt(root.clone()).expect("adopt an uncontrolled root"),
+        );
+
+        let with = Host::for_daemon(
+            (80, 24),
+            std::path::Path::new("/tmp/sprag-916-gate.sock"),
+            None,
+            Some(Arc::clone(&tree)),
+        );
+        // ⚠⚠ THE ROOT ITSELF, not merely *something is installed*: an arm that passed a DIFFERENT
+        // tree — one built here, or a default — would satisfy a presence check and place every
+        // pane somewhere nobody asked for. This is item 912's lesson (a column that exists is not
+        // a column that is filled) asked of an argument instead of a column.
+        assert_eq!(
+            with.homes.tree_root(),
+            Some(tree.root()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 916: `Host::for_daemon` was handed a share tree and its \
+             panes do not live in it. Dropping that argument is silent from both sides — this \
+             gate is the only thing that reads it, because `pane_placement.rs` returns early on \
+             a machine with no delegated cgroup. What comes back is R337's defect: a restored \
+             pane is the one unweighted pane in the daemon, and the gap shows only after a \
+             reboot.",
+        );
+
+        // ⛔ AND THE OTHER ARM IS A REAL ANSWER, not the absence of this one — a machine with no
+        // delegated cgroup owes no tree, and a daemon there must boot rather than refuse. Without
+        // this half the assertion above would also pass on a build that installed a tree of its
+        // own making whenever it was given none.
+        let without = Host::for_daemon(
+            (80, 24),
+            std::path::Path::new("/tmp/sprag-916-gate.sock"),
+            None,
+            None,
+        );
+        assert_eq!(
+            without.homes.tree_root(),
+            None,
+            "⛔⛔⛔ REGISTER ITEM 916: a daemon given no tree invented one. `PaneHomes::none()` is \
+             what *nothing to enforce* looks like, and a host that manufactures a root here would \
+             place panes under a path nobody delegated to it.",
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A long-lived `cat` pane (echoes stdin, keeps the PTY open across assertions).

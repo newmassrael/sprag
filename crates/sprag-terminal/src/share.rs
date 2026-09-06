@@ -313,7 +313,16 @@ const DAEMON_LEAF: &str = "daemon";
 const SUBTREE_CONTROL: &str = "cgroup.subtree_control";
 
 /// The file that lists — and, written to, moves — a cgroup's member processes.
-const PROCS: &str = "cgroup.procs";
+///
+/// ⛔⛔⛔⛔⛔ **`pub` SO NOBODY SPELLS IT TWICE** — register item 916. [`Tree::adopt`] reads this
+/// and [`CONTROLLERS`] to decide whether a root is one it can take, so a caller that wants to
+/// present such a root — a gate over a host that installs a tree, say — either names these files
+/// or cannot. A second speller in another crate is the drift this repository refuses everywhere
+/// else it publishes a wire key: the name belongs to the module that reads it.
+///
+/// ⚠ It is the KERNEL's name, not this crate's invention, so publishing it commits to nothing this
+/// module chose.
+pub const PROCS: &str = "cgroup.procs";
 
 /// A cgroup's share of its level.
 const CPU_WEIGHT: &str = "cpu.weight";
@@ -392,7 +401,16 @@ const WANTED_CONTROLLERS: [&str; 3] = ["cpu", "memory", "pids"];
 
 /// The file listing what a cgroup's PARENT enabled for it — which is exactly the set this cgroup may
 /// enable for its own children.
-const CONTROLLERS: &str = "cgroup.controllers";
+///
+/// ⛔⛔⛔ **`pub` on [`PROCS`]'s argument** — register item 916. An EMPTY one is a real and
+/// supported answer, not a broken root: `enable_controllers` returns early when there is nothing
+/// to enable, so a root whose parent delegated no controller is one [`Tree::adopt`] takes and whose
+/// panes are simply unweighted.
+///
+/// ⚠ That helper is SPELLED rather than linked because it is private and this constant is not —
+/// register item 365's trap, met again here and refused by the rustdoc gate before this sentence
+/// was right.
+pub const CONTROLLERS: &str = "cgroup.controllers";
 
 /// The three identities that already name a pane, which are also where its cgroup goes.
 ///
