@@ -71,6 +71,10 @@ pub mod keymap;
 /// crate's own detector. Opt-in and test-only — it costs an agent's real turns to run.
 #[cfg(test)]
 mod live_agent;
+// When a live store was READ, in the words the register quotes numbers in. Its own module because
+// nothing else in this workspace knew what a date was — measured 2026-09-06, the only `%Y` under
+// `crates/` was a fixture asking an agent to run `date` (register item 918).
+pub mod moment;
 pub mod notify;
 pub mod options;
 pub mod outward;

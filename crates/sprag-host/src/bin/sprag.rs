@@ -768,10 +768,7 @@ fn waits(args: Vec<String>) -> io::Result<()> {
 /// [`disposition_rows`] makes one verb over, and for its reason: the mouth is where item 856 ⑸
 /// measured a value crossing into nothing, and a renderer nothing drives is a renderer that goes
 /// green while saying anything at all.
-fn waits_lines(
-    read: &[(std::path::PathBuf, sprag_host::runs::RunLog)],
-    swept: Option<&std::path::Path>,
-) -> Vec<String> {
+fn waits_lines(read: &[LogRead], swept: Option<&std::path::Path>) -> Vec<String> {
     let mut lines = Vec::new();
     // ⛔⛔⛔⛔⛔ **WHICH DIRECTORY THIS IS AN ANSWER ABOUT, WHEN NOBODY NAMED ONE** — and it is here
     // because running the verb without `XDG_STATE_HOME` printed a confident, complete, WRONG answer.
@@ -807,13 +804,13 @@ fn waits_lines(
     // different facts and a reader must not infer the first from an absence — item 856's rule
     // pointing the other way. What is dropped is the repetition, never the population.
     let mut empty = 0usize;
-    for (path, log) in read {
-        let waits = log.waits_between_runs();
+    for store in read {
+        let waits = store.log.waits_between_runs();
         if waits.runs() == 0 {
             empty += 1;
             continue;
         }
-        lines.push(format!("{}  {} run(s)", path.display(), waits.runs()));
+        lines.push(store.heading(waits.runs()));
         for wait in &waits.measured {
             lines.push(format!(
                 "  {} waited {}s after run {} until run {}",
@@ -864,6 +861,48 @@ fn waits_lines(
     lines
 }
 
+/// ⛔⛔⛔⛔⛔ **ONE STORE A `[LOG]` VERB READ, AND WHEN** — register item 918.
+///
+/// # ⛔⛔⛔⛔⛔ The moment is part of what was read, not of what a mouth remembered to print
+///
+/// Every number these verbs publish is taken over a file a daemon is still appending to, so running
+/// the command again is **a new measurement** rather than a check of the old one. Register item 895
+/// paid for that: three readings of one ratio came out `0.3130` · `0.3114` · `0.3036`, and because
+/// the first carried no moment a later round read the third as a contradiction of it. Carrying the
+/// stamp HERE is what makes forgetting it a change to this struct rather than an omission nobody
+/// sees.
+///
+/// ⚠⚠ A named struct and not a third tuple slot, this workspace's rule about tuples: a `(path, log)`
+/// pair already made two facts positional, and register items 833 ⑵, 883 and 888 are the same
+/// finding three times — a tuple separates only the things somebody NAMED.
+struct LogRead {
+    /// Which file, so an answer names the place a reader can doubt.
+    path: std::path::PathBuf,
+    /// What it held when it was read.
+    log: sprag_host::runs::RunLog,
+    /// ⛔ **WHEN THOSE BYTES WERE TAKEN** — see the struct, and [`sprag_host::moment::Reading`].
+    at: sprag_host::moment::Reading,
+}
+
+impl LogRead {
+    /// ⛔⛔⛔⛔⛔ **THE HEADING BOTH `[LOG]` VERBS PRINT** — the file, how many runs the verb could
+    /// account for, and the moment the file was read.
+    ///
+    /// # ⚠⚠ Written once because it had already been written twice
+    ///
+    /// `folds` and `waits` each carried `format!("{}  {} run(s)", …)` — one sentence, two spellings,
+    /// and register item 918's stamp would have become a third and a fourth. The run count is passed
+    /// because it is the one part that differs: each verb counts the population ITS report can
+    /// account for, and those are different questions over the same file.
+    fn heading(&self, runs: usize) -> String {
+        format!(
+            "{}  {runs} run(s)  read at {}",
+            self.path.display(),
+            self.at,
+        )
+    }
+}
+
 /// **THE RUN LOGS A `[LOG]` VERB IS ANSWERING ABOUT** — [`waits`]' reader and [`folds`]', written
 /// once.
 ///
@@ -887,10 +926,7 @@ fn run_logs(
     verb: &str,
     nothing_happened: &str,
     args: &[String],
-) -> io::Result<(
-    Vec<(std::path::PathBuf, sprag_host::runs::RunLog)>,
-    std::path::PathBuf,
-)> {
+) -> io::Result<(Vec<LogRead>, std::path::PathBuf)> {
     if let Some(extra) = args.get(1) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -918,9 +954,19 @@ fn run_logs(
             found
         }
     };
-    let read: Vec<(std::path::PathBuf, sprag_host::runs::RunLog)> = logs
+    // ⛔⛔⛔⛔⛔ AND THE MOMENT IS TAKEN **PER FILE, AT ITS OWN READ** — register item 918. One
+    // stamp over a sweep would be a claim about files read seconds apart, and the sweep at the real
+    // store is 69 logs (2026-09-05T07:52:53Z). The clock is read here because this is where the
+    // bytes are read; a mouth that took it at print time would be stamping when it got round to it.
+    let read: Vec<LogRead> = logs
         .into_iter()
-        .filter_map(|path| sprag_host::load_runs(&path).map(|log| (path, log)))
+        .filter_map(|path| {
+            sprag_host::load_runs(&path).map(|log| LogRead {
+                path,
+                log,
+                at: sprag_host::moment::Reading::now(),
+            })
+        })
         .collect();
     if read.is_empty() {
         return Err(io::Error::new(
@@ -1004,10 +1050,7 @@ fn folds(args: Vec<String>) -> io::Result<()> {
 
 /// [`folds`]'s BODY, separated from the printing so a gate can read what it says — [`waits_lines`]'
 /// split, for its reason: the mouth is where item 856 ⑸ measured a value crossing into nothing.
-fn folds_lines(
-    read: &[(std::path::PathBuf, sprag_host::runs::RunLog)],
-    swept: Option<&std::path::Path>,
-) -> Vec<String> {
+fn folds_lines(read: &[LogRead], swept: Option<&std::path::Path>) -> Vec<String> {
     let mut lines = Vec::new();
     // ⛔ WHICH DIRECTORY THIS IS AN ANSWER ABOUT — `waits_lines` carries the measurement this line
     // exists for (2026-09-05T08:47:23Z, the same command answering about two machines' worth of
@@ -1021,13 +1064,13 @@ fn folds_lines(
         ));
     }
     let mut empty = 0usize;
-    for (path, log) in read {
-        let folds = log.folds_against_fullness();
+    for store in read {
+        let folds = store.log.folds_against_fullness();
         if folds.runs() == 0 {
             empty += 1;
             continue;
         }
-        lines.push(format!("{}  {} run(s)", path.display(), folds.runs()));
+        lines.push(store.heading(folds.runs()));
         // ⛔⛔⛔⛔⛔ AND THE PREDICATE THAT CHOSE THOSE ROWS, SAID BEFORE ANY NUMBER TAKEN OVER THEM
         // — register item 895 ⑷. Every rate below is over the rows
         // `sprag_host::runs::PersistedRun::sampled` admitted for the fold split, and that was true
@@ -11570,6 +11613,23 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// **THE MOMENT EVERY `[LOG]` GATE READS ITS FIXTURE AT** — `2026-09-06T08:01:08Z`, the instant
+    /// register item 918 was measured, checked against `date -u -d @1788681668`.
+    ///
+    /// ⚠ A NAMED moment and never `Reading::now()`: the clock is the one input a gate cannot state,
+    /// and item 918's whole subject is a stamp the page must PRINT — so the gate has to know what
+    /// the page is supposed to say.
+    const READ_AT: u64 = 1_788_681_668;
+
+    /// One store read at [`READ_AT`], for the gates over [`waits_lines`] and [`folds_lines`].
+    fn read_at(path: &std::path::Path, log: sprag_host::runs::RunLog) -> LogRead {
+        LogRead {
+            path: path.to_path_buf(),
+            log,
+            at: sprag_host::moment::Reading::at(READ_AT),
+        }
+    }
+
     /// ⛔⛔⛔⛔⛔ **NO SENTENCE IN THIS CRATE STILL SAYS A FOLD MOVES WITH HOW FULL THE SESSION IS**
     /// — register item 856, the half of that ratchet that lives where [`folds`] is printed.
     ///
@@ -13998,7 +14058,7 @@ mod tests {
         }))
         .expect("the log a predecessor leaves is what this reads");
         let here = std::path::PathBuf::from("/tmp/one.runs.json");
-        let lines = waits_lines(&[(here.clone(), log.clone())], None);
+        let lines = waits_lines(&[read_at(&here, log.clone())], None);
         let said = lines.join("\n");
 
         // ── ① THE STRETCH, WITH ITS NUMBER — item 827's own shape, 13,629s being 3h47m ──
@@ -14108,7 +14168,10 @@ mod tests {
         // directory; there the wrong place prints ZEROS, which reads as *nothing happened*. Here it
         // prints a full table, which reads as *this is your machine* — so the address has to be on
         // the page.
-        let swept = waits_lines(&[(here, log)], Some(std::path::Path::new("/state/sprag")));
+        let swept = waits_lines(
+            &[read_at(&here, log)],
+            Some(std::path::Path::new("/state/sprag")),
+        );
         assert!(
             swept.first().is_some_and(
                 |line| line.contains("/state/sprag") && line.contains("XDG_STATE_HOME")
@@ -14123,6 +14186,101 @@ mod tests {
             "⚠⚠ AND A NAMED LOG CARRIES NO SUCH WARNING: the caller said where, so a note about a \
              derivation that did not happen would make the one certain case read as the doubtful \
              one. Got:\n{said}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY `[LOG]` VERB SAYS WHEN IT READ THE FILE** — register item 918, over both
+    /// verbs at once because the heading is ONE sentence they share.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A number over a live store is re-taken, never re-derived
+    ///
+    /// These verbs read a file a daemon is still appending to. Running one again is a NEW
+    /// measurement, so two answers that differ have not found a discrepancy — and nothing can say
+    /// which is which unless each carried the moment it was read. Register item 895 paid the whole
+    /// price: three readings of one ratio came out `0.3130` · `0.3114` · `0.3036`, and a later
+    /// round read the third as a CONTRADICTION of the first because the first carried no stamp.
+    ///
+    /// # ⚠⚠ Why it is asserted of BOTH verbs in one gate rather than inside each verb's own
+    ///
+    /// `folds` and `waits` had each spelled `format!("{}  {} run(s)", …)` — one sentence, two
+    /// copies — and item 918's stamp would have become a third and a fourth. [`LogRead::heading`]
+    /// is now that sentence, and a gate that only watched one verb would go green on a build that
+    /// gave the other verb a heading of its own again.
+    ///
+    /// ⚠ The run count still comes from each verb, because *how many runs can this report account
+    /// for* is a different question per verb even where today's answer is the same number.
+    #[test]
+    fn every_log_verb_says_when_it_read_the_file() {
+        use sprag_host::runs::RunLog;
+
+        let log: RunLog = serde_json::from_value(serde_json::json!({
+            "version": sprag_host::runs::RUN_LOG_VERSION,
+            "runs": [
+                {"id": 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
+                 "tree": "/home/coin/sprag", "ran_from": 1_000, "ran_to": 2_000,
+                 "outcome": "converged",
+                 "context_high_water": 800_000, "context_ceiling": 800_000, "overridden": [],
+                 "deliveries": {"made": 4, "folded": 1},
+                 "folds_by_reason": {"ordinary": {"delivered": 4, "folded": 1}}},
+                {"id": 2, "label": "ai_loop pane=2", "iterations": 1, "finished": true,
+                 "tree": "/home/coin/sprag", "ran_from": 3_000, "ran_to": 4_000,
+                 "outcome": "converged",
+                 "deliveries": {"made": 2, "folded": 0},
+                 "folds_by_reason": {"ordinary": {"delivered": 2, "folded": 0}}},
+            ]
+        }))
+        .expect("the log a predecessor leaves is what this reads");
+        let here = std::path::PathBuf::from("/tmp/one.runs.json");
+        // ⚠ `2026-09-06T08:01:08Z` — `READ_AT`, checked against `date -u -d @1788681668` on the
+        // machine this was written on.
+        let moment = "2026-09-06T08:01:08Z";
+        for (verb, page) in [
+            ("waits", waits_lines(&[read_at(&here, log.clone())], None)),
+            ("folds", folds_lines(&[read_at(&here, log.clone())], None)),
+        ] {
+            let heading = page
+                .iter()
+                .find(|line| line.contains("/tmp/one.runs.json"))
+                .unwrap_or_else(|| panic!("{verb} must name the file it read: {page:?}"));
+            assert!(
+                heading.contains(moment),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 918: `{verb}` published a table over a LIVE store and \
+                 did not say when it read it. Every number under this heading is true of an \
+                 instant, and the next round runs the same command and gets a different answer — \
+                 without the stamp that reads as a discrepancy rather than as a second \
+                 measurement. Got: {heading}",
+            );
+            // ⚠⚠ ON THE HEADING, not appended below the numbers it qualifies: a stamp under a
+            // table is read after the table has already been quoted out of.
+            assert!(
+                heading.contains("run(s)"),
+                "⚠⚠ AND ON THE LINE THAT CARRIES THE COUNT — the count and the moment are one \
+                 fact about a live file. Got: {heading}",
+            );
+            assert_eq!(
+                page.iter().filter(|line| line.contains(moment)).count(),
+                1,
+                "⚠ ONCE PER FILE READ, so a sweep's stamps stay countable against its logs. \
+                 `{verb}` said it {} times: {page:?}",
+                page.iter().filter(|line| line.contains(moment)).count(),
+            );
+        }
+        // ⛔⛔⛔ AND THE TWO HEADINGS ARE THE SAME SENTENCE — the whole reason `LogRead::heading`
+        // exists. Two verbs that compose their own would drift the day one of them is edited, and
+        // this fixture reports the same run count through both, so any difference here is a second
+        // spelling rather than a second question.
+        let head = |page: &[String]| {
+            page.iter()
+                .find(|line| line.contains("/tmp/one.runs.json"))
+                .cloned()
+                .expect("both verbs name the file")
+        };
+        assert_eq!(
+            head(&waits_lines(&[read_at(&here, log.clone())], None)),
+            head(&folds_lines(&[read_at(&here, log)], None)),
+            "⛔⛔⛔ ONE HEADING, ONE SPELLING — item 918's stamp went onto a sentence that had \
+             already been written twice, and a third copy is how the next fact added to it reaches \
+             only one verb.",
         );
     }
 
@@ -14277,7 +14435,7 @@ mod tests {
         }))
         .expect("the log a predecessor leaves is what this reads");
         let here = std::path::PathBuf::from("/tmp/one.runs.json");
-        let lines = folds_lines(&[(here.clone(), log.clone())], None);
+        let lines = folds_lines(&[read_at(&here, log.clone())], None);
         let said = lines.join("\n");
 
         // ── ① THE ROW: a fullness, the ceiling beside it, and whose ceiling it was ──
@@ -14441,7 +14599,7 @@ mod tests {
             ]
         }))
         .expect("a log whose only production run records no price");
-        let single = folds_lines(&[(here.clone(), all_one_kind)], None).join("\n");
+        let single = folds_lines(&[read_at(&here, all_one_kind)], None).join("\n");
         assert!(
             single.contains(
                 "of those 1, by whether that `capacity` column could ever have been non-zero: 0 \
@@ -14653,7 +14811,7 @@ mod tests {
                       "folds_by_reason": {"capacity": {"delivered": 3, "folded": 3}}}]
         }))
         .expect("a log from the daemon driving the loop today");
-        let wall = folds_lines(&[(here.clone(), walled)], None).join("\n");
+        let wall = folds_lines(&[read_at(&here, walled)], None).join("\n");
         assert!(
             wall.contains("NO population") && !wall.contains("landing(s) refute the axis"),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856 ⑴: a landing count over a population of zero is a zero \
@@ -14690,7 +14848,7 @@ mod tests {
 
         // ── ⑥ AND A SWEPT ANSWER NAMES THE DIRECTORY IT IS ABOUT — `waits`' measurement, verbatim ──
         let swept = folds_lines(
-            &[(here, log.clone())],
+            &[read_at(&here, log.clone())],
             Some(std::path::Path::new("/state/sprag")),
         );
         assert!(

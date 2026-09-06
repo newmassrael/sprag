@@ -122,6 +122,14 @@ pub mod pty_demand;
 /// *the runner's pty pool was exhausted* got written down with nothing behind it.
 pub mod refusals;
 
+/// Whether a date this workspace prints came from the one place that owns a calendar — item 918.
+///
+/// Beside [`refusals`] because it is the same shape of claim: a fact that is TRUE today (measured
+/// 2026-09-06, nothing under `crates/` could say a date at all) and would stop being true silently.
+/// A second conversion prints an instant indistinguishable from a true one, which is the worst
+/// possible failure for a stamp whose whole job is making a quotation checkable.
+pub mod calendars;
+
 /// What the north star is COUNTING — register item 823.
 ///
 /// Beside the others for their reason, on the one quantity that is about the ledger rather than
