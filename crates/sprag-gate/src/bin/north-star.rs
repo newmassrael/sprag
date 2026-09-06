@@ -184,12 +184,45 @@ fn main() -> std::process::ExitCode {
         eprintln!("north-star: item {number} names commit {id}, which this tree cannot resolve");
     }
 
+    // ⛔⛔⛔⛔⛔ AND THE REDS THE LEDGER CLAIMS, AGAINST WHAT THE SUITE SAYS — register item 843.
+    //
+    // ⚠⚠ PRINTED EVEN WHEN THERE ARE NONE, which is register item 924's finding one gate over: a
+    // machinery that examined nothing and a machinery that examined things and found them clean
+    // read identically unless the count is stated. `claimed 0` is the sentence a later round needs
+    // in order to know this said nothing rather than said yes.
+    let claims = reading.red_claims();
+    let (standing, refuted) = match reading.standing_reds(&RunTheSuite) {
+        Ok(found) => found,
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let confirmed: Vec<String> = standing.iter().map(ToString::to_string).collect();
+    println!(
+        "reds {} claimed, {} standing: {}",
+        claims.len(),
+        standing.len(),
+        confirmed.join(" "),
+    );
+    // ⛔ A CLAIM THE SUITE REFUTES IS A FAULT ABOUT THE DOCUMENT, and the mirror of item 902's
+    // wrongly-paid mark: this one would buy an item past the severity gate on a red that is not
+    // there. It is reported here, beside `paid_unresolved`, because only the caller could ask.
+    for number in &refuted {
+        eprintln!(
+            "north-star: item {number} claims a red the suite says is green — the claim is stale, \
+             so remove the `{}` line rather than leaving it to admit the item on a fact that has \
+             stopped being true",
+            north_star::RED,
+        );
+    }
+
     // ⛔⛔⛔⛔⛔ AND THE DEFERRALS RESTING ON A LINK NOBODY CLASSIFIED — register item 920. Asked
     // here rather than in `read` for the reason `cap` itself is: the depth cap is the loop
     // document's number and this binary is the only thing that has opened that document.
     let unread = reading.deferred_unread(cap.depth());
 
-    if reading.is_green() && unresolved.is_empty() && unread.is_empty() {
+    if reading.is_green() && unresolved.is_empty() && unread.is_empty() && refuted.is_empty() {
         return std::process::ExitCode::SUCCESS;
     }
     let faults: Vec<&north_star::Fault> = reading.faults.iter().chain(unread.iter()).collect();
@@ -248,6 +281,50 @@ impl north_star::Commits for Repository {
                 "git could not be asked whether {id} is a commit ({}): {}",
                 asked.status,
                 String::from_utf8_lossy(&asked.stderr).trim(),
+            )),
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **AND WHETHER A CLAIMED RED IS RED** — register item 843, asked by RUNNING the thing.
+///
+/// # ⚠⚠⚠ Why the suite and not the ledger, and why that is worth what it costs
+///
+/// Item 843's done-when says the fact must be confirmed *«원장이 아니라 저장소»에 물어서* — the
+/// suite knows what is red. A `@red:` line is a claim, and item 902 already paid for the difference
+/// between a well-formed mark and a true one. This is the only thing that can tell them apart.
+///
+/// ⚠ `--no-fail-fast` is NOT passed and `--quiet` is: the question is *is this selection failing*,
+/// one bit, and a selection that names several is answered by the first failure as truly as by all
+/// of them. ⚠⚠ The arguments are ARGV, checked by `north_star::RED`'s own reader before they get
+/// here, and no shell is opened.
+///
+/// # ⛔⛔ A build that cannot run is *could not ask* and never *green*
+///
+/// `cargo test` exits 101 for a failing test and 101 for a compile error alike, so this cannot tell
+/// them apart and does not pretend to: both are RED, which is the conservative side and the honest
+/// one — a tree that does not build is not a tree with no failing tests. What is an [`Err`] is
+/// cargo not being runnable at all, which says nothing about any claim.
+struct RunTheSuite;
+
+impl north_star::Suite for RunTheSuite {
+    fn is_red(&self, names: &str) -> Result<bool, String> {
+        let asked = std::process::Command::new("cargo")
+            .arg("test")
+            .arg("--quiet")
+            .args(names.split_whitespace())
+            .output()
+            .map_err(|why| {
+                format!("cannot run the suite to ask whether `{names}` is red: {why}")
+            })?;
+        match asked.status.code() {
+            Some(0) => Ok(false),
+            Some(_) => Ok(true),
+            // ⚠ Killed by a signal. Nothing was decided, so nothing is reported — the rule
+            // `Commits::resolves` states one fact over.
+            None => Err(format!(
+                "the suite was killed while being asked whether `{names}` is red ({})",
+                asked.status,
             )),
         }
     }
@@ -371,7 +448,21 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
             return std::process::ExitCode::FAILURE;
         }
     };
-    let admitted = reading.admits(cap.depth());
+    // ⛔⛔⛔⛔⛔ AND THE SUITE IS ASKED HERE TOO — register item 843. A classifier that judged a
+    // proposal on a set the round's own measurement would have widened is the same rule wearing two
+    // answers, which is the defect item 839 exists to prevent one layer down.
+    //
+    // ⚠⚠ IT RUNS NOTHING WHERE NOTHING IS CLAIMED, which is the ordinary case; where a red IS
+    // claimed this costs that test on every proposal, and that is the price of the answer being the
+    // repository's. A failure to ask is a REFUSAL to judge and never a silent `NO`.
+    let standing = match reading.standing_reds(&RunTheSuite) {
+        Ok((standing, _)) => standing,
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let admitted = reading.admits(cap.depth(), &standing);
     let spelled: Vec<String> = admitted.iter().map(ToString::to_string).collect();
     let proposal = proposal.to_string_lossy();
     let Some(number) = reading.names(&proposal) else {

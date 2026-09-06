@@ -281,6 +281,58 @@ pub fn met_while(reason: &str) -> Option<&'static str> {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **THE LINE AN ITEM CLAIMS TO BE A STANDING RED ON**: `@red: <cargo test arguments>` —
+/// register item 843.
+///
+/// # ⛔⛔⛔⛔ Two rules collided and only one of them was a machine
+///
+/// Working rule 11 — *while anything is critical, take from those* — became [`Reading::admits`],
+/// enforced on every proposal. The standing rule beside it — **a red is paid in its own round** —
+/// stayed prose in `CLAUDE.md` and the round ritual, measured by nobody. So the enforced one won:
+/// item 837 was `@sev: ordinary` and **stood red for four days**, unreachable to an unattended loop
+/// for as long as any critical item stood, because a proposal naming it was counted and not taken.
+///
+/// ⇒ ⛔ And the repair is NOT to write `@sev: critical` on the red, which 843 refuses in its own
+/// words: that makes the instrument disagree with what severity MEANS. Being red is a fact about
+/// the tree, not a judgement about how much a debt hurts, so it is a THIRD thing and it gets its
+/// own mark.
+///
+/// # ⚠⚠⚠ What the value is, and why it is argv rather than prose
+///
+/// The ledger already names its reds — item 837's own table carries
+/// `plugins::tests::a_loop_started_over_the_wire_prompts_its_agent_with_what_the_caller_briefed`
+/// beside `cargo test -p sprag-host --lib` — and **nothing has ever parsed it**, which is this
+/// workspace's rule 10 exactly. This mark is that table's first two columns in a form the
+/// repository can be ASKED: the arguments after `cargo test`, e.g.
+///
+/// ```text
+/// @red: -p sprag-host --lib plugins::tests::a_loop_started_over_the_wire --exact
+/// ```
+///
+/// ⚠⚠ Passed as ARGV and never through a shell, and every token is checked against
+/// `safe_argument` first — SPELLED rather than linked, because it is private and this constant is
+/// public, which is `private_intra_doc_links` under `-D warnings` (register item 365, and the doc
+/// gate refused this file for it). The same care [`Commits`] takes with an id read off a mark line,
+/// and for a sharper reason: this one is executed rather than looked up.
+///
+/// ⚠ It is read from OPEN items only. A paid item's red is history, and one outside the population
+/// was never this loop's to run.
+pub const RED: &str = "@red:";
+
+/// Whether one token of a [`RED`] value may be handed to `cargo test`.
+///
+/// ⛔⛔⛔ **A CLOSED SET RATHER THAN A LIST OF THINGS TO REFUSE.** A denylist of shell
+/// metacharacters would be a guess about every future reader of this string; this admits the
+/// characters cargo's own selectors are made of — `--flags`, `crate-names`, `module::paths`,
+/// `file.rs` — and refuses everything else, so a value that could do anything surprising cannot be
+/// spelled at all. Register item 843, and this crate does not open a shell in any case.
+fn safe_argument(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .chars()
+            .all(|at| at.is_ascii_alphanumeric() || matches!(at, '-' | '_' | ':' | '.' | '/'))
+}
+
 /// The line the ledger declares its own count of items that state no [`PARENT`]:
 /// `@from-unclassified: <n>`.
 ///
@@ -505,6 +557,13 @@ pub struct Item {
     pub severity: Option<Severity>,
     /// What it says found it, if it says. See [`PARENT`].
     pub parent: Option<Parent>,
+    /// ⛔⛔⛔⛔⛔ **WHAT THIS ITEM CLAIMS IS RED**, if it claims anything — register item 843. The
+    /// value of its [`RED`] line, which is the argv `cargo test` is to be asked with. [`None`] for
+    /// every item that makes no such claim, which is nearly all of them.
+    ///
+    /// ⚠ A CLAIM AND NOT A FACT. Whether it is true is [`Reading::standing_reds`]' question, and it
+    /// is put to the repository — see [`Suite`].
+    pub red: Option<String>,
     /// ⛔⛔⛔ **THE SENTENCE THAT FOLLOWS [`PARENT`]'s VALUE**, kept rather than dropped once the
     /// number is read — register item 920. It comes off the SAME block that settled
     /// [`Item::parent`], so a superseded block cannot explain a mark that beat it. [`None`] where
@@ -615,6 +674,19 @@ pub enum Fault {
         at: u32,
         /// The parent that line names.
         named: u32,
+    },
+    /// ⛔⛔⛔⛔⛔ **A [`RED`] CLAIM THIS INSTRUMENT CANNOT PUT TO THE REPOSITORY** — register item
+    /// 843. Empty, or carrying a token outside `safe_argument` — spelled and not linked, for
+    /// [`RED`]'s stated reason.
+    ///
+    /// ⚠ It is a RED and not a silence for item 902's reason one mark over: a claim that is never
+    /// checked reads exactly like a checked one, and this claim buys an item past the severity
+    /// gate. **An unrunnable claim must not be the cheap answer.**
+    UnrunnableRed {
+        /// The item that made it.
+        number: u32,
+        /// The line as written.
+        line: String,
     },
     /// An item names a parent section A does not have. **A chain that leaves the ledger cannot be
     /// walked**, so the depth of everything below it is unknown rather than zero.
@@ -792,6 +864,15 @@ impl fmt::Display for Fault {
                  round MET it, so this deferral rests on a sentence no round argued. Say it in the \
                  line (a creation word, or `{PARENT} none`); do not widen the vocabulary",
             ),
+            Self::UnrunnableRed { number, line } => write!(
+                f,
+                "item {number}: `{}` is a red this instrument cannot put to the repository — a \
+                 `{RED}` value is the argv `cargo test` is asked with, so every token must be a \
+                 flag, a crate name, a module path or a file (letters, digits and `-_:./`). A \
+                 claim nothing can check buys an item past the severity gate on a line nobody \
+                 verified",
+                line.trim()
+            ),
             Self::DanglingParent { number, named } => write!(
                 f,
                 "item {number} says it was found while paying {named}, which section A does not \
@@ -960,6 +1041,54 @@ impl Reading {
                 }
             }
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ITEMS CLAIMING TO BE A STANDING RED**, as `(number, argv)` — register item
+    /// 843. Open items only, and only those whose claim this instrument could read; an unrunnable
+    /// one is [`Fault::UnrunnableRed`] and is not carried here.
+    ///
+    /// ⚠⚠ **A CLAIM, NOT A FACT.** Printed by the binary even when empty, because *zero claims* and
+    /// *zero confirmed* are different sentences and a reader who cannot tell them apart cannot know
+    /// whether this machinery looked at anything — register item 924, which is the same hazard one
+    /// gate over.
+    #[must_use]
+    pub fn red_claims(&self) -> Vec<(u32, String)> {
+        self.items
+            .iter()
+            .filter(|item| item.tag == Some(Tag::Open))
+            .filter_map(|item| item.red.clone().map(|argv| (item.number, argv)))
+            .collect()
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE REDS THE REPOSITORY CONFIRMS**, in numeric order — register item 843, and
+    /// the half of [`Reading::red_claims`] the ledger is not allowed to answer.
+    ///
+    /// Returns the confirmed items and, separately, the claims the suite ran and found GREEN: those
+    /// are a ledger that says a red where there is none, which is the mirror of item 902's
+    /// wrongly-paid mark and belongs in the same place — a fault about the document, raised by the
+    /// caller that could ask.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming why the suite could not be RUN. **A failure to ask is its own fault and
+    /// never a verdict about any claim** — [`Reading::paid_unresolved`]'s rule exactly, and the
+    /// reason both of these return a [`Result`] rather than folding *could not tell* into *no*.
+    ///
+    /// ⚠⚠ THE COST, STATED: this runs the named selection. With no claims it runs nothing at all,
+    /// which is the ordinary case — measured 2026-09-06, this ledger carries none. With one it
+    /// costs whatever that test costs, on every call, which is the price of the answer being the
+    /// repository's rather than the document's.
+    pub fn standing_reds(&self, suite: &dyn Suite) -> Result<(Vec<u32>, Vec<u32>), String> {
+        let mut red = Vec::new();
+        let mut green = Vec::new();
+        for (number, argv) in self.red_claims() {
+            if suite.is_red(&argv)? {
+                red.push(number);
+            } else {
+                green.push(number);
+            }
+        }
+        Ok((red, green))
     }
 
     /// 🎯🎯🎯🎯🎯 **HOW MANY STILL-OPEN DEBTS THIS ONE SITS UNDER** — register item 921, and the
@@ -1204,19 +1333,36 @@ impl Reading {
     /// kept exactly as [`SEVERITY`]'s own docs state it — **this is a gate, not a sort**, so items
     /// that share a seam may still be worked in whatever order coheres, as long as they are in the
     /// set.
+    /// # ⛔⛔⛔⛔⛔ AND A STANDING RED IS IN THE SET WHATEVER ITS SEVERITY — register item 843
+    ///
+    /// The composition above is a gate on SEVERITY, and it made the loop unable to reach its own
+    /// reds: item 837 was `@sev: ordinary`, **stood red for four days**, and every proposal naming
+    /// it was counted and not taken for as long as any critical item stood. Two rules were in
+    /// conflict — *take from critical* (a machine since register item 839) and *a red is paid in
+    /// its own round* (prose in `CLAUDE.md`, measured by nobody) — and the enforced one won, which
+    /// is register item 839's own finding arriving one layer up.
+    ///
+    /// ⚠⚠ `reds` IS A PARAMETER AND NOT A LOOKUP, because this crate may not decide it: the answer
+    /// is the repository's ([`Suite`]), and a caller that has not asked must pass `&[]` VISIBLY
+    /// rather than get the old behaviour by writing nothing.
+    ///
+    /// ⚠ They still have to be [`Reading::takeable`]. Item 843's words are *등급과 무관하게* —
+    /// severity, not the depth cap, which is register item 833's separate rule and a different
+    /// question. THE RESIDUE, STATED: a red held back by the cap is still unreachable. Since
+    /// register item 921 the cap holds only chains whose ancestors are still owed, so this is a
+    /// narrow case rather than the standing one it was.
     #[must_use]
-    pub fn admits(&self, cap: u32) -> Vec<u32> {
+    pub fn admits(&self, cap: u32, reds: &[u32]) -> Vec<u32> {
         let takeable = self.takeable(cap);
-        let critical: Vec<u32> = self
+        let mut first: Vec<u32> = self
             .critical()
             .into_iter()
+            .chain(reds.iter().copied())
             .filter(|number| takeable.contains(number))
             .collect();
-        if critical.is_empty() {
-            takeable
-        } else {
-            critical
-        }
+        first.sort_unstable();
+        first.dedup();
+        if first.is_empty() { takeable } else { first }
     }
 
     /// **WHICH REGISTER ITEM A PROPOSAL NAMES** — the FIRST number in `text` that this ledger files
@@ -1557,6 +1703,35 @@ fn parent_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(PARENT)
 }
 
+/// The value of a [`RED`] line, by the same whole-line rule [`mark_value`] holds.
+fn red_value(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix(RED)
+}
+
+/// ⛔⛔⛔⛔⛔ **WHETHER A CLAIMED RED IS ACTUALLY RED**, asked of the repository — register item 843,
+/// and [`Commits`]' shape one fact over.
+///
+/// # ⚠⚠ Why the ledger may not answer this by itself
+///
+/// Item 843's own done-when says it in as many words: *「서 있는 red」가 admits 의 모집단에
+/// 들어간다 — 등급과 무관하게, 그리고 그 사실이 «원장이 아니라 저장소»에 물어서 확인된다(빨간 것은
+/// 스위트가 안다)*. A ledger line saying *this is red* is a claim about a tree, and item 902 already
+/// paid for the difference between a correctly-formed mark and a TRUE one: item 866(2) sat marked
+/// paid over 720 lines that were never committed. A red mark nobody checks is the same defect
+/// pointing the other way — it would let any item promote itself past the severity gate by typing
+/// one line.
+pub trait Suite {
+    /// Whether the thing `names` selects is failing NOW.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming why the question could not be PUT — never why one claim failed. A claim
+    /// the suite ran and found GREEN is `Ok(false)`, which is a fault about the ledger; a suite
+    /// that could not be run at all says nothing about any claim, and the difference is the whole
+    /// of why this returns a [`Result`]. [`Commits::resolves`]' rule exactly.
+    fn is_red(&self, names: &str) -> Result<bool, String>;
+}
+
 /// Read the one line that declares a ratchet's floor, faulting when there is not exactly one or
 /// when its number cannot be read.
 ///
@@ -1674,6 +1849,7 @@ pub fn read(text: &str) -> Reading {
         let mut severity = None;
         let mut parent = None;
         let mut reason = None;
+        let mut red = None;
         // ⛔⛔⛔⛔⛔ THE COMMIT IDS THE MARK LINE NAMES — register item 902, collected in the same
         // walk and settled by the same topmost-block rule the mark itself is, because an id read
         // off a block whose mark lost the tie would be evidence for a claim this item is not
@@ -1685,6 +1861,7 @@ pub fn read(text: &str) -> Reading {
             let mut severities: Vec<Severity> = Vec::new();
             let mut parents: Vec<Parent> = Vec::new();
             let mut reasons: Vec<String> = Vec::new();
+            let mut reds: Vec<String> = Vec::new();
             for line in body {
                 if let Some(value) = parent_value(line) {
                     match Parent::parse(value) {
@@ -1714,6 +1891,21 @@ pub fn read(text: &str) -> Reading {
                             number: Some(*number),
                             line: (*line).to_string(),
                         }),
+                    }
+                }
+                // ⛔⛔⛔⛔⛔ AND WHAT IT CLAIMS IS RED — register item 843. An unrunnable value is a
+                // FAULT and never a silence: a claim this instrument cannot put to the repository
+                // would otherwise sit in the ledger looking like a checked one, which is exactly
+                // the shape item 902 measured on a `paid` mark that named no commit.
+                if let Some(value) = red_value(line) {
+                    let named = value.trim();
+                    if named.is_empty() || !named.split_whitespace().all(safe_argument) {
+                        faults.push(Fault::UnrunnableRed {
+                            number: *number,
+                            line: (*line).to_string(),
+                        });
+                    } else {
+                        reds.push(named.to_string());
                     }
                 }
                 if let Some(value) = severity_value(line) {
@@ -1746,6 +1938,11 @@ pub fn read(text: &str) -> Reading {
             // Topmost block wins, exactly as the membership mark does.
             if severity.is_none() {
                 severity = severities.first().copied();
+            }
+            // ⚠ Topmost block wins, exactly as the three marks above it do — see `Item`'s own doc
+            // about a number owning several blocks. Register item 843.
+            if red.is_none() {
+                red = reds.first().cloned();
             }
             if parent.is_none() {
                 parent = parents.first().copied();
@@ -1790,6 +1987,7 @@ pub fn read(text: &str) -> Reading {
             severity,
             parent,
             reason,
+            red,
             commits,
             names_the_loop,
             reads_as_closed,
@@ -2555,10 +2753,11 @@ mod tests {
             "THE CONTROL: two open items, or the narrowing below is about nothing",
         );
         assert_eq!(
-            reading.admits(1),
+            reading.admits(1, &[]),
             vec![900],
             "🎯 the ordinary one is open, takeable, and NOT what a round takes next — that is the \
-             whole of working rule 11, and until this predicate existed it was prose",
+             whole of working rule 11, and until this predicate existed it was prose. ⚠ No red is \
+             claimed here, and register item 843's `&[]` says so out loud rather than by omission",
         );
     }
 
@@ -2577,7 +2776,7 @@ mod tests {
             reading.critical(),
         );
         assert_eq!(
-            reading.admits(1),
+            reading.admits(1, &[]),
             vec![900, 901],
             "the population minus what the depth cap holds back — and 902 is held back, which is \
              what makes the fall-through incapable of admitting more than `takeable` does",
@@ -2606,7 +2805,7 @@ mod tests {
             reading.faults,
         );
         assert_eq!(
-            reading.admits(1),
+            reading.admits(1, &[]),
             vec![900, 901],
             "⛔ a critical mark does not lift the depth cap. Taking 902 here would make the cap \
              something a round could escape by ranking its own finding",
@@ -3146,6 +3345,185 @@ mod tests {
             }],
             "⚠ 902 IS still deferred and its chain runs through that link, so it is named — the \
              link is charged where it costs, and 901's own takeability is not this gate's subject",
+        );
+    }
+
+    // ── register item 843: a standing red is admissible whatever its severity ───────────────────
+
+    /// A suite that answers from a table rather than by running anything — the two verdicts and the
+    /// third answer, *could not be asked*.
+    struct Answers(std::collections::BTreeMap<String, Result<bool, String>>);
+
+    impl Suite for Answers {
+        fn is_red(&self, names: &str) -> Result<bool, String> {
+            self.0.get(names).cloned().unwrap_or_else(|| {
+                panic!("the fixture was asked about `{names}`, which it has no answer for")
+            })
+        }
+    }
+
+    /// A ledger shaped like the day item 843 was registered: one critical item standing, and an
+    /// ORDINARY item that is red right now.
+    fn with_a_standing_red() -> String {
+        LEDGER.replace(
+            "899. ✅✅ **PAID 2026-09-02**",
+            "898. ⛔ **An ordinary item that is RED**\n     @ns: open\n     @sev: ordinary\n     \
+             @from: none\n     @red: -p sprag-gate --lib north_star\n\n899. ✅✅ **PAID \
+             2026-09-02**",
+        )
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE FINDING: A RED IS IN THE SET THOUGH A CRITICAL ITEM STANDS** — register item
+    /// 843's done-when ⑴, and the four days item 837 spent unreachable.
+    #[test]
+    fn a_standing_red_is_admissible_while_a_critical_item_stands() {
+        let reading = read(&with_a_standing_red());
+        let claims = reading.red_claims();
+        assert_eq!(
+            claims,
+            vec![(898, "-p sprag-gate --lib north_star".to_string())],
+            "⚠ THE CONTROL: the ledger claims exactly one red, so the two arms below differ by the \
+             SUITE's answer and by nothing else",
+        );
+        assert_eq!(
+            reading.critical(),
+            vec![900],
+            "and a critical item stands, which is what shuts the gate",
+        );
+
+        assert_eq!(
+            reading.admits(1, &[]),
+            vec![900],
+            "⛔⛔⛔⛔⛔ WITHOUT THE RED, THIS IS THE DEFECT: item 898 is open, takeable, and RED, \
+             and a proposal naming it is counted and not taken because something else is critical. \
+             Item 837 sat here for four days",
+        );
+        assert_eq!(
+            reading.admits(1, &[898]),
+            vec![898, 900],
+            "🎯 with it, the red joins the set WITHOUT its severity moving — which is the repair \
+             843 asks for and refuses the alternative to: writing `@sev: critical` on a red makes \
+             the instrument disagree with what severity means",
+        );
+        assert_eq!(
+            reading
+                .items
+                .iter()
+                .find(|item| item.number == 898)
+                .and_then(|item| item.severity),
+            Some(Severity::Ordinary),
+            "⚠⚠ AND ITS SEVERITY IS UNTOUCHED, asserted rather than assumed: the whole of 843's \
+             refusal is that the mark must not be manipulated to get the item admitted",
+        );
+        assert!(
+            !reading.critical().contains(&898),
+            "which is the same claim from the other side — the red is admitted WITHOUT joining \
+             the critical set: {:?}",
+            reading.critical(),
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE LEDGER DOES NOT GET TO ANSWER IT** — done-when ⑴'s second half: *그
+    /// 사실이 «원장이 아니라 저장소»에 물어서 확인된다*.
+    #[test]
+    fn the_suite_and_not_the_ledger_says_whether_a_claimed_red_is_red() {
+        let reading = read(&with_a_standing_red());
+        let asked = "-p sprag-gate --lib north_star".to_string();
+
+        let red = Answers([(asked.clone(), Ok(true))].into_iter().collect());
+        assert_eq!(
+            reading.standing_reds(&red).expect("the suite answered"),
+            (vec![898], Vec::new()),
+            "the suite ran it and it failed, so the claim stands",
+        );
+
+        let green = Answers([(asked.clone(), Ok(false))].into_iter().collect());
+        assert_eq!(
+            reading.standing_reds(&green).expect("the suite answered"),
+            (Vec::new(), vec![898]),
+            "⛔ THE SAME LEDGER, THE OPPOSITE ANSWER. A `@red:` line is a CLAIM about a tree, and \
+             an item whose claim the suite refutes must not be admitted on it — item 902's \
+             wrongly-paid mark, pointing the other way",
+        );
+
+        let mute = Answers(
+            [(asked, Err("cargo is not on the path".to_string()))]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            reading.standing_reds(&mute),
+            Err("cargo is not on the path".to_string()),
+            "⚠⚠ AND *COULD NOT ASK* IS ITS OWN ANSWER, never folded into `false`: a suite that \
+             cannot be run says nothing about any claim, which is `Commits::resolves`' rule and \
+             the reason both of these return a `Result`",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CLAIM THIS INSTRUMENT CANNOT PUT TO THE REPOSITORY IS RED, NOT SILENT** —
+    /// working rule 6, on the one mark in this file that is EXECUTED rather than looked up.
+    #[test]
+    fn a_red_claim_that_could_do_anything_is_refused_at_the_door() {
+        for spelled in [
+            "@red: -p sprag-gate; rm -rf /",
+            "@red: $(whoami)",
+            "@red:",
+            "@red: --lib `id`",
+        ] {
+            let ledger = with_a_standing_red()
+                .replace("@red: -p sprag-gate --lib north_star", spelled.trim_start());
+            let reading = read(&ledger);
+            assert!(
+                reading
+                    .faults
+                    .iter()
+                    .any(|fault| matches!(fault, Fault::UnrunnableRed { number: 898, .. })),
+                "{spelled:?} must be refused: {:?}",
+                reading.faults,
+            );
+            assert!(
+                reading.red_claims().is_empty(),
+                "and it must not be carried as a claim either — a value the reader rejected must \
+                 not reach the thing that runs it: {:?}",
+                reading.red_claims(),
+            );
+        }
+    }
+
+    /// ⚠⚠⚠ **THE CONTROL FOR THE ONE ABOVE**: the ordinary spellings a red is actually named with
+    /// go through, or the door refuses everything and this gate is about nothing.
+    #[test]
+    fn the_spellings_a_red_is_really_named_with_are_admitted() {
+        for spelled in [
+            "@red: -p sprag-host --lib plugins::tests::a_loop_started_over_the_wire --exact",
+            "@red: --workspace",
+            "@red: -p sprag-gate --test no_product_code_takes_a_scratch_root_unchecked",
+        ] {
+            let ledger = with_a_standing_red()
+                .replace("@red: -p sprag-gate --lib north_star", spelled.trim_start());
+            let reading = read(&ledger);
+            assert!(
+                reading.is_green(),
+                "{spelled:?} is how item 837's own table names a red: {:?}",
+                reading.faults,
+            );
+            assert_eq!(reading.red_claims().len(), 1, "{spelled:?}");
+        }
+    }
+
+    /// A red on a PAID item is history and must not admit anything — the rule every other mark
+    /// here follows about the population.
+    #[test]
+    fn a_red_an_item_used_to_have_is_not_a_red_now() {
+        let ledger = with_a_standing_red().replace(
+            "898. ⛔ **An ordinary item that is RED**\n     @ns: open",
+            "898. ⛔ **An ordinary item that is RED**\n     @ns: paid `0c034d6`",
+        );
+        let reading = read(&ledger);
+        assert!(
+            reading.red_claims().is_empty(),
+            "a paid item's red is not this loop's to run: {:?}",
+            reading.red_claims(),
         );
     }
 
