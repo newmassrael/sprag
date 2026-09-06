@@ -315,6 +315,34 @@ pub const RUN_WHY_KEY: &str = "why";
 /// BEHALF, so *"this run answered nothing"* is a claim a reader must be able to get affirmatively
 /// rather than by not finding a key.
 pub const RUN_ANSWERED_KEY: &str = "answered";
+/// ⛔⛔⛔⛔⛔ **HOW MANY OF ITS PEER'S TOOL CALLS A RUN REFUSED AND REDIRECTED** on a standing
+/// instruction its author wrote — register item 914, and [`RUN_ANSWERED_KEY`]'s opposite decision
+/// published on [`RUN_ANSWERED_KEY`]'s terms: **always present, `0` for the runs that refused
+/// nothing.**
+///
+/// # ⛔⛔⛔⛔⛔ It was on NEITHER block, so a run driven elsewhere could not record it at all
+///
+/// Measured 2026-09-06T01:3x by counting the keys each renderer writes rather than by reading the
+/// sentence that claimed to list them: [`outcome_to_json`] published fifteen keys and this was not
+/// among them, and neither was it on [`progress_to_json`]. Every other fact an ending carries had
+/// a road — `checks` and `deliveries` on the progress block, `banked` on the ending — and this one
+/// had none. Measured the same moment over the loop's own store: **241 rows, every one of them
+/// driven by another process** (a `driver` pid on all 241), so the count died with its driver for
+/// the whole population.
+///
+/// # ⚠⚠ Why absence-is-the-claim would be wrong here, exactly as it is for [`RUN_ANSWERED_KEY`]
+///
+/// A refusal is a decision taken on somebody's behalf and, measured, a louder one than an approval:
+/// the key it presses makes the agent report `User rejected` and **the file is never written**. So
+/// *"this run refused nothing"* has to be obtainable affirmatively rather than by not finding a key
+/// — that is [`RUN_ANSWERED_KEY`]'s stated rule, and the PAIR is why it applies here: a reader
+/// asking *what did my run let it do?* who found `answered` present and this one absent would read
+/// the silence as none.
+///
+/// ⚠⚠ **BESIDE `answered` AND NEVER FOLDED INTO IT** — [`sprag_plugin::Outcome::screened`]'s own
+/// rule, which does not change by being put on a wire: they are opposite decisions, and one number
+/// covering both answers that reader's question with a count that includes every refusal.
+pub const RUN_SCREENED_KEY: &str = "screened";
 /// 🎯🎯🎯🎯🎯 **HOW MANY NEXT CHECKPOINTS A RUN COUNTED RATHER THAN TOOK**, because it had spent
 /// the budget its document gives it for re-aiming itself — the owner's decision of 2026-09-02,
 /// register item 833(2). ABSENT for a plugin that sets no proposals aside.
@@ -6140,6 +6168,15 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         // watched to tell progress from stuck, this one is watched to see a decision being taken on
         // your behalf while there is still time to cancel.
         RUN_ANSWERED_KEY: progress.answered,
+        // ⛔⛔⛔⛔⛔ AND THE OPPOSITE DECISION MID-FLIGHT — register item 914, and
+        // `sprag_plugin::Progress::screened`'s own words: it is watched *"for `answered`'s reason
+        // and with more urgency: a run refusing calls in a cycle is one whose standing rule is too
+        // broad, and this count is the only thing that says so while there is still time to stop
+        // it."* That sentence stood while this block published its neighbour and not it, so for a
+        // run driven in another process the row showed approvals climbing and no refusals at all.
+        //
+        // ⚠ ALWAYS AND INCLUDING `0`, the key beside it exactly — see `RUN_SCREENED_KEY`.
+        RUN_SCREENED_KEY: progress.screened,
     });
     // 🎯🎯🎯🎯🎯 AND WHAT THIS RUN HAS SET ASIDE AT ITS RE-AIMING CAP, MID-FLIGHT — register item
     // 833(2), and the polling argument above applies to it hardest of the three. A cap that is too
@@ -7685,11 +7722,16 @@ pub fn stand_down_sentence(
         // ⚠⚠⚠⚠⚠ A RUN THAT ENDED IN ANOTHER PROCESS — register items 650 and 544. The ending WORD
         // crossed the wire, so the first half of this sentence is as sound as its `Done` sibling's.
         //
-        // ⚠⚠⚠ **WHAT BECAME OF THE WORK DID NOT CROSS, AND THIS SAYS SO RATHER THAN GUESSING.**
-        // `outcome_to_json` does not carry `banked`, so `work_after`'s three answers are
-        // unavailable here — and the pair register item 604 measured is exactly the pair where a
-        // guess swaps the alarming answer for the relieved one. An honest *this ending cannot say*
-        // is the one thing that is never wrong in that direction, and it names the repair.
+        // ⚠⚠⚠ **WHAT BECAME OF THE WORK CROSSES NOW, AND THIS ARM READS IT RATHER THAN GUESSING.**
+        // The pair register item 604 measured is exactly the pair where a guess swaps the alarming
+        // answer for the relieved one, so this used to answer *this ending cannot say* — the one
+        // thing that is never wrong in that direction. `RUN_BANKED_KEY` is what retired that, and
+        // `banked_reported` below is where it is read.
+        //
+        // ⛔⛔⛔ THIS COMMENT SAID THE OPPOSITE UNTIL REGISTER ITEM 914, while the line twenty
+        // rows down already said *"it carries it now"* — a doc contradicted by its own function,
+        // which is that item's whole subject met one surface over. It is corrected by counting the
+        // keys `outcome_to_json` writes, never by reading a sentence that claims to list them.
         crate::runs::RunState::Reported(reported) => {
             let word = reported.get("state").and_then(Value::as_str);
             // ⚠⚠⚠ ASKED OF THE TYPE, never spelled here — `outcome_word`'s own rule, and it matters
@@ -9139,6 +9181,16 @@ pub fn outcome_to_json(outcome: &Outcome) -> Value {
         // ⚠ ALWAYS, including `0` — see `RUN_ANSWERED_KEY`. A decision taken on somebody's behalf
         // must be readable as a claim and not inferred from a key nobody wrote.
         RUN_ANSWERED_KEY: outcome.answered,
+        // ⛔⛔⛔⛔⛔ AND THE OPPOSITE DECISION BESIDE IT, ALWAYS AND INCLUDING `0` — register item
+        // 914, on the line above's rule and its own sharper reason: a refusal makes the agent
+        // report `User rejected` and the file is never written, so it is the half of *what did my
+        // run let it do?* a reader most needs affirmatively. See `RUN_SCREENED_KEY`.
+        //
+        // ⚠⚠ THIS KEY IS THE ONE ROAD THE COUNT HAS. `checks` and `deliveries` reach a row on the
+        // PROGRESS block and `banked` on this one; this fact was on neither, so for a run driven in
+        // another process it reached no durable surface at all — measured over 241 rows, every one
+        // of which had a driver pid.
+        RUN_SCREENED_KEY: outcome.screened,
         // ⚠ THE SENTENCE, not the variant. This was `format!("{e:?}")` — `Write("Broken pipe (os
         // error 32)")` reaching an agent, which is R283's leak on the loop's own answer.
         "failure": outcome.failure.as_ref().map(ToString::to_string),
@@ -18186,6 +18238,74 @@ mod tests {
                 "and a run that answered says so whatever became of it afterwards: {spoke}",
             );
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND HOW MANY IT REFUSED, ON BOTH BLOCKS AND ON THE SAME TERMS** — register
+    /// item 914.
+    ///
+    /// # ⛔⛔⛔⛔⛔ It was on NEITHER, and the pair is why that was invisible
+    ///
+    /// The gate above has held `answered` to *always present, including `0`* since it was written,
+    /// and nothing asked the same of its opposite — so a reader meeting `answered: 3` and no
+    /// `screened` read the silence as *none*, which is the reading `RUN_ANSWERED_KEY`'s own doc
+    /// refuses in the very words it refuses it for approvals. Measured 2026-09-06T01:3x by counting
+    /// the keys each renderer writes: this one appeared in neither.
+    ///
+    /// ⚠⚠ **BOTH BLOCKS, BECAUSE THEY ARE TWO DIFFERENT QUESTIONS AND ONLY ONE IS ABOUT HISTORY.**
+    /// The ENDING's key is the road the durable row takes (`crate::runs::PersistedRun::screened`);
+    /// the PROGRESS one is what `sprag_plugin::Progress::screened` was written for — *"a run
+    /// refusing calls in a cycle is one whose standing rule is too broad, and this count is the
+    /// only thing that says so while there is still time to stop it"* — and for a run driven in
+    /// another process, that block is the only thing a watcher sees.
+    #[test]
+    fn every_outcome_and_every_progress_report_says_how_many_calls_it_refused() {
+        for state in [
+            OutcomeState::Converged,
+            OutcomeState::Cancelled,
+            OutcomeState::Failed,
+            OutcomeState::Exhausted(Ceiling::Iterations),
+            OutcomeState::Blocked(Some(sprag_plugin::Unanswered::unreadable())),
+        ] {
+            let quiet = outcome_to_json(&finished(state.clone(), 0));
+            assert_eq!(
+                quiet[RUN_SCREENED_KEY], 0,
+                "⚠ PRESENT and zero, not absent — see `RUN_SCREENED_KEY`, which is \
+                 `RUN_ANSWERED_KEY`'s rule for the opposite decision: {quiet}",
+            );
+            let refused = outcome_to_json(&Outcome {
+                screened: 5,
+                ..finished(state, 0)
+            });
+            assert_eq!(
+                refused[RUN_SCREENED_KEY], 5,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 914: a run that refused its peer's calls says so \
+                 whatever became of it afterwards — and until this key existed it said so nowhere \
+                 at all, for a store whose every row was driven by another process: {refused}",
+            );
+        }
+        // ⛔⛔⛔ AND MID-FLIGHT, which is the half a durable row cannot stand in for: the count is
+        // watched to catch a standing rule that is too broad WHILE there is still time.
+        let watching = progress_to_json(&sprag_plugin::Progress {
+            answered: 3,
+            screened: 5,
+            ..sprag_plugin::Progress::default()
+        });
+        assert_eq!(
+            (
+                watching[RUN_ANSWERED_KEY].as_u64(),
+                watching[RUN_SCREENED_KEY].as_u64()
+            ),
+            (Some(3), Some(5)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 914: the progress block published the approvals and not the \
+             refusals, so a person watching an out-of-process run saw one half of *what did my run \
+             let it do?* and could not tell the other half from zero: {watching}",
+        );
+        let silent = progress_to_json(&sprag_plugin::Progress::default());
+        assert_eq!(
+            silent[RUN_SCREENED_KEY], 0,
+            "⚠ AND A RUN THAT HAS REFUSED NOTHING SAYS SO, never by omission — the key beside it \
+             has answered that way since item 663 and a reader meets one vocabulary: {silent}",
+        );
     }
 
     /// ⚠⚠ **THE CONSENT IS READ THROUGH THE TYPE, so what this surface accepts and what the type

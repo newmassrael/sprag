@@ -13622,14 +13622,23 @@ fn the_daemon_drives_a_run_in_a_process_of_its_own() {
          must not build. Last row: {:?}",
         run_row(&mut conn, run),
     );
-    // ⚠⚠ AND THE ANSWER TALLY IS THERE TOO, which is what proves the report crossed WHOLE rather
-    // than one key of it: `progress_to_json` publishes four keys and the daemon stores the object
-    // without reading it apart, so a row missing this one would mean somebody unpacked it.
+    // ⚠⚠ AND THE DECISION TALLIES ARE THERE TOO, which is what proves the report crossed WHOLE
+    // rather than one key of it: the daemon stores `progress_to_json`'s object without reading it
+    // apart, so a row missing either of these would mean somebody unpacked it.
+    //
+    // ⛔⛔⛔ BOTH, SINCE REGISTER ITEM 914 — and the count this comment used to give (*four keys*)
+    // is deliberately gone rather than corrected. A number in prose is a number nobody measures:
+    // it was already wrong when it was read, and the keys asked for below are what the assertion
+    // actually rests on.
     let mid = seen.expect("the row that satisfied the wait");
     assert!(
-        mid["state"][sprag_host::plugins::RUN_ANSWERED_KEY].is_u64(),
-        "⚠⚠⚠ the report a driver sent is spliced WHOLE — a mid-flight row without the answer tally \
-         means a reader here unpacked it key by key and forgot one: {mid:?}",
+        mid["state"][sprag_host::plugins::RUN_ANSWERED_KEY].is_u64()
+            && mid["state"][sprag_host::plugins::RUN_SCREENED_KEY].is_u64(),
+        "⚠⚠⚠ the report a driver sent is spliced WHOLE — a mid-flight row without both decision \
+         tallies means a reader here unpacked it key by key and forgot one. ⛔ `screened` is the \
+         one register item 914 added: a person watching an out-of-process run could see the \
+         approvals climbing and not the refusals, which is the half that says a standing rule is \
+         too broad while there is still time to stop it: {mid:?}",
     );
 
     // Claim 2 — it ends, and the ending is on the row under the same word every run uses.
