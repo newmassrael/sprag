@@ -118,7 +118,61 @@ use sprag_gate::sources::outside_strings;
 /// ⚠ Lowered here rather than left as slack, which is what this constant's own doc demands and what
 /// register item 926 had to build into `north-star` for the same reason: a floor above the count is
 /// exactly that many new sites admitted in silence.
-const HARNESS_SITES_REGISTERED: usize = 160;
+///
+/// ⭐⭐⭐ **AND DOWN BY TWENTY-FIVE ON 2026-09-06 — 160 → 135, register item 795 paid down against
+/// the families that dominate the scratch root's COUNT.** `sprag-wire-it` (1,922), `sprag-gate`'s
+/// five tags (520 apiece), `sprag-gate-bin`'s four (491 apiece), `sprag-cli-tree` (399),
+/// `sprag-cli-it`, `sprag-rt`, `sprag-loop-tree`, `sprag-other-tree`, `sprag-no-tree`,
+/// `sprag-not-a-tree`, `sprag-sweep-mute`, `sprag-checker`, `sprag-695`, `sprag-619` and
+/// `sprag-mcp`'s six. Each now takes its name from `sprag_scratch::scratch_for`, which mints it and
+/// sweeps the same prefix's dead owners in one call — see [`PER_RUN_NAMES_REGISTERED`] for why the
+/// conversion alone would not have been the fix.
+const HARNESS_SITES_REGISTERED: usize = 135;
+
+/// ⛔⛔⛔⛔⛔ **THE SECOND AXIS: A NAME NOBODY CAN EVER COLLECT** — register item 795, and the thing
+/// converting a site to `scratch_root()` does NOT do.
+///
+/// # Why this is a second population and not a wider [`HARNESS_SITES_REGISTERED`]
+///
+/// The file's header asks that question of the shell gate before answering it; the same question is
+/// owed here, and it was measured rather than argued:
+///
+/// | | that ratchet | this one |
+/// |---|---|---|
+/// | population | lines calling `env::temp_dir()` | lines calling `scratch_root()` and minting a per-run name |
+/// | predicate | is the root usable where it is taken | can what is put there ever be collected |
+///
+/// The intersection is empty by construction — a converted site LEAVES the first population and
+/// ENTERS this one — and that is precisely why both counts live in one file. Read alone, the first
+/// number falling looks like the litter being paid down. Measured 2026-09-06T14:24Z, in the same
+/// scratch root, it was not: `sprag-869-<pid>` had been converted for item 794 and stood at **124
+/// directories**, because a name carries the pid of the run that made it, so that run's own
+/// `remove_dir_all` matches only itself and its `Drop` never runs when it is killed.
+///
+/// # ⚠ Rule 5 — is there a path by which this reaches zero?
+///
+/// Yes, and it is why the population is *per-run* names rather than every `scratch_root()` caller.
+/// A caller that joins a FIXED name, or that wants the root itself to hand on, has no predecessor
+/// problem and could never be zero; including it would have made a ratchet that is red forever and
+/// therefore read by nobody. Every site in THIS population is one `scratch_for` call away, and when
+/// the number reaches 0 this constant and its test go with it.
+///
+/// # 26 → 4, 2026-09-06, register item 795's second axis opened and its harness half paid
+///
+/// The gate was written with this constant at 0 on purpose — the idiom
+/// [`HARNESS_SITES_REGISTERED`]'s own doc records — and printed **26**. Fourteen of those were
+/// harness (`#[cfg(test)]` modules and `tests/` files) and went the same round: `sprag-tab`,
+/// `sprag-tui-pty`, `sprag-tui-cfg`, `sprag-mine`, `sprag-waits`, `sprag-folds`, `sprag-contract`,
+/// `sprag-loop-read-it`, `sprag-916`, `sprag-leftovers-*`, `sprag-survey-*`, `sprag-mute-gaps`,
+/// `sprag-mute-twice`, `sprag-folds-outside`, `sprag-roads`, five `sprag-*-count` counters and
+/// `pty.rs`'s `sprag-{what}`.
+///
+/// ⛔⛔ **THE FOUR THAT REMAIN ARE PRODUCT, AND THAT IS WHY THEY DID NOT MOVE HERE.** `scratch_for`
+/// SWEEPS, and a sweep inside `sprag-latency`'s binary or `live_agent`'s spawn is a running program
+/// deleting directories in the machine's scratch root — a behaviour change to a shipped process,
+/// not a fixture edit, and it is owed its own measurement of what a stranger's leftovers cost
+/// there. Registered rather than waved through, which is the whole point of holding it exactly.
+const PER_RUN_NAMES_REGISTERED: usize = 4;
 
 /// The tree this ratchet counts — through the one door, register item 809.
 ///
@@ -260,6 +314,103 @@ fn call_sites() -> Vec<(Where, String)> {
     sites
 }
 
+/// How many code lines an expression may run to before this gate stops trying to delimit it.
+///
+/// ⚠ A cap is needed because an unbalanced line this walker misreads would run the span to the end
+/// of the file. When the cap is hit the site is counted anyway — rule 6: an expression the gate
+/// could not read is not one it may wave through, and the refusal names the line so a person reads
+/// it rather than a number quietly absorbing it.
+const EXPRESSION_LINES: usize = 12;
+
+/// How far one code line opens or closes parentheses, with quoted spans already blanked.
+fn depth_of(code: &str) -> i32 {
+    let opened = i32::try_from(code.matches('(').count()).unwrap_or(i32::MAX);
+    let closed = i32::try_from(code.matches(')').count()).unwrap_or(i32::MAX);
+    opened - closed
+}
+
+/// The line numbers in `text` at which a PER-RUN scratch name is minted on top of `scratch_root()`.
+///
+/// # ⚠⚠ The span is the EXPRESSION, and the first draft delimited it with `;`
+///
+/// That draft counted `IsolatedCheckout::of(dir, &sprag_scratch::scratch_root()).map(…)` and
+/// `Self::resolve(…, &sprag_scratch::scratch_root(), …)` — a tail expression and an argument, both
+/// of which hand the ROOT on and neither of which names anything. Their statements end with no
+/// semicolon at all, so the walker ran to its cap and counted them under the rule that says an
+/// unreadable span is a red. The rule was right and the delimiter was wrong.
+///
+/// So the span runs while the text is unbalanced, and one line further whenever the next line opens
+/// a method call — which is exactly how `scratch_root()` newline `.join(format!(…))` reads, and
+/// this workspace wraps it that way five times. Pure, so
+/// [`the_per_run_detector_answers_both_ways`] can drive every arm from literals instead of hoping
+/// the tree happens to hold one of each.
+fn per_run_name_lines(text: &str) -> Vec<usize> {
+    let lines: Vec<(usize, String)> = code_lines(text)
+        .map(|(number, line)| (number, outside_strings(line)))
+        .collect();
+    let mut found = Vec::new();
+    for (at, (number, code)) in lines.iter().enumerate() {
+        if !code.contains("scratch_root()") {
+            continue;
+        }
+        let mut span = String::new();
+        let mut depth = 0;
+        let mut closed = false;
+        for (offset, (_, code)) in lines.iter().skip(at).take(EXPRESSION_LINES).enumerate() {
+            span.push_str(code);
+            depth += depth_of(code);
+            if depth > 0 {
+                continue;
+            }
+            let chained = lines
+                .get(at + offset + 1)
+                .is_some_and(|(_, next)| next.starts_with('.'));
+            if !chained {
+                closed = true;
+                break;
+            }
+        }
+        if !closed || span.contains("process::id()") {
+            found.push(*number);
+        }
+    }
+    found
+}
+
+/// Every per-run name minted outside the seam, as `"[where] path:line: text"`.
+///
+/// ⚠ The `Where` is carried into the message rather than into a second constant. Item 794's file
+/// splits its two halves because one of them REACHED zero and the other could not; nothing here has
+/// reached anything yet, and inventing that boundary before the measurement supports it would be a
+/// number about a division somebody assumed.
+fn per_run_name_sites() -> Vec<String> {
+    let mut sites = Vec::new();
+    for (name, text) in rust_files() {
+        // The seam itself mints them; that is what it is for.
+        if Path::new(&name).starts_with("crates/sprag-scratch") {
+            continue;
+        }
+        let inline_harness_from = test_module_starts_at(&text);
+        let file = where_it_lives(&name);
+        let numbered: Vec<(usize, &str)> = code_lines(&text).collect();
+        for number in per_run_name_lines(&text) {
+            let line = numbered
+                .iter()
+                .find(|(at, _)| *at == number)
+                .map_or("", |(_, line)| *line);
+            let placed = match file {
+                Where::Harness => Where::Harness,
+                Where::Product if inline_harness_from.is_some_and(|start| number > start) => {
+                    Where::Harness
+                }
+                Where::Product => Where::Product,
+            };
+            sites.push(format!("{placed:?} {name}:{number}: {line}"));
+        }
+    }
+    sites
+}
+
 /// ⛔ **THE GATE.** No product line takes a scratch root from the operating system directly.
 ///
 /// The one place that may is `sprag-scratch`, which asks the question this gate exists to enforce
@@ -314,6 +465,118 @@ fn the_harness_half_cannot_grow_without_being_read() {
          SHRANK, that is item 795 being paid down: set this constant to {harness} and say so in \
          the register. It is held exactly rather than as a ceiling so the number cannot rot into \
          slack that admits new sites in silence",
+    );
+}
+
+/// ⛔⛔ **A PER-RUN NAME COMES FROM THE SEAM THAT CAN COLLECT IT** — register item 795's second
+/// axis, held exactly for [`HARNESS_SITES_REGISTERED`]'s reason.
+///
+/// `sprag_scratch::scratch_for` mints the name AND sweeps the same prefix's dead owners, which is
+/// the only arrangement in which the two can agree on the prefix. They have to: `owner_in` reads
+/// the pid immediately after the prefix it is given, so `sprag-869-<pid>` swept as `sprag` answers
+/// **869** — an item number read as a process id, and on the machine this was measured on, a live
+/// service. A site that builds the name itself and sweeps somewhere else is one edit away from
+/// deleting a running suite's scratch, and a site that builds the name and never sweeps at all is
+/// what put 13,898 directories in this machine's scratch root.
+#[test]
+fn a_per_run_name_is_minted_by_the_seam_that_can_collect_it() {
+    let sites = per_run_name_sites();
+    assert_eq!(
+        sites.len(),
+        PER_RUN_NAMES_REGISTERED,
+        "⛔ ITEM 795's second axis moved: {} site(s) build a per-run scratch name on top of \
+         `scratch_root()`, against {PER_RUN_NAMES_REGISTERED} recorded. Taking the ROOT from \
+         `sprag_scratch` says the root is usable; it says nothing about who removes the directory \
+         when the run that made it is killed, and nothing ever does — the name carries that run's \
+         pid, so its own `remove_dir_all` matches only itself. Call \
+         `sprag_scratch::scratch_for(<prefix>, <tail>)` instead: it mints the name with the pid \
+         where the reaper reads it and sweeps that prefix's dead owners in the same call. If it \
+         SHRANK, that is item 795 being paid down: set this constant to {} and say so in the \
+         register.\n{}",
+        sites.len(),
+        sites.len(),
+        sites.join("\n"),
+    );
+}
+
+/// ⛔⛔⛔ **AND THE DETECTOR ANSWERS BOTH WAYS** — register item 908's lesson, and item 924's: a
+/// count of zero that nothing can raise is a green about nothing.
+///
+/// Driven from literals rather than from the tree, because the tree is meant to hold none of these
+/// and a fixture that only ever sees the empty case cannot tell a working detector from a broken
+/// one.
+/// ⚠⚠ **EVERY FIXTURE HERE IS ASSEMBLED WITH `concat!`, ONE CLOSED STRING PER LINE**, and that is
+/// not a style choice. [`outside_strings`] keeps a line that ENDS inside a string as code — the
+/// deliberate behaviour this file's own header records — so a `\`-continued literal spelling
+/// `scratch_root()` would be read as a call site and this gate would red on its own fixtures. The
+/// header says the answer is to rephrase rather than widen the filter; this is that, applied to the
+/// one place in the workspace that has to write the call down verbatim.
+#[test]
+fn the_per_run_detector_answers_both_ways() {
+    let minted = concat!(
+        "let dir = sprag_scratch::scratch_root()",
+        ".join(format!(\"sprag-x-{}\", std::process::id()));",
+    );
+    assert_eq!(
+        per_run_name_lines(minted),
+        vec![1],
+        "a per-run name on one line is the plain case",
+    );
+
+    let wrapped = concat!(
+        "let dir = sprag_scratch::scratch_root()\n",
+        "    .join(format!(\n",
+        "        \"sprag-x-{}-{tag}\",\n",
+        "        std::process::id(),\n",
+        "    ));\n",
+        "let other = 1;\n",
+    );
+    assert_eq!(
+        per_run_name_lines(wrapped),
+        vec![1],
+        "the `.join` on the next line and the pid two below it belong to the same expression — a \
+         line-at-a-time reader would call this clean, which is how five of this workspace's own \
+         wrapped sites would ride through",
+    );
+
+    for clean in [
+        concat!(
+            "let p = sprag_scratch::scratch_root()",
+            ".join(\"sprag-latency-manifests.toml\");",
+        ),
+        "let root = sprag_scratch::scratch_root();",
+        concat!(
+            "// sprag_scratch::scratch_root()",
+            ".join(format!(\"x-{}\", std::process::id()));",
+        ),
+        "let told = \"scratch_root() and std::process::id() in a string\";",
+        "let n = std::process::id();",
+        concat!(
+            "Self::resolve(\n",
+            "    &[],\n",
+            "    &sprag_scratch::scratch_root(),\n",
+            "    HOST_SOCKET_NAME,\n",
+            ")\n",
+        ),
+        concat!(
+            "IsolatedCheckout::of(dir, &sprag_scratch::scratch_root())\n",
+            "    .map(|cut| Box::new(cut))\n",
+        ),
+    ] {
+        assert!(
+            per_run_name_lines(clean).is_empty(),
+            "a fixed name, a bare root, a comment, a string, a lone pid, an argument and a tail \
+             expression are none of them this population — counting one would make the ratchet a \
+             number about something else: {clean}",
+        );
+    }
+
+    let unreadable = "let dir = sprag_scratch::scratch_root().join(format!(\n".to_string()
+        + &"    a_line_that_never_closes,\n".repeat(EXPRESSION_LINES + 2);
+    assert_eq!(
+        per_run_name_lines(&unreadable),
+        vec![1],
+        "an expression the gate could not delimit is counted rather than waved through — rule 6",
     );
 }
 

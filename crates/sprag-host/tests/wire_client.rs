@@ -202,10 +202,17 @@ fn open_a_pane_in_a_tree(sock: &Path) {
 /// own names (`spawn` / `close` / `absent` infixes) and so avoided collision by NAMING LUCK,
 /// one copy-pasted infix away from re-creating it. They now all come through here, and
 /// [`spawn_host`] owns the minting so no test can name a socket at all.
+///
+/// ⛔⛔ **AND IT IS WHERE THIS FILE'S PREDECESSORS ARE COLLECTED** — register item 795. The guard
+/// below takes away what THIS run made; nothing could take away what a run that was KILLED made,
+/// because its name carries that run's pid and a `remove_dir_all` of the same name never matched
+/// it. Measured 2026-09-06T14:24:01Z, this one prefix stood at **1,922 `.tree` directories**, the
+/// largest family in the machine's scratch root. [`sprag_scratch::scratch_for`] mints the name and
+/// sweeps the dead owners in the same call, which is the only way the two can agree on the prefix.
 fn socket_path() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!("sprag-wire-it-{}-{n}.sock", std::process::id()))
+    sprag_scratch::scratch_for("sprag-wire-it", &format!("{n}.sock"))
 }
 
 /// ⛔⛔⛔⛔⛔ **EVERYTHING THIS FILE MAKES UNDER THE TEMP DIR GOES WITH THE TEST THAT MADE IT** —

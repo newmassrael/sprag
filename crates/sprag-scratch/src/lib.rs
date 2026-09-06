@@ -248,19 +248,30 @@ pub fn owner_of(pid: u32) -> Owner {
 /// What one call to [`reap_predecessors`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reaped {
-    /// Directories removed.
+    /// Entries removed — a directory with everything under it, anything else as itself.
     pub removed: Vec<String>,
-    /// Directories left, with why — so a caller can say what it did NOT do.
+    /// Entries left, with why — so a caller can say what it did NOT do.
     pub kept: Vec<(String, Reap)>,
     /// Removals that failed, with the reason. Never a panic: this is housekeeping, and a harness
     /// must not fail because somebody else's leftovers are read-only.
     pub refused: Vec<(String, String)>,
 }
 
-/// Remove the scratch directories of DEAD runs sharing `prefix`, under `root`.
+/// Remove what DEAD runs sharing `prefix` left under `root`.
 ///
 /// `mine` is the file name this run is about to use, which is never removed even if its owner
 /// somehow reads as gone.
+///
+/// # ⚠⚠ A DIRECTORY IS NOT THE ONLY SHAPE A DEAD RUN LEAVES
+///
+/// The first draft of this collected directories alone, because register item 927's own subject —
+/// `sprag-promoted-<pid>-<thread>`, a fake `bin/` holding 192 MB of copied binaries — was one. The
+/// same scratch root, measured 2026-09-06T14:24:34Z, held **2,667 entries that are not
+/// directories** and are the identical mechanism seen from the side: `sprag-cli-it-<pid>-<n>.lock`
+/// 802, `…​.log` 767, `sprag-standin-<pid>` 736, `sprag-skew-up-<pid>-<n>.sock` 342. Each carries a
+/// dead owner in the one place [`owner_in`] reads it, and each was kept by a question about its
+/// TYPE that has nothing to do with whether anybody still wants it. The predicate is
+/// [`may_reap`]'s and it never asked.
 ///
 /// ⚠⚠ Errors are collected rather than raised. A harness calling this at startup is tidying, and a
 /// permission error on a stranger's leftovers must not take the test with it.
@@ -275,18 +286,27 @@ pub fn reap_predecessors(root: &std::path::Path, prefix: &str, mine: &str) -> Re
     };
     for entry in listing.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
+        // ⚠ A SYMLINK IS NEITHER SHAPE, and the question is asked this way round on purpose:
+        // `remove_dir_all` refuses a link that points at a directory, while `remove_file` takes the
+        // link itself and leaves whatever it pointed at alone. So *is this a real directory* gets
+        // the recursive removal and everything else — file, socket, fifo, link — goes as one entry.
+        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
         let owner = match owner_in(&name, prefix) {
             Some(pid) => owner_of(pid),
             None => Owner::Unknown,
         };
         match may_reap(&name, prefix, mine, owner) {
-            Reap::Yes => match std::fs::remove_dir_all(entry.path()) {
-                Ok(()) => reaped.removed.push(name),
-                Err(why) => reaped.refused.push((name, why.to_string())),
-            },
+            Reap::Yes => {
+                let taken = if is_dir {
+                    std::fs::remove_dir_all(entry.path())
+                } else {
+                    std::fs::remove_file(entry.path())
+                };
+                match taken {
+                    Ok(()) => reaped.removed.push(name),
+                    Err(why) => reaped.refused.push((name, why.to_string())),
+                }
+            }
             // ⚠ Only this prefix's siblings are worth reporting; the rest of the root is not this
             // caller's business and listing it would drown the answer.
             kept if name.starts_with(prefix) => reaped.kept.push((name, kept)),
@@ -294,6 +314,99 @@ pub fn reap_predecessors(root: &std::path::Path, prefix: &str, mine: &str) -> Re
         }
     }
     reaped
+}
+
+// ══ THE ONE PLACE A RUN'S SCRATCH IS NAMED ═════════════════════════════════════════════════════
+//
+// ⛔⛔⛔⛔⛔ WHY NAMING AND REAPING ARE ONE ACT — register item 795, measured 2026-09-06T14:27:10Z
+// in this machine's scratch root.
+//
+// Item 794's remedy — take the root from `scratch_root()` instead of from the operating system —
+// answers WHERE THE ROOT CAME FROM. It says nothing about what becomes of the directory
+// afterwards, and the COUNT is governed entirely by that second question:
+//
+// ```text
+// sprag-869-<pid>   124 directories standing   and BOTH its call sites already ask scratch_root()
+// ```
+//
+// ⇒ **A conversion to `scratch_root()` is not a fix for the litter.** Reaping is. And reaping
+// needs two promises a hand-built name cannot make:
+//
+//   * the pid must sit where `owner_in` reads it — immediately after the prefix;
+//   * the prefix handed to the reaper must be the prefix the name was built from.
+//
+// The second one is not hypothetical either. `owner_in("sprag-869-2575955", "sprag")` answers
+// `Some(869)` — an ITEM NUMBER read as a process id, and on this workstation pid 869 belongs to a
+// live system service. Ask with the prefix that built the name and the same string answers
+// `Some(2575955)`, which is the run that made it. One function that does both cannot get that pair
+// wrong; two call sites that each do one of them can, and only in the direction that deletes
+// somebody's live scratch.
+
+/// The name [`scratch_for`] gives this run: `<prefix>-<pid>`, plus `-<tail>` when `tail` is not
+/// empty.
+///
+/// ⛔ **The pid sits immediately after the prefix, which is the one place [`owner_in`] reads it.**
+/// That is the contract: a name built here is reapable by construction, whatever the tail says.
+///
+/// Split out from [`scratch_for`] for the reason `root_from` is split out of [`scratch_root`] —
+/// the decision is pure and can be driven directly, while the seam that touches the filesystem
+/// stays one function up.
+#[must_use]
+pub fn scratch_name(prefix: &str, tail: &str) -> String {
+    let pid = std::process::id();
+    if tail.is_empty() {
+        format!("{prefix}-{pid}")
+    } else {
+        format!("{prefix}-{pid}-{tail}")
+    }
+}
+
+/// Whether this process still owes `prefix` a sweep — true the first time it is asked, false after.
+///
+/// ⚠⚠ **Reaping is a property of the PROCESS, not of the call.** A predecessor is a run that was
+/// already dead when this one started; a second sweep of the same prefix can only find what the
+/// first one decided to KEEP, and every one of those was kept because its owner may be alive. So a
+/// repeat scan costs a full listing of the scratch root — thirteen thousand entries on the machine
+/// register item 927 measured — to re-derive an answer it already has.
+///
+/// ⚠ Poisoning is absorbed rather than propagated. A caller is asking where to put a file, and a
+/// panic in some unrelated thread that happened to hold this lock is not a reason to take that
+/// caller down; the worst an absorbed poison can do here is sweep one prefix twice.
+fn first_time_for(prefix: &str) -> bool {
+    static SWEPT: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut swept = SWEPT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    swept.insert(prefix.to_string())
+}
+
+/// **Where this run may put its scratch, with whatever DEAD runs left under the same prefix
+/// collected first** — the call every harness in this workspace makes.
+///
+/// The name is [`scratch_name`]'s, so [`owner_in`] can always read this run's own pid back out of
+/// it, and the sweep is asked with the same `prefix` — see the block above for the pair of
+/// promises that makes, and for the measurement that says why `scratch_root()` alone does not.
+///
+/// ⚠ The path is NOT created. Callers differ on what belongs there — a directory, a unix socket, a
+/// file with an extension on it — and creating one shape here would make most callers delete it
+/// again.
+///
+/// ⚠ The sweep's outcome is discarded on purpose. This is housekeeping: a leftover this process may
+/// not delete belongs to somebody else and is not a reason to fail the work the caller came to do.
+/// [`reap_predecessors`] stays public for the caller that does want to say what it collected.
+///
+/// # Panics
+///
+/// When the machine's scratch root is not absolute — [`scratch_root`].
+#[must_use]
+pub fn scratch_for(prefix: &str, tail: &str) -> PathBuf {
+    let root = scratch_root();
+    let mine = scratch_name(prefix, tail);
+    if first_time_for(prefix) {
+        let _ = reap_predecessors(&root, prefix, &mine);
+    }
+    root.join(mine)
 }
 
 #[cfg(test)]
@@ -491,5 +604,126 @@ mod tests {
         let absent = scratch_root().join("sprag-scratch-reap-no-such-directory-927");
         let reaped = reap_predecessors(&absent, "sprag-reaptest", "sprag-reaptest-1");
         assert!(reaped.removed.is_empty() && reaped.kept.is_empty() && reaped.refused.is_empty());
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE INVARIANT THE SEAM EXISTS FOR** — register item 795: whatever a caller asks
+    /// for, [`owner_in`] reads this run back out of the answer.
+    ///
+    /// Driven over the tail shapes this workspace actually uses, and one that is deliberately
+    /// hostile: a tail that opens with digits. A name built by hand as `<prefix>-<n>-<pid>` is the
+    /// mistake this test would catch, and the reason the pid's position is the seam's promise
+    /// rather than each call site's habit.
+    #[test]
+    fn a_name_this_crate_builds_is_a_name_it_can_read() {
+        let me = std::process::id();
+        for tail in [
+            "",
+            "0.tree",
+            "clean-ThreadId(4)",
+            "written",
+            "7-still-digits",
+        ] {
+            let name = scratch_name("sprag-nametest", tail);
+            assert_eq!(
+                owner_in(&name, "sprag-nametest"),
+                Some(me),
+                "{name:?} must name this run where the reaper looks, or it can never be collected",
+            );
+            assert_eq!(
+                may_reap(&name, "sprag-nametest", &name, Owner::Gone),
+                Reap::ItIsMine,
+                "{name:?} is this run's own and must survive its own sweep",
+            );
+        }
+    }
+
+    /// ⛔⛔⛔ **THE HAZARD THAT MAKES NAMING AND SWEEPING ONE CALL** — measured on a real name from
+    /// this machine's scratch root, 2026-09-06T14:27:10Z.
+    ///
+    /// `sprag-869-<pid>` is a fixture named after register item 869. Swept under the prefix that
+    /// built it, its owner is the run. Swept under a SHORTER prefix, the item number reads as the
+    /// owner — and pid 869 is a live service on this workstation, so the answer would be *kept for
+    /// the wrong reason today* and *deleted for the wrong reason* on the day that pid is free.
+    /// Neither call site can see the mismatch; [`scratch_for`] cannot make it.
+    #[test]
+    fn a_prefix_shorter_than_the_one_that_built_the_name_names_the_wrong_process() {
+        assert_eq!(owner_in("sprag-869-2575955", "sprag-869"), Some(2_575_955));
+        assert_eq!(
+            owner_in("sprag-869-2575955", "sprag"),
+            Some(869),
+            "the shorter prefix reads the ITEM NUMBER as a process id — this is the answer the \
+             seam exists to make unaskable, not one it corrects",
+        );
+    }
+
+    /// ⚠ The sweep is owed once per prefix per process — [`first_time_for`]'s whole contract, and
+    /// the reason a helper called five hundred times does not list a thirteen-thousand-entry root
+    /// five hundred times.
+    #[test]
+    fn a_prefix_is_swept_once_per_process() {
+        assert!(
+            first_time_for("sprag-oncetest-and-nobody-else"),
+            "the first ask owes the sweep",
+        );
+        assert!(
+            !first_time_for("sprag-oncetest-and-nobody-else"),
+            "the second ask does not — every entry a first sweep left was left because its owner \
+             may be alive, and asking again cannot change that",
+        );
+        assert!(
+            first_time_for("sprag-oncetest-a-different-prefix"),
+            "and the answer is per PREFIX, not a single latch for the process",
+        );
+    }
+
+    /// ⛔⛔ **THE MUTATION FOR THE SHAPE THE FIRST DRAFT SKIPPED**: a dead run's socket and its lock
+    /// file go, exactly like its directory, and a live run's stay.
+    ///
+    /// Item 927 collected directories because its own subject was one. 2,667 entries in this
+    /// machine's scratch root are not, and a reaper that walked past them would pass every test
+    /// written about directories.
+    #[test]
+    fn a_dead_runs_socket_and_lock_go_the_way_its_directory_does() {
+        let root = scratch_root().join(format!("sprag-scratch-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch root of this test's own");
+
+        // Pid 0 is never a running process on Linux, so `/proc/0` does not exist.
+        let dead_lock = "sprag-filetest-0-4.lock".to_string();
+        let dead_dir = "sprag-filetest-0-4.tree".to_string();
+        let live_lock = format!("sprag-filetest-{}-4.lock", std::process::id());
+        let mine = scratch_name("sprag-filetest", "9.tree");
+        for name in [&dead_lock, &live_lock] {
+            std::fs::write(root.join(name), b"x").expect("a planted file");
+        }
+        std::fs::create_dir_all(root.join(&dead_dir)).expect("a planted directory");
+        std::fs::create_dir_all(root.join(&mine)).expect("this run's own");
+
+        let reaped = reap_predecessors(&root, "sprag-filetest", &mine);
+
+        if cfg!(target_os = "linux") {
+            // ⚠ Both sides sorted: `read_dir` answers in whatever order the filesystem holds, and
+            // an assertion that depended on it would be a flake wearing a gate's clothes.
+            let mut removed = reaped.removed.clone();
+            removed.sort();
+            let mut expected = vec![dead_dir, dead_lock];
+            expected.sort();
+            assert_eq!(removed, expected, "{reaped:?}");
+        } else {
+            assert!(
+                reaped.removed.is_empty(),
+                "this platform answers Unknown, so it reaps nothing and says so: {reaped:?}",
+            );
+        }
+        assert!(
+            root.join(&live_lock).exists(),
+            "a live owner's lock is in use whatever its type is: {reaped:?}",
+        );
+        assert!(
+            root.join(&mine).exists(),
+            "this run's own scratch is untouched: {reaped:?}",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

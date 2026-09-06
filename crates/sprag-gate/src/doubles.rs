@@ -351,7 +351,7 @@ mod tests {
              that put the universal claim in this module in the first place.",
         );
 
-        let dir = std::env::temp_dir().join(format!("sprag-gate-etxtbsy-{}", std::process::id()));
+        let dir = sprag_scratch::scratch_for("sprag-gate-etxtbsy", "");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a directory for the staged window");
 
@@ -435,7 +435,7 @@ mod tests {
     /// A link reaches the same program under a name the fixture chose, and re-linking replaces.
     #[test]
     fn a_link_reaches_the_program_under_a_chosen_name_and_can_be_restaged() {
-        let dir = std::env::temp_dir().join(format!("sprag-gate-link-{}", std::process::id()));
+        let dir = sprag_scratch::scratch_for("sprag-gate-link", "");
         let _ = std::fs::remove_dir_all(&dir);
 
         // A directory with a SPACE in it, because that is the shape `sprag-host`'s hook fixture

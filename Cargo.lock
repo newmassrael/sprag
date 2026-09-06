@@ -3767,6 +3767,7 @@ dependencies = [
  "sprag-peer",
  "sprag-plugin",
  "sprag-rpc",
+ "sprag-scratch",
  "sprag-terminal",
  "tracing",
  "tracing-subscriber",

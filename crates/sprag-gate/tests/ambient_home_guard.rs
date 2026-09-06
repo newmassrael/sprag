@@ -14,7 +14,7 @@ use std::process::{Command, Output};
 
 /// Three fresh homes under one root, named for the test that owns them.
 fn homes(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
-    let root = std::env::temp_dir().join(format!("sprag-gate-bin-{}-{tag}", std::process::id()));
+    let root = sprag_scratch::scratch_for("sprag-gate-bin", tag);
     let _ = std::fs::remove_dir_all(&root);
     let (config, data, state) = (root.join("config"), root.join("data"), root.join("state"));
     for home in [&config, &data, &state] {

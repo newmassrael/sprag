@@ -279,11 +279,10 @@ mod tests {
 
     /// A state directory of this test's own, with the stems it is handed.
     fn a_state_dir(name: &str, stems: &[(&str, &str, Option<&str>)]) -> std::path::PathBuf {
-        let dir = sprag_scratch::scratch_root().join(format!(
-            "sprag-leftovers-{name}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id(),
-        ));
+        let dir = sprag_scratch::scratch_for(
+            &format!("sprag-leftovers-{name}"),
+            &format!("{:?}", std::thread::current().id()),
+        );
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a state directory of this test's own");
         for (stem, runs, snapshot) in stems {

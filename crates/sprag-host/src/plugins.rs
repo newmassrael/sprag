@@ -11945,7 +11945,7 @@ mod tests {
     fn a_claude_stand_in() -> std::path::PathBuf {
         // ⚠ Register item 794: the scratch root comes from `sprag_scratch`, never from a bare
         // `std::env::temp_dir()`, or a set-and-empty `TMPDIR` puts this link inside the repository.
-        let dir = sprag_scratch::scratch_root().join(format!("sprag-869-{}", std::process::id()));
+        let dir = sprag_scratch::scratch_for("sprag-869", "");
         sprag_gate::doubles::linked_as(std::path::Path::new("/bin/cat"), &dir.join("claude"))
     }
 
@@ -12042,7 +12042,7 @@ mod tests {
     /// ⚠ Leaked deliberately: the tree lives for the process, and a fixture that removed it would
     /// race every pane still standing in it.
     fn a_tree_to_stand_in() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("sprag-loop-tree-{}", std::process::id()));
+        let dir = sprag_scratch::scratch_for("sprag-loop-tree", "");
         std::fs::create_dir_all(&dir).expect("a directory for the fixture's panes to stand in");
         std::fs::write(dir.join(".git"), b"gitdir: nowhere\n")
             .expect("the marker `debt_loop.scxml` names — a FILE, as a linked worktree carries it");
@@ -16927,7 +16927,7 @@ mod tests {
         // tree, standing in for the `$HOME` a pane opened without `-c` is born in. Asserted rather
         // than assumed, because a fixture that accidentally carried the marker would make the
         // refusal below unreachable and the gate green about nothing.
-        let bare = std::env::temp_dir().join(format!("sprag-not-a-tree-{}", std::process::id()));
+        let bare = sprag_scratch::scratch_for("sprag-not-a-tree", "");
         std::fs::create_dir_all(&bare).expect("a directory that is not a tree");
         assert!(
             !bare.join(&marks).exists(),
@@ -17050,7 +17050,7 @@ mod tests {
     /// item's own Done-when. Item 754 needed two trees to express *somebody else's*; item 890 needs
     /// two to express *told apart*. One directory serves both.
     fn another_tree_to_stand_in() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("sprag-other-tree-{}", std::process::id()));
+        let dir = sprag_scratch::scratch_for("sprag-other-tree", "");
         std::fs::create_dir_all(&dir).expect("a second tree for a neighbour to stand in");
         std::fs::write(dir.join(".git"), b"gitdir: elsewhere\n").expect("the same marker");
         dir
@@ -17181,7 +17181,7 @@ mod tests {
         // The watcher's own shell is born in a home directory and the GUI's pane in nowhere in
         // particular. Those are absences of a claim, and a check that read them as claims of a
         // different tree would refuse every window this loop has ever run in.
-        let bare = std::env::temp_dir().join(format!("sprag-no-tree-{}", std::process::id()));
+        let bare = sprag_scratch::scratch_for("sprag-no-tree", "");
         std::fs::create_dir_all(&bare).expect("a directory that is not a tree");
         assert!(
             !bare.join(&marks).exists(),

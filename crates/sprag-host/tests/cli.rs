@@ -118,8 +118,13 @@ impl Drop for SocketSite {
 /// day the guards started taking them: a tree keyed on the PROCESS has no scope to be dropped at,
 /// which is the honest reason and not the same reason as the one it used to borrow. One directory
 /// per run of this binary, in the temporary directory, and nothing writes to it after the run.
+///
+/// ⛔⛔ **AND BECAUSE IT IS LEFT BEHIND, IT IS THE ONE THING HERE THAT MUST COLLECT ITS OWN DEAD** —
+/// register item 795. "Nothing drops it" and "nothing will ever remove it" were the same sentence
+/// until [`sprag_scratch::scratch_for`] existed; this prefix stood at **399 directories** on
+/// 2026-09-06T14:24:01Z, one per run of this binary since the tree started being kept.
 fn a_tree_to_stand_in() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("sprag-cli-tree-{}", std::process::id()));
+    let dir = sprag_scratch::scratch_for("sprag-cli-tree", "");
     std::fs::create_dir_all(&dir).expect("a tree for the daemon's panes to stand in");
     std::fs::write(dir.join(".git"), b"gitdir: nowhere\n")
         .expect("the marker `debt_loop.scxml` names — a FILE, as a linked worktree carries it");
@@ -134,7 +139,7 @@ fn a_tree_to_stand_in() -> PathBuf {
 fn scratch_state_home() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!("sprag-cli-it-{}-state-{n}", std::process::id()))
+    sprag_scratch::scratch_for("sprag-cli-it", &format!("state-{n}"))
 }
 
 /// A socket path unique to this CALL (pid + a per-binary counter), so parallel test threads in
@@ -142,7 +147,7 @@ fn scratch_state_home() -> PathBuf {
 fn socket_path() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!("sprag-cli-it-{}-{n}.sock", std::process::id()))
+    sprag_scratch::scratch_for("sprag-cli-it", &format!("{n}.sock"))
 }
 
 /// Spawn a NON-daemon `sprag-term` serving `sock`, its boot pane running `cat` (which blocks on
@@ -5072,11 +5077,8 @@ fn a_conversation_can_ask_which_runs_it_is_on() {
     const DRIVEN: &str = "3f2c9a17-0000-4000-8000-00000000090b";
 
     let sock = socket_path();
-    let state = sprag_scratch::scratch_root().join(format!(
-        "sprag-mine-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id(),
-    ));
+    let state =
+        sprag_scratch::scratch_for("sprag-mine", &format!("{:?}", std::thread::current().id()));
     let _ = std::fs::remove_dir_all(&state);
     let guard = DaemonGuard {
         sock: sock.clone(),
@@ -11224,7 +11226,7 @@ impl ConfigHome {
     fn new(text: &str) -> Self {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("sprag-cli-cfg-{}-{n}", std::process::id()));
+        let dir = sprag_scratch::scratch_for("sprag-cli-cfg", &format!("{n}"));
         std::fs::create_dir_all(dir.join("sprag")).expect("temp config dir");
         std::fs::write(dir.join("sprag").join("config.toml"), text).expect("write config");
         Self(dir)
@@ -15166,7 +15168,7 @@ fn default_named_runtime_dir(sock: &Path) -> PathBuf {
     // BINARIES apart, the counter keeps two threads of one binary apart.
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("sprag-rt-{}-{n}", std::process::id()));
+    let dir = sprag_scratch::scratch_for("sprag-rt", &format!("{n}"));
     let _ = std::fs::create_dir_all(&dir);
     let link = dir.join(sprag_rpc::HOST_SOCKET_NAME);
     let _ = std::fs::remove_file(&link);
@@ -19840,8 +19842,7 @@ fn the_push_time_reader_says_what_happens_next_in_the_products_own_words() {
     // ratchet caught this line the first time it ran: a set-and-empty `TMPDIR` makes the bare std
     // call answer a RELATIVE path, and every `create_dir_all` below would then land INSIDE this
     // repository. The 164 older call sites are item 795's backlog; a new one joins the fix.
-    let dir =
-        sprag_scratch::scratch_root().join(format!("sprag-loop-read-it-{}", std::process::id()));
+    let dir = sprag_scratch::scratch_for("sprag-loop-read-it", "");
     let _ = std::fs::remove_dir_all(&dir);
     let _guard = TempDir(dir.clone());
     let state = dir.join("state");
@@ -20104,11 +20105,8 @@ fn a_current_builds_daemon_leaves_a_log_whose_runs_can_be_paired() {
     // ⚠ `scratch_root`, not the bare `std::env::temp_dir()` its neighbours still spell — item 794's
     // ratchet caught this line, exactly as it caught the same copied line two rounds ago. With
     // `TMPDIR` set-and-empty the std call resolves into this repository's own working tree.
-    let state = sprag_scratch::scratch_root().join(format!(
-        "sprag-waits-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id(),
-    ));
+    let state =
+        sprag_scratch::scratch_for("sprag-waits", &format!("{:?}", std::thread::current().id()));
     let _ = std::fs::remove_dir_all(&state);
     let guard = DaemonGuard {
         sock: sock.clone(),
@@ -20353,11 +20351,8 @@ fn a_current_builds_daemon_leaves_a_log_saying_which_ceiling_its_runs_were_judge
     let sock = socket_path();
     // ⚠ `scratch_root`, never the bare `std::env::temp_dir()` — item 794's ratchet, which has
     // caught this copied line twice in this file already.
-    let state = sprag_scratch::scratch_root().join(format!(
-        "sprag-folds-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id(),
-    ));
+    let state =
+        sprag_scratch::scratch_for("sprag-folds", &format!("{:?}", std::thread::current().id()));
     let _ = std::fs::remove_dir_all(&state);
     let guard = DaemonGuard {
         sock: sock.clone(),
@@ -20823,11 +20818,10 @@ fn the_door_can_ask_every_image_once_a_promotion_has_moved_them() {
 /// that watcher exists for.
 #[test]
 fn the_watcher_contract_is_published_without_a_daemon() {
-    let sock = sprag_scratch::scratch_root().join(format!(
-        "sprag-contract-{}-{:?}.sock",
-        std::process::id(),
-        std::thread::current().id(),
-    ));
+    let sock = sprag_scratch::scratch_for(
+        "sprag-contract",
+        &format!("{:?}.sock", std::thread::current().id()),
+    );
     assert!(
         !sock.exists(),
         "⚠ THE PREMISE: nothing may be listening here, or this gate proves the opposite of what \

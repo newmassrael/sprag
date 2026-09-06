@@ -9104,8 +9104,7 @@ mod tests {
     ///
     /// ⚠ Named per gate so two running at once cannot see each other's breadcrumbs.
     fn nobody_left_word(label: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("sprag-mcp-mute-{}-{label}", std::process::id()));
+        let dir = sprag_scratch::scratch_for("sprag-mcp-mute", label);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a directory this gate owns");
         dir

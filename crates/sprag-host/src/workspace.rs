@@ -4647,7 +4647,7 @@ mod tests {
         // A program BASENAMED `claude`, linked rather than copied — register item 467's `ETXTBSY`
         // window. `cat` stands in: this gate is about which conversation comes back, and a real
         // agent would answer identically while costing a model call.
-        let dir = std::env::temp_dir().join(format!("sprag-619-{}", std::process::id()));
+        let dir = sprag_scratch::scratch_for("sprag-619", "");
         let agent =
             sprag_gate::doubles::linked_as(std::path::Path::new("/bin/cat"), &dir.join("claude"));
         let pane_at = |id: u64, session: &str| sprag_terminal::PaneSnapshot {

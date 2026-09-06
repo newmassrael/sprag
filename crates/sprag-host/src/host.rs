@@ -4306,7 +4306,7 @@ mod tests {
         // ⚠ THROUGH `sprag_scratch`, never `std::env::temp_dir` — register item 794's ratchet,
         // which refused the first draft of this line: a bare read writes into this repository's
         // own directory when `TMPDIR` is set-and-empty, and `git status` cannot see it.
-        let root = sprag_scratch::scratch_root().join(format!("sprag-916-{}", std::process::id()));
+        let root = sprag_scratch::scratch_for("sprag-916", "");
         std::fs::create_dir_all(&root).expect("a root to adopt");
         for name in [
             sprag_terminal::share::PROCS,
@@ -5123,7 +5123,7 @@ mod tests {
             std::path::Path::new(REAL).exists(),
             "the fixture needs a real program to point at",
         );
-        let bin = std::env::temp_dir().join(format!("sprag-695-{}", std::process::id()));
+        let bin = sprag_scratch::scratch_for("sprag-695", "");
         std::fs::create_dir_all(&bin).expect("a directory for the stand-in agent");
         let agent = bin.join("claude");
         let _ = std::fs::remove_file(&agent);
@@ -5247,7 +5247,12 @@ mod tests {
         // ⚠ `scratch_root`, not the bare `std::env::temp_dir()` the gate above still spells —
         // item 794's ratchet, which caught this line: with `TMPDIR` set-and-empty the std call
         // resolves into this repository's own working tree.
-        let bin = sprag_scratch::scratch_root().join(format!("sprag-869-{}", std::process::id()));
+        //
+        // ⛔ AND `scratch_for` RATHER THAN `scratch_root().join(…)` — register item 795. This exact
+        // name is the measurement that separates the two: it had already been converted for 794 and
+        // it still stood at **124 directories** on 2026-09-06T14:24Z, because where the root comes
+        // from says nothing about who collects the directory afterwards.
+        let bin = sprag_scratch::scratch_for("sprag-869", "");
         std::fs::create_dir_all(&bin).expect("a directory for the stand-in agent");
         let agent = bin.join("claude");
         let _ = std::fs::remove_file(&agent);

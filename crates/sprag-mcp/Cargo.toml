@@ -48,3 +48,9 @@ sprag-detect = { workspace = true }
 # sprag-host LIB and never its BINS, so without this the stdio gate can drive a daemon built
 # from older source and report green about an edit it never contained (measured, R367).
 sprag-gate = { workspace = true }
+# Where a fixture may put its scratch, and what a DEAD run left there — register items 794 and 795.
+# DEV-ONLY: nothing in `src/main.rs` outside `#[cfg(test)]` asks. The crate declares no dependencies
+# of its own, so this adds nothing to what the binary links; what it buys is that this crate's
+# fixtures stop being six of the largest families in the machine's scratch root (1,666 directories,
+# measured 2026-09-06T14:24:01Z) and start collecting their own predecessors.
+sprag-scratch = { workspace = true }

@@ -91,7 +91,10 @@ fn socket_path() -> PathBuf {
     // `temp_dir()` answers the CRATE'S OWN DIRECTORY inside this repository when `TMPDIR` is
     // set-and-empty, so a socket made that way is litter `git status` cannot see. The ratchet in
     // `sprag-gate` counts the bare call sites and refused this file's first draft.
-    sprag_scratch::scratch_root().join(format!("sprag-tab-{}-{n}.sock", std::process::id()))
+    // ⛔ And `scratch_for` rather than `scratch_root().join(…)` — item 795: the root being usable
+    // says nothing about who removes this when the run that made it is killed, and the name
+    // carries that run's pid, so nothing ever could.
+    sprag_scratch::scratch_for("sprag-tab", &format!("{n}.sock"))
 }
 
 /// A private daemon whose boot pane runs `cat` — an idle child that keeps its PTY open, so the

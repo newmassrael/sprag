@@ -250,7 +250,7 @@ fn sibling_bin(name: &str) -> PathBuf {
 fn socket_path() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    sprag_scratch::scratch_root().join(format!("sprag-tui-pty-{}-{n}.sock", std::process::id()))
+    sprag_scratch::scratch_for("sprag-tui-pty", &format!("{n}.sock"))
 }
 
 /// The state home every process this file spawns is given, derived from the socket it is about.
@@ -4306,8 +4306,7 @@ impl ConfigHome {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // ⚠ Asked for rather than taken — see [`socket_path`] (register items 794 and 802).
-        let dir =
-            sprag_scratch::scratch_root().join(format!("sprag-tui-cfg-{}-{n}", std::process::id()));
+        let dir = sprag_scratch::scratch_for("sprag-tui-cfg", &format!("{n}"));
         std::fs::create_dir_all(dir.join("sprag")).expect("temp config dir");
         std::fs::write(dir.join("sprag").join("config.toml"), text).expect("write config");
         Self(dir)

@@ -247,13 +247,15 @@ mod tests {
 
     /// A directory of this test's own, removed by the caller.
     fn scratch(name: &str) -> PathBuf {
-        let dir = sprag_scratch::scratch_root().join(format!(
-            "sprag-survey-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |since| since.subsec_nanos()),
-        ));
+        let dir = sprag_scratch::scratch_for(
+            &format!("sprag-survey-{name}"),
+            &format!(
+                "{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.subsec_nanos()),
+            ),
+        );
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         dir
     }

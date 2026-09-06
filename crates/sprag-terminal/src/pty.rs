@@ -2541,8 +2541,7 @@ mod tests {
     /// every binary in its own crate directory, so these files would land inside the repository
     /// and `git status` cannot see the shape they land in.
     fn scratch_dir(what: &str) -> PathBuf {
-        let dir =
-            sprag_scratch::scratch_root().join(format!("sprag-{what}-{}", std::process::id()));
+        let dir = sprag_scratch::scratch_for(&format!("sprag-{what}"), "");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         dir

@@ -618,8 +618,7 @@ mod freshness_tests {
         /// `sources` is `(name, seconds relative to the binary's own mtime)` — negative is a source
         /// the binary was built AFTER (the healthy case), positive is one edited since.
         fn new(tag: &str, sources: &[(&str, i64)]) -> Self {
-            let dir =
-                std::env::temp_dir().join(format!("sprag-gate-fresh-{}-{tag}", std::process::id()));
+            let dir = sprag_scratch::scratch_for("sprag-gate-fresh", tag);
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("the fake target dir");
             let bin = dir.join("sprag-term");
@@ -751,7 +750,7 @@ mod freshness_tests {
     /// ...and a binary that was never built at all is the arm both call sites already had, kept.
     #[test]
     fn a_binary_that_was_never_built_is_named_as_missing() {
-        let dir = std::env::temp_dir().join(format!("sprag-gate-absent-{}", std::process::id()));
+        let dir = sprag_scratch::scratch_for("sprag-gate-absent", "");
         std::fs::create_dir_all(&dir).expect("an empty dir");
         let bin = dir.join("sprag-term");
         assert_eq!(
@@ -837,12 +836,16 @@ mod tests {
     use super::*;
 
     /// A directory per test, since these run as threads of one binary.
+    ///
+    /// ⛔ Through [`sprag_scratch::scratch_for`] — register item 795. The `remove_dir_all` below
+    /// takes the identical NAME, and the name carries this run's pid, so it has never once removed
+    /// anything a previous run made. Five tags of this one prefix stood at **520 directories
+    /// apiece** on 2026-09-06T14:24:01Z.
     fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "sprag-gate-{}-{tag}-{:?}",
-            std::process::id(),
-            std::thread::current().id(),
-        ));
+        let dir = sprag_scratch::scratch_for(
+            "sprag-gate",
+            &format!("{tag}-{:?}", std::thread::current().id()),
+        );
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch home");
         dir

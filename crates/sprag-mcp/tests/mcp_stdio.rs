@@ -155,7 +155,7 @@ fn sprag_cli_bin() -> PathBuf {
 fn state_home() -> PathBuf {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("sprag-mcp-state-{}-{n}", std::process::id()));
+    let dir = sprag_scratch::scratch_for("sprag-mcp-state", &format!("{n}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("the state home");
     dir
@@ -2123,7 +2123,7 @@ fn an_agent_reading_the_listing_alone_cannot_believe_a_stale_report() {
 /// round ends.
 #[test]
 fn agent_explain_warns_when_the_daemon_has_refused_the_manifest_file() {
-    let dir = std::env::temp_dir().join(format!("sprag-mcp-manifest-{}", std::process::id()));
+    let dir = sprag_scratch::scratch_for("sprag-mcp-manifest", "");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sprag")).expect("create the temp config dir");
     // Valid TOML, invalid MANIFEST — nothing else in the file stops working, which is what makes the
@@ -4320,11 +4320,7 @@ fn an_agent_reads_what_each_pane_is_running() {
 /// its own wording.
 #[test]
 fn an_agent_sizes_the_pane_it_opened_and_no_other() {
-    let dir = std::env::temp_dir().join(format!(
-        "sprag-mcp-resize-{}-{}",
-        std::process::id(),
-        line!()
-    ));
+    let dir = sprag_scratch::scratch_for("sprag-mcp-resize", &format!("{}", line!()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sprag")).expect("create the temp config dir");
     std::fs::write(
@@ -5624,11 +5620,7 @@ fn an_agent_resizes_only_its_own_window_and_is_told_when_the_pin_is_inert() {
     // The DAEMON's own config home: `window-size` is read by the daemon, and the third claim below
     // is about what IT arbitrates under. A test that pointed only this process at a file would be
     // asserting against whatever the developer's own config says (R331).
-    let dir = std::env::temp_dir().join(format!(
-        "sprag-mcp-winsize-{}-{}",
-        std::process::id(),
-        line!()
-    ));
+    let dir = sprag_scratch::scratch_for("sprag-mcp-winsize", &format!("{}", line!()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sprag")).expect("create the temp config dir");
     std::fs::write(

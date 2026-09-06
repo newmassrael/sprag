@@ -109,10 +109,7 @@ mod tests {
         /// directory in the repository. This workspace ratchets the number of sites that still
         /// bypass it, so the import is what keeps a new fixture from adding one.
         fn new(case: &str) -> Self {
-            let root = sprag_scratch::scratch_root().join(format!(
-                "sprag-gate-gui-launch-{}-{case}",
-                std::process::id(),
-            ));
+            let root = sprag_scratch::scratch_for("sprag-gate-gui-launch", case);
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).expect("a scratch tree");
             Self { root }

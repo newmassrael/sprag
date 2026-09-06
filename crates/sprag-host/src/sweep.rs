@@ -458,11 +458,10 @@ mod tests {
     /// Named per gate so two running at once cannot see each other's breadcrumbs, and emptied on
     /// creation so a previous run's cannot be inherited either.
     fn nobody_left_word(label: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "sprag-sweep-mute-{}-{label}-{:?}",
-            std::process::id(),
-            std::thread::current().id(),
-        ));
+        let dir = sprag_scratch::scratch_for(
+            "sprag-sweep-mute",
+            &format!("{label}-{:?}", std::thread::current().id()),
+        );
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a directory this gate owns");
         dir

@@ -6229,13 +6229,15 @@ mod tests {
             // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item
             // 794. The bare call answers a RELATIVE path when `TMPDIR` is set-and-empty, and this
             // file would then be written into the crate's own directory inside the repository.
-            let counter = sprag_scratch::scratch_root().join(format!(
-                "sprag-reaim-count-{}-{}-{cap}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| since.subsec_nanos()),
-            ));
+            let counter = sprag_scratch::scratch_for(
+                "sprag-reaim-count",
+                &format!(
+                    "{}-{cap}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |since| since.subsec_nanos()),
+                ),
+            );
             let _ = std::fs::remove_file(&counter);
             let (workspace, pane) = crate::testing::standin_agent_reflecting_afresh(
                 PROMPTS, AFRESH, READ_NEXT, &counter,
@@ -6385,13 +6387,15 @@ mod tests {
             // reason: a re-aim RESPAWNS the pane, so a counter in a shell variable goes back to
             // one and the peer proposes the same thing twice.
             // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item 794.
-            let counter = sprag_scratch::scratch_root().join(format!(
-                "sprag-admits-count-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| since.subsec_nanos()),
-            ));
+            let counter = sprag_scratch::scratch_for(
+                "sprag-admits-count",
+                &format!(
+                    "{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |since| since.subsec_nanos()),
+                ),
+            );
             let _ = std::fs::remove_file(&counter);
             let (workspace, pane) = crate::testing::standin_agent_reflecting_afresh(
                 PROMPTS, AFRESH, READ_NEXT, &counter,
@@ -6571,13 +6575,15 @@ mod tests {
             // ⚠ ONE FILE PER ARM — a re-aim RESPAWNS the pane, so a counter in a shell variable
             // goes back to one and the peer proposes the same thing twice
             // (`a_documents_depth_cap_is_the_one_a_run_obeys`' measured reason).
-            let counter = sprag_scratch::scratch_root().join(format!(
-                "sprag-chain-count-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| since.subsec_nanos()),
-            ));
+            let counter = sprag_scratch::scratch_for(
+                "sprag-chain-count",
+                &format!(
+                    "{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |since| since.subsec_nanos()),
+                ),
+            );
             let _ = std::fs::remove_file(&counter);
             let (workspace, pane) = crate::testing::standin_agent_reflecting_afresh(
                 PROMPTS, AFRESH, READ_NEXT, &counter,
@@ -6699,13 +6705,15 @@ mod tests {
         /// Drive a run whose document names `check` (or names none), and answer what the DOCUMENT
         /// holds: how far it re-aimed, and how much of that nobody checked.
         fn checked_by(check: Option<&str>) -> (Option<i64>, Option<i64>, Option<u32>) {
-            let counter = sprag_scratch::scratch_root().join(format!(
-                "sprag-unchecked-count-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| since.subsec_nanos()),
-            ));
+            let counter = sprag_scratch::scratch_for(
+                "sprag-unchecked-count",
+                &format!(
+                    "{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |since| since.subsec_nanos()),
+                ),
+            );
             let _ = std::fs::remove_file(&counter);
             let (workspace, pane) = crate::testing::standin_agent_reflecting_afresh(
                 PROMPTS, AFRESH, READ_NEXT, &counter,
@@ -9506,13 +9514,15 @@ mod tests {
         // The bare call answers a RELATIVE path when `TMPDIR` is set-and-empty, and the peer's
         // counter would then be written inside the repository. The name carries the pid and a
         // nanosecond count so two runs of this suite cannot share it.
-        let counter = sprag_scratch::scratch_root().join(format!(
-            "sprag-reflect-once-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |since| since.subsec_nanos()),
-        ));
+        let counter = sprag_scratch::scratch_for(
+            "sprag-reflect-once",
+            &format!(
+                "{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.subsec_nanos()),
+            ),
+        );
         let _ = std::fs::remove_file(&counter);
         let (workspace, pane) =
             crate::testing::standin_agent_reflecting_once(PROMPTS, NEXT, READ_NEXT, &counter);

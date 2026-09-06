@@ -18492,8 +18492,7 @@ mod tests {
     fn a_turn_that_could_not_be_measured_does_not_wipe_the_streak() {
         // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item 794: a
         // bare `temp_dir` writes into this repository's own tree when `TMPDIR` is set-and-empty.
-        let home =
-            sprag_scratch::scratch_root().join(format!("sprag-mute-gaps-{}", std::process::id()));
+        let home = sprag_scratch::scratch_for("sprag-mute-gaps", "");
         std::fs::create_dir_all(&home).expect("a directory to file the record in");
         let record = home.join("readable-every-other-turn.jsonl");
         let written = crate::testing::MEASURED_HERE.transcript();
@@ -18614,8 +18613,7 @@ mod tests {
     #[test]
     fn a_second_silent_session_stops_the_run_for_a_person() {
         // ⛔ REGISTER ITEM 794, exactly as the gate above: the scratch root, never `temp_dir`.
-        let home =
-            sprag_scratch::scratch_root().join(format!("sprag-mute-twice-{}", std::process::id()));
+        let home = sprag_scratch::scratch_for("sprag-mute-twice", "");
         std::fs::create_dir_all(&home).expect("a directory to file the record in");
         let record = home.join("read-every-turn-and-never-grows.jsonl");
         std::fs::write(&record, crate::testing::MEASURED_HERE.transcript())
@@ -22357,11 +22355,10 @@ mod tests {
     /// Named per label and per thread so two gates cannot see each other's files, and emptied on
     /// creation so a previous run's cannot be inherited either.
     fn a_directory_this_gate_owns(label: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "sprag-checker-{}-{label}-{:?}",
-            std::process::id(),
-            std::thread::current().id(),
-        ));
+        let dir = sprag_scratch::scratch_for(
+            "sprag-checker",
+            &format!("{label}-{:?}", std::thread::current().id()),
+        );
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a directory this gate owns");
         dir
@@ -24569,9 +24566,8 @@ mod tests {
         // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item 794. A
         // bare std call writes into this crate's own directory inside the repository when `TMPDIR`
         // is set-and-empty, which is litter `git status` cannot see.
-        let nowhere = sprag_scratch::scratch_root()
-            .join(format!("sprag-folds-{}", std::process::id()))
-            .join("no-record-was-ever-written.jsonl");
+        let nowhere =
+            sprag_scratch::scratch_for("sprag-folds", "").join("no-record-was-ever-written.jsonl");
         let access = crate::testing::supervised_writing(&workspace, &nowhere);
         let mut loops = ready_bounded_at(
             Arc::clone(&lua),
@@ -24763,8 +24759,7 @@ mod tests {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
         let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
         // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item 794.
-        let nowhere = sprag_scratch::scratch_root()
-            .join(format!("sprag-folds-outside-{}", std::process::id()))
+        let nowhere = sprag_scratch::scratch_for("sprag-folds-outside", "")
             .join("no-record-was-ever-written.jsonl");
         let access = crate::testing::supervised_writing(&workspace, &nowhere);
         let mut loops = ready_bounded_at(
@@ -24986,9 +24981,8 @@ mod tests {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
         let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
         // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item 794.
-        let nowhere = sprag_scratch::scratch_root()
-            .join(format!("sprag-roads-{}", std::process::id()))
-            .join("no-record-was-ever-written.jsonl");
+        let nowhere =
+            sprag_scratch::scratch_for("sprag-roads", "").join("no-record-was-ever-written.jsonl");
         let access = crate::testing::supervised_writing(&workspace, &nowhere);
         let mut loops = ready_bounded_at(
             Arc::clone(&lua),
