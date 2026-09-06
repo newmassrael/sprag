@@ -1738,34 +1738,62 @@ impl Briefing {
         self.north_star + self.milestone + self.reference + self.working_rules
     }
 
-    /// **THE PART TO SHORTEN FIRST** — its name and its size.
+    /// **THE PART TO SHORTEN FIRST** — its name, its size, and **whose it is**.
     ///
     /// ⚠⚠ It is here rather than left to a reader's arithmetic because *shorten your brief* is not
     /// an instruction anybody can act on: the parts are written by different hands at different
     /// times, and item 719's own case was **one of them** carrying a diagnosis in full while the
     /// others were a line each.
     ///
-    /// ⚠ Ties go to the earlier part in this order, which is deliberate and stated rather than
-    /// silently arbitrary: naming the same part twice for one run is better than naming a different
-    /// one on each look at equal sizes.
+    /// ⛔⛔⛔⛔ **`working_rules` WAS NOT IN THIS LIST AND IS THIS REPOSITORY'S OWN KIND'S** —
+    /// register item 762. A part that cannot win an answer it is bigger than half the others put
+    /// together makes this a wrong answer rather than an incomplete one, and the reader acts on it.
     ///
-    /// ⛔⛔⛔⛔ **`working_rules` WAS NOT IN THIS LIST AND IS 1,195 BYTES OF THIS REPOSITORY'S OWN
-    /// KIND** — register item 762. A part that cannot win an answer it is bigger than half the
-    /// others put together makes this a wrong answer rather than an incomplete one, and the reader
-    /// acts on it. ⚠ It is listed LAST of the four so a tie still names a part the caller can
-    /// actually edit first — being told *the kind's rules* where a caller's own text is equally
-    /// long is an instruction they cannot follow.
-    #[must_use]
-    pub fn largest(&self) -> (&'static str, usize) {
+    /// # ⛔⛔⛔⛔⛔ AND NAMING IT WAS ONLY HALF — register item 762's remaining half
+    ///
+    /// [`Briefing::working_rules`]' own doc states the obligation this function had not met: *the
+    /// answer to* what do I shorten *has to be able to say **you cannot; go and read the kind
+    /// document***. It said `working_rules is the largest at 2590` and stopped, so the reader was
+    /// sent to a door that **has no wire key for it and was never meant to** — the instruction was
+    /// unfollowable in a new way rather than merely incomplete. So the answer carries [`Whose`],
+    /// and it is a VALUE rather than a clause in the prose, because a gate can be asked a value.
+    ///
+    /// ⚠⚠ **TIES GO TO THE EARLIER PART IN THIS ORDER, AND THAT USED TO BE PROSE THE CODE
+    /// CONTRADICTED.** The doc said *ties go to the earlier part* and *it is listed LAST of the
+    /// four so a tie still names a part the caller can actually edit first*; the implementation was
+    /// [`Iterator::max_by_key`], which returns the LAST of several equal maxima — so on a tie it
+    /// named exactly the part both sentences existed to keep out of the answer. This reduces
+    /// instead, keeping the first strict maximum, which is the documented rule made executable.
+    ///
+    /// ⛔ **DESTRUCTURED WITHOUT `..`** — a fifth part added to [`Briefing`] breaks the compile
+    /// here rather than being silently unclassified, which is this workspace's rule 6 moved to the
+    /// cheapest moment there is.
+    ///
+    /// ⚠ No `#[must_use]` here: [`Largest`] carries it, and clippy refuses the pair as one of them
+    /// saying nothing the other does not.
+    pub fn largest(&self) -> Largest {
+        let Self {
+            north_star,
+            milestone,
+            reference,
+            working_rules,
+        } = *self;
         [
-            ("reference", self.reference),
-            ("milestone", self.milestone),
-            ("north_star", self.north_star),
-            (WORKING_RULES, self.working_rules),
+            (REFERENCE, reference, Whose::Caller),
+            (MILESTONE, milestone, Whose::Caller),
+            ("north_star", north_star, Whose::Caller),
+            (WORKING_RULES, working_rules, Whose::Kind),
         ]
         .into_iter()
-        .max_by_key(|(_, bytes)| *bytes)
-        .unwrap_or(("north_star", 0))
+        .reduce(|best, next| if next.1 > best.1 { next } else { best })
+        .map_or(
+            Largest {
+                part: "north_star",
+                bytes: 0,
+                whose: Whose::Caller,
+            },
+            |(part, bytes, whose)| Largest { part, bytes, whose },
+        )
     }
 
     /// **WHAT A READER OF THE RUN SHOULD MAKE OF IT** — the sentence the door owes its caller.
@@ -1783,14 +1811,78 @@ impl Briefing {
     /// product says what folding is a function of, so its three notices cannot come to disagree.
     #[must_use]
     pub fn describe(&self) -> String {
-        let (part, bytes) = self.largest();
+        let Largest { part, bytes, whose } = self.largest();
         format!(
-            "briefed with {} bytes ({part} is the largest at {bytes}), re-typed in full into every \
-             session this run opens — read this run's delivery line for what became of it rather \
-             than trusting the number. {}",
+            "briefed with {} bytes ({part} is the largest at {bytes}{}), re-typed in full into \
+             every session this run opens — read this run's delivery line for what became of it \
+             rather than trusting the number. {}",
             self.bytes(),
+            whose.describe(),
             crate::ai_loop::THE_AXIS,
         )
+    }
+}
+
+/// **THE PART TO SHORTEN FIRST** — see [`Briefing::largest`], which is the only thing that builds
+/// one.
+///
+/// ⚠ A record and not a tuple, for this file's own measured reason: a triple of two numbers and a
+/// word is a positional list nobody reads, and the two `usize`-adjacent fields here are exactly the
+/// shape that swaps silently. `sprag-host`'s own `Ending` was registered for the same reason.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[must_use]
+pub struct Largest {
+    /// The part's name, spelled as the datamodel spells it.
+    pub part: &'static str,
+    /// How many bytes of the brief it is.
+    pub bytes: usize,
+    /// **WHOSE IT IS**, which is what makes the name an instruction rather than a fact.
+    pub whose: Whose,
+}
+
+/// **WHOSE A PART OF A BRIEF IS**, and therefore whether *shorten it* is something its reader can
+/// do at all — register item 762.
+///
+/// # ⛔⛔⛔⛔⛔ Why a run has to publish this and not only a name
+///
+/// Three of a brief's four parts are the CALLER's: they arrive as wire keys on the request that
+/// starts the run, and a person told *this is the biggest* can go and edit the one they sent. The
+/// fourth is the loop KIND's — this repository's own `working_rules`, **2,590 bytes** at the
+/// measurement that paid this — and there is no wire key for it, deliberately: a launch cannot
+/// author what a repository holds every run of itself to.
+///
+/// ⇒ Naming it without saying so sends a reader to a door that has no such key. They then shorten
+/// what they CAN reach, which is the smaller half, and the number does not move. That is not an
+/// incomplete answer; it is a wrong one that costs its reader a round.
+///
+/// ⚠ It is a VALUE and not a clause in [`Briefing::describe`]'s prose, on this workspace's rule
+/// that reasoning written as prose is measured by nobody: a gate can ask this, and one does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Whose {
+    /// **THE CALLER WROTE IT AT THE DOOR** — `north_star`, `milestone` and `reference` all arrive
+    /// as wire keys, so shortening it is theirs to do and the instruction is followable as it
+    /// stands.
+    Caller,
+    /// **THE LOOP KIND HOLDS IT** — `working_rules`, which has no wire key by decision. A caller
+    /// cannot shorten it from the door at all; it is changed in the kind's own document.
+    Kind,
+}
+
+impl Whose {
+    /// The clause [`Briefing::describe`] appends, so the reader is told what to DO with the name.
+    ///
+    /// ⚠ It opens with `, ` and is composed rather than spelled at the call site, for the reason
+    /// [`crate::ai_loop::THE_AXIS`] is a constant: two spellings of one fact drift, and the one
+    /// that drifts is the one somebody reads.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Caller => ", which the caller sent to this door and can shorten",
+            Self::Kind => {
+                ", which a caller CANNOT shorten — it is the loop kind's own text, held over every \
+                 run of that kind and changed in its document rather than at this door"
+            }
+        }
     }
 }
 
@@ -17306,12 +17398,17 @@ mod tests {
         );
         assert_eq!(
             loops.briefed().map(|held| held.largest()),
-            Some((WORKING_RULES, 4444)),
+            Some(Largest {
+                part: WORKING_RULES,
+                bytes: 4444,
+                whose: Whose::Kind,
+            }),
             "⛔⛔⛔⛔ REGISTER ITEM 762: AND IT NAMES THE PART TO SHORTEN, WHICH MAY BE ONE THE \
              CALLER CANNOT TOUCH. `working_rules` is the KIND's — a caller shortening their brief \
              cannot reach it — so an answer that could only ever name the three THEY wrote is a \
              wrong answer rather than an incomplete one: it sends them to trim 3,333 bytes while \
-             4,444 sit in a document they were not looking at",
+             4,444 sit in a document they were not looking at. ⛔ AND THE ANSWER SAYS SO: naming it \
+             without [`Whose::Kind`] sends that reader to a door with no wire key for it",
         );
 
         // ── AND A BRIEF THE DATAMODEL DOES NOT HOLD PUBLISHES NOTHING ──
@@ -17491,9 +17588,10 @@ mod tests {
     /// not is how the next reader learns the wrong rule.
     #[test]
     fn what_the_door_says_about_a_brief_names_the_largest_part_and_the_axis() {
-        for (part, briefing) in [
+        for (part, whose, briefing) in [
             (
                 "north_star",
+                Whose::Caller,
                 Briefing {
                     north_star: 90,
                     milestone: 5,
@@ -17503,6 +17601,7 @@ mod tests {
             ),
             (
                 "milestone",
+                Whose::Caller,
                 Briefing {
                     north_star: 5,
                     milestone: 90,
@@ -17512,6 +17611,7 @@ mod tests {
             ),
             (
                 "reference",
+                Whose::Caller,
                 Briefing {
                     north_star: 5,
                     milestone: 7,
@@ -17521,6 +17621,7 @@ mod tests {
             ),
             (
                 WORKING_RULES,
+                Whose::Kind,
                 Briefing {
                     north_star: 5,
                     milestone: 7,
@@ -17531,9 +17632,15 @@ mod tests {
         ] {
             assert_eq!(
                 briefing.largest(),
-                (part, 90),
+                Largest {
+                    part,
+                    bytes: 90,
+                    whose
+                },
                 "⚠⚠⚠ THE LARGEST PART IS THE ONE TO SHORTEN, and a renderer that named a fixed \
-                 one would be green on whichever case it happened to match: {briefing:?}",
+                 one would be green on whichever case it happened to match — AND WHOSE IT IS \
+                 travels with it (register item 762), because a name a reader cannot act on is a \
+                 wrong answer rather than a short one: {briefing:?}",
             );
             let said = briefing.describe();
             assert!(
@@ -17554,6 +17661,147 @@ mod tests {
                  to keep in step. Said {said:?}",
             );
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE PART IT NAMES SAYS WHOSE IT IS, SO THE INSTRUCTION CAN BE FOLLOWED** —
+    /// register item 762's remaining half, and the one its own prescription had wrong.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the register asked for, and why it is NOT what this pays
+    ///
+    /// Item 762's outstanding line read *"브리프를 매번 전부 다시 타이핑하지 않기(참조로)"* — send a
+    /// REFERENCE instead of re-typing the brief into every session. Its whole justification was
+    /// that the size is what makes a composer fold a prompt away, and that run110 died of it.
+    /// **That axis is retracted, in this product, with ratchets**: see
+    /// [`crate::ai_loop::THE_AXIS`] for the three scales it was measured dead at, and
+    /// [`crate::ai_loop::the_axis_this_product_retracted`] for the population of spellings a gate
+    /// now forbids from coming back. Implementing a remedy for a retracted cause would trade a
+    /// delivered guarantee — the rules ARE in the session — for a dependency on the agent going and
+    /// reading a file, and buy nothing that was measured.
+    ///
+    /// ⇒ **What survived is the half the register wrote first and named exactly**: *읽는 사람은
+    /// «자기가 못 고치는 것»이 제일 큰 줄 모른 채 자기 글을 줄인다*. The round that made
+    /// `working_rules` a candidate paid the first half of that — the reader is now TOLD it is the
+    /// biggest — and left the second, because being told is what sends them to the door. There is
+    /// no wire key for `working_rules` and there was never meant to be, so the reader shortens the
+    /// three they can reach, the number does not move, and the round is gone.
+    ///
+    /// # ⚠⚠⚠ Three claims, and the third is the one that used to be prose
+    ///
+    /// * **THE VALUE**: the answer carries [`Whose`], so a consumer can branch on it rather than
+    ///   parse a sentence — this workspace's rule that reasoning written as prose is measured by
+    ///   nobody.
+    /// * **THE SENTENCE**: [`Briefing::describe`] carries that clause, because the run row is where
+    ///   a person meets this and they do not read types.
+    /// * ⛔⛔⛔⛔⛔ **THE TIE**: `largest`'s doc said *ties go to the earlier part in this order* and
+    ///   *it is listed LAST of the four so a tie still names a part the caller can actually edit
+    ///   first* — and the implementation was [`Iterator::max_by_key`], which returns the LAST of
+    ///   several equal maxima. **So on a tie it named `working_rules`, which is precisely what both
+    ///   sentences existed to prevent.** Two doc lines, one behaviour, and they disagreed; the code
+    ///   is what changed, because the doc's reason is the good one.
+    ///
+    /// # ⚠⚠⚠ FOUR MUTATIONS, MEASURED 2026-09-06, each on a different one of those
+    ///
+    /// | mutation | what went red |
+    /// |---|---|
+    /// | the tie resolved by `max_by_key` again (the shipped behaviour) | ③ — `left: Kind, right: Caller`, which is the defect this arm found |
+    /// | `working_rules` classified [`Whose::Caller`] | ② here AND the neighbour gate, on the value |
+    /// | [`Briefing::describe`] drops the clause | ① and ② on the SENTENCE, with the value still right |
+    /// | both clauses spelled the same | ④ the control, and ②'s *only one clause* with it |
+    ///
+    /// ⇒ The third and fourth are the pair that matter: a value nobody renders is a fact a reader
+    /// never meets, and one clause for both cases is a sentence that says nothing while every
+    /// `contains` in this gate stays green.
+    #[test]
+    fn the_part_a_brief_names_to_shorten_says_whose_it_is() {
+        // ── ① A CALLER'S PART, AND THE CLAUSE THAT MAKES IT ACTIONABLE ────────────────────────
+        let theirs = Briefing {
+            north_star: 5,
+            milestone: 7,
+            reference: 90,
+            working_rules: 3,
+        };
+        assert_eq!(
+            theirs.largest().whose,
+            Whose::Caller,
+            "⚠⚠ `reference` arrives as a wire key on the request that starts a run, so the reader \
+             told it is the biggest can go and edit the one they sent. Got {:?}",
+            theirs.largest(),
+        );
+        assert!(
+            theirs.describe().contains(Whose::Caller.describe()),
+            "⚠⚠ AND THE ROW SAYS IT, because a person meets this as a sentence and not as a type. \
+             Said {:?}",
+            theirs.describe(),
+        );
+
+        // ── ② THE KIND'S PART, WHICH IS THE WHOLE REASON THIS EXISTS ──────────────────────────
+        let the_kinds = Briefing {
+            north_star: 5,
+            milestone: 7,
+            reference: 3,
+            working_rules: 90,
+        };
+        assert_eq!(
+            the_kinds.largest().whose,
+            Whose::Kind,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: `working_rules` has NO WIRE KEY and was never meant to — \
+             a launch cannot author what a repository holds every run of itself to. An answer that \
+             names it without saying so sends its reader to a door with no such key, where they \
+             shorten the smaller half and the number does not move. Got {:?}",
+            the_kinds.largest(),
+        );
+        let said = the_kinds.describe();
+        assert!(
+            said.contains(Whose::Kind.describe()),
+            "⛔⛔⛔⛔ AND THE ROW SAYS IT IN THE SENTENCE. [`Briefing::working_rules`]' own doc \
+             states the obligation — *the answer to* what do I shorten *has to be able to say you \
+             cannot; go and read the kind document* — and a row that stops at the name is this \
+             product not keeping a promise it wrote down. Said {said:?}",
+        );
+        assert!(
+            !said.contains(Whose::Caller.describe()),
+            "⚠⚠ AND ONLY ONE CLAUSE: a sentence carrying both tells a reader nothing, which is the \
+             state this replaced wearing more words. Said {said:?}",
+        );
+
+        // ── ③ THE TIE, WHICH THE DOC PRESCRIBED AND THE CODE CONTRADICTED ─────────────────────
+        //
+        // ⚠⚠⚠ ALL FOUR EQUAL, so nothing but the rule decides. `max_by_key` returns the LAST of
+        // several equal maxima and `working_rules` is listed last, so this arm named the one part
+        // the reader cannot act on — with the doc two lines above saying it must not.
+        let tied = Briefing {
+            north_star: 50,
+            milestone: 50,
+            reference: 50,
+            working_rules: 50,
+        };
+        assert_eq!(
+            tied.largest().whose,
+            Whose::Caller,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 762: with every part the same size the answer must name one \
+             the CALLER can shorten — being sent to the kind's document where their own text is \
+             equally long is an instruction they cannot follow, and `largest`'s doc says so twice. \
+             Got {:?}",
+            tied.largest(),
+        );
+        // ⚠ AND THE SAME PART EVERY TIME, which is the other half of that doc line: naming a
+        // different one on each look at equal sizes is a row a reader cannot compare with itself.
+        assert_eq!(
+            tied.largest(),
+            tied.largest(),
+            "⚠ a tie must resolve the same way twice, or the row moves under its reader",
+        );
+
+        // ── ④ AND THE CONTROL: THE TWO CLAUSES ARE DIFFERENT TEXT ─────────────────────────────
+        //
+        // ⛔ Without this, both arms above pass for a build whose two clauses are the same string —
+        // and every `contains` here would be true of every brief there is.
+        assert_ne!(
+            Whose::Caller.describe(),
+            Whose::Kind.describe(),
+            "⛔⛔⛔ THE CONTROL: one clause for both cases says nothing, and the two `contains` \
+             assertions above would then be measuring a constant rather than a decision",
+        );
     }
 
     /// ⚠⚠⚠⚠⚠ **`reviewing` KEEPS ITS COUNTS WHERE THE RUN SAID, AND NOWHERE AT ALL WHEN IT SAID
