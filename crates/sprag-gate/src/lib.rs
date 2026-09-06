@@ -139,6 +139,13 @@ pub mod calendars;
 /// it.
 pub mod north_star;
 
+/// What a suite left behind in the machine's scratch directory — register item 927.
+///
+/// Two numbers, because the directories holding the BYTES and the directories making up the COUNT
+/// are different directories: 22 of them held 98.3% of 19.9 GB while the other 13,848 held 99.84%
+/// of the count. A gate reporting one of those would report that the other had not moved.
+pub mod litter;
+
 /// What the DOCK's launcher does — register item 825.
 ///
 /// Here for this crate's own charter, one turn further out than the others: the launcher is not

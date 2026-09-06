@@ -2780,6 +2780,38 @@ fn the_cli_waits_for_output_a_pane_has_not_printed_yet() {
 /// written for a different gate — and `daemon_pid` computed it, took one pid and dropped the rest.
 /// The fact existed and the teardown had no sentence that asked for it, which is the shape item 802
 /// is about at every one of its addresses.
+/// A scratch home for a promotion case, having first collected the ones DEAD runs left behind.
+///
+/// # ⛔⛔⛔⛔⛔ Why the `remove_dir_all` this replaces could never work — register item 927
+///
+/// The name carries this process's pid, so the `let _ = remove_dir_all(&state)` every one of these
+/// cases opened with deleted **only the identical name** — and a different run has a different pid,
+/// so it never matched anything. The other half of the cleanup is [`DaemonGuard`]'s `Drop`, which
+/// belongs to a process that, if it was killed, is not there to run it.
+///
+/// ⇒ **Nothing could ever collect a predecessor**, and each of these directories is a fake `bin/`
+/// holding copies of `sprag-term` (114 MB) and `sprag` (64 MB). Measured 2026-09-06 13:48:40 UTC:
+/// **13 of them, 2,499.6 MB**, one per interrupted sweep since 2026-08-24.
+///
+/// ⚠⚠ It reaps only what is PROVABLY abandoned — a name whose pid is gone. A live run's scratch, a
+/// name with no pid in it, and this run's own are all kept, because register item 196 is that two
+/// writers share this machine and deleting somebody's live scratch breaks their round. See
+/// [`sprag_scratch::may_reap`] for the whole decision, driven case by case in that crate.
+fn promoted_scratch(prefix: &str) -> PathBuf {
+    let root = sprag_scratch::scratch_root();
+    let mine = format!(
+        "{prefix}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    );
+    // ⚠ Housekeeping, so its outcome does not decide the test: a leftover this process may not
+    // delete is somebody else's problem and not a reason to fail a promotion case.
+    let _ = sprag_scratch::reap_predecessors(&root, prefix, &mine);
+    let state = root.join(mine);
+    let _ = std::fs::remove_dir_all(&state);
+    state
+}
+
 struct DaemonGuard {
     sock: PathBuf,
     state: PathBuf,
@@ -4346,12 +4378,7 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
     use sprag_plugin::PaneAccess as _;
 
     let sock = socket_path();
-    let state = std::env::temp_dir().join(format!(
-        "sprag-promoted-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id(),
-    ));
-    let _ = std::fs::remove_dir_all(&state);
+    let state = promoted_scratch("sprag-promoted");
     let guard = DaemonGuard {
         sock: sock.clone(),
         state: state.clone(),
@@ -6043,12 +6070,7 @@ fn a_daemon_restarted_under_a_live_loop_brings_that_loop_back_running() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
     let sock = socket_path();
-    let state = std::env::temp_dir().join(format!(
-        "sprag-promoted-under-guests-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id(),
-    ));
-    let _ = std::fs::remove_dir_all(&state);
+    let state = promoted_scratch("sprag-promoted-under-guests");
     let guard = DaemonGuard {
         sock: sock.clone(),
         state: state.clone(),
@@ -6361,12 +6383,7 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
     const NO_SUCH_PANE: u64 = 900_003;
 
     let sock = socket_path();
-    let state = std::env::temp_dir().join(format!(
-        "sprag-promoted-past-its-documents-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id(),
-    ));
-    let _ = std::fs::remove_dir_all(&state);
+    let state = promoted_scratch("sprag-promoted-past-its-documents");
     let guard = DaemonGuard {
         sock: sock.clone(),
         state: state.clone(),
@@ -6660,12 +6677,7 @@ fn a_promotion_that_changes_the_documents_ends_the_drivers_it_is_not_bringing_ba
     const FOREIGN: &str = "0000000000000000";
 
     let sock = socket_path();
-    let state = std::env::temp_dir().join(format!(
-        "sprag-promoted-leaving-a-driver-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id(),
-    ));
-    let _ = std::fs::remove_dir_all(&state);
+    let state = promoted_scratch("sprag-promoted-leaving-a-driver");
     let guard = DaemonGuard {
         sock: sock.clone(),
         state: state.clone(),
@@ -20738,13 +20750,8 @@ fn every_image_a_promotion_moves_says_which_build_it_is() {
 fn the_door_can_ask_every_image_once_a_promotion_has_moved_them() {
     use sprag_host::promotion;
 
-    let staged = sprag_scratch::scratch_root().join(format!(
-        "sprag-promoted-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id(),
-    ));
+    let staged = promoted_scratch("sprag-promoted");
     let bin = staged.join(".local/share/sprag-loop/bin");
-    let _ = std::fs::remove_dir_all(&staged);
     std::fs::create_dir_all(&bin).expect("a home of this test's own");
 
     // ── THE CONTROL FIRST: an empty promotion is exactly the state item 897 measured ─────────

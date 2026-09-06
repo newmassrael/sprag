@@ -107,7 +107,18 @@ use sprag_gate::sources::outside_strings;
 /// each needs a state root. Both went to ONE root apiece from the start, on the line above's answer
 /// — the second and third times this ratchet's question was worth asking and the first two times it
 /// was already answered before it was put.
-const HARNESS_SITES_REGISTERED: usize = 164;
+/// ⭐⭐ **AND DOWN BY FOUR ON 2026-09-06 — 164 → 160, register item 927 paying 795 down.** The four
+/// `sprag-promoted-*` cases in `sprag-host`'s CLI suite each took their own root from the operating
+/// system to build a fake `bin/` in. They now go through `promoted_scratch`, which asks
+/// `sprag_scratch::scratch_root()` once and — the reason item 927 touched them at all — reaps the
+/// directories DEAD predecessors left, which their own `remove_dir_all` never could: it deleted
+/// only the identical name, and the name carries the pid. Thirteen of them were standing, holding
+/// 2,499.6 MB.
+///
+/// ⚠ Lowered here rather than left as slack, which is what this constant's own doc demands and what
+/// register item 926 had to build into `north-star` for the same reason: a floor above the count is
+/// exactly that many new sites admitted in silence.
+const HARNESS_SITES_REGISTERED: usize = 160;
 
 /// The tree this ratchet counts — through the one door, register item 809.
 ///

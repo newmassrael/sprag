@@ -46,3 +46,10 @@ path = "src/bin/pty-demand.rs"
 [[bin]]
 name = "north-star"
 path = "src/bin/north-star.rs"
+
+# Register item 927: what a suite left behind in the machine's scratch directory, in TWO numbers —
+# 22 directories held 98.3% of 19.9 GB while 13,848 others held 99.84% of the count, so an
+# instrument reporting one of them reports that the other did not move.
+[[bin]]
+name = "scratch-litter"
+path = "src/bin/scratch-litter.rs"
