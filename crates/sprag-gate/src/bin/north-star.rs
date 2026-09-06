@@ -126,6 +126,26 @@ fn main() -> std::process::ExitCode {
             None => println!("  {number} held by: a chain that cannot be walked"),
         }
     }
+    // ⛔⛔⛔⛔⛔ AND WHAT THE CAP WOULD HAVE HELD AND NO LONGER DOES — register item 921. An empty
+    // `deferred` line has two completely different causes and a reader has to be able to tell
+    // *nothing sits deep* from *everything deep sits under closed parents*: the second is a claim
+    // about specific items and the specific ancestors that released them. Register item 914's
+    // finding, one instrument over — a green gate has to say which population it is green for.
+    let released = reading.released(cap.depth());
+    if !released.is_empty() {
+        let freed: Vec<String> = released.iter().map(ToString::to_string).collect();
+        println!(
+            "released {} the cap no longer holds: {}",
+            released.len(),
+            freed.join(" "),
+        );
+        for number in &released {
+            if let Some(links) = reading.chain(*number) {
+                let spelled: Vec<String> = links.iter().map(ToString::to_string).collect();
+                println!("  {number} was held by: {}", spelled.join(", "));
+            }
+        }
+    }
     println!(
         "unrooted {} (declared {})",
         reading.unrooted().len(),

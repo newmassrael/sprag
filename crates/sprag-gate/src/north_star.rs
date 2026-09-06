@@ -458,6 +458,11 @@ pub struct Link {
     pub named: u32,
     /// What the sentence after the number says. See [`says`].
     pub says: Says,
+    /// ⛔⛔⛔⛔⛔ **WHETHER THE PARENT IT NAMES IS STILL A DEBT** — register item 921, and the fact
+    /// [`Reading::debts_above`] counts. [`None`] where that item states no mark at all, which is
+    /// **not** the same as a closed one: see [`Reading::debts_above`] for why an unknown mark holds
+    /// the link rather than releasing it.
+    pub parent: Option<Tag>,
 }
 
 impl fmt::Display for Link {
@@ -466,11 +471,21 @@ impl fmt::Display for Link {
             number,
             named,
             says,
+            parent,
         } = self;
+        // ⚠ The parent's mark is printed BESIDE the reason and not instead of it: one says why the
+        // link exists and the other whether it still holds anything back — register item 921 split
+        // exactly those two, and a reader of a deferral needs both.
+        let mark = match parent {
+            Some(Tag::Open) => "owed",
+            Some(Tag::Paid) => "PAID",
+            Some(Tag::Out) => "OUT",
+            None => "unmarked",
+        };
         match says {
-            Says::Made(word) => write!(f, "{number} from {named} (made, `{word}`)"),
-            Says::Met(word) => write!(f, "{number} from {named} (MET, `{word}`)"),
-            Says::Neither => write!(f, "{number} from {named} (UNREAD)"),
+            Says::Made(word) => write!(f, "{number} from {named} [{mark}] (made, `{word}`)"),
+            Says::Met(word) => write!(f, "{number} from {named} [{mark}] (MET, `{word}`)"),
+            Says::Neither => write!(f, "{number} from {named} [{mark}] (UNREAD)"),
         }
     }
 }
@@ -931,11 +946,104 @@ impl Reading {
                         number: at,
                         named,
                         says: says(item.reason.as_deref().unwrap_or_default()),
+                        // ⚠ The PARENT's mark, read here rather than by the caller — register item
+                        // 921. A caller looking it up again would be a second authority on the one
+                        // fact the cap now decides on, which is the rule `depth` follows one
+                        // method down about the walk itself.
+                        parent: self
+                            .items
+                            .iter()
+                            .find(|item| item.number == named)
+                            .and_then(|item| item.tag),
                     });
                     at = named;
                 }
             }
         }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **HOW MANY STILL-OPEN DEBTS THIS ONE SITS UNDER** — register item 921, and the
+    /// number [`Reading::deferred`] and [`Reading::takeable`] actually decide on.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Two questions were one number, and only one of them is the cap's
+    ///
+    /// [`Reading::depth`] answers *how far down the causal chain does this debt sit* — a FACT about
+    /// what created what, permanent once the `@from:` lines are written. The cap asks something
+    /// else, and `debt_loop.scxml` says so in its own words: *"HOW FAR A DEBT RUN MAY RE-AIM ITSELF
+    /// AWAY FROM THE CHECKPOINT A PERSON GAVE IT"*, where *"Depth 1 is what the run finds WHILE
+    /// PAYING that item"*. **A parent that is paid is not being paid by anybody.** 부채의 부채 is a
+    /// debt whose parent is a debt; a closed parent is not one.
+    ///
+    /// # ⛔⛔⛔⛔ What the conflation cost, measured
+    ///
+    /// [`Reading::deferred`]'s own doc says a deferral is *"registered, and not to be worked until
+    /// the budget allows"*. **Nothing ever allowed.** The chain is fixed once written, so a depth
+    /// above the cap was permanent — and measured 2026-09-06T11:41:46Z, every one of the five
+    /// items the cap was holding sat under ancestors that were ALL `@ns: paid` (839 at 09-02
+    /// 23:0x, 840 at 09-03 00:5x, 833 at 09-04 22:xx), while the oldest of them had been standing
+    /// since 09-03. So the cap was holding back STANDING debt on the strength of a chain whose
+    /// upper links had been closed for days — the exact inversion [`PARENT`]'s doc names, *the
+    /// oldest debts sink fastest*, arriving from a second cause after register item 920 fixed the
+    /// first.
+    ///
+    /// # ⚠⚠ Why not simply raise the cap, which is the document's OTHER prescription
+    ///
+    /// `reaim_max`'s comment says *"If that number climbs while the register does not, this cap has
+    /// become a way of losing findings and the right answer is a bigger number, not a quieter
+    /// one."* That clause is conditioned on findings being LOST, and they are not: the register grew
+    /// by three on the day this shipped while `deferred` fell from six to five. The defect is not
+    /// *findings are lost*; it is *a deferral has no end*. The owner's number is untouched at 1.
+    ///
+    /// # ⛔⛔⛔ AN UNMARKED PARENT HOLDS THE LINK, and that is working rule 6
+    ///
+    /// A parent stating no mark is *nobody said*, not *closed*. Releasing on it would hand every
+    /// one of the ledger's 330 unmarked items the power to free its children silently, which is the
+    /// escape hatch that disables its own gate. Unknown counts; only a mark that says the parent is
+    /// no longer this loop's debt ([`Tag::Paid`] or [`Tag::Out`]) stops the walk.
+    ///
+    /// # ⚠⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN
+    ///
+    /// Paying a parent now unlocks its children. That is a path which did not exist before: a run
+    /// could in principle pay a shallow parent to reach a deep child. It is not free — paying a
+    /// parent is a whole round, and the parent has to be takeable itself — but it is real, and it
+    /// is the price of giving a deferral an end. ⚠ What it is NOT is a run boundary resetting the
+    /// count, which is the laundering [`Reading::depth`]'s own doc refused and which this leaves
+    /// refused: nothing here changes because a run started or ended.
+    #[must_use]
+    pub fn debts_above(&self, number: u32) -> Option<u32> {
+        let links = self.chain(number)?;
+        let owed = links
+            .iter()
+            .take_while(|link| !matches!(link.parent, Some(Tag::Paid | Tag::Out)))
+            .count();
+        // ⚠ The cast cannot lose, for [`Reading::depth`]'s reason: a chain is never longer than
+        // section A.
+        Some(u32::try_from(owed).unwrap_or(u32::MAX))
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ITEMS THE CAP WOULD HAVE HELD AND NO LONGER DOES** — register item 921, and
+    /// the answer to *green for WHICH population*.
+    ///
+    /// # ⚠⚠⚠ Why an empty `deferred` line has to say which kind of empty it is
+    ///
+    /// After this item [`Reading::deferred`] reads 0 on this ledger. Two completely different
+    /// facts produce that: *nothing sits deep in a chain at all*, and *everything that does sits
+    /// under parents that are closed*. The second is a claim about five specific items and the
+    /// three ancestors that released them, and a reader who cannot tell the two apart cannot audit
+    /// this item's own change — which is register item 914's finding, one instrument over.
+    ///
+    /// ⇒ So the release is PRINTED with the deferral rather than inferred from its absence: these
+    /// are the items whose causal [`Reading::depth`] is above `cap` while their
+    /// [`Reading::debts_above`] is not.
+    #[must_use]
+    pub fn released(&self, cap: u32) -> Vec<u32> {
+        self.population()
+            .into_iter()
+            .filter(|number| {
+                self.depth(*number).is_some_and(|depth| depth > cap)
+                    && self.debts_above(*number).is_some_and(|owed| owed <= cap)
+            })
+            .collect()
     }
 
     /// ⛔⛔⛔⛔⛔ **THE DEFERRALS THAT REST ON A LINK NOBODY CLASSIFIED** — register item 920, and
@@ -1052,7 +1160,10 @@ impl Reading {
     pub fn takeable(&self, cap: u32) -> Vec<u32> {
         self.population()
             .into_iter()
-            .filter(|number| self.depth(*number).is_none_or(|depth| depth <= cap))
+            // ⛔⛔⛔ [`Reading::debts_above`] AND NOT [`Reading::depth`] — register item 921. The
+            // fact and the budget were one number; the cap is about how much of the chain is still
+            // OWED, and a paid parent is not a debt.
+            .filter(|number| self.debts_above(*number).is_none_or(|owed| owed <= cap))
             .collect()
     }
 
@@ -1062,7 +1173,10 @@ impl Reading {
     pub fn deferred(&self, cap: u32) -> Vec<u32> {
         self.population()
             .into_iter()
-            .filter(|number| self.depth(*number).is_some_and(|depth| depth > cap))
+            // ⛔⛔⛔ [`Reading::debts_above`], register item 921 — and this is where the sentence
+            // one line up stopped being false. *Until the budget allows* had no allowing in it: a
+            // depth taken over a FIXED chain never fell, so every deferral was permanent.
+            .filter(|number| self.debts_above(*number).is_some_and(|owed| owed > cap))
             .collect()
     }
 
@@ -2918,15 +3032,18 @@ mod tests {
                     number: 902,
                     named: 901,
                     says: Says::Made("만들"),
+                    parent: Some(Tag::Open),
                 },
                 Link {
                     number: 901,
                     named: 900,
                     says: Says::Made("만들"),
+                    parent: Some(Tag::Open),
                 },
             ]),
             "two hops to a declared root, and 900 itself adds no link because a root is where a \
-             chain ends",
+             chain ends. ⚠ Each link carries the PARENT's mark — register item 921, the fact the \
+             cap decides on: both of these are still owed, so both still hold",
         );
         assert_eq!(
             reading.chain(900),
@@ -3029,6 +3146,179 @@ mod tests {
             }],
             "⚠ 902 IS still deferred and its chain runs through that link, so it is named — the \
              link is charged where it costs, and 901's own takeability is not this gate's subject",
+        );
+    }
+
+    // ── register item 921: the cap counts DEBTS above, not links ────────────────────────────────
+
+    /// ⚠⚠⚠⚠⚠ **THE CONTROL, AND IT IS THE WHOLE OF WHETHER THIS ITEM IS A REPAIR OR A HOLE.**
+    /// Register item 921 makes a closed parent stop holding its child, and the one thing that must
+    /// survive it is the case the cap was BUILT from: a run paying an open item, finding a second,
+    /// and finding a third while paying that. Every link there is still owed, so every one still
+    /// counts and the third is still deferred.
+    ///
+    /// ⚠⚠ Asserted FIRST and in its own test, because the change is one this round wanted: it makes
+    /// item 843 takeable. A finding that arrives with the outcome its author was hoping for has to
+    /// be held by the case that would embarrass it.
+    #[test]
+    fn a_chain_whose_parents_are_all_still_owed_defers_exactly_as_before() {
+        let reading = read(&with_a_chain());
+        assert_eq!(
+            reading.debts_above(900),
+            Some(0),
+            "a root sits under nothing",
+        );
+        assert_eq!(
+            reading.debts_above(901),
+            Some(1),
+            "found while paying 900, which is STILL OPEN — the link holds",
+        );
+        assert_eq!(
+            reading.debts_above(902),
+            Some(2),
+            "and this is the 2026-09-02 shape the cap was measured from: a chain built and chased \
+             inside one day, every link still owed",
+        );
+        assert_eq!(
+            reading.deferred(1),
+            vec![902],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 921 MUST NOT EMPTY THE CAP. If this line ever reads `[]` the \
+             change stopped being *a closed parent releases its child* and became *the cap defers \
+             nothing*, which is the one move the north star forbids",
+        );
+        assert!(
+            reading.released(1).is_empty(),
+            "and nothing was released here, because nothing above these is closed: {:?}",
+            reading.released(1),
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A PAID PARENT STOPS HOLDING ITS CHILD** — register item 921's finding, and the
+    /// sentence [`Reading::deferred`] had been making falsely: *not to be worked until the budget
+    /// allows*, where nothing ever allowed.
+    #[test]
+    fn a_parent_that_has_been_paid_no_longer_holds_the_debt_below_it() {
+        // The middle of the chain closes — 901 is paid, exactly as 840 and 839 were for days while
+        // the items under them stayed deferred.
+        let ledger = with_a_chain().replace(
+            "901. ⛔ **Found while paying 900**\n     @ns: open",
+            "901. ⛔ **Found while paying 900**\n     @ns: paid `0c034d6`",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.depth(902),
+            Some(2),
+            "⚠⚠ THE FACT IS UNCHANGED: 902 still came out of 901 which came out of 900. Register \
+             item 921 did not rewrite what created what, and a build that moved THIS number would \
+             be falsifying the chain rather than reading it",
+        );
+        assert_eq!(
+            reading.debts_above(902),
+            Some(0),
+            "⚠⚠ AND ZERO IS THE RIGHT ANSWER, not one: 부채의 부채 is a debt whose PARENT is a \
+             debt, and 902's parent is 901, which has been paid. Nothing open sits above it — what \
+             900 was to 901 is 901's history and not 902's, because the walk stops where the chain \
+             stops being owed",
+        );
+        assert!(
+            reading.deferred(1).is_empty(),
+            "so the cap lets it go: {:?}",
+            reading.deferred(1),
+        );
+        assert_eq!(
+            reading.released(1),
+            vec![902],
+            "and the instrument SAYS SO rather than leaving an empty line to be read two ways",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN UNMARKED PARENT HOLDS THE LINK** — working rule 6, and the escape hatch this
+    /// item was two lines from opening.
+    ///
+    /// This ledger carries 330 items that state no mark. Treating *nobody said* as *closed* would
+    /// hand every one of them the power to free its children silently, and nothing about the
+    /// instrument's output would look wrong.
+    #[test]
+    fn a_parent_nobody_marked_is_not_a_parent_that_was_paid() {
+        let ledger = with_a_chain().replace(
+            "901. ⛔ **Found while paying 900**\n     @ns: open",
+            "901. ⛔ **Found while paying 900**\n     nothing says what became of it",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.debts_above(902),
+            Some(2),
+            "⛔ UNKNOWN COUNTS. A mark that is absent is not a mark that says paid, and the \
+             conservative side of that is the side that keeps the deferral",
+        );
+        assert_eq!(
+            reading.deferred(1),
+            vec![902],
+            "so it is still held: {:?}",
+            reading.deferred(1),
+        );
+    }
+
+    /// An item marked [`Tag::Out`] is not this loop's debt either, so it releases what sits under
+    /// it — the same rule as [`Tag::Paid`], for a different reason that lands in the same place.
+    #[test]
+    fn a_parent_that_was_never_this_loops_debt_releases_what_is_under_it() {
+        let ledger = with_a_chain().replace(
+            "901. ⛔ **Found while paying 900**\n     @ns: open",
+            "901. ⛔ **Found while paying 900**\n     @ns: out — a rendering defect",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.debts_above(902),
+            Some(0),
+            "nothing OWED sits above it, for the paid case's reason exactly",
+        );
+        assert!(reading.deferred(1).is_empty(), "{:?}", reading.deferred(1),);
+    }
+
+    /// ⚠⚠⚠ **AND A CLOSED LINK IN THE MIDDLE STOPS THE WALK RATHER THAN BEING SKIPPED**, which is
+    /// the arithmetic a reader would most likely get wrong: what sits above a closed parent is that
+    /// parent's history, not its child's. Register item 921.
+    #[test]
+    fn the_walk_stops_at_a_closed_parent_instead_of_stepping_over_it() {
+        // 900 — the ROOT of this chain — is the one that closes, so 901 is still owed and 902 sits
+        // under exactly it.
+        let ledger = with_a_chain().replace(
+            "     @ns: open — the loop's own driver",
+            "     @ns: paid `0c034d6` — the loop's own driver",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.debts_above(901),
+            Some(0),
+            "901's only parent is 900, and 900 is paid",
+        );
+        assert_eq!(
+            reading.debts_above(902),
+            Some(1),
+            "⛔ ONE, not two and not zero: 901 is still open so its link counts, and the link ABOVE \
+             901 names a paid item so the walk ends there",
+        );
+        assert!(
+            reading.deferred(1).is_empty(),
+            "which the cap of one admits: {:?}",
+            reading.deferred(1),
+        );
+    }
+
+    /// ⚠⚠ **AND THE CAP'S OWN NUMBER IS UNTOUCHED**, which is the other half of not widening a
+    /// gate: this item changed WHAT IS COUNTED and not HOW MANY are allowed. `debt_loop.scxml`
+    /// still authors 1, and `reaim_max`'s own comment offers a bigger number for a different
+    /// condition — *findings being lost* — which this ledger does not meet.
+    #[test]
+    fn register_item_921_did_not_move_the_owners_number() {
+        let document = include_str!("../../sprag-plugin/src/debt_loop.scxml");
+        assert_eq!(
+            declared_reaim(document),
+            Ok(Reaim::Of(1)),
+            "⛔⛔⛔⛔⛔ the cap is the owner's decision of 2026-09-02 and register item 921 is not \
+             a licence to move it. If this line ever fails, read whether the round that moved it \
+             had the owner's word",
         );
     }
 
