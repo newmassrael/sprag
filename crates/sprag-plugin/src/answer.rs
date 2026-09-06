@@ -620,6 +620,53 @@ mod tests {
         assert_eq!(Answer::new(PaneId(7), consent_to("Yes")).driving(), None);
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND THE WORD REACHES THE RUN'S OWN ENDING, NOT ONLY THIS PLUGIN'S METHOD** —
+    /// register item 912's done-when ⑴, which asks for the ROW rather than the reader one step
+    /// behind it.
+    ///
+    /// # ⚠⚠⚠ Why the two gates above are not this one
+    ///
+    /// They drive `step` and ask [`Plugin::ended_because`]. Between that answer and a row a person
+    /// reads there is a [`Driver`](crate::driver::Driver) that latches the word with `or_else` and
+    /// an [`Outcome`](crate::driver::Outcome) that carries it — and the whole of item 912 is a fact
+    /// that existed at one end and did not arrive at the other. A gate that stops at the plugin
+    /// measures the half that was never in doubt.
+    ///
+    /// ⚠ `Answer` is the plugin the item was filed against, so this drives THAT one end to end;
+    /// the same road is asserted for `orchestrator` and `agent` inside their own converging gates.
+    #[test]
+    fn a_run_that_converged_because_nothing_was_asking_says_so_in_its_outcome() {
+        let (access, pane) = crate::testing::silent_peer();
+        let outcome = crate::driver::Driver::new(crate::driver::Guardrails {
+            max_iterations: 4,
+            max_cost: None,
+            max_duration: Some(std::time::Duration::from_secs(20)),
+        })
+        .run(
+            &mut Answer::new(pane, consent_to("Yes")),
+            &access,
+            &RunContext::uncancellable(),
+        );
+        assert_eq!(
+            (
+                outcome.state.clone(),
+                outcome.done_reason.as_deref(),
+                outcome.answered,
+            ),
+            (
+                crate::driver::OutcomeState::Converged,
+                Some(Closed::NothingToAnswer.word()),
+                0,
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 912: the row a person reads has to carry the ground, and \
+             `converged` alone is the word an answering run publishes too. ⚠ `answered` is beside \
+             it rather than folded into it — that counter says how many decisions this run took on \
+             somebody's behalf and is published on every ending, and a cancelled run that had \
+             already answered carries 1: {outcome:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⛔⛔⛔⛔⛔ **EVERY ENDING THIS PLUGIN CAN CLOSE UNDER HAS A WORD OF ITS OWN, AND THE WORD
     /// READS BACK** — register item 912, and the vocabulary half of it.
     ///
