@@ -56,6 +56,14 @@
 //! declaration is [`crate::north_star::Fault::RatchetGrew`]. A new item added without a mark raises
 //! the count and reds; the standing
 //! backlog is paid down by reading it. **Zero is reachable and it means the population is total.**
+//!
+//! ⚠⚠⚠ AND A COUNT *BELOW* THE DECLARATION IS [`crate::north_star::Fault::RatchetSlack`] — register
+//! item 926, and the half this paragraph described for as long as it existed without holding it. A
+//! floor left standing above the count is not a harmless margin: it is exactly that many items that
+//! can be registered unmarked before anything says a word, and two of these four ratchets had
+//! drifted that way on the real ledger. So the floor must EQUAL the count, which makes paying the
+//! backlog down a two-part edit — mark the item, lower the floor — and the refusal names the number
+//! to write so that stays one line rather than an investigation.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -340,6 +348,20 @@ fn safe_argument(token: &str) -> bool {
 /// at once is the kind of retroactive sweep that gets abandoned half-done. The ratchet holds the
 /// standing count instead: a NEW item must state its parentage, because adding one without it
 /// raises the count above the floor and reds.
+///
+/// # ⛔⛔⛔⛔⛔ That last sentence was FALSE for as long as nobody re-asked it — register item 926
+///
+/// It is a claim about *today's* floor, not about the code, and it is only true while the floor
+/// still touches the count. Measured 2026-09-06 12:43 UTC: this declaration said 386 against 382
+/// counted, so **four items could have been registered with no parentage and this sentence would
+/// have been a lie about every one of them.** Item 823 repeats the claim and was equally stale.
+///
+/// ⚠⚠ What makes it true now is not that somebody corrected the number — that lasts until the next
+/// payment moves the count — but that [`Fault::RatchetSlack`] re-asks it on every reading and
+/// refuses a floor standing above the count. **A promise in a doc comment is kept by a gate or it
+/// is not kept.** Re-derived rather than trusted: with the floors brought down, adding one unmarked
+/// item to a copy of the real ledger takes it from rc=0 to rc=1, which is the experiment item 926
+/// ran to show the opposite.
 pub const PARENT_DECLARATION: &str = "@from-unclassified:";
 
 /// ⛔⛔⛔⛔⛔ **THE LINE THE LEDGER DECLARES ITS OWN COUNT OF PAID ITEMS THAT NAME NO COMMIT**:
@@ -753,6 +775,35 @@ pub enum Fault {
         /// The line as written.
         line: String,
     },
+    /// A declared floor standing **above** what this reading counted — register item 926.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why slack is a RED and not a tidy-up
+    ///
+    /// The four ratchets above hold *may shrink, never grow*, and each was written as a single
+    /// comparison: `counted > floor`. That leaves the other direction unwatched, and the gap it
+    /// leaves is not cosmetic — **it is exactly as many free unmarked items as the gap is wide.**
+    /// Measured on this repository 2026-09-06 12:43 UTC: `@sev-unclassified:` declared 49 against
+    /// 47 counted and `@from-unclassified:` declared 386 against 382, so two items could be
+    /// registered with no severity and four with no parentage, and the ratchet would have stayed
+    /// green through every one of them.
+    ///
+    /// ⚠⚠ That made two sentences elsewhere FALSE while both read as enforced: this file's own
+    /// [`PARENT_DECLARATION`] doc says *"adding one without it raises the count above the floor and
+    /// reds"*, and register item 823 says the same. They were true on the day the floors were
+    /// written and nothing re-asked. **A ratchet is only as tight as its last honest reading.**
+    ///
+    /// ⚠ ONE VARIANT FOR ALL FOUR, unlike [`Fault::RatchetGrew`] and its three siblings, and that
+    /// is a claim rather than brevity: growth needs per-backlog advice (*mark the item*, *say
+    /// whether it is critical*), while slack has exactly one remedy whatever the backlog — bring
+    /// the floor down to what is actually there. The token is carried so the message can name it.
+    RatchetSlack {
+        /// The declaration whose floor is standing too high, e.g. [`SEVERITY_DECLARATION`].
+        token: &'static str,
+        /// What this reading counted.
+        counted: usize,
+        /// What the declaration claims.
+        declared: usize,
+    },
 }
 
 impl fmt::Display for Fault {
@@ -793,6 +844,20 @@ impl fmt::Display for Fault {
                 f,
                 "found {found} `{DECLARATION}` lines, need exactly 1 — a ratchet with no floor \
                  holds nothing",
+            ),
+            // ⚠⚠ THE MESSAGE SAYS WHAT TO DO, and the number to do it with — register item 926's
+            // second clause, and the shape item 794's ratchet already uses. A refusal that only
+            // names the discrepancy makes the reader re-derive the fix the tool already knows.
+            Self::RatchetSlack {
+                token,
+                counted,
+                declared,
+            } => write!(
+                f,
+                "the ledger declares {declared} on `{token}` but this reading counted {counted}: a \
+                 floor ABOVE the count is slack, and {} more item(s) could be registered unmarked \
+                 before anything went red. Lower `{token}` to {counted}",
+                declared - counted,
             ),
             Self::UnreadableDeclaration { line } => write!(
                 f,
@@ -1767,6 +1832,39 @@ fn declared_floor(
     }
 }
 
+/// Judge one backlog against the floor its ledger declares — **in both directions**.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is a function, and why all four go through it
+///
+/// Register item 926. The four ratchets were four copies of `if counted > floor { … }`, and the
+/// missing half — a floor standing *above* the count — was missing from all four at once, because
+/// a shape written four times is corrected in one place and left in three. That is register item
+/// 213 exactly, and it is why *all four are held* is arranged here as a property of the code rather
+/// than as a list somebody keeps in step: a fifth ratchet added tomorrow gets both directions by
+/// calling this, and cannot get only one by forgetting.
+///
+/// ⚠ `declared` of [`None`] returns without a word, and that is not a hole: [`declared_floor`] has
+/// already faulted for the missing or unreadable line, and a second complaint about the same
+/// absence would be noise. A ratchet with no floor is refused there, not weakened here.
+fn ratchet(
+    counted: usize,
+    declared: Option<usize>,
+    token: &'static str,
+    grew: impl FnOnce(usize, usize) -> Fault,
+    faults: &mut Vec<Fault>,
+) {
+    let Some(floor) = declared else { return };
+    if counted > floor {
+        faults.push(grew(counted, floor));
+    } else if counted < floor {
+        faults.push(Fault::RatchetSlack {
+            token,
+            counted,
+            declared: floor,
+        });
+    }
+}
+
 /// Read section A of a ledger and judge it.
 ///
 /// The `declared` floor is read from the same text: see [`DECLARATION`].
@@ -1994,38 +2092,53 @@ pub fn read(text: &str) -> Reading {
         });
     }
 
+    // ⛔⛔⛔⛔ ALL FOUR RATCHETS ARE JUDGED IN BOTH DIRECTIONS, THROUGH ONE DOOR — register item
+    // 926. Each of these was `if counted > floor`, which holds *may shrink, never grow* and says
+    // nothing when the floor drifts ABOVE the count. Two of the four had drifted on the real
+    // ledger, and the gap was free room for unmarked items. See [`ratchet`].
     let unmarked = items.iter().filter(|item| item.tag.is_none()).count();
-    if let Some(floor) = declared
-        && unmarked > floor
-    {
-        faults.push(Fault::RatchetGrew {
-            counted: unmarked,
-            declared: floor,
-        });
-    }
+    ratchet(
+        unmarked,
+        declared,
+        DECLARATION,
+        |counted, declared| Fault::RatchetGrew { counted, declared },
+        &mut faults,
+    );
 
+    // ⚠⚠⚠ THE POPULATION HERE IS *OPEN* ITEMS, AND THAT IS THE MEASURED CHOICE, NOT AN OVERSIGHT.
+    // Item 926 asks which way this backlog should be counted now that slack reds, and names the
+    // alternative: count EVERY item rather than only open ones, so that paying does not move the
+    // number and the floor never has to follow. Measured on this ledger, 2026-09-06 13:1x UTC:
+    //
+    //   open items with no severity  ...  47      shrinks as unclassified items are paid
+    //   ALL items with no severity   ... 380      a paid item still has none, so it never shrinks
+    //
+    // The wider population is eight times larger AND monotonically non-decreasing — paying an item
+    // does not take it out, so the floor could never be tightened by doing the work. That is the
+    // *"ratchet that punishes payment"* this file's own doc warns about, arriving by the other
+    // road. So the narrow population stays, and the cost is accepted and named: a round that pays
+    // an unclassified item now goes red until it lowers the floor by one. The refusal names the
+    // number to write, which is what keeps that a one-line edit rather than an investigation.
     let unranked = items
         .iter()
         .filter(|item| item.tag == Some(Tag::Open) && item.severity.is_none())
         .count();
-    if let Some(floor) = severity_declared
-        && unranked > floor
-    {
-        faults.push(Fault::SeverityRatchetGrew {
-            counted: unranked,
-            declared: floor,
-        });
-    }
+    ratchet(
+        unranked,
+        severity_declared,
+        SEVERITY_DECLARATION,
+        |counted, declared| Fault::SeverityRatchetGrew { counted, declared },
+        &mut faults,
+    );
 
     let unrooted = items.iter().filter(|item| item.parent.is_none()).count();
-    if let Some(floor) = parent_declared
-        && unrooted > floor
-    {
-        faults.push(Fault::ParentRatchetGrew {
-            counted: unrooted,
-            declared: floor,
-        });
-    }
+    ratchet(
+        unrooted,
+        parent_declared,
+        PARENT_DECLARATION,
+        |counted, declared| Fault::ParentRatchetGrew { counted, declared },
+        &mut faults,
+    );
 
     // ⛔⛔⛔⛔⛔ AND THE PAID MARKS THAT NAME NO COMMIT — register item 902, held by the same
     // ratchet its three neighbours are. See [`PAID_DECLARATION`] for why an item that has LEFT the
@@ -2034,14 +2147,13 @@ pub fn read(text: &str) -> Reading {
         .iter()
         .filter(|item| item.tag == Some(Tag::Paid) && item.commits.is_empty())
         .count();
-    if let Some(floor) = paid_declared
-        && unnamed > floor
-    {
-        faults.push(Fault::PaidRatchetGrew {
-            counted: unnamed,
-            declared: floor,
-        });
-    }
+    ratchet(
+        unnamed,
+        paid_declared,
+        PAID_DECLARATION,
+        |counted, declared| Fault::PaidRatchetGrew { counted, declared },
+        &mut faults,
+    );
 
     // ⚠ The chain is judged AFTER every item is known: a parent may be filed below its child, and
     // reading forward-only would call a legal chain dangling.
@@ -2454,17 +2566,139 @@ mod tests {
     /// And paying the backlog down is NOT a fault — otherwise the ratchet would punish the only
     /// move that ends it, and register item 823 would have no zero.
     #[test]
-    fn marking_an_item_shrinks_the_backlog_without_complaint() {
-        let ledger = LEDGER.replace(
+    fn marking_an_item_shrinks_the_backlog_and_the_floor_must_follow_it_down() {
+        let marked = LEDGER.replace(
             "897. ⛔ **Unmarked and quiet**\n     no mark, no mention",
             "897. ⛔ **Now classified**\n     @ns: out — a build-system item\n     no mention",
         );
-        let reading = read(&ledger);
+        let reading = read(&marked);
         assert!(reading.unclassified().is_empty(), "the backlog emptied");
+
+        // ⛔⛔⛔⛔⛔ THIS ASSERTION IS THE REVERSE OF WHAT IT WAS, AND THE REVERSAL IS THE POINT —
+        // register item 926. It used to read *"counting fewer than declared is the goal, not a
+        // fault"* and assert `is_green()`. That sentence is what left the other direction
+        // unwatched: on the real ledger the floors then drifted two and four above their counts,
+        // and that gap was room for six items to be registered unmarked with nothing going red.
+        //
+        // ⚠ Shrinking the count is still the goal. What is refused is shrinking it and LEAVING THE
+        // FLOOR where it was, because a floor that no longer touches the count has stopped being a
+        // ratchet and become a budget.
+        assert!(
+            reading.faults.contains(&Fault::RatchetSlack {
+                token: DECLARATION,
+                counted: 0,
+                declared: 1,
+            }),
+            "paying the backlog down without lowering the floor leaves slack, and slack is free \
+             room for the next unmarked item: {:?}",
+            reading.faults,
+        );
+
+        // …and lowering it in the same edit is green. This is the whole ritual item 926's third
+        // clause asks for, and the refusal above names the number to write, so it is one line.
+        let lowered = marked.replace("@ns-unclassified: 1", "@ns-unclassified: 0");
+        let reading = read(&lowered);
         assert!(
             reading.is_green(),
-            "counting fewer than declared is the goal, not a fault: {:?}",
+            "the floor now equals the count, which is what a tightened ratchet looks like: {:?}",
             reading.faults,
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A FLOOR ABOVE THE COUNT IS REFUSED, ON EVERY ONE OF THE FOUR** — register item
+    /// 926, and the mutation it asks for by name: *put a fixture's floor one above what it counts,
+    /// and if the reading is green the gate is not there.*
+    ///
+    /// # ⚠⚠ Why the four are a TABLE and not four test functions
+    ///
+    /// The defect being paid was one shape written four times with the second half missing from
+    /// every copy. Four hand-written cases would reproduce exactly that: the fifth ratchet somebody
+    /// adds is covered only if they remember to add a fifth case. Here the declarations are walked,
+    /// so a new one is covered by construction — and the count is asserted, so a table that
+    /// silently lost an entry cannot pass as *all four*.
+    #[test]
+    fn a_floor_standing_above_the_count_is_refused_on_every_ratchet() {
+        // The floors the fixture declares, each with the count it actually sits on.
+        let floors: [(&str, usize); 4] = [
+            (DECLARATION, 1),
+            (SEVERITY_DECLARATION, 0),
+            (PARENT_DECLARATION, 3),
+            (PAID_DECLARATION, 1),
+        ];
+        assert_eq!(
+            floors.len(),
+            4,
+            "this repository declares four floors; a table that lost one would still read as \
+             covering every ratchet",
+        );
+
+        // ⚠ THE FIXTURE SITS EXACTLY ON ITS FLOORS, asserted rather than assumed — every case
+        // below is a ONE-STEP move off this point, and if the fixture already carried slack the
+        // moves would prove nothing.
+        assert!(
+            !read(LEDGER)
+                .faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::RatchetSlack { .. })),
+            "the fixture must start with its floors on its counts: {:?}",
+            read(LEDGER).faults,
+        );
+
+        let mut missed: Vec<String> = Vec::new();
+        for (token, count) in floors {
+            let raised = LEDGER.replace(
+                &format!("{token} {count}"),
+                &format!("{token} {}", count + 1),
+            );
+            assert_ne!(
+                raised, LEDGER,
+                "the mutation for `{token}` changed nothing, so its case is asserting about the \
+                 unmutated fixture",
+            );
+            let reading = read(&raised);
+            let found = reading.faults.iter().any(|fault| {
+                matches!(
+                    fault,
+                    Fault::RatchetSlack { token: named, counted, declared }
+                        if *named == token && *counted == count && *declared == count + 1
+                )
+            });
+            if !found {
+                missed.push(format!(
+                    "`{token}` raised to {}: {:?}",
+                    count + 1,
+                    reading.faults
+                ));
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "⛔ ITEM 926: a floor one above the count went unrefused, which is one free unmarked \
+             item nothing would have said a word about:\n{}",
+            missed.join("\n"),
+        );
+    }
+
+    /// ⚠⚠ **AND THE REFUSAL SAYS WHAT TO DO** — register item 926's second clause. A gate that
+    /// only names the discrepancy makes the reader work out the fix the tool already holds; item
+    /// 794's ratchet sets the house style by naming the number to write.
+    #[test]
+    fn a_slack_refusal_names_the_number_to_write() {
+        let raised = LEDGER.replace("@sev-unclassified: 0", "@sev-unclassified: 3");
+        let reading = read(&raised);
+        let said = reading
+            .faults
+            .iter()
+            .find(|fault| matches!(fault, Fault::RatchetSlack { .. }))
+            .map(ToString::to_string)
+            .expect("a floor three above the count is refused");
+        assert!(
+            said.contains("Lower `@sev-unclassified:` to 0"),
+            "the remedy and its number belong in the sentence: {said}",
+        );
+        assert!(
+            said.contains("3 more item(s)"),
+            "and so does what the slack was WORTH, which is the reason it is a red: {said}",
         );
     }
 
@@ -3365,12 +3599,20 @@ mod tests {
     /// A ledger shaped like the day item 843 was registered: one critical item standing, and an
     /// ORDINARY item that is red right now.
     fn with_a_standing_red() -> String {
-        LEDGER.replace(
-            "899. ✅✅ **PAID 2026-09-02**",
-            "898. ⛔ **An ordinary item that is RED**\n     @ns: open\n     @sev: ordinary\n     \
-             @from: none\n     @red: -p sprag-gate --lib north_star\n\n899. ✅✅ **PAID \
-             2026-09-02**",
-        )
+        LEDGER
+            .replace(
+                "899. ✅✅ **PAID 2026-09-02**",
+                "898. ⛔ **An ordinary item that is RED**\n     @ns: open\n     @sev: ordinary\n     \
+                 @from: none\n     @red: -p sprag-gate --lib north_star\n\n899. ✅✅ **PAID \
+                 2026-09-02**",
+            )
+            // ⚠⚠ AND THE FLOOR FOLLOWS THE LEDGER THIS BUILDS — register item 926. The block above
+            // is inserted ABOVE the existing 898 and therefore wins the topmost-block tie, so item
+            // 898 acquires a `@from: none` it did not have and the unrooted count falls 3 → 2.
+            // Leaving the declaration at 3 would make every caller of this helper carry a slack
+            // fault about a discrepancy the helper itself created. ⛔ This is the declaration being
+            // made TRUE of its own text, not a guard being loosened: the count really is 2 here.
+            .replace("@from-unclassified: 3", "@from-unclassified: 2")
     }
 
     /// ⛔⛔⛔⛔⛔ **THE FINDING: A RED IS IN THE SET THOUGH A CRITICAL ITEM STANDS** — register item
