@@ -839,6 +839,32 @@ pub struct Banked {
     pub unit: std::borrow::Cow<'static, str>,
 }
 
+impl Banked {
+    /// ⛔⛔⛔⛔⛔ **WHETHER THIS COUNTED AND FOUND NOTHING** — register item 915, and the predicate
+    /// `sprag_host::runs::Tally` needs so it can ask a POPULATION question about this counter.
+    ///
+    /// # ⚠⚠ Why the type owns it rather than the reader that wants it
+    ///
+    /// `sprag_host::runs::PersistedRun::sampled` states the rule its every arm follows: *asked
+    /// through the tables' own `is_empty`, never through a sum written here* — [`Carried::is_empty`]
+    /// beside it, and item 895's finding is what happens otherwise. **Measured 2026-09-05: four
+    /// readers each wrote their own filter over the run store and two counts of one population came
+    /// out 8 against 10, both right about their own predicate.** A `completed == 0` typed at the
+    /// reader would be a fifth.
+    ///
+    /// ⚠⚠ **AND IT IS ONLY [`completed`](Self::completed).** [`unit`](Self::unit) is what the
+    /// plugin CALLS one of them — a label, present on every value including this one — so a
+    /// predicate that read it would answer *this run banked nothing* differently for a plugin that
+    /// spells its noun `""`. The count is the fact; the noun is how to say it.
+    ///
+    /// ⚠ `true` here is **counted, and none finished**, never *nobody was counting* — that one is
+    /// [`None`] one level up, and keeping the two apart is the whole of item 604.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.completed == 0
+    }
+}
+
 /// ONE TRANSITION A STEP'S MACHINE ACTUALLY TOOK, in that machine's own words.
 ///
 /// # ⚠⚠⚠⚠⚠ Why the walk stopped being a sentence

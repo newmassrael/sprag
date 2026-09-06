@@ -3059,17 +3059,31 @@ fn report_tally(reported: &Value, key: &str) -> Option<u32> {
         .and_then(|count| u32::try_from(count).ok())
 }
 
-/// ⛔⛔⛔⛔⛔ **A COUNTER A STORED RUN CARRIES** — register item 895, the closed set `counted`
-/// writes and [`PersistedRun::sampled`] answers about.
+/// ⛔⛔⛔⛔⛔ **A COUNTER A STORED RUN CARRIES** — register item 895, the set
+/// [`PersistedRun::sampled`] answers a population question about.
 ///
-/// ⚠ `counted` is SPELLED rather than linked: it is crate-private and this type is public, so an
-/// intra-doc link to it is `private_intra_doc_links` under `-D warnings` — register item 365, met
-/// again here and refused by the commit hook before this sentence existed.
+/// # ⛔⛔⛔⛔⛔ This doc used to name `counted` as the authority, and that was WRONG BY TWO
+///
+/// It read *"the closed set `counted` writes"*. Counting the call sites rather than reading the
+/// sentence — register item 914's method, applied to this type by item 915 — says that helper
+/// writes **five** columns (`deliveries`, `folds_by_reason`, `delivered_by_road`,
+/// `said_by_sentence`, `width_withheld`) and does not write `checks`, which is in this enum, nor
+/// `banked`, which now is. A writer is not the definition. **The definition is the question**: a
+/// column a rate may be taken over, which is what [`Sampled`] partitions and what `sprag-samples`
+/// prints.
+///
+/// # ⛔⛔⛔⛔⛔ And the sentence below claimed a derivation the gate did not do — item 915
+///
+/// It has said *"derives the record's real counter columns from the TYPE"* since item 895, and
+/// measured 2026-09-06T02:43:58Z the gate derived them from a FIXTURE: a column counted only if
+/// that fixture both filled it and cleared it. **Six columns escaped**, by two different routes,
+/// and item 913 walked five of them straight past a gate whose message promises to catch exactly
+/// that. It derives from the type now — see the gate, which destructures [`PersistedRun`] with no
+/// `..`.
 ///
 /// ⚠ A closed enum with an [`ALL`](Self::ALL) rather than a list at each reader, this workspace's
-/// rule for a vocabulary: a fifth counter added to [`PersistedRun`] and forgotten here is caught by
-/// `every_tally_this_record_carries_is_one_a_population_can_be_asked_about`, which derives the
-/// record's real counter columns from the TYPE and compares them with this array.
+/// rule for a vocabulary: a counter added to [`PersistedRun`] and forgotten here is a compile error
+/// in that gate until somebody classifies it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tally {
     /// [`PersistedRun::deliveries`].
@@ -3085,16 +3099,49 @@ pub enum Tally {
     /// ⛔ [`PersistedRun::checks`] — register item 913, and the sixth arrived the way this type's
     /// own doc predicted the fifth would.
     Checks,
+    /// ⛔⛔⛔⛔⛔ [`PersistedRun::answered`] — register item 915, and the first of six this type
+    /// had no word for while `sprag-samples` printed a partition that could not include them.
+    ///
+    /// ⚠⚠ **A SCALAR IS A COUNTER, and the question is the SAME question.** *How many stored runs
+    /// can say whether this product pressed a key on somebody's behalf?* is exactly the shape
+    /// [`Sampled`] exists to answer, and it had no arm to answer it in: absent from
+    /// `sprag-samples`' output entirely, measured 2026-09-06T02:45:43Z over 243 rows.
+    Answered,
+    /// ⛔⛔⛔ [`PersistedRun::screened`] — register item 915, on [`Answered`](Self::Answered)'s
+    /// argument and beside it for the reason `sprag_plugin::Outcome::screened` states: they are
+    /// OPPOSITE decisions, so one word over both would answer *what did my run let it do?* with a
+    /// count that includes every refusal.
+    Screened,
+    /// 🎯 [`PersistedRun::deferred`] — register item 915. It is read ACROSS runs or not at all
+    /// (that column's own stated rule), and *across runs* is precisely a population question.
+    Deferred,
+    /// 🎯 [`PersistedRun::unchecked`] — register item 915, on [`Deferred`](Self::Deferred)'s
+    /// argument.
+    Unchecked,
+    /// 🎯 [`PersistedRun::unadmitted`] — register item 915. A SUBSET of
+    /// [`Deferred`](Self::Deferred) and never a second total, which does not change by being
+    /// countable: a subset still has a population it is a subset OF.
+    Unadmitted,
+    /// ⛔⛔ [`PersistedRun::banked`] — register item 915, and the one this item found that is not a
+    /// scalar. It was outside this enum for a THIRD reason again: the fixture never filled it, so
+    /// no amount of clearing columns would have surfaced it.
+    Banked,
 }
 
 impl Tally {
     /// Every counter, in the order [`PersistedRun`] declares them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 12] = [
         Self::Deliveries,
         Self::FoldsByReason,
         Self::DeliveredByRoad,
         Self::SaidBySentence,
         Self::WidthWithheld,
+        Self::Banked,
+        Self::Answered,
+        Self::Screened,
+        Self::Deferred,
+        Self::Unchecked,
+        Self::Unadmitted,
         Self::Checks,
     ];
 
@@ -3109,6 +3156,14 @@ impl Tally {
             Self::SaidBySentence => "said_by_sentence",
             Self::WidthWithheld => "width_withheld",
             Self::Checks => "checks",
+            // ⛔ THE COLUMN'S OWN NAME, register item 915 — the gate compares these words with the
+            // record's serialised keys, so a word invented here would vouch for no column.
+            Self::Answered => "answered",
+            Self::Screened => "screened",
+            Self::Deferred => "deferred",
+            Self::Unchecked => "unchecked",
+            Self::Unadmitted => "unadmitted",
+            Self::Banked => "banked",
         }
     }
 }
@@ -3894,6 +3949,31 @@ impl PersistedRun {
                 .checks
                 .clone()
                 .map(|it| sprag_plugin::Checks::from(it).is_empty()),
+            // ⛔⛔⛔⛔⛔ AND THE COUNTER THAT IS NOT A TABLE — register item 915. It goes through
+            // `sprag_plugin::Banked::is_empty`, added there for this, so the rule above holds
+            // unbroken: the type owns the predicate and this is not a fifth reader spelling one.
+            Tally::Banked => self
+                .banked
+                .clone()
+                .map(|it| sprag_plugin::Banked::from(it).is_empty()),
+            // ⛔⛔⛔⛔⛔ AND THE FIVE SCALARS — register item 915, and here the rule above is MET
+            // rather than bent, which has to be said because the shape is different.
+            //
+            // ⚠⚠ **THE RULE'S REASON IS A SUM, AND THERE IS NOTHING HERE TO SUM.** It exists
+            // because `Deliveries::is_empty` folds five parts, so a reader that re-spelled the fold
+            // would drift from the type's own answer — item 895 measured two counts of one
+            // population coming out 8 against 10. A `u32` has ONE part: `== 0` is not a re-spelling
+            // of a fold, it is the value. Asking `u32` for an `is_empty` would be a method on the
+            // integer, which is a worse answer than saying this out loud.
+            //
+            // ⚠ AND `Some(0)` IS *IT COUNTED AND FOUND NONE*, `None` IS *NOBODY COUNTED* — the
+            // three arms below land exactly where register item 891 put the distinction, which is
+            // why these columns are `Option<u32>` and not `u32`.
+            Tally::Answered => self.answered.map(|count| count == 0),
+            Tally::Screened => self.screened.map(|count| count == 0),
+            Tally::Deferred => self.deferred.map(|count| count == 0),
+            Tally::Unchecked => self.unchecked.map(|count| count == 0),
+            Tally::Unadmitted => self.unadmitted.map(|count| count == 0),
         };
         match empty {
             None => Sampled::Unsaid,
@@ -10149,14 +10229,40 @@ mod tests {
     /// same way puts both runs OUTSIDE the denominator. So this gate drives the two shapes through
     /// the stored record and holds that both come back [`Sampled::Counted`].
     ///
-    /// # ⚠⚠ And the third assertion is the one that covers the NEXT tally
+    /// # ⛔⛔⛔⛔⛔ And the third assertion CLAIMED to derive from the type and derived from a
+    /// FIXTURE — register item 915
     ///
-    /// [`Tally::ALL`] is a hand-ordered array, which is the shape item 891 ⑶ warned about: fix one
-    /// key and the next lands in the same place. So the record's REAL counter columns are derived
-    /// from the type — write one row twice, once holding the tallies and once with them cleared
-    /// through the fields, and the keys whose value goes null are exactly theirs — and compared
-    /// with what this enum claims. A fifth counter added to [`PersistedRun`] and not named here is
-    /// red before anybody quotes a number over it.
+    /// It wrote one row twice, once holding the tallies and once with them cleared, and called the
+    /// keys that went null the record's real counter columns. That population is decided by the
+    /// fixture, not by [`PersistedRun`], and it leaks **two different ways**:
+    ///
+    /// | escape | columns that took it | would more clear-lines have found it? |
+    /// |---|---|---|
+    /// | the fixture did not CLEAR it | `answered`, `screened` | yes |
+    /// | the fixture did not FILL it | `deferred`, `unchecked`, `unadmitted`, `banked` | ⛔ **no** |
+    ///
+    /// **Measured 2026-09-06T02:43:58Z** by clearing all six in that block: only `answered` and
+    /// `screened` appeared, because `an_outcome`'s other four are [`None`] and the derivation drops
+    /// a null before it ever compares. So the second escape is the dangerous one — it is invisible
+    /// to the obvious repair.
+    ///
+    /// ⚠⚠⚠ **AND THE COST IS MEASURED, NOT HYPOTHETICAL.** Item 913 added five counters to
+    /// [`PersistedRun`] and this gate — whose own message promises to catch exactly that — stayed
+    /// green for all five. `sprag-samples`, the mouth item 895 built so a round could quote a number
+    /// with its predicate attached, printed six tallies over 243 rows at 2026-09-06T02:45:43Z and
+    /// could not be asked about any of the six.
+    ///
+    /// # 🎯 So the population comes from the TYPE, by the device this file already trusts
+    ///
+    /// [`PersistedRun`] is destructured with **no `..`**: a field added to that record stops this
+    /// file compiling (`E0027`) until somebody has said whether it is a counter, and neither escape
+    /// above exists any more because nothing here depends on what a fixture holds.
+    /// `every_fact_an_ending_carries_either_reaches_a_row_or_says_why_it_cannot` and
+    /// `an_ending_that_crossed_a_driver_boundary_reaches_a_row_or_says_why_it_cannot` are the same
+    /// device one type over, and this is the third.
+    ///
+    /// ⚠⚠ **THE EXEMPTIONS ARE COUNTED, NOT MERELY SPELLED** — register item 903's rule. A column
+    /// quietly joining the not-a-counter list has to move a number.
     #[test]
     fn every_tally_this_record_carries_is_one_a_population_can_be_asked_about() {
         /// A stored row carrying `deliveries` and nothing else counted.
@@ -10242,47 +10348,294 @@ mod tests {
 
         // ── And no tally is missing from the vocabulary ───────────────────────────────────────
         //
-        // ⚠ DERIVED, NOT NAMED — the rule `watching-zenoh` handed this register and the one item
-        // 891's gate above uses: take the population from the record's own structure, because a
-        // hand list is what goes stale.
+        // ⛔⛔⛔⛔⛔ **DERIVED FROM THE TYPE, WHICH IS WHAT THIS BLOCK USED TO CLAIM AND NOT DO** —
+        // register item 915. It wrote one row twice and called the keys that went null the
+        // counters, so the population was whatever the fixture happened to fill AND clear; six
+        // columns were outside it, four of them by a route no extra clear-line reaches.
         //
-        // ⚠ THE ROW HAS TO HOLD EVERY ONE OF THEM, or the difference below finds only the one this
-        // fixture bothered to fill and the gate passes while claiming a population of one. The
-        // first draft did exactly that and said so: `left: ["deliveries"]`.
-        // ⚠⚠ AND IT IS WRITTEN AS A COUNT NOBODY TYPES — the list used to say *all four* in prose
-        // and the fifth column (item 866(2)) arrived the day after the fourth, exactly as the
-        // refusal below predicts. The arms are enumerated; the number is not.
-        let holding = {
-            let mut row = stored(Some(sprag_plugin::Deliveries::NONE));
-            row.folds_by_reason = Some(sprag_plugin::FoldsByReason::NONE.into());
-            row.delivered_by_road = Some(sprag_plugin::DeliveredByRoad::NONE.into());
-            row.said_by_sentence = Some(sprag_plugin::SaidBySentence::NONE.into());
-            row.width_withheld = Some(sprag_plugin::WidthWithheld::NONE.into());
-            // ⛔ AND THE SIXTH — register item 913. `an_outcome()` already fills it through the
-            // `Done` arm, and it is set here anyway so this block stays the one list of what the
-            // row must HOLD: a column filled only by the fixture's other half is a column the
-            // difference below would credit to nobody.
-            row.checks = Some(sprag_plugin::Checks::NONE.into());
-            row
-        };
-        let full = serde_json::to_value(holding.clone()).expect("a record serialises");
-        let cleared = {
-            let mut row = holding;
-            row.deliveries = None;
-            row.folds_by_reason = None;
-            row.delivered_by_road = None;
-            row.said_by_sentence = None;
-            row.width_withheld = None;
-            row.checks = None;
-            serde_json::to_value(row).expect("and so does the cleared one")
-        };
-        let mut columns: Vec<&str> = full
+        // ⚠⚠ NOW EVERY FIELD IS CLASSIFIED IN A PATTERN WITH NO `..`, so a column added to
+        // `PersistedRun` is `E0027` here until somebody says which it is. Nothing below reads a
+        // fixture, which is the whole repair.
+        let row = an_empty_row();
+        let PersistedRun {
+            // ── The counters: a rate may be taken over each of these ─────────────────────────
+            deliveries,
+            folds_by_reason,
+            delivered_by_road,
+            said_by_sentence,
+            width_withheld,
+            banked,
+            answered,
+            screened,
+            deferred,
+            unchecked,
+            unadmitted,
+            checks,
+            // ── Not counters. Each says what it is instead, and the COUNT is asserted below ──
+            //
+            // ⚠ `id`, `label`, `plugin`-shaped names and the rest are IDENTITY or POSITION: asking
+            // *how many rows have an id* is a question with one answer, so `Sampled` would
+            // partition every row into `counted` and say nothing.
+            id,
+            label,
+            // ⚠⚠ `iterations` IS A COUNT AND IS DELIBERATELY NOT A TALLY, which is the sharpest
+            // exemption here. It is a bare `u32` with no `None`, so it cannot ever answer
+            // `Sampled::Unsaid` — *nobody counted* is unrepresentable — and a partition whose third
+            // arm is unreachable is the shape rule 5 refuses. `Sampled`'s own doc uses this column
+            // as the DISCRIMINATOR for that reason: it predates every counter here, so a zero in it
+            // means the run took no step rather than that nobody was counting.
+            iterations,
+            cost,
+            unit,
+            moved_at,
+            ended_at,
+            ran_from,
+            ran_to,
+            finished,
+            outcome,
+            ceiling,
+            output,
+            build,
+            which_run,
+            driver,
+            driving,
+            opened_by_session,
+            at,
+            document,
+            // ⚠ The three context readings are MEASUREMENTS of one session, not counts of events —
+            // *how full did it get* has no population question of this shape: a `0` is a reading
+            // that could not be taken, which `Sampled::Zeroed` would report as *counted none*.
+            context_ceiling,
+            context_high_water,
+            context_break_even,
+            overridden,
+            place,
+            stood_down,
+            stood_down_by,
+            cancelled_by,
+            done_reason,
+            failure,
+            blocked_by,
+            // ⚠ `briefed` is three BYTE LENGTHS, not a tally of events — item 719's own framing.
+            // A brief of zero bytes is a run nobody briefed, which `briefing_sentence` already
+            // refuses to say anything about, so the partition would be over a different question.
+            briefed,
+            request,
+            tree,
+        } = row;
+        // ⚠⚠ EVERY BOUND NAME IS READ, WHICH IS WHAT KEEPS THE PATTERN HONEST rather than a shape
+        // `-D warnings` would invite somebody to shorten — and shortening it with `..` is the exact
+        // edit that puts this gate back where item 915 found it. The first draft bound the twelve
+        // and read none of them, and clippy said so twelve times.
+        let counters: Vec<(&'static str, bool, Tally)> = vec![
+            (
+                "deliveries",
+                deliveries.is_none() || deliveries.is_some(),
+                Tally::Deliveries,
+            ),
+            (
+                "folds_by_reason",
+                folds_by_reason.is_none() || folds_by_reason.is_some(),
+                Tally::FoldsByReason,
+            ),
+            (
+                "delivered_by_road",
+                delivered_by_road.is_none() || delivered_by_road.is_some(),
+                Tally::DeliveredByRoad,
+            ),
+            (
+                "said_by_sentence",
+                said_by_sentence.is_none() || said_by_sentence.is_some(),
+                Tally::SaidBySentence,
+            ),
+            (
+                "width_withheld",
+                width_withheld.is_none() || width_withheld.is_some(),
+                Tally::WidthWithheld,
+            ),
+            (
+                "banked",
+                banked.is_none() || banked.is_some(),
+                Tally::Banked,
+            ),
+            (
+                "answered",
+                answered.is_none() || answered.is_some(),
+                Tally::Answered,
+            ),
+            (
+                "screened",
+                screened.is_none() || screened.is_some(),
+                Tally::Screened,
+            ),
+            (
+                "deferred",
+                deferred.is_none() || deferred.is_some(),
+                Tally::Deferred,
+            ),
+            (
+                "unchecked",
+                unchecked.is_none() || unchecked.is_some(),
+                Tally::Unchecked,
+            ),
+            (
+                "unadmitted",
+                unadmitted.is_none() || unadmitted.is_some(),
+                Tally::Unadmitted,
+            ),
+            (
+                "checks",
+                checks.is_none() || checks.is_some(),
+                Tally::Checks,
+            ),
+        ];
+        let not_counters: Vec<(&'static str, bool)> = vec![
+            // ⚠ THE PREMISE IS *IT IS READABLE*, spelled the way `iterations` below is: a bound
+            // that cannot be false. `id == 0 || id > 0` said the same thing and `-D warnings`
+            // refused it as a double comparison, which is right — an unsigned tautology is a
+            // sentence, not a read.
+            ("id", id < u64::MAX),
+            ("label", label.is_empty() || !label.is_empty()),
+            ("iterations", iterations < u32::MAX),
+            ("cost", cost.is_none() || cost.is_some()),
+            ("unit", unit.is_none() || unit.is_some()),
+            ("moved_at", moved_at.is_none() || moved_at.is_some()),
+            ("ended_at", ended_at.is_none() || ended_at.is_some()),
+            ("ran_from", ran_from.is_none() || ran_from.is_some()),
+            ("ran_to", ran_to.is_none() || ran_to.is_some()),
+            ("finished", finished || !finished),
+            ("outcome", outcome.is_none() || outcome.is_some()),
+            ("ceiling", ceiling.is_none() || ceiling.is_some()),
+            ("output", output.is_none() || output.is_some()),
+            ("build", build.is_none() || build.is_some()),
+            ("which_run", which_run.is_none() || which_run.is_some()),
+            ("driver", driver.is_none() || driver.is_some()),
+            ("driving", driving.is_none() || driving.is_some()),
+            (
+                "opened_by_session",
+                opened_by_session.is_none() || opened_by_session.is_some(),
+            ),
+            ("at", at.is_none() || at.is_some()),
+            ("document", document.is_none() || document.is_some()),
+            (
+                "context_ceiling",
+                context_ceiling.is_none() || context_ceiling.is_some(),
+            ),
+            (
+                "context_high_water",
+                context_high_water.is_none() || context_high_water.is_some(),
+            ),
+            (
+                "context_break_even",
+                context_break_even.is_none() || context_break_even.is_some(),
+            ),
+            ("overridden", overridden.is_none() || overridden.is_some()),
+            ("place", place.is_none() || place.is_some()),
+            ("stood_down", stood_down.is_none() || stood_down.is_some()),
+            (
+                "stood_down_by",
+                stood_down_by.is_none() || stood_down_by.is_some(),
+            ),
+            (
+                "cancelled_by",
+                cancelled_by.is_none() || cancelled_by.is_some(),
+            ),
+            (
+                "done_reason",
+                done_reason.is_none() || done_reason.is_some(),
+            ),
+            ("failure", failure.is_none() || failure.is_some()),
+            ("blocked_by", blocked_by.is_none() || blocked_by.is_some()),
+            ("briefed", briefed.is_none() || briefed.is_some()),
+            ("request", request.is_none() || request.is_some()),
+            ("tree", tree.is_none() || tree.is_some()),
+        ];
+        // ⚠⚠ THE PREMISE, or the classification below is over names nobody bound: every field of
+        // the pattern has to be readable, which is what makes the `..`-less shape do work rather
+        // than merely compile.
+        for (name, read) in not_counters
+            .iter()
+            .map(|(name, read)| (name, read))
+            .chain(counters.iter().map(|(name, read, _)| (name, read)))
+        {
+            assert!(
+                read,
+                "⚠ THE PREMISE: `{name}` must be readable off the record"
+            );
+        }
+        // ⛔⛔⛔⛔⛔ AND THE EXEMPTIONS ARE COUNTED — register item 903's rule. A counter that
+        // quietly joins this list has to move this number, and a `..` reinstated in the pattern
+        // above would drop columns out of BOTH lists without moving it, which is why the sum is
+        // checked against the record's own serialised key count one assertion down.
+        assert_eq!(
+            not_counters.len(),
+            34,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 915: the not-a-counter list changed size. A column that \
+             JOINED it is a rate somebody can no longer take — say why in its comment and move \
+             this number; one that LEFT it belongs in `Tally` and in the list above. Found \
+             {:?}",
+            not_counters
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+        );
+        // ⛔⛔⛔⛔⛔ AND THE TWO LISTS TOGETHER ARE THE WHOLE RECORD — the record's own serialised
+        // keys are the authority, so a column nobody classified is red rather than absent.
+        //
+        // ⚠⚠⚠ **WHAT EACH DEVICE ACTUALLY CATCHES, MEASURED RATHER THAN CLAIMED.** A first draft
+        // of this comment said the assertion below is what stops a `..` being slipped back into
+        // the pattern, and the mutation that puts one there came back GREEN (2026-09-06T02:51:10Z)
+        // — because a `..` alone changes nothing here while the names are still in the lists. The
+        // honest split is:
+        //
+        // * the `..`-less PATTERN is a COMPILE-time guard: a column added to `PersistedRun` is
+        //   `E0027` until somebody binds it, which is the moment they have to classify it;
+        // * this assertion and the counted exemption above are the RUN-time guards: they catch a
+        //   column that is missing from the classification, `..` or no `..` — measured at
+        //   2026-09-06T02:51:51Z, where shortening the pattern AND dropping the two names went red
+        //   on the exemption count, `left: 32  right: 34`.
+        //
+        // ⇒ Neither alone is the gate. The pattern makes the omission impossible to write by
+        // accident; these make it impossible to keep.
+        let keys: std::collections::BTreeSet<String> = serde_json::to_value(an_empty_row())
+            .expect("a record serialises")
             .as_object()
             .expect("a record is an object")
-            .iter()
-            .filter(|(name, held)| !held.is_null() && cleared[name].is_null())
-            .map(|(name, _)| name.as_str())
+            .keys()
+            .cloned()
             .collect();
+        let classified: std::collections::BTreeSet<String> = counters
+            .iter()
+            .map(|(name, _, _)| (*name).to_owned())
+            .chain(not_counters.iter().map(|(name, _)| (*name).to_owned()))
+            .collect();
+        assert_eq!(
+            classified, keys,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 915: the classification above and the record's real columns \
+             have come apart. The record's own KEYS are the population — which is what this gate \
+             claimed to take it from since item 895 while taking it from a fixture instead — so a \
+             column nobody classified is red here rather than silently outside every rate. ⚠ This \
+             fires whether or not the pattern above still says `..`: measured, a `..` alone does \
+             not reach this assertion, and what it costs is the compiler's refusal to let the NEXT \
+             column be added without a decision.",
+        );
+        // ⛔⛔⛔⛔⛔ AND EACH COUNTER NAMES THE ARM THAT READS IT — register item 915, and this is
+        // what stops the pairing above from being decoration. A column mapped to a neighbour's arm
+        // would satisfy every set comparison here and make `sampled` answer about the wrong column
+        // for ever: two `Option<u32>` neighbours are indistinguishable to a set of names, which is
+        // the same swap `Ending` was made a named struct to prevent one type over.
+        for (name, _, tally) in &counters {
+            assert_eq!(
+                tally.word(),
+                *name,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 915: the column `{name}` is classified under an arm \
+                 that names `{}`. `Tally::word` is what `sprag-samples` prints beside the number \
+                 and what this gate compares with the record's keys, so an arm reading a \
+                 neighbour's column would publish one column's rate under another's name.",
+                tally.word(),
+            );
+        }
+        let mut columns: Vec<&str> = counters.iter().map(|(name, _, _)| *name).collect();
         columns.sort_unstable();
         let mut claimed: Vec<&str> = Tally::ALL.map(Tally::word).to_vec();
         claimed.sort_unstable();
