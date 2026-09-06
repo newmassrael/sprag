@@ -3786,17 +3786,56 @@ pub enum RestartReason {
     /// ⚠ And it is raised only where the pane can REPORT being asked — at a scraped pane *nobody
     /// reported it* is not evidence, and the delivery's old refusal stands.
     Unasked,
+    /// ⛔⛔⛔⛔⛔ **THE SESSION TOOK ITS QUESTIONS AND WROTE NOTHING BACK**, for `empty_max`
+    /// consecutive judged turns — register item 878.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The measurement, and what had no remedy at all
+    ///
+    /// A fold recovery replaced a session at 22:54:13 and **the session it bought was dead**. Each
+    /// of the twenty-five turns that followed rendered the `Working` to `Judging` line carrying
+    /// `AND THIS TURN PRODUCED NOTHING`, the pane's own hook account read `asked=26  said=0`, and
+    /// the run spent its whole `max_turns` on a corpse before ending `exhausted (turns) after 87
+    /// iterations` — a phrase that says the agent ran out of work.
+    ///
+    /// ⇒ **The product diagnosed it correctly on every one of those turns and had no transition.**
+    /// That is the whole of item 878: folding has a recovery — this replacement — and the
+    /// replacement producing a dead session had none.
+    ///
+    /// # ⚠⚠ Why a REPLACEMENT and not `awaiting_human`, which is the document's own rule
+    ///
+    /// *"a condition this document can fix by itself must not wake anybody"* — `ai_loop.scxml`, on
+    /// the `prompt.unasked` edge this one is modelled on. A session that writes nothing is the same
+    /// shape as a wedged one: session-level, and the loop's answer to a session-level condition
+    /// already exists. ⚠ It is bounded the same way too (`empty_seen`): a run whose SECOND session
+    /// writes nothing either, while the replacement this bought is still on the pane, says
+    /// `failed`, because nothing another restart does reaches that.
+    ///
+    /// ⚠⚠ [`ReflectReason`] is NOT the road, and that is a decision rather than an oversight:
+    /// every reflection asks the session a question, and a session that answers nothing cannot
+    /// answer that one either. The 25 measured turns include the reflection cadence firing, and
+    /// `a_silent_session_is_replaced_before_anything_asks_it_another_question` holds the ordering
+    /// that follows from it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the word is `wrote_nothing` and NOT `silent`
+    ///
+    /// `silent` is spent twice over in this loop already, on two subjects that are not this one:
+    /// [`Checked::Silent`] is a MILESTONE CHECKER that would not start or would not answer, and
+    /// `peer.silent` is a PANE that painted nothing inside `turn_within_ms`. Neither reads the
+    /// agent's own record, which is the only thing this arm reads. A third meaning in one document
+    /// is a reader's trap and this variant was two keystrokes from being it.
+    WroteNothing,
 }
 
 impl RestartReason {
     /// Every arm, so the document's words and the readers below are one list.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Economics,
         Self::Capacity,
         Self::NobodyCouldSay,
         Self::NoCeiling,
         Self::Unread,
         Self::Unasked,
+        Self::WroteNothing,
     ];
 
     /// **THE WORD THE DOCUMENT ASSIGNS** for this reason.
@@ -3812,6 +3851,7 @@ impl RestartReason {
             Self::NoCeiling => "no_ceiling",
             Self::Unread => "unread",
             Self::Unasked => "unasked",
+            Self::WroteNothing => "wrote_nothing",
         }
     }
 
@@ -3856,13 +3896,22 @@ impl RestartReason {
             // ⚠ THE RECOVERY'S OWN. This is the replacement the budget paid for, and a budget that
             // renewed itself on being spent would bound nothing at all — 745(B) exactly.
             Self::Unasked => false,
-            // Every other word is a decision `reviewing` reached out of its own numbers, about
-            // context and about cost, with no folded question anywhere in it.
+            // Every other word is a decision reached out of numbers this document read — about
+            // context, about cost, and (register item 878) about a session that answered nothing —
+            // with no folded question anywhere in it.
+            //
+            // ⛔⛔⛔ `WroteNothing` SITS ON THIS SIDE AND THE LINE IS PROVENANCE, exactly as run
+            // 110 settled it: the fold budget did not buy a session replaced for writing nothing,
+            // so the earlier refusal is not evidence about the peer now on the pane. ⚠ The two
+            // recoveries are separately bounded on purpose — `unasked_seen` and `empty_seen` —
+            // because a run that folds once and later writes nothing has met two conditions, not
+            // one twice.
             Self::Economics
             | Self::Capacity
             | Self::NobodyCouldSay
             | Self::NoCeiling
-            | Self::Unread => true,
+            | Self::Unread
+            | Self::WroteNothing => true,
         }
     }
 
@@ -3935,6 +3984,20 @@ impl RestartReason {
                  IT BOUGHT: hand over for capacity or for cost and the next fold buys another one, \
                  because the peer this bound is about is gone. Fold a second question while that \
                  same session is still on the pane and the run stops for a person"
+            }
+            // ⛔⛔⛔⛔⛔ REGISTER ITEM 878, AND THE REMEDY IS NAMED BECAUSE THE MEASURED RUN HAD
+            // NONE: a reader who sees this word is looking at a run that CAUGHT the corpse, where
+            // the run this item is made of prompted one for thirty-five minutes and then reported
+            // `exhausted (turns)` — a sentence that says the agent ran out of work to do.
+            Self::WroteNothing => {
+                "the session took its questions and wrote nothing back — its own record held the \
+                 same output total across `empty_max` consecutive judged turns, so the run \
+                 replaced it rather than going on prompting it. NOTHING IS WRONG WITH THE WORK: \
+                 this is the loop noticing a dead session, which before register item 878 it \
+                 diagnosed on every turn and did nothing about. What is unmeasured is WHY a fresh \
+                 session arrives dead — the run this is made of got one out of a fold recovery. \
+                 This run gets ONE such replacement until something else replaces the session it \
+                 bought; a second silence on that same session stops the run for a person"
             }
         }
     }
@@ -18402,6 +18465,350 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A TURN THE RUN COULD NOT MEASURE DOES NOT WIPE THE STREAK** — register item 878,
+    /// and working rule 6 made into a run instead of a sentence.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The escape hatch this is about, and it was GREEN under mutation until this existed
+    ///
+    /// `produced` has three answers. `'nothing'` counts and `'something'` clears — and the third,
+    /// `false`, is *this run could not compare*. Writing that branch as an `<else/>` puts the
+    /// unknown answer on the CLEARING side, and the document then has an exit nobody meant: a
+    /// session whose record is unreadable every other turn resets the counter for ever and is
+    /// prompted until its turns run out, **which is exactly the run item 878 is made of**.
+    ///
+    /// ⚠⚠⚠ The mutation is one word (`<elseif cond="produced == 'something'"/>` for `<else/>`) and
+    /// every other gate in this file stayed green for it, this item's own two included: their
+    /// records are readable on every turn, so the arm under test is never taken. A hazard no
+    /// fixture reaches is one the argument in the document was carrying alone.
+    ///
+    /// # ⚠⚠ How the fixture makes the third answer happen, which is not a stub
+    ///
+    /// The record is REMOVED after every other judged turn and put back before the next one, so the
+    /// run alternates *read it, could not read it, read it*. Nothing is faked: `Made::Unmeasured`
+    /// is what a missing record produces, and `Spend` keeps the last real reading rather than
+    /// overwriting it with a `None` — so the turns that CAN be compared are compared against each
+    /// other across the gap, and each of them says the agent wrote nothing.
+    #[test]
+    fn a_turn_that_could_not_be_measured_does_not_wipe_the_streak() {
+        // ⛔ `sprag_scratch::scratch_root()` AND NOT `std::env::temp_dir()` — register item 794: a
+        // bare `temp_dir` writes into this repository's own tree when `TMPDIR` is set-and-empty.
+        let home =
+            sprag_scratch::scratch_root().join(format!("sprag-mute-gaps-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        let record = home.join("readable-every-other-turn.jsonl");
+        let written = crate::testing::MEASURED_HERE.transcript();
+        std::fs::write(&record, &written).expect("the agent's own record");
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        let access = crate::testing::supervised_writing(&workspace, &record);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "prove an unreadable turn is not a clean bill of health".to_string(),
+                milestone: "reach the first checkpoint".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                working_rules: None,
+                unverified_rules: None,
+                context_ceiling: None,
+                reflect_after_refusals: None,
+                reaim_max: None,
+                milestone_check: None,
+                successor_check: None,
+                reask_max: None,
+                service: None,
+                max_turns: Some(Counted::Of(200)),
+                reflect_every: Some(99),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let mut judged = 0_usize;
+        let mut landed = None;
+        while walked.len() < 90 {
+            let Pumped::Moved {
+                from,
+                raised,
+                to,
+                because,
+                ..
+            } = loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable")
+            else {
+                break;
+            };
+            walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+            if to == AiLoopState::Restarting {
+                landed = Some(because);
+                break;
+            }
+            // ⚠ SET UP THE NEXT TURN, never this one: the pass that reached `judging` has already
+            // taken its reading, so toggling here decides what the turn AFTER it can measure.
+            if to == AiLoopState::Judging {
+                judged += 1;
+                if judged % 2 == 1 {
+                    std::fs::remove_file(&record).expect("the record must go");
+                } else {
+                    std::fs::write(&record, &written).expect("and come back unchanged");
+                }
+            }
+        }
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert!(
+            judged > 4,
+            "⚠⚠⚠ THE CONTROL: the run has to take enough turns for the gap to sit BETWEEN two \
+             measurable ones, or this gate proves nothing about the arm it is named for. Judged \
+             {judged}, walked {walked:?}",
+        );
+        assert_eq!(
+            landed,
+            Some(Some(Because::Restarted(RestartReason::WroteNothing))),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 878, WORKING RULE 6: every turn this run could measure said \
+             the agent wrote nothing, and the turns it could NOT measure said nothing at all — yet \
+             the streak never reached its bound, so the session was prompted until its turns ran \
+             out. `false` is *this run could not compare*; putting it on the clearing side of that \
+             `<if>` hands a run whose record is unreadable every other turn an exit that never \
+             expires. Walked {walked:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE RECOVERY IS BOUNDED: A SECOND SILENT SESSION STOPS THE RUN FOR A
+    /// PERSON** — register item 878, and the half without which this item would be worse than the
+    /// defect it repairs.
+    ///
+    /// # ⛔⛔⛔⛔ What an unbounded version would do, which is not a slower failure
+    ///
+    /// A run whose sessions arrive dead would replace, be silent, replace, be silent — spawning an
+    /// agent process per cycle for as long as its turns last. The run measured in item 878 at least
+    /// ENDED, saying `exhausted (turns)`; a loop that recovers for ever ends nothing and is the
+    /// shape `restarting`'s own comment warns about one state over (*"a run that spawns agent
+    /// processes without limit"*).
+    ///
+    /// ⚠⚠ IT IS DRIVEN AND NOT READ. `a_silent_session_is_replaced_before_anything_asks_it_another
+    /// _question` reads the document's order; this one takes a run all the way through the
+    /// replacement to the second silence, because the bound is three separate facts agreeing —
+    /// `empty_seen` set on the way out, `empty_turns` cleared on the way in, and the second arm
+    /// guarded on the counter that was set.
+    #[test]
+    fn a_second_silent_session_stops_the_run_for_a_person() {
+        // ⛔ REGISTER ITEM 794, exactly as the gate above: the scratch root, never `temp_dir`.
+        let home =
+            sprag_scratch::scratch_root().join(format!("sprag-mute-twice-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("a directory to file the record in");
+        let record = home.join("read-every-turn-and-never-grows.jsonl");
+        std::fs::write(&record, crate::testing::MEASURED_HERE.transcript())
+            .expect("the agent's own record");
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        let access = crate::testing::supervised_writing(&workspace, &record);
+        let mut loops = ready_bounded_at(
+            Arc::clone(&lua),
+            pane,
+            ReadyWhen::Settles("claude".to_string()),
+            Duration::from_secs(5),
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "prove the silence recovery is bounded".to_string(),
+                milestone: "reach the first checkpoint".to_string(),
+                reference: "this gate".to_string(),
+                closing_rules: None,
+                working_rules: None,
+                unverified_rules: None,
+                context_ceiling: None,
+                reflect_after_refusals: None,
+                reaim_max: None,
+                milestone_check: None,
+                successor_check: None,
+                reask_max: None,
+                service: None,
+                // ⚠⚠ GENEROUS, SO `turns` IS NOT WHAT ENDS THIS RUN. A bound proved by a run that
+                // simply ran out of turns would be the defect wearing the fix's name — which is
+                // precisely how the measured run ended.
+                max_turns: Some(Counted::Of(200)),
+                reflect_every: Some(99),
+                screen_rules: None,
+                may_answer: None,
+                await_person_ms: Some(0),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: None,
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        let run = RunContext::uncancellable();
+        let mut walked: Vec<String> = Vec::new();
+        let mut replacements = 0_usize;
+        let mut ended = None;
+        while walked.len() < 120 {
+            let Pumped::Moved {
+                from, raised, to, ..
+            } = loops
+                .pump(&access, &run)
+                .expect("the pane must stay readable")
+            else {
+                break;
+            };
+            walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+            if to == AiLoopState::Restarting {
+                replacements += 1;
+            }
+            if to == AiLoopState::Failed {
+                ended = Some(to);
+                break;
+            }
+        }
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_eq!(
+            ended,
+            Some(AiLoopState::Failed),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 878: every session this run was given wrote nothing, and the \
+             run never stopped for a person. An unbounded recovery opens an agent process per \
+             cycle and ends nothing at all, which is worse than the corpse-prompting it replaces. \
+             Walked {walked:?}",
+        );
+        assert_eq!(
+            replacements, 1,
+            "⚠⚠⚠ AND IT BOUGHT EXACTLY ONE. Zero would mean the run failed without ever trying \
+             the recovery — a session-level condition sent straight to a person, which is the rule \
+             `prompt.unasked` states in words. More than one would mean `empty_seen` is not \
+             holding, so the bound is a comment rather than a guard. Walked {walked:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SILENT-SESSION EDGE OUTRANKS EVERY DOOR THAT ASKS THE SESSION A QUESTION** —
+    /// register item 878, and the one claim its comment makes that a reader could not check.
+    ///
+    /// # ⚠⚠⚠ Why ordering is the whole of it, and why it is silent when wrong
+    ///
+    /// `judging`'s `judge` transitions are tried in document order, and three of them lead to
+    /// `reflecting` — a state whose entire job is to ASK THE SESSION what to do next. A session
+    /// that answers nothing cannot answer that one either, and the twenty-five measured turns of
+    /// item 878 include the reflection cadence firing inside them. Ordered below any of those, this
+    /// edge is unreachable exactly when it is needed, and **nothing about the document would look
+    /// wrong**: every arm is still present, the walk still renders, and the run still ends
+    /// `exhausted (turns)` after prompting a corpse.
+    ///
+    /// # ⚠⚠⚠⚠ The population is the doors a DEAD session can actually take, and that is measured
+    ///
+    /// Three edges into `reflecting` are written above this one and all three are guarded on
+    /// `_event.data.done` — the agent CLAIMED its milestone, which it can only do by saying so.
+    /// A session whose record shows no output cannot reach any of them, so ordering above them
+    /// would buy nothing and would put a replacement ahead of a claimed milestone. The doors that
+    /// matter are the CADENCES — the ones a run takes without the agent asking — and those are
+    /// exactly the ones with no `done` in their guard.
+    ///
+    /// ⚠ Read by guard rather than by a list of line numbers, so a fourth cadence door cannot slip
+    /// under this line and a fourth `done` door does not have to be added to it.
+    #[test]
+    fn a_silent_session_is_replaced_before_anything_asks_it_another_question() {
+        /// The authority, read as TEXT for its neighbours' reason: the compiled machine cannot
+        /// answer *in what order were these written*.
+        const DOCUMENT: &str = include_str!("ai_loop.scxml");
+        /// The guard that names this item's recovery.
+        const SILENT: &str = "empty_turns &gt;= empty_max";
+        /// And the state that asks the session a question.
+        const ASKS: &str = "target=\"reflecting\"";
+
+        /// And the guard clause that says the AGENT asked for this door — a claim only a session
+        /// that spoke can make.
+        const CLAIMED: &str = "_event.data.done";
+
+        let lines: Vec<&str> = DOCUMENT.lines().collect();
+        // Each edge, as (the line an author would open, the whole of its head).
+        let heads: Vec<(usize, String)> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains("<transition"))
+            .map(|(at, _)| {
+                let head = lines[at..]
+                    .iter()
+                    .take(3)
+                    .take_while(|part| !part.contains("</transition>"))
+                    .copied()
+                    .collect::<Vec<&str>>()
+                    .join(" ");
+                (at, head)
+            })
+            .collect();
+        let recovery: Vec<usize> = heads
+            .iter()
+            .filter(|(_, head)| head.contains(SILENT))
+            .map(|(at, _)| *at)
+            .collect();
+        // The reflection doors a run takes WITHOUT the agent claiming anything — the only ones a
+        // session with nothing to say could reach.
+        let cadences: Vec<usize> = heads
+            .iter()
+            .filter(|(_, head)| head.contains(ASKS) && !head.contains(CLAIMED))
+            .map(|(at, _)| *at)
+            .collect();
+
+        // ── THE CONTROLS: both sets exist, or the comparison below is vacuously true ──
+        assert_eq!(
+            recovery.len(),
+            2,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 878: `judging` must carry exactly two edges guarded on \
+             {SILENT:?} — the replacement and the bound that stops a run replacing for ever. Found \
+             {recovery:?}",
+        );
+        assert!(
+            !cadences.is_empty(),
+            "⚠⚠⚠ THE CONTROL: no edge reaches `reflecting` without {CLAIMED:?} in its guard, so \
+             this gate is comparing against an empty set and would pass on any ordering at all",
+        );
+
+        let first = recovery[0];
+        let too_late: Vec<usize> = cadences
+            .iter()
+            .copied()
+            .filter(|ask| *ask < first)
+            .collect();
+        assert!(
+            too_late.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 878: {} reflection CADENCE edge(s) are written ABOVE the \
+             recovery at line {}, so a session that writes nothing is sent to be asked a question \
+             before anything replaces it — and `reflecting` asks the session. Lines {too_late:?} \
+             (1-based: {:?}). The measured run's twenty-five empty turns include the cadence firing \
+             inside them, which is why this edge is placed where it is and why the placement is \
+             held here rather than in a comment",
+            too_late.len(),
+            first + 1,
+            too_late.iter().map(|at| at + 1).collect::<Vec<usize>>(),
+        );
+    }
+
     /// ⚠⚠⚠ **EVERY EDGE INTO `restarting` SAYS WHICH DECISION REPLACED THE SESSION, IN A WORD THIS
     /// DRIVER HAS AN ARM FOR** — register item 445's other half, held against the document itself.
     ///
@@ -25932,6 +26339,106 @@ mod tests {
             (to, because, walked)
         }
 
+        /// ⛔⛔⛔⛔⛔ **A SESSION WHOSE RECORD IS READ EVERY TURN AND NEVER GROWS** — register item
+        /// 878, and the fixture is the FINDING rather than a staging of it.
+        ///
+        /// # ⚠⚠⚠ Why a static record IS the corpse, and why that is not a trick
+        ///
+        /// `Made::Nothing` is *both readings succeeded and the output total is the same*. An
+        /// unreadable record is `Unmeasured` and publishes `false`, so nothing here rests on a
+        /// missing file: this record parses perfectly on every turn and says the agent wrote not
+        /// one token. That is exactly what the measured run had — `asked=26  said=0`, twenty-five
+        /// turns, and a `max_turns` spent on a corpse.
+        ///
+        /// ⚠⚠ `reflect_every` IS 99 AND THE SIBLINGS' IS 1, which is the one thing that had to
+        /// change: the reflection cadence would take this run to `reviewing` first and it would
+        /// leave by a `restarting` door for a reason that is not this one. The measured run's
+        /// twenty-five turns include the cadence firing, so ordering matters in the document and
+        /// is asserted there; here the cadence is simply moved out of the way.
+        fn went_silent(record: &std::path::Path) -> (AiLoopState, Option<Because>, Vec<String>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) =
+                crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+            let access = crate::testing::supervised_writing(&workspace, record);
+            let mut loops = ready_bounded_at(
+                Arc::clone(&lua),
+                pane,
+                ReadyWhen::Settles("claude".to_string()),
+                Duration::from_secs(5),
+            )
+            .expect("the document's datamodel must carry its four authored strings");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "prove a session that writes nothing is replaced".to_string(),
+                    milestone: "reach the first checkpoint".to_string(),
+                    reference: "this gate".to_string(),
+                    closing_rules: None,
+                    working_rules: None,
+                    unverified_rules: None,
+                    context_ceiling: None,
+                    reflect_after_refusals: None,
+                    reaim_max: None,
+                    milestone_check: None,
+                    successor_check: None,
+                    reask_max: None,
+                    service: None,
+                    max_turns: Some(Counted::Of(40)),
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    await_person_ms: Some(0),
+                    handback_still_ms: None,
+                    hold_within_ms: None,
+                    ready_timeout_ms: None,
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held",
+            );
+
+            let run = RunContext::uncancellable();
+            let mut walked: Vec<String> = Vec::new();
+            let mut landed = None;
+            while walked.len() < 40 {
+                match loops
+                    .pump(&access, &run)
+                    .expect("the pane must stay readable")
+                {
+                    Pumped::Moved {
+                        from,
+                        raised,
+                        to,
+                        because,
+                        ..
+                    } => {
+                        walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+                        if to == AiLoopState::Restarting {
+                            landed = Some((to, because));
+                            break;
+                        }
+                    }
+                    // ⛔ THE DEFECT ITSELF: before register item 878 this run went round
+                    // `Judging` to `Working` until its turns ran out, and every pass was a `Moved`.
+                    other => panic!(
+                        "a silent session must be replaced, not prompted again: {other:?}, walked \
+                         {walked:?}"
+                    ),
+                }
+            }
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            let Some((to, because)) = landed else {
+                panic!(
+                    "⛔⛔⛔⛔⛔ REGISTER ITEM 878: this session's record was read on every turn and \
+                     never grew, and in 40 passes nothing replaced it — which is the run this item \
+                     is made of, where the loop diagnosed the corpse twenty-five times and went on \
+                     prompting it: {walked:?}"
+                );
+            };
+            (to, because, walked)
+        }
+
         // ⚠⚠⚠ A PATH NOTHING WROTE, which is how `context` reads 0 — the same instrument the gate
         // above this one measures directly (its `(held, blind)` reads the sample's own `context`
         // against 0), so the two runs below are separated by the reading itself rather than by a
@@ -25944,6 +26451,7 @@ mod tests {
         let (unread_to, unread, unread_walk) = left_reviewing(&missing, ROOMY);
         let (neither_to, neither, neither_walk) = left_reviewing(&missing, 0);
         let (wedged_to, wedged, wedged_walk) = never_asked(&record);
+        let (mute_to, mute, mute_walk) = went_silent(&record);
         let _ = std::fs::remove_dir_all(&home);
 
         // ── THE CONTROL: all three really did REPLACE, or the words below are about an edge no
@@ -26031,7 +26539,24 @@ mod tests {
              either. Walked {wedged_walk:?}",
         );
 
-        let lines: Vec<String> = [paid, full, blind, unread, neither, wedged]
+        assert_eq!(
+            mute_to,
+            AiLoopState::Restarting,
+            "⛔⛔⛔⛔⛔ ITEM 878: a session that takes its questions and writes nothing back must \
+             cost a SESSION, not the run. Measured — a fold recovery bought a dead session at \
+             22:54:13 and the loop prompted it for thirty-five minutes, diagnosing `AND THIS TURN \
+             PRODUCED NOTHING` on every one of twenty-five turns, before ending `exhausted \
+             (turns)`. Walked {mute_walk:?}",
+        );
+        assert_eq!(
+            mute,
+            Some(Because::Restarted(RestartReason::WroteNothing)),
+            "⚠⚠⚠⚠ AND IN ITS OWN WORD, because the reader of this replacement must not be sent to \
+             the ceiling or the economics: neither was measured, and the session's record was read \
+             perfectly well on every turn. It said the agent wrote nothing. Walked {mute_walk:?}",
+        );
+
+        let lines: Vec<String> = [paid, full, blind, unread, neither, wedged, mute]
             .into_iter()
             .map(|because| {
                 because.map_or_else(|| "(nothing said)".to_string(), |because| because.noted())
@@ -26049,7 +26574,7 @@ mod tests {
         // ⚠⚠ An arm no run here reaches is a word rendered by nobody — `Pumped::Unbuilt`'s finding
         // (register item 260), which this workspace has now paid for twice.
         let reached: std::collections::BTreeSet<RestartReason> =
-            [paid, full, blind, unread, neither, wedged]
+            [paid, full, blind, unread, neither, wedged, mute]
                 .into_iter()
                 .filter_map(|because| match because {
                     Some(Because::Restarted(reason)) => Some(reason),
@@ -26981,6 +27506,29 @@ mod tests {
             // ⚠ Null passes are moves that changed nothing and they are the bulk of a stuck run —
             // recorded, because *which line* is the first question of any red.
             walked.push(format!("{from:?} --{raised:?}--> {to:?}"));
+            // ⛔⛔⛔⛔⛔ AND THE SESSION WRITES, WHICH THIS FIXTURE USED TO GET AWAY WITH NOT DOING —
+            // register item 878. This gate's subject is a run that is WORKING: it reflects, adopts
+            // a milestone and is prompted again. Its record was static, so from the second judged
+            // turn the loop read `Made::Nothing` — and since 878 that buys a replacement, which
+            // moves the prompt to a fresh pane and leaves this assertion reading a dead one.
+            //
+            // ⚠⚠ THE FIXTURE WAS WRONG AND THE GUARD IS NOT: a session that answers writes tokens,
+            // and one whose own record says it wrote none across two judged turns is the corpse
+            // item 878 is made of. Appending here is what the agent this stands in for does.
+            if to == AiLoopState::Judging {
+                use std::io::Write as _;
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&record)
+                    .expect("the agent's own record");
+                writeln!(
+                    file,
+                    "{}",
+                    crate::testing::MEASURED_HERE
+                        .one_more_request(&format!("turn-{}", walked.len()), 37)
+                )
+                .expect("a working session writes");
+            }
             if from == AiLoopState::Reviewing {
                 kept_the_session = to != AiLoopState::Restarting;
             }

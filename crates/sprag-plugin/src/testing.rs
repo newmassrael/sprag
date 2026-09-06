@@ -3447,6 +3447,22 @@ impl Billed {
         )
     }
 
+    /// ⛔⛔⛔⛔ **ONE MORE BILLED REQUEST, TO APPEND TO A RECORD WHOSE SESSION IS STILL WORKING** —
+    /// register item 878.
+    ///
+    /// A fixture whose record NEVER GROWS is a fixture whose session wrote nothing, and since 878
+    /// that is a fact this loop acts on: two such judged turns in a row buy a replacement. Before
+    /// it, a static record was free — every stand-in gate in this crate had one and none of them
+    /// was about the agent's output. A gate whose subject is a HEALTHY run has to write, the same
+    /// way the agent it stands in for does.
+    ///
+    /// ⚠ `id` is the caller's so successive appends are distinguishable in a failure's dump; the
+    /// reading is [`Billed::context`] as everywhere else here, because this moves output ALONE —
+    /// [`after_a_turn_producing`](Self::after_a_turn_producing)'s rule, and for its reason.
+    pub(crate) fn one_more_request(&self, id: &str, output: u64) -> String {
+        Self::request(id, 0, self.context, output)
+    }
+
     /// One billed request, as its reader will meet it in the record.
     fn request(id: &str, wrote: u64, read: u64, output: u64) -> String {
         format!(
