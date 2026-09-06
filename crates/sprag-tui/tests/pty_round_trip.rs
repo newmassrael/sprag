@@ -695,9 +695,51 @@ fn wait_bounded(
         std::thread::sleep(POLL);
     }
     panic!(
-        "timed out after {within:?} waiting for {what}\n  last observation: {last}{}",
+        "timed out after {within:?} waiting for {what}\n  last observation: {last}{}\n  {}",
         standing(),
+        how_loaded(),
     );
+}
+
+/// **WHAT THE MACHINE WAS DOING WHEN A WAIT RAN OUT** — register item 880, and the fork a deadline
+/// could not make on its own.
+///
+/// # ⛔⛔⛔⛔⛔ Two failures arrive as one sentence, and they ask for opposite repairs
+///
+/// Item 880 is *gates that go red only under load*, and this file has supplied one of them: on
+/// 2026-09-05 `a_select_pane_made_by_another_client_moves_this_ones_focus` timed out after
+/// [`DEADLINE`] in a `--workspace` run and passed **in 0.85 s** on its own. The message it left
+/// said only *timed out after 45s*, which is the same sentence a genuinely HUNG client leaves —
+/// and the two want opposite things done: one is a product defect to go and find, the other is
+/// this test's own margin against a machine running many pty suites at once.
+///
+/// ⇒ So the deadline says what it was competing with. A reader can then fork on the spot instead
+/// of paying a reproduce cycle, which is exactly what [`wait_bounded`]'s other three clauses were
+/// each added for.
+///
+/// ⚠⚠ **IT CHANGES NO BOUND.** Raising [`DEADLINE`] because a run lost a race is the move this
+/// workspace forbids — a gate widened until it is green measures nothing. What is added here is
+/// the number a person needs to decide whether the bound is the thing that was wrong.
+///
+/// ⚠ **AND IT SAYS WHEN IT CANNOT SAY.** `/proc/loadavg` is Linux's; on any host without it this
+/// answers so in words rather than reporting a zero, because a zero here would read as *the
+/// machine was idle*, which is the one conclusion an unreadable instrument must never support.
+fn how_loaded() -> String {
+    let cores = std::thread::available_parallelism().map_or_else(
+        |_| "an unreadable number of cores".to_owned(),
+        |cores| format!("{cores} cores"),
+    );
+    match std::fs::read_to_string("/proc/loadavg") {
+        Ok(said) => {
+            let over = said
+                .split_whitespace()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("machine: load {over} over {cores}")
+        }
+        Err(why) => format!("machine: load unreadable on this host ({why}), {cores}"),
+    }
 }
 
 /// **THE GATE FOR THE DIAGNOSTIC ITSELF** — the deadline names what was wanted, what was last seen,
@@ -732,12 +774,24 @@ fn the_deadline_says_what_it_wanted_and_what_was_standing_there() {
         "a condition that is never going to hold",
         "the row read \"nothing\"",
         "(client: EXITED)",
+        // ⛔⛔⛔ AND THE FOURTH — register item 880. Without it a starved run and a hung client leave
+        // the SAME sentence, and this file has produced one of each; see `how_loaded`.
+        "machine: load",
     ] {
         assert!(
             said.contains(owed),
             "the deadline must carry {owed:?}, or the failure it reports is unattributable: {said}",
         );
     }
+    // ⚠⚠ AND IT MUST CARRY A READING RATHER THAN THE WORD — a clause that said `machine: load` and
+    // nothing else would satisfy the loop above while telling a reader exactly as much as the
+    // sentence it replaced. Either a number or the reason there is none, and never a bare zero.
+    assert!(
+        said.contains("cores"),
+        "⛔⛔⛔ REGISTER ITEM 880: the machine clause must name what the load is spread over, or a \
+         `load 8` means nothing — eight on eight cores and eight on thirty-two are opposite \
+         readings, and this file's reds have come from oversubscription: {said}",
+    );
 }
 
 /// `Ok` when `got` is what was wanted, else `got` rendered as [`wait_for`]'s diagnostic.
@@ -3687,6 +3741,19 @@ fn a_select_pane_made_by_another_client_moves_this_ones_focus() {
     // those keys have DEMONSTRABLY been delivered. Waiting for them here is not decoration and not a
     // longer timeout: it removes the concurrency instead of tolerating it, so a failure below is the
     // client failing to follow rather than this harness racing itself.
+    //
+    // ⚠⚠⚠ **AND THIS IS THE WAIT REGISTER ITEM 880 CAUGHT LOSING TO THE MACHINE, WHICH IS A
+    // DIFFERENT CLASS FROM ITS OTHER TWO.** 2026-09-05, a `--workspace` run: *timed out after 45s
+    // waiting for the keys typed before the select to land*, and **0.85 s green on its own.** The
+    // other two gates that item names were waiting on ONE fact and reading ANOTHER — a file against
+    // a row, a pane's text against the operating system's answer — and each was repaired by waiting
+    // for the thing it claims. **This wait already does that**: what it lost was [`DEADLINE`],
+    // against nine characters delivered at 100–124 ms each while many pty suites shared the cores.
+    //
+    // ⛔ So nothing here was widened. Raising a bound because a run lost a race is how a gate stops
+    // measuring, and this one's diagnosis was not *the bound is wrong* — it was *nobody could tell
+    // starvation from a hang out of the sentence it left*. That is what `how_loaded` answers, at
+    // the deadline, with the number a reader needs to make exactly this fork.
     wait_for(
         "the keys typed before the select to land in the pane they were typed into",
         || {

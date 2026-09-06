@@ -7743,7 +7743,41 @@ fn a_rescued_run_types_its_first_prompt_and_a_pane_that_came_back_a_shell_types_
     // ⚠ ONE definition, at module scope — see `run_block_for` for what these five copies had drifted
     // into asserting, and why the heading is matched by boundary rather than by `ends_with`.
     let block_for = run_block_for;
-    let restored_row = block_for(&sprag(&sock, &["runs", "-t", "restored"]).stdout, restored);
+    // ⛔⛔⛔⛔⛔ **THE ROW IS WAITED FOR, NOT SAMPLED** — register item 880, and it is the same
+    // defect register item 877 was: **waiting on one fact and reading another**.
+    //
+    // The wait above is on a FILE, and the file is written by the pane's STAND-IN when the driver
+    // types at it. Everything below is read off the ROW, which the DRIVER publishes through its
+    // progress sink and which this test then fetches by spawning a whole `sprag runs -t` process.
+    // Two different writers, so the instant the file fills is not the instant the row says
+    // anything — and under load it was measured saying the opposite: *"put back by a boot and
+    // nothing has driven it since"* and *"1 prompt(s) delivered"* on the SAME row (2026-09-05).
+    //
+    // ⚠⚠ It is a wait for exactly what the three assertions below claim, so it removes the
+    // concurrency rather than tolerating it — R327's rule, that an observation window ends on the
+    // thing being claimed and not on a proxy for it. ⛔ It is NOT a longer timeout: a row that never
+    // says these things still fails, sixty seconds later, through the assertions themselves.
+    //
+    // ⚠ The wait's own bool is deliberately not asserted on. It can say only *some part of this was
+    // missing*, and the three assertions immediately below each name WHICH and why it matters —
+    // item 774's whole reasoning lives in those messages, and a bool in front of them would be a
+    // worse sentence reached first.
+    //
+    // ⚠⚠⚠ **THAT IT DOES NOT SWALLOW A REAL RED IS MEASURED, NOT ARGUED** — the risk any added wait
+    // carries. Mutated 2026-09-06: `resumed_clause`'s inheritance guard inverted, so the *put back
+    // by a boot* clause is never cleared, and this gate reds on the third assertion below with the
+    // row it read — sixty seconds later, and about the product.
+    let restored_row = {
+        let mut said = String::new();
+        let _ = wait_for(Duration::from_secs(60), || {
+            said = block_for(&sprag(&sock, &["runs", "-t", "restored"]).stdout, restored);
+            said.contains("prompt(s) delivered")
+                && said.contains("Resuming")
+                && said.contains("Priming")
+                && !said.contains("put back by a boot")
+        });
+        said
+    };
     assert!(
         restored_row.contains("prompt(s) delivered"),
         "⛔⛔⛔⛔ REGISTER ITEM 774: the stand-in was typed at and the row does not say so, which \

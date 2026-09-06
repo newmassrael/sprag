@@ -5007,30 +5007,59 @@ fn an_agent_this_daemon_launched_talks_to_the_mcp_server_of_the_image_that_made_
     let id = pane_entry(&mut conn, 0)["id"]
         .as_u64()
         .expect("the boot pane is listed with an id");
-    let reading: PaneProcessesWire = serde_json::from_value(
-        conn.call(
+    // ⛔⛔⛔⛔⛔ **AND THIS READER WAITS FOR ITS OWN FACT** — register item 880, register item 877's
+    // class: the wait above is on the PANE's text, written by the agent; this is the OPERATING
+    // SYSTEM's answer about a foreground job, gathered by a different reader through a different
+    // slot. A line on the screen does not mean `/proc` has been walked, that the job leader is the
+    // process this asks about, or that the reading has crossed the socket — so sampling it once
+    // asserted about whichever instant this test happened to arrive at.
+    //
+    // ⚠⚠ It waits for exactly what is claimed below (the flag is on that command line) rather than
+    // for a proxy, so a failure here is the daemon not putting it there and never this test racing
+    // the machine. ⛔ Not a longer timeout: a launch that never carries the flag still fails, and
+    // says so with the argv it did find.
+    //
+    // ⚠⚠⚠ **AND THIS WAIT CANNOT MASK A MISSING FLAG, WHICH IS MEASURED RATHER THAN ARGUED.**
+    // Reader one has already proved the launch carried it — a daemon that injected nothing paints
+    // `agent-peer mcp: no --mcp-config on this launch` and that assertion fires FIRST (mutated
+    // 2026-09-06: `mcp_flag: None` reds there, thirty seconds before this wait would have run). So
+    // the only thing the bound below can be spent on is the operating system's own lag, which is
+    // exactly the fact this reader is about. ⚠ What the wait might still have swallowed is the
+    // three assertions AFTER it, and that was mutated too: a launch that also said
+    // `--strict-mcp-config` reds on the last of them, past the wait.
+    let argv_of = |conn: &mut HostConn| -> Vec<String> {
+        let Ok(value) = conn.call(
             "scene/query",
             json!({ "path": mux_action_path(&pane_processes_at(0)) }),
-        )
-        .expect("the processes reading"),
-    )
-    .expect("the processes reading parses");
-    let argv = reading
-        .panes
-        .iter()
-        .find(|row| row.id == id)
-        .and_then(|row| row.foreground.as_ref())
-        .map(|job| {
-            job.processes
-                .iter()
-                .flat_map(|process| process.argv.clone())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        ) else {
+            return Vec::new();
+        };
+        let Ok(reading) = serde_json::from_value::<PaneProcessesWire>(value) else {
+            return Vec::new();
+        };
+        reading
+            .panes
+            .iter()
+            .find(|row| row.id == id)
+            .and_then(|row| row.foreground.as_ref())
+            .map(|job| {
+                job.processes
+                    .iter()
+                    .flat_map(|process| process.argv.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let mut argv = Vec::new();
+    let carried = wait_until(Duration::from_secs(30), || {
+        argv = argv_of(&mut conn);
+        argv.iter().any(|arg| arg == "--mcp-config")
+    });
+    assert!(carried, "the pane's own job carries the flag: {argv:?}",);
     let at = argv
         .iter()
         .position(|arg| arg == "--mcp-config")
-        .unwrap_or_else(|| panic!("the pane's own job carries the flag: {argv:?}"));
+        .expect("the wait above found it");
     let document: Value = serde_json::from_str(&argv[at + 1])
         .unwrap_or_else(|why| panic!("the value beside the flag is JSON ({why}): {argv:?}"));
     let named = document["mcpServers"][sprag_host::hooks::MCP_SERVER]["command"]
