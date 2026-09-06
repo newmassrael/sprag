@@ -61,6 +61,11 @@ pub mod drive;
 pub mod durability;
 pub mod events;
 mod external;
+// What an outer-loop watcher reads off `sprag runs`, stated ONCE and applied rather than
+// paraphrased. Its source was five expressions in a shell script under `$HOME` that this tree
+// cannot see, so every product-side claim about them was a copy — 30 comments and one gate,
+// measured 2026-09-06 (register item 892).
+pub mod headline;
 pub mod history;
 pub mod hooks;
 pub mod host;

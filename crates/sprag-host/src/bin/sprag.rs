@@ -7396,10 +7396,30 @@ fn my_runs(args: Vec<String>) -> io::Result<()> {
 }
 
 fn runs(args: Vec<String>) -> io::Result<()> {
+    // ⛔⛔⛔⛔⛔ **WHAT A WATCHER MAY PARSE OFF THIS VERB, PUBLISHED** — register item 892. The
+    // repayment skill's `watch.sh` reads this output by POSITION, and the source of those five
+    // reads was that file: outside this repository, unreachable by `include_str!`, and copied into
+    // thirty comments here. This prints the contract so the file outside has one thing to derive
+    // from.
+    //
+    // ⚠⚠ BEFORE THE DAEMON IS REACHED, and that is the point: a contract a watcher can only obtain
+    // from a running daemon is one it cannot check at startup, on the machine where the daemon is
+    // the thing being watched.
+    if args.first().is_some_and(|first| first == "--contract") {
+        if let Some(extra) = args.get(1) {
+            return Err(bad_input(&format!(
+                "runs --contract: unexpected argument {extra:?} (it takes nothing else)"
+            )));
+        }
+        for line in sprag_host::headline::WatcherAnchor::published() {
+            println!("{line}");
+        }
+        return Ok(());
+    }
     let (session, args) = scope_and_rest(args, "runs")?;
     if let Some(extra) = args.first() {
         return Err(bad_input(&format!(
-            "runs: unexpected argument {extra:?} (it takes only -t SESSION)"
+            "runs: unexpected argument {extra:?} (it takes only -t SESSION or --contract)"
         )));
     }
     let mut conn = connect_scoped(session.as_deref())?;
@@ -7940,10 +7960,18 @@ fn render_run(run: &Value) -> String {
         .map_or_else(String::new, |named| format!("  judged as {named}"));
     let state = &run["state"];
     // ⚠⚠⚠⚠⚠ WHAT BECAME OF A PERSON'S STAND-DOWN — register item 594 — AND WHY IT IS NOT ON THE
-    // HEADING AND NOT AT THE END. `render_build`'s doc names the constraint: this repository's own
-    // outer-loop watcher (the repayment skill's `watch.sh`) reads the run's STATUS as the line
-    // immediately after the heading (`$0 ~ r {getline; print}`) and its walk as the block's LAST
-    // line (`… | tail -1`). A clause inserted at either end moves a reader that already exists.
+    // HEADING AND NOT AT THE END. The constraint is [`sprag_host::headline::WatcherAnchor`]'s, and
+    // it is asked of this renderer by a gate rather than repeated here: the outer-loop watcher
+    // takes the run's STATUS as the line immediately after the heading, so a clause inserted there
+    // becomes the status for every watcher on this machine.
+    //
+    // ⛔⛔⛔ THIS COMMENT USED TO ADD *and its walk as the block's LAST line (`… | tail -1`)*, AND
+    // THAT HAD BEEN FALSE FOR SOME TIME — register item 892. The watcher stopped reading the last
+    // line when it was rewritten (`tail -1` survives there only in two comments explaining why it
+    // was replaced: it could not see two transitions inside one poll, and it could not reach behind
+    // its own birth). So this file was defending a constraint that no longer existed while the one
+    // that did — a walk line's SHAPE — was asserted by nothing. That is the whole of item 892: a
+    // copied contract does not fail loudly, it drifts and goes on reading true.
     //
     // So it goes where `stopped` and `failure` already go — a detail clause UNDER the status line,
     // which is the one place in a run's block that is addressed by neither of those two reads.
@@ -14187,6 +14215,128 @@ mod tests {
              derivation that did not happen would make the one certain case read as the doubtful \
              one. Got:\n{said}",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY READ THE OUTER-LOOP WATCHER PERFORMS STILL ANSWERS OFF A REAL ROW** —
+    /// register item 892, and the gate the contract never had.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Thirty comments and one gate, and the one gate was a paraphrase
+    ///
+    /// The repayment skill's `watch.sh` parses this verb by POSITION, and the source of those five
+    /// reads is that file — outside this repository, unreachable by `include_str!`. Measured
+    /// 2026-09-06 over this file: **30 comments** assert one of the constraints and **one** gate
+    /// held any of them (item 890's, spelled `head.ends_with("[…]")`); the status-after-head and
+    /// walk-line reads had **no gate at all**.
+    ///
+    /// ⇒ And the paraphrase had already drifted: this file said *the walk is the block's LAST
+    /// line (`… | tail -1`)*, and the watcher stopped reading the last line when it was rewritten —
+    /// `tail -1` survives there only in two comments explaining why it was replaced. **The product
+    /// was defending a constraint the watcher no longer has while the one it does have was
+    /// asserted by nothing.**
+    ///
+    /// # ⚠⚠ Why the anchors are APPLIED here rather than described
+    ///
+    /// [`sprag_host::headline::WatcherAnchor`] carries the pattern and runs it, so this gate asks
+    /// *does the row this build actually renders still answer that read* — no step where somebody's
+    /// belief about what the expression requires can enter. The anchors' own gate proves each read
+    /// is sensitive to its own position; this one points them at `render_run`.
+    #[test]
+    fn every_read_the_outer_loop_watcher_performs_survives_this_renderer() {
+        use sprag_host::headline::WatcherAnchor;
+
+        const STAMP: &str = "1f4a-17e2c9d31bb40000-0.c7";
+
+        // ⚠⚠ EVERY CLAUSE THE HEADING CAN CARRY IS ON IT, and a journal under it: a fixture with a
+        // bare heading would pass a build that had pushed the stamp off the end with a clause this
+        // row never grew, which is item 890's mistake exactly.
+        let mut run = serde_json::json!({
+            "id": 240,
+            "label": "ai_loop pane=7",
+            "state": {"status": "running", "iterations": 12, "cost": 8451, "unit": "bytes"},
+            sprag_host::plugins::RUN_JOURNAL_KEY: [{
+                "iteration": 11, "cost": 4120, "unit": "bytes",
+                "verdict": "continue", "note": "working --step--> reviewing",
+            }],
+        });
+        run[sprag_host::plugins::RUN_TREE_KEY] = serde_json::json!("/home/coin/sprag");
+        run[sprag_host::plugins::RUN_WHICH_RUN_KEY] = serde_json::json!(STAMP);
+        run[sprag_host::plugins::RUN_ASKED_BY_KEY] = serde_json::json!("pinion-66");
+        run[sprag_host::plugins::LOOP_KIND_KEY] = serde_json::json!("debt");
+        let block = render_run(&run);
+
+        for (anchor, expected) in [
+            (WatcherAnchor::StampAtHeadEnd, STAMP.to_owned()),
+            (
+                WatcherAnchor::IterationsInStatus,
+                "12 iterations".to_owned(),
+            ),
+            (WatcherAnchor::WalkLine, "11".to_owned()),
+        ] {
+            assert_eq!(
+                anchor.read(&block).as_deref(),
+                Some(expected.as_str()),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 892: this build's row no longer answers the watcher's \
+                 `{}` read. {} — and the whole finding of this item is that it fails SILENTLY: the \
+                 value is still printed, the row still looks right to a person, and the monitoring \
+                 this repository runs its own loop under is off. The watcher's expression is \
+                 `{}`. Row:\n{block}",
+                anchor.word(),
+                anchor.requires(),
+                anchor.as_written(),
+            );
+        }
+        // ⛔⛔⛔ THE STATUS IS THE LINE AFTER THE HEAD, and it is asserted by WHAT it says rather
+        // than by whether the read answered: a clause inserted between them makes that read succeed
+        // and return the wrong line, which is why *it answered* cannot be this gate's question.
+        assert!(
+            WatcherAnchor::StatusAfterHead
+                .read(&block)
+                .is_some_and(|status| status.contains("running —")),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 892: a clause has been inserted between the heading and the \
+             status, so every watcher on this machine now records that clause as the run's status. \
+             {} Row:\n{block}",
+            WatcherAnchor::StatusAfterHead.requires(),
+        );
+        // ⚠ AND THE BLOCK OPENS WHERE A WATCHER LOOKS FOR IT — `^run <id> `, which is how it finds
+        // the run it was started for among every other run the daemon holds.
+        assert!(
+            WatcherAnchor::BlockHead
+                .read(&block)
+                .is_some_and(|head| head.starts_with("run 240 ")),
+            "⛔⛔⛔ REGISTER ITEM 892: {} Row:\n{block}",
+            WatcherAnchor::BlockHead.requires(),
+        );
+    }
+
+    /// ⚠⚠ **AND `runs --contract` HANDS THAT CONTRACT OUT** — register item 892's other half: the
+    /// file outside this tree needs something to derive from.
+    ///
+    /// ⛔⛔⛔⛔⛔ **THE *WITHOUT A DAEMON* HALF IS NOT ASSERTED HERE, AND THAT IS A CORRECTION.**
+    /// The first draft called `runs(["--contract"])` in-process and claimed the success proved it
+    /// needed no daemon. It proved nothing: this process inherits `SPRAG_HOST_RPC_SOCK` from
+    /// whoever ran the suite — measured 2026-09-06, `/run/user/1000/sprag-loop.sock` with a live
+    /// daemon on it — so a mutation that made this arm CONNECT FIRST left the gate green. An
+    /// assertion whose subject is a connection cannot be made in a process whose environment
+    /// decides whether connections work; `tests/cli.rs` owns a socket path per test and asserts it
+    /// there. This one is about the contract's CONTENT.
+    #[test]
+    fn the_runs_verb_publishes_what_a_watcher_may_parse() {
+        use sprag_host::headline::WatcherAnchor;
+
+        let said = WatcherAnchor::published().join("\n");
+        for anchor in WatcherAnchor::ALL {
+            assert!(
+                said.contains(anchor.as_written()),
+                "⛔⛔⛔ REGISTER ITEM 892: the published contract must carry `{}` as the watcher \
+                 WRITES it, not only as this product spells it — the two forms differing is the \
+                 drift this item is about, and a reader handed one form completes the other from \
+                 memory. Got:\n{said}",
+                anchor.word(),
+            );
+        }
+        let extra = runs(vec!["--contract".to_owned(), "and".to_owned()])
+            .expect_err("⚠ a second argument is refused rather than half-honoured");
+        assert_eq!(extra.kind(), io::ErrorKind::InvalidInput);
     }
 
     /// ⛔⛔⛔⛔⛔ **EVERY `[LOG]` VERB SAYS WHEN IT READ THE FILE** — register item 918, over both

@@ -20785,3 +20785,60 @@ fn the_door_can_ask_every_image_once_a_promotion_has_moved_them() {
     }
     let _ = std::fs::remove_dir_all(&staged);
 }
+
+/// ⛔⛔⛔⛔⛔ **THE WATCHER'S CONTRACT IS OBTAINABLE WITHOUT A DAEMON** — register item 892, and
+/// the half that can only be asserted where the socket is this test's own.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is not a unit test, which was found out the hard way
+///
+/// The first draft asserted it in the binary's own test module by calling the verb in-process. That
+/// process inherits `SPRAG_HOST_RPC_SOCK` from whoever ran the suite — measured 2026-09-06,
+/// `/run/user/1000/sprag-loop.sock`, with a live daemon on it — so a mutation that made the arm
+/// CONNECT before printing left the gate **green**. An assertion whose subject is *no connection is
+/// attempted* is vacuous in a process whose environment decides whether connections succeed.
+///
+/// ⇒ Here the socket is a path in this test's scratch directory with nothing listening on it, so
+/// *it answered* is the whole proof.
+///
+/// # ⚠⚠ Why the property matters at all
+///
+/// The repayment skill's `watch.sh` checks its five positional reads against this contract at
+/// startup and refuses to watch on a drift. A contract it could only fetch from a running daemon
+/// would be unavailable exactly when the daemon is the thing going wrong — which is the situation
+/// that watcher exists for.
+#[test]
+fn the_watcher_contract_is_published_without_a_daemon() {
+    let sock = sprag_scratch::scratch_root().join(format!(
+        "sprag-contract-{}-{:?}.sock",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    assert!(
+        !sock.exists(),
+        "⚠ THE PREMISE: nothing may be listening here, or this gate proves the opposite of what \
+         it says: {sock:?}",
+    );
+
+    let said = sprag(&sock, &["runs", "--contract"]);
+    assert!(
+        said.ok,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 892: `sprag runs --contract` must answer with NO daemon on the \
+         socket. The watcher checks its own positional reads against this before it starts, and a \
+         contract that needs the daemon is one it cannot get exactly when the daemon is what is \
+         going wrong. stderr: {}",
+        said.stderr,
+    );
+    // ⚠⚠ AND IT IS THE CONTRACT, not an empty success: every anchor's own name and the expression
+    // the watcher writes, because the file outside this repository greps for the second of those
+    // verbatim.
+    for anchor in sprag_host::headline::WatcherAnchor::ALL {
+        assert!(
+            said.stdout.contains(anchor.word()) && said.stdout.contains(anchor.as_written()),
+            "⛔⛔⛔ REGISTER ITEM 892: the published contract must carry `{}` with the expression \
+             the watcher writes — that script matches these strings against its own source and \
+             refuses to watch when one is missing. Got:\n{}",
+            anchor.word(),
+            said.stdout,
+        );
+    }
+}
