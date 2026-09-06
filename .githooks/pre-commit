@@ -211,7 +211,14 @@ if [ -f Cargo.toml ] && [ -n "$staged_rs" ]; then
     # It refuses only when it cannot proceed safely — and a refusal is a
     # verdict, not an outage. Papering over it is how a hook reports "green"
     # about a tree nobody checked.
-    lint_and_doc='cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS="-D warnings" CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items'
+    # ⚠⚠ THE INNER QUOTES ARE SINGLE, AND THAT IS A GATE'S REQUIREMENT RATHER THAN A STYLE.
+    # `a_fleet_ceiling_is_a_measurement_with_a_date` compares this text against the reading taken
+    # from it, and it reads `.claude/remote-build.toml` as TOML basic strings — a `"` inside a value
+    # TRUNCATES it there, which that reader's own comment says will show up as a mismatch. So the
+    # command this hook hands the wrapper carries no double quote, and the two spellings can be the
+    # same string. `'-D warnings'` and `"-D warnings"` are the same word to sh; the outer quoting is
+    # double instead, which is safe here because the value holds no `$`, backtick or backslash.
+    lint_and_doc="cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items"
 
     # ⛔⛔⛔⛔⛔ THE RATCHET LANE — register item 784, and the mechanism this hook was missing.
     #
@@ -238,6 +245,59 @@ if [ -f Cargo.toml ] && [ -n "$staged_rs" ]; then
     # ⚠ IT TRAVELS IN THE SAME COMMAND as clippy and the doc gate, so the tree is synced once and
     # `&&` keeps the fail-fast ordering: the cheap compile error is reported before the tests run.
     ratchets='cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free'
+    # ⛔⛔⛔⛔⛔ THIS LANE CARRIES ITS OWN RAM BOUND, DERIVED FROM ITS OWN READING — register item 932.
+    #
+    # The wrapper divides a host's free RAM by `peak_gb_per_task` from `.claude/remote-build.toml`,
+    # and that scalar is derived from `[commands]` — two commands, neither of them this one.
+    # Measured with this repository's own instrument (`measure-peak precommit`, cold target
+    # directory, sampler walking the run's ancestry): this lane peaks at **9,260,688 kB, 8.83 GiB**,
+    # in `rustdoc --crate-type bin --crate-name sprag_gui`. Budgeted at the declared 2 GiB a 22 GiB
+    # host is handed ELEVEN tasks of a job that wants nine each.
+    #
+    # ⚠⚠ RAISING THE SCALAR IS NOT THE FIX AND THAT WAS MEASURED TOO: `floor(8.83)+1 = 9` would
+    # divide the same 22 GiB into TWO for every command, including `build`, whose own reading is
+    # 1,204,328 kB. The declaration says both directions of wrong are real; this is the "too HIGH"
+    # one. So the reading lives in `[routed]`, where it cannot reach the scalar, and the bound is
+    # applied HERE instead — which also covers the branch below, where there is no wrapper at all
+    # and nothing has ever bounded this lane (register item 457's subject, and the path this hook
+    # actually takes when the index's `env -u BX` rule is followed).
+    #
+    # ⚠ DERIVED, NOT TYPED — item 457's standard. The figure comes out of the declaration by the
+    # same `sed` shape the wrapper uses on the same file, so editing the reading moves the bound.
+    # An already-set value wins, as it does inside the wrapper: an operator who chose a number
+    # meant it.
+    # ⛔⛔⛔⛔⛔ THE FILE IS TESTED BEFORE IT IS READ, AND `set -euo pipefail` IS WHY.
+    #
+    # `sprag-gate` links these hooks into a THROWAWAY repository and drives them (register item
+    # 467), and that repository has no `.claude/remote-build.toml`. A first draft read it anyway,
+    # with `sed … 2>/dev/null | head -1`: `sed` exits 2 on a file that is not there, `pipefail`
+    # makes the PIPELINE fail, the assignment then carries that status, and `set -e` kills the hook
+    # **at that line** — before the lane it was meant to bound and with nothing said. Four cases of
+    # `hooks_judge_the_bytes_being_published` went red on a hook that had simply stopped, and the
+    # only visible trace was the drift gate reporting a file the fixture's doubles wrote after it.
+    # ⚠ Silencing stderr hid the message and not the status; the first repair changed `2>/dev/null`
+    # and the red survived it, which is what pointed here. The path is anchored to `$repo_root` for
+    # the same reason: a relative one is a different file depending on where the hook was invoked.
+    #
+    # A checkout without the declaration is the same case as one without `$BX`: the absence is the
+    # old behaviour, silently. The warning below is for a declaration that IS there and says
+    # nothing about this lane — the case somebody has to fix (rule 6).
+    routed_decl="$repo_root/.claude/remote-build.toml"
+    routed_kb=""
+    if [ -f "$routed_decl" ]; then
+        routed_kb=$(sed -n 's/^precommit_kb = \([0-9]\+\).*/\1/p' "$routed_decl" | head -1)
+    fi
+    free_kb=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || true)
+    if [ -n "$routed_kb" ] && [ -n "$free_kb" ] && [ "$routed_kb" -gt 0 ]; then
+        routed_jobs=$(( free_kb / routed_kb ))
+        [ "$routed_jobs" -ge 1 ] || routed_jobs=1
+        CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$routed_jobs}"
+        RUST_TEST_THREADS="${RUST_TEST_THREADS:-$routed_jobs}"
+        export CARGO_BUILD_JOBS RUST_TEST_THREADS
+        echo "pre-commit: this lane peaks at $((routed_kb / 1024))MB/task (declared in [routed]); ${free_kb}kB free -> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" >&2
+    elif [ -f "$routed_decl" ]; then
+        echo "pre-commit: ⚠ no usable precommit_kb in $routed_decl — this lane is running UNBOUNDED (register item 932)" >&2
+    fi
     echo "pre-commit: cargo clippy --workspace --all-targets -- -D warnings && doc gate && the ratchet lane ..." >&2
     if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
         "${BX}" --label pre-commit-lint -- bash -c "$lint_and_doc && $ratchets"

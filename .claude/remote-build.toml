@@ -49,6 +49,79 @@ min_free_gb = 20
 # `2` silently, so the file would declare one ceiling and the fleet would use another.
 peak_gb_per_task = 2
 
+# ⛔⛔⛔⛔⛔ WHAT THIS REPOSITORY HANDS THE WRAPPER ITSELF — register item 932, and the population
+# `[commands]` was never the whole of.
+#
+# `[commands]` is what this DECLARATION sends. It is not what the wrapper RUNS. The wrapper reads
+# exactly one key from this file — `peak_gb_per_task`, at `bx:485` — and divides a host's free RAM
+# by it for whatever argv it was given; it never reads `[commands]` or `[peak_measured]` at all.
+# ⚠ Asked of the program rather than remembered: `grep -n 'commands' bin/bx` answers FOUR lines —
+# three comments and one refusal message (`die "unknown flag $1 (commands go after --)"`), and not
+# one of them is a read of the table. `grep -n 'peak_measured\|_kb' bin/bx` answers none at all.
+# So the ceiling derived from two rows below has been budgeting every command any caller hands it.
+#
+# ⚠⚠ MEASURED, AT 2026-09-06, from the wrapper's own logs rather than from memory:
+#     ls target/bx-logs/*.log | wc -l                                   -> 10029 runs
+#     grep -h '^# cmd:' target/bx-logs/*.log | sort -u | wc -l          ->  2514 distinct commands
+#     grep -hc 'peak 2GB/task' target/bx-logs/*.log | paste -sd+ | bc   ->  2600 budgeted by it
+# Two rows measured, 2,514 commands budgeted.
+#
+# ⛔ AND THE SENTENCE THIS FILE USED TO REST ON WAS FALSE. `[peak_measured]` below excludes a 6.5GB
+# rustdoc reading because *"that is the COMMIT HOOK's doc gate and is not a command this file
+# sends"*. True of the file, false of the fleet: `grep -l 'document-private-items'
+# target/bx-logs/*.log | wc -l` answers **767**, and the single most frequent command the wrapper
+# has ever been given for this repository is this hook lane — 360 runs. The exclusion was correct
+# about which table the command belonged in and wrong about whether anybody was budgeting it.
+#
+# So it belongs in a table of its own, measured to the same standard — and NOT folded into the
+# scalar, which the block under the row below shows arithmetically would make things worse rather
+# than better. `every_command_this_repository_hands_the_wrapper_is_one_it_measured` holds that no
+# `"${BX}"` call site in `.githooks/` sends a command that is not here AND that the site divides by
+# its reading, which is what keeps a row from being a number nobody uses.
+[routed]
+# `.githooks/pre-commit`'s lint lane, exactly as the hook composes it from `$lint_and_doc` and
+# `$ratchets`. ⚠ The inner quotes are SINGLE and that is this table's doing: the gate's reader takes
+# TOML basic strings and a `"` inside a value truncates it, so the hook was changed to spell the
+# same word in a way both sides can hold. A change to either spelling is now a mismatch somebody
+# reads rather than a divergence nobody sees.
+precommit = "cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items && cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free"
+
+# ⛔⛔⛔⛔⛔ ITS READING LIVES HERE AND NOT IN `[peak_measured]`, AND THE ARITHMETIC IS WHY.
+#
+# Taken with this repository's own instrument, which is the same one `[peak_measured]` is taken
+# with and whose sampler walks the run's ANCESTRY rather than matching a program name — the reason
+# that matters is two paragraphs down:
+#
+#     bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak precommit
+#     -> RUN_STATUS=0  PEAK_KB=9260688  PEAK_WORST=rustdoc --crate-type bin --crate-name sprag_gui
+#
+# **8.83 GiB.** `the_ceiling_is_the_next_whole_gigabyte_above_the_worst_measurement` derives the
+# scalar as `floor(worst) + 1`, so folding this into `[peak_measured]` would set
+# `peak_gb_per_task = 9` — and `bx:1738` divides free RAM by it for EVERY command. Measured against
+# today's host: 22 GB free gives 11 tasks at the declared 2 and **2** at 9. `build`'s own reading is
+# 1,204,328 kB, so the row that made this repository honest would run `build` five times less
+# parallel than its own measurement allows. That is the "too HIGH" failure this file names beside
+# "too LOW" — *refuses hosts that could have done the work* — and it would be self-inflicted.
+#
+# ⇒ ⭐ **So the scalar's SHAPE is what the measurement refutes.** One number per repository cannot
+# describe commands whose peaks differ sevenfold, and raising it is not a fix. This reading is kept
+# where it cannot corrupt the scalar, and the command it belongs to is bounded from it AT ITS CALL
+# SITE — `.githooks/pre-commit` divides free RAM by this figure and hands the result down, so the
+# bound travels with the command whether or not the wrapper is in the chain. The clause
+# `every_command_this_repository_hands_the_wrapper_is_one_it_measured` holds that pairing: a routed
+# command with no reading here, or a call site that does not bound itself from it, is a red.
+#
+# ⚠⚠ THE FILTER IS WHY THIS NUMBER CAN BE TRUSTED AND SOME EARLIER ONES CANNOT. `measure-peak`
+# selects by walking `PPid` back to the run. A reading taken instead with `ps -eo pid= -C rustdoc`
+# selects NOTHING: `-e` means every process and it overrides `-C` — measured 2026-09-06, 772 pids
+# against 771 for a bare `ps -e`, while `ps -o pid= -C rustdoc` correctly answered 0. Register item
+# 932 carries three readings taken that way and retracted the same day.
+precommit_cmd = "cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items && cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free"
+precommit_kb = 9260688
+precommit_date = "2026-09-06"
+precommit_host = "the 31GiB workstation, 32 cores, rustc stable, cold CARGO_TARGET_DIR"
+precommit_worst = "rustdoc --crate-type bin --crate-name sprag_gui, in the doc leg"
+
 [commands]
 # What the machine has to produce before anything can be judged.
 build = "cargo test --workspace --no-run"

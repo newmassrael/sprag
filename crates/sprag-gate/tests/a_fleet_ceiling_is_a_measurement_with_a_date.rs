@@ -45,10 +45,26 @@
 //! line of whatever peaked — which is what `worst` below is for and what a re-measurement is
 //! pointed at.
 //!
-//! ⚠ **6.5 IS NOT THE NUMBER**, and the register says so in capitals. That reading was
-//! `--document-private-items`, which is the COMMIT HOOK's doc gate and is not a command this
-//! declaration sends. The same tree answers differently per command, which is why the record is
-//! per-command rather than one figure for "sprag".
+//! ⚠ **6.5 IS NOT THE NUMBER FOR `[commands]`**, and the register says so in capitals. That
+//! reading was `--document-private-items`, which is the COMMIT HOOK's doc gate and is not a command
+//! this declaration SENDS. The same tree answers differently per command, which is why the record
+//! is per-command rather than one figure for "sprag".
+//!
+//! ⛔⛔⛔⛔⛔ **AND THAT SENTENCE WAS TAKEN TO MEAN NOBODY BUDGETS IT, WHICH WAS FALSE** — register
+//! item 932. The declaration does not send that command; this repository's own commit hook HANDS it
+//! to the wrapper, and `bx` divides free RAM by `peak_gb_per_task` for whatever it is handed.
+//! Measured 2026-09-06 from the wrapper's own logs: 767 of its 10,029 runs here carried
+//! `--document-private-items`, and the single most frequent command it has ever been given for this
+//! repository is that hook lane — 360 runs. Re-measured with this repository's instrument, the lane
+//! peaks at **9,260,688 kB**, four times the figure it was being budgeted by.
+//!
+//! ⇒ So there is a second population and a second table. `[routed]` holds what this repository
+//! HANDS OVER, measured to the same standard, and
+//! [`every_command_this_repository_hands_the_wrapper_is_one_it_measured`] holds that every
+//! `"${BX}"` call site in `.githooks/` is in it AND bounds itself from its reading. Those readings
+//! stay OUT of `[peak_measured]` on purpose: folding 8.83 GiB in would derive
+//! `peak_gb_per_task = 9` and divide the same host into two tasks for `build` as well, whose own
+//! reading is 1,204,328 kB — the "too HIGH" failure named below, self-inflicted.
 
 use std::collections::BTreeMap;
 
@@ -245,6 +261,99 @@ fn the_measurement_says_when_and_where_it_was_taken() {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **EVERY COMMAND THIS REPOSITORY HANDS THE WRAPPER IS ONE IT MEASURED, AND EVERY SUCH
+/// CALL SITE BOUNDS ITSELF FROM THAT READING** — register item 932.
+///
+/// The gates above are about `[commands]`, which is what this DECLARATION sends. They are not
+/// about what the wrapper RUNS. Measured 2026-09-06 from the wrapper's own logs: it has been given
+/// **2,514 distinct commands** for this repository across 10,029 runs, and **2,600** of those runs
+/// printed the divisor derived from the two rows in `[peak_measured]`. Nothing said so, because
+/// `bx` reads exactly one key from this file — `peak_gb_per_task` — and never reads either table.
+///
+/// So the population here is the one thing this repository controls: its own `"${BX}"` call sites.
+/// Today there is exactly one, and rule 5's question has a plain answer — a site is one `[routed]`
+/// row away, and a row is one `measure-peak` run away.
+///
+/// ⚠⚠ **AND THE READING HAS TO BE USED, NOT MERELY RECORDED.** A row nobody divides by is a number
+/// in a file. The bound is applied at the call site because that is the only place that covers the
+/// branch with no wrapper in it at all — which is the branch this hook actually takes whenever the
+/// operating rules call for `env -u BX`.
+///
+/// ⛔ Rule 6 runs through all of it: a call site whose argv this cannot compose, a routed command
+/// with no reading, and a site that does not bound itself are each a RED naming the line. A shape
+/// the composer does not recognise must never be a silent skip — that is the escape hatch this
+/// clause exists to close.
+#[test]
+fn every_command_this_repository_hands_the_wrapper_is_one_it_measured() {
+    let decl = read_decl();
+    let routed = decl.table("routed");
+    let sites = wrapper_call_sites();
+
+    assert!(
+        !sites.is_empty(),
+        "⚠ no `\"${{BX}}\"` call site was found under `{HOOKS}`. This clause reads them to know \
+         what must have been measured, so finding none would make it vacuously green — register \
+         item 441. If the hooks genuinely stopped routing anything, delete this clause and the \
+         `[routed]` table together and say so in the register.",
+    );
+
+    for (site, command) in &sites {
+        let name = routed
+            .iter()
+            .find(|(key, value)| !key.contains('_') && *value == command)
+            .map(|(key, _)| key.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "⛔ ITEM 932: `{site}` hands the wrapper a command that `[routed]` does not \
+                 declare, so `bx` will budget it by `peak_gb_per_task` — a figure derived from \
+                 `[commands]`, which this command is not in. Measure it and record it:\n    bash \
+                 crates/sprag-gate/tests/doubles/declared-verify/measure-peak <name>\nThe command \
+                 as this hook composes it:\n{command}",
+                )
+            });
+
+        let recorded = routed.get(&format!("{name}_cmd")).unwrap_or_else(|| panic!(
+            "⚠ `[routed] {name}` has no `{name}_cmd`: the command is declared and the text it was \
+             MEASURED as is not, so nothing can say the reading still describes it.",
+        ));
+        assert_eq!(
+            recorded, command,
+            "\n⚠⚠⚠ `[routed] {name}` HAS CHANGED SINCE IT WAS MEASURED.\n  measured: {recorded}\n  \
+             now:      {command}\nMeasure it again and update `{name}_kb` and `{name}_cmd` \
+             together.",
+        );
+
+        let kb: u64 = routed
+            .get(&format!("{name}_kb"))
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or_else(|| panic!(
+                "⚠ `[routed] {name}_cmd` is recorded and `{name}_kb` is not, so the command was \
+                 named and its cost was not. `{site}` divides free RAM by that figure.",
+            ));
+        assert!(
+            kb > KB_PER_GIB / 4,
+            "⚠ `[routed] {name}_kb = {kb}` is under a quarter of a gigabyte, which no compilation \
+             in this workspace has ever measured. A reading that low would hand the call site a \
+             parallelism budget larger than the machine, which is the failure the reading exists \
+             to prevent.",
+        );
+
+        let hook = std::fs::read_to_string(workspace_root().join(site.split(':').next().unwrap()))
+            .expect("the hook this site was found in");
+        // ⚠ The key AND its `=` — not the bare name. A hook that only MENTIONS the reading in a
+        // message (this one does, in its own refusal text) would satisfy a bare-name check while
+        // dividing by nothing. Measured: the mutation that repointed the `sed` at another key left
+        // that message untouched and this assertion still caught it.
+        assert!(
+            hook.contains(&format!("{name}_kb = ")),
+            "⛔ ITEM 932: `{site}` routes `{name}`, and its hook never reads `{name}_kb` out of \
+             `{DECL}`. The reading is then a number in a file: the wrapper divides by \
+             `peak_gb_per_task` instead, and the branch that runs without the wrapper divides by \
+             nothing at all. Derive the bound from the reading at the call site.",
+        );
+    }
+}
+
 /// ⚠⚠ **A MACHINE THAT CLEARS THE FLOOR CAN RUN ONE TASK.**
 ///
 /// `min_ram_gb` is a host requirement and `peak_gb_per_task` is what one task needs; they are
@@ -355,4 +464,176 @@ fn read_decl() -> Decl {
     }
 
     Decl { top, tables }
+}
+
+/// The hook directory, WALKED rather than listed — register item 445's rule, applied to the one
+/// place this repository hands work to the wrapper.
+const HOOKS: &str = ".githooks";
+
+/// Every `"${BX}"` invocation under [`HOOKS`], as `(path:line, the command it hands over)`.
+fn wrapper_call_sites() -> Vec<(String, String)> {
+    let dir = workspace_root().join(HOOKS);
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|why| panic!("{} must be readable: {why}", dir.display()))
+        .map(|entry| entry.expect("a hook entry").path())
+        .collect();
+    files.sort();
+
+    let mut found = Vec::new();
+    for path in files {
+        if !path.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|why| panic!("{} must be text: {why}", path.display()));
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        for (index, line) in text.lines().enumerate() {
+            let code = line.trim();
+            if code.starts_with('#') || !code.contains("\"${BX}\"") {
+                continue;
+            }
+            let site = format!("{HOOKS}/{name}:{}", index + 1);
+            // ⛔⛔⛔ A CALL SITE IS THE WRAPPER IN A **COMMAND POSITION**, and getting to that rule
+            // took two wrong ones — both of which a mutation caught.
+            //
+            //   1. *skip every `"${BX}"` line without ` -- `* — reads as "skip the tests" and is
+            //      not: it makes a shape this cannot compose a SILENT PASS, the one thing this
+            //      clause's own doc says it must never be.
+            //   2. *skip lines starting `[` or `if [`* — a mutation of the form
+            //      `[ -n "${BX:-}" ] && "${BX}" --explain-declaration` walked straight through it,
+            //      because that line both tests AND invokes.
+            //
+            // So the question is asked of the OCCURRENCE, not the line: what comes before it. At
+            // the start of the line, or after `&&`, `||`, `;`, `then`, `else`, `do`, `(` or `{`,
+            // the wrapper is being RUN. Inside `[ -x … ]` it is an argument to a test and hands
+            // over nothing. The wrapper refuses an argv that does not follow `--` (`die "unknown
+            // flag $1 (commands go after --)"`), so a run without one is a line somebody reads.
+            let Some(at) = code.find("\"${BX}\"") else {
+                continue;
+            };
+            let before = code[..at].trim_end();
+            let runs = before.is_empty()
+                || ["&&", "||", ";", "then", "else", "do", "(", "{"]
+                    .iter()
+                    .any(|lead| before.ends_with(lead));
+            if !runs {
+                continue;
+            }
+            let argv = code
+                .split_once(" -- ")
+                .map(|(_, tail)| tail.trim())
+                .unwrap_or_else(|| panic!(
+                    "⚠ {site} names the wrapper and separates no argv with ` -- `, and it is not a \
+                     test expression either. The wrapper takes its command after `--` and refuses \
+                     anything else, so this clause cannot say what would be handed over — and a \
+                     command it cannot name is one nobody measured (rule 6). The line:\n{code}",
+                ));
+            found.push((site.clone(), compose(&text, argv, &site)));
+        }
+    }
+    found
+}
+
+/// What a `bash -c "…"` argv actually runs, with the hook's own shell variables resolved.
+fn compose(text: &str, argv: &str, site: &str) -> String {
+    let inner = argv
+        .strip_prefix("bash -c ")
+        .or_else(|| argv.strip_prefix("sh -c "))
+        .unwrap_or_else(|| {
+            panic!(
+                "⚠ {site} hands the wrapper an argv this clause cannot read: `{argv}`. It knows \
+             `bash -c \"…\"` and `sh -c \"…\"`, which is every shape this repository has used. A \
+             shape it does not know is a RED rather than a skip — rule 6 — because the claim here \
+             is that nothing reaches the wrapper unmeasured.",
+            )
+        });
+    let inner = inner
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or_else(|| {
+            panic!(
+                "⚠ {site} hands `bash -c` something that is not one double-quoted word: `{inner}`. \
+             Composing it would be guessing at the caller's quoting.",
+            )
+        });
+    expand(text, inner, site)
+}
+
+/// `$name` and `${name}` replaced by what the same file assigns them.
+///
+/// Pure over `(text, spelled)`, so [`the_composer_answers_both_ways`] can drive every arm from a
+/// literal instead of hoping the hooks happen to hold one of each.
+fn expand(text: &str, spelled: &str, site: &str) -> String {
+    let mut out = String::new();
+    let mut rest = spelled;
+    while let Some(at) = rest.find('$') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let (name, tail) = match after.strip_prefix('{') {
+            Some(braced) => {
+                let close = braced
+                    .find('}')
+                    .unwrap_or_else(|| panic!("⚠ {site}: `${{` with no `}}` in `{spelled}`"));
+                (&braced[..close], &braced[close + 1..])
+            }
+            None => {
+                let end = after
+                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .unwrap_or(after.len());
+                (&after[..end], &after[end..])
+            }
+        };
+        out.push_str(&assignment(text, name).unwrap_or_else(|| {
+            panic!(
+                "⚠ {site} hands over `${name}`, and nothing in that file assigns it as one quoted \
+             word. The clause cannot say what the wrapper will be given, so it says so — a command \
+             it cannot name is one nobody measured.",
+            )
+        }));
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The value of `name='…'` or `name="…"` where that is one quoted word on one line.
+fn assignment(text: &str, name: &str) -> Option<String> {
+    for line in text.lines() {
+        let Some(rest) = line
+            .trim()
+            .strip_prefix(name)
+            .and_then(|rest| rest.strip_prefix('='))
+        else {
+            continue;
+        };
+        for quote in ['\'', '"'] {
+            if let Some(inner) = rest.strip_prefix(quote).and_then(|r| r.strip_suffix(quote)) {
+                return Some(inner.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// ⛔⛔⛔ **AND THE COMPOSER ANSWERS BOTH WAYS** — register item 908's lesson: a clause that passes
+/// by composing one command it happens to recognise is a green about nothing.
+#[test]
+fn the_composer_answers_both_ways() {
+    let text = "a='one two'\nb=\"three\"\n";
+    assert_eq!(expand(text, "$a && $b", "fixture"), "one two && three");
+    assert_eq!(expand(text, "${a}x", "fixture"), "one twox");
+    assert_eq!(
+        expand(text, "no variables here", "fixture"),
+        "no variables here"
+    );
+    assert_eq!(assignment(text, "missing"), None);
+    assert_eq!(
+        assignment("c=bare\n", "c"),
+        None,
+        "an unquoted word is not one this reads"
+    );
 }
