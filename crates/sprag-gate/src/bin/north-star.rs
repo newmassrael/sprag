@@ -107,6 +107,25 @@ fn main() -> std::process::ExitCode {
         cap.spelled(),
         held.join(" "),
     );
+    // 🎯🎯🎯🎯🎯 AND THE CHAIN THAT DEFERS EACH ONE, LINK BY LINK — register item 920. The line
+    // above was a set of bare numbers, and the depth behind each was an integer with no way back
+    // to the ledger lines that produced it: auditing a deferral meant walking the ledger by hand,
+    // which is why nothing had ever audited one while both `@sev: critical` items sat behind it.
+    //
+    // ⚠ Printed under the line it explains and never instead of it: the set is what a round acts
+    // on, and this is the evidence for it.
+    for number in &deferred {
+        match reading.chain(*number) {
+            Some(links) => {
+                let spelled: Vec<String> = links.iter().map(ToString::to_string).collect();
+                println!("  {number} held by: {}", spelled.join(", "));
+            }
+            // Unreachable while `deferred` reports it — a chain that cannot be walked has no depth
+            // and is takeable — but stated rather than unwrapped, because the two are read from the
+            // same walk and a build that let them disagree should say so instead of panicking.
+            None => println!("  {number} held by: a chain that cannot be walked"),
+        }
+    }
     println!(
         "unrooted {} (declared {})",
         reading.unrooted().len(),
@@ -145,12 +164,18 @@ fn main() -> std::process::ExitCode {
         eprintln!("north-star: item {number} names commit {id}, which this tree cannot resolve");
     }
 
-    if reading.is_green() && unresolved.is_empty() {
+    // ⛔⛔⛔⛔⛔ AND THE DEFERRALS RESTING ON A LINK NOBODY CLASSIFIED — register item 920. Asked
+    // here rather than in `read` for the reason `cap` itself is: the depth cap is the loop
+    // document's number and this binary is the only thing that has opened that document.
+    let unread = reading.deferred_unread(cap.depth());
+
+    if reading.is_green() && unresolved.is_empty() && unread.is_empty() {
         return std::process::ExitCode::SUCCESS;
     }
-    if !reading.faults.is_empty() {
-        eprintln!("\n{} fault(s):", reading.faults.len());
-        for fault in &reading.faults {
+    let faults: Vec<&north_star::Fault> = reading.faults.iter().chain(unread.iter()).collect();
+    if !faults.is_empty() {
+        eprintln!("\n{} fault(s):", faults.len());
+        for fault in faults {
             eprintln!("  {fault}");
         }
     }

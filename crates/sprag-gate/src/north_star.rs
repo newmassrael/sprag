@@ -218,8 +218,30 @@ pub const MET_WHILE: [&str; 4] = ["마주친", "마주쳤다", "넘겨줬다", "
 /// and the hole is registered rather than hidden — see register item 896.
 pub const MADE_BY_PAYING: [&str; 6] = ["만들", "만든", "만드는", "생겼", "생긴", "났다"];
 
-/// Whether `reason` states that the debt was MET rather than made — [`MET_WHILE`] with no
-/// [`MADE_BY_PAYING`] word beside it.
+/// ⛔⛔⛔⛔⛔ **WHAT ONE [`PARENT`] REASON STATES** — [`MET_WHILE`] and [`MADE_BY_PAYING`] read as
+/// a single answer, so the third case has a NAME instead of being the gap between two `bool`s.
+/// Register item 920.
+///
+/// # ⛔⛔⛔ Why the third case is a value and not a `None` nobody looks at
+///
+/// [`MET_WHILE`]'s own doc records three reasons in neither vocabulary — `입구`, `골라 넣은 수다`,
+/// `갈랐다` — and calls widening the arrays *the one move the north star forbids*. That left the
+/// unreadable reason with no representation at all: [`met_while`] answers [`None`] for *it says
+/// made* and for *nobody can tell* alike, which is working rule 6's escape hatch exactly.
+/// [`Says::Neither`] is the name that lets a caller refuse it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Says {
+    /// Paying the named item MADE this debt — [`MADE_BY_PAYING`]. Carries the word it matched, so
+    /// a reader is shown the evidence rather than asked to trust the verdict.
+    Made(&'static str),
+    /// The round MET this debt while paying the named item — [`MET_WHILE`] with no creation word
+    /// beside it. On a numbered [`PARENT`] that is [`Fault::MetWhileNotMade`].
+    Met(&'static str),
+    /// Neither vocabulary reaches it. **Not a pass** — see [`Reading::deferred_unread`].
+    Neither,
+}
+
+/// ⛔⛔⛔⛔⛔ **READ ONE [`PARENT`] REASON** — the single place the two vocabularies meet.
 ///
 /// # ⛔⛔⛔⛔⛔ THE MATCHED WORD IS CUT OUT BEFORE THE OTHER SET IS ASKED, and that is not tidiness
 ///
@@ -231,14 +253,32 @@ pub const MADE_BY_PAYING: [&str; 6] = ["만들", "만든", "만드는", "생겼"
 ///
 /// ⇒ Held by `a_reason_that_says_revealed_is_not_a_reason_that_says_made`, which is red for the
 /// version that asks the whole sentence.
+///
+/// ⚠ A line carrying BOTH answers [`Says::Made`]: it is drawing the distinction rather than falling
+/// foul of it, which [`MADE_BY_PAYING`]'s doc argues from the two lines that do it on purpose.
+#[must_use]
+pub fn says(reason: &str) -> Says {
+    if let Some(word) = MET_WHILE.into_iter().find(|word| reason.contains(word)) {
+        let without = reason.replace(word, " ");
+        return match MADE_BY_PAYING.iter().find(|made| without.contains(*made)) {
+            Some(made) => Says::Made(made),
+            None => Says::Met(word),
+        };
+    }
+    match MADE_BY_PAYING.iter().find(|made| reason.contains(*made)) {
+        Some(made) => Says::Made(made),
+        None => Says::Neither,
+    }
+}
+
+/// Whether `reason` states that the debt was MET rather than made — [`Says::Met`] spelled as the
+/// [`Option`] the reader's fault arm wants. Register item 896.
 #[must_use]
 pub fn met_while(reason: &str) -> Option<&'static str> {
-    let word = MET_WHILE.into_iter().find(|word| reason.contains(word))?;
-    let without = reason.replace(word, " ");
-    if MADE_BY_PAYING.iter().any(|made| without.contains(made)) {
-        return None;
+    match says(reason) {
+        Says::Met(word) => Some(word),
+        Says::Made(_) | Says::Neither => None,
     }
-    Some(word)
 }
 
 /// The line the ledger declares its own count of items that state no [`PARENT`]:
@@ -404,6 +444,37 @@ impl fmt::Display for Parent {
     }
 }
 
+/// 🎯🎯🎯 **ONE HOP OF A [`PARENT`] CHAIN** — register item 920. An item, the item it names, and
+/// what its own sentence [`Says`] about which of working rule 13's two things happened.
+///
+/// ⚠ A link is a STATEMENT, not a relation: `number` states that `named` is where it came from.
+/// Only [`Parent::Item`] makes one — reaching [`Parent::Root`] ends the chain and adds no link,
+/// which is what makes a root's depth 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Link {
+    /// The item whose [`PARENT`] line this is.
+    pub number: u32,
+    /// The item that line names.
+    pub named: u32,
+    /// What the sentence after the number says. See [`says`].
+    pub says: Says,
+}
+
+impl fmt::Display for Link {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            number,
+            named,
+            says,
+        } = self;
+        match says {
+            Says::Made(word) => write!(f, "{number} from {named} (made, `{word}`)"),
+            Says::Met(word) => write!(f, "{number} from {named} (MET, `{word}`)"),
+            Says::Neither => write!(f, "{number} from {named} (UNREAD)"),
+        }
+    }
+}
+
 /// One numbered item of section A, after its blocks have been grouped.
 ///
 /// ⚠ A number can own several blocks: this ledger closes an item by laying a new block ON TOP of
@@ -419,6 +490,11 @@ pub struct Item {
     pub severity: Option<Severity>,
     /// What it says found it, if it says. See [`PARENT`].
     pub parent: Option<Parent>,
+    /// ⛔⛔⛔ **THE SENTENCE THAT FOLLOWS [`PARENT`]'s VALUE**, kept rather than dropped once the
+    /// number is read — register item 920. It comes off the SAME block that settled
+    /// [`Item::parent`], so a superseded block cannot explain a mark that beat it. [`None`] where
+    /// the item states no parentage at all. See [`Reading::chain`].
+    pub reason: Option<String>,
     /// ⛔⛔⛔⛔⛔ **THE COMMIT IDS ITS MARK LINE NAMES** — register item 902. Empty for an item
     /// whose mark names none, and empty for every item that is not [`Tag::Paid`], because only a
     /// claim of payment can be checked against the repository. See [`PAID_DECLARATION`].
@@ -509,6 +585,21 @@ pub enum Fault {
         named: u32,
         /// The word in its reason that says it was met rather than made.
         word: &'static str,
+    },
+    /// ⛔⛔⛔⛔⛔ **AN ITEM HELD BELOW THE DEPTH CAP BY A LINK IN NEITHER VOCABULARY** — register
+    /// item 920. The reason answers [`Says::Neither`], so no round ever stated which of working
+    /// rule 13's two things happened, and the deferral it produces rests on nothing anybody argued.
+    ///
+    /// ⚠ The repair is never to widen [`MET_WHILE`] or [`MADE_BY_PAYING`] — [`MET_WHILE`]'s doc
+    /// calls that *the one move the north star forbids*. It is to make the ledger line STATE its
+    /// verdict: a creation word if paying `named` made it, `@from: none` if a round met it.
+    DeferredByUnreadLink {
+        /// The deferred item whose depth this link is part of.
+        held: u32,
+        /// The item whose [`PARENT`] line cannot be read.
+        at: u32,
+        /// The parent that line names.
+        named: u32,
     },
     /// An item names a parent section A does not have. **A chain that leaves the ledger cannot be
     /// walked**, so the depth of everything below it is unknown rather than zero.
@@ -679,6 +770,13 @@ impl fmt::Display for Fault {
                  every debt under it inherits a depth nobody earned: write `{PARENT} none` and \
                  keep the sentence, which already says why",
             ),
+            Self::DeferredByUnreadLink { held, at, named } => write!(
+                f,
+                "item {held} is held below the depth cap by `{at} {PARENT} {named}`, whose reason \
+                 is in neither vocabulary — nobody ever said whether paying {named} MADE it or a \
+                 round MET it, so this deferral rests on a sentence no round argued. Say it in the \
+                 line (a creation word, or `{PARENT} none`); do not widen the vocabulary",
+            ),
             Self::DanglingParent { number, named } => write!(
                 f,
                 "item {number} says it was found while paying {named}, which section A does not \
@@ -787,22 +885,93 @@ impl Reading {
     /// the whole standing backlog look like roots and hand the cap nothing to hold.
     #[must_use]
     pub fn depth(&self, number: u32) -> Option<u32> {
+        // ⚠⚠ THE DEPTH IS THE CHAIN'S LENGTH AND NOT A SECOND WALK — register item 920. Two walks
+        // over the same marks can disagree, and the one that is PRINTED would not be the one that
+        // defers: a reader auditing the chain would then be auditing a different object.
+        //
+        // ⚠ The cast cannot lose: `chain` inserts each item into `seen` before it is followed, so
+        // a chain is never longer than section A, which is a `Vec` on a 64-bit host and nowhere
+        // near `u32::MAX` — and `saturating` states that rather than leaving it to be noticed.
+        self.chain(number)
+            .map(|links| u32::try_from(links.len()).unwrap_or(u32::MAX))
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE `@from:` LINKS THAT CARRY AN ITEM DOWN TO ITS ROOT**, nearest first, each
+    /// carrying what its own sentence [`Says`] — register item 920.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a chain nobody can SEE is a chain nobody audits
+    ///
+    /// [`Reading::deferred`] prints bare numbers, and the depth behind each one was a single
+    /// integer with no way back to the lines that made it. Auditing it meant walking the ledger by
+    /// hand, which is why — measured on the day this shipped — **it had never been done once**,
+    /// while the depths it produced were holding both `@sev: critical` items out of every round's
+    /// reach for six rounds running.
+    ///
+    /// ⇒ The chain is the object the audit is ABOUT, so it is returned rather than summarised. The
+    /// per-link verdict comes with it because working rule 13's question — *did paying it MAKE
+    /// this, or did a round merely MEET it?* — is asked of a LINK and never of an item.
+    ///
+    /// [`None`] where the walk cannot finish: an item stating no parentage, a parent section A does
+    /// not have, or a chain that returns to itself. **Unknown is never an empty chain**, for the
+    /// same reason [`Reading::depth`] never reports it as 0.
+    #[must_use]
+    pub fn chain(&self, number: u32) -> Option<Vec<Link>> {
         let mut seen = std::collections::BTreeSet::new();
+        let mut links = Vec::new();
         let mut at = number;
-        let mut depth = 0;
         loop {
             if !seen.insert(at) {
                 return None;
             }
             let item = self.items.iter().find(|item| item.number == at)?;
             match item.parent? {
-                Parent::Root => return Some(depth),
-                Parent::Item(up) => {
-                    depth += 1;
-                    at = up;
+                Parent::Root => return Some(links),
+                Parent::Item(named) => {
+                    links.push(Link {
+                        number: at,
+                        named,
+                        says: says(item.reason.as_deref().unwrap_or_default()),
+                    });
+                    at = named;
                 }
             }
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE DEFERRALS THAT REST ON A LINK NOBODY CLASSIFIED** — register item 920, and
+    /// working rule 6 made into a predicate for the one place an unread reason costs something.
+    ///
+    /// # ⛔⛔⛔ What this is, and what item 896 keeps
+    ///
+    /// Item 896 owns *every* [`PARENT`] line whose reason is in neither vocabulary: that is a
+    /// standing backlog of seventy-odd lines and needs a floor to pay down, exactly like
+    /// [`Reading::unrooted`]. **This is the subset where being unread has a PRICE** — a link inside
+    /// a chain that holds an item below the cap. Every link of such a chain adds one to the depth
+    /// that defers it, so an unread link there is not an annotation nobody got to: it is a debt
+    /// held back on a reason no round ever argued.
+    ///
+    /// ⇒ Which is why this needs no ratchet and is a RED on the spot: the set can be, and after the
+    /// round that shipped it was, empty.
+    ///
+    /// ⚠ Takes the cap rather than reading it, because the cap is the loop document's and this
+    /// crate does not open that document — the split register item 833(1) drew and `cap()` in the
+    /// binary keeps.
+    #[must_use]
+    pub fn deferred_unread(&self, cap: u32) -> Vec<Fault> {
+        self.deferred(cap)
+            .into_iter()
+            .filter_map(|held| Some((held, self.chain(held)?)))
+            .flat_map(|(held, links)| {
+                links
+                    .into_iter()
+                    .filter(|link| link.says == Says::Neither)
+                    .map(move |link| Fault::DeferredByUnreadLink {
+                        held,
+                        at: link.number,
+                        named: link.named,
+                    })
+            })
+            .collect()
     }
 
     /// 🎯🎯🎯🎯🎯 **DOES `to` COME OUT OF `from`?** — `Some(true)` where `to`'s chain of
@@ -1390,6 +1559,7 @@ pub fn read(text: &str) -> Reading {
         let mut tag = None;
         let mut severity = None;
         let mut parent = None;
+        let mut reason = None;
         // ⛔⛔⛔⛔⛔ THE COMMIT IDS THE MARK LINE NAMES — register item 902, collected in the same
         // walk and settled by the same topmost-block rule the mark itself is, because an id read
         // off a block whose mark lost the tie would be evidence for a claim this item is not
@@ -1400,6 +1570,7 @@ pub fn read(text: &str) -> Reading {
             let mut named: Vec<String> = Vec::new();
             let mut severities: Vec<Severity> = Vec::new();
             let mut parents: Vec<Parent> = Vec::new();
+            let mut reasons: Vec<String> = Vec::new();
             for line in body {
                 if let Some(value) = parent_value(line) {
                     match Parent::parse(value) {
@@ -1420,6 +1591,10 @@ pub fn read(text: &str) -> Reading {
                                 });
                             }
                             parents.push(found);
+                            // ⛔ AND THE SENTENCE IS KEPT, not only asked one question and thrown
+                            // away — register item 920. `met_while` above consumed it and dropped
+                            // it, so nothing downstream could say WHY a chain holds an item back.
+                            reasons.push(value.to_string());
                         }
                         None => faults.push(Fault::UnknownParent {
                             number: Some(*number),
@@ -1460,6 +1635,10 @@ pub fn read(text: &str) -> Reading {
             }
             if parent.is_none() {
                 parent = parents.first().copied();
+                // ⚠ In the SAME breath as the parent it explains, for the reason item 902 gives
+                // about commit ids: a reason gathered a step later could come off a block whose
+                // parentage lost the tie.
+                reason = reasons.first().cloned();
             }
             if in_block.len() > 1 && in_block.iter().any(|found| *found != in_block[0]) {
                 faults.push(Fault::ConflictingTags {
@@ -1496,6 +1675,7 @@ pub fn read(text: &str) -> Reading {
             tag,
             severity,
             parent,
+            reason,
             commits,
             names_the_loop,
             reads_as_closed,
@@ -2191,11 +2371,15 @@ mod tests {
     // ── register item 833(2): the debt chain ───────────────────────────────────────────────────
 
     /// A chain hung off 900: 901 was found while paying it, 902 while paying 901.
+    ///
+    /// ⚠ Each link STATES its verdict (`만들었다`), because register item 920 made an unstated one
+    /// a [`Fault::DeferredByUnreadLink`] and a fixture that trips a gate by accident is a fixture
+    /// nobody can mutate deliberately.
     fn with_a_chain() -> String {
         let link = |number: u32, from: u32| {
             format!(
                 "{number}. ⛔ **Found while paying {from}**\n     @ns: open\n     @sev: ordinary\n \
-                 \u{20}   @from: {from}\n\n"
+                 \u{20}   @from: {from} — {from} 을 갚으며 «만들었다»\n\n"
             )
         };
         LEDGER.replace(
@@ -2683,6 +2867,185 @@ mod tests {
             "⚠⚠ THE OWNER'S DEFAULT, register item 833(2): *부채의 부채는 몇 depth까지 갚을지 \
              scxml에 지정할수있게하고 default로 1 depth로해*. A round that moves it moves this \
              line with it — which is the whole point of the number living in one place.",
+        );
+    }
+
+    // ── register item 920: the chain that defers is READ, not merely counted ────────────────────
+
+    /// The three answers a reason can give, over the words the ledger was measured to use.
+    #[test]
+    fn a_reason_is_read_as_made_met_or_neither() {
+        assert_eq!(
+            says("840 을 갚으며 «만든» 리더다"),
+            Says::Made("만든"),
+            "the creation vocabulary, and the word it matched comes back as the evidence",
+        );
+        assert_eq!(
+            says("852 를 재느라 GUI 로그를 읽다 «마주친» 것이다"),
+            Says::Met("마주친"),
+        );
+        assert_eq!(
+            says("856 의 접힘이 세션 교체를 부르고, 그 교체가 이 결함의 «입구»다"),
+            Says::Neither,
+            "⛔⛔⛔ THE WHOLE OF THIS ITEM: `입구` is in neither array, and the build before this \
+             one had no way to SAY so — `met_while` answers `None` here and `None` for a creation \
+             word alike, which is working rule 6's escape hatch",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SUBSTRING LESSON SURVIVES THE UNIFICATION** — `드러났다` contains `났다`, and
+    /// [`says`] is now the only place that knows it. A build that asked the creation set over the
+    /// whole sentence would call every *was revealed* line a made-by-paying line, which is exactly
+    /// what item 896 measured and repaired.
+    #[test]
+    fn a_reason_that_says_revealed_is_still_not_a_reason_that_says_made() {
+        assert_eq!(
+            says("865 가 그 물음을 세우자 «성공»했고, 그때 드러났다"),
+            Says::Met("드러났다"),
+            "⛔ the matched word is cut out BEFORE the other set is asked",
+        );
+    }
+
+    /// The chain comes back as links, nearest first, each carrying its own verdict — the object an
+    /// audit is about, rather than the integer it collapses to.
+    #[test]
+    fn the_chain_that_defers_an_item_is_returned_link_by_link() {
+        let reading = read(&with_a_chain());
+        assert_eq!(
+            reading.chain(902),
+            Some(vec![
+                Link {
+                    number: 902,
+                    named: 901,
+                    says: Says::Made("만들"),
+                },
+                Link {
+                    number: 901,
+                    named: 900,
+                    says: Says::Made("만들"),
+                },
+            ]),
+            "two hops to a declared root, and 900 itself adds no link because a root is where a \
+             chain ends",
+        );
+        assert_eq!(
+            reading.chain(900),
+            Some(Vec::new()),
+            "a root's chain is EMPTY and not absent — that is what makes its depth 0",
+        );
+    }
+
+    /// ⚠⚠ **THE DEPTH AND THE PRINTED CHAIN ARE ONE WALK.** Two walks over the same marks can
+    /// disagree, and then a reader auditing the chain is auditing a different object from the one
+    /// that defers the item.
+    #[test]
+    fn the_depth_is_the_length_of_the_chain_it_prints() {
+        let reading = read(&with_a_chain());
+        for number in [900, 901, 902] {
+            assert_eq!(
+                reading.depth(number),
+                reading
+                    .chain(number)
+                    .map(|links| u32::try_from(links.len()).unwrap()),
+                "item {number}",
+            );
+        }
+        assert_eq!(reading.depth(897), None, "and unknown stays unknown, not 0");
+        assert_eq!(reading.chain(897), None, "in both answers");
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE MUTATION**: turn one link's reason into a sentence in neither vocabulary —
+    /// the real `846 @from: 840 — 840 을 갚으며 «내가» 골라 넣은 수다` — and the deferral it
+    /// produces must go RED. The build before this one printed the same `deferred` line and said
+    /// nothing.
+    #[test]
+    fn a_deferral_resting_on_a_reason_in_neither_vocabulary_is_red() {
+        let ledger = with_a_chain().replace(
+            "@from: 901 — 901 을 갚으며 «만들었다»",
+            "@from: 901 — 901 을 갚으며 «내가» 골라 넣은 수다",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.deferred(1),
+            vec![902],
+            "the item is still deferred — the depth did not move, only the reason for it",
+        );
+        assert!(
+            reading.is_green(),
+            "⛔⛔ AND `read` ITSELF STAYS SILENT, which is the point: item 896's ratchet does not \
+             reach this and no other fault does either: {:?}",
+            reading.faults,
+        );
+        assert_eq!(
+            reading.deferred_unread(1),
+            vec![Fault::DeferredByUnreadLink {
+                held: 902,
+                at: 902,
+                named: 901,
+            }],
+            "the deferral names the link it rests on",
+        );
+    }
+
+    /// ⚠⚠⚠ **THE CONTROL** — the same ledger with every link stating its verdict is SILENT. A gate
+    /// that fires on the state it wants teaches a reader to skip it.
+    #[test]
+    fn a_chain_whose_every_link_states_its_verdict_is_silent() {
+        let reading = read(&with_a_chain());
+        assert_eq!(
+            reading.deferred(1),
+            vec![902],
+            "there IS a deferral here, so the silence below is not an empty population",
+        );
+        assert!(
+            reading.deferred_unread(1).is_empty(),
+            "{:?}",
+            reading.deferred_unread(1),
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE POPULATION IS THE DEFERRED, AND WIDENING IT WOULD BE THE OTHER ITEM'S JOB.**
+    /// An unread reason on a TAKEABLE item costs nothing today — no debt is held back on it — and
+    /// it is item 896's standing backlog of seventy-odd lines, which needs a floor to pay down.
+    /// A build that red on all of them would be red for months and read as broken.
+    #[test]
+    fn an_unread_reason_that_defers_nothing_is_item_896s_backlog_and_not_this_gate() {
+        let ledger = with_a_chain().replace(
+            "@from: 900 — 900 을 갚으며 «만들었다»",
+            "@from: 900 — 900 을 갚으며 «내가» 골라 넣은 수다",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.depth(901),
+            Some(1),
+            "901 sits AT the cap, so nothing is held back by this link",
+        );
+        assert_eq!(
+            reading.deferred_unread(1),
+            vec![Fault::DeferredByUnreadLink {
+                held: 902,
+                at: 901,
+                named: 900,
+            }],
+            "⚠ 902 IS still deferred and its chain runs through that link, so it is named — the \
+             link is charged where it costs, and 901's own takeability is not this gate's subject",
+        );
+    }
+
+    /// A cap that holds nothing back has nothing to audit, and must not manufacture a finding out
+    /// of the same unread lines — working rule 5, asked of this gate's own population.
+    #[test]
+    fn a_cap_that_defers_nothing_finds_nothing_to_read() {
+        let ledger = with_a_chain().replace(
+            "@from: 901 — 901 을 갚으며 «만들었다»",
+            "@from: 901 — 901 을 갚으며 «내가» 골라 넣은 수다",
+        );
+        let reading = read(&ledger);
+        assert!(reading.deferred(9).is_empty(), "{:?}", reading.deferred(9),);
+        assert!(
+            reading.deferred_unread(9).is_empty(),
+            "the reason is as unread as ever; what changed is that it now costs nothing: {:?}",
+            reading.deferred_unread(9),
         );
     }
 }
