@@ -1096,7 +1096,7 @@ fn a_live_judge_hears_the_marker_whatever_the_milestone_asked_for() {
 
     let progress = sprag_plugin::ProgressCell::default();
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
-        max_iterations: 24,
+        max_iterations: Some(24),
         max_cost: None,
         max_duration: Some(Duration::from_secs(300)),
     })
@@ -1301,7 +1301,7 @@ fn a_live_judge_hears_the_marker_on_the_budget_the_deaf_runs_shared() {
     // it. **That is the deaf run's shape, which is the point.**
     let progress = sprag_plugin::ProgressCell::default();
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
-        max_iterations: 24,
+        max_iterations: Some(24),
         max_cost: None,
         max_duration: Some(Duration::from_secs(300)),
     })
@@ -1488,7 +1488,7 @@ fn a_turn_that_outran_its_bound_is_looked_at_again_and_never_judged() {
 
     let progress = sprag_plugin::ProgressCell::default();
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
-        max_iterations: 24,
+        max_iterations: Some(24),
         max_cost: None,
         max_duration: Some(Duration::from_secs(300)),
     })
@@ -1663,7 +1663,7 @@ fn a_briefed_loop_converges_against_a_live_agent() {
     // product rather than by a `panic!` in a test.
     let progress = sprag_plugin::ProgressCell::default();
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
-        max_iterations: 24,
+        max_iterations: Some(24),
         max_cost: None,
         max_duration: Some(Duration::from_secs(300)),
     })
@@ -1911,7 +1911,7 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
 
     let progress = sprag_plugin::ProgressCell::default();
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
-        max_iterations: 24,
+        max_iterations: Some(24),
         max_cost: None,
         max_duration: Some(Duration::from_secs(300)),
     })
@@ -2111,7 +2111,7 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
 
     let progress = sprag_plugin::ProgressCell::default();
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
-        max_iterations: 4_000,
+        max_iterations: Some(4_000),
         max_cost: None,
         max_duration: Some(CLOCK),
     })
@@ -2374,7 +2374,7 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
         // The substrate's bounds, as the convergence gate beside this one establishes. A tool turn
         // is slower than an arithmetic one, so the wall clock is the looser of the two.
-        max_iterations: 40,
+        max_iterations: Some(40),
         max_cost: None,
         max_duration: Some(Duration::from_secs(420)),
     })
@@ -2582,7 +2582,7 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
 
     let progress = sprag_plugin::ProgressCell::default();
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
-        max_iterations: 40,
+        max_iterations: Some(40),
         max_cost: None,
         max_duration: Some(Duration::from_secs(420)),
     })
@@ -2826,7 +2826,7 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
 
     let progress = sprag_plugin::ProgressCell::default();
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
-        max_iterations: 60,
+        max_iterations: Some(60),
         max_cost: None,
         // ⚠ Longer than the other loop gates by a whole agent STARTUP: this run pays for a second
         // session coming up, which R379 measured at tens of seconds on a cold start. ⚠⚠ And not
@@ -4195,7 +4195,7 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
     .expect("a briefed loop over a named pane starts");
 
     let outcome = sprag_plugin::Driver::new(sprag_plugin::Guardrails {
-        max_iterations: 24,
+        max_iterations: Some(24),
         max_cost: None,
         max_duration: Some(Duration::from_secs(300)),
     })

@@ -638,7 +638,7 @@ mod tests {
     fn a_run_that_converged_because_nothing_was_asking_says_so_in_its_outcome() {
         let (access, pane) = crate::testing::silent_peer();
         let outcome = crate::driver::Driver::new(crate::driver::Guardrails {
-            max_iterations: 4,
+            max_iterations: Some(4),
             max_cost: None,
             max_duration: Some(std::time::Duration::from_secs(20)),
         })

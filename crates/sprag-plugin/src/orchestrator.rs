@@ -872,7 +872,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 3,
+                max_iterations: Some(3),
                 max_cost: None,
                 max_duration: None,
             },
@@ -926,7 +926,7 @@ mod tests {
             },
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 50,
+            max_iterations: Some(50),
             max_cost: None,
             max_duration: None,
         })
@@ -1110,7 +1110,7 @@ mod tests {
         const AT_ONCE: Duration = Duration::from_secs(1);
 
         let guardrails = || Guardrails {
-            max_iterations: 4,
+            max_iterations: Some(4),
             max_cost: None,
             max_duration: Some(CEILING),
         };
@@ -1254,7 +1254,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 3,
+                max_iterations: Some(3),
                 max_cost: None,
                 max_duration: None,
             },
@@ -1300,7 +1300,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 10,
+                max_iterations: Some(10),
                 max_cost: None,
                 max_duration: None,
             },
@@ -1358,7 +1358,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 10,
+                max_iterations: Some(10),
                 max_cost: None,
                 max_duration: None,
             },
@@ -1385,7 +1385,10 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: u32::MAX,
+                // ⚠ Register item 941: this said `u32::MAX` and meant *do not let the step count
+                // end this run* — a sentinel, because the field had no value for it. It has one
+                // now, so the fixture says what it means.
+                max_iterations: None,
                 max_cost: Some(Cost::Bytes(12)),
                 max_duration: None,
             },
@@ -1460,7 +1463,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 6,
+                max_iterations: Some(6),
                 max_cost: None,
                 max_duration: None,
             },
@@ -1530,7 +1533,7 @@ mod tests {
                 },
             );
             let outcome = Driver::new(Guardrails {
-                max_iterations: 3,
+                max_iterations: Some(3),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             })
@@ -1598,7 +1601,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 3,
+                max_iterations: Some(3),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(20)),
             },
@@ -1659,7 +1662,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 3,
+                max_iterations: Some(3),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(20)),
             },
@@ -1721,7 +1724,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 6,
+                max_iterations: Some(6),
                 max_cost: None,
                 max_duration: None,
             },
@@ -1791,7 +1794,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 6,
+                max_iterations: Some(6),
                 max_cost: None,
                 max_duration: None,
             },
@@ -1867,7 +1870,7 @@ mod tests {
             },
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 5,
+            max_iterations: Some(5),
             max_cost: None,
             // Far longer than the readiness bound, so the RUN's clock provably cannot end this.
             max_duration: Some(Duration::from_secs(30)),
@@ -1911,7 +1914,7 @@ mod tests {
             },
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 5,
+            max_iterations: Some(5),
             max_cost: None,
             max_duration: Some(Duration::from_millis(300)),
         })
@@ -1966,7 +1969,7 @@ mod tests {
             },
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 5,
+            max_iterations: Some(5),
             max_cost: None,
             // ⚠ FAR LONGER than the readiness bound, so the run's own clock provably cannot be
             // what ends this — that is the other gate, and it reaches a different arm.
@@ -2148,7 +2151,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 3,
+                max_iterations: Some(3),
                 max_cost: None,
                 max_duration: None,
             },
@@ -2372,7 +2375,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 3,
+                max_iterations: Some(3),
                 max_cost: None,
                 max_duration: None,
             },
@@ -2448,7 +2451,7 @@ mod tests {
             Guardrails {
                 // ⚠ FAR ABOVE what one question needs, because the defect is measured in turns
                 // SPENT and a tight ceiling would hide it as `exhausted` instead.
-                max_iterations: 100,
+                max_iterations: Some(100),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(60)),
             },
@@ -2500,7 +2503,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 100,
+                max_iterations: Some(100),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(60)),
             },
@@ -2609,7 +2612,7 @@ mod tests {
             },
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 100,
+            max_iterations: Some(100),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -2869,7 +2872,7 @@ mod tests {
         );
         let cell = crate::driver::ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 10,
+            max_iterations: Some(10),
             max_cost: None,
             max_duration: Some(Duration::from_millis(400)),
         })
@@ -2961,7 +2964,7 @@ mod tests {
         );
         let cell = crate::driver::ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 100,
+            max_iterations: Some(100),
             max_cost: None,
             max_duration: Some(Duration::from_millis(1_200)),
         })
@@ -3051,7 +3054,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 8,
+                max_iterations: Some(8),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             },
@@ -3113,7 +3116,7 @@ mod tests {
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 8,
+                max_iterations: Some(8),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             },
@@ -3230,7 +3233,7 @@ mod tests {
                 &access,
                 &mut orch,
                 Guardrails {
-                    max_iterations: INTERRUPTION_BUDGET,
+                    max_iterations: Some(INTERRUPTION_BUDGET),
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -3314,7 +3317,7 @@ mod tests {
                 &access,
                 &mut orch,
                 Guardrails {
-                    max_iterations: INTERRUPTION_BUDGET,
+                    max_iterations: Some(INTERRUPTION_BUDGET),
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -3483,7 +3486,7 @@ mod tests {
                 &access,
                 &mut orch,
                 Guardrails {
-                    max_iterations: 40,
+                    max_iterations: Some(40),
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -3573,7 +3576,7 @@ mod tests {
                 crate::testing::person_types(&access, pane, b"X");
             });
             let outcome = Driver::new(Guardrails {
-                max_iterations: 40,
+                max_iterations: Some(40),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(60)),
             })
@@ -3664,7 +3667,7 @@ mod tests {
                 &access,
                 &mut orch,
                 Guardrails {
-                    max_iterations: 40,
+                    max_iterations: Some(40),
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -3755,7 +3758,7 @@ mod tests {
                 &access,
                 &mut orch,
                 Guardrails {
-                    max_iterations: 40,
+                    max_iterations: Some(40),
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -3839,7 +3842,7 @@ mod tests {
                 &access,
                 &mut orch,
                 Guardrails {
-                    max_iterations: 8,
+                    max_iterations: Some(8),
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },

@@ -570,7 +570,7 @@ mod tests {
         let mut spec = DialogueSpec::new(endpoint.clone(), endpoint, "go");
         spec.timeout = Duration::from_secs(300);
         let outcome = Driver::new(Guardrails {
-            max_iterations: 1,
+            max_iterations: Some(1),
             max_cost: None,
             max_duration: None,
         })
@@ -703,7 +703,7 @@ mod tests {
         run_with(
             spec,
             Guardrails {
-                max_iterations: max_turns,
+                max_iterations: Some(max_turns),
                 max_cost: None,
                 max_duration: None,
             },
@@ -848,7 +848,7 @@ mod tests {
         let (_ws, outcome, _t) = run_with(
             spec,
             Guardrails {
-                max_iterations: 100,
+                max_iterations: Some(100),
                 max_cost: Some(Cost::Tokens(50)),
                 max_duration: None,
             },
@@ -1046,7 +1046,7 @@ mod tests {
         let worker = thread::spawn(move || {
             let mut dialogue = Dialogue::new(spec);
             let outcome = Driver::new(Guardrails {
-                max_iterations: 100,
+                max_iterations: Some(100),
                 max_cost: None,
                 max_duration: None,
             })
@@ -1106,7 +1106,7 @@ mod tests {
             "hi",
         ));
         let outcome = Driver::new(Guardrails {
-            max_iterations: 3,
+            max_iterations: Some(3),
             max_cost: None,
             max_duration: None,
         })

@@ -941,13 +941,29 @@
       decision: `Guardrails::max_iterations` is a `u32` and has no value meaning
       *no bound*. Giving it one is this item's second layer.
 
-      ⚠⚠⚠ **max_iterations — FIVE THOUSAND**, and it agrees with the line above
-      rather than being a second guess. The largest converged run took 1,231
-      steps; five thousand is four times that, and 5,000 x 419 bytes is 2.1 MB —
-      so the two ceilings bite at about the same place. **That agreement is the
-      argument**: two bounds that fire far apart mean one of them is decorative,
-      and a run stopped by a decorative bound is stopped by a number nobody
-      reasoned about.
+      ⛔⛔⛔⛔⛔ **max_iterations — `never`, AND WITH IT ALL THREE.** Register item
+      941, second layer.
+
+      It read FIVE THOUSAND and was argued as *agreeing* with the byte ceiling
+      rather than being a second guess: the largest converged run took 1,231
+      steps, five thousand is four times that, and 5,000 x 419 bytes is 2.1 MB, so
+      the two bit at about the same place. **That agreement was the argument**,
+      and it is why they leave together: with `max_bytes` gone this number had
+      nothing left to agree with, and a lone step ceiling of five thousand would
+      be exactly the *decorative bound* the sentence warned about.
+
+      ⚠⚠⚠ THIS ONE NEEDED THE SUBSTRATE TO CHANGE. Its two neighbours were
+      already `Option` in `Guardrails`; this was a `u32`, so *no bound* was a
+      thing the daemon could not carry and it REFUSED the word for one commit,
+      naming the reason. Giving the field a value for *none* touched 147 places
+      the compiler listed, and that is why it is a second commit rather than a
+      wider first one.
+
+      ⛔ SO THIS KIND'S RUNS NOW END ONLY ON WHAT THEY JUDGE THEMSELVES —
+      converged, blocked, unadmitted, stood_down — or on a person. That is the
+      owner's decision of 2026-09-07 and the residue is written under `max_bytes`
+      above: if it costs something, build a ceiling that measures PROGRESS, not a
+      number put back here.
 
       ⛔⛔⛔⛔⛔ **max_seconds — `never`, AND THE RE-MEASURE THIS CLAUSE ASKED FOR
       IS WHAT PUT IT THERE.** Register item 941.
@@ -991,7 +1007,7 @@
     <data id="guardrails"
           expr="{
             max_bytes:      'never',
-            max_iterations: 5000,
+            max_iterations: 'never',
             max_seconds:    'never'
           }"/>
 

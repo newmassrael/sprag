@@ -36,8 +36,22 @@ use crate::sm::orchestration::{OrchestrationEvent, OrchestrationPolicy, Orchestr
 /// print-mode dialogue reports `Tokens(0)` every turn).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Guardrails {
-    /// Stop after this many steps.
-    pub max_iterations: u32,
+    /// STOP AFTER THIS MANY STEPS. `None` leaves the step count unbounded (the other two ceilings
+    /// still apply, and a kind that declines all three is bounded only by what it judges itself).
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why it became an `Option` — register item 941, second layer
+    ///
+    /// It was a bare `u32`, and that made *no step bound* a thing this substrate could not express
+    /// while its two neighbours already could. The owner's instruction of 2026-09-07 was that every
+    /// run of this repository's debt loop be unbounded, and the honest reading of a `u32` was a
+    /// REFUSAL at the door — `sprag-host` said so in as many words — because the alternative was
+    /// filling it with `u32::MAX`, which is the *number nobody reasoned about* that
+    /// `debt_loop.scxml`'s own clause refuses.
+    ///
+    /// ⚠⚠ So this is the substrate acquiring a value it lacked, not a policy: what any given kind
+    /// bounds itself by stays that document's business. See [`Guardrails::max_cost`] beside it,
+    /// whose `None` has meant *unbounded* since long before this.
+    pub max_iterations: Option<u32>,
     /// Stop once the accumulated step cost reaches this bound. `None` leaves cost
     /// unbounded (the other two ceilings still apply). The
     /// bound's unit is the run's cost currency — every step the plugin reports
@@ -2498,7 +2512,13 @@ impl Driver {
     /// also saying what caused it. The DURATION ceiling is not asked here: it is not a property of
     /// a completed step, and the loop top is where a run out of time must stop.
     fn budget_exhausted(&self) -> Option<Ceiling> {
-        if self.iterations >= self.guardrails.max_iterations {
+        // ⚠ Register item 941: a bound that is not there cannot be reached, which is the same
+        // reading `max_cost` below has always had one line down.
+        if self
+            .guardrails
+            .max_iterations
+            .is_some_and(|max| self.iterations >= max)
+        {
             return Some(Ceiling::Iterations);
         }
         match (self.cost, self.guardrails.max_cost) {
@@ -3200,7 +3220,7 @@ mod tests {
         };
         // ⚠ The OUTCOME is not what this measures — what the two watchers were told is.
         let _ = Driver::new(Guardrails {
-            max_iterations: 2,
+            max_iterations: Some(2),
             max_cost: None,
             max_duration: None,
         })
@@ -3302,7 +3322,7 @@ mod tests {
             }) as ProgressSink
         };
         let _ = Driver::new(Guardrails {
-            max_iterations: 2,
+            max_iterations: Some(2),
             max_cost: None,
             max_duration: None,
         })
@@ -3404,7 +3424,7 @@ mod tests {
             }) as ProgressSink
         };
         let _ = Driver::new(Guardrails {
-            max_iterations: 3,
+            max_iterations: Some(3),
             max_cost: None,
             max_duration: None,
         })
@@ -3495,7 +3515,7 @@ mod tests {
         );
 
         let _ = Driver::new(Guardrails {
-            max_iterations: 1,
+            max_iterations: Some(1),
             max_cost: None,
             max_duration: None,
         })
@@ -3553,7 +3573,7 @@ mod tests {
     #[test]
     fn only_a_run_that_was_cut_short_stops_the_work_it_had_going() {
         let bounded = |max_iterations, max_duration| Guardrails {
-            max_iterations,
+            max_iterations: Some(max_iterations),
             max_cost: None,
             max_duration,
         };
@@ -3659,7 +3679,7 @@ mod tests {
     #[test]
     fn a_host_that_cannot_stop_a_job_reports_that_and_not_a_stop() {
         let outcome = Driver::new(Guardrails {
-            max_iterations: 100,
+            max_iterations: Some(100),
             max_cost: None,
             max_duration: Some(Duration::from_millis(50)),
         })
@@ -3707,7 +3727,7 @@ mod tests {
         }
         let panes = RecordingPanes::new();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 100,
+            max_iterations: Some(100),
             max_cost: None,
             max_duration: Some(Duration::from_millis(50)),
         })
@@ -3793,7 +3813,7 @@ mod tests {
     fn a_run_given_a_window_to_account_for_itself_still_ends_on_the_ceiling_that_stopped_it() {
         const CEILING: u32 = 3;
         let bounded = Guardrails {
-            max_iterations: CEILING,
+            max_iterations: Some(CEILING),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         };
@@ -3891,7 +3911,7 @@ mod tests {
         ] {
             let mut accounting = Accounts::ending_with(ends_with.clone());
             let outcome = Driver::new(Guardrails {
-                max_iterations: 3,
+                max_iterations: Some(3),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(60)),
             })
@@ -4070,7 +4090,7 @@ mod tests {
 
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Driver::new(Guardrails {
-                max_iterations: 4,
+                max_iterations: Some(4),
                 max_cost: None,
                 max_duration: None,
             })
@@ -4164,7 +4184,7 @@ mod tests {
     fn last_line(plugin: &mut dyn Plugin) -> String {
         let cell: ProgressCell = Arc::new(Mutex::new(Progress::default()));
         let outcome = Driver::new(Guardrails {
-            max_iterations: 5,
+            max_iterations: Some(5),
             max_cost: None,
             max_duration: None,
         })
@@ -4320,7 +4340,7 @@ mod tests {
         // holds.
         let cell: ProgressCell = Arc::new(Mutex::new(Progress::default()));
         let outcome = Driver::new(Guardrails {
-            max_iterations: 5,
+            max_iterations: Some(5),
             max_cost: None,
             max_duration: None,
         })
@@ -4400,7 +4420,7 @@ mod tests {
     #[test]
     fn driver_maps_a_step_error_to_failed_with_the_cause() {
         let outcome = Driver::new(Guardrails {
-            max_iterations: 5,
+            max_iterations: Some(5),
             max_cost: None,
             max_duration: None,
         })
@@ -4439,7 +4459,7 @@ mod tests {
         let steps = u32::try_from(JOURNAL_LIMIT).expect("the limit fits a step count") + 10;
         let cell = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: steps,
+            max_iterations: Some(steps),
             max_cost: None,
             max_duration: None,
         })
@@ -4507,7 +4527,7 @@ mod tests {
     #[test]
     fn a_run_out_of_time_inside_a_step_ends_by_the_clock_and_says_so() {
         let outcome = Driver::new(Guardrails {
-            max_iterations: 1_000,
+            max_iterations: Some(1_000),
             max_cost: None,
             max_duration: Some(Duration::from_millis(50)),
         })
@@ -4539,7 +4559,7 @@ mod tests {
     #[test]
     fn the_clock_that_curtailed_a_step_outranks_the_tally_that_topped_out() {
         let outcome = Driver::new(Guardrails {
-            max_iterations: 1,
+            max_iterations: Some(1),
             max_cost: None,
             max_duration: Some(Duration::from_millis(50)),
         })
@@ -4571,7 +4591,7 @@ mod tests {
     fn a_person_who_stops_the_last_permitted_turn_is_not_told_it_ran_out() {
         let cancel = Arc::new(AtomicBool::new(false));
         let outcome = Driver::new(Guardrails {
-            max_iterations: 1,
+            max_iterations: Some(1),
             max_cost: None,
             max_duration: None,
         })
@@ -4615,7 +4635,7 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(true));
         let mut plugin = Accounts::ending_with(Verdict::Converged);
         let outcome = Driver::new(Guardrails {
-            max_iterations: 100,
+            max_iterations: Some(100),
             max_cost: None,
             // Already past at the first loop top, so BOTH endings are true in the same instant —
             // which is the only arrangement that can tell the two orders apart.
@@ -4648,7 +4668,7 @@ mod tests {
         // it at the loop top: Cancelled, zero iterations, no failure recorded.
         let cancel = Arc::new(AtomicBool::new(true));
         let outcome = Driver::new(Guardrails {
-            max_iterations: 5,
+            max_iterations: Some(5),
             max_cost: None,
             max_duration: None,
         })

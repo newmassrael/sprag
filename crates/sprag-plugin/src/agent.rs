@@ -1361,7 +1361,7 @@ mod tests {
 
     fn run(access: &WorkspacePaneAccess, agent: &mut Agent) -> Outcome {
         Driver::new(Guardrails {
-            max_iterations: 4,
+            max_iterations: Some(4),
             max_cost: None,
             max_duration: None,
         })
@@ -1776,7 +1776,7 @@ mod tests {
         );
 
         let outcome = Driver::new(Guardrails {
-            max_iterations: 4,
+            max_iterations: Some(4),
             max_cost: None,
             max_duration: Some(Duration::from_secs(20)),
         })
@@ -1844,7 +1844,7 @@ mod tests {
                 },
             );
             let outcome = Driver::new(Guardrails {
-                max_iterations: 1,
+                max_iterations: Some(1),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             })
@@ -1911,7 +1911,7 @@ mod tests {
                 },
             );
             let outcome = Driver::new(Guardrails {
-                max_iterations: 1,
+                max_iterations: Some(1),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             })
@@ -1983,7 +1983,7 @@ mod tests {
                 },
             );
             let outcome = Driver::new(Guardrails {
-                max_iterations: 1,
+                max_iterations: Some(1),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             })
@@ -2209,7 +2209,7 @@ mod tests {
                 },
             );
             let outcome = Driver::new(Guardrails {
-                max_iterations: 1,
+                max_iterations: Some(1),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             })
@@ -2340,7 +2340,7 @@ mod tests {
         // caller only through the run's journal, and this is the seam the host reads it from.
         let cell = crate::driver::ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 1,
+            max_iterations: Some(1),
             max_cost: None,
             max_duration: Some(Duration::from_secs(30)),
         })
@@ -2402,7 +2402,7 @@ mod tests {
             },
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 1,
+            max_iterations: Some(1),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -2513,7 +2513,7 @@ mod tests {
         let access = NoStream(Mutex::new(vec!["banner".to_string()]));
         let mut agent = Agent::new(PaneId(1), AgentSpec::new("ask"));
         let outcome = Driver::new(Guardrails {
-            max_iterations: 1,
+            max_iterations: Some(1),
             max_cost: None,
             max_duration: Some(Duration::from_secs(5)),
         })
@@ -2549,7 +2549,7 @@ mod tests {
         );
         let mut agent = Agent::new(pane, AgentSpec::new("ask"));
         let outcome = Driver::new(Guardrails {
-            max_iterations: 2,
+            max_iterations: Some(2),
             max_cost: None,
             max_duration: Some(Duration::from_secs(30)),
         })
@@ -2635,7 +2635,7 @@ mod tests {
                     .expect("a client attaches, so the pane is re-laid out");
             });
             let outcome = Driver::new(Guardrails {
-                max_iterations: 2,
+                max_iterations: Some(2),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             })
@@ -2683,7 +2683,7 @@ mod tests {
             },
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 5,
+            max_iterations: Some(5),
             max_cost: None,
             // ⚠ FAR LONGER than the readiness bound, so the run's own clock provably cannot be
             // what ends this — that is the neighbouring gate, and it reaches a different arm.
@@ -2731,7 +2731,7 @@ mod tests {
         );
         let cell = crate::driver::ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 100,
+            max_iterations: Some(100),
             max_cost: None,
             max_duration: Some(Duration::from_millis(200)),
         })
@@ -2798,7 +2798,7 @@ mod tests {
         );
         let cell = crate::driver::ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 2,
+            max_iterations: Some(2),
             max_cost: None,
             max_duration: Some(Duration::from_secs(20)),
         })
@@ -2903,7 +2903,7 @@ mod tests {
             let mut agent = Agent::new(pane, spec);
             let start = std::time::Instant::now();
             let outcome = Driver::new(Guardrails {
-                max_iterations: 100,
+                max_iterations: Some(100),
                 max_cost: None,
                 max_duration: deadline,
             })
@@ -2959,7 +2959,7 @@ mod tests {
             AgentSpec::new("Reply with exactly the single word: PONG"),
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 2,
+            max_iterations: Some(2),
             max_cost: None,
             max_duration: None,
         })
@@ -3076,7 +3076,7 @@ mod tests {
             },
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 1,
+            max_iterations: Some(1),
             max_cost: None,
             max_duration: None,
         })
@@ -3177,7 +3177,7 @@ mod tests {
             },
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 1,
+            max_iterations: Some(1),
             max_cost: None,
             max_duration: None,
         })
@@ -3334,7 +3334,7 @@ mod tests {
             },
         );
         let outcome = Driver::new(Guardrails {
-            max_iterations: 1,
+            max_iterations: Some(1),
             max_cost: None,
             max_duration: None,
         })

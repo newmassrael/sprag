@@ -738,7 +738,7 @@ mod tests {
         // The pipe never converges; the iteration budget binds it.
         let mut pipe = Pipe::new(PipeSpec::new(src, dst));
         let outcome = Driver::new(Guardrails {
-            max_iterations: 5,
+            max_iterations: Some(5),
             max_cost: None,
             max_duration: None,
         })
@@ -804,7 +804,7 @@ mod tests {
 
             let journal = Arc::new(Mutex::new(sprag_plugin_progress()));
             let outcome = Driver::new(Guardrails {
-                max_iterations: 1,
+                max_iterations: Some(1),
                 max_cost: None,
                 max_duration: None,
             })
@@ -901,7 +901,7 @@ mod tests {
 
         let journal = Arc::new(Mutex::new(sprag_plugin_progress()));
         let outcome = Driver::new(Guardrails {
-            max_iterations: 100,
+            max_iterations: Some(100),
             max_cost: None,
             // Shorter than REACTION_TIMEOUT, so the run's clock is provably what ends the wait.
             max_duration: Some(Duration::from_millis(150)),
@@ -979,7 +979,7 @@ mod tests {
             ..PipeSpec::new(src, dst)
         };
         let _outcome = Driver::new(Guardrails {
-            max_iterations: 6,
+            max_iterations: Some(6),
             max_cost: None,
             max_duration: Some(Duration::from_secs(10)),
         })
@@ -1043,7 +1043,7 @@ mod tests {
         };
         let journal = Arc::new(Mutex::new(sprag_plugin_progress()));
         let outcome = Driver::new(Guardrails {
-            max_iterations: 100,
+            max_iterations: Some(100),
             max_cost: None,
             max_duration: Some(Duration::from_millis(200)),
         })
@@ -1117,7 +1117,7 @@ mod tests {
             ..PipeSpec::new(src, dst)
         };
         let outcome = Driver::new(Guardrails {
-            max_iterations: 100,
+            max_iterations: Some(100),
             max_cost: None,
             // Far above the barrier's bound, so the run's clock provably is not what ended this.
             max_duration: Some(Duration::from_secs(30)),

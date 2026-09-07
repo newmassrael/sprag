@@ -7142,7 +7142,7 @@ fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
 
     let progress = sprag_plugin::ProgressCell::default();
     let outcome = Driver::new(Guardrails {
-        max_iterations: 40,
+        max_iterations: Some(40),
         max_cost: None,
         max_duration: Some(Duration::from_secs(120)),
     })
@@ -7662,7 +7662,7 @@ fn a_host_run_drives_its_turns_on_the_turn_contract_that_ships() {
         let progress = sprag_plugin::ProgressCell::default();
         let began = std::time::Instant::now();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 4_000,
+            max_iterations: Some(4_000),
             max_cost: None,
             max_duration: Some(CEILING),
         })
@@ -7946,7 +7946,7 @@ fn a_host_run_replaces_its_inner_session_and_the_fresh_one_works() {
     let progress = sprag_plugin::ProgressCell::default();
     let began = std::time::Instant::now();
     let outcome = Driver::new(Guardrails {
-        max_iterations: 8_000,
+        max_iterations: Some(8_000),
         max_cost: None,
         max_duration: Some(CEILING),
     })
@@ -8309,7 +8309,7 @@ fn a_session_that_has_filled_up_hands_over_and_one_that_has_not_keeps_working() 
             .expect("a well-briefed loop over a live pane starts");
         let progress = sprag_plugin::ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 8_000,
+            max_iterations: Some(8_000),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -8724,7 +8724,7 @@ fn a_run_that_has_been_stood_down_finishes_its_milestone_and_stops() {
         let held = loops.standing_down();
         let progress = sprag_plugin::ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 8_000,
+            max_iterations: Some(8_000),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -8960,7 +8960,7 @@ fn a_loop_converges_on_what_its_agent_says_not_on_what_its_terminal_shows() {
         loops.stand_down();
         let progress = sprag_plugin::ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 8_000,
+            max_iterations: Some(8_000),
             max_cost: None,
             // ⚠⚠ TIGHT ON PURPOSE. Both arms converge in well under a second; this bound is only
             // ever paid by an arm that FAILED to read its declaration, and the first draft of this
@@ -12326,7 +12326,7 @@ fn a_real_run_driven_from_another_process_outlives_the_daemon_it_drives() {
         turn: None,
     };
     let rails = Guardrails {
-        max_iterations: 4,
+        max_iterations: Some(4),
         max_cost: None,
         max_duration: Some(Duration::from_secs(20)),
     };
@@ -12445,7 +12445,7 @@ fn a_run_that_could_not_read_its_pane_does_not_report_what_was_running_in_it() {
         turn: None,
     };
     let rails = Guardrails {
-        max_iterations: 2,
+        max_iterations: Some(2),
         max_cost: None,
         max_duration: Some(Duration::from_secs(20)),
     };
@@ -12628,7 +12628,7 @@ fn a_cancelled_run_driven_from_another_process_really_ends_the_turn_it_started()
         },
     );
     let control = Driver::new(Guardrails {
-        max_iterations: 4,
+        max_iterations: Some(4),
         max_cost: None,
         max_duration: Some(Duration::from_secs(20)),
     })
@@ -12698,7 +12698,9 @@ fn a_cancelled_run_driven_from_another_process_really_ends_the_turn_it_started()
     let outcome = Driver::new(Guardrails {
         // Out of reach on purpose: the cancel must be the only ending available, or this gate
         // measures a ceiling and reports it as a stop.
-        max_iterations: u32::MAX,
+        // ⚠ Register item 941: `u32::MAX` was this fixture's way of saying *the step count must
+        // not end this run*, because the field had no value for it. It has one now.
+        max_iterations: None,
         max_cost: None,
         max_duration: Some(Duration::from_secs(120)),
     })
@@ -12822,7 +12824,9 @@ fn a_stop_that_crosses_the_socket_keeps_the_narrow_reach_and_leaves_the_pane_sta
     // one the item's sentence is about (*a routine timeout must not be able to close somebody's
     // pane*). Between the two gates both endings are driven over this socket.
     let outcome = Driver::new(Guardrails {
-        max_iterations: u32::MAX,
+        // ⚠ Register item 941: `u32::MAX` was this fixture's way of saying *the step count must
+        // not end this run*, because the field had no value for it. It has one now.
+        max_iterations: None,
         max_cost: None,
         max_duration: Some(Duration::from_secs(3)),
     })

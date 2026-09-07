@@ -1655,6 +1655,21 @@ mod tests {
         // them decline is pinned by name in its own test below — so a later round cannot quietly
         // type a number back, nor quietly decline one more. This block is the argument for a
         // number, and a key that holds none has no number to argue about.
+        // ⚠⚠⚠⚠⚠ AND HOW MANY OF THEM ARE NUMBERS, PRINTED-BY-ASSERTION RATHER THAN LEFT TO AN
+        // EMPTY `if` — register item 924's face, met here. After register item 941 this kind
+        // declines all three, so the block below judges NOTHING; a reader who saw only its green
+        // would learn *the numeric arguments hold* when what is true is *there are no numbers*.
+        // The sibling test names which bounds decline, and this says the pair agrees.
+        let numeric = named
+            .values()
+            .filter(|held| matches!(held, Counted::Of(_)))
+            .count();
+        assert_eq!(
+            numeric, 0,
+            "⚠⚠ REGISTER ITEM 941: a bound of this kind holds a number again, so the arguments \
+             below stopped being vacuous — read them, and read the decision test beside this one: \
+             {named:?}",
+        );
         if let Counted::Of(bytes) = named["max_bytes"] {
             assert!(
                 bytes > 516_020,
@@ -1702,28 +1717,25 @@ mod tests {
             .authored_bounds("guardrails")
             .expect("readable")
             .expect("this kind authors its guardrails");
-        for (key, decision) in [
-            ("max_seconds", Counted::Never),
-            ("max_bytes", Counted::Never),
-        ] {
+        for key in ["max_seconds", "max_bytes", "max_iterations"] {
             assert_eq!(
-                named[key], decision,
+                named[key],
+                Counted::Never,
                 "⛔⛔⛔⛔⛔ REGISTER ITEM 941: the owner asked on 2026-09-07 that every run of \
-                 this loop be unbounded, and `{key}` no longer says so. A number here is that \
-                 instruction undone, and the round that then forgets to override it at the door is \
-                 cut mid-work — which is what this item was filed on",
+                 this loop be unbounded — ALL THREE, the watcher's duration-only recommendation \
+                 having been put and declined — and `{key}` no longer says so. A number here is \
+                 that instruction undone, and the round that then forgets to override it at the \
+                 door is cut mid-work, which is what this item was filed on",
             );
         }
-        // ⚠⚠⚠ AND THE ONE THAT STILL HOLDS A NUMBER, ASSERTED SO THE REMAINING WORK IS VISIBLE
-        // RATHER THAN REMEMBERED. When `Guardrails::max_iterations` becomes an `Option`, this row
-        // is what fails and sends its reader to the clause — the honest shape for work that is
-        // decided and not yet done.
-        assert!(
-            matches!(named["max_iterations"], Counted::Of(_)),
-            "⚠⚠ REGISTER ITEM 941, SECOND LAYER: this bound may say `never` only once \
-             `Guardrails::max_iterations` has a value meaning *no bound*. If this line fails, the \
-             substrate changed and the document may now say it: {:?}",
-            named["max_iterations"],
+        // ⚠⚠⚠ AND THE COUNT, so a fourth guardrail cannot arrive unjudged. The loop above walks a
+        // hand-written three, and this is what refuses that list quietly falling behind the
+        // clause: a key added to `guardrails` is a bound nobody here decided about.
+        assert_eq!(
+            named.len(),
+            3,
+            "⚠⚠ REGISTER ITEM 941: this clause holds a bound the decision above does not name. \
+             Say whether it declines: {named:?}",
         );
     }
 

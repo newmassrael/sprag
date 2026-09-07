@@ -2384,7 +2384,7 @@ mod tests {
             // ⚠ WELL ABOVE the five passes the authored happy path takes and well below anything
             // that would take real time, so a stall is caught HERE and a converged run is the
             // machine's own doing rather than a ceiling's.
-            max_iterations: 40,
+            max_iterations: Some(40),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -2462,7 +2462,7 @@ mod tests {
         let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
         let outcome = Driver::new(Guardrails {
-            max_iterations: 40,
+            max_iterations: Some(40),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -2554,7 +2554,7 @@ mod tests {
 
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 120,
+            max_iterations: Some(120),
             max_cost: None,
             max_duration: Some(Duration::from_secs(30)),
         })
@@ -2783,7 +2783,7 @@ mod tests {
         let outcome = Driver::new(Guardrails {
             // ⚠ SMALL ON PURPOSE: the very first step this driver takes is the judging pass, so a
             // run that needs more than a handful of iterations to die is not dying of this.
-            max_iterations: 4,
+            max_iterations: Some(4),
             max_cost: None,
             max_duration: Some(Duration::from_secs(30)),
         })
@@ -2946,7 +2946,7 @@ mod tests {
             let outcome = Driver::new(Guardrails {
                 // ⚠ The very first step this driver takes is the judging pass, so a run needing
                 // more than a handful of iterations to die is not dying of the removal.
-                max_iterations: 4,
+                max_iterations: Some(4),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             })
@@ -3165,7 +3165,7 @@ mod tests {
         ) -> (OutcomeState, Vec<String>) {
             let progress = ProgressCell::default();
             let outcome = Driver::new(Guardrails {
-                max_iterations: 4,
+                max_iterations: Some(4),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             })
@@ -3352,7 +3352,7 @@ mod tests {
         );
 
         let outcome = Driver::new(Guardrails {
-            max_iterations: 40,
+            max_iterations: Some(40),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -3438,7 +3438,7 @@ mod tests {
             // ⚠⚠ THE CONTROL FOR THE WHOLE CLAIM. A run that does NOT answer its own error stalls,
             // and a stall ends `exhausted — iterations` at this ceiling: the two outcomes are what
             // this gate tells apart, so the ceiling must be reachable within the clock below.
-            max_iterations: 40,
+            max_iterations: Some(40),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -3570,7 +3570,7 @@ mod tests {
             // discarded, because a run that failed for some other reason would leave a walk this
             // gate would then be reading as evidence about a record.
             let outcome = Driver::new(Guardrails {
-                max_iterations: 40,
+                max_iterations: Some(40),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(60)),
             })
@@ -3805,7 +3805,7 @@ mod tests {
         let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
         let outcome = Driver::new(Guardrails {
-            max_iterations: 40,
+            max_iterations: Some(40),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -3906,7 +3906,7 @@ mod tests {
         let mut loops = AiLoop::new(engine(), pane, &brief_for(2), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
         let outcome = Driver::new(Guardrails {
-            max_iterations: 40,
+            max_iterations: Some(40),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -3991,7 +3991,7 @@ mod tests {
             .expect("a well-briefed loop over a live pane starts");
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 40,
+            max_iterations: Some(40),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -4062,7 +4062,7 @@ mod tests {
             .expect("a well-briefed loop over a live pane starts");
 
         let outcome = Driver::new(Guardrails {
-            max_iterations: 40,
+            max_iterations: Some(40),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -4123,7 +4123,7 @@ mod tests {
         for (guardrails, ceiling) in [
             (
                 Guardrails {
-                    max_iterations: 8,
+                    max_iterations: Some(8),
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -4131,7 +4131,7 @@ mod tests {
             ),
             (
                 Guardrails {
-                    max_iterations: 4_000,
+                    max_iterations: Some(4_000),
                     max_cost: None,
                     max_duration: Some(Duration::from_millis(120)),
                 },
@@ -4143,7 +4143,7 @@ mod tests {
             // not reach.
             (
                 Guardrails {
-                    max_iterations: 4_000,
+                    max_iterations: Some(4_000),
                     max_cost: Some(Cost::Bytes(1)),
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -4307,7 +4307,7 @@ mod tests {
         for (guardrails, max_turns, ceiling) in [
             (
                 Guardrails {
-                    max_iterations: 4_000,
+                    max_iterations: Some(4_000),
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -4316,7 +4316,7 @@ mod tests {
             ),
             (
                 Guardrails {
-                    max_iterations: 8,
+                    max_iterations: Some(8),
                     max_cost: None,
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -4325,7 +4325,7 @@ mod tests {
             ),
             (
                 Guardrails {
-                    max_iterations: 4_000,
+                    max_iterations: Some(4_000),
                     max_cost: None,
                     max_duration: Some(Duration::from_millis(120)),
                 },
@@ -4334,7 +4334,7 @@ mod tests {
             ),
             (
                 Guardrails {
-                    max_iterations: 4_000,
+                    max_iterations: Some(4_000),
                     max_cost: Some(Cost::Bytes(1)),
                     max_duration: Some(Duration::from_secs(60)),
                 },
@@ -4474,7 +4474,7 @@ mod tests {
         let progress = ProgressCell::default();
         let started = Instant::now();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 4_000,
+            max_iterations: Some(4_000),
             max_cost: None,
             // ⚠ A FRACTION OF ONE TURN, so the deadline lands inside the wait rather than between
             // two steps — which is the whole hazard being staged.
@@ -5373,7 +5373,7 @@ mod tests {
             // (measured: `rc=124` at a 400-second timeout). Forty passes bound that to about
             // twelve seconds and land it as `Exhausted(Iterations)`, which is a different word
             // from the one asserted and therefore a legible failure rather than a hang.
-            max_iterations: 40,
+            max_iterations: Some(40),
             max_cost: None,
             max_duration: None,
         })
@@ -5440,7 +5440,7 @@ mod tests {
         };
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 4_000,
+            max_iterations: Some(4_000),
             max_cost: None,
             max_duration: None,
         })
@@ -5590,7 +5590,7 @@ mod tests {
             let progress = ProgressCell::default();
             let began = Instant::now();
             let outcome = Driver::new(Guardrails {
-                max_iterations: ITERATIONS,
+                max_iterations: Some(ITERATIONS),
                 max_cost: None,
                 // ⚠ Far above what either arm takes, so the wall clock is never the ending: this
                 // gate is about which of the OTHER two ceilings a run comes to rest on.
@@ -5838,7 +5838,7 @@ mod tests {
         .expect("a well-briefed loop over a live pane starts");
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 4_000,
+            max_iterations: Some(4_000),
             max_cost: None,
             max_duration: Some(Duration::from_millis(400)),
         })
@@ -6919,7 +6919,7 @@ mod tests {
             // red about an edge the record no longer holds is about nothing** — the shape register
             // item 277 priced. What this gate is about happens in the first dozen steps.
             let outcome = Driver::new(Guardrails {
-                max_iterations: 20,
+                max_iterations: Some(20),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(120)),
             })
@@ -7262,7 +7262,7 @@ mod tests {
             )
             .expect("a well-briefed loop over a live pane starts");
             let outcome = Driver::new(Guardrails {
-                max_iterations: 40,
+                max_iterations: Some(40),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(60)),
             })
@@ -7421,7 +7421,7 @@ mod tests {
             // saying nothing about where.
             let progress = ProgressCell::default();
             let outcome = Driver::new(Guardrails {
-                max_iterations: 40,
+                max_iterations: Some(40),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(60)),
             })
@@ -7673,7 +7673,7 @@ mod tests {
         .expect("a well-briefed loop over a live pane starts");
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 200,
+            max_iterations: Some(200),
             max_cost: None,
             max_duration: Some(Duration::from_secs(120)),
         })
@@ -8003,7 +8003,7 @@ mod tests {
         .expect("a brief that reflects after every turn is one this build drives");
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 60,
+            max_iterations: Some(60),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -9289,7 +9289,7 @@ mod tests {
             .expect("a well-briefed loop over a live pane starts");
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 60,
+            max_iterations: Some(60),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -9459,7 +9459,7 @@ mod tests {
         ) -> (crate::driver::Outcome, Vec<String>, Vec<String>) {
             let progress = ProgressCell::default();
             let outcome = Driver::new(Guardrails {
-                max_iterations: STEPS,
+                max_iterations: Some(STEPS),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(120)),
             })
@@ -9716,7 +9716,7 @@ mod tests {
         ) -> (crate::driver::Outcome, Vec<String>) {
             let progress = ProgressCell::default();
             let outcome = Driver::new(Guardrails {
-                max_iterations: 60,
+                max_iterations: Some(60),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(60)),
             })
@@ -10170,7 +10170,7 @@ mod tests {
 
             let progress = ProgressCell::default();
             let outcome = Driver::new(Guardrails {
-                max_iterations: 120,
+                max_iterations: Some(120),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(30)),
             })
@@ -10309,7 +10309,7 @@ mod tests {
 
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 120,
+            max_iterations: Some(120),
             max_cost: None,
             max_duration: Some(Duration::from_secs(30)),
         })
@@ -10412,7 +10412,7 @@ mod tests {
         loops.stand_down();
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 60,
+            max_iterations: Some(60),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -10531,7 +10531,7 @@ mod tests {
 
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 60,
+            max_iterations: Some(60),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -10852,7 +10852,7 @@ mod tests {
         .expect("a well-briefed loop over a live pane starts");
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
-            max_iterations: 60,
+            max_iterations: Some(60),
             max_cost: None,
             max_duration: Some(Duration::from_secs(90)),
         })
@@ -10946,7 +10946,7 @@ mod tests {
         let outcome = Driver::new(Guardrails {
             // ⚠ The substrate's ceilings are put out of reach for `UNSPENDABLE`'s reason: the
             // iteration count is the one a fast peer reaches first, and this gate is about neither.
-            max_iterations: u32::try_from(UNSPENDABLE).expect("a positive budget"),
+            max_iterations: Some(u32::try_from(UNSPENDABLE).expect("a positive budget")),
             max_cost: None,
             max_duration: Some(Duration::from_secs(60)),
         })
@@ -11132,7 +11132,7 @@ mod tests {
             .expect("a well-briefed loop over a live pane starts");
             let progress = ProgressCell::default();
             let outcome = Driver::new(Guardrails {
-                max_iterations: 40,
+                max_iterations: Some(40),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(60)),
             })
@@ -11346,7 +11346,7 @@ mod tests {
             .expect("a well-briefed loop over a live pane starts");
             let progress = ProgressCell::default();
             let outcome = Driver::new(Guardrails {
-                max_iterations: 40,
+                max_iterations: Some(40),
                 max_cost: None,
                 max_duration: Some(Duration::from_secs(60)),
             })

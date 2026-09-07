@@ -4153,7 +4153,7 @@ enum PluginKind {
 /// every reader, kept out of this commit deliberately.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 struct AuthoredGuardrails {
-    max_iterations: Option<u32>,
+    max_iterations: Option<Declared<u32>>,
     max_cost: Option<Declared<Cost>>,
     max_duration: Option<Declared<Duration>>,
 }
@@ -5086,23 +5086,19 @@ fn kind_guardrails(
     // them are `Option` in `Guardrails` and take the word today, and this one is a `u32`. Filling
     // it with `u32::MAX` instead would be the *number nobody reasoned about* this whole clause
     // exists against, so the honest answer is a refusal that names the work rather than a clamp.
+    // ⛔ AND THE THIRD ONE TAKES THE WORD SINCE REGISTER ITEM 941's SECOND LAYER. It was refused
+    // here for one commit with a sentence naming the reason — `Guardrails::max_iterations` was a
+    // `u32` and had no value meaning *no bound* — and that reason is gone rather than argued away:
+    // the field is an `Option` now, so the refusal would be this daemon overruling a document on a
+    // limitation it no longer has.
     let max_iterations = match named.get("max_iterations") {
-        Some(Counted::Never) => {
-            return Err(refused(
-                "this repository's loop-kind document says `max_iterations: never`, and this \
-                 daemon cannot yet carry that: `Guardrails::max_iterations` is a `u32` with no \
-                 value meaning *no bound*. Giving it one is register item 941's second layer — it \
-                 changes every reader of that field — and clamping to the largest `u32` instead \
-                 would be a ceiling nobody reasoned about, which is what the clause refuses"
-                    .to_string(),
-            ));
-        }
-        Some(Counted::Of(held)) => Some(
+        Some(Counted::Never) => Some(Declared::Never),
+        Some(Counted::Of(held)) => Some(Declared::Of(
             u32::try_from(*held)
                 .ok()
                 .filter(|it| *it > 0)
                 .ok_or_else(|| out_of_range("max_iterations"))?,
-        ),
+        )),
         None => None,
     };
     // ⚠⚠⚠ THE ONE BOUND THAT MAY DECLINE, AND `Some(Never)` IS NOT `None` — register item 941 on
@@ -6100,7 +6096,14 @@ fn parse_guardrails(
     // step at all — and those are the three that actually kill runs here (measured: 8 of this
     // daemon's 49 recorded runs ended `exhausted (cost)` at the 64 KiB default, while the largest
     // run that converged spent 516,020 bytes).
-    let iterations = || authored.max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
+    // ⛔⛔⛔ AND SO DOES THE STEP BOUND — register item 941, second layer. All three ceilings now
+    // resolve on the same three arms, which is what the owner's *every run unbounded* asked for and
+    // what the substrate could not carry until `Guardrails::max_iterations` became an `Option`.
+    let iterations = || match authored.max_iterations {
+        Some(Declared::Never) => None,
+        Some(Declared::Of(steps)) => Some(steps),
+        None => Some(DEFAULT_MAX_ITERATIONS),
+    };
     // ⛔⛔⛔ AND THE COST BOUND HANDS BACK AN `Option` TOO — register item 941, all three states on
     // the same three arms as the clock below it.
     let cost = || match authored.max_cost {
@@ -6162,10 +6165,12 @@ fn parse_guardrails(
     let max_iterations = if declined(g, "max_iterations") {
         iterations()
     } else {
-        g["max_iterations"]
-            .as_u64()
-            .and_then(|n| u32::try_from(n).ok())
-            .ok_or(InvokeError::TypeMismatch)?
+        Some(
+            g["max_iterations"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or(InvokeError::TypeMismatch)?,
+        )
     };
     // ⚠⚠ A CALLER WHO NAMES IT STILL WINS — register item 300, per field. A caller naming a
     // number over a document that declined is buying a bound the document refused, and that is
@@ -16258,8 +16263,13 @@ mod tests {
             // cannot be between two readers. A sixth ceiling stops the build here.
             let (bound, said) = match ceiling {
                 Ceiling::Iterations => (
-                    Bound::Of(u64::from(resolved.max_iterations)),
-                    authored.max_iterations.map(|it| Bound::Of(u64::from(it))),
+                    resolved
+                        .max_iterations
+                        .map_or(Bound::Never, |it| Bound::Of(u64::from(it))),
+                    authored.max_iterations.map(|it| match it {
+                        Declared::Of(steps) => Bound::Of(u64::from(steps)),
+                        Declared::Never => Bound::Never,
+                    }),
                 ),
                 Ceiling::Cost => (
                     resolved
@@ -16395,7 +16405,7 @@ mod tests {
         );
         assert_eq!(
             (run_41.max_iterations, run_41.max_duration),
-            (60, Some(std::time::Duration::from_secs(21_600))),
+            (Some(60), Some(std::time::Duration::from_secs(21_600))),
             "⚠⚠⚠ and the two the caller DID name are still theirs: a per-field fall-through that \
              overrode a named bound would be the document deciding what a person already decided",
         );
@@ -16413,7 +16423,7 @@ mod tests {
         assert_eq!(
             (over.max_iterations, over.max_cost, over.max_duration),
             (
-                7,
+                Some(7),
                 Some(Cost::Bytes(4096)),
                 Some(std::time::Duration::from_secs(11))
             ),
@@ -16503,7 +16513,8 @@ mod tests {
             skill.overridden,
         );
         assert_eq!(
-            skill.bounds.max_iterations, 100_000,
+            skill.bounds.max_iterations,
+            Some(100_000),
             "⚠ and REPORTING IS NOT REFUSING — the caller's number still wins, which is what makes \
              this a report rather than a policy change",
         );
@@ -16914,14 +16925,26 @@ mod tests {
             "⛔ REGISTER ITEM 941: this repository's document declines the cost bound and the run \
              got one anyway: {untimed:?}",
         );
-        // ⚠⚠⚠ AND THE ONE RAIL THAT REMAINS, ASSERTED SO THE REMAINING WORK IS VISIBLE. The owner
-        // asked for this one as well; `Guardrails::max_iterations` is a `u32` and has no value for
-        // *no bound*, so it still holds a number and register item 941's second layer is what
-        // removes it. **This is also the whole of what now ends a stopped run** — the residue the
-        // clause records, kept where a reader of the product meets it.
-        assert!(
-            untimed.max_iterations > 0,
-            "⚠ the step ceiling is the last automatic ending this kind has: {untimed:?}",
+        // ⛔⛔⛔⛔⛔ AND THE STEP BOUND, WHICH COMPLETES THE OWNER'S *ALL THREE* — register item
+        // 941's second layer. This assertion read `max_iterations > 0` for one commit, when the
+        // substrate could not carry an unbounded step count and the field was a `u32`; it is an
+        // `Option` now, so the sentence the owner asked for is finally sayable in full.
+        //
+        // ⚠⚠⚠ THE RESIDUE, ASSERTED RATHER THAN COMMENTED: with all three declined, **nothing in
+        // `Ceiling::ALL` measures progress any more**. The four remaining endings — converged,
+        // blocked, unadmitted, stood_down — all need the loop to judge itself or a person to step
+        // in. That is the trade the owner took on 2026-09-07, and the clause records what to build
+        // if it costs something: a ceiling that counts steps WITHOUT a commit or a ledger edit,
+        // not a number put back here.
+        assert_eq!(
+            (
+                untimed.max_iterations,
+                untimed.max_cost,
+                untimed.max_duration
+            ),
+            (None, None, None),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 941: the owner asked that every run of this loop be \
+             unbounded, and a four-argument launch came up bounded: {untimed:?}",
         );
 
         // ⚠⚠ AND THE OTHER THREE — `--reference`, and the `--match`/`--marker` pair — resolved by
