@@ -928,40 +928,85 @@
       and a run stopped by a decorative bound is stopped by a number nobody
       reasoned about.
 
-      ⚠⚠ **max_seconds — SIX HOURS, AND IT IS THE ONE NUMBER HERE NOTHING
-      MEASURED.** Stated rather than derived, on `context_ceiling`'s own terms.
-      The registry records no timestamps at all — `finished` is a boolean and `at`
-      is a state name — so nothing in this workspace can say how long a debt run
-      takes. Six hours is the number the launcher has carried in its usage line
-      since it was written, which makes it a decision somebody took rather than a
-      default nobody saw. ⚠ The residue, stated: the day a run is cut by
-      `duration` with work uncommitted, this is the clause to re-measure, and the
-      thing to measure first is whether the registry can be made to hold a
-      timestamp at all.
+      ⛔⛔⛔⛔⛔ **max_seconds — `never`, AND THE RE-MEASURE THIS CLAUSE ASKED FOR
+      IS WHAT PUT IT THERE.** Register item 941.
+
+      The clause used to read SIX HOURS and said of itself: *"it is the one number
+      here nothing measured … the day a run is cut by `duration` with work
+      uncommitted, this is the clause to re-measure."* That day came twice (runs
+      245 and 250), and the re-measure convicted the number by THIS DOCUMENT'S
+      OWN TEST — the one written three paragraphs up: *two bounds that fire far
+      apart mean one of them is decorative.* Measured on run 250 (278 iterations,
+      120,227 bytes, 8.8 hours):
+
+        max_bytes       2 MiB   at 432 B/iteration   about 4,854 iterations
+        max_iterations  5000    at 278 per 8.8 h     about 158 hours (6.6 days)
+        max_seconds     21600                        **26 times sooner**
+
+      ⇒ So the decorative bounds were the two that AGREE, and the thing actually
+      ending every run was the one nothing measured. The owner's instruction of
+      2026-09-07 — every sprag loop unbounded — is the decision; this word is how
+      the document says it.
+
+      ⚠⚠⚠ WHY THE WORD AND NOT A LARGE NUMBER. A week in seconds would be a
+      number nobody reasoned about, which is precisely what the paragraph above
+      refuses, and a reader told `604800` learns nothing while a reader told
+      `never` learns the whole of it. The word is not new here: `max_turns` below
+      declines its count the same way, and so does `reaim_max`.
+
+      ⚠⚠ WHAT STILL ENDS A RUN, so that *unbounded* is not read as *unstoppable*:
+      the two bounds above, and they are now the whole of it. A run that has
+      stopped making progress and is still typing meets them at about 4,854
+      iterations — which is the axis this loop should be bounded on, because a
+      loop that is working should not be cut for having worked a long time. ⛔ The
+      residue, stated: nothing here bounds a run that makes SLOW progress
+      indefinitely, and the rail against that is a person reading the round
+      summaries, not a clock.
+
+      ⚠ AND A CALLER MAY STILL NAME A NUMBER, per-field, which is register item
+      300 — what changed is that a caller who names NOTHING now gets what this
+      document decided instead of this daemon's six-hour constant.
     -->
     <data id="guardrails"
           expr="{
             max_bytes:      2097152,
             max_iterations: 5000,
-            max_seconds:    21600
+            max_seconds:    'never'
           }"/>
 
     <!--
-      ⚠⚠⚠⚠ HOW LONG A PERSON MAY HOLD A RUN OF THIS KIND — SIX HOURS, DERIVED
-      FROM THE CLAUSE ABOVE RATHER THAN COPIED FROM THE TEMPLATE.
+      ⚠⚠⚠⚠ HOW LONG A PERSON MAY HOLD A RUN OF THIS KIND — SIX HOURS, AND SINCE
+      REGISTER ITEM 941 IT IS ON ITS OWN AXIS RATHER THAN DERIVED FROM THE CLAUSE
+      ABOVE.
 
       ⚠⚠⚠ WHY IT IS HERE AT ALL, WHICH IS THE GATE'S DOING. `Ceiling::ALL` names
-      five things that can end a run, and the gate this item builds walks that set
-      and asks THIS DOCUMENT for the bound each one fires on. There is no
+      five things that can end a run, and the gate register item 738 built walks
+      that set and asks THIS DOCUMENT for the bound each one fires on. There is no
       exemption arm: a ceiling nobody classified is a RED, not a pass. `Hold` was
       the fifth, and leaving it to the template would have been exactly the escape
       hatch that disarms the gate.
 
-      ⚠⚠ AND THE NUMBER IS NOT THE TEMPLATE'S FOUR HOURS RE-SPELLED. It is
-      `max_seconds` above: **a hold longer than the run's own wall-clock budget
-      can never be handed back to a live run** — the run would be gone before the
-      person returned, so a larger number here would promise something the clause
-      above has already refused. Equal is the largest value that is not a lie.
+      ⛔⛔⛔⛔⛔ THE OLD ARGUMENT IS GONE, AND IT IS WORTH SAYING WHAT IT WAS. This
+      number read *equal to `max_seconds`*, because **a hold longer than the run's
+      own wall-clock budget can never be handed back to a live run** — equal was
+      the largest value that was not a lie. `max_seconds` is `never` now, so every
+      hold is handable back and that sentence bounds nothing. Keeping the sentence
+      would have left a derivation pointing at a clause that no longer exists,
+      which is the shape register item 933 keeps arriving as.
+
+      ⚠⚠⚠ SO WHAT IS THIS NUMBER ABOUT. It is the only bound left between a run
+      somebody took and a person who did not come back — a question about PEOPLE,
+      not about runs, and a different axis from the one above. **NOTHING HERE
+      MEASURES IT**: read 2026-09-07 across every run registry on this machine,
+      no run has ever ended on `hold` at all (`ceiling` was `turns` once and
+      `duration` once). So it is stated rather than derived, on `context_ceiling`'s
+      own terms, and six hours is kept because it is the number this document has
+      carried — changing it would invent a second unmeasured one.
+
+      ⛔ AND IT MUST NOT BECOME `never` TOO, which is the tempting next move now
+      that the run is untimed: a hold that never expires is a pane this loop can
+      never have back. A gate in `kind.rs` asserts exactly that pair — the run
+      declines its clock AND this stays finite.
 
       ⚠ MILLISECONDS, because that is the unit the id carries. Six hours is
       21,600,000.

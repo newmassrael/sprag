@@ -47,10 +47,10 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
-    Agent, AgentSpec, Attended, Brief, Ceiling, Consent, Consents, Cost, Dialogue, DialogueSpec,
-    DoneWhen, Driver, Guardrails, Handback, OrchestrationSpec, Orchestrator, Outcome, OutcomeState,
-    Pipe, PipeSpec, Plugin, Readiness, ReadyWhen, ReplyFormat, RunContext, ScreenRule, ScreenRules,
-    Turn, WorkspacePaneAccess,
+    Agent, AgentSpec, Attended, Brief, Ceiling, Consent, Consents, Cost, Counted, Dialogue,
+    DialogueSpec, DoneWhen, Driver, Guardrails, Handback, OrchestrationSpec, Orchestrator, Outcome,
+    OutcomeState, Pipe, PipeSpec, Plugin, Readiness, ReadyWhen, ReplyFormat, RunContext,
+    ScreenRule, ScreenRules, Turn, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -4140,11 +4140,20 @@ enum PluginKind {
 /// wrong currency on this road either. `parse_max_cost` already refuses that of a caller; a
 /// document that named `max_tokens` for a byte-spending plugin is the same mistake and is refused
 /// in the same words, by the same publication.
+/// ⛔⛔⛔⛔⛔ **AND THE TIME BOUND IS THREE-STATED** — register item 941. `None` is *the document
+/// said nothing*, which falls through to this daemon's constant; [`Counted::Never`] is *the
+/// document decided there is no bound*, which is the opposite of an absence and the whole reason
+/// this field is not an `Option<Duration>`. It is [`Counted`]'s own argument, reused rather than
+/// re-derived: `sprag_plugin` already holds `max_turns` this way off the same datamodel.
+///
+/// ⚠ Seconds and not a [`Duration`], because that is the unit the clause is authored in and one
+/// conversion in one place ([`parse_guardrails`]) is what keeps the `never` arm from acquiring a
+/// second spelling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 struct AuthoredGuardrails {
     max_iterations: Option<u32>,
     max_cost: Option<Cost>,
-    max_duration: Option<Duration>,
+    max_duration: Option<Counted>,
 }
 
 /// ⛔⛔⛔⛔⛔ **AN AUTHORED NUMBER A CALLER MAY REPLACE THAT IS NOT A GUARDRAIL** — register item
@@ -4970,8 +4979,8 @@ fn opt_count(map: &Map<String, Value>, key: &str) -> Result<Option<i64>, InvokeE
 ///
 /// # ⚠⚠⚠⚠⚠ The keys are the WIRE's, checked against the publication rather than a list here
 ///
-/// `sprag-plugin` hands back the clause as a map of name → number and reads no meaning into it
-/// ([`LoopKind::authored_numbers`](sprag_plugin::kind::LoopKind::authored_numbers)), because the
+/// `sprag-plugin` hands back the clause as a map of name → bound and reads no meaning into it
+/// ([`LoopKind::authored_bounds`](sprag_plugin::kind::LoopKind::authored_bounds)), because the
 /// field names belong to [`PluginGrammar::guardrail_fields`](crate::wire::PluginGrammar::guardrail_fields)
 /// and that crate cannot see them. **This is where the vocabulary lives, so this is where the
 /// clause is judged** — and a fourth guardrail added to the publication is admitted here in the
@@ -4989,16 +4998,34 @@ fn opt_count(map: &Map<String, Value>, key: &str) -> Result<Option<i64>, InvokeE
 ///
 /// # Errors
 ///
-/// [`refused`]'s sentence for a clause this driver cannot read, and for a key no guardrail admits.
+/// # ⛔⛔⛔⛔⛔ AND WHICH BOUNDS MAY DECLINE — register item 941
+///
+/// `never` is a classified value of the clause ([`Counted::Never`]), and **this is the layer that
+/// decides which bounds admit it**, which is the same shape/meaning split the section above draws:
+/// the substrate can express *no cost bound* and *no time bound*
+/// ([`Guardrails::max_cost`](sprag_plugin::driver::Guardrails::max_cost) and `max_duration` are
+/// `Option`), and it CANNOT express an unbounded step count — `max_iterations` is a `u32`. So a
+/// document declining that one is refused with a sentence saying so, rather than clamped to
+/// `u32::MAX`, which would be the *number nobody reasoned about* this whole clause exists against.
+///
+/// ⚠ The cost bound could take the word and does not, and that is a decision rather than an
+/// oversight: `debt_loop.scxml` derives its two remaining bounds from one measured rate so they
+/// bite together, and they are the only rail that stops a run which has stopped making progress
+/// and is still typing. Widening it is the owner's to ask for; the refusal names it either way.
+///
+/// # Errors
+///
+/// [`refused`]'s sentence for a clause this driver cannot read, for a key no guardrail admits, and
+/// for a bound that declines where the substrate has no way to be unbounded.
 fn kind_guardrails(
     kind: &sprag_plugin::kind::LoopKind,
     unit: Cost,
 ) -> Result<AuthoredGuardrails, InvokeError> {
-    let Some(named) = kind.authored_numbers("guardrails").map_err(|why| {
+    let Some(named) = kind.authored_bounds("guardrails").map_err(|why| {
         refused(format!(
             "this repository's loop-kind document holds a `guardrails` clause this driver cannot \
-             read ({why:?}); it must be an object of whole numbers, and a run cannot start on a \
-             bound nobody can check"
+             read ({why:?}); it must be an object of whole numbers or `never`, and a run cannot \
+             start on a bound nobody can check"
         ))
     })?
     else {
@@ -5032,8 +5059,30 @@ fn kind_guardrails(
              a guardrail is a whole number of at least one"
         ))
     };
-    let max_iterations = match named.get("max_iterations") {
-        Some(&held) => Some(
+    // ⛔⛔⛔⛔⛔ AND A BOUND THAT DECLINES WHERE THE SUBSTRATE CANNOT — register item 941. The
+    // sentence names the type, because the author of the clause is the one who has to hear WHY the
+    // word is admitted one line up and refused here.
+    let cannot_decline = |name: &str, why: &str| {
+        refused(format!(
+            "this repository's loop-kind document says `{name}: never`, and a run cannot be \
+             unbounded that way: {why}. Only `max_seconds` may decline, because a run with no \
+             wall-clock bound is a `max_duration` of `None` and the substrate already has that \
+             value"
+        ))
+    };
+    let whole = |name: &'static str, why: &'static str| -> Result<Option<i64>, InvokeError> {
+        match named.get(name) {
+            Some(Counted::Of(held)) => Ok(Some(*held)),
+            Some(Counted::Never) => Err(cannot_decline(name, why)),
+            None => Ok(None),
+        }
+    };
+    let max_iterations = match whole(
+        "max_iterations",
+        "`Guardrails::max_iterations` is a `u32` and has no value meaning *no bound*, and clamping \
+         it to the largest one would be a ceiling nobody reasoned about",
+    )? {
+        Some(held) => Some(
             u32::try_from(held)
                 .ok()
                 .filter(|it| *it > 0)
@@ -5041,27 +5090,47 @@ fn kind_guardrails(
         ),
         None => None,
     };
+    // ⚠⚠⚠ THE ONE BOUND THAT MAY DECLINE, AND `Some(Never)` IS NOT `None` — register item 941 on
+    // `Counted`'s own terms. `None` here means *the document said nothing* and falls through to
+    // this daemon's constant; the word means *the document decided there is no bound*, and reading
+    // them as one would answer the owner's instruction with a six-hour default.
     let max_duration = match named.get("max_seconds") {
-        Some(&held) => Some(Duration::from_secs(
-            u64::try_from(held)
-                .ok()
-                .filter(|it| *it > 0)
-                .ok_or_else(|| out_of_range("max_seconds"))?,
+        Some(Counted::Of(held)) => Some(Counted::Of(
+            i64::try_from(
+                u64::try_from(*held)
+                    .ok()
+                    .filter(|it| *it > 0)
+                    .ok_or_else(|| out_of_range("max_seconds"))?,
+            )
+            .map_err(|_| out_of_range("max_seconds"))?,
         )),
+        Some(Counted::Never) => Some(Counted::Never),
         None => None,
     };
     // ⚠⚠ THE COST KEY IS THE UNIT'S OWN, so the same clause read for a token-spending plugin looks
     // for `max_tokens` — and `Cost::sized` is what keeps the currency from being crossed.
     let cost_key = unit.bound_key();
     let max_cost = match named.get(cost_key) {
-        Some(&held) => Some(
+        Some(Counted::Of(held)) => Some(
             unit.sized(
-                u64::try_from(held)
+                u64::try_from(*held)
                     .ok()
                     .filter(|it| *it > 0)
                     .ok_or_else(|| out_of_range(cost_key))?,
             ),
         ),
+        // ⚠ The substrate CAN express this one — `max_cost` is an `Option` — and it is refused all
+        // the same, which is a decision this file's own doc argues rather than a limitation: the
+        // cost and step bounds are derived from one measured rate so they bite together, and they
+        // are what stops a run that has stopped making progress. Widening it is the owner's ask.
+        Some(Counted::Never) => {
+            return Err(cannot_decline(
+                cost_key,
+                "this loop's cost and step bounds are derived from one measured rate so they bite \
+                 at the same place, and they are the only rail that ends a run which has stopped \
+                 making progress and is still typing",
+            ));
+        }
         None => None,
     };
     Ok(AuthoredGuardrails {
@@ -6026,10 +6095,15 @@ fn parse_guardrails(
     // run that converged spent 516,020 bytes).
     let iterations = || authored.max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
     let cost = || authored.max_cost.unwrap_or(default_cost);
-    let duration = || {
-        authored
-            .max_duration
-            .unwrap_or_else(|| Duration::from_secs(DEFAULT_MAX_SECONDS))
+    // ⛔⛔⛔⛔⛔ AND THIS ONE HANDS BACK AN `Option`, WHICH IS THE WHOLE OF REGISTER ITEM 941. The
+    // three states are the document's word (`never` ⇒ no bound at all), the document's number, and
+    // the document saying nothing (⇒ this daemon's constant). Folding the first into the third is
+    // what made the owner's instruction — *every sprag loop unbounded* — sayable only by a caller
+    // overriding the bound every round, which is register item 853's forbidden shape.
+    let duration = || match authored.max_duration {
+        Some(Counted::Never) => None,
+        Some(Counted::Of(secs)) => Some(Duration::from_secs(secs.unsigned_abs())),
+        None => Some(Duration::from_secs(DEFAULT_MAX_SECONDS)),
     };
     // ⚠ DECLINED, not merely absent — see [`declined`](crate::external::declined). A client whose
     // language serialises an absent optional as `null` sends `"guardrails": null` on every
@@ -6039,7 +6113,7 @@ fn parse_guardrails(
             bounds: Guardrails {
                 max_iterations: iterations(),
                 max_cost: Some(cost()),
-                max_duration: Some(duration()),
+                max_duration: duration(),
             },
             // A caller that named no `guardrails` object at all took NOTHING, which is a different
             // claim from *there was nothing to take* and is spelled by `overridden` rather than by
@@ -6080,16 +6154,21 @@ fn parse_guardrails(
             .and_then(|n| u32::try_from(n).ok())
             .ok_or(InvokeError::TypeMismatch)?
     };
+    // ⚠⚠ A CALLER WHO NAMES IT STILL WINS — register item 300, per field. A caller naming a
+    // number over a document that declined is buying a bound the document refused, and that is
+    // theirs to buy; the `Overridden` report beside this says so, which is item 853's whole point.
     let max_duration = if declined(g, "max_seconds") {
         duration()
     } else {
-        Duration::from_secs(g["max_seconds"].as_u64().ok_or(InvokeError::TypeMismatch)?)
+        Some(Duration::from_secs(
+            g["max_seconds"].as_u64().ok_or(InvokeError::TypeMismatch)?,
+        ))
     };
     Ok(Resolved {
         bounds: Guardrails {
             max_iterations,
             max_cost: parse_max_cost(g, cost())?,
-            max_duration: Some(max_duration),
+            max_duration,
         },
         // ⚠⚠⚠⚠⚠ READ OFF THE SAME `g` AND THE SAME `declined` THE THREE BRANCHES ABOVE READ —
         // register item 853. A second walk over the caller's keys, kept anywhere else, is how the
@@ -16058,6 +16137,22 @@ mod tests {
     /// daemon's default.
     #[test]
     fn every_ceiling_that_can_end_a_run_is_one_this_repositorys_document_set() {
+        /// ⛔⛔⛔⛔⛔ **WHAT A CEILING FIRES ON, INCLUDING *NOTHING*** — register item 941(4).
+        ///
+        /// The pair this gate compares used to be two `Option<u64>`, and a `None` there had to
+        /// mean *nobody set this* so the walk could panic on it. A bound the document DECLINES is
+        /// the opposite claim and would have arrived as the same value — [`Counted`]'s own
+        /// argument, met inside the gate that exists to refuse that confusion.
+        ///
+        /// ⚠ So *declined* is a value here and *unset* stays the `Option` around it, which is why
+        /// the arms below need no special case and the mutation that empties one has nowhere to
+        /// hide: `Never` compared against a number reds on the same line every other ceiling does.
+        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        enum Bound {
+            Of(u64),
+            Never,
+        }
+
         let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
             Arc::new(sce_rust_lua::LuaEngine::new());
         let kind = sprag_plugin::kind::LoopKind::debt(Arc::clone(&script))
@@ -16142,16 +16237,31 @@ mod tests {
             // cannot be between two readers. A sixth ceiling stops the build here.
             let (bound, said) = match ceiling {
                 Ceiling::Iterations => (
-                    Some(u64::from(resolved.max_iterations)),
-                    authored.max_iterations.map(u64::from),
+                    Bound::Of(u64::from(resolved.max_iterations)),
+                    authored.max_iterations.map(|it| Bound::Of(u64::from(it))),
                 ),
                 Ceiling::Cost => (
-                    resolved.max_cost.map(Cost::amount),
-                    authored.max_cost.map(Cost::amount),
+                    resolved
+                        .max_cost
+                        .map_or(Bound::Never, |it| Bound::Of(it.amount())),
+                    authored.max_cost.map(|it| Bound::Of(it.amount())),
                 ),
+                // ⛔⛔⛔⛔⛔ AND THIS ONE MAY SAY *NEVER BITES* — register item 941(4). It is
+                // rendered into the SAME pair as its neighbours rather than short-circuited past
+                // them, and that is the whole of what makes it a gate: written first as an
+                // `if … { assert; continue; }` arm, **the mutation that emptied the assertion
+                // passed** — the product-level gate below asserted the same fact about the same
+                // document, so the arm proved nothing and was the exemption shape this gate's own
+                // doc forbids. Through `Bound` the general assertion carries it, and a channel
+                // that hands back a constant reds on the line every other ceiling reds on.
                 Ceiling::Duration => (
-                    resolved.max_duration.map(|it| it.as_secs()),
-                    authored.max_duration.map(|it| it.as_secs()),
+                    resolved
+                        .max_duration
+                        .map_or(Bound::Never, |it| Bound::Of(it.as_secs())),
+                    authored.max_duration.map(|it| match it {
+                        Counted::Of(secs) => Bound::Of(secs.unsigned_abs()),
+                        Counted::Never => Bound::Never,
+                    }),
                 ),
                 // ⚠ The plugin's own budget, which this kind DECLINES with a word rather than a
                 // number — so the pair compared is the decision, not an amount. `Counted::Never`
@@ -16172,9 +16282,14 @@ mod tests {
                     );
                     continue;
                 }
+                // ⚠ A hold has no *declined* spelling and register item 941(3) says why it must
+                // not acquire one: with the run untimed this is the only bound between a held run
+                // and a person who did not come back. `None` here is still *nobody set it*.
                 Ceiling::Hold => (
-                    brief.hold_within_ms.map(|it| it as u64),
-                    kind.hold_within_ms().map(|it| it as u64),
+                    brief
+                        .hold_within_ms
+                        .map_or(Bound::Never, |it| Bound::Of(it as u64)),
+                    kind.hold_within_ms().map(|it| Bound::Of(it as u64)),
                 ),
             };
             let said = said.unwrap_or_else(|| {
@@ -16188,8 +16303,7 @@ mod tests {
                 )
             });
             assert_eq!(
-                bound,
-                Some(said),
+                bound, said,
                 "⚠⚠⚠⚠⚠ {ceiling:?}: the document names a bound and the run did not get it, so the \
                  channel is broken somewhere between the clause and the driver — which is item \
                  492's shape and is SILENT, because a run bounded by a default looks exactly like \
@@ -16722,6 +16836,39 @@ mod tests {
             plugin.own_bounds() != AuthoredGuardrails::none(),
             "⚠⚠⚠ and the document must really set them: comparing two empty sets and calling it \
              agreement is how this gate would pass over a kind that authors nothing",
+        );
+
+        // ⛔⛔⛔⛔⛔ AND THE FOUR-ARGUMENT LAUNCH COMES UP UNTIMED — register item 941, asked of the
+        // PRODUCT and not of the document. This is the whole of the owner's instruction of
+        // 2026-09-07: the run this item was filed from had `--max-seconds 604800` typed at its
+        // door, and a round that forgot to type it was cut at six hours with its work uncommitted
+        // (runs 245 and 250). The assertion is on `resolve` and not on the clause, because the
+        // failure this replaces was a channel that read the document and then handed over a
+        // constant anyway — item 492's shape, and silent.
+        let untimed = parse_guardrails(map, plugin.cost_unit(), plugin.own_bounds())
+            .expect("the four-argument launch resolves its guardrails")
+            .bounds;
+        assert_eq!(
+            untimed.max_duration, None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 941: a launch that names no `max_seconds` must come up with \
+             NO wall-clock bound, because this repository's document declines it. A `Some` here is \
+             the owner's instruction executable only by a caller typing the override every round, \
+             which is register item 853's forbidden shape and how this item was filed",
+        );
+        assert_ne!(
+            untimed.max_duration,
+            Some(Duration::from_secs(DEFAULT_MAX_SECONDS)),
+            "⚠⚠⚠ AND THE CONTROL, on this gate's own terms one assertion up: the value that \
+             arrives must not be this daemon's constant — a document that is read and then \
+             overruled looks exactly like a document nobody read",
+        );
+        // ⚠⚠ AND THE TWO THAT DID NOT MOVE, so *untimed* is never read as *unbounded*. These are
+        // what now ends a run of this kind, and a round that quietly widened them while widening
+        // the clock would be the escape hatch this item's own scope decision refused.
+        assert!(
+            untimed.max_iterations > 0 && untimed.max_cost.is_some(),
+            "⛔ REGISTER ITEM 941: the step and cost rails are the whole of what stops a run that \
+             has stopped making progress and is still typing: {untimed:?}",
         );
 
         // ⚠⚠ AND THE OTHER THREE — `--reference`, and the `--match`/`--marker` pair — resolved by

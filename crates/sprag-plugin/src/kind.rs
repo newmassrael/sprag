@@ -613,18 +613,38 @@ impl LoopKind {
     /// document. ⚠ An unclassified key must never be a pass: a bound silently dropped is a run
     /// with no bound at all, and it answers success.
     ///
-    /// ⚠⚠ **NUMBERS ONLY, AND A NON-NUMBER IS AN ERROR RATHER THAN A SKIP.** A clause a person
-    /// edits is a clause a person mistypes, and a value this reader could not carry would otherwise
-    /// leave the caller with the daemon's default while the document plainly names something else
-    /// — the exact shape item 492 measured on `context_ceiling`.
+    /// ⚠⚠ **A NUMBER OR THE WORD `never`, AND ANYTHING ELSE IS AN ERROR RATHER THAN A SKIP.** A
+    /// clause a person edits is a clause a person mistypes, and a value this reader could not carry
+    /// would otherwise leave the caller with the daemon's default while the document plainly names
+    /// something else — the exact shape item 492 measured on `context_ceiling`.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why `never` is a VALUE here — register item 941, and the owner's instruction
+    ///
+    /// The owner's instruction of 2026-09-07 was *every sprag loop unbounded*, and **this reader
+    /// was what made that unsayable**: it took numbers only, so the one way to run a loop untimed
+    /// was for the caller to override the bound every round — which is exactly the shape register
+    /// item 853 forbids, because a caller's flag silently replaces a document's argument.
+    ///
+    /// ⚠⚠ AND IT IS NOT A NEW WORD. [`Counted`] and its `never` are `OuterLoop::authored_count`'s,
+    /// already read off this same datamodel for `max_turns`, and `north_star::declared_reaim`
+    /// spells the same word for the re-aim cap. A large number would have been the other move and
+    /// the document itself refuses it: *a run stopped by a decorative bound is stopped by a number
+    /// nobody reasoned about.* A reader told `never` learns the whole of it.
+    ///
+    /// ⚠⚠⚠ **THIS DOES NOT WEAKEN RULE 6.** An unclassified value is still
+    /// [`NotScreenable::Unreadable`]; what changed is that the vocabulary has two classified values
+    /// instead of one. Which BOUNDS may take the word is not this reader's business — the crate
+    /// that owns the vocabulary refuses `never` where the substrate cannot express it, which is the
+    /// same shape/meaning split this method's doc opens with.
     ///
     /// # Errors
     ///
-    /// [`NotScreenable::Unreadable`] when the id holds something that is not an object of numbers.
-    pub fn authored_numbers(
+    /// [`NotScreenable::Unreadable`] when the id holds something that is not an object whose every
+    /// value is a whole number or `never`.
+    pub fn authored_bounds(
         &self,
         id: &str,
-    ) -> Result<Option<std::collections::BTreeMap<String, i64>>, NotScreenable> {
+    ) -> Result<Option<std::collections::BTreeMap<String, Counted>>, NotScreenable> {
         let Ok(held) = self.script.get_variable(&self.session, id) else {
             return Err(NotScreenable::Unreadable);
         };
@@ -635,14 +655,18 @@ impl LoopKind {
         };
         let mut read = std::collections::BTreeMap::new();
         for (name, value) in &fields {
-            let number = match value {
-                ScriptValue::Int(held) => *held,
+            let bound = match value {
+                ScriptValue::Int(held) => Counted::Of(*held),
                 // ⚠ A script datamodel holds a bare integer literal as a double on some engines,
                 // so refusing one here would refuse a document that is written correctly.
-                ScriptValue::Double(held) if held.fract() == 0.0 => *held as i64,
+                ScriptValue::Double(held) if held.fract() == 0.0 => Counted::Of(*held as i64),
+                // ⛔ Register item 941: the ONE word, and it is the word two other readers of this
+                // same datamodel already take. A second spelling would be two ways to say one
+                // thing, which is `hold_within_ms`'s own rule one clause over.
+                ScriptValue::String(held) if held == OuterLoop::NEVER => Counted::Never,
                 _ => return Err(NotScreenable::Unreadable),
             };
-            read.insert(name.clone(), number);
+            read.insert(name.clone(), bound);
         }
         Ok(Some(read))
     }
@@ -1598,8 +1622,8 @@ mod tests {
     #[test]
     fn the_debt_kind_says_what_actually_kills_its_runs() {
         let named = debt()
-            .authored_numbers("guardrails")
-            .expect("its guardrail clause must be an object of numbers")
+            .authored_bounds("guardrails")
+            .expect("its guardrail clause must be an object of numbers or `never`")
             .expect(
                 "⛔⛔⛔⛔⛔ ITEM 738: a debt run is ended by three bounds this document could not \
                  reach, so it was ended by this daemon's constants — 8 of 49 recorded runs died at \
@@ -1613,7 +1637,30 @@ mod tests {
                  {key:?} in {named:?}",
             );
         }
-        let bytes = named["max_bytes"];
+        // ⛔⛔⛔⛔⛔ AND WHICH OF THE THREE MAY DECLINE — register item 941, as an ARM and never as
+        // a relaxation. The owner asked for unbounded runs and the honest answer is not *all three
+        // are now optional*: `Guardrails::max_iterations` is a `u32` and the substrate CANNOT
+        // express an unbounded step count, and the two derived bounds are the only rail that
+        // catches a run which stopped making progress and is still typing.
+        //
+        // ⚠⚠ EXHAUSTIVE ON `Counted`, so a third classified value cannot arrive without an author
+        // saying here which bounds admit it — item 918's shape, and the reason this is a `match`
+        // and not an `if let`.
+        for key in ["max_bytes", "max_iterations"] {
+            match named[key] {
+                Counted::Of(_) => {}
+                Counted::Never => panic!(
+                    "⛔⛔⛔⛔⛔ REGISTER ITEM 941: `{key}` declines its bound, and neither the \
+                     substrate nor this loop's own argument admits that. `max_iterations` is a \
+                     `u32` in `Guardrails` — there is no value for *no bound* — and these two are \
+                     what stop a run that has stopped making progress and is still typing. Only \
+                     `max_seconds` may say `never`",
+                ),
+            }
+        }
+        let Counted::Of(bytes) = named["max_bytes"] else {
+            unreachable!("the loop above refused every other arm")
+        };
         assert!(
             bytes > 516_020,
             "⛔⛔⛔ AND THE COST BOUND MUST EXCEED THE LARGEST RUN THIS DAEMON HAS EVER RECORDED \
@@ -1626,13 +1673,90 @@ mod tests {
         // the byte ceiling should bite at roughly the same place. Two bounds that fire an order of
         // magnitude apart mean one of them is not a decision, and a run stopped by a number nobody
         // reasoned about is this item's own defect wearing the other ceiling's name.
-        let implied = named["max_iterations"].saturating_mul(419);
+        //
+        // ⚠⚠⚠ AND SINCE REGISTER ITEM 941 THE THIRD BOUND IS OUT OF THIS COMPARISON RATHER THAN
+        // IN IT WITH A LARGER NUMBER. The document's own test — *two bounds that fire far apart
+        // mean one of them is decorative* — was what convicted `max_seconds`: measured on run 250
+        // (278 iterations, 120,227 bytes, 8.8 hours) it bit **26 times earlier** than either of
+        // these, so the pair below is now the whole of what ends a run of this kind.
+        let Counted::Of(steps) = named["max_iterations"] else {
+            unreachable!("the loop above refused every other arm")
+        };
+        let implied = steps.saturating_mul(419);
         assert!(
             implied * 4 > bytes && bytes * 4 > implied,
             "⚠⚠⚠ the step and byte ceilings must bite within a factor of four of each other at \
-             this loop's own measured 419 bytes per step: {} steps implies {implied} bytes against \
-             a bound of {bytes}",
-            named["max_iterations"],
+             this loop's own measured 419 bytes per step: {steps} steps implies {implied} bytes \
+             against a bound of {bytes}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THIS LOOP'S RUNS ARE UNTIMED, AND THAT IS THE DOCUMENT'S OWN WORD** — register
+    /// item 941, and the owner's instruction of 2026-09-07 made into a predicate.
+    ///
+    /// # ⛔⛔⛔ What it cost before there was a word for it
+    ///
+    /// The only way to run this loop untimed was for the launcher to name `max_seconds` on every
+    /// call — the run this item was filed from was started with `604800` typed at the door. That is
+    /// register item 853's shape exactly: **a caller's number silently replaces a document's
+    /// argument**, and the round that forgets to type it is cut at six hours with its work
+    /// uncommitted. Two runs were (245 and 250).
+    ///
+    /// ⚠⚠ The gate above says only that the clause is READABLE and classified. This says WHICH
+    /// value it holds, because *the runs of this kind are unbounded in time* is a decision the
+    /// owner took and a later round must not undo by typing a number back.
+    #[test]
+    fn a_debt_run_declines_its_wall_clock_bound() {
+        let named = debt()
+            .authored_bounds("guardrails")
+            .expect("readable")
+            .expect("this kind authors its guardrails");
+        assert_eq!(
+            named["max_seconds"],
+            Counted::Never,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 941: the owner's instruction was that every sprag loop runs \
+             unbounded, and a number here is that instruction undone — the round that then forgets \
+             to override it at the door is cut mid-work, which is what this item was filed on",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND THE HOLD STAYS FINITE WHILE THE RUN DOES NOT** — register item 941(3), the
+    /// clause whose derivation this item destroyed.
+    ///
+    /// # ⛔⛔⛔ The old argument was *equal to the run's own budget*, and there is no budget now
+    ///
+    /// `hold_within_ms` was six hours BECAUSE `max_seconds` was: *a hold longer than the run's own
+    /// wall-clock budget can never be handed back to a live run*, and equal was the largest value
+    /// that was not a lie. With the run untimed that sentence bounds nothing — every hold is
+    /// handable back — so the number is no longer derived from anything.
+    ///
+    /// ⇒ **The two are different axes**, and this is the one that is about PEOPLE: how long this
+    /// loop waits for somebody who took its pane. Measured 2026-09-07 across every run registry on
+    /// this machine: **no run has ever ended on `hold`** (`ceiling` = `turns` 1, `duration` 1), so
+    /// there is nothing here to derive a person's return time from, and the number is stated rather
+    /// than derived on `context_ceiling`'s own terms.
+    ///
+    /// ⚠⚠ What this gate refuses is the tempting next move: `never` here too. A hold that never
+    /// expires is a pane this loop can never get back, and with the run itself untimed **this
+    /// number is the only thing left between a held run and a person who did not come back.**
+    #[test]
+    fn a_hold_is_bounded_even_though_the_run_is_not() {
+        let kind = debt();
+        assert_eq!(
+            kind.authored_bounds("guardrails")
+                .expect("readable")
+                .expect("authored")["max_seconds"],
+            Counted::Never,
+            "the premise: this gate is about a kind whose runs are untimed",
+        );
+        let held = kind.hold_within_ms().expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 941(3): the run is untimed and the hold declines too, so a \
+             pane somebody took is one this loop can never have back. The hold is now the only \
+             bound between a held run and a person who did not return",
+        );
+        assert!(
+            held > 0,
+            "*hold this run and end it at once* is `cancel` spelled wrong: {held}",
         );
     }
 
