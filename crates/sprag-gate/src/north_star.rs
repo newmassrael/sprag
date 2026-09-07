@@ -4626,6 +4626,59 @@ mod tests {
     /// stayed green. So the severity is dropped here on purpose: nothing critical, marked work
     /// still standing, which is the only shape that puts the second and third tiers side by side.
     fn the_unclassified_are_not_admitted_while_marked_work_stands() {
+        // ⚠⚠⚠ AND THE OTHER WAY `takeable` CAN EMPTY, which this test did not reach until it was
+        // asked how: marked work that stands but is entirely HELD BACK BY THE CAP. Measured before
+        // it was asserted — `population 3`, `deferred 1`, and the unclassified block still refused
+        // with *"What a round may take: 899 900"*.
+        //
+        // ⭐ It cannot in fact happen, and that is the tighter statement this arm pins: an item's
+        // depth counts the ancestors STILL OWED, chains are finite, and a cycle or a dangling
+        // parent reads as unknown depth — which `takeable` admits. So the topmost owed item of any
+        // chain always has zero owed above it and is takeable. **`takeable` empties only when
+        // `population` does**, which makes the third tier fire at exactly one moment rather than
+        // whenever the cap happens to bite.
+        let held = "\
+# Ledger
+## A. THE SHARPEST THINGS OPEN
+@ns-unclassified: 1
+@sev-unclassified: 0
+@from-unclassified: 1
+@paid-uncommitted: 0
+
+900. The root debt, owed
+     @ns: open
+     @sev: ordinary
+     @from: none
+
+899. Found while paying 900
+     @ns: open
+     @sev: ordinary
+     @from: 900 — 900 을 갚으며 «만들었다»
+
+898. Found while paying 899
+     @ns: open
+     @sev: ordinary
+     @from: 899 — 899 를 갚으며 «만들었다»
+
+897. A block nobody ever classified
+     no mark of any kind
+";
+        let deep = read(held);
+        assert_eq!(deep.deferred(1), vec![898], "the premise: the cap bites");
+        assert_eq!(
+            deep.backlogs().unclassified.items,
+            vec![897],
+            "the premise: an unclassified block is standing beside it",
+        );
+        assert_eq!(
+            deep.admits(1, &[]),
+            vec![899, 900],
+            "⛔⛔⛔⛔ REGISTER ITEM 936: the cap holding one item back is not the register running \
+             out of marked work. A tier that opened here would offer unread blocks while a debt \
+             the loop can reach is sitting in front of it: {:?}",
+            deep.takeable(1),
+        );
+
         let ordinary = LEDGER.replace(
             "     @sev: critical — it stops the loop dead",
             "     @sev: ordinary — it does not stop the loop",
