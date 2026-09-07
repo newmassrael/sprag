@@ -1325,16 +1325,40 @@ fn impl_type(line: &str) -> Option<String> {
     (!name.is_empty() && name.starts_with(char::is_uppercase)).then(|| name.to_owned())
 }
 
-/// `const NAME: &str = "…";` as `(name, value)`, for a line that is one.
+/// What a line declares once whatever VISIBILITY precedes it is off — the same `const NAME…` for
+/// every one of `const`, `pub const`, `pub(crate) const`, `pub(super) const` and
+/// `pub(in crate::a) const`.
+///
+/// # ⚠⚠⚠⚠ The grammar is SPELLED OUT, never searched for — register item 944
+///
+/// The reader below saw `pub const` and `const` and nothing else, so a key declared
+/// `pub(crate) const` resolved to no value and the payload claim went red naming the IDENTIFIER
+/// about a payload that carried exactly what the document read. What that repair widens is the set
+/// of constants READ; it must not widen what an UNREAD one is taken to mean. So a visibility whose
+/// parenthesis never closes resolves to `None` rather than to the `const` further along the line,
+/// and the token it declares is left standing the way [`Rust::strings`] promises — a claim about it
+/// goes red naming the token instead of passing on a guess.
+///
+/// ⚠ [`Squeezed::functions`] already reads every visibility, by asking that the character before
+/// `fn` not be an identifier one. This is that same tolerance, spelled for a reader of whole lines.
+fn past_visibility(line: &str) -> Option<&str> {
+    let Some(rest) = line.strip_prefix("pub") else {
+        return Some(line);
+    };
+    let rest = match rest.strip_prefix('(') {
+        // `pub(in crate::a)`, and the FIRST `)` is the one that closes it — a value further along
+        // the line cannot be mistaken for the end of the restriction.
+        Some(restriction) => restriction.split_once(')')?.1,
+        None => rest,
+    };
+    // The keyword has to have ENDED: `pubfoo` and `public_key` are identifiers, not visibilities.
+    rest.strip_prefix(' ').map(str::trim_start)
+}
+
+/// `const NAME: &str = "…";` as `(name, value)`, for a line that is one, at whatever visibility it
+/// is declared with ([`past_visibility`]).
 fn string_const(line: &str) -> Option<(String, String)> {
-    // ⚠⚠ THIS READER SEES `pub const` AND `const` AND NOTHING ELSE — register item 944. A key
-    // declared `pub(crate) const` resolves to no value, and the payload claim then reds naming the
-    // IDENTIFIER about a payload that carried exactly what the document read. Registered rather
-    // than widened here, because a reader change with no product behind it is a change nothing
-    // holds; the keys this workspace writes are declared the way `REAIM_MAX` is.
-    let rest = line
-        .strip_prefix("pub const ")
-        .or_else(|| line.strip_prefix("const "))?;
+    let rest = past_visibility(line)?.strip_prefix("const ")?;
     let (name, tail) = rest.split_once(american_colon())?;
     if !name.chars().all(is_ident) || name.is_empty() {
         return None;
@@ -1634,6 +1658,50 @@ mod tests {
         assert!(
             !read.ambiguous().contains_key("Readiness::WIRE_KEY"),
             "⚠⚠ but the QUALIFIED name is not contested — that is the whole repair",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A KEY IS READ AT WHATEVER VISIBILITY DECLARES IT** — register item 944, where a
+    /// `pub(crate) const` resolved to no value and the payload claim went red naming the IDENTIFIER
+    /// about a payload that carried exactly what the document reads.
+    ///
+    /// ⚠⚠ The two `None`s are the other half: what grows is the set of constants READ, never what
+    /// an unread one is taken to mean, so a line the grammar does not cover leaves its token
+    /// standing rather than resolving to a `const` found further along.
+    #[test]
+    fn a_constant_is_read_at_whatever_visibility_declares_it() {
+        let rust = "impl Brief {\n\
+                    pub(crate) const STALL_AFTER_KEY: &str = \"stall_after_steps\";\n\
+                    pub(super) const MARKS_KEY: &str = \"progress_marks\";\n\
+                    pub(in crate::plugin) const COST_KEY: &'static str = \"cost_bound\";\n\
+                    }";
+        let sources = [source("a.rs", rust)];
+        let read = Rust::of(&sources);
+        assert_eq!(
+            read.keys_of(
+                "json!({Brief::STALL_AFTER_KEY: 1, Brief::MARKS_KEY: 2, Brief::COST_KEY: 3})"
+            ),
+            Some(BTreeSet::from([
+                "stall_after_steps".to_owned(),
+                "progress_marks".to_owned(),
+                "cost_bound".to_owned(),
+            ])),
+            "⚠⚠⚠⚠⚠ every visibility Rust can spell is a key this reader resolves — seeing only \
+             `pub const` and `const` made a payload that carried the document's own keys go red \
+             naming `STALL_AFTER_KEY` at it",
+        );
+        assert_eq!(
+            string_const("pub(in crate::a const HALF: &str = \"open\";"),
+            None,
+            "⚠⚠⚠ the grammar is SPELLED OUT rather than searched for: a visibility that never \
+             closes its parenthesis resolves to NOTHING, so the token stands and a claim about it \
+             reds naming it — taking the `const` further along the line would be a guess",
+        );
+        assert_eq!(
+            string_const("pubconst STOLEN: &str = \"a keyword that never ended\";"),
+            None,
+            "⚠⚠ and the keyword has to have ENDED — an identifier that merely begins with `pub` is \
+             not a visibility, so dropping that check would invent a constant",
         );
     }
 
