@@ -243,6 +243,15 @@ struct Learned<'a> {
     /// ⚠ Borrowed, like [`found`](Self::found) and [`explained`](Self::explained): this struct is
     /// `Copy` so a caller cannot half-fill it, and the renderer only reads.
     faced: Option<&'a crate::outer::Faced>,
+    /// **HOW MANY OF THE MARKS THIS RUN'S PROGRESS AXIS NAMES IT CAN ACTUALLY READ** — register
+    /// item 943, and [`None`] both on a pass that read no marks and on one whose count is what the
+    /// run was already told.
+    ///
+    /// ⚠ Taken off the loop rather than carried on `Pumped::Moved`, exactly as
+    /// [`faced`](Self::faced) above is and for that field's stated reason: the slot is emptied at
+    /// the top of every pump, so what is in it belongs to the pass that just ran, and a field on
+    /// `Pumped` would put one fact at nine construction sites.
+    watching: Option<crate::outer::Watching>,
 }
 
 impl AiLoop {
@@ -567,6 +576,7 @@ impl AiLoop {
             unadmitted,
             witnessed,
             faced,
+            watching,
         } = learned;
         let mut note = if raised == AiLoopEvent::Null {
             format!("{from:?}: looked, nothing had happened")
@@ -694,6 +704,22 @@ impl AiLoop {
                  session that has spent nothing",
                 record.display(),
             );
+        }
+        // ⛔⛔⛔⛔⛔ **AND THE FOURTH — REGISTER ITEM 943 — BESIDE THE THIRD, because it answers the
+        // same kind of question: what this run's own instruments can see. That one says a spend
+        // reading is blind; this says how many terms the predicate that can END the run really has.
+        //
+        // ⚠⚠⚠ SAID ON THE WHOLE AXIS TOO AND NOT ONLY ON THE DEGRADED ONE, which is the rule four
+        // clauses above are already written on and is sharpest here: *this run can read both of
+        // its marks* is the CONTROL that makes *it can read one* legible, and a build that printed
+        // only the interesting arm would leave a reader unable to tell a degraded axis from a run
+        // whose journal simply predates the count.
+        //
+        // ⚠⚠ ONCE PER CHANGE, which is [`crate::outer::OuterLoop::watching`]'s take rather than
+        // this function's business: the marks are read on every pass, and a sentence on every step
+        // would fill a bounded journal with one fact (item 277, measured).
+        if let Some(axis) = watching {
+            note = format!("{note} — {}", axis.noted());
         }
         note
     }
@@ -1693,6 +1719,10 @@ impl Plugin for AiLoop {
                 // would then read as a change and say it twice. Both gates that caught it are in
                 // this file.
                 let faced = self.inner.facing();
+                // ⚠⚠ TAKEN BESIDE `faced` AND FOR ITS REASON — register item 943. Both are diffed
+                // where the sentence is written rather than where the reading happened; see
+                // `OuterLoop::watching`, which holds that measurement.
+                let watching = self.inner.watching();
                 let note = Self::walked(
                     from,
                     raised,
@@ -1714,6 +1744,13 @@ impl Plugin for AiLoop {
                         // every pump, so what is in it belongs to the pass that just ran, and a
                         // field on `Pumped` would put one fact at every construction site.
                         faced: faced.as_ref(),
+                        // ⚠⚠ AND THE SAME ROAD FOR THE SAME REASON — register item 943. ⚠ TAKEN
+                        // HERE, past the two early returns above, on `faced`'s measured rule
+                        // exactly (register item 745(C)): a pass that answered a dialog or refused
+                        // a call composes no walk line, so a count consumed there would be a
+                        // finding nobody ever said — and the next pass would read as a change and
+                        // say it twice.
+                        watching,
                     },
                 );
                 // ⚠⚠⚠⚠⚠ **WHETHER THAT ARRIVAL WAS AN ENDING IS THE DOCUMENT'S TO SAY** — register
@@ -4575,6 +4612,224 @@ mod tests {
             loops.captured().is_some_and(|said| !said.trim().is_empty()),
             "⚠⚠⚠ the stalled run asked its agent where it got to and came back with nothing, so a \
              person reading this run has the word and no account. Walked {walked:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// **A RUN WHOSE PROGRESS AXIS HAS LOST A TERM SAYS SO, AND ONE WHOSE AXIS IS WHOLE SAYS THAT
+    /// TOO** — register item 943, and the count nothing produced.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was indistinguishable before this
+    ///
+    /// [`crate::outer::OuterLoop::progress_reading`] renders a mark it cannot stat as one fixed
+    /// word, so a permanently unreadable mark contributes the same substring on every pass: it can
+    /// never report progress, and the predicate falls from the two signals `debt_loop.scxml`
+    /// argued for to one — **the one-signal predicate register item 942 measured and rejected**
+    /// (1197 steps with no milestone claimed against 325 with no mark moved). A run in that state
+    /// looked exactly like a healthy one.
+    ///
+    /// ⚠⚠ THE WHOLE AXIS IS ASSERTED IN THE SAME TEST AND THAT IS THE CONTROL, not politeness: a
+    /// build that printed only the degraded arm would leave a reader unable to tell a lost term
+    /// from a journal that predates the count, which is the reading this file's own renderer says
+    /// this workspace has burned wire numbers over.
+    #[test]
+    fn a_run_says_how_many_of_its_progress_marks_it_can_actually_read() {
+        /// Out of reach, so the axis is what this test reads and the stall count is not what ends
+        /// the run — the fixture above drives the ending and this one must not.
+        const NEVER_STALLS: i64 = 100_000;
+
+        /// The whole named list, so `2` in the sentences below is this constant and not a literal.
+        const MARKS: usize = 2;
+
+        // ⛔ `sprag_scratch::scratch_for` AND NOT `std::env::temp_dir()` — register item 794.
+        let home = sprag_scratch::scratch_for("sprag-marks-read", "");
+        std::fs::create_dir_all(&home).expect("a directory to put the marks in");
+        let present = home.join("a-mark-that-exists");
+        std::fs::write(&present, b"still").expect("a readable mark");
+        let absent = home.join("a-mark-nothing-can-stat");
+        assert!(
+            std::fs::metadata(&absent).is_err(),
+            "⚠ THE FIXTURE'S OWN PRECONDITION: this path must be unstattable, or the degraded \
+             reading below is about a mark that was readable all along",
+        );
+
+        let walk = |marks: Vec<String>| -> Vec<String> {
+            let (workspace, pane) = crate::testing::standin_agent_reporting(
+                crate::testing::Accounts::ForARunThatRanOutOfTurns,
+                NO_THINKING,
+            );
+            let access = supervised(&workspace);
+            let brief = Brief {
+                stall_after_steps: Some(crate::outer::Counted::Of(NEVER_STALLS)),
+                progress_marks: Some(marks),
+                ..brief_for(1_000_000)
+            };
+            let mut loops =
+                AiLoop::new(engine(), pane, &brief, &standin_spec()).expect("a well-briefed loop");
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: Some(40),
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &access, &RunContext::uncancellable());
+            // ⚠ THE FIXTURE'S OWN PRECONDITION: the stall bound is out of reach and the turn
+            // budget is too, so this run ends on the ITERATION backstop. A run that ended anywhere
+            // else took a different number of passes than this test's sentences are counted over.
+            assert_eq!(
+                outcome.state,
+                OutcomeState::Exhausted(Ceiling::Iterations),
+                "⚠⚠ this fixture's run must spend its iteration backstop, or the journal below is \
+                 about a walk that did not happen",
+            );
+            let walked = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|entry| entry.note.clone())
+                .collect();
+            access.lifecycle().expect("lifecycle").close(pane);
+            walked
+        };
+
+        let degraded = walk(vec![
+            present.display().to_string(),
+            absent.display().to_string(),
+        ]);
+        let times = |walked: &[String], needle: &str| {
+            walked.iter().filter(|it| it.contains(needle)).count()
+        };
+        let says = |walked: &[String], needle: &str| times(walked, needle) > 0;
+        // ⚠⚠⚠ **ONCE, AND THAT IS ASSERTED RATHER THAN ASSUMED** — the axis of this run never
+        // changes, so a count above one is a level being published as though it were an event. The
+        // journal is bounded ([`crate::plugin::JOURNAL_LIMIT`]), so one fact repeated per pass
+        // EVICTS the walk a person is reading it for — register item 277's measurement, and the
+        // reason `Told` exists at all.
+        assert_eq!(
+            times(&degraded, &format!("only 1 of the {MARKS} mark(s)")),
+            1,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 943: this run's document named {MARKS} progress marks and only \
+             ONE of them answers, so the predicate that can end it has one term where its document \
+             argued for {MARKS}. Its journal owes exactly one sentence about that — NONE is the \
+             silence this item was filed on, and more than one is a level published as an event. \
+             Walked {degraded:?}",
+        );
+        assert!(
+            !says(&degraded, &format!("all {MARKS} of the mark(s)")),
+            "⚠⚠⚠ AND IT CLAIMED THE WHOLE AXIS ON A RUN THAT HAS ONE TERM, which is worse than \
+             silence: a reader would stop looking. Walked {degraded:?}",
+        );
+
+        // ── THE CONTROL: the same run with both marks readable ──
+        let second = home.join("another-mark-that-exists");
+        std::fs::write(&second, b"still").expect("a second readable mark");
+        let whole = walk(vec![
+            present.display().to_string(),
+            second.display().to_string(),
+        ]);
+        assert!(
+            says(&whole, &format!("all {MARKS} of the mark(s)")),
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED, so the sentence above says nothing about a DEGRADED axis — \
+             a renderer that speaks only when something is wrong cannot be told from one that \
+             speaks by accident. Walked {whole:?}",
+        );
+        assert!(
+            !says(&whole, "only ") && !says(&whole, "none of the"),
+            "⚠⚠⚠ AND IT REPORTED A LOST TERM ON A RUN WHOSE {MARKS} MARKS BOTH ANSWER, so the \
+             count is not reading the filesystem at all. Walked {whole:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THAT CAN READ NONE OF ITS MARKS IS NOT ENDED BY THE CEILING THAT WATCHES
+    /// THEM** — register item 943, and the promise
+    /// [`crate::outer::OuterLoop::watch_for_progress`]'s own doc had been making while the code did
+    /// the opposite.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The sentence that was false
+    ///
+    /// *"A document that declines the bound, one that names no marks, and a mark that cannot be
+    /// stat'd all leave the count where it was."* The third clause was not true: an unreadable mark
+    /// renders ONE FIXED WORD, so a run whose whole list is unreadable produces an **identical**
+    /// reading on every pass, the count advances at full speed, and the run is stopped by a ceiling
+    /// that observed nothing whatsoever. A path typo, a checkout with `core.logAllRefUpdates=false`
+    /// and a permission are each enough.
+    ///
+    /// ⚠⚠ THE COUNT IS FROZEN AND NOT RESET, which is item 943's own ⑶: reading absence as PROGRESS
+    /// would make a missing file a step of progress every pass and the bound could never bite at
+    /// all. This asserts the ending is the ITERATION backstop rather than merely *not* a stall —
+    /// `!= Stall` would also pass on a run that converged for some unrelated reason.
+    #[test]
+    fn a_run_that_can_read_none_of_its_marks_is_not_stalled_by_them() {
+        /// Small enough that a run still counting against an unread reading would meet it several
+        /// times over before the backstop below.
+        const STALLS_AFTER: i64 = 12;
+
+        /// The backstop, and the assertion: five times the stall bound, so the ending naming THIS
+        /// is a run whose stall count never reached its own.
+        const STOPS_AFTER: u32 = 60;
+
+        // ⛔ `sprag_scratch::scratch_for` AND NOT `std::env::temp_dir()` — register item 794.
+        let home = sprag_scratch::scratch_for("sprag-marks-blind", "");
+        std::fs::create_dir_all(&home).expect("a directory the marks are absent from");
+        let marks: Vec<String> = ["nothing-here-a", "nothing-here-b"]
+            .iter()
+            .map(|name| home.join(name).display().to_string())
+            .collect();
+        for mark in &marks {
+            assert!(
+                std::fs::metadata(mark).is_err(),
+                "⚠ THE FIXTURE'S OWN PRECONDITION: {mark} must be unstattable, or this run can see \
+                 something and the reading below is about a different case",
+            );
+        }
+
+        let (workspace, pane) = crate::testing::standin_agent_reporting(
+            crate::testing::Accounts::ForARunThatRanOutOfTurns,
+            NO_THINKING,
+        );
+        let access = supervised(&workspace);
+        let brief = Brief {
+            stall_after_steps: Some(crate::outer::Counted::Of(STALLS_AFTER)),
+            progress_marks: Some(marks.clone()),
+            // ⚠ OUT OF REACH, so the document's own turn budget cannot be what ends this run.
+            ..brief_for(1_000_000)
+        };
+        let mut loops =
+            AiLoop::new(engine(), pane, &brief, &standin_spec()).expect("a well-briefed loop");
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: Some(STOPS_AFTER),
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+
+        let walked: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|entry| entry.note.clone())
+            .collect();
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Iterations),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 943: this run could stat NEITHER of the {} marks its document \
+             named, so its stall predicate observed nothing at all — and it was stopped anyway, \
+             after {STALLS_AFTER} identical readings of two words. Every way this ceiling cannot \
+             see is supposed to be a way it does NOT fire. Walked {walked:?}",
+            marks.len(),
+        );
+        assert!(
+            walked
+                .iter()
+                .any(|note| note.contains(&format!("none of the {} mark(s)", marks.len()))),
+            "⚠⚠⚠ AND THE RUN NEVER SAID IT WAS BLIND. A ceiling silently doing nothing is the \
+             other half of this item: a person raising `stall_after_steps` on a run it could never \
+             have ended is being sent to the wrong end of the bound. Walked {walked:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }

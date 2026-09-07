@@ -5690,6 +5690,90 @@ impl Faced {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **HOW MANY OF THE MARKS A RUN'S PROGRESS AXIS NAMES IT CAN ACTUALLY READ, OF HOW MANY
+/// ITS DOCUMENT NAMED** — register item 943, and the arity of [`crate::Ceiling::Stall`]'s predicate
+/// as it really is rather than as the document declared it.
+///
+/// # ⚠⚠⚠⚠⚠ Why a count, when an unreadable mark already has a reading
+///
+/// `OuterLoop::progress_reading` renders a mark it cannot stat as one fixed word, so a
+/// PERMANENTLY unreadable mark contributes the same substring on every pass — it can never report
+/// progress, and the predicate quietly falls from the two signals its document named to one.
+/// Register item 942 measured that one-signal predicate and REJECTED it (longest stretch with no
+/// milestone claimed 1197 steps, with no mark moved 325), so a run whose axis has degraded to it is
+/// being judged by the predicate this repository already decided was wrong — **and nothing counted
+/// that this had happened.** This is that count.
+///
+/// # ⚠⚠ It is a LEVEL, published on CHANGE — `Told::watching`
+///
+/// `Faced`'s split beside it exactly: the marks are read on every pass, and a sentence per pass
+/// would fill a bounded journal with one fact (measured, register item 277). What a reader needs is
+/// the transition — *this run started able to read both and can now read one* — plus the opening
+/// reading as its control.
+///
+/// ⚠ Every arm says something, on [`Faced::noted`]'s rule: telling *the axis is whole* apart from
+/// *nobody looked* by the ABSENCE of a sentence is the reading this workspace has burned wire
+/// numbers over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Watching {
+    /// How many of the named marks answered a `stat`.
+    read: usize,
+    /// How many the document named.
+    named: usize,
+}
+
+impl Watching {
+    /// `read` of `named` marks answered.
+    const fn of(read: usize, named: usize) -> Self {
+        Self { read, named }
+    }
+
+    /// **HOW MANY SIGNALS THIS RUN'S STALL PREDICATE ACTUALLY HAS.**
+    #[must_use]
+    pub const fn read(&self) -> usize {
+        self.read
+    }
+
+    /// **HOW MANY ITS DOCUMENT NAMED**, which is the number the predicate was argued with.
+    #[must_use]
+    pub const fn named(&self) -> usize {
+        self.named
+    }
+
+    /// **WHETHER THE AXIS IS THE ONE THE DOCUMENT DECLARED** — false the moment a mark stops
+    /// answering, which is the whole subject of register item 943.
+    #[must_use]
+    pub const fn whole(&self) -> bool {
+        self.read == self.named
+    }
+
+    /// **NOTHING AT ALL COULD BE READ**, so no reading this produces can ever differ and the stall
+    /// count must not advance on it — see `OuterLoop::watch_for_progress`, where that is enforced.
+    #[must_use]
+    pub const fn blind(&self) -> bool {
+        self.read == 0
+    }
+
+    /// **THE SENTENCE A JOURNAL LINE CARRIES**, for the reader who has only this one line.
+    #[must_use]
+    pub fn noted(&self) -> String {
+        let Self { read, named } = *self;
+        if self.blind() {
+            return format!(
+                "none of the {named} mark(s) its work is supposed to move could be read, so \
+                 nothing can spend its stall count and that ceiling cannot end this run"
+            );
+        }
+        if self.whole() {
+            return format!("all {named} of the mark(s) its work is supposed to move can be read");
+        }
+        format!(
+            "only {read} of the {named} mark(s) its work is supposed to move can be read, so its \
+             stall count is spent on {read} signal(s) and not the {named} its document argued for"
+        )
+    }
+}
+
 /// **WHAT A SESSION CAN SAY ABOUT ITS OWN SPEND** — three answers, because two of them look like
 /// zero and only one of them is a fault.
 ///
@@ -6852,6 +6936,15 @@ pub struct OuterLoop {
     /// not be read* — that answer is an arm of [`Faced`] itself. The two would be one `Option` if
     /// the absence were folded, which is register item 745(C)'s whole point one type over.
     faced: Option<Faced>,
+    /// ⛔⛔⛔ **HOW MANY OF ITS PROGRESS MARKS THIS PASS COULD READ** — [`Watching`], taken in
+    /// [`Self::watch_for_progress`] and emptied at the top of every [`Self::pump`], the slot beside
+    /// `faced` and for its reason exactly. Register item 943.
+    ///
+    /// ⚠⚠ [`None`] means THIS PASS READ NO MARKS AT ALL — a document that declined the bound or
+    /// named no list — and never *the marks could not be read*, which is a `Watching` with a count
+    /// of zero. Folding the two would make *nobody looked* and *nothing answered* one value, and
+    /// those are the two facts this item exists to separate.
+    marks: Option<Watching>,
     /// ⚠⚠⚠ **THE EVIDENCE THIS RUN HAS ALREADY TOLD ITS READER ABOUT** — the level
     /// [`witnessed`](Self#structfield.witnessed)'s event is DIFFED against, so a walk carries the
     /// answer once and then again whenever it CHANGES.
@@ -6963,6 +7056,8 @@ struct Told {
     witnessed: Option<crate::deliver::Witnessed>,
     /// What the run was last told it was typing at — register item 745(C).
     faced: Option<Faced>,
+    /// How many of its progress marks the run was last told it could read — register item 943.
+    watched: Option<Watching>,
 }
 
 impl Told {
@@ -7000,6 +7095,24 @@ impl Told {
             return None;
         }
         self.faced = Some(now.clone());
+        Some(now)
+    }
+
+    /// **WHAT THIS PASS SHOULD SAY ABOUT THE ARITY OF ITS OWN PROGRESS AXIS** — [`None`] where that
+    /// is what this run was already told. Register item 943.
+    ///
+    /// ⚠⚠ The same act as [`facing`](Self::facing) about the third fact, and here for that
+    /// function's reason: a run that decided what to publish in one place and remembered it in
+    /// another would have two records of one thing.
+    ///
+    /// ⚠ It takes the reading rather than an [`Option`] of one, on `facing`'s rule: a run whose
+    /// document names marks always has a count, and *nobody looked* is the CALLER's absence — a
+    /// pass that read no marks never reaches here at all.
+    fn watching(&mut self, now: Watching) -> Option<Watching> {
+        if self.watched == Some(now) {
+            return None;
+        }
+        self.watched = Some(now);
         Some(now)
     }
 }
@@ -7168,6 +7281,9 @@ impl OuterLoop {
             // ⚠ Nothing has been typed at yet, which is not the same as a peer that could not be
             // read — see the field's own doc.
             faced: None,
+            // ⚠ No pass has looked at a mark yet, which is not the same as a mark that could not be
+            // read — see the field's own doc.
+            marks: None,
             told: Told::default(),
             deliveries: crate::plugin::Deliveries::NONE,
             folds: FoldsByReason::NONE,
@@ -7283,11 +7399,22 @@ impl OuterLoop {
     ///
     /// # ⚠⚠⚠ Every way it cannot see is a way it does NOT fire
     ///
-    /// A document that declines the bound, one that names no marks, and a mark that cannot be
-    /// stat'd all leave the count where it was. The alternative — reading *I cannot see* as
+    /// A document that declines the bound, one that names no marks, and a list NOTHING in which can
+    /// be stat'd all leave the count where it was. The alternative — reading *I cannot see* as
     /// *nothing moved* — would end every run of every kind that never learned to answer, at the
     /// first bound anybody typed. ⚠ A mark that DISAPPEARS is a change like any other, because its
     /// reading changes; that is deliberate and it is the safe direction.
+    ///
+    /// ⛔⛔⛔⛔⛔ **THE THIRD CLAUSE SAID *a mark* AND WAS FALSE — register item 943.** An unreadable
+    /// mark renders one FIXED WORD, so a run whose whole list is unreadable produced an identical
+    /// reading on every pass and marched to the bound at full speed, having observed nothing at
+    /// all. Measured 2026-09-07 by making both marks unstattable: the run ended
+    /// `exhausted (stall)`. The clause is now about the LIST, and the code below enforces it.
+    ///
+    /// ⚠⚠ **AND A LIST THAT IS ONLY PARTLY READABLE IS A DIFFERENT CASE, which this paragraph never
+    /// separated.** The readable marks still decide, so the count both advances and resets — the
+    /// predicate simply has fewer terms than the document argued for. That is not silent any more:
+    /// [`Watching`] counts it and the run's journal line says so, which is the rest of item 943.
     ///
     /// ⚠⚠ The bound and the marks are re-read on every pass rather than cached at construction, on
     /// `rules_in`'s rule: what an author wrote is the authority for as long as the run lasts.
@@ -7312,7 +7439,33 @@ impl OuterLoop {
         let standing_in = panes
             .origin()
             .and_then(|origin| origin.pane_start_dir(self.driving.pane));
-        let reading = Self::progress_reading(&marks, standing_in.as_deref());
+        let (reading, watching) = Self::progress_reading(&marks, standing_in.as_deref());
+        // ⛔⛔⛔⛔⛔ **WHAT THE AXIS REALLY IS, PUT WHERE SOMEBODY CAN SEE IT** — register item 943.
+        // The slot is diffed and rendered by [`Self::watching`] where the journal line is written;
+        // this only records what this pass read.
+        self.marks = Some(watching);
+        // ⛔⛔⛔⛔⛔ **A RUN THAT CAN READ NONE OF ITS MARKS IS NOT MEASURED BY THIS CEILING AT ALL**
+        // — register item 943, and this line is what makes the doc's third promise above TRUE. It
+        // read *a mark that cannot be stat'd leaves the count where it was* while the code did the
+        // opposite: an unreadable mark renders ONE FIXED WORD, so a run whose whole list is
+        // unreadable produces an IDENTICAL reading on every pass and marches to the bound at full
+        // speed, having observed nothing whatsoever. Measured 2026-09-07 by making both marks
+        // unstattable: the run ended `exhausted (stall)`.
+        //
+        // ⚠⚠⚠ IT FREEZES THE COUNT RATHER THAN RESETTING IT, and that is the distinction item 943's
+        // own ⑶ demands: reading absence as PROGRESS would make a missing file a step of progress
+        // every pass, and then the bound could never bite at all. Frozen, the steps a run banked
+        // while it could still see are exactly where it left them.
+        //
+        // ⚠⚠ IT IS BEFORE THE FIRING TEST AND NOT ONLY BEFORE THE INCREMENT, because a bound of
+        // ZERO is met by a count of zero — one condition short of *every way it cannot see is a way
+        // it does not fire* is an exception nobody wrote down.
+        //
+        // ⚠ A mark that DISAPPEARS from a list with a readable one left is a change like any other,
+        // because the joined reading changes; that arm is the `else` below and is untouched.
+        if watching.blind() {
+            return;
+        }
         if self.progress_seen.as_deref() == Some(reading.as_str()) {
             self.stalled = self.stalled.saturating_add(1);
         } else {
@@ -7345,8 +7498,25 @@ impl OuterLoop {
     ///
     /// ⚠ An unreadable mark reads as one fixed word rather than being dropped, so a file that comes
     /// and goes CHANGES the reading — which is the direction that lets the count go back to zero.
-    fn progress_reading(marks: &[String], standing_in: Option<&std::path::Path>) -> String {
-        marks
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND IT ANSWERS HOW MANY MARKS IT ACTUALLY READ — register item 943
+    ///
+    /// The fixed word above is why: a PERMANENTLY unreadable mark contributes the same substring
+    /// for ever, so it can never report progress and the predicate silently loses a term. Nothing
+    /// counted that, so a run watching one of the two signals its document argued for looked
+    /// exactly like a run watching both. [`Watching`] is that count, and
+    /// [`watch_for_progress`](Self::watch_for_progress) both publishes it and refuses to spend a
+    /// count against a reading that observed nothing.
+    ///
+    /// ⚠ A `stat` that answered is READ even if the file is empty: zero bytes at a timestamp is an
+    /// observation, and the only thing this separates is *the filesystem answered* from *it did
+    /// not*.
+    fn progress_reading(
+        marks: &[String],
+        standing_in: Option<&std::path::Path>,
+    ) -> (String, Watching) {
+        let mut read = 0_usize;
+        let reading = marks
             .iter()
             .map(|mark| {
                 let path = std::path::Path::new(mark);
@@ -7355,19 +7525,23 @@ impl OuterLoop {
                     _ => path.to_path_buf(),
                 };
                 match std::fs::metadata(&full) {
-                    Ok(seen) => format!(
-                        "{mark}={}:{}",
-                        seen.len(),
-                        seen.modified()
-                            .ok()
-                            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map_or(0, |since| since.as_nanos()),
-                    ),
+                    Ok(seen) => {
+                        read += 1;
+                        format!(
+                            "{mark}={}:{}",
+                            seen.len(),
+                            seen.modified()
+                                .ok()
+                                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map_or(0, |since| since.as_nanos()),
+                        )
+                    }
                     Err(_) => format!("{mark}=unreadable"),
                 }
             })
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(" ");
+        (reading, Watching::of(read, marks.len()))
     }
 
     /// **HOW LONG ONE OF THIS LOOP'S TURNS MAY TAKE**, as its DOCUMENT authors it — [`None`] for a
@@ -8222,6 +8396,23 @@ impl OuterLoop {
     pub fn facing(&mut self) -> Option<Faced> {
         let reading = self.faced.take()?;
         self.told.facing(reading)
+    }
+
+    /// **WHAT THIS PASS SHOULD SAY ABOUT THE ARITY OF ITS OWN PROGRESS AXIS** — [`Watching`], or
+    /// [`None`] both for a pass that read no marks and for one whose count is what this run was
+    /// already told. Register item 943.
+    ///
+    /// ⚠⚠⚠ **THE DIFF IS HERE AND NOT AT THE READING**, which is [`facing`](Self::facing)'s own
+    /// measured reason one fact over: the marks are read at the top of every pump, and
+    /// `AiLoop::step` has early returns that compose no journal line at all (an answered dialog, a
+    /// screened call). A diff taken at the reading would let one of those passes consume the
+    /// finding with nothing ever saying it, and the next pass would then read as a change and say
+    /// it twice.
+    ///
+    /// ⚠ So this TAKES: the reading is consumed whatever it decides, on `facing`'s rule.
+    pub fn watching(&mut self) -> Option<Watching> {
+        let reading = self.marks.take()?;
+        self.told.watching(reading)
     }
 
     /// **WHAT THE LAST PUMP SAW BEHIND THE EVENT IT RAISED** — see [`Noticed`].
@@ -9569,6 +9760,11 @@ impl OuterLoop {
         // belongs to the pass that typed it, and a slot cleared anywhere else would let a journal
         // line say a run faced a peer on a pass that asked it nothing.
         self.faced = None;
+        // ⚠⚠ AND THE THIRD, on the same rule — register item 943. What a pass could read of its
+        // marks belongs to the pass that read them, so a document that stops naming marks
+        // mid-run (`rules_in`'s re-read is per pass) cannot leave a stale count standing on a
+        // journal line about a pass that looked at nothing.
+        self.marks = None;
         // ⚠⚠⚠ A PERSON'S ORDER IS CARRIED IN FIRST, BEFORE ANYTHING IS DECIDED THIS PASS. The flag
         // is raised by a host thread at a moment nothing here controls, so the only place it can be
         // read without racing a decision is at the top of a pass — the same reason the barrier
