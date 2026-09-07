@@ -372,6 +372,57 @@
       What a kind may NOT do is say nothing: the driver refuses a document that
       declares no cap at all, because an absent policy that reads as *do what you
       like* is the escape hatch that disables its own gate.
+
+      ═══ 🎯 ONE WAS RIGHT, AND HERE IS THE READING THAT SAYS SO — item 956 ⑴ ═══
+
+      The clause above promised *"if that number climbs while the register does
+      not, the right answer is a bigger number"*. Asked on 2026-09-08, over the
+      EIGHTEEN runs that had a `successor_check` answer anything at all (runs 189
+      195 199 205 210 217 218 220 227 230 232 237 242 245 248 250 253 257, from
+      2026-09-03 on — the 227 earlier logs classify nothing, so no proposal of
+      theirs could be a STEP and including them would only dilute the reading):
+
+      ⚠ Written as a list and not a table because an XML comment may not carry a
+      double hyphen, which is what a markdown rule row is made of.
+
+      * milestones BANKED — `milestone: the agent said …` in the logs: **76**
+      * STEP proposals REFUSED, all three refusal arms — `"STEP —` on such an
+        edge: **77**
+      * of those, the ones that ATE AN ASK — the same, counted only on the two
+        arms a finished checkpoint reaches: **10**
+      * DISTINCT register items this cap turned away — those, de-duplicated:
+        **8** (480 795 808 856 865 939 943 951)
+      * of those eight, STILL OPEN today — asked of the register per item: **4**
+        (480 795 808 951)
+      * runs that adopted MORE than one STEP — an adopting edge carrying
+        `"STEP —`, de-duplicated per run: **0**
+
+      ⇒ ⭐ **THE CAP BINDS AND IT IS NOT VACUOUS**: zero runs exceeded it in
+      eighteen, and `north-star` prints `deferred 0 at depth > 1` off this very
+      number. A bound nothing ever reaches would be a number to delete; this one
+      is reached constantly and holds.
+
+      ⇒ ⛔⛔⛔ **AND THE TWO RUNS IT WAS BLAMED FOR WERE NOT ITS FAULT.** Runs 248
+      and 253 closed `unadmitted`, and in BOTH the whole ask-again budget had been
+      spent on proposals the classifier ADMITTED — merit refusals ate an ask in
+      neither. The cap had done exactly what it promises (*register it, the next
+      run may take it*) and the ENDING WORD then forbade that remedy by naming the
+      bad guess that arrived at the shut door. That is item 956 ⑵⑶ and it is
+      repaired in the template (`reask_capped`), not here. ⚠ The harm was real and
+      is measurable: 951 and 808 were the two proposals run 253 set aside, and
+      both are still open.
+
+      ⇒ ⛔⛔ **RAISING IT IS NOT FREE AND THE COST IS NOT IN THIS FILE.**
+      `north-star` reads THIS declaration as the register's own deferral depth
+      (its `DRIVING_DOCUMENT`), so a bigger number here does not only let a run go
+      deeper — it changes which items the ledger admits at all. Item 659's cost,
+      applied to the register rather than to one run.
+
+      ⭐ **WHAT WOULD OVERTURN THIS, stated so a later round can just measure it**:
+      the distinct-items-turned-away row climbing while the paid half of it does
+      NOT — i.e. this cap deferring findings that no later run ever picks up. Four
+      of eight paid is the reading that says deferral is working; four of twenty
+      would say it is a way of losing findings, and then the answer is 2.
     -->
     <data id="reaim_max" expr="1"/>
 
@@ -389,9 +440,29 @@
       ⚠⚠⚠ TWO, AND THE NUMBER IS AN ESTIMATE THIS ROUND CANNOT MEASURE. Nobody
       has yet watched an agent guess twice here, so what it rests on is the shape
       of the failure rather than a reading: one retry is a typo's worth of
-      patience, and a large number is the livelock wearing a bound. ⭐ The data
+      patience, and a large number is the livelock wearing a bound.
+
+      ⛔⛔⛔⛔⛔ AND THE SENTENCE THAT USED TO FOLLOW WAS WRONG ABOUT ITS OWN
+      INSTRUMENT — register item 956, measured 2026-09-08. It read: *"The data
       that settles it is being collected — every refusal raises `deferred`, so a
-      later round can ask whether second guesses actually land and move this.
+      later round can ask whether second guesses actually land and move this."*
+      **`deferred` cannot answer it.** That total counts refusals on all THREE
+      refusal arms, and the arm back to `working` never touches this budget: run
+      237 set 42 proposals aside on it while asking again exactly ONCE. A round
+      following that instruction would have read 43 and concluded a budget of two
+      was being exhausted by guessing.
+
+      ⇒ 📊 SO IT WAS ASKED THE OTHER WAY, off the arms themselves, over the
+      eighteen runs that had a classifier: the bound was reached TWICE (runs 248
+      and 253) and **on neither occasion did a wrong guess eat an ask** — every
+      ask spent on both roads went on a proposal the classifier ADMITTED. So the
+      original estimate still stands unrefuted for the reason it was written: an
+      agent guessing twice is a shape nobody has yet observed — not in the 245
+      run logs this loop has kept since 2026-08-26, nor in the 18 of them where a
+      classifier could refuse anything at all. ⭐ What is collected NOW is the number that
+      can settle it — `reask_capped`, published on the run's row: an ask spent
+      that this does NOT count is a wrong guess, and the day that difference is
+      routinely two, this number is the one to move.
 
       ⚠⚠ IT IS NOT A DECLINE. Unbounded has no spelling in this slot, deliberately
       (see the template): an agent that keeps naming refused things would turn for

@@ -1065,6 +1065,11 @@ const UNCHECKED: &str = "unchecked";
 /// SUBSET of that total and never a second one. Register item 833, and see
 /// [`OuterLoop::unadmitted_count`].
 const UNADMITTED_COUNT: &str = "unadmitted";
+/// 🎯 The datamodel variable counting **how many of the refusals that ate this checkpoint's
+/// ask-again budget were proposals the classifier ADMITTED** — per checkpoint, unlike the three
+/// above, because it answers *what shut this door* rather than *what did this run do*. Register
+/// item 956, and see [`OuterLoop::reask_capped`].
+const REASK_CAPPED: &str = "reask_capped";
 
 /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN WHOSE CHECKPOINT IS DONE MAY ASK ITS AGENT AGAIN** — register
 /// item 840, and the bound the owner's decision of 2026-09-02 needs in order to be safe.
@@ -3582,6 +3587,16 @@ pub enum DoneReason {
     /// ⚠ Like [`StoodDown`](Self::StoodDown) and unlike the driver's two, the DOCUMENT spells this
     /// word as a literal — the cap is its own datum and this driver neither holds it nor compares
     /// against it, so the fact belongs to the file that decided it.
+    ///
+    /// # 🎯🎯🎯🎯🎯 It names what SPENT the budget, not what arrived after it was spent
+    ///
+    /// Register item 956. A run whose checkpoint is done asks again when its proposal is turned
+    /// away, and **every refusal on that road spends an ask, whatever refused it** — so the run can
+    /// reach its bound having been stopped only by its own depth budget, on proposals a classifier
+    /// said YES to. This word is chosen from [`OuterLoop::reask_capped`], which counts exactly
+    /// those, so it holds whenever there is something takeable to register — even where the LAST
+    /// refusal was on merit. That case is not hypothetical: it is how runs 248 and 253 of this
+    /// repository's own loop ended, and both used to report [`Unadmitted`](Self::Unadmitted).
     Capped,
     /// 🎯🎯🎯🎯🎯 **THE MILESTONE WAS REACHED, A SUCCESSOR WAS NAMED, AND A PROGRAM SAID IT IS NOT
     /// ONE THIS RUN MAY TAKE** — register item 839, and [`Capped`](Self::Capped)'s twin on the same
@@ -3589,14 +3604,22 @@ pub enum DoneReason {
     ///
     /// # ⚠⚠⚠⚠⚠ Why it is not [`Capped`](Self::Capped), which is the same edge
     ///
-    /// **The two send a reader in opposite directions.** `capped` says the proposal was fine and
+    /// **The two send a reader in opposite directions.** `capped` says a proposal was fine and
     /// this run had wandered its allowance: register it, and the next run may take it. This says
-    /// the proposal was refused **on its own merits** — registering it and launching a run at it
-    /// would be refused again, by the same program, for the same reason. A reader told `capped`
-    /// about this would do exactly the wrong thing, which is the argument `capped` itself makes
-    /// against being reported as [`NoSuccessor`](Self::NoSuccessor).
+    /// **every** proposal that shut the door was refused **on its own merits** — registering one
+    /// and launching a run at it would be refused again, by the same program, for the same reason.
+    /// A reader told `capped` about this would do exactly the wrong thing, which is the argument
+    /// `capped` itself makes against being reported as [`NoSuccessor`](Self::NoSuccessor).
     ///
-    /// ⚠⚠ What to look at is the PROPOSAL and the program that turned it down — the run's walk
+    /// ⛔⛔⛔⛔⛔ **AND *EVERY* IS LOAD-BEARING — register item 956.** This word used to be chosen
+    /// by the refusal STANDING at the door rather than by the ones that shut it, and a run whose
+    /// asks were eaten by admitted proposals reported it the moment a bad guess arrived last. Run
+    /// 253 (2026-09-08) did: items 951 and 808 took both asks, `item 2` walked into the shut door,
+    /// and the reader was sent to inspect `item 2` while the two takeable proposals went
+    /// unregistered. [`OuterLoop::reask_capped`] is what decides now, and this word means it is
+    /// zero.
+    ///
+    /// ⚠⚠ What to look at is the PROPOSALS and the program that turned them down — the run's walk
     /// carries what the classifier said beside its verdict, which is [`Admits`]'s own reason for
     /// existing rather than a bare boolean.
     ///
@@ -3670,20 +3693,22 @@ impl DoneReason {
                  that ran out of things to propose"
             }
             Self::Capped => {
-                "the milestone was reached, the reflection DID name a next checkpoint, and this \
-                 run had spent the re-aiming budget its document gives it — so the proposal was \
-                 counted rather than taken and the run stopped rather than asking an agent to \
-                 reach a checkpoint it had just reached; the run's `deferred` count says how many \
-                 such proposals it set aside, and they are owed a look wherever this kind \
-                 registers them"
+                "the milestone was reached, the reflection DID name a next checkpoint, and at \
+                 least one proposal a classifier ADMITTED was turned away by the re-aiming budget \
+                 this run's document gives it — so the run stopped rather than asking an agent to \
+                 reach a checkpoint it had just reached. ⚠ There IS work named here and it is \
+                 takeable: the run's `reask_capped` count says how many such proposals shut this \
+                 door, they are owed a look wherever this kind registers them, and a next run may \
+                 take them as they stand"
             }
             Self::Unadmitted => {
-                "the milestone was reached, the reflection DID name a next checkpoint, and this \
-                 run's `successor_check` said it is NOT one to take now — so the proposal was \
-                 counted rather than taken and the run stopped rather than asking an agent to \
-                 reach a checkpoint it had just reached. ⚠ Unlike a run that ran out of budget, \
-                 this one would be refused again: read the proposal and what the classifier said \
-                 about it before launching anything at it"
+                "the milestone was reached, the reflection DID name a next checkpoint, and EVERY \
+                 proposal that shut this door was one a `successor_check` refused — so the run \
+                 stopped rather than asking an agent to reach a checkpoint it had just reached. ⚠ \
+                 Unlike a run whose budget was eaten by good proposals (`reask_capped` is zero \
+                 here, which is what tells the two apart), this one would be refused again: read \
+                 the proposals and what the classifier said about them before launching anything \
+                 at this"
             }
         }
     }
@@ -12484,6 +12509,50 @@ impl OuterLoop {
     pub fn unadmitted_count(&self) -> Option<i64> {
         match self.script.get_variable(&self.session, UNADMITTED_COUNT) {
             Ok(ScriptValue::Int(refused)) => Some(refused),
+            _ => None,
+        }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS A CLASSIFIER ADMITTED AND THE DEPTH BUDGET TURNED AWAY, ON
+    /// THE CHECKPOINT THIS RUN IS ON** — register item 956, and the number that decides which of
+    /// the two refusal endings a run gets.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The ending used to name the last refusal, which is not the one that killed it
+    ///
+    /// A run whose checkpoint is done and whose proposal is turned away asks again, up to
+    /// `reask_max` — SPELLED rather than linked, because that constant is private and this item is
+    /// public, which is `private_intra_doc_links` under `-D warnings` (register item 365, and the
+    /// doc gate refused this file for it on the first attempt at this very line).
+    ///
+    /// **Every refusal on that road spends an ask, whatever refused it** — so a run
+    /// can arrive at its bound having been turned away only by its own depth budget, on proposals a
+    /// classifier said YES to. Run 253 of this repository's loop did exactly that on 2026-09-08:
+    /// two admitted STEP proposals (items 951 and 808) took both asks, a proposal that was not in
+    /// the register at all arrived at the shut door, and the run reported `unadmitted` — whose own
+    /// remedy is *read the proposal, it would be refused again*. The two good proposals went
+    /// unregistered. Run 248 is the same shape.
+    ///
+    /// ⇒ So this counts the refusals that left something behind, and
+    /// [`DoneReason::Capped`] against [`DoneReason::Unadmitted`] is decided by whether it is zero.
+    ///
+    /// # ⛔⛔ Why [`deferred`](Self::deferred) minus [`unadmitted_count`](Self::unadmitted_count)
+    /// is not this number
+    ///
+    /// Those two are lifetime totals over all three refusal arms, and the arm back to `working`
+    /// **never touches this budget**: run 237 set 42 proposals aside on it and asked again exactly
+    /// once. Subtracting one published number from the other would have said 42 refusals ate a
+    /// budget of two.
+    ///
+    /// ⚠⚠ **IT IS PER CHECKPOINT**, like `reasked` which it qualifies and unlike its three
+    /// neighbours above: a run that guessed wrong, recovered, worked and finished has left that
+    /// episode behind, and the ending is about the door that actually shut.
+    ///
+    /// ⚠ [`None`] on its neighbours' terms exactly: a datamodel that has stopped answering is
+    /// *nobody was counting*, never a zero.
+    #[must_use]
+    pub fn reask_capped(&self) -> Option<i64> {
+        match self.script.get_variable(&self.session, REASK_CAPPED) {
+            Ok(ScriptValue::Int(capped)) => Some(capped),
             _ => None,
         }
     }

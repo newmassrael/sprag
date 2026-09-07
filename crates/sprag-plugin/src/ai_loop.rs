@@ -1559,6 +1559,16 @@ impl Plugin for AiLoop {
             .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
     }
 
+    /// 🎯 **THE DOCUMENT'S OWN `reask_capped`, ON ITS WAY TO THE ROW SOMEBODY READS** — register
+    /// item 956, delegated on `deferred`'s exact terms: the `<if>` that counts is written in
+    /// `ai_loop.scxml` on the very arm that spends an ask, so nothing out here can come to disagree
+    /// with the guard that chose the ending word from it.
+    fn reask_capped(&self) -> Option<u32> {
+        self.inner
+            .reask_capped()
+            .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
     /// ⚠ DELEGATED for `deliveries`' reason — register item 719. The driver that put the brief in
     /// is the only thing that read it back out of the datamodel, and a size measured at this layer
     /// would be measuring the REQUEST rather than what the machine holds — a second authority on
@@ -7371,6 +7381,207 @@ mod tests {
             "⚠⚠⚠ AND IT DID NOT END THE WAY THE CONTROL DID. That word means *a program refused \
              the successor and this run had no ask left*, and this run had one and used it. \
              Walked {patient_walk:?}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE ENDING NAMES WHAT SPENT THE ASK-AGAIN BUDGET, NOT WHAT ARRIVED AFTER IT
+    /// WAS SPENT** — register item 956, and the run this repository's own loop died in twice.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What went wrong, measured on runs 248 and 253
+    ///
+    /// Every refusal on the ask-again road spends an ask, **whatever refused it**. So a run reaches
+    /// its bound with the budget eaten by proposals a classifier ADMITTED and only the depth cap
+    /// turned away — and then whichever refusal happens to arrive at the shut door names the
+    /// ending. Run 253 (2026-09-08): items 951 and 808 took both asks, `item 2` walked into the
+    /// closed door, and the run reported `unadmitted`, whose remedy is *read the proposal, it would
+    /// be refused again*. The two proposals a next run could have taken went unregistered. Run 248
+    /// is the same shape, and over the eighteen runs that had a classifier at all those two are
+    /// the only ones that ever reached this bound — **neither was killed by bad guessing**.
+    ///
+    /// # ⚠⚠⚠ The fixture is that run, and the control is its opposite
+    ///
+    /// | arm | classifier | what shuts the door | the word |
+    /// |---|---|---|---|
+    /// | the defect | admits twice, then refuses | two ADMITTED proposals | `capped` |
+    /// | the control | refuses every time | three refused proposals | `unadmitted` |
+    ///
+    /// **Both reach the same bound by the same edge**, so the word is the only thing between them
+    /// — which is what makes this a measurement rather than a re-spelling of the guard. Without the
+    /// control an ending hardcoded to `capped` would be green.
+    ///
+    /// ⚠⚠ `reaim_max` is **zero** on the defect arm rather than declined: the budget must be the
+    /// thing turning those two proposals away, and a declined cap would leave the classifier as the
+    /// only refusal in the run. On the control it is DECLINED for the mirror reason — the cap must
+    /// not be a second explanation for a refusal that is supposed to be pure merit.
+    ///
+    /// ⚠ The classifier's state is a FILE and the peer's counter is another, for
+    /// `standin_agent_reflecting_afresh`'s measured reason: a shell variable does not outlive the
+    /// respawn an adoption causes.
+    #[test]
+    fn the_ending_names_the_refusals_that_ate_the_budget_and_not_the_last_one() {
+        /// The edge that ends a run on a refusal — the arm whose word this gate is about.
+        const CLOSED: &str = "Reflecting --ReflectApplied--> Closing";
+        /// The edge that IS asking again, and therefore spending an ask.
+        const ASK_AGAIN: &str = "Reflecting --ReflectApplied--> Reflecting";
+        /// What the peer proposes, before the counter it appends to make each one distinct.
+        const AFRESH: &str = "a register entry this run just found";
+        /// And what it says the replacement should read.
+        const READ_NEXT: &str = "the register entry itself";
+        /// Work turns before the peer says its checkpoint is done.
+        const PROMPTS: u32 = 2;
+
+        /// Drive a run to its ask-again bound and hand back the ending, its `reask_capped`, and
+        /// the walk.
+        ///
+        /// `admits_first` is how many proposals the classifier ADMITS before it starts refusing,
+        /// and `cap` is the run's re-aiming budget.
+        fn bounded(
+            admits_first: u32,
+            cap: crate::outer::Counted,
+            tag: &str,
+        ) -> (crate::driver::Outcome, Vec<String>) {
+            let stamp = format!(
+                "{}-{}-{tag}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.subsec_nanos()),
+            );
+            let proposals = sprag_scratch::scratch_root().join(format!("sprag-ate-peer-{stamp}"));
+            let asked = sprag_scratch::scratch_root().join(format!("sprag-ate-asked-{stamp}"));
+            let classifier = sprag_scratch::scratch_root().join(format!("sprag-ate-say-{stamp}"));
+            for path in [&proposals, &asked, &classifier] {
+                let _ = std::fs::remove_file(path);
+            }
+            // ⚠⚠ A REAL PROGRAM ON THE REAL ROAD, `patience_of`'s idiom exactly: spawned by the
+            // driver with the proposal appended, and read back by the same `verdict_in` that reads
+            // a model's reply. What is arranged is only WHICH answer it gives when.
+            //
+            // ⚠ `STEP` on the admitting arm is the whole point — a `FRESH` proposal spends no
+            // budget at all, so a fixture that said it would never reach the bound.
+            std::fs::write(
+                &classifier,
+                format!(
+                    "n=0; [ -s '{c}' ] && n=$(cat '{c}'); n=$((n+1)); printf '%s' \"$n\" > '{c}'; \
+                     if [ \"$n\" -le {admits_first} ]; then \
+                       printf 'YES STEP it comes out of the work in hand\\n'; \
+                     else printf 'NO not one to take now\\n'; fi\n",
+                    c = asked.display(),
+                ),
+            )
+            .expect("the classifier script is writable");
+
+            let (workspace, pane) = crate::testing::standin_agent_reflecting_afresh(
+                PROMPTS, AFRESH, READ_NEXT, &proposals,
+            );
+            let access = crate::testing::supervised(&workspace);
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    reaim_max: Some(cap),
+                    successor_check: Some(format!("/bin/sh {}", classifier.display())),
+                    // ⚠ TWO, which is what this repository's own kind authors — so the episode the
+                    // gate stages is the one runs 248 and 253 actually had.
+                    reask_max: Some(2),
+                    ..brief_for(40)
+                },
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            let progress = ProgressCell::default();
+            // ⛔ BOUNDED SO THE WHOLE WALK IS STILL IN THE JOURNAL — `patience_of`'s measured
+            // lesson: the journal is bounded, and a verdict about an edge the record no longer
+            // holds is a verdict about nothing. This shape closes in well under a dozen steps.
+            let outcome = Driver::new(Guardrails {
+                max_iterations: Some(20),
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(120)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &access, &RunContext::uncancellable());
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            for path in [&proposals, &asked, &classifier] {
+                let _ = std::fs::remove_file(path);
+            }
+            (outcome, walk)
+        }
+
+        // ── THE DEFECT: THE BUDGET IS EATEN BY ADMITTED PROPOSALS AND A BAD GUESS ARRIVES LAST ──
+        let (eaten, eaten_walk) = bounded(2, crate::outer::Counted::Of(0), "eaten");
+
+        // ⚠⚠⚠ THE PREMISE FIRST, because every assertion below is about an episode that has to
+        // have happened: the run must actually have spent both asks and then closed on the refusal
+        // arm. A run that ended some other way would make the word below true of nothing.
+        assert_eq!(
+            eaten_walk
+                .iter()
+                .filter(|note| note.starts_with(ASK_AGAIN))
+                .count(),
+            2,
+            "⚠⚠⚠ THE PREMISE: both asks must have been spent, or the ending this gate is about \
+             was never reached. Walked {eaten_walk:?}",
+        );
+        assert!(
+            eaten_walk.iter().any(|note| note.starts_with(CLOSED)),
+            "⚠⚠ AND IT MUST HAVE CLOSED ON THE REFUSAL ARM, which is the only edge that spells \
+             either of these two words. Walked {eaten_walk:?}",
+        );
+        assert_eq!(
+            eaten.reask_capped,
+            Some(2),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 956 ⑵: the number that says WHAT ATE THE BUDGET. Both asks \
+             went on proposals this classifier ADMITTED, so it is exactly two — and it is not \
+             `deferred` minus `unadmitted`, which counts refusals on an arm that never touches \
+             this budget at all. Walked {eaten_walk:?}",
+        );
+        assert_eq!(
+            eaten.done_reason.as_deref(),
+            Some(crate::outer::DoneReason::Capped.word()),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 956 ⑶, AND THIS IS THE MUTATION: the last refusal was on \
+             MERIT and the word must still be `capped`, because what shut this door was two \
+             proposals worth registering. Reporting the last one sends a reader to a proposal that \
+             would be refused again and hides the two a next run could take — which is exactly how \
+             runs 248 and 253 ended. Walked {eaten_walk:?}",
+        );
+
+        // ── THE CONTROL: THE SAME BOUND BY THE SAME EDGE, EATEN ENTIRELY ON MERIT ──────────────
+        //
+        // ⛔⛔⛔⛔⛔ WITHOUT THIS THE ARM ABOVE IS SATISFIED BY A CONSTANT. `capped` written
+        // unconditionally on that transition passes every assertion above; it fails here.
+        let (merit, merit_walk) = bounded(0, crate::outer::Counted::Never, "merit");
+        assert_eq!(
+            merit_walk
+                .iter()
+                .filter(|note| note.starts_with(ASK_AGAIN))
+                .count(),
+            2,
+            "⚠⚠⚠ THE CONTROL'S OWN PREMISE: it must reach the SAME bound by the SAME edge, or it \
+             controls for nothing. Walked {merit_walk:?}",
+        );
+        assert_eq!(
+            merit.reask_capped,
+            Some(0),
+            "⚠⚠⚠⚠ AND NOTHING ADMITTED WAS SET ASIDE HERE — the cap is declined on this arm, so \
+             the only thing that can turn a proposal away is the classifier. A non-zero here would \
+             mean the count has stopped following the reason. Walked {merit_walk:?}",
+        );
+        assert_eq!(
+            merit.done_reason.as_deref(),
+            Some(crate::outer::DoneReason::Unadmitted.word()),
+            "⛔⛔⛔⛔⛔ AND THE OTHER WORD SURVIVES, which is what keeps the pair worth two words: \
+             every refusal that shut THIS door would be refused again, so a reader must read the \
+             proposals rather than register them. An ending that said `capped` here would send \
+             somebody to relaunch at work no run may take. Walked {merit_walk:?}",
         );
     }
 

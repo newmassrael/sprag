@@ -4485,6 +4485,7 @@ mod tests {
                 deferred: None,
                 unchecked: None,
                 unadmitted: None,
+                reask_capped: None,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,

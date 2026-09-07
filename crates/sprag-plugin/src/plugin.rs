@@ -1730,6 +1730,34 @@ pub trait Plugin {
         None
     }
 
+    /// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS A CLASSIFIER ADMITTED AND THE DEPTH BUDGET TURNED AWAY, ON
+    /// THE CHECKPOINT THIS RUN IS ON** — register item 956, and the number that says which refusal
+    /// actually shut the door.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The ending named the last refusal, and the last refusal is not the cause
+    ///
+    /// A run whose checkpoint is done and whose proposal is turned away may ask again. **Every
+    /// refusal on that road spends an ask, whatever refused it** — so a run reaches its bound
+    /// having been turned away only by its own budget, on proposals a classifier said YES to. Run
+    /// 253 (2026-09-08) did: two admitted proposals took both asks, a proposal outside the register
+    /// arrived at the shut door, and the run reported `unadmitted` — *read the proposal, it would
+    /// be refused again* — while the two worth relaunching at went unregistered.
+    ///
+    /// ⚠⚠ **It is NOT [`deferred`](Self::deferred) minus [`unadmitted`](Self::unadmitted).** Those
+    /// are lifetime totals over all three refusal arms and the one back to `working` never touches
+    /// this budget: run 237 set 42 proposals aside on it while asking again once.
+    ///
+    /// ⚠ **PER CHECKPOINT**, unlike its neighbours, because it answers *what shut this door*. A run
+    /// that guessed wrong, recovered and finished has left that episode behind.
+    ///
+    /// ⚠ [`None`] on [`deferred`](Self::deferred)'s exact terms — never `Some(0)` for a plugin with
+    /// no such choice to make.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn reask_capped(&self) -> Option<u32> {
+        None
+    }
+
     /// ⚠⚠⚠ **THE RUN'S BUDGET IS SPENT — CAN YOU SAY WHERE IT GOT TO, AND HOW LONG DO YOU NEED?**
     ///
     /// Called by the [`Driver`] the moment one of ITS ceilings binds, before the run is ended, and

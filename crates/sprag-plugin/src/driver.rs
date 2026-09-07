@@ -1093,6 +1093,15 @@ pub struct Outcome {
     /// item 833, a SUBSET of that count and never a second total. See [`Plugin::unadmitted`], where
     /// the measurement is: a running row has no ending word, and the mouth had been supplying one.
     pub unadmitted: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS A CLASSIFIER ADMITTED AND THE DEPTH BUDGET TURNED AWAY, ON
+    /// THE CHECKPOINT THIS RUN CLOSED ON** — register item 956. See [`Plugin::reask_capped`], where
+    /// the measurement is: the two runs that ever reached this bound were killed by good proposals,
+    /// and both reported the bad guess that arrived at the shut door.
+    ///
+    /// ⚠ It is the one number here that is PER CHECKPOINT, because it answers *what shut this
+    /// door*. `Some(0)` beside a `capped`/`unadmitted` ending is a real claim: nothing worth
+    /// relaunching at was set aside here.
+    pub reask_capped: Option<u32>,
     /// ⚠⚠⚠ **WHAT THE RUN PUT INTO ITS PANE AND HOW MUCH OF IT WAS NEVER VISIBLE THERE** —
     /// register item 591, [`Progress::deliveries`] read at the end.
     ///
@@ -1269,6 +1278,10 @@ pub struct Driver {
     /// 🎯 **WHAT THE PLUGIN LAST SAID ITS REFUSED DEFERRALS CAME TO** — register item 833, held on
     /// `deferred`'s terms and read from the plugin at the same one place. ⚠ NEVER incremented here.
     unadmitted: Option<u32>,
+    /// 🎯 **WHAT THE PLUGIN LAST SAID ATE THIS CHECKPOINT'S ASK-AGAIN BUDGET** — register item 956,
+    /// held on `unadmitted`'s terms and read from the plugin at the same one place. ⚠ NEVER
+    /// incremented here.
+    reask_capped: Option<u32>,
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS DELIVERIES CAME TO** — register item 591, held for
     /// [`at`](Self::at)'s reason and read from the plugin at the same one place.
     ///
@@ -1413,6 +1426,11 @@ pub struct Progress {
     /// WHILE THE RUN IS STILL GOING for the reason it exists at all: the ending's word answers this
     /// for a run that has ended, and a running row had nothing to answer it with.
     pub unadmitted: Option<u32>,
+    /// 🎯 **AND HOW MANY OF THE ASKS THIS CHECKPOINT HAS SPENT WENT ON PROPOSALS THAT WERE
+    /// ADMITTED** — register item 956, published WHILE THE RUN IS STILL GOING on the line above's
+    /// argument: a person watching a run burn its asks on good proposals is the one who can raise
+    /// the budget before it closes.
+    pub reask_capped: Option<u32>,
     /// ⚠⚠⚠⚠⚠ **WHERE THE RUN IS** — the plugin's own machine position, from [`Plugin::at`].
     ///
     /// # The fact that existed only as prose — register item 543
@@ -1718,6 +1736,9 @@ impl Driver {
             // ⚠ `None` FOR `deferred`'s REASON TWO LINES UP — *nobody was counting* is not
             // *none of them were refused*.
             unadmitted: None,
+            // ⚠ `None` FOR THE SAME REASON — register item 956. A run nobody has stepped has spent
+            // no ask, and *nobody was counting* is not *nothing worth taking was set aside*.
+            reask_capped: None,
             deliveries: Deliveries::NONE,
             folds_by_reason: crate::outer::FoldsByReason::NONE,
             delivered_by_road: crate::outer::DeliveredByRoad::NONE,
@@ -1794,6 +1815,9 @@ impl Driver {
             // 🎯 AND HOW MANY OF THEM THE CLASSIFIER REFUSED — register item 833, live for the
             // reason the number exists: a running row has no ending word to say which reason it was.
             unadmitted: self.unadmitted,
+            // 🎯 AND HOW MANY OF THIS CHECKPOINT'S ASKS WENT ON GOOD PROPOSALS — register item 956,
+            // live because the budget can still be raised while the run is going.
+            reask_capped: self.reask_capped,
             at: self.at,
             waiting: self.waiting.clone(),
             place: self.place.clone(),
@@ -2217,6 +2241,12 @@ impl Driver {
                     // 🎯 AND HOW MANY OF ITS DEFERRALS WERE REFUSALS — register item 833, read in
                     // the same breath and kept on the same terms as the two above.
                     self.unadmitted = plugin.unadmitted().or_else(|| self.unadmitted.take());
+                    // 🎯 AND WHAT ATE THIS CHECKPOINT'S ASKS — register item 956, read in the same
+                    // breath and kept on the same terms as the three above. It matters MORE here
+                    // than for its neighbours: the step that ends a run is exactly the step whose
+                    // datamodel this number explains, so the last answer it could give is the
+                    // whole of what the ending means.
+                    self.reask_capped = plugin.reask_capped().or_else(|| self.reask_capped.take());
                     // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS COMPLETE AND KEPT — register item 604, in
                     // the same breath as the three above and for their reason. It is asked EVERY
                     // step rather than once at the end because the last step is the one that ends
@@ -2648,6 +2678,7 @@ impl Driver {
             deferred: self.deferred,
             unchecked: self.unchecked,
             unadmitted: self.unadmitted,
+            reask_capped: self.reask_capped,
             deliveries: self.deliveries,
             checks: self.checks.clone(),
             banked: self.banked,

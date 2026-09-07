@@ -465,6 +465,29 @@ pub const RUN_UNCHECKED_KEY: &str = "unchecked";
 /// ⚠ ABSENT / `0` / above are three claims, on [`RUN_DEFERRED_KEY`]'s exact rule: *this plugin sets
 /// nothing aside*, *it set some aside and none of them were refused*, and *this many were*.
 pub const RUN_UNADMITTED_KEY: &str = "unadmitted";
+/// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS A CLASSIFIER ADMITTED AND THE DEPTH BUDGET TURNED AWAY, ON THE
+/// CHECKPOINT THIS RUN IS ON** — register item 956, and the key that says which refusal actually
+/// shut the door.
+///
+/// # ⛔⛔⛔⛔⛔ The ending named the last refusal, and the last refusal is not the cause
+///
+/// A run whose checkpoint is done and whose proposal is turned away asks again, up to a bound its
+/// document authors. **Every refusal on that road spends an ask, whatever refused it** — so a run
+/// can reach the bound having been turned away only by its own depth budget, on proposals the
+/// classifier said YES to. Run 253 of this repository's loop did exactly that on 2026-09-08: two
+/// admitted proposals (items 951 and 808) took both asks, a proposal outside the register arrived
+/// at the shut door, and the run reported `unadmitted` — whose own remedy is *read the proposal, it
+/// would be refused again*. The two worth relaunching at went unregistered. Run 248 is the same
+/// shape, and across the eighteen runs that had a classifier they are the only two that ever
+/// reached the bound.
+///
+/// ⚠⚠ **IT IS NOT [`RUN_DEFERRED_KEY`] MINUS [`RUN_UNADMITTED_KEY`].** Those are lifetime totals
+/// over all three refusal arms, and the arm back to `working` never touches this budget: run 237
+/// set 42 proposals aside on it while asking again exactly once.
+///
+/// ⚠ It is PER CHECKPOINT, unlike its neighbours, because it answers *what shut this door* — and
+/// ABSENT / `0` / above are three claims on [`RUN_DEFERRED_KEY`]'s exact rule.
+pub const RUN_REASK_CAPPED_KEY: &str = "reask_capped";
 /// 🎯🎯🎯🎯🎯 **WHICH OF ITS BOUNDS A RUN IS NOT SPENDING UNDER ITS OWN DOCUMENT'S** — register
 /// item 853. A LIST of the field names the caller took, `[]` when it took none, and ABSENT for a
 /// run whose plugin has no document authoring any bound.
@@ -6315,6 +6338,12 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
     if let Some(unadmitted) = progress.unadmitted {
         answer[RUN_UNADMITTED_KEY] = json!(unadmitted);
     }
+    // 🎯🎯🎯 AND WHAT THE ASKS OF THE CHECKPOINT IT IS ON WENT ON — register item 956, live because
+    // a person watching a run burn its asks on GOOD proposals is the one who can raise the budget
+    // before it closes. See `RUN_REASK_CAPPED_KEY`.
+    if let Some(reask_capped) = progress.reask_capped {
+        answer[RUN_REASK_CAPPED_KEY] = json!(reask_capped);
+    }
     // ⚠⚠⚠⚠⚠ **AND WHERE THE RUN'S MACHINE IS — register item 662, and this renderer is the ONLY
     // way that fact can cross a process boundary.** A driver in another process reports through
     // here and nowhere else, so a key missing here is a fact the daemon cannot know about such a
@@ -9337,6 +9366,12 @@ pub fn outcome_to_json(outcome: &Outcome) -> Value {
     if let Some(unadmitted) = outcome.unadmitted {
         answer[RUN_UNADMITTED_KEY] = json!(unadmitted);
     }
+    // 🎯🎯🎯🎯🎯 AND WHAT ATE THE ASKS OF THE CHECKPOINT IT CLOSED ON — register item 956. This is
+    // THE row the number exists for: the closing word is CHOSEN from it, so an ending published
+    // without it is a verdict no reader can re-derive. See `RUN_REASK_CAPPED_KEY`.
+    if let Some(reask_capped) = outcome.reask_capped {
+        answer[RUN_REASK_CAPPED_KEY] = json!(reask_capped);
+    }
     // WHICH CEILING, present only when there was one — so the key's presence is itself the claim,
     // the rule `run_to_json` follows for `opened_by`. `exhausted` with no ceiling beside it told a
     // caller to change something without saying what, and the three ceilings have three different
@@ -9668,6 +9703,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             checks: None,
             briefed: None,
             done_reason: None,
@@ -10232,6 +10268,7 @@ mod tests {
                 deferred: None,
                 unchecked: None,
                 unadmitted: None,
+                reask_capped: None,
                 checks: None,
                 briefed: None,
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
@@ -10435,6 +10472,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             checks: None,
             briefed: None,
             done_reason: None,
@@ -10873,6 +10911,7 @@ mod tests {
                 deferred: None,
                 unchecked: None,
                 unadmitted: None,
+                reask_capped: None,
                 checks: None,
                 briefed: None,
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
@@ -15601,6 +15640,7 @@ mod tests {
                 // the two counts it takes as arguments; the subset that says WHY has its own gate
                 // beside the row that reads it.
                 unadmitted: None,
+                reask_capped: None,
                 waiting: None,
                 deliveries: Some(sprag_plugin::Deliveries::NONE),
                 folds_by_reason: Some(sprag_plugin::FoldsByReason::NONE),
@@ -15778,6 +15818,7 @@ mod tests {
                 context_break_even: None,
                 unchecked: None,
                 unadmitted: None,
+                reask_capped: None,
                 waiting: None,
                 deliveries: Some(sprag_plugin::Deliveries::NONE),
                 folds_by_reason: Some(folds),
@@ -18566,6 +18607,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
@@ -21027,6 +21069,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(banked),
@@ -21082,6 +21125,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(sprag_plugin::Banked {
@@ -21612,6 +21656,7 @@ mod tests {
                     deferred: None,
                     unchecked: None,
                     unadmitted: None,
+                    reask_capped: None,
                     checks: None,
                     briefed: None,
                     // ⚠ Item 706's field, absent for the reason every field above it is.

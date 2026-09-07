@@ -4528,6 +4528,7 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 deferred: None,
                 unchecked: None,
                 unadmitted: None,
+                reask_capped: None,
                 checks: None,
                 briefed: None,
                 done_reason: None,

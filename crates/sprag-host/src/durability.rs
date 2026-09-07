@@ -834,6 +834,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             checks: None,
             cancelled_by: None,
             briefed: None,

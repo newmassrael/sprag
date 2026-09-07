@@ -2789,6 +2789,18 @@ pub struct PersistedRun {
     /// ⚠ [`None`] is [`deferred`](Self::deferred)'s [`None`], for its reason.
     #[serde(default)]
     pub unadmitted: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS A CLASSIFIER ADMITTED AND THE DEPTH BUDGET TURNED AWAY, ON
+    /// THE CHECKPOINT THIS RUN CLOSED ON** — register item 956, carrying
+    /// [`sprag_plugin::Outcome::reask_capped`].
+    ///
+    /// ⚠⚠ It is the one column here that is PER CHECKPOINT rather than per run, and stored anyway
+    /// for the reason the number exists: after a restart the ENDING is read from this file, and
+    /// `capped` against `unadmitted` is decided by this. A row that kept the word and dropped what
+    /// chose it would be back to naming a refusal nobody can check.
+    ///
+    /// ⚠ [`None`] is [`deferred`](Self::deferred)'s [`None`], for its reason.
+    #[serde(default)]
+    pub reask_capped: Option<u32>,
     /// ⛔⛔⛔⛔⛔ **WHETHER ANYTHING INDEPENDENT VERIFIED WHAT THIS RUN SAID IT FINISHED** —
     /// register item 913. See [`PersistedChecks`], where the argument and the measurement are.
     ///
@@ -3043,6 +3055,8 @@ struct Ending {
     unchecked: Option<u32>,
     /// [`PersistedRun::unadmitted`] — register item 913.
     unadmitted: Option<u32>,
+    /// [`PersistedRun::reask_capped`] — register item 956.
+    reask_capped: Option<u32>,
     /// [`PersistedRun::checks`] — register item 913.
     checks: Option<PersistedChecks>,
 }
@@ -3122,6 +3136,11 @@ pub enum Tally {
     /// [`Deferred`](Self::Deferred) and never a second total, which does not change by being
     /// countable: a subset still has a population it is a subset OF.
     Unadmitted,
+    /// 🎯 [`PersistedRun::reask_capped`] — register item 956, on [`Deferred`](Self::Deferred)'s
+    /// argument. ⚠ It is not a subset of that column: it counts a different population (the
+    /// refusals that ate one checkpoint's ask-again budget), which is exactly why it is here at all
+    /// rather than derived from the two above.
+    ReaskCapped,
     /// ⛔⛔ [`PersistedRun::banked`] — register item 915, and the one this item found that is not a
     /// scalar. It was outside this enum for a THIRD reason again: the fixture never filled it, so
     /// no amount of clearing columns would have surfaced it.
@@ -3130,7 +3149,7 @@ pub enum Tally {
 
 impl Tally {
     /// Every counter, in the order [`PersistedRun`] declares them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Deliveries,
         Self::FoldsByReason,
         Self::DeliveredByRoad,
@@ -3142,6 +3161,7 @@ impl Tally {
         Self::Deferred,
         Self::Unchecked,
         Self::Unadmitted,
+        Self::ReaskCapped,
         Self::Checks,
     ];
 
@@ -3163,6 +3183,7 @@ impl Tally {
             Self::Deferred => "deferred",
             Self::Unchecked => "unchecked",
             Self::Unadmitted => "unadmitted",
+            Self::ReaskCapped => "reask_capped",
             Self::Banked => "banked",
         }
     }
@@ -3974,6 +3995,7 @@ impl PersistedRun {
             Tally::Deferred => self.deferred.map(|count| count == 0),
             Tally::Unchecked => self.unchecked.map(|count| count == 0),
             Tally::Unadmitted => self.unadmitted.map(|count| count == 0),
+            Tally::ReaskCapped => self.reask_capped.map(|count| count == 0),
         };
         match empty {
             None => Sampled::Unsaid,
@@ -6984,6 +7006,7 @@ impl RunRegistry {
                         deferred,
                         unchecked,
                         unadmitted,
+                        reask_capped,
                         checks,
                     } = match &run.state {
                         RunState::Running | RunState::Interrupted => Ending::default(),
@@ -7041,6 +7064,11 @@ impl RunRegistry {
                             deferred: outcome.deferred,
                             unchecked: outcome.unchecked,
                             unadmitted: outcome.unadmitted,
+                            // 🎯 AND WHAT ATE THE ASK-AGAIN BUDGET OF THE CHECKPOINT IT CLOSED
+                            // ON — register item 956, carried on the line above's terms: the
+                            // ending word is chosen from this, so a row that stored one without
+                            // the other would keep a verdict nobody could re-derive.
+                            reask_capped: outcome.reask_capped,
                             // ⛔⛔ AND WHETHER ANYTHING INDEPENDENT CHECKED IT — register item
                             // 601's tally, register item 913's crossing. See `PersistedChecks`.
                             checks: Some(outcome.checks.clone().into()),
@@ -7107,6 +7135,11 @@ impl RunRegistry {
                             deferred: report_tally(reported, crate::plugins::RUN_DEFERRED_KEY),
                             unchecked: report_tally(reported, crate::plugins::RUN_UNCHECKED_KEY),
                             unadmitted: report_tally(reported, crate::plugins::RUN_UNADMITTED_KEY),
+                            // 🎯 AND THE SEVENTH — register item 956, read on the same terms.
+                            reask_capped: report_tally(
+                                reported,
+                                crate::plugins::RUN_REASK_CAPPED_KEY,
+                            ),
                             // ⛔⛔⛔⛔⛔ AND THE FIFTH, WHICH USED TO HAVE NO ROAD AT ALL —
                             // register item 914. It is read here exactly as its four
                             // neighbours are, and the reason it could not be is that
@@ -7382,6 +7415,7 @@ impl RunRegistry {
                         deferred,
                         unchecked,
                         unadmitted,
+                        reask_capped,
                         // ⛔⛔⛔⛔⛔ THE CHECK TALLY TAKES A SECOND ROAD WHERE IT HAS ONE —
                         // register item 914's measurement, which corrected this round's own first
                         // answer. The ENDING's tally is authoritative and comes first; behind it
@@ -7567,6 +7601,9 @@ impl RunRegistry {
                         unchecked: saved.unchecked,
                         // ⚠ NOR HOW MANY OF ITS DEFERRALS WERE REFUSALS — register item 833.
                         unadmitted: saved.unadmitted,
+                        // ⚠ NOR WHAT ATE THE LAST CHECKPOINT'S ASKS — register item 956, restored
+                        // beside its neighbour because the ending word is only re-derivable with it.
+                        reask_capped: saved.reask_capped,
                         // ⚠⚠⚠ AND NOT HERE, THOUGH THE LOG NOW CARRIES IT — register item 606. The
                         // restored pair goes into `Progress` below, which is where every reader
                         // takes it from: `crate::plugins::run_to_json` publishes `delivered` out of
@@ -7741,6 +7778,9 @@ impl RunRegistry {
                     // ⚠ Nor how many of its deferrals were refusals (register item 833), for the
                     // reason on the line above it.
                     unadmitted: None,
+                    // ⚠ Nor what ate the last checkpoint's asks (register item 956), for the reason
+                    // two lines up.
+                    reask_capped: None,
                     // ⛔⛔⛔ AND NOTHING IS WAITED ON BY A RUN NOBODY IS DRIVING — register item
                     // 755. A restored run has no driver asking its plugin anything, so *is a
                     // person needed* has no answerer; `None` is the honest reading and the same one
@@ -8182,6 +8222,7 @@ mod tests {
                 deferred: None,
                 unchecked: None,
                 unadmitted: None,
+                reask_capped: None,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
@@ -8469,6 +8510,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             checks: None,
             briefed: None,
             request: None,
@@ -8524,6 +8566,7 @@ mod tests {
                     deferred: None,
                     unchecked: None,
                     unadmitted: None,
+                    reask_capped: None,
                     deliveries: sprag_plugin::Deliveries::NONE,
                     checks: sprag_plugin::Checks::NONE,
                     banked: None,
@@ -8635,6 +8678,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -10453,6 +10497,7 @@ mod tests {
             deferred,
             unchecked,
             unadmitted,
+            reask_capped,
             checks,
             // ── Not counters. Each says what it is instead, and the COUNT is asserted below ──
             //
@@ -10565,6 +10610,11 @@ mod tests {
                 "unadmitted",
                 unadmitted.is_none() || unadmitted.is_some(),
                 Tally::Unadmitted,
+            ),
+            (
+                "reask_capped",
+                reask_capped.is_none() || reask_capped.is_some(),
+                Tally::ReaskCapped,
             ),
             (
                 "checks",
@@ -10787,6 +10837,7 @@ mod tests {
             deferred: Some(7),
             unchecked: Some(9),
             unadmitted: Some(11),
+            reask_capped: Some(15),
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks {
                 asked: 13,
@@ -10816,6 +10867,7 @@ mod tests {
             deferred,
             unchecked,
             unadmitted,
+            reask_capped,
             deliveries,
             checks,
             banked,
@@ -10889,6 +10941,15 @@ mod tests {
                 "unadmitted",
                 unadmitted.is_none() || unadmitted.is_some(),
                 Crosses::Into(&["unadmitted"]),
+            ),
+            // 🎯 AND WHAT ATE THE ASK-AGAIN BUDGET OF THE CHECKPOINT IT CLOSED ON — register item
+            // 956. It crosses for a sharper reason than its neighbours: the ending WORD is chosen
+            // from this number, so a build that stored the word and dropped this would keep a
+            // verdict no reader can re-derive.
+            (
+                "reask_capped",
+                reask_capped.is_none() || reask_capped.is_some(),
+                Crosses::Into(&["reask_capped"]),
             ),
             // ⚠ The pair and the three splits it is summed by — items 606, 856(1), 856 and 866(2).
             (
@@ -11089,6 +11150,7 @@ mod tests {
             deferred: Some(7),
             unchecked: Some(9),
             unadmitted: Some(11),
+            reask_capped: Some(15),
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks {
                 asked: 13,
@@ -11119,6 +11181,7 @@ mod tests {
             deferred,
             unchecked,
             unadmitted,
+            reask_capped,
             deliveries,
             checks,
             banked,
@@ -11188,6 +11251,15 @@ mod tests {
                 unadmitted.is_none() || unadmitted.is_some(),
                 Crosses::Into(&["unadmitted"]),
             ),
+            // 🎯 AND WHAT ATE THE ASK-AGAIN BUDGET OF THE CHECKPOINT IT CLOSED ON — register item
+            // 956. It crosses for a sharper reason than its neighbours: the ending WORD is chosen
+            // from this number, so a build that stored the word and dropped this would keep a
+            // verdict no reader can re-derive.
+            (
+                "reask_capped",
+                reask_capped.is_none() || reask_capped.is_some(),
+                Crosses::Into(&["reask_capped"]),
+            ),
             (
                 "deliveries",
                 !deliveries.is_empty() || deliveries.is_empty(),
@@ -11256,6 +11328,7 @@ mod tests {
                 deferred: ending.deferred,
                 unchecked: ending.unchecked,
                 unadmitted: ending.unadmitted,
+                reask_capped: ending.reask_capped,
                 // ⚠ A DELIVERY COUNT THAT IS NOT THE ENDING'S, deliberately: the row takes this
                 // road for these five columns, so a value equal to the ending's would leave which
                 // road it came down unmeasured.
@@ -11369,6 +11442,7 @@ mod tests {
             deferred: Some(7),
             unchecked: Some(9),
             unadmitted: Some(11),
+            reask_capped: Some(15),
             checks: Some(PersistedChecks {
                 asked: 13,
                 silent: 2,
@@ -11447,9 +11521,10 @@ mod tests {
                 row.deferred,
                 row.unchecked,
                 row.unadmitted,
+                row.reask_capped,
                 row.checks.clone(),
             ),
-            (None, None, None, None, None, None),
+            (None, None, None, None, None, None, None),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 891, MET AGAIN AT 913: a log older than these columns must \
              read *nobody counted* and NEVER a zero. A `0` here would sign a count for a run this \
              build never watched — the exact laundering the restore path's own comment said it \
@@ -11477,6 +11552,7 @@ mod tests {
             deferred: Some(7),
             unchecked: Some(9),
             unadmitted: Some(11),
+            reask_capped: Some(15),
             checks: sprag_plugin::Checks {
                 asked: 13,
                 ..sprag_plugin::Checks::NONE
@@ -11518,9 +11594,10 @@ mod tests {
                 outcome.deferred,
                 outcome.unchecked,
                 outcome.unadmitted,
+                outcome.reask_capped,
                 outcome.checks.asked,
             ),
-            (3, 5, Some(7), Some(9), Some(11), 13),
+            (3, 5, Some(7), Some(9), Some(11), Some(15), 13),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 913 ⑵: the six tallies did not survive the restart. Item 606 \
              measured that EVERY run anybody reads has been through one — thirteen live runs, all \
              restored — so a column that dies here is a column readable only while nobody is \
@@ -11619,6 +11696,7 @@ mod tests {
             deferred: Some(7),
             unchecked: Some(9),
             unadmitted: Some(11),
+            reask_capped: Some(15),
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -11631,9 +11709,10 @@ mod tests {
                 row.screened,
                 row.deferred,
                 row.unchecked,
-                row.unadmitted
+                row.unadmitted,
+                row.reask_capped
             ),
-            (Some(3), Some(5), Some(7), Some(9), Some(11)),
+            (Some(3), Some(5), Some(7), Some(9), Some(11), Some(15)),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 914: every tally the ending block publishes must be read off \
              the far driver's report rather than recomputed or dropped — it wrote them with THIS \
              daemon's own renderer, so there is one spelling and this side reads it. `screened` is \
@@ -11655,9 +11734,10 @@ mod tests {
                 older.deferred,
                 older.unchecked,
                 older.unadmitted,
+                older.reask_capped,
                 older.checks.clone(),
             ),
-            (None, None, None, None, None, None),
+            (None, None, None, None, None, None, None),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 913: a report that carries no tally must land as *nobody \
              wrote it down* and never as a zero — the two images are the same binary only until \
              somebody promotes one. A `0` here would be this record signing a count for a run it \
@@ -12769,6 +12849,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -12797,6 +12878,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             checks: None,
             cost: None,
             unit: None,
@@ -12903,6 +12985,7 @@ mod tests {
                 deferred: None,
                 unchecked: None,
                 unadmitted: None,
+                reask_capped: None,
                 checks: None,
                 briefed: None,
                 // ⚠ Item 706's field, absent on the line above's argument.
@@ -13171,6 +13254,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             checks: None,
             briefed: None,
             // ⚠ Item 706's field, absent on the line above's argument.
@@ -13303,6 +13387,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             checks: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -13426,6 +13511,7 @@ mod tests {
             deferred: None,
             unchecked: None,
             unadmitted: None,
+            reask_capped: None,
             checks: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -13894,6 +13980,7 @@ mod tests {
                 deferred: None,
                 unchecked: None,
                 unadmitted: None,
+                reask_capped: None,
                 checks: None,
                 briefed: None,
                 // ⚠ Nor which ending it closed under — item 706's field, on the same argument.

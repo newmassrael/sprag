@@ -1741,6 +1741,40 @@
     -->
     <data id="reasked" expr="0"/>
     <!--
+      🎯🎯🎯🎯🎯 HOW MANY OF THE REFUSALS THAT ATE THAT BUDGET WERE PROPOSALS A
+      CLASSIFIER ADMITTED — register item 956, and the number without which an
+      ending names the wrong refusal.
+
+      ⛔⛔⛔⛔⛔ WHAT WENT WRONG, MEASURED ON THIS REPOSITORY'S OWN RUNS. Run 253
+      (2026-09-08) closed `unadmitted`, and that word sent its reader to the last
+      proposal — `item 2`, which was not in the register's population at all. But
+      that proposal did not spend the budget: TWO admitted STEP proposals had,
+      one for each ask, and only then did a bad guess arrive at a door already
+      shut. The remedy the run actually needed was the OTHER one — register those
+      two and launch again — and the ending word forbade it. Run 248 (2026-09-07)
+      is the same shape: both of its asks were eaten by admitted STEP proposals.
+      Across the eighteen runs that had a classifier at all, those two are the
+      only ones that reached this bound, and NEITHER was killed by bad guessing.
+
+      ⛔⛔ AND `deferred` MINUS `unadmitted` CANNOT ANSWER IT. Those two are
+      lifetime totals over ALL THREE refusal arms, and the arm back to `working`
+      never touches this budget: run 237 set 42 proposals aside on it while
+      asking again exactly ONCE. A reader subtracting one published number from
+      the other would have been told 42 refusals ate a budget of two.
+
+      ⚠⚠ SO IT IS PER CHECKPOINT, exactly like `reasked` beside it and for the
+      same reason: what a reader needs at the ending is what shut THIS door, and
+      a run that guessed wrong, recovered, worked and finished has left that
+      episode behind. It is reset on the same entry `reasked` is.
+
+      ⚠ THE MERIT REFUSALS NEED NO TWIN NUMBER. A proposal the classifier turned
+      down has no remedy to size — registering it and launching at it would be
+      refused again, which is `unadmitted`'s whole argument — so what is worth
+      counting is the refusals that DO leave something behind. Zero of them is
+      exactly what the other word means.
+    -->
+    <data id="reask_capped" expr="0"/>
+    <!--
       WHAT AN AGENT WHOSE PROPOSAL WAS TURNED AWAY IS TOLD, and the parts are
       here for `dispute_opening`'s reason exactly: a template that shipped these
       empty would put `(edit me)` in front of a real agent, and what they say is
@@ -5471,6 +5505,14 @@
         </send>
       <else/>
         <assign location="reasked" expr="0"/>
+        <!--
+          ⚠⚠ AND WHAT THOSE GUESSES WERE MADE OF RESETS WITH THEM — register
+          item 956. `reask_capped` qualifies `reasked`, so a reset that moved one
+          and not the other would carry a previous checkpoint's refusals into
+          this one's ending and name the wrong remedy on a run that had already
+          recovered from them.
+        -->
+        <assign location="reask_capped" expr="0"/>
         <send type="x-sprag-host" event="prompt.say">
           <param name="text" expr="reflect_prompt"/>
           <param name="sentence" expr="'reflection'"/>
@@ -5585,9 +5627,30 @@
       at is the proposal and the program that turned it down. One word for both
       would send half of these readers the wrong way.
 
-      ⚠ THE REFUSAL ON MERIT IS TESTED FIRST, and that is the ordering rather
-      than an accident of typing: where BOTH hold, `capped` is the weaker fact -
-      it would still have been refused with the whole budget unspent.
+      🎯🎯🎯🎯🎯 AND THE WORD IS DECIDED BY THE EPISODE, NOT BY THE REFUSAL
+      STANDING HERE — register item 956, and a correction to what this comment
+      used to say.
+
+      ⛔⛔⛔⛔⛔ IT USED TO READ *"the refusal on merit is tested first ... where
+      BOTH hold, `capped` is the weaker fact - it would still have been refused
+      with the whole budget unspent"*. That sentence is TRUE OF ONE PROPOSAL and
+      it is still how `unadmitted` counts, one `<if>` down. What it is not is an
+      answer to the question this ENDING is asked, which is about a run: several
+      refusals shut this door and only the LAST of them is standing here. Run 253
+      shut it with two admitted STEP proposals and then a bad guess walked into
+      it, and the old ordering reported the bad guess - so a reader was sent to
+      inspect `item 2` while 951 and 808 sat unregistered.
+
+      ⇒ SO `reask_capped` DECIDES, and the two words keep their meanings exactly:
+      `capped` says *something worth taking was set aside here, register it and
+      launch again*, which is TRUE the moment one admitted proposal was turned
+      away, whatever arrived afterwards. `unadmitted` says *nothing here is worth
+      relaunching at*, which is only true when NO admitted proposal was.
+
+      ⚠ THE PER-PROPOSAL ORDERING IS UNCHANGED AND THE TWO DO NOT CONTRADICT.
+      A proposal that was both refused on merit and over the cap counts as
+      `unadmitted` and adds nothing to `reask_capped` - it left nothing behind -
+      so the subset below still qualifies `deferred` the way it always did.
 
       ⚠⚠ THE PROPOSAL IS STILL COUNTED, on either word. It is the same finding
       the arm below counts, set aside for the same reason, and a refusal whose
@@ -5608,9 +5671,23 @@
       <assign location="deferred" expr="deferred + 1"/>
       <if cond="_event.data.admits &amp;&amp; _event.data.admits != 'admitted'">
         <assign location="unadmitted" expr="unadmitted + 1"/>
-        <assign location="done_reason" expr="'unadmitted'"/>
       <else/>
+        <!--
+          ⚠ THE ARRIVING REFUSAL JOINS THE EPISODE BEFORE THE WORD IS CHOSEN,
+          which is what makes a run with NO asks behind it still answer
+          correctly: `reask_max` may be zero, and then this refusal is the whole
+          of what closed the run.
+        -->
+        <assign location="reask_capped" expr="reask_capped + 1"/>
+      </if>
+      <!--
+        🎯🎯🎯🎯🎯 THE WORD NAMES WHAT SPENT THE BUDGET, NOT WHAT ARRIVED AFTER
+        IT WAS SPENT — register item 956.
+      -->
+      <if cond="reask_capped &gt; 0">
         <assign location="done_reason" expr="'capped'"/>
+      <else/>
+        <assign location="done_reason" expr="'unadmitted'"/>
       </if>
     </transition>
     <!--
@@ -5650,6 +5727,16 @@
       -->
       <if cond="_event.data.admits &amp;&amp; _event.data.admits != 'admitted'">
         <assign location="unadmitted" expr="unadmitted + 1"/>
+      <else/>
+        <!--
+          🎯🎯🎯🎯🎯 AND THE ASK THIS REFUSAL JUST ATE IS CHARGED TO THE REASON
+          IT WAS EATEN FOR — register item 956. This is the arm run 253 took
+          twice, on two proposals its classifier ADMITTED, and nothing counted
+          them: the run then closed on a third refusal and reported that one.
+          The `<else/>` is the whole of it — where the classifier did not refuse,
+          the only thing left in the guard above is the depth budget.
+        -->
+        <assign location="reask_capped" expr="reask_capped + 1"/>
       </if>
       <assign location="reasked" expr="reasked + 1"/>
       <!--
