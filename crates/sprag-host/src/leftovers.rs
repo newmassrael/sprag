@@ -462,21 +462,18 @@ mod tests {
         // ⚠ A listener that accepts and never speaks: `survey::ask` calls that `Refused`, which is
         // the arm that matters most here — *not a daemon I recognise* must not read as *nobody is
         // there*. A real daemon would be `Serving`, and both are keeps.
-        let socket = runtime.join("listening.sock");
-        // ⛔⛔⛔⛔⛔ **THE CEILING IS ASSERTED BEFORE THE BIND, ON EVERY PLATFORM** — register item
-        // 950 ⑴. `bind` refuses a path over `sun_path` with *"path must be shorter than SUN_LEN"*,
-        // and that limit is 104 on macOS against 108 on Linux — so this test passed here and failed
-        // on the macOS runner on every push. `socket_fits` measures the part below the scratch root
-        // against the LONGEST root this project must tolerate (48 bytes, measured on that runner),
-        // which is what makes the answer the same on this machine as on that one.
-        assert!(
-            sprag_scratch::socket_fits(&socket),
-            "⛔ REGISTER ITEM 950 ⑴: {} would be refused by `bind` on the platform with the \
-             tightest `sun_path` ({} bytes). Shorten this fixture's own names — a short prefix and \
-             a per-call counter, never an embedded file name",
-            socket.display(),
-            sprag_scratch::TIGHTEST_SUN_PATH,
-        );
+        // ⛔⛔⛔⛔⛔ **THROUGH THE CHECKING DOOR, ON EVERY PLATFORM** — register item 950 ⑴, and
+        // item 955 is why it is this door and not a bare assertion. `bind` refuses a path over
+        // `sun_path` with *"path must be shorter than SUN_LEN"*, and that limit is 104 on macOS
+        // against 108 on Linux — so this test passed here and failed on the macOS runner on every
+        // push. The check measures the part below the scratch root against the LONGEST root this
+        // project must tolerate (48 bytes, measured on that runner), which is what makes the answer
+        // the same on this machine as on that one.
+        //
+        // ⚠ It was written as `assert!(socket_fits(…))` when item 950 paid it, and item 955's gate
+        // refused that: twenty other sites needed the same check, so the shape that spreads has to
+        // be the one that HANDS THE PATH BACK. One spelling, twenty-one sites.
+        let socket = sprag_scratch::may_bind(&runtime.join("listening.sock"));
         let listener =
             std::os::unix::net::UnixListener::bind(&socket).expect("a socket of this test's own");
 

@@ -6167,7 +6167,12 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("sprag-wire-quit-{}-{tag}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
-        path
+        // ⛔⛔⛔ CHECKED HERE, WHERE THE PATH IS MADE — register item 955. TEN binds in this file
+        // take what this returns, so this one call is what keeps all ten portable: `sun_path` is
+        // 104 bytes on macOS against 108 on Linux, and the macOS scratch root is 48 against
+        // Linux's 4. ⚠ The longest `tag` this file passes is fifteen characters, which leaves ten
+        // bytes of headroom — a longer one is what this call is here to refuse.
+        sprag_scratch::may_bind(&path)
     }
 
     /// A connected [`HostConn`] whose server end is already CLOSED **and whose daemon is GONE** —

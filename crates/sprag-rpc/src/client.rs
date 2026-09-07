@@ -3303,10 +3303,13 @@ mod tests {
     /// deadline the first `call` below would block until this test binary was killed.
     #[test]
     fn a_host_that_never_answers_costs_the_deadline_and_retires_the_connection() {
-        let path = std::env::temp_dir().join(format!(
+        // ⛔ CHECKED BEFORE THE BIND — register item 955, and this name is the longest of the
+        // workspace's socket stems (`sprag-rpc-deadline-test-`, 23 characters) which is why the
+        // call is worth more here than anywhere else.
+        let path = sprag_scratch::may_bind(&std::env::temp_dir().join(format!(
             "sprag-rpc-deadline-test-{}.sock",
             std::process::id()
-        ));
+        )));
         let _ = std::fs::remove_file(&path);
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the test socket");
         // HOLD the accepted stream: dropping it would close the connection and the read would end

@@ -214,7 +214,12 @@ fn run_hook(sock: &Path, state: &Path, pane: u64, belonging_to: Option<&str>) {
 fn socket_path() -> PathBuf {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("sprag-mcp-it-{}-{n}.sock", std::process::id()))
+    // ⛔⛔⛔ CHECKED AT THE FACTORY — register item 955, and `cli.rs`'s `socket_path` for the reason
+    // in full. macOS gives 104 bytes of `sun_path` and a 48-byte scratch root, so a path that fits
+    // on this machine can be refused there.
+    sprag_scratch::may_bind(
+        &std::env::temp_dir().join(format!("sprag-mcp-it-{}-{n}.sock", std::process::id())),
+    )
 }
 
 /// Spawn a non-daemon `sprag-term` whose boot pane runs `program`, at `size`.

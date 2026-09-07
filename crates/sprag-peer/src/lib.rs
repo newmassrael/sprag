@@ -380,6 +380,13 @@ impl OldDaemon {
 
     fn bind(sock: &Path, missing: Missing, upstream: Option<PathBuf>) -> Self {
         let _ = std::fs::remove_file(sock);
+        // ⛔⛔⛔ THE PATH IS THE CALLER'S AND THE CHECK IS THIS CRATE'S — register item 955. Every
+        // front's version-skew test hands this a path it built itself, so there is no factory here
+        // to put the check in; this is the one door they all come through. `sun_path` is 104 bytes
+        // on macOS against 108 on Linux, and a stand-in that could not bind would fail as *"the
+        // older daemon did not answer"*, which is a sentence about the product and not about a
+        // path four bytes too long.
+        let sock = &sprag_scratch::may_bind(sock);
         let listener = UnixListener::bind(sock).expect("bind the older daemon's socket");
         listener
             .set_nonblocking(true)

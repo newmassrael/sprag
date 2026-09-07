@@ -326,7 +326,10 @@ mod tests {
         let dir = scratch("answers");
         let dead = dir.join("sprag-dead.sock");
         std::fs::write(&dead, b"").expect("a file where a socket used to be");
-        let taken = dir.join("sprag-taken.sock");
+        // ⛔ CHECKED BEFORE THE BIND — register item 955: `sun_path` is 104 bytes on macOS against
+        // 108 on Linux, and this test's `dir` is a scratch path whose root is twelve times longer
+        // there than here.
+        let taken = sprag_scratch::may_bind(&dir.join("sprag-taken.sock"));
         let _listener = UnixListener::bind(&taken).expect("a socket this test owns");
 
         let survey = survey(&dir, "gate", Duration::from_millis(500));

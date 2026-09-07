@@ -3781,6 +3781,7 @@ dependencies = [
  "libc",
  "serde_json",
  "sprag-rpc",
+ "sprag-scratch",
 ]
 
 [[package]]

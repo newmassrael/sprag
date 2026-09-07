@@ -469,6 +469,38 @@ pub const MEASURED_TIGHT_ROOT: &str = "/var/folders/d8/hvxvltxn0fl4rmnd52sncbth0
 /// It does not create anything and it does not bind. A caller that wants a path this answers `true`
 /// for shortens its own names — the technique its neighbour in `cli.rs` already uses: a short
 /// prefix plus a per-call counter, never an embedded file name.
+/// `path` back, or a panic naming why no platform-portable socket can live there — register item
+/// 955.
+///
+/// # ⛔⛔⛔⛔⛔ Why a CONSTRUCTOR and not an assertion each bind site remembers
+///
+/// Measured 2026-09-08: this workspace binds a unix socket at **21 sites**, and the paths come from
+/// about six FACTORIES — `socket_path()` in two test files, `sock_path(tag)` feeding ten binds in
+/// one, and a handful of `dir.join(…)`. A check at each bind is twenty-one things to remember and
+/// the twenty-second is the one that breaks; a check at the factory is one thing that CANNOT be
+/// forgotten, because the caller has to take the value back to use it.
+///
+/// ⚠⚠ It PANICS rather than answering a `Result`, on `sibling_bin`'s rule one crate over: a caller
+/// that carried on would bind a path the platform refuses, and the run that followed would be
+/// about the wrong thing. [`socket_fits`] is the predicate for a caller that wants to ask.
+///
+/// # Panics
+///
+/// When [`socket_fits`] is false — the message names the path, the ceiling, and the repair.
+#[must_use]
+pub fn may_bind(path: &std::path::Path) -> PathBuf {
+    assert!(
+        socket_fits(path),
+        "⛔ REGISTER ITEM 955: {} cannot hold a unix socket on every platform this project runs \
+         on — `sun_path` is {TIGHTEST_SUN_PATH} bytes at its tightest and the longest scratch root \
+         this project must tolerate is {LONGEST_SCRATCH_ROOT} ({MEASURED_TIGHT_ROOT}). Shorten the \
+         names this path is built from: a short prefix and a per-call counter, never an embedded \
+         file name",
+        path.display(),
+    );
+    path.to_path_buf()
+}
+
 #[must_use]
 pub fn socket_fits(path: &std::path::Path) -> bool {
     let shown = path.as_os_str().as_encoded_bytes().len();

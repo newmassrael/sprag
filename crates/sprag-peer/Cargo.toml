@@ -14,6 +14,10 @@ publish = false
 # address or an action. Every one of those is MATCHED by the code under test, so a
 # stand-in that spelled its own would be testing a grammar nobody speaks.
 sprag-rpc = { workspace = true }
+# Where a socket path may live: this crate BINDS one on a path its caller chose, and
+# `sun_path` is 104 bytes on macOS against 108 on Linux (register item 955). The check
+# is at the one door every front's version-skew test comes through.
+sprag-scratch = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

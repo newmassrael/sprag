@@ -147,7 +147,13 @@ fn scratch_state_home() -> PathBuf {
 fn socket_path() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    sprag_scratch::scratch_for("sprag-cli-it", &format!("{n}.sock"))
+    let path = sprag_scratch::scratch_for("sprag-cli-it", &format!("{n}.sock"));
+    // ⛔⛔⛔ CHECKED AT THE FACTORY AND NOT AT EACH BIND — register item 955. Four sites in this
+    // file bind what this returns, and a check each of them has to remember is the shape this
+    // workspace has already paid for; here it cannot be forgotten. `sun_path` is 104 bytes on
+    // macOS against 108 on Linux, and the macOS scratch root is 48 against Linux's 4, so a path
+    // that fits here can be refused there — which is exactly what item 950 measured.
+    sprag_scratch::may_bind(&path)
 }
 
 /// Spawn a NON-daemon `sprag-term` serving `sock`, its boot pane running `cat` (which blocks on
@@ -1100,11 +1106,12 @@ fn a_daemon_on_a_socket_nobody_named_is_found_by_the_survey() {
     );
     let dead = runtime.join("sprag-host.sock");
     std::fs::write(&dead, b"").expect("a file where a daemon used to be");
-    let taken = runtime.join("sprag-gui.sock");
+    // ⛔ CHECKED BEFORE THE BIND — register item 955; `socket_path` above holds the reason.
+    let taken = sprag_scratch::may_bind(&runtime.join("sprag-gui.sock"));
     let _listener = UnixListener::bind(&taken).expect("a socket some other program owns");
     // Not this product's, so it must not be knocked on at all — connecting to a stranger's socket
     // to see what it says is not this product's business.
-    let stranger = runtime.join("ssh-askpass-1a2b.sock");
+    let stranger = sprag_scratch::may_bind(&runtime.join("ssh-askpass-1a2b.sock"));
     let _stranger = UnixListener::bind(&stranger).expect("another program's socket");
 
     let elsewhere = runtime.join("nothing-here.sock");

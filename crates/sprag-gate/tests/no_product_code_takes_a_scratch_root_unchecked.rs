@@ -949,3 +949,82 @@ fn the_walk_reaches_this_workspace_and_the_classifier_answers_both_ways() {
          and on every message that quotes the call while explaining it",
     );
 }
+
+/// Every workspace site that BINDS a unix socket, as `(file, line, code)`.
+///
+/// ⚠ Discovered by walking the same Rust the gates above walk — a hand list of bind sites is the
+/// place that leaks (register items 80, 762, 945), and this population moved twice while item 955
+/// was being measured.
+fn bind_sites() -> Vec<(String, usize, String)> {
+    let mut found = Vec::new();
+    for (name, text) in rust_files() {
+        for (line, code) in code_lines(&text) {
+            let bare = outside_strings(code);
+            if bare.contains("UnixListener::bind(") || bare.contains("UnixDatagram::bind(") {
+                found.push((name.clone(), line, code.trim().to_owned()));
+            }
+        }
+    }
+    found
+}
+
+/// ⛔⛔⛔⛔⛔ **A FILE THAT BINDS A UNIX SOCKET ASKS WHETHER THE PATH CAN HOLD ONE** — register item
+/// 955, and the adoption item 950's budget did not have.
+///
+/// # ⛔⛔⛔⛔ What was measured, and why a budget alone was not enough
+///
+/// Item 950 gave this workspace `sprag_scratch::socket_fits` after the macOS runner refused
+/// `a_live_daemons_residue_is_never_removable_however_empty_its_files_are` with *"path must be
+/// shorter than SUN_LEN"* — 104 bytes there against 108 on Linux, under a scratch root of 48 bytes
+/// against Linux's 4. **Measured the next day: 21 bind sites, and exactly ONE of them asked.** A
+/// budget nothing consults is *somebody's memory* wearing a function's name, which is the shape
+/// register items 738 and 853 refuse.
+///
+/// # ⚠⚠⚠ Why the claim is per FILE and not per bind, said plainly
+///
+/// The paths come from about six FACTORIES — two `socket_path()`s, one `sock_path(tag)` feeding ten
+/// binds, a few `dir.join(…)` — and the right place for the check is where the path is MADE, so a
+/// caller cannot forget it. A per-bind rule would demand the call on lines that legitimately do not
+/// have it. What every binding file can be held to is that it asks SOMEWHERE, and the checking
+/// constructor hands the path back, so the asking cannot be decorative.
+///
+/// ⚠⚠ THE COUNT IS ASSERTED, because a walk that stopped finding binds would satisfy this claim
+/// vacuously — register item 924's shape, and the reason every population in this file is printed.
+///
+/// ⚠ There is NO exemption arm. This gate is written after all twenty-one were brought in, so the
+/// honest number today is zero; an exemption array here would be the escape hatch this workspace's
+/// rule 6 refuses, and a site that genuinely cannot ask belongs in the ledger instead.
+#[test]
+fn every_file_that_binds_a_socket_asks_whether_the_path_can_hold_one() {
+    let sites = bind_sites();
+    assert!(
+        sites.len() >= 20,
+        "⚠⚠⚠ THE POPULATION COLLAPSED: this walk found {} bind site(s), and measured 2026-09-08 \
+         this workspace has 21. A scan of nothing is green for the wrong reason: {sites:#?}",
+        sites.len(),
+    );
+
+    // ⚠ Spelled once, so the message below and the search cannot drift apart.
+    let door = "may_bind(";
+    let asking: std::collections::BTreeSet<String> = rust_files()
+        .into_iter()
+        .filter(|(_, text)| code_lines(text).any(|(_, line)| line.contains(door)))
+        .map(|(name, _)| name)
+        .collect();
+    let silent: Vec<String> = sites
+        .iter()
+        .filter(|(name, _, _)| !asking.contains(name))
+        .map(|(name, line, code)| format!("  {name}:{line}  {code}"))
+        .collect();
+    assert!(
+        silent.is_empty(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 955: a file binds a unix socket and never asks whether the path \
+         can hold one on the platform with the tightest `sun_path`. macOS gives {} bytes and a \
+         {}-byte scratch root against Linux's 4, so a path that binds here is refused there and the \
+         test then reports something else entirely. Take the path back through `{door}` in \
+         `sprag_scratch`, at the factory that MAKES it:\n{}",
+        sprag_scratch::TIGHTEST_SUN_PATH,
+        sprag_scratch::LONGEST_SCRATCH_ROOT,
+        silent.join("\n"),
+    );
+}
