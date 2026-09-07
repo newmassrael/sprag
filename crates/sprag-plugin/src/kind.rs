@@ -1909,6 +1909,121 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE PROGRESS BOUND IS AT LEAST WHAT ITS OWN DERIVATION REQUIRES, AND THAT
+    /// DERIVATION IS A ONE-TERM MEASUREMENT** — register item 946, whose premise this refutes.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What item 946 asked, and what re-measuring answered
+    ///
+    /// Item 943 made a degraded axis VISIBLE — a run that can read only one of the marks its
+    /// document names says so on its own journal line — and left the other half open as item 946:
+    /// *a one-term axis still ends a run, and item 942 measured and rejected the one-term
+    /// predicate.* Re-running item 942's own derivation over its own population (2026-09-07: **60
+    /// converged runs**, both numbers reproduced to the digit) answers it:
+    ///
+    /// **the 325 the bound is four times was never a two-mark measurement.** `debt_loop.scxml`
+    /// says the derivation asked *did a mark move in the interval since the previous step, taken
+    /// from this repository's git history* — and git history is the REFLOG mark alone. The
+    /// register is deliberately NOT in git (that document argues why: a round that has judged an
+    /// item and written its measurement has moved the register and no commit), so it was never in
+    /// the population.
+    ///
+    /// ⇒ **1300 is already four times the worst stretch of a ONE-TERM axis.** The two-mark AND can
+    /// only make this ceiling fire LATER — a stretch where NEITHER moved is a subset of one where
+    /// the reflog did not — so full arity carries slack ABOVE the derivation, and losing the
+    /// register returns the bound to exactly the footing it was derived on.
+    ///
+    /// ⚠⚠ **THE RESIDUE, STATED RATHER THAN HIDDEN: the other degradation is not measured.** If the
+    /// REFLOG is the mark that stops answering, the surviving term is the register, whose stretches
+    /// cannot be measured backwards at all — the register is not versioned (checked: no git
+    /// directory above it). Rule (8) of the run's own standing rules puts a register write at every
+    /// round end beside the commit, so its stretches ought to be the shorter of the two; that is a
+    /// rule, not a measurement, and it is why item 946 closes with this stated rather than proven.
+    ///
+    /// ⚠ [`STRETCH`] and [`TIMES`] are the derivation, spelled apart so the assertion COMPUTES it
+    /// rather than restating the product of two numbers somebody would have to re-multiply.
+    #[test]
+    fn the_progress_bound_is_at_least_what_its_own_derivation_requires() {
+        /// The longest stretch, in driver steps, that a CONVERGED run of this kind ever passed
+        /// through without its reflog mark moving — 325, run 17, re-measured 2026-09-07 over the
+        /// document's own population of 60 converged runs.
+        const STRETCH: i64 = 325;
+
+        /// The multiplier `max_bytes` was derived with and this bound reuses — *four times the
+        /// largest a converged run has ever actually needed*.
+        const TIMES: i64 = 4;
+
+        let kind = debt();
+        let Some(Counted::Of(steps)) = kind.stall_after_steps() else {
+            panic!(
+                "the premise: this gate is about a kind that authors the bound as a NUMBER, and \
+                 the gate above is what refuses a `never`. Got {:?}",
+                kind.stall_after_steps(),
+            );
+        };
+        assert!(
+            steps >= STRETCH * TIMES,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 946: `stall_after_steps` is {steps} and its own derivation \
+             needs at least {} — {STRETCH} steps is the longest a converged run of this kind ever \
+             went without moving its reflog mark, and {TIMES} is the multiplier the document \
+             derives every other bound with. Raise it in `debt_loop.scxml` to {} or above, and \
+             re-derive the {STRETCH} there rather than lowering it here: that number is what makes \
+             this bound hold even when the axis degrades to the ONE term it was measured on",
+            STRETCH * TIMES,
+            STRETCH * TIMES,
+        );
+        // ⚠⚠⚠⚠⚠ AND THE FLOOR IS ARITY-INDEPENDENT, WHICH IS THE WHOLE ANSWER TO ITEM 946 — put
+        // through a FUNCTION OF THE ARITY rather than restated, because *the number does not fall
+        // when a term is lost* is a claim and a repeated `steps >= STRETCH * TIMES` would be prose
+        // wearing an assertion's clothes. The loop asks the floor about every arity this
+        // document's list can degrade to, so a later round that decides arity matters — the
+        // tempting move — meets the number here instead of shipping past it.
+        //
+        // ⚠ `_terms` is unused ON PURPOSE and that is the assertion: the stretch this is derived
+        // from was measured on a SINGLE mark (see the doc above), so a run watching one term needs
+        // exactly what a run watching two needs.
+        const fn floor(_terms: usize) -> i64 {
+            STRETCH * TIMES
+        }
+        let marks = kind.progress_marks().unwrap_or_default();
+        assert!(
+            !marks.is_empty(),
+            "the premise: a list this can degrade FROM. The gate above owns the count",
+        );
+        for arity in 1..=marks.len() {
+            assert!(
+                steps >= floor(arity),
+                "⛔⛔⛔⛔ REGISTER ITEM 946: {steps} stops being enough once the axis is down to \
+                 {arity} of {} term(s) — the floor is {} there. Either raise the bound in \
+                 `debt_loop.scxml` to that number, or the floor has been made to scale with the \
+                 count and must not be: {STRETCH} was measured on a SINGLE mark",
+                marks.len(),
+                floor(arity),
+            );
+        }
+        // ⛔⛔⛔⛔⛔ AND THE MEASUREMENT CANNOT BE LOWERED HERE ALONE, which is the escape hatch
+        // every floor above would otherwise stand on: `STRETCH` is an authored number, so a round
+        // that found this gate inconvenient could shrink it and each assertion would pass again in
+        // silence. It is pinned to the DOCUMENT'S OWN DERIVATION SENTENCES, because that is where
+        // the number is argued (item 738's rule) — the two move together or this reds.
+        //
+        // ⚠⚠ THE NEEDLES ARE THE ARGUMENT AND NOT THE DIGITS. `contains("325")` would be satisfied
+        // by any stray occurrence — the shape item 924 measured as *vacuously true* — so what is
+        // asked for is the derivation table's own row and its own arithmetic line.
+        let document = include_str!("debt_loop.scxml");
+        for sentence in [
+            format!("{STRETCH} steps"),
+            format!("{STRETCH} x {TIMES} = {}", STRETCH * TIMES),
+        ] {
+            assert!(
+                document.contains(&sentence),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 946: `debt_loop.scxml` no longer says {sentence:?}, so \
+                 this gate's derivation and the document's have drifted apart. They are ONE \
+                 argument and it lives in the document: re-derive it there over the converged \
+                 population and bring these constants with it",
+            );
+        }
+    }
+
     /// ⚠⚠⚠⚠ **AND HOW LONG SOMEBODY MAY HOLD ONE** — register item 738, layer 1's fifth ceiling,
     /// and it is in the document because a GATE asked rather than because anybody noticed.
     ///

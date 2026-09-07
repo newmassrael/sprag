@@ -1078,13 +1078,46 @@
 
         predicate                              longest stretch, converged runs
         no milestone claimed                       1197 steps   (run 17)
-        no mark moved                               325 steps   (run 17)
+        no COMMIT landed                            325 steps   (run 17)
         NEITHER                                     325 steps   (run 17)
 
       ⇒ **325 x 4 = 1300**, four times the largest stretch a run that finished
       its work has ever actually passed through — the same multiplier and the
       same anchor `max_bytes` used, which took *"four times the largest run this
       daemon has ever recorded converging"* and landed on run 17 as well.
+
+      ⛔⛔⛔⛔⛔ THE MIDDLE ROW SAID *no mark moved* AND THAT WAS A WIDER CLAIM
+      THAN THE MEASUREMENT — register item 946, and the row is now spelled as
+      what it is. The predicate is taken from THIS REPOSITORY'S GIT HISTORY, one
+      paragraph up, and git history is the REFLOG mark alone: the register is
+      deliberately not in git (the clause below this one argues why), so it was
+      never in the population and its own stretches are not measured here.
+
+      ⚠⚠⚠⚠ AND THAT IS WHY THIS NUMBER SURVIVES A MARK GOING UNREADABLE, which
+      is the question item 946 was opened to ask. **325 is a ONE-TERM
+      measurement**, so 1300 is already four times what a single-signal axis
+      needs. A run that can read both marks is bounded by the AND of them, and a
+      stretch where NEITHER moved is a SUBSET of one where the reflog did not —
+      so full arity carries slack ABOVE this derivation, and a run reduced to
+      the reflog alone is back on exactly the footing the number was derived on.
+      A gate in `kind.rs` asserts that floor and asks it about every arity this
+      list can degrade to, so the number cannot quietly fall below its own
+      derivation and nobody can make the floor scale with the count.
+
+      ⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN: the OTHER degradation is not
+      measured. If the reflog is the mark that stops answering, the surviving
+      term is the register, and the register cannot be measured backwards at all
+      because it is not versioned. Rule (8) of the standing rules a run of this
+      kind is given — *round end = commit + ledger update + push* — puts a
+      register write beside every commit, so its stretches ought to be the
+      shorter of the two. That is a rule and not a measurement, and item 946
+      closes with it stated rather than proven.
+
+      ⚠ RE-DERIVED 2026-09-07 by the round that closed item 946, over the same
+      population and independently: 60 converged runs (one RUN-ENDED line each —
+      run231's log holds TWO of them), 2,050 commits on record, and both numbers
+      above came back to the digit. Run 17 is 1,231 steps by its own registry
+      and by a line count that agrees exactly.
 
       ⚠⚠⚠ AND WHAT THE DERIVATION REFUTED, recorded because the register asked
       for the re-run rather than the answer. The item proposed 48, from a sample
