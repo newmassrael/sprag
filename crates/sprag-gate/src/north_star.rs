@@ -841,8 +841,8 @@ impl fmt::Display for Fault {
                 f,
                 "{} unmarked items, but the ledger declares {declared}: the backlog may \
                  shrink, never grow. Mark the new item, or lower `{DECLARATION}` if you paid some \
-                 down. Newest of what was counted (a number is `max+1`, so an ADDED item is here; \
-                 an item whose mark was DELETED is not): {}",
+                 down. Newest of what was counted (a number is `max+1`, so a NEWLY REGISTERED item \
+                 is here; one that entered because a mark CHANGED or was DELETED sits anywhere): {}",
                 counted.len(),
                 name_some(counted, Ends::Highest),
             ),
@@ -902,8 +902,9 @@ impl fmt::Display for Fault {
                 "{} open items state no `{SEVERITY}`, but the ledger declares {declared}: \
                  this backlog may shrink, never grow. Say whether the new item is critical, or \
                  lower `{SEVERITY_DECLARATION}` if you classified some. Newest of what was counted \
-                 (a number is `max+1`, so an ADDED item is here; an item whose mark was DELETED is \
-                 not): {}",
+                 (a number is `max+1`, so a NEWLY REGISTERED item is here; one that entered \
+                 because a mark CHANGED — an old item just became open — or was DELETED sits \
+                 anywhere): {}",
                 counted.len(),
                 name_some(counted, Ends::Highest),
             ),
@@ -969,7 +970,8 @@ impl fmt::Display for Fault {
                 "{} items state no `{PARENT}`, but the ledger declares {declared}: this \
                  backlog may shrink, never grow. A new item says what found it (`{PARENT} <n>`) or \
                  that nothing did (`{PARENT} none`). Newest of what was counted (a number is \
-                 `max+1`, so an ADDED item is here; an item whose mark was DELETED is not): {}",
+                 `max+1`, so a NEWLY REGISTERED item is here; one that entered because a mark \
+                 CHANGED or was DELETED sits anywhere): {}",
                 counted.len(),
                 name_some(counted, Ends::Highest),
             ),
@@ -988,8 +990,9 @@ impl fmt::Display for Fault {
                 "{} paid items name no commit, but the ledger declares {declared}: a `paid` \
                  mark that names nothing is a claim about the repository that nothing checked, and \
                  an item marked paid has already left the population. Newest of what was counted \
-                 (a number is `max+1`, so an ADDED item is here; an item whose mark was DELETED is \
-                 not): {}",
+                 (a number is `max+1`, so a NEWLY REGISTERED item is here; one that entered \
+                 because a mark CHANGED — an old item was just marked paid — or was DELETED sits \
+                 anywhere): {}",
                 counted.len(),
                 name_some(counted, Ends::Highest),
             ),
@@ -4613,6 +4616,59 @@ mod tests {
              block nobody read — otherwise it says a debt stands and that no round may take it, \
              and the run stalls with `unadmitted`. Working rule 6: an unstated case is not a pass",
         );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AN EMPTY ADMISSIBLE SET NOW MEANS *FINISHED* AND NEVER *STUCK*** — register
+    /// item 936, and the single statement the whole item buys.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The two were the same shape, and a run walked into the wrong one
+    ///
+    /// Before this, `--admits` answering with nothing had two causes a reader could not separate:
+    /// *everything is paid* and *the register holds debts none of which any round may take*. The
+    /// second is what run 248 hit — it stopped `unadmitted` — and it is the reason this item was
+    /// opened rather than a tidier one.
+    ///
+    /// The biconditional below makes them one question again, provably:
+    ///
+    /// * NOT reached ⇒ `population` or `unclassified` is non-empty. A non-empty population always
+    ///   has a takeable member (an item's depth counts the ancestors STILL OWED, chains are
+    ///   finite, and unknown depth is takeable — so the topmost owed item of any chain qualifies).
+    ///   A non-empty `unclassified` with an empty population is exactly the third tier. **Either
+    ///   way the set is non-empty.**
+    /// * Reached ⇒ both are empty ⇒ every tier is empty.
+    ///
+    /// ⚠⚠ Asserted over every fixture in this file that carries a distinct shape, because a
+    /// biconditional shown on one ledger is an anecdote. The shapes are: marked work standing,
+    /// marked work with the cap biting, nothing but unread blocks, and nothing at all.
+    #[test]
+    fn an_empty_admissible_set_means_finished_and_never_stuck() {
+        let finished = AT_THE_END.replace(
+            "899. A block nobody ever classified\n     no mark of any kind\n",
+            "899. A block that was read and answered\n     @ns: out — a rendering defect\n",
+        );
+        let finished = finished.replace("@ns-unclassified: 1", "@ns-unclassified: 0");
+        for (name, text, reached) in [
+            ("marked work standing", LEDGER, false),
+            ("only unread blocks left", AT_THE_END, false),
+            ("nothing left at all", finished.as_str(), true),
+        ] {
+            let reading = read(text);
+            let ending = reading.ending();
+            assert_eq!(
+                ending.reached(),
+                reached,
+                "the fixture `{name}` does not have the shape this case is about: {ending}",
+            );
+            assert_eq!(
+                reading.admits(1, &[]).is_empty(),
+                ending.reached(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 936 on `{name}`: an empty admissible set and a reached \
+                 north star must be the SAME fact. Where they come apart, a run is either told to \
+                 stop with work standing, or told to carry on with nothing it may take — which is \
+                 the `unadmitted` stall. Said: {ending}; may take: {:?}",
+                reading.admits(1, &[]),
+            );
+        }
     }
 
     /// ⛔⛔⛔⛔ **AND IT IS A THIRD TIER, NOT A BLEND** — the guard on the arm above. On the real
