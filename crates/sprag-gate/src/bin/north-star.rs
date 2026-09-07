@@ -67,28 +67,23 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     }
 
+    // 🎯🎯🎯🎯🎯 THE FOUR RATCHETED BACKLOGS, NAMING THEIR ITEMS — register item 934. This binary
+    // printed `.len()` over four `Vec`s it then dropped, so the largest population in the ledger
+    // could be seen and not asked about. The LINE is `north_star::Backlog`'s and not this file's,
+    // which is what keeps *the set that reds* and *the set that prints* one object; the gate in
+    // `north_star`'s tests refuses a build where this file formats one of these lines itself.
+    let backlogs = reading.backlogs();
+
     let population = reading.population();
     let spelled: Vec<String> = population.iter().map(ToString::to_string).collect();
     println!("population {}: {}", population.len(), spelled.join(" "));
-    println!(
-        "unclassified {} (declared {})",
-        reading.unclassified().len(),
-        reading
-            .declared
-            .map_or_else(|| "none".to_string(), |n| n.to_string()),
-    );
+    println!("{}", backlogs.unclassified);
     // ⚠⚠ PRINTED ABOVE THE TOTAL, because this is the line a round acts on — register item 833(1).
     // The population says what is owed; this says what to take first.
     let critical = reading.critical();
     let ranked: Vec<String> = critical.iter().map(ToString::to_string).collect();
     println!("critical {}: {}", critical.len(), ranked.join(" "));
-    println!(
-        "unranked {} (declared {})",
-        reading.severity_unclassified().len(),
-        reading
-            .severity_declared
-            .map_or_else(|| "none".to_string(), |n| n.to_string()),
-    );
+    println!("{}", backlogs.unranked);
     // ⚠⚠ THE CAP IS THE DOCUMENT'S, NOT THIS BINARY'S — register item 833(1) and 773's axis ("the
     // subject is the launcher's, the policy is the document's"). See [`cap`], which is where that
     // sentence stopped being a comment.
@@ -146,24 +141,13 @@ fn main() -> std::process::ExitCode {
             }
         }
     }
-    println!(
-        "unrooted {} (declared {})",
-        reading.unrooted().len(),
-        reading
-            .parent_declared
-            .map_or_else(|| "none".to_string(), |n| n.to_string()),
-    );
+    println!("{}", backlogs.unrooted);
     // ⛔⛔⛔⛔⛔ AND THE PAID MARKS WHOSE CLAIM NOTHING CHECKED — register item 902, printed
     // beside its three ratchet neighbours because it is the same kind of statement: a backlog with
     // a floor that may only fall. See `north_star::PAID_DECLARATION`.
-    let unnamed = reading.paid_unnamed();
-    println!(
-        "paid-uncommitted {} (declared {})",
-        unnamed.len(),
-        reading
-            .paid_declared
-            .map_or_else(|| "none".to_string(), |n| n.to_string()),
-    );
+    println!("{}", backlogs.paid_unnamed);
+    // ⚠ A TOTAL AND NOT A BACKLOG, so it names no items and register item 934 does not widen to
+    // it: nothing is held back by this number and there is nothing in it for a round to take.
     println!("items {} in section A", reading.items.len());
 
     // ⛔⛔⛔⛔⛔ AND THE OTHER HALF, WHICH NEEDS THE REPOSITORY AND NOT THE DOCUMENT — register

@@ -643,8 +643,8 @@ pub enum Fault {
     /// More OPEN items with no severity than the ledger declares. **This backlog may shrink, never
     /// grow** — the same ratchet [`Fault::RatchetGrew`] holds over membership.
     SeverityRatchetGrew {
-        /// What this reading counted.
-        counted: usize,
+        /// What this reading counted — the items themselves, register item 934.
+        counted: Vec<u32>,
         /// What [`SEVERITY_DECLARATION`] claims.
         declared: usize,
     },
@@ -726,8 +726,8 @@ pub enum Fault {
     /// More items with no [`PARENT`] than the ledger declares.
     /// More paid items name no commit than [`PAID_DECLARATION`] declares. Register item 902.
     PaidRatchetGrew {
-        /// What this pass counted.
-        counted: usize,
+        /// What this pass counted — the items themselves, register item 934.
+        counted: Vec<u32>,
         /// What the ledger declared.
         declared: usize,
     },
@@ -742,8 +742,8 @@ pub enum Fault {
         line: String,
     },
     ParentRatchetGrew {
-        /// What this reading counted.
-        counted: usize,
+        /// What this reading counted — the items themselves, register item 934.
+        counted: Vec<u32>,
         /// What [`PARENT_DECLARATION`] claims.
         declared: usize,
     },
@@ -759,8 +759,8 @@ pub enum Fault {
     },
     /// More unmarked items than the ledger declares. **The backlog may shrink, never grow.**
     RatchetGrew {
-        /// What this reading counted.
-        counted: usize,
+        /// What this reading counted — the items themselves, register item 934.
+        counted: Vec<u32>,
         /// What [`DECLARATION`] claims.
         declared: usize,
     },
@@ -799,8 +799,8 @@ pub enum Fault {
     RatchetSlack {
         /// The declaration whose floor is standing too high, e.g. [`SEVERITY_DECLARATION`].
         token: &'static str,
-        /// What this reading counted.
-        counted: usize,
+        /// What this reading counted — the items themselves, register item 934.
+        counted: Vec<u32>,
         /// What the declaration claims.
         declared: usize,
     },
@@ -834,11 +834,17 @@ impl fmt::Display for Fault {
                 "item {number}: names the loop, reads as open, and states no `{TAG}` — say whether \
                  it is in the population",
             ),
+            // 🎯🎯🎯 AND WHICH ITEMS — register item 934. `{counted} unmarked items` sent its
+            // reader to a ledger of five hundred blocks with nothing to search for. See [`Ends`]
+            // for why the NEW end is the one shown, and why that is likely rather than certain.
             Self::RatchetGrew { counted, declared } => write!(
                 f,
-                "{counted} unmarked items, but the ledger declares {declared}: the backlog may \
+                "{} unmarked items, but the ledger declares {declared}: the backlog may \
                  shrink, never grow. Mark the new item, or lower `{DECLARATION}` if you paid some \
-                 down",
+                 down. Newest of what was counted (a number is `max+1`, so an ADDED item is here; \
+                 an item whose mark was DELETED is not): {}",
+                counted.len(),
+                name_some(counted, Ends::Highest),
             ),
             Self::Declaration { found } => write!(
                 f,
@@ -854,10 +860,16 @@ impl fmt::Display for Fault {
                 declared,
             } => write!(
                 f,
-                "the ledger declares {declared} on `{token}` but this reading counted {counted}: a \
+                "the ledger declares {declared} on `{token}` but this reading counted {}: a \
                  floor ABOVE the count is slack, and {} more item(s) could be registered unmarked \
-                 before anything went red. Lower `{token}` to {counted}",
-                declared - counted,
+                 before anything went red. Lower `{token}` to {}. What was counted: {}",
+                counted.len(),
+                declared - counted.len(),
+                counted.len(),
+                // ⚠ THE OLD END, unlike the four `…Grew` arms. Nothing was added here — the count
+                // is BELOW the floor — so there is no new item to point at, and the end worth
+                // handing a reader is the one this ledger's rule 13 says sinks.
+                name_some(counted, Ends::Lowest),
             ),
             Self::UnreadableDeclaration { line } => write!(
                 f,
@@ -887,9 +899,13 @@ impl fmt::Display for Fault {
             }
             Self::SeverityRatchetGrew { counted, declared } => write!(
                 f,
-                "{counted} open items state no `{SEVERITY}`, but the ledger declares {declared}: \
+                "{} open items state no `{SEVERITY}`, but the ledger declares {declared}: \
                  this backlog may shrink, never grow. Say whether the new item is critical, or \
-                 lower `{SEVERITY_DECLARATION}` if you classified some",
+                 lower `{SEVERITY_DECLARATION}` if you classified some. Newest of what was counted \
+                 (a number is `max+1`, so an ADDED item is here; an item whose mark was DELETED is \
+                 not): {}",
+                counted.len(),
+                name_some(counted, Ends::Highest),
             ),
             Self::SeverityDeclaration { found } => write!(
                 f,
@@ -950,9 +966,12 @@ impl fmt::Display for Fault {
             ),
             Self::ParentRatchetGrew { counted, declared } => write!(
                 f,
-                "{counted} items state no `{PARENT}`, but the ledger declares {declared}: this \
+                "{} items state no `{PARENT}`, but the ledger declares {declared}: this \
                  backlog may shrink, never grow. A new item says what found it (`{PARENT} <n>`) or \
-                 that nothing did (`{PARENT} none`)",
+                 that nothing did (`{PARENT} none`). Newest of what was counted (a number is \
+                 `max+1`, so an ADDED item is here; an item whose mark was DELETED is not): {}",
+                counted.len(),
+                name_some(counted, Ends::Highest),
             ),
             Self::ParentDeclaration { found } => write!(
                 f,
@@ -966,9 +985,13 @@ impl fmt::Display for Fault {
             ),
             Self::PaidRatchetGrew { counted, declared } => write!(
                 f,
-                "{counted} paid items name no commit, but the ledger declares {declared}: a `paid` \
+                "{} paid items name no commit, but the ledger declares {declared}: a `paid` \
                  mark that names nothing is a claim about the repository that nothing checked, and \
-                 an item marked paid has already left the population",
+                 an item marked paid has already left the population. Newest of what was counted \
+                 (a number is `max+1`, so an ADDED item is here; an item whose mark was DELETED is \
+                 not): {}",
+                counted.len(),
+                name_some(counted, Ends::Highest),
             ),
             Self::PaidDeclaration { found } => write!(
                 f,
@@ -1017,11 +1040,63 @@ impl Reading {
     /// The items that state nothing — the backlog the ratchet holds.
     #[must_use]
     pub fn unclassified(&self) -> Vec<u32> {
-        self.items
-            .iter()
-            .filter(|item| item.tag.is_none())
-            .map(|item| item.number)
-            .collect()
+        self.backlogs().unclassified.items
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE FOUR BACKLOGS A FLOOR HOLDS, EACH CARRYING ITS ITEMS** — register item
+    /// 934, and the ONE place their four predicates are written.
+    ///
+    /// # ⛔⛔⛔⛔⛔ There had been eight predicates for these four questions
+    ///
+    /// [`read`] ratcheted each backlog off its own `items.iter().filter(…).count()` while the four
+    /// accessors on this type re-derived the same sets for the report — so the number that RED and
+    /// the number that PRINTED were two authors agreeing by inspection. They agreed; that is not
+    /// the point. Register item 445 is the file this repository keeps re-learning it from, and
+    /// register item 926 had already found one of these four floors drifted while the other
+    /// direction went unwatched.
+    ///
+    /// ⚠ Recomputed per call rather than stored: [`read`] must ratchet these before this type
+    /// exists, and a cached copy would be a fifth thing that can disagree. The walk is one pass
+    /// over section A.
+    #[must_use]
+    pub fn backlogs(&self) -> Backlogs {
+        let of = |keep: fn(&Item) -> bool| -> Vec<u32> {
+            self.items
+                .iter()
+                .filter(|item| keep(item))
+                .map(|item| item.number)
+                .collect()
+        };
+        Backlogs {
+            unclassified: Backlog {
+                label: "unclassified",
+                token: DECLARATION,
+                items: of(|item| item.tag.is_none()),
+                declared: self.declared,
+            },
+            // ⚠⚠⚠ OPEN ONLY, and that is the measured choice register item 926 recorded rather
+            // than an oversight — counting every item's severity would make a ratchet that grows
+            // when a round does its job. The note at [`read`]'s severity ratchet carries the two
+            // numbers it was decided on.
+            unranked: Backlog {
+                label: "unranked",
+                token: SEVERITY_DECLARATION,
+                items: of(|item| item.tag == Some(Tag::Open) && item.severity.is_none()),
+                declared: self.severity_declared,
+            },
+            unrooted: Backlog {
+                label: "unrooted",
+                token: PARENT_DECLARATION,
+                items: of(|item| item.parent.is_none()),
+                declared: self.parent_declared,
+            },
+            paid_unnamed: Backlog {
+                label: "paid-uncommitted",
+                token: PAID_DECLARATION,
+                items: of(|item| item.tag == Some(Tag::Paid) && item.commits.is_empty()),
+                declared: self.paid_declared,
+            },
+        }
     }
 
     /// **WHAT A ROUND TAKES FIRST** — the open items marked [`Severity::Critical`], in numeric
@@ -1469,11 +1544,7 @@ impl Reading {
     /// The items that state no [`PARENT`] — the backlog [`Fault::ParentRatchetGrew`] holds.
     #[must_use]
     pub fn unrooted(&self) -> Vec<u32> {
-        self.items
-            .iter()
-            .filter(|item| item.parent.is_none())
-            .map(|item| item.number)
-            .collect()
+        self.backlogs().unrooted.items
     }
 
     /// The OPEN items that state no severity — the backlog [`Fault::SeverityRatchetGrew`] holds.
@@ -1483,11 +1554,7 @@ impl Reading {
     /// worked says so by classifying it.
     #[must_use]
     pub fn severity_unclassified(&self) -> Vec<u32> {
-        self.items
-            .iter()
-            .filter(|item| item.tag == Some(Tag::Open) && item.severity.is_none())
-            .map(|item| item.number)
-            .collect()
+        self.backlogs().unranked.items
     }
 
     /// ⛔⛔⛔⛔⛔ **THE PAID ITEMS WHOSE MARK NAMES NO COMMIT** — the backlog
@@ -1499,11 +1566,7 @@ impl Reading {
     /// records avoiding.
     #[must_use]
     pub fn paid_unnamed(&self) -> Vec<u32> {
-        self.items
-            .iter()
-            .filter(|item| item.tag == Some(Tag::Paid) && item.commits.is_empty())
-            .map(|item| item.number)
-            .collect()
+        self.backlogs().paid_unnamed.items
     }
 
     /// ⛔⛔⛔⛔⛔ **AND THE PAID ITEMS WHOSE NAMED COMMIT THIS TREE CANNOT RESOLVE** — the other
@@ -1832,6 +1895,151 @@ fn declared_floor(
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **HOW MANY BYTES OF ITEM NUMBERS ONE LINE SPENDS BEFORE SUMMARISING THE REST** —
+/// register item 934, and a BYTE budget rather than a count of items on purpose.
+///
+/// # ⛔⛔⛔ Why bytes and not `take(N)`
+///
+/// This ledger's numbers are three digits today and cross into four the moment it registers item
+/// 1000. A budget of *items* would silently lengthen every line on that day; a budget of bytes
+/// names fewer items instead, which is the thing actually being protected.
+///
+/// # 📊 The measurement this number came from — 2026-09-07
+///
+/// ```text
+/// north-star <ledger> | awk '{print length($0)}'
+/// ```
+///
+/// Every line of the report is 12–341 bytes: `population` is the longest at **341** (82 items) and
+/// every other line is at most **93**. Naming all 330 `unclassified` items would cost ≈ 1,320
+/// bytes and all 382 `unrooted` ≈ 1,528 — four to five times the longest line this report has ever
+/// printed, on lines that are annotations rather than the set a round acts on.
+///
+/// ⇒ **120 bytes**, which names about thirty three-digit items and lands the whole line near 180 —
+/// under the 341 the `population` line already spends, so no backlog line becomes this report's
+/// longest, and an order of magnitude more items than the `deferred`/`released` sets a round reads
+/// today.
+///
+/// ⚠⚠ **AT LEAST ONE ITEM IS NAMED WHATEVER THE BUDGET**, see [`name_some`]. A line that named a
+/// count and no item is the whole of register item 934, and a budget that could bring that back by
+/// being set low would be the defect returning through the knob meant to bound it.
+const NAMED_IN_A_LINE: usize = 120;
+
+/// Which end of a set [`name_some`] shows when it cannot show all of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ends {
+    /// The lowest numbers — the OLDEST items. What a report line shows: this ledger's rule 13 is
+    /// that old debt sinks, so the end a reader must be handed is the end that sinks.
+    Lowest,
+    /// The highest numbers — the NEWEST items. What a grown ratchet shows: a number is assigned
+    /// `max+1` at registration, so a backlog that grew by an item being ADDED grew at its top.
+    ///
+    /// ⚠ It is the likely end and not the certain one: a backlog also grows when an existing
+    /// item's mark is deleted, and that item sits wherever it sits. The fault says so rather than
+    /// letting the reader read a heuristic as a location.
+    Highest,
+}
+
+/// 🎯🎯🎯🎯🎯 **NAME THE ITEMS, NOT ONLY HOW MANY** — register item 934, in the one place every
+/// line that carries a set is rendered.
+///
+/// Empty for an empty set. Every number when they fit inside [`NAMED_IN_A_LINE`]; otherwise as
+/// many as fit from the `from` end, then `… and N more, all higher`/`, all lower` — **said**, so a
+/// reader can tell a short set from a cut one, which is the rule `pty-demand`'s own head already
+/// keeps.
+///
+/// ⚠⚠ Ascending in both directions. The ORDER a set is read in is not the END it is cut at, and
+/// printing the high end backwards would make two lines of one report disagree about what a list
+/// looks like.
+fn name_some(items: &[u32], from: Ends) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    // How many fit, counted the way they will be printed: each number plus the space before it,
+    // except the first. ⚠ At least one, whatever the budget — see [`NAMED_IN_A_LINE`].
+    let mut spent = 0;
+    let mut fits = 0;
+    for number in items {
+        let width = number.to_string().len() + usize::from(fits > 0);
+        if fits > 0 && spent + width > NAMED_IN_A_LINE {
+            break;
+        }
+        spent += width;
+        fits += 1;
+    }
+    let (shown, hidden) = match from {
+        Ends::Lowest => (&items[..fits], "higher"),
+        Ends::Highest => (&items[items.len() - fits..], "lower"),
+    };
+    let spelled: Vec<String> = shown.iter().map(ToString::to_string).collect();
+    let line = spelled.join(" ");
+    match items.len() - fits {
+        0 => line,
+        rest => format!("{line} … and {rest} more, all {hidden}"),
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **ONE OF THE FOUR BACKLOGS A FLOOR HOLDS, CARRYING THE ITEMS AND NOT ONLY THE COUNT**
+/// — register item 934.
+///
+/// # ⛔⛔⛔ What was wrong with a count
+///
+/// The four numbers were printed as `.len()` over a `Vec` that was then dropped, and the ratchet
+/// that judges them took a `usize`. So the largest population in this ledger — 330 unclassified items,
+/// four times the standing `population` — could be *seen* and not *asked about*: no round could
+/// name one of them, and a ratchet that moved said a number had moved and never which item.
+///
+/// ⚠ This type exists so the label, the floor's token, the items and the floor travel together.
+/// The binary printing `unclassified` beside the severity backlog's items would have been a
+/// one-word edit while the four were four unrelated locals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backlog {
+    /// The word this backlog's report line opens with, e.g. `unclassified`.
+    pub label: &'static str,
+    /// The declaration whose floor holds it, e.g. [`DECLARATION`].
+    pub token: &'static str,
+    /// Every item in it, ascending.
+    pub items: Vec<u32>,
+    /// The floor the ledger declares, or [`None`] when it declares none readably.
+    pub declared: Option<usize>,
+}
+
+impl fmt::Display for Backlog {
+    /// The report line: `unclassified 330 (declared 330): 80 470 … and 300 more, all higher`.
+    ///
+    /// ⚠ Shaped after the `population` line — count, then the items after a colon — because a
+    /// reader who has learnt one line of this report has learnt this one.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} (declared {}): {}",
+            self.label,
+            self.items.len(),
+            self.declared
+                .map_or_else(|| "none".to_string(), |n| n.to_string()),
+            name_some(&self.items, Ends::Lowest),
+        )
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **ALL FOUR OF THEM, NAMED RATHER THAN INDEXED** — register item 934.
+///
+/// ⚠⚠ Built in ONE place ([`Reading::backlogs`]) and handed to both readers: the ratchets that
+/// judge these sets and the lines that print them. They had been two separate `filter` chains per
+/// backlog — eight predicates for four questions — which is register item 445's two authors sitting
+/// inside the instrument that counts them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backlogs {
+    /// Items stating no [`TAG`] at all.
+    pub unclassified: Backlog,
+    /// OPEN items stating no [`SEVERITY`].
+    pub unranked: Backlog,
+    /// Items stating no [`PARENT`].
+    pub unrooted: Backlog,
+    /// PAID items naming no commit — register item 902.
+    pub paid_unnamed: Backlog,
+}
+
 /// Judge one backlog against the floor its ledger declares — **in both directions**.
 ///
 /// # ⛔⛔⛔⛔⛔ Why this is a function, and why all four go through it
@@ -1846,20 +2054,25 @@ fn declared_floor(
 /// ⚠ `declared` of [`None`] returns without a word, and that is not a hole: [`declared_floor`] has
 /// already faulted for the missing or unreadable line, and a second complaint about the same
 /// absence would be noise. A ratchet with no floor is refused there, not weakened here.
+/// ⚠⚠ **IT TAKES THE BACKLOG AND NOT ITS SIZE** — register item 934. A fault reading *331, but the
+/// ledger declares 330* hands its reader nothing to open; the set it counted is the only thing
+/// this can hand over, because a floor is a scalar and no reading can diff a set against a number.
+/// That limit is stated in the faults themselves rather than papered over.
 fn ratchet(
-    counted: usize,
-    declared: Option<usize>,
-    token: &'static str,
-    grew: impl FnOnce(usize, usize) -> Fault,
+    backlog: &Backlog,
+    grew: impl FnOnce(Vec<u32>, usize) -> Fault,
     faults: &mut Vec<Fault>,
 ) {
-    let Some(floor) = declared else { return };
+    let Some(floor) = backlog.declared else {
+        return;
+    };
+    let counted = backlog.items.len();
     if counted > floor {
-        faults.push(grew(counted, floor));
+        faults.push(grew(backlog.items.clone(), floor));
     } else if counted < floor {
         faults.push(Fault::RatchetSlack {
-            token,
-            counted,
+            token: backlog.token,
+            counted: backlog.items.clone(),
             declared: floor,
         });
     }
@@ -2092,69 +2305,6 @@ pub fn read(text: &str) -> Reading {
         });
     }
 
-    // ⛔⛔⛔⛔ ALL FOUR RATCHETS ARE JUDGED IN BOTH DIRECTIONS, THROUGH ONE DOOR — register item
-    // 926. Each of these was `if counted > floor`, which holds *may shrink, never grow* and says
-    // nothing when the floor drifts ABOVE the count. Two of the four had drifted on the real
-    // ledger, and the gap was free room for unmarked items. See [`ratchet`].
-    let unmarked = items.iter().filter(|item| item.tag.is_none()).count();
-    ratchet(
-        unmarked,
-        declared,
-        DECLARATION,
-        |counted, declared| Fault::RatchetGrew { counted, declared },
-        &mut faults,
-    );
-
-    // ⚠⚠⚠ THE POPULATION HERE IS *OPEN* ITEMS, AND THAT IS THE MEASURED CHOICE, NOT AN OVERSIGHT.
-    // Item 926 asks which way this backlog should be counted now that slack reds, and names the
-    // alternative: count EVERY item rather than only open ones, so that paying does not move the
-    // number and the floor never has to follow. Measured on this ledger, 2026-09-06 13:1x UTC:
-    //
-    //   open items with no severity  ...  47      shrinks as unclassified items are paid
-    //   ALL items with no severity   ... 380      a paid item still has none, so it never shrinks
-    //
-    // The wider population is eight times larger AND monotonically non-decreasing — paying an item
-    // does not take it out, so the floor could never be tightened by doing the work. That is the
-    // *"ratchet that punishes payment"* this file's own doc warns about, arriving by the other
-    // road. So the narrow population stays, and the cost is accepted and named: a round that pays
-    // an unclassified item now goes red until it lowers the floor by one. The refusal names the
-    // number to write, which is what keeps that a one-line edit rather than an investigation.
-    let unranked = items
-        .iter()
-        .filter(|item| item.tag == Some(Tag::Open) && item.severity.is_none())
-        .count();
-    ratchet(
-        unranked,
-        severity_declared,
-        SEVERITY_DECLARATION,
-        |counted, declared| Fault::SeverityRatchetGrew { counted, declared },
-        &mut faults,
-    );
-
-    let unrooted = items.iter().filter(|item| item.parent.is_none()).count();
-    ratchet(
-        unrooted,
-        parent_declared,
-        PARENT_DECLARATION,
-        |counted, declared| Fault::ParentRatchetGrew { counted, declared },
-        &mut faults,
-    );
-
-    // ⛔⛔⛔⛔⛔ AND THE PAID MARKS THAT NAME NO COMMIT — register item 902, held by the same
-    // ratchet its three neighbours are. See [`PAID_DECLARATION`] for why an item that has LEFT the
-    // population is the one whose claim most needs checking.
-    let unnamed = items
-        .iter()
-        .filter(|item| item.tag == Some(Tag::Paid) && item.commits.is_empty())
-        .count();
-    ratchet(
-        unnamed,
-        paid_declared,
-        PAID_DECLARATION,
-        |counted, declared| Fault::PaidRatchetGrew { counted, declared },
-        &mut faults,
-    );
-
     // ⚠ The chain is judged AFTER every item is known: a parent may be filed below its child, and
     // reading forward-only would call a legal chain dangling.
     let numbers: std::collections::BTreeSet<u32> = items.iter().map(|item| item.number).collect();
@@ -2177,6 +2327,56 @@ pub fn read(text: &str) -> Reading {
         paid_declared,
         faults,
     };
+
+    // ⛔⛔⛔⛔ ALL FOUR RATCHETS ARE JUDGED IN BOTH DIRECTIONS, THROUGH ONE DOOR — register item
+    // 926. Each of these was `if counted > floor`, which holds *may shrink, never grow* and says
+    // nothing when the floor drifts ABOVE the count. Two of the four had drifted on the real
+    // ledger, and the gap was free room for unmarked items. See [`ratchet`].
+    //
+    // 🎯🎯🎯 AND OFF THE SAME SETS THE REPORT PRINTS — register item 934. These were four
+    // `filter(…).count()` chains here and four more on `Reading`, so what red and what printed
+    // were written twice. See [`Reading::backlogs`], which is now the only author of the four.
+    //
+    // ⚠⚠⚠ THE SEVERITY BACKLOG IS *OPEN* ITEMS, AND THAT IS THE MEASURED CHOICE, NOT AN OVERSIGHT.
+    // Item 926 asks which way that backlog should be counted now that slack reds, and names the
+    // alternative: count EVERY item rather than only open ones, so that paying does not move the
+    // number and the floor never has to follow. Measured on this ledger, 2026-09-06 13:1x UTC:
+    //
+    //   open items with no severity  ...  47      shrinks as unclassified items are paid
+    //   ALL items with no severity   ... 380      a paid item still has none, so it never shrinks
+    //
+    // The wider population is eight times larger AND monotonically non-decreasing — paying an item
+    // does not take it out, so the floor could never be tightened by doing the work. That is the
+    // *"ratchet that punishes payment"* this file's own doc warns about, arriving by the other
+    // road. So the narrow population stays, and the cost is accepted and named: a round that pays
+    // an unclassified item now goes red until it lowers the floor by one. The refusal names the
+    // number to write, which is what keeps that a one-line edit rather than an investigation.
+    //
+    // ⛔ The fourth is the PAID marks that name no commit — register item 902, held by the same
+    // ratchet its three neighbours are. See [`PAID_DECLARATION`] for why an item that has LEFT the
+    // population is the one whose claim most needs checking.
+    let backlogs = reading.backlogs();
+    ratchet(
+        &backlogs.unclassified,
+        |counted, declared| Fault::RatchetGrew { counted, declared },
+        &mut reading.faults,
+    );
+    ratchet(
+        &backlogs.unranked,
+        |counted, declared| Fault::SeverityRatchetGrew { counted, declared },
+        &mut reading.faults,
+    );
+    ratchet(
+        &backlogs.unrooted,
+        |counted, declared| Fault::ParentRatchetGrew { counted, declared },
+        &mut reading.faults,
+    );
+    ratchet(
+        &backlogs.paid_unnamed,
+        |counted, declared| Fault::PaidRatchetGrew { counted, declared },
+        &mut reading.faults,
+    );
+
     // A cycle is only visible once the walk exists, and it must be a fault rather than a silent
     // `None` — an item whose chain eats itself would otherwise read as merely unstated.
     let cycles: Vec<u32> = reading
@@ -2392,7 +2592,9 @@ mod tests {
         );
         assert!(
             read(&ledger).faults.contains(&Fault::PaidRatchetGrew {
-                counted: 2,
+                // ⚠ THE ITEMS AND NOT A `2` — register item 934. A `counted: 2` here would pass
+                // against a reading that counted the wrong two.
+                counted: vec![898, 899],
                 declared: 1,
             }),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 902: the floor may only fall. A round that marks something \
@@ -2555,7 +2757,8 @@ mod tests {
         let reading = read(&ledger);
         assert!(
             reading.faults.contains(&Fault::RatchetGrew {
-                counted: 2,
+                // 896 is the item this mutation adds; 897 is the fixture's standing unmarked one.
+                counted: vec![896, 897],
                 declared: 1,
             }),
             "the backlog may shrink, never grow: {:?}",
@@ -2586,7 +2789,7 @@ mod tests {
         assert!(
             reading.faults.contains(&Fault::RatchetSlack {
                 token: DECLARATION,
-                counted: 0,
+                counted: Vec::new(),
                 declared: 1,
             }),
             "paying the backlog down without lowering the floor leaves slack, and slack is free \
@@ -2660,7 +2863,7 @@ mod tests {
                 matches!(
                     fault,
                     Fault::RatchetSlack { token: named, counted, declared }
-                        if *named == token && *counted == count && *declared == count + 1
+                        if *named == token && counted.len() == count && *declared == count + 1
                 )
             });
             if !found {
@@ -2833,7 +3036,7 @@ mod tests {
         );
         assert!(
             reading.faults.contains(&Fault::SeverityRatchetGrew {
-                counted: 1,
+                counted: vec![900],
                 declared: 0,
             }),
             "the backlog grew and the ratchet says so: {:?}",
@@ -3316,7 +3519,8 @@ mod tests {
         let reading = read(&ledger);
         assert!(
             reading.faults.contains(&Fault::ParentRatchetGrew {
-                counted: 4,
+                // 895 is the item this mutation adds; 897–899 are the fixture's standing three.
+                counted: vec![895, 897, 898, 899],
                 declared: 3,
             }),
             "the backlog may shrink, never grow: {:?}",
@@ -3957,5 +4161,269 @@ mod tests {
             "the reason is as unread as ever; what changed is that it now costs nothing: {:?}",
             reading.deferred_unread(9),
         );
+    }
+
+    // ⛔⛔⛔⛔⛔ ────────────── REGISTER ITEM 934: A COUNT NOBODY CAN OPEN ──────────────
+    //
+    // The four ratcheted numbers were printed as `.len()` over lists that were then dropped, so
+    // the largest population this ledger holds — 330 unclassified items, four times the standing
+    // `population` — could be READ and not ASKED ABOUT. The mutation these tests exist to fail
+    // under is item 934's own third clause: *erase or truncate the list and the suite must go
+    // red*, which is why every assertion below COUNTS the numbers a line names rather than
+    // checking that it says something.
+
+    /// The item numbers a rendered line actually names, read the way a person reads it: whatever
+    /// follows the last `": "`, up to the first token that is not a number.
+    ///
+    /// ⚠⚠ NOT `line.contains("934")`. Every one of these messages carries counts, floors and item
+    /// numbers in its prose, so a `contains` would pass against a line that named no item at all —
+    /// which is the exact defect being paid off.
+    fn numbers_named_by(line: &str) -> Vec<u32> {
+        let Some((_, tail)) = line.rsplit_once(": ") else {
+            return Vec::new();
+        };
+        tail.split_whitespace()
+            .map_while(|word| word.parse().ok())
+            .collect()
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A BACKLOG LINE NAMES THE ITEMS IT COUNTED** — register item 934(1).
+    #[test]
+    fn a_backlog_line_names_the_items_and_not_only_how_many() {
+        let backlogs = read(LEDGER).backlogs();
+        let Backlogs {
+            unclassified,
+            unranked,
+            unrooted,
+            paid_unnamed,
+        } = &backlogs;
+        // ⚠ `unranked` is EMPTY in this fixture and is asserted about separately below: a line
+        // with nothing to name must name nothing, and folding it in here would either weaken this
+        // assertion to *0 or more* or make an empty backlog print a phantom.
+        assert!(unranked.items.is_empty(), "{unranked:?}");
+        for backlog in [unclassified, unrooted, paid_unnamed] {
+            let line = backlog.to_string();
+            let named = numbers_named_by(&line);
+            assert_eq!(
+                named,
+                backlog.items,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 934: `{}` counted {} item(s) and its line names {}. A \
+                 number nobody can open is the whole of that item — the line is what a round reads \
+                 to pick one of these up. Line: {line}",
+                backlog.label,
+                backlog.items.len(),
+                named.len(),
+            );
+        }
+        assert_eq!(
+            numbers_named_by(&unranked.to_string()),
+            Vec::<u32>::new(),
+            "an empty backlog names nothing: {}",
+            unranked,
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AND WHEN IT CANNOT NAME THEM ALL, IT NAMES SOME AND SAYS HOW MANY IT HID** —
+    /// register item 934(1)'s bound, which that item left for this round to choose. See
+    /// [`NAMED_IN_A_LINE`] for the measurement it was chosen on.
+    ///
+    /// # ⛔⛔⛔ The two mutations this is built to fail under
+    ///
+    /// *Naming none* and *naming all of them* are both refused here, and they are opposite
+    /// failures: the first is item 934 returning, and the second is the 1,300-byte line that made
+    /// printing the list look impossible in the first place.
+    #[test]
+    fn a_backlog_too_long_for_one_line_names_some_and_says_how_many_it_hid() {
+        let many: Vec<u32> = (100..=499).collect();
+        let backlog = Backlog {
+            label: "unclassified",
+            token: DECLARATION,
+            items: many.clone(),
+            declared: Some(many.len()),
+        };
+        let line = backlog.to_string();
+        let named = numbers_named_by(&line);
+
+        assert!(
+            !named.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 934: a line that names NO item is the defect this pays off, \
+             and a bound is not a licence to bring it back: {line}",
+        );
+        assert!(
+            named.len() < many.len(),
+            "the bound did not bite on a 400-item backlog, so it would not bite on the real \
+             ledger's 382 either: {line}",
+        );
+        assert_eq!(
+            named,
+            many[..named.len()],
+            "a report line shows the LOWEST numbers — this ledger's rule 13 is that old debt \
+             sinks, so the end handed to a reader is the end that sinks: {line}",
+        );
+        // ⚠⚠ THE HIDDEN COUNT IS ASSERTED AGAINST THE ARITHMETIC, not merely present. A tail
+        // reading `and 0 more` would be a line that stopped saying anything while still looking
+        // like it did.
+        assert!(
+            line.ends_with(&format!(
+                "… and {} more, all higher",
+                many.len() - named.len()
+            )),
+            "a reader must be able to tell a short set from a cut one, and by how much: {line}",
+        );
+        assert!(
+            line.len() < 341,
+            "⚠ 341 bytes is what the `population` line spends on the real ledger (measured \
+             2026-09-07) — a backlog line is an annotation on this report and must not become its \
+             longest: {} bytes, {line}",
+            line.len(),
+        );
+    }
+
+    /// Whether a fault carries the SET it counted, said **exhaustively** — register item 934(2).
+    ///
+    /// ⚠⚠ NO `_` ARM, which is this workspace's rule 6 wearing its usual shape: a twenty-fifth
+    /// fault added tomorrow cannot slip past by being unlisted. Its author has to say here whether
+    /// it names items, and if it does, the test below starts holding it to naming them.
+    fn set_carried_by(fault: &Fault) -> Option<&[u32]> {
+        match fault {
+            Fault::RatchetGrew { counted, .. }
+            | Fault::SeverityRatchetGrew { counted, .. }
+            | Fault::ParentRatchetGrew { counted, .. }
+            | Fault::PaidRatchetGrew { counted, .. }
+            | Fault::RatchetSlack { counted, .. } => Some(counted),
+            // Everything else is about ONE line or ONE item, which its own message already names.
+            Fault::UnknownTag { .. }
+            | Fault::ConflictingTags { .. }
+            | Fault::UntaggedCandidate { .. }
+            | Fault::UnknownSeverity { .. }
+            | Fault::ConflictingSeverities { .. }
+            | Fault::SeverityDeclaration { .. }
+            | Fault::UnreadableSeverityDeclaration { .. }
+            | Fault::UnknownParent { .. }
+            | Fault::MetWhileNotMade { .. }
+            | Fault::DeferredByUnreadLink { .. }
+            | Fault::UnrunnableRed { .. }
+            | Fault::DanglingParent { .. }
+            | Fault::ParentCycle { .. }
+            | Fault::PaidDeclaration { .. }
+            | Fault::UnreadablePaidDeclaration { .. }
+            | Fault::ParentDeclaration { .. }
+            | Fault::UnreadableParentDeclaration { .. }
+            | Fault::Declaration { .. }
+            | Fault::UnreadableDeclaration { .. } => None,
+        }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A RATCHET THAT MOVED NAMES THE ITEMS IT COUNTED** — register item 934(2).
+    ///
+    /// `331 unmarked items, but the ledger declares 330` sent its reader to a ledger of five
+    /// hundred blocks with nothing to search for. **A floor is a scalar, so no reading can diff a
+    /// set against it** — the set it counted is the only thing this can hand over, and the four
+    /// `…Grew` messages say which end of it is the likely one rather than implying certainty.
+    #[test]
+    fn every_fault_that_carries_a_set_names_items_in_its_message() {
+        let counted: Vec<u32> = (100..=499).collect();
+        let faults = [
+            Fault::RatchetGrew {
+                counted: counted.clone(),
+                declared: 1,
+            },
+            Fault::SeverityRatchetGrew {
+                counted: counted.clone(),
+                declared: 1,
+            },
+            Fault::ParentRatchetGrew {
+                counted: counted.clone(),
+                declared: 1,
+            },
+            Fault::PaidRatchetGrew {
+                counted: counted.clone(),
+                declared: 1,
+            },
+            Fault::RatchetSlack {
+                token: DECLARATION,
+                counted: counted.clone(),
+                declared: counted.len() + 1,
+            },
+        ];
+        for fault in &faults {
+            let carried = set_carried_by(fault).expect("these five carry a set by construction");
+            assert_eq!(carried, counted, "{fault:?}");
+            let said = fault.to_string();
+            let named = numbers_named_by(&said);
+            assert!(
+                !named.is_empty(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 934(2): this fault reports that a backlog moved and \
+                 hands its reader no item to open. The count already told them a number moved; \
+                 what they cannot do is find it: {said}",
+            );
+            assert!(
+                named.iter().all(|number| counted.contains(number)),
+                "every number named must be one that was counted: {named:?} in {said}",
+            );
+        }
+        // ⚠ The `…Grew` four show the NEW end and slack shows the OLD one — see `Ends`. Asserted
+        // because the two directions are the reason the ends differ, and a refactor that made them
+        // one would silently stop pointing at the item a growth most likely added.
+        let grown = faults[0].to_string();
+        assert_eq!(
+            *numbers_named_by(&grown).last().expect("named some"),
+            *counted.last().expect("non-empty"),
+            "a growth is `max+1`, so the newest item must be in the window: {grown}",
+        );
+        let slack = faults[4].to_string();
+        assert_eq!(
+            numbers_named_by(&slack).first(),
+            counted.first(),
+            "nothing was added under slack, so the end worth naming is the one that sinks: {slack}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE PRINTED LINE IS THE ONE THESE TESTS JUDGE** — register item 934(3).
+    ///
+    /// # ⛔⛔⛔ Why a source gate and not another assertion
+    ///
+    /// The tests above judge [`Backlog`]'s rendering; the lines a round actually reads are printed
+    /// by `bin/north-star.rs`. While that binary formatted its own four lines, every assertion
+    /// here was about a string nothing printed — a gate green for a population of one, which is
+    /// register item 914's finding. So the binary is held to printing THESE lines: it may not
+    /// carry a format string that opens with one of the four labels.
+    ///
+    /// ⚠⚠ Both halves are needed and neither is enough. *Prints the backlog* alone would pass a
+    /// binary that printed it and then a hand-rolled copy; *formats no label* alone would pass a
+    /// binary that had simply stopped printing them.
+    #[test]
+    fn the_binary_prints_these_lines_rather_than_formatting_its_own() {
+        const BIN: &str = include_str!("bin/north-star.rs");
+        let Backlogs {
+            unclassified,
+            unranked,
+            unrooted,
+            paid_unnamed,
+        } = read(LEDGER).backlogs();
+        assert!(
+            BIN.contains("reading.backlogs()"),
+            "⛔ the binary no longer asks for the backlogs at all",
+        );
+        for (backlog, field) in [
+            (&unclassified, "backlogs.unclassified"),
+            (&unranked, "backlogs.unranked"),
+            (&unrooted, "backlogs.unrooted"),
+            (&paid_unnamed, "backlogs.paid_unnamed"),
+        ] {
+            assert!(
+                BIN.contains(&format!("println!(\"{{}}\", {field})")),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 934(3): the report line for `{}` is not printed from \
+                 `{field}`, so the assertions in this file are about a string nobody reads",
+                backlog.label,
+            );
+            assert!(
+                !BIN.contains(&format!("\"{} ", backlog.label)),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 934(3): the binary formats a line opening with `{}` \
+                 itself. Two authors for one line is how the printed number and the ratcheted \
+                 number come to disagree — the line belongs to `Backlog`",
+                backlog.label,
+            );
+        }
     }
 }
