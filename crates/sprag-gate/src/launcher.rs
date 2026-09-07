@@ -481,4 +481,137 @@ asked 3 socket(s) matching sprag*.sock under /run/user/1000
             run.shown,
         );
     }
+
+    /// ⛔⛔⛔⛔⛔ **NO TRACKED SCRIPT USES A BUILTIN THE OLDEST BASH THIS PROJECT RUNS ON DOES NOT
+    /// HAVE** — register item 947, and the gate the six cases above could not be.
+    ///
+    /// # ⛔⛔⛔⛔ What was measured, and why every case above was blind to it
+    ///
+    /// The macOS CI runner of 2026-09-07 printed
+    /// `sprag-gui-launch: line 54: mapfile: command not found` **six times, once per case above**,
+    /// and each case then failed on `Shown: ""`. Apple froze `/bin/bash` at **3.2** over its
+    /// licence, `mapfile` arrived in bash 4, and `set -u` alone does not stop a script whose array
+    /// simply never got filled — so the launcher ran on and showed nothing. Every assertion above
+    /// is about what the script SAID, so all six reported the symptom and none could name the
+    /// cause; the six had also been red on that runner with nobody reading it.
+    ///
+    /// # ⚠⚠⚠ Why a text scan is the right instrument here, and not a run
+    ///
+    /// The cases above run the launcher, and they run it under **this machine's** bash — which is
+    /// 5.2 on the only host anybody develops on. A builtin that is missing somewhere else cannot be
+    /// made missing here: `enable -n` acts on the CALLING shell, and the script is a fresh `bash`
+    /// naming its own interpreter. So the fact worth holding is a fact about the FILE, and this
+    /// crate's charter is *the gates a test cannot be*.
+    ///
+    /// ⚠⚠ **AND IT COVERS EVERY TRACKED SCRIPT, NOT THE ONE THAT BROKE.** The same disease had
+    /// already been diagnosed and repaired in `.githooks/commit-msg` — whose own comment records
+    /// that `set -e` made its `mapfile` line *"the END of this hook, so on macOS every rule below
+    /// was unreachable"* and that four gates said so from 2026-08-14 with nobody reading them. One
+    /// file was fixed, the disease was not, and it came back in a second file. A gate over one path
+    /// would let it come back in a third.
+    ///
+    /// ⚠ A CLOSED SET rather than a denylist of everything ever added to bash: these are the
+    /// constructs this project has actually used or reached for, each with the version that
+    /// introduced it. A build that wants a fifth adds it here, which is a decision somebody takes
+    /// rather than a drift.
+    ///
+    /// ⚠ `outside_strings` is DEFENSIVE and was not measured — no script here puts one of these
+    /// words inside a literal today, so a mutation of it would be vacuously green. It is the shared
+    /// reader (item 818: the second gate that needs one does not copy it) and it errs toward a red
+    /// to read, which is why it is here rather than a `contains` on the raw line.
+    #[test]
+    fn no_tracked_script_uses_a_builtin_the_oldest_bash_this_project_runs_on_lacks() {
+        /// `(needle, since, instead)` — what to look for, the bash it needs, and the repair.
+        const YOUNGER_THAN_BASH_3: [(&str, &str, &str); 4] = [
+            (
+                "mapfile ",
+                "4.0",
+                "`GUIS=(); while IFS= read -r one; do GUIS+=(\"$one\"); done < <(…)`",
+            ),
+            ("readarray ", "4.0", "the same `while IFS= read -r` loop"),
+            (
+                "declare -A",
+                "4.0",
+                "two indexed arrays, or a `case` over the keys",
+            ),
+            (
+                "${EPOCHSECONDS",
+                "5.0",
+                "`$(date +%s)`, which every one of them has",
+            ),
+        ];
+
+        let root = crate::sources::workspace_root();
+        // ⛔⛔⛔⛔⛔ **DISCOVERED AND NOT LISTED**, which is register item 945's own finding turned on
+        // this gate: a hand-written list is *by definition the place that leaks* (items 80 and 762
+        // are the same face), and the first draft of this very test named six paths while
+        // `.githooks/` held **ten**. The population is every hook in that directory plus the
+        // launcher — the scripts that run on a person's or a runner's machine rather than under
+        // `cargo`.
+        //
+        // ⚠⚠ THE COUNT IS ASSERTED BELOW, because a `read_dir` that started answering nothing —
+        // a rename, a move, a gate run from somewhere else — would make this test vacuously green,
+        // which is item 924's shape exactly.
+        let hooks = root.join(".githooks");
+        let mut scripts = vec![root.join(LAUNCHER)];
+        for entry in std::fs::read_dir(&hooks).unwrap_or_else(|why| {
+            panic!(
+                "⛔ REGISTER ITEM 947: {} is where this repository keeps the scripts that run \
+                 outside `cargo` — {why}",
+                hooks.display(),
+            )
+        }) {
+            let path = entry.expect("a readable directory entry").path();
+            if path.is_file() {
+                scripts.push(path);
+            }
+        }
+        assert!(
+            scripts.len() > 6,
+            "⚠⚠⚠ THE POPULATION COLLAPSED: this gate found {} script(s), and measured 2026-09-07 \
+             there are eleven. A scan of nothing is green for the wrong reason — find out where \
+             the hooks went before touching this number: {scripts:?}",
+            scripts.len(),
+        );
+
+        let mut guilty = Vec::new();
+        for path in &scripts {
+            let name = path
+                .strip_prefix(&root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            let text = std::fs::read_to_string(path).unwrap_or_else(|why| {
+                panic!("⛔ REGISTER ITEM 947: {name} could not be read — {why}")
+            });
+            for (line, body) in text.lines().enumerate() {
+                // ⚠⚠ THE COMMENTS ARE SKIPPED AND THAT IS LOAD-BEARING: both files carry a
+                // paragraph NAMING `mapfile` as the thing they must not use, and a scan that read
+                // those would be permanently red at the very files it just repaired — the
+                // instrument convicting its own documentation.
+                let code = body.trim_start();
+                if code.starts_with('#') {
+                    continue;
+                }
+                for (needle, since, instead) in YOUNGER_THAN_BASH_3 {
+                    if crate::sources::outside_strings(code).contains(needle) {
+                        guilty.push(format!(
+                            "  {name}:{} uses `{}`, which needs bash {since} — macOS ships 3.2 as \
+                             `/bin/bash`. Use {instead}",
+                            line + 1,
+                            needle.trim(),
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            guilty.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 947: a tracked script needs a bash macOS does not have, and \
+             the failure is SILENT in the worst way — `set -u` does not stop it, so the script runs \
+             on with the value it never got. That is six red cases reporting `Shown: \"\"` in this \
+             very file, and before that a commit hook whose every rule was unreachable on a Mac:\n{}",
+            guilty.join("\n"),
+        );
+    }
 }

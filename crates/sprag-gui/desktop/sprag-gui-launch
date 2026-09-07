@@ -51,7 +51,29 @@ tell() {
 }
 
 # Every GUI this tree has built, newest first.
-mapfile -t GUIS < <(ls -t "$REPO"/target/*/sprag-gui 2>/dev/null)
+#
+# ⛔⛔⛔⛔⛔ `while read` AND NOT `mapfile`, WHICH IS A bash 4 BUILTIN — register item 947, measured on
+# the macOS CI runner of 2026-09-07: `sprag-gui-launch: line 54: mapfile: command not found`, six
+# times, once per case in `sprag-gate`'s launcher suite. macOS ships **bash 3.2** as `/bin/bash`,
+# and `set -u` alone does not stop a script whose array simply never got filled — so this file ran
+# on, showed NOTHING, and every one of the six cases failed with `Shown: ""`. The dock press on a
+# Mac was the window that never appears with no message anywhere the clicker will look: item 825's
+# own defect, on the platform its gate had never been run on.
+#
+# ⚠⚠ THE TWO READ THE SAME THING AND THAT WAS MEASURED, not assumed: both are LINE-based, so a
+# build path containing a SPACE comes back whole from either (checked against
+# `target/a b/sprag-gui` — identical arrays). What breaks both equally is a path with a NEWLINE in
+# it, which is why this is a substitution and not a widening.
+#
+# ⚠ `IFS=` and `read -r` are the pair that makes that true: without them a leading space would be
+# trimmed and a backslash eaten, and `mapfile -t` does neither.
+#
+# ⛔ AND NOT `#!/usr/bin/env bash` TO PICK UP A HOMEBREW bash 4 — the dock does not execute this
+# with the user's PATH, so that would turn the CI green while every real Mac stayed broken. Item
+# 454's rule: the answer to *this host cannot run it* is to make the file able, never to move the
+# goalposts.
+GUIS=()
+while IFS= read -r one; do GUIS+=("$one"); done < <(ls -t "$REPO"/target/*/sprag-gui 2>/dev/null)
 if [[ ${#GUIS[@]} -eq 0 ]]; then
     say "no sprag-gui built under $REPO/target"
     tell "sprag" "No sprag-gui is built.
