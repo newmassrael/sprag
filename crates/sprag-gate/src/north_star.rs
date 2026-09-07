@@ -176,6 +176,49 @@ pub const SEVERITY_DECLARATION: &str = "@sev-unclassified:";
 /// their own ratchet.
 pub const PARENT: &str = "@from:";
 
+/// ⛔⛔⛔⛔⛔ **THE LINE BY WHICH AN ITEM CLAIMS A RATCHETED BACKLOG** — register item 939, and the
+/// answer to *whose 938 is that*.
+///
+/// ```text
+/// 938. ⛔ Twenty-six paid marks name no commit
+///      @ns: open
+///      @owns: @paid-uncommitted:
+/// ```
+///
+/// # ⛔⛔⛔⛔⛔ Why the NUMBER had to leave the crate, when the JUDGEMENT stays in it
+///
+/// Register item 937 gave every backlog a [`Reckoning`], and [`Reckoning::Owned`] is a judgement
+/// about the KIND of backlog — *this is real work, so somebody has to carry it* — which is true of
+/// any ledger and rightly lives here. The item NUMBER is not: this crate reads whatever ledger it
+/// is pointed at, and `Owned(938)` was a claim about exactly one of them. **Measured 2026-09-07:
+/// `north-star` exited 1 on a two-item ledger belonging to no repository**, naming an item that
+/// document had never heard of. A gate red on every document but one is not a gate — register item
+/// 939's own words, and [`DECLARATION`]'s doc had already written the rule it broke: *the number
+/// lives in the ledger, not in this crate*.
+///
+/// # ⚠⚠⚠ Why an item-level token, and not a fifth declaration line — MEASURED, not preferred
+///
+/// The two shapes register item 939 left open were a token per backlog (`@paid-uncommitted-owner:
+/// 938`, beside the four floors) and this one, a value that names the backlog. Both were costed:
+///
+/// | | a floor-side token | this |
+/// |---|---|---|
+/// | uniqueness | free, from the shared floor reader | needs its own count — [`Fault::BacklogOwnerUnclear`] |
+/// | a second owned backlog costs | a new constant and its reader | nothing |
+/// | where the fact sits | the top of section A | **in the owning item's own block** |
+///
+/// The last row decided it. The failure this item exists to prevent is *938 is paid and its
+/// successor is opened, and now the CRATE must be edited*; the round that pays 938 is editing
+/// 938's block, and this line is in it. A declaration at the top of the section is a second place
+/// to remember, and remembering is what register item 939 is the failure of.
+///
+/// ⚠⚠ **AND IT DOES NOT TRIP THE TRAP REGISTER ITEM 823 RECORDS**, which was measured before
+/// choosing it: floors are found by `line.trim_start().starts_with(<token>)`, and after trimming
+/// this line starts with `@owns:` — so the declaration token it NAMES is not the line's opening
+/// word and the ledger does not read as declaring twice. A floor-side token would have put the
+/// same string at a line's head, which is precisely how item 823 went red.
+pub const OWNER: &str = "@owns:";
+
 /// ⛔⛔⛔⛔⛔ **THE WORDS THIS LEDGER USES FOR *I MET IT WHILE PAYING SOMETHING ELSE*** — register
 /// item 896, and the vocabulary [`PARENT`]'s own *CAUSED BY, NEVER MERELY MET WHILE* section
 /// argues about while nothing read it.
@@ -595,6 +638,13 @@ pub struct Item {
     /// whose mark names none, and empty for every item that is not [`Tag::Paid`], because only a
     /// claim of payment can be checked against the repository. See [`PAID_DECLARATION`].
     pub commits: Vec<String>,
+    /// ⛔⛔⛔⛔⛔ **THE RATCHETED BACKLOGS THIS ITEM CLAIMS** — register item 939. The declaration
+    /// tokens its [`OWNER`] lines name, in document order; empty for nearly every item.
+    ///
+    /// ⚠ Every entry is one of the four declaration tokens: a value naming anything else is
+    /// [`Fault::UnknownOwned`] rather than a line that quietly does not count, which is this
+    /// workspace's rule 6 in the place a typo would otherwise retire the gate.
+    pub owns: Vec<&'static str>,
     /// Whether any block of it names the loop — the alarm's input, never the population's.
     pub names_the_loop: bool,
     /// Whether the prose vocabulary reads it as closed — likewise only the alarm's input.
@@ -712,6 +762,31 @@ pub enum Fault {
         number: u32,
         /// The id, exactly as the ledger spells it.
         id: String,
+    },
+    /// ⛔⛔⛔⛔⛔ **AN [`OWNER`] LINE NAMING SOMETHING THAT IS NOT A RATCHETED BACKLOG** — register
+    /// item 939. The value must be one of the four declaration tokens — `OWNABLE`, SPELLED and not
+    /// linked because it is private and this is public, the rule [`PARENT`]'s own doc keeps.
+    ///
+    /// ⚠ Read from the line rather than guessed at: a typo that counted as an owner would leave the
+    /// backlog unowned and the gate green, and there is no ratchet here to absorb one.
+    UnknownOwned {
+        /// The item whose line it is.
+        number: u32,
+        /// The line, exactly as written.
+        line: String,
+    },
+    /// ⛔⛔⛔⛔⛔ **A BACKLOG THAT NEEDS AN OWNER AND IS NOT CLAIMED BY EXACTLY ONE OPEN ITEM** —
+    /// register item 939, and [`Fault::BacklogOwnerClosed`]'s sibling for the two states a number
+    /// baked into the crate could not have: **nobody claimed it**, and **two items did**.
+    ///
+    /// ⚠ Zero and two share a variant deliberately — both mean *this ledger does not say who*, and
+    /// splitting them would be two refusals carrying one instruction. [`Fault::Declaration`] holds
+    /// the same shape for the same reason.
+    BacklogOwnerUnclear {
+        /// The backlog's declaration token.
+        token: &'static str,
+        /// The items claiming it, ascending. Empty where none does.
+        claimed: Vec<u32>,
     },
     /// ⛔⛔⛔⛔⛔ **A [`RED`] CLAIM THIS INSTRUMENT CANNOT PUT TO THE REPOSITORY** — register item
     /// 843. Empty, or carrying a token outside `safe_argument` — spelled and not linked, for
@@ -899,13 +974,17 @@ impl fmt::Display for Fault {
                 // handing a reader is the one this ledger's rule 13 says sinks.
                 name_some(counted, Ends::Lowest),
             ),
+            // ⛔ THE SECOND HALF OF THIS SENTENCE WAS TRUE UNTIL REGISTER ITEM 939 AND IS THE
+            // EDIT THAT PAID IT. It used to send its reader to `north_star.rs`, because that is
+            // where `Owned(938)` was; the number lives in the ledger now, so the old instruction
+            // would have been a correct-looking direction to the wrong file — register item 933's
+            // shape, which 939's own done-when named in advance.
             Self::BacklogOwnerClosed { token, owner } => write!(
                 f,
                 "`{token}`'s backlog says item {owner} owns bringing it to zero, and {owner} is \
                  not in the open population — so nothing carries that work and no round can be \
-                 routed to it. Judge the backlog again: name an open owner, or write why it needs \
-                 none — the judgement is the `Reckoning` beside this backlog in `north_star.rs`, \
-                 not a line in the ledger",
+                 routed to it. Move the `{OWNER} {token}` line out of item {owner}'s block and \
+                 into the open item that carries the work now",
             ),
             Self::UnreadableDeclaration { line } => write!(
                 f,
@@ -986,6 +1065,30 @@ impl fmt::Display for Fault {
                 f,
                 "item {number} names commit {id}, which this tree cannot resolve",
             ),
+            Self::UnknownOwned { number, line } => write!(
+                f,
+                "item {number}: `{}` names no ratcheted backlog — an `{OWNER}` line takes one of \
+                 `{}`, and a value outside them is a typo that would leave the backlog unowned \
+                 while reading like an owner",
+                line.trim(),
+                OWNABLE.join("`, `"),
+            ),
+            Self::BacklogOwnerUnclear { token, claimed } => match claimed.as_slice() {
+                [] => write!(
+                    f,
+                    "`{token}`'s backlog is real work and no item claims it, so nothing carries \
+                     bringing it to zero and no round can be routed to it. Put `{OWNER} {token}` \
+                     in the block of the open item that owns it",
+                ),
+                many => write!(
+                    f,
+                    "`{token}`'s backlog is claimed by {} items ({}) — ownership that is shared is \
+                     ownership nobody has. Keep the `{OWNER} {token}` line in exactly one open \
+                     item's block",
+                    many.len(),
+                    name_some(many, Ends::Lowest),
+                ),
+            },
             Self::UnrunnableRed { number, line } => write!(
                 f,
                 "item {number}: `{}` is a red this instrument cannot put to the repository — a \
@@ -1163,7 +1266,11 @@ impl Reading {
                 // is a judgement, not a move — 823's own warning about item 212). Register item
                 // 938 carries it, which is what puts it in `population` where `admits` can reach
                 // it: register item 937's finding that opening an item IS the route.
-                reckoning: Reckoning::Owned(938),
+                //
+                // ⚠⚠ AND WHICH ITEM THAT IS, IS THE LEDGER'S TO SAY — register item 939. The
+                // sentence above is about the KIND of backlog and is true of any ledger; the
+                // number was true of one, and is now read from an `OWNER` line. See `Owned`.
+                reckoning: Reckoning::Owned,
             },
         }
     }
@@ -1657,14 +1764,36 @@ impl Reading {
             // owner-claims were checked when one was, which is the drift a denominator exists to
             // refuse. ⇒ The day the last `Owned` becomes `Exempt` this reads `0 judged`, which is
             // exactly the vacuity register item 924 measured one gate over.
-            if let Reckoning::Owned(owner) = backlog.reckoning {
-                judged += 1;
-                if !population.contains(&owner) {
-                    faults.push(Fault::BacklogOwnerClosed {
-                        token: backlog.token,
-                        owner,
-                    });
-                }
+            if backlog.reckoning != Reckoning::Owned {
+                continue;
+            }
+            // ⚠⚠ A BACKLOG AT ZERO NEEDS NO OWNER, and that is working rule 5 rather than an
+            // escape hatch — an owner is *who brings this to zero*, and there is nothing to bring.
+            // It is not a way to stay green either: the question comes back the moment the count
+            // does, which is the difference between an exemption and a state.
+            if backlog.items.is_empty() {
+                continue;
+            }
+            judged += 1;
+            // ⛔⛔⛔⛔⛔ READ FROM THE LEDGER — register item 939. This walked a number baked into
+            // the arm above until an audit pointed the binary at a ledger belonging to no
+            // repository and it exited 1 on an item that document had never heard of.
+            let claimed: Vec<u32> = self
+                .items
+                .iter()
+                .filter(|item| item.owns.contains(&backlog.token))
+                .map(|item| item.number)
+                .collect();
+            match claimed.as_slice() {
+                [owner] if population.contains(owner) => {}
+                [owner] => faults.push(Fault::BacklogOwnerClosed {
+                    token: backlog.token,
+                    owner: *owner,
+                }),
+                _ => faults.push(Fault::BacklogOwnerUnclear {
+                    token: backlog.token,
+                    claimed,
+                }),
             }
         }
         Screening {
@@ -2046,6 +2175,25 @@ fn red_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(RED)
 }
 
+/// The value of an [`OWNER`] line, by the same whole-line rule [`mark_value`] holds.
+fn owner_value(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix(OWNER)
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERY DECLARATION TOKEN AN [`OWNER`] LINE MAY NAME** — register item 939, and the
+/// one place that says what the four are.
+///
+/// ⚠⚠ A LIST AND NOT A SHAPE. Accepting *anything that looks like a token* would make a typo an
+/// unowned backlog wearing an owner's clothes, and there is no ratchet here to absorb one: this is
+/// the same reason [`Parent::parse`](Parent) refuses a word it cannot resolve. A value outside this
+/// list is [`Fault::UnknownOwned`].
+const OWNABLE: [&str; 4] = [
+    DECLARATION,
+    SEVERITY_DECLARATION,
+    PARENT_DECLARATION,
+    PAID_DECLARATION,
+];
+
 /// ⛔⛔⛔⛔⛔ **WHETHER A CLAIMED RED IS ACTUALLY RED**, asked of the repository — register item 843,
 /// and [`Commits`]' shape one fact over.
 ///
@@ -2248,10 +2396,17 @@ pub enum Reckoning {
     /// [`Ending`], whose own doc carries why only two of the five qualify.
     Counted,
     /// **An open register item owns the work**, so `population` carries it and
-    /// [`Reading::admits`] can hand it over like any other debt. The number is checked: an owner
-    /// that has been paid is [`Fault::BacklogOwnerClosed`], which is the disposition asking to be
-    /// re-stated rather than quietly expiring.
-    Owned(u32),
+    /// [`Reading::admits`] can hand it over like any other debt. The claim is checked: an owner
+    /// that has been paid is [`Fault::BacklogOwnerClosed`], and none or several is
+    /// [`Fault::BacklogOwnerUnclear`] — the disposition asking to be re-stated rather than quietly
+    /// expiring.
+    ///
+    /// ⚠⚠ **CARRIES NO NUMBER — register item 939.** *This is real work and somebody must carry
+    /// it* is true of any ledger and belongs here; *and that somebody is 938* is true of one, and
+    /// belongs in that document, on the [`OWNER`] line the owning item's own block carries. The
+    /// number sat here until an audit ran this crate's binary against a ledger belonging to no
+    /// repository and it exited 1, naming an item that document had never heard of.
+    Owned,
     /// **It needs neither, and this is why.** The sentence is the whole of this arm's honesty, and
     /// the COUNT of backlogs standing on it is asserted by a gate — an exemption nobody counts is
     /// the escape hatch this workspace's rule 6 exists to refuse.
@@ -2680,6 +2835,9 @@ pub fn read(text: &str) -> Reading {
         // off a block whose mark lost the tie would be evidence for a claim this item is not
         // making. See [`named_commits`].
         let mut commits: Vec<String> = Vec::new();
+        // ⛔ Register item 939: the backlogs this item claims, settled by the topmost block that
+        // claims anything — see below.
+        let mut owns: Vec<&'static str> = Vec::new();
         for body in bodies {
             let mut in_block: Vec<Tag> = Vec::new();
             let mut named: Vec<String> = Vec::new();
@@ -2687,6 +2845,7 @@ pub fn read(text: &str) -> Reading {
             let mut parents: Vec<Parent> = Vec::new();
             let mut reasons: Vec<String> = Vec::new();
             let mut reds: Vec<String> = Vec::new();
+            let mut owned: Vec<&'static str> = Vec::new();
             for line in body {
                 if let Some(value) = parent_value(line) {
                     match Parent::parse(value) {
@@ -2742,6 +2901,20 @@ pub fn read(text: &str) -> Reading {
                         }),
                     }
                 }
+                // ⛔⛔⛔⛔⛔ AND WHICH RATCHETED BACKLOG IT CLAIMS — register item 939. A value
+                // outside `OWNABLE` is a FAULT and never a silence, for `UnrunnableRed`'s reason
+                // one line up: a typo would leave the backlog unowned while the line reads like
+                // an owner, and there is no ratchet here to absorb one.
+                if let Some(value) = owner_value(line) {
+                    let named = value.trim();
+                    match OWNABLE.iter().find(|token| **token == named) {
+                        Some(token) => owned.push(*token),
+                        None => faults.push(Fault::UnknownOwned {
+                            number: *number,
+                            line: (*line).to_string(),
+                        }),
+                    }
+                }
                 let Some(value) = mark_value(line) else {
                     continue;
                 };
@@ -2768,6 +2941,13 @@ pub fn read(text: &str) -> Reading {
             // about a number owning several blocks. Register item 843.
             if red.is_none() {
                 red = reds.first().cloned();
+            }
+            // ⚠⚠ AND SO DOES THE OWNERSHIP CLAIM — register item 939, by the same rule and for the
+            // same reason: a superseded block claiming a backlog the block that beat it does not
+            // claim would be a claim nobody is making. Several tokens in ONE block are all kept,
+            // because one item may carry more than one backlog.
+            if owns.is_empty() {
+                owns = std::mem::take(&mut owned);
             }
             if parent.is_none() {
                 parent = parents.first().copied();
@@ -2814,6 +2994,7 @@ pub fn read(text: &str) -> Reading {
             reason,
             red,
             commits,
+            owns,
             names_the_loop,
             reads_as_closed,
         });
@@ -4915,7 +5096,13 @@ mod tests {
             // ⚠⚠ Register item 940's fault names ONE item and ONE id, both in its message. This
             // arm is the gate working a second time: adding the variant would not compile until
             // its author answered here, which is what register item 903 bought.
-            | Fault::PaidCommitUnresolved { .. } => None,
+            | Fault::PaidCommitUnresolved { .. }
+            // ⚠ Register item 939's first fault is about ONE line, which its message quotes.
+            | Fault::UnknownOwned { .. } => None,
+            // ⛔ AND ITS SECOND ONE DOES CARRY A SET — register item 939. The items claiming a
+            // backlog are what a reader has to go and look at, and there is no other line naming
+            // them; the empty case is the one where the set is the point.
+            Fault::BacklogOwnerUnclear { claimed, .. } => Some(claimed),
         }
     }
 
@@ -5137,11 +5324,14 @@ mod tests {
                      opened by",
                     backlog.label,
                 ),
-                // ⚠ The owner is checked by `read` against the ledger's own population — a unit
-                // test cannot, because the fixture is not the ledger the claim is about.
-                Reckoning::Owned(owner) => assert!(
-                    *owner > 0,
-                    "`{}` names item {owner} as its owner",
+                // ⚠⚠ THE OWNER IS THE LEDGER'S AND NOT THIS ARM'S — register item 939. There is
+                // no number here to assert about any more; what this disposition claims is that
+                // the DOCUMENT names an open owner, and `Reading::backlog_owners` is where that
+                // claim is put to a document. Asserted there, over three ledgers, rather than here
+                // over none.
+                Reckoning::Owned => assert!(
+                    !backlog.token.is_empty(),
+                    "`{}` says an item owns it, and the ledger says which",
                     backlog.label,
                 ),
                 Reckoning::Exempt(why) => {
@@ -5174,16 +5364,25 @@ mod tests {
     fn a_backlog_whose_owner_left_the_population_is_red() {
         // ⚠ ASKED OF THE READING, not read off `faults` — see `backlog_owners`, which records
         // the eleven tests that went red when this lived inside `read`.
-        let reading = read(LEDGER);
+        //
+        // ⛔⛔⛔ AND THE OWNER IS THE LEDGER'S — register item 939. `LEDGER` is a fixture, not
+        // this repository's register, and until 939 the claim under test was about item 938:
+        // a number no fixture could carry, which is why this arm could only ever be exercised
+        // against one document in the world.
+        let owned = LEDGER.replace(
+            "     @ns: paid\n",
+            "     @ns: paid\n     @owns: @paid-uncommitted:\n",
+        );
+        let reading = read(&owned);
         let screened = reading.backlog_owners();
-        assert!(
-            screened.faults.contains(&Fault::BacklogOwnerClosed {
+        assert_eq!(
+            screened.faults,
+            vec![Fault::BacklogOwnerClosed {
                 token: PAID_DECLARATION,
-                owner: 938,
-            }),
+                owner: 899,
+            }],
             "⛔⛔⛔⛔⛔ REGISTER ITEM 937: a backlog naming an owner that is not open has no owner \
-             at all, and nothing said so. The remedy is to judge it again — a new owner, or an \
-             exemption with its sentence: {:?}",
+             at all, and nothing said so. 899 is `paid`, so it carries nothing: {:?}",
             screened.faults,
         );
         // ⛔⛔⛔ REGISTER ITEM 940: AND THE DENOMINATOR IS THE OWNED BACKLOGS, NOT ALL FOUR. One
@@ -5200,7 +5399,9 @@ mod tests {
                 .backlogs()
                 .each()
                 .iter()
-                .filter(|backlog| matches!(backlog.reckoning, Reckoning::Owned(_)))
+                .filter(|backlog| {
+                    backlog.reckoning == Reckoning::Owned && !backlog.items.is_empty()
+                })
                 .count(),
             screened.judged,
             "⚠⚠ THE PREMISE OF THAT COUNT, MEASURED RATHER THAN ASSERTED: without this the `1` \
@@ -5208,15 +5409,181 @@ mod tests {
              the same number on this one fixture",
         );
         // ⚠ AND THE MESSAGE SAYS WHAT TO DO, which is register item 926's rule for every refusal
-        // in this file: a reader told only *the owner is gone* has to re-derive the two remedies.
-        let said = Fault::BacklogOwnerClosed {
-            token: PAID_DECLARATION,
-            owner: 938,
-        }
-        .to_string();
+        // in this file: a reader told only *the owner is gone* has to re-derive the remedy.
+        //
+        // ⛔⛔⛔⛔⛔ AND IT NAMES THE LEDGER — register item 939(4). The sentence used to send its
+        // reader to `north_star.rs`, which was TRUE while the number lived there and became a
+        // correct-looking direction to the wrong file the moment it did not. An instruction that
+        // outlives its fact is register item 933's shape, and 939 named this one in advance.
+        let said = screened.faults[0].to_string();
         assert!(
-            said.contains("name an open owner, or write why it needs none"),
-            "the refusal must name both remedies: {said}",
+            said.contains("Move the `@owns: @paid-uncommitted:` line out of item 899's block"),
+            "the refusal must name the ledger line to move: {said}",
+        );
+        assert!(
+            !said.contains("north_star.rs"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 939(4): the refusal still sends its reader to the crate, \
+             where the number no longer is: {said}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND A LEDGER THAT IS NOT THIS REPOSITORY'S CAN BE GREEN** — register item 939's
+    /// second done-when, which is the whole reason the item exists.
+    ///
+    /// # ⛔⛔⛔ The state this was opened in, measured
+    ///
+    /// `Reckoning::Owned(938)` made every document except one red. **Measured 2026-09-07**, the
+    /// binary run against a two-item ledger belonging to no repository exited 1 with
+    /// *"item 938 is not in the open population"* — about a document that had never heard of 938.
+    /// Register item 939's own words: *a gate red on every document but one is not a gate.*
+    ///
+    /// ⚠⚠ The three arms below are one predicate asked of three ledgers, and the first is the
+    /// control the other two are only meaningful against.
+    #[test]
+    fn any_ledger_that_names_an_open_owner_is_green_and_one_that_names_none_is_not() {
+        // ⑴ NAMES AN OPEN OWNER → silent. 900 is the open item of this fixture.
+        let named = LEDGER.replace(
+            "     @ns: open — the loop's own driver\n",
+            "     @ns: open — the loop's own driver\n     @owns: @paid-uncommitted:\n",
+        );
+        let reading = read(&named);
+        assert!(
+            reading.is_green(),
+            "the fixture must parse clean for the rest to say anything: {:?}",
+            reading.faults,
+        );
+        let screened = reading.backlog_owners();
+        assert_eq!(
+            screened.judged, 1,
+            "⚠ THE PREMISE: this is the second kind of empty — a question WAS put: {screened}",
+        );
+        assert!(
+            screened.faults.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 939: a ledger that says who owns its backlog is a ledger \
+             this gate has nothing to say about, whatever repository it belongs to: {:?}",
+            screened.faults,
+        );
+
+        // ⑵ NAMES NOBODY → red, and the refusal says what line to write.
+        let unclaimed = read(LEDGER).backlog_owners();
+        assert_eq!(
+            unclaimed.faults,
+            vec![Fault::BacklogOwnerUnclear {
+                token: PAID_DECLARATION,
+                claimed: vec![],
+            }],
+            "⛔ a backlog that is real work and that nobody claims is carried by nobody: {:?}",
+            unclaimed.faults,
+        );
+        assert!(
+            unclaimed.faults[0]
+                .to_string()
+                .contains("Put `@owns: @paid-uncommitted:` in the block of the open item"),
+            "the refusal must hand over the line to write: {}",
+            unclaimed.faults[0],
+        );
+
+        // ⑶ NAMED TWICE → red. Ownership that is shared is ownership nobody has, and rule 6 says
+        // an ambiguous state is not a pass.
+        let twice = named.replace(
+            "     @ns: out — a rendering defect, nothing to do with the loop",
+            "     @ns: out — a rendering defect\n     @owns: @paid-uncommitted:",
+        );
+        assert_eq!(
+            read(&twice).backlog_owners().faults,
+            vec![Fault::BacklogOwnerUnclear {
+                token: PAID_DECLARATION,
+                claimed: vec![898, 900],
+            }],
+            "two claimants is not one: {:?}",
+            read(&twice).backlog_owners().faults,
+        );
+    }
+
+    /// ⚠⚠ **A BACKLOG AT ZERO NEEDS NO OWNER** — working rule 5 asked of this gate, and the arm
+    /// that keeps it from demanding a carrier for work that does not exist.
+    ///
+    /// ⛔ It is not a way to stay green: the question returns the moment the count does, which is
+    /// asserted here rather than argued — the same ledger with one uncommitted `paid` mark reds.
+    #[test]
+    fn a_backlog_at_zero_needs_no_owner_and_asks_again_the_moment_it_grows() {
+        let empty = LEDGER
+            .replace("     @ns: paid\n", "     @ns: paid — closed by `deadbee`\n")
+            .replace("@paid-uncommitted: 1", "@paid-uncommitted: 0");
+        let reading = read(&empty);
+        assert!(
+            reading.backlogs().paid_unnamed.items.is_empty(),
+            "the premise: {:?}",
+            reading.backlogs().paid_unnamed,
+        );
+        let screened = reading.backlog_owners();
+        assert!(screened.faults.is_empty(), "{:?}", screened.faults);
+        assert_eq!(
+            screened.judged, 0,
+            "⛔⛔⛔ REGISTER ITEM 924's SHAPE, KEPT: nothing was asked, and the report says so \
+             rather than reading like a gate that asked and approved: {screened}",
+        );
+        // ⚠⚠ AND THE COUNTER-EXAMPLE: put the work back and the question returns. Without this the
+        // `0` above would be indistinguishable from an exemption that had swallowed the gate.
+        assert_eq!(read(LEDGER).backlog_owners().judged, 1);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN OWNER LINE NAMING SOMETHING THAT IS NOT A BACKLOG IS RED** — register item
+    /// 939, and this workspace's rule 6 in the one place a typo would retire the gate: a
+    /// misspelled token would leave the backlog unclaimed while the line reads like a claim.
+    #[test]
+    fn an_owner_line_that_names_no_backlog_is_red() {
+        let typo = LEDGER.replace(
+            "     @ns: open — the loop's own driver\n",
+            "     @ns: open — the loop's own driver\n     @owns: @paid-uncomitted:\n",
+        );
+        let reading = read(&typo);
+        assert!(
+            reading.faults.contains(&Fault::UnknownOwned {
+                number: 900,
+                line: "     @owns: @paid-uncomitted:".to_string(),
+            }),
+            "⛔ one letter short of the token is not the token: {:?}",
+            reading.faults,
+        );
+        // ⚠⚠ AND IT DOES NOT SILENTLY COUNT AS A CLAIM EITHER — the backlog is still unowned, and
+        // both faults stand. A parse that had kept the typo would have been green here.
+        assert_eq!(
+            reading.backlog_owners().faults,
+            vec![Fault::BacklogOwnerUnclear {
+                token: PAID_DECLARATION,
+                claimed: vec![],
+            }],
+        );
+    }
+
+    /// ⚠⚠⚠ **AND THE OWNER LINE DOES NOT MAKE THE LEDGER DECLARE TWICE** — register item 823's
+    /// trap, measured against this item's own shape before the shape was chosen.
+    ///
+    /// A floor is found by `line.trim_start().starts_with(<token>)`. An [`OWNER`] line NAMES a
+    /// declaration token, so a shape that put it first would have made every owning item a second
+    /// declaration — which is exactly how item 823 went red, and how register item 939's own
+    /// register entry went red while being written.
+    #[test]
+    fn an_owner_line_naming_a_declaration_token_is_not_a_declaration() {
+        let named = LEDGER.replace(
+            "     @ns: open — the loop's own driver\n",
+            "     @ns: open — the loop's own driver\n     @owns: @paid-uncommitted:\n",
+        );
+        assert!(
+            !read(&named)
+                .faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::PaidDeclaration { .. })),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 823: the ledger now reads as declaring its floor twice, so \
+             the shape chosen for register item 939 walked into the trap it was measured against: \
+             {:?}",
+            read(&named).faults,
+        );
+        assert_eq!(
+            read(&named).backlogs().paid_unnamed.declared,
+            Some(1),
+            "and the one real declaration is still the one that counts",
         );
     }
 
