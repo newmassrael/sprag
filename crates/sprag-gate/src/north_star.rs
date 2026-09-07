@@ -2161,6 +2161,39 @@ impl fmt::Display for Ending {
     }
 }
 
+/// 🎯🎯🎯🎯🎯 **WHAT TO DO WITH AN UNREAD BLOCK, SAID WHERE ONE IS HANDED OVER** — register item
+/// 936(1), whose done-when asks that the work say *what you read and what you write so the count
+/// falls by one*.
+///
+/// # ⛔⛔⛔ Why this is a sentence the INSTRUMENT says
+///
+/// [`Reading::admits`]'s third tier makes an unread block takeable, but the tier only fires once
+/// the population empties — on this ledger roughly a hundred and sixty rounds from the day it was
+/// written. A procedure recorded in a register entry that far ahead is prose nobody re-reads,
+/// which is this workspace's rule 10 arriving at the worst possible distance. So the answer rides
+/// on the reply that offers the block.
+///
+/// # 📊 Every clause measured, 2026-09-07 — and what each omission costs
+///
+/// Driven against the real ledger, one unread block marked and the reading re-run:
+///
+/// | what was written | result |
+/// |---|---|
+/// | `@ns: out` **and** the floor lowered by one | `rc=0`, stderr empty |
+/// | the mark alone, floor left standing | `rc=1` — [`Fault::RatchetSlack`], which names the number to write |
+/// | `@ns: open` with no [`SEVERITY`] | `rc=1` — [`Fault::SeverityRatchetGrew`] |
+/// | `@ns: paid` with no commit id on the mark line | `rc=1` — [`Fault::PaidRatchetGrew`] |
+///
+/// ⚠⚠ **NOT A WORD OF THIS IS SPELLED IN CAPITALS, AND THAT IS LOAD-BEARING.** This is the only
+/// free prose that reaches an `--admits` reply — everything else interpolated there is a fixed
+/// string, an item number, or [`Reaim::spelled`]'s two words — and `sprag_plugin::judge` finds a
+/// verdict by taking the first MARKED word, where the marks are *opens the reply* **or** *all
+/// capitals*. A capitalised yes-or-no word here could be read as the verdict itself; register item
+/// 743 records what one misread verdict cost.
+pub const CLASSIFY_REMEDY: &str = "it carries no `@ns:` mark — read the block, write \
+     `@ns: open|paid|out`, and lower `@ns-unclassified:` by one. An `open` verdict needs `@sev:` \
+     too and a `paid` one needs a commit id on the mark line, or that ratchet reds instead.";
+
 /// Judge one backlog against the floor its ledger declares — **in both directions**.
 ///
 /// # ⛔⛔⛔⛔⛔ Why this is a function, and why all four go through it
@@ -4618,6 +4651,39 @@ mod tests {
         );
     }
 
+    /// 🎯🎯🎯🎯🎯 **THE REMEDY NAMES EVERY EDIT ITS OWN GATES DEMAND** — register item 936(1).
+    ///
+    /// A procedure that leaves one clause out is worse than none: a round follows it, goes red on
+    /// the ratchet it was not told about, and learns to distrust the sentence. Each token below is
+    /// the one a measured omission reds on — see [`CLASSIFY_REMEDY`]'s table.
+    #[test]
+    fn the_remedy_names_each_edit_and_marks_no_verdict() {
+        for token in [TAG, DECLARATION, SEVERITY, "commit id"] {
+            assert!(
+                CLASSIFY_REMEDY.contains(token),
+                "⛔⛔⛔⛔ REGISTER ITEM 936: the remedy omits `{token}`, so a round that follows it \
+                 goes red on a gate it was not told about: {CLASSIFY_REMEDY}",
+            );
+        }
+        // ⛔⛔⛔⛔⛔ AND IT MARKS NO VERDICT — the constraint `CLASSIFY_REMEDY`'s doc states, held
+        // here rather than trusted: this is the only free prose in an `--admits` reply, and
+        // `judge` reads a verdict from the first word that OPENS the reply or is ALL CAPITALS.
+        let marked: Vec<&str> = CLASSIFY_REMEDY
+            .split_whitespace()
+            .map(|word| word.trim_matches(|c: char| !c.is_ascii_alphabetic()))
+            .filter(|word| {
+                !word.is_empty()
+                    && word.chars().all(|c| c.is_ascii_uppercase())
+                    && matches!(word.to_ascii_uppercase().as_str(), "YES" | "NO")
+            })
+            .collect();
+        assert!(
+            marked.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 743's defect, one road over: a capitalised verdict word in \
+             this sentence can be read AS the verdict. Found {marked:?} in: {CLASSIFY_REMEDY}",
+        );
+    }
+
     /// 🎯🎯🎯🎯🎯 **AN EMPTY ADMISSIBLE SET NOW MEANS *FINISHED* AND NEVER *STUCK*** — register
     /// item 936, and the single statement the whole item buys.
     ///
@@ -4799,6 +4865,19 @@ mod tests {
             "⛔⛔⛔⛔⛔ REGISTER ITEM 936: the report no longer prints whether the north star is \
              reached, so the only mechanical answer to that question is one nobody sees — and the \
              ending goes back to being a sentence an agent judges by eye",
+        );
+        // 🎯 AND THE REMEDY, at the one moment an unread block is handed to a round — register
+        // item 936(1). Held here because the test above judges the CONSTANT, and only this says
+        // the constant is what reaches a reader.
+        // ⚠⚠⚠ THE PRINT AND NOT THE MENTION. Written first as `contains("CLASSIFY_REMEDY")`,
+        // this passed against a binary whose line had been replaced by `let _ = …CLASSIFY_REMEDY;`
+        // — the constant was still named and nothing reached a reader. A gate that a mutation
+        // walks through is the hole, not the mutation.
+        assert!(
+            BIN.contains("println!(\"  {}\", north_star::CLASSIFY_REMEDY)"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 936(1): the reply that hands over an unread block no longer \
+             says what to do with it, so the procedure is back to living in a register entry a \
+             hundred and sixty rounds away from the round that needs it",
         );
         for (backlog, field) in [
             (&unclassified, "backlogs.unclassified"),

@@ -500,6 +500,15 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
              {how}.",
             admitted.len(),
         );
+        // 🎯🎯🎯🎯🎯 AND IF WHAT IS BEING HANDED OVER IS AN UNREAD BLOCK, WHAT TO DO WITH IT —
+        // register item 936(1). See `north_star::CLASSIFY_REMEDY`, which owns the sentence and the
+        // measurement behind each of its clauses.
+        //
+        // ⚠⚠ A SECOND LINE, never a change to the first: the reply's opening word is the verdict
+        // a run reads, and `sprag_plugin::judge` takes the first MARKED word.
+        if reading.backlogs().unclassified.items.contains(&number) {
+            println!("  {}", north_star::CLASSIFY_REMEDY);
+        }
         return std::process::ExitCode::SUCCESS;
     }
     // ⚠⚠ THE REASON NAMES WHICH RULE REFUSED IT, because the two remedies differ: an item the
