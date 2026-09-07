@@ -888,7 +888,8 @@ impl fmt::Display for Fault {
                 "`{token}`'s backlog says item {owner} owns bringing it to zero, and {owner} is \
                  not in the open population — so nothing carries that work and no round can be \
                  routed to it. Judge the backlog again: name an open owner, or write why it needs \
-                 none",
+                 none — the judgement is the `Reckoning` beside this backlog in `north_star.rs`, \
+                 not a line in the ledger",
             ),
             Self::UnreadableDeclaration { line } => write!(
                 f,
