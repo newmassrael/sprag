@@ -1609,12 +1609,7 @@ impl Reading {
         let population = self.population();
         let backlogs = self.backlogs();
         let mut gone = Vec::new();
-        for backlog in [
-            &backlogs.unclassified,
-            &backlogs.unranked,
-            &backlogs.unrooted,
-            &backlogs.paid_unnamed,
-        ] {
+        for backlog in backlogs.each() {
             if let Reckoning::Owned(owner) = backlog.reckoning
                 && !population.contains(&owner)
             {
@@ -2214,6 +2209,33 @@ pub struct Backlogs {
     pub unrooted: Backlog,
     /// PAID items naming no commit — register item 902.
     pub paid_unnamed: Backlog,
+}
+
+impl Backlogs {
+    /// 🎯🎯🎯🎯🎯 **ALL FOUR, ENUMERATED IN ONE PLACE** — register item 937.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this is destructured rather than four field reads
+    ///
+    /// [`Reckoning`] forces a fifth backlog's author to JUDGE it — the struct literal will not
+    /// compile without the field. It does not force anyone to CHECK that judgement, and the check
+    /// lived in a hand-listed array of four: a fifth backlog declaring
+    /// [`Reckoning::Owned`] would have been judged and then never verified, which needs no
+    /// deliberate evasion, only forgetting.
+    ///
+    /// Destructuring `Self` here makes a fifth field a compile error in **this one place**, and
+    /// everything that walks the backlogs walks it through here. Measured before writing it: this
+    /// struct has four fields and three destructurings, none of them using `..`, so the judgement
+    /// was already forced everywhere — only its checking was not.
+    #[must_use]
+    pub fn each(&self) -> [&Backlog; 4] {
+        let Self {
+            unclassified,
+            unranked,
+            unrooted,
+            paid_unnamed,
+        } = self;
+        [unclassified, unranked, unrooted, paid_unnamed]
+    }
 }
 
 /// 🎯🎯🎯🎯🎯 **WHETHER THIS LEDGER'S NORTH STAR IS REACHED** — register item 936, and the
@@ -4798,16 +4820,13 @@ mod tests {
     #[test]
     fn every_backlog_is_judged_and_the_exemptions_are_counted() {
         let reading = read(LEDGER);
-        let Backlogs {
-            unclassified,
-            unranked,
-            unrooted,
-            paid_unnamed,
-        } = reading.backlogs();
+        let backlogs = reading.backlogs();
         let ending = reading.ending();
 
+        // ⚠ THROUGH `each`, not a list written here — see its doc. A judgement counted by a
+        // hand-listed array is one a fifth backlog joins only if somebody remembers.
         let mut exempt: Vec<&'static str> = Vec::new();
-        for backlog in [&unclassified, &unranked, &unrooted, &paid_unnamed] {
+        for backlog in backlogs.each() {
             match &backlog.reckoning {
                 Reckoning::Counted => assert_eq!(
                     backlog.items, ending.unclassified,
