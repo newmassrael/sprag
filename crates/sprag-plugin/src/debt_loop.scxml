@@ -913,12 +913,33 @@
       document silently granted the looser bound would be worse.
       ══════════════════════════════════════════════════════════════════════════
 
-      ⚠⚠⚠⚠ **max_bytes — TWO MEBIBYTES.** Four times the largest run this daemon
-      has ever recorded converging (516,020), and at that run's own measured rate
-      of 419 bytes per iteration it is about five thousand iterations of typing.
-      It is a real bound rather than a formality: a loop that has stopped making
-      progress and is still typing meets it, and a loop doing four times the most
-      work ever recorded does not.
+      ⛔⛔⛔⛔⛔ **max_bytes — `never`, BY THE OWNER'S DECISION OF 2026-09-07.**
+      Register item 941.
+
+      It read TWO MEBIBYTES and was argued this way: *four times the largest run
+      this daemon has ever recorded converging (516,020), and at that run's own
+      measured rate of 419 bytes per iteration about five thousand iterations of
+      typing — a real bound rather than a formality, because a loop that has
+      stopped making progress and is still typing meets it.*
+
+      ⚠⚠⚠ THAT ARGUMENT IS STILL TRUE AND THE OWNER TOOK THE TRADE ANYWAY. The
+      question put was whether to lift the clock alone or all three, and the
+      answer was all three. **So this clause loses a rail rather than a
+      formality**, and that is written here rather than in a summary nobody
+      re-reads: with the two spending bounds gone, nothing left in `Ceiling::ALL`
+      measures PROGRESS — the four remaining endings (converged, blocked,
+      unadmitted, stood_down) all need the loop to judge itself or a person to
+      step in.
+
+      ⛔ WHAT TO DO IF THAT COSTS SOMETHING, and it is deliberately NOT to put a
+      number back: build a ceiling that measures progress — *N steps with no
+      commit and no ledger edit* — which is the predicate `max_bytes` was standing
+      in for all along. Do not build it before a stopped run is actually observed;
+      an unmeasured number is what this whole clause refuses.
+
+      ⚠ AND THE STEP CEILING BELOW STILL HOLDS A NUMBER, which is not a second
+      decision: `Guardrails::max_iterations` is a `u32` and has no value meaning
+      *no bound*. Giving it one is this item's second layer.
 
       ⚠⚠⚠ **max_iterations — FIVE THOUSAND**, and it agrees with the line above
       rather than being a second guess. The largest converged run took 1,231
@@ -969,7 +990,7 @@
     -->
     <data id="guardrails"
           expr="{
-            max_bytes:      2097152,
+            max_bytes:      'never',
             max_iterations: 5000,
             max_seconds:    'never'
           }"/>

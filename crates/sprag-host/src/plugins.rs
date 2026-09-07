@@ -4140,20 +4140,39 @@ enum PluginKind {
 /// wrong currency on this road either. `parse_max_cost` already refuses that of a caller; a
 /// document that named `max_tokens` for a byte-spending plugin is the same mistake and is refused
 /// in the same words, by the same publication.
-/// ⛔⛔⛔⛔⛔ **AND THE TIME BOUND IS THREE-STATED** — register item 941. `None` is *the document
-/// said nothing*, which falls through to this daemon's constant; [`Counted::Never`] is *the
-/// document decided there is no bound*, which is the opposite of an absence and the whole reason
-/// this field is not an `Option<Duration>`. It is [`Counted`]'s own argument, reused rather than
-/// re-derived: `sprag_plugin` already holds `max_turns` this way off the same datamodel.
+/// ⛔⛔⛔⛔⛔ **AND THE TWO BOUNDS THE SUBSTRATE CAN LEAVE OFF ARE THREE-STATED** — register item
+/// 941. `None` is *the document said nothing*, which falls through to this daemon's constant;
+/// [`Declared::Never`] is *the document decided there is no bound*, which is the opposite of an
+/// absence. It is [`Counted`]'s own argument one crate over, reused rather than re-derived:
+/// `sprag_plugin` already holds `max_turns` this way off the same datamodel.
 ///
-/// ⚠ Seconds and not a [`Duration`], because that is the unit the clause is authored in and one
-/// conversion in one place ([`parse_guardrails`]) is what keeps the `never` arm from acquiring a
-/// second spelling.
+/// ⚠⚠ `max_iterations` is the odd one and that is the SUBSTRATE's shape, not a decision here:
+/// [`Guardrails::max_iterations`](sprag_plugin::Guardrails) is a `u32` with no value for *no
+/// bound*, so there is nothing for a third state to resolve to. The owner asked for all three on
+/// 2026-09-07 and giving it one is register item 941's second layer — a change to that field's
+/// every reader, kept out of this commit deliberately.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 struct AuthoredGuardrails {
     max_iterations: Option<u32>,
-    max_cost: Option<Cost>,
-    max_duration: Option<Counted>,
+    max_cost: Option<Declared<Cost>>,
+    max_duration: Option<Declared<Duration>>,
+}
+
+/// ⛔⛔⛔⛔⛔ **A BOUND A DOCUMENT MAY ALSO DECLINE** — register item 941, and [`Counted`]'s shape
+/// carried into the types the guardrail clause actually resolves to.
+///
+/// # ⚠⚠ Why not `Counted` itself, which is already this word one crate over
+///
+/// `Counted` holds an `i64`, and this file's own [`AuthoredGuardrails`] doc records why the cost
+/// bound must be a [`Cost`] and not a number: *so a bound cannot be misloaded into the wrong
+/// currency on this road either.* Reusing `Counted` here would have thrown that away to save a
+/// type — the currency protection is older than this item and outranks the saving.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Declared<T> {
+    /// The document named a bound.
+    Of(T),
+    /// The document said there is none.
+    Never,
 }
 
 /// ⛔⛔⛔⛔⛔ **AN AUTHORED NUMBER A CALLER MAY REPLACE THAT IS NOT A GUARDRAIL** — register item
@@ -5062,28 +5081,24 @@ fn kind_guardrails(
     // ⛔⛔⛔⛔⛔ AND A BOUND THAT DECLINES WHERE THE SUBSTRATE CANNOT — register item 941. The
     // sentence names the type, because the author of the clause is the one who has to hear WHY the
     // word is admitted one line up and refused here.
-    let cannot_decline = |name: &str, why: &str| {
-        refused(format!(
-            "this repository's loop-kind document says `{name}: never`, and a run cannot be \
-             unbounded that way: {why}. Only `max_seconds` may decline, because a run with no \
-             wall-clock bound is a `max_duration` of `None` and the substrate already has that \
-             value"
-        ))
-    };
-    let whole = |name: &'static str, why: &'static str| -> Result<Option<i64>, InvokeError> {
-        match named.get(name) {
-            Some(Counted::Of(held)) => Ok(Some(*held)),
-            Some(Counted::Never) => Err(cannot_decline(name, why)),
-            None => Ok(None),
+    // ⛔⛔⛔⛔⛔ THE ONE BOUND THAT CANNOT DECLINE, AND THE REFUSAL SAYS WHY IT IS THE SUBSTRATE
+    // AND NOT A POLICY — register item 941. The owner asked for all three on 2026-09-07; two of
+    // them are `Option` in `Guardrails` and take the word today, and this one is a `u32`. Filling
+    // it with `u32::MAX` instead would be the *number nobody reasoned about* this whole clause
+    // exists against, so the honest answer is a refusal that names the work rather than a clamp.
+    let max_iterations = match named.get("max_iterations") {
+        Some(Counted::Never) => {
+            return Err(refused(
+                "this repository's loop-kind document says `max_iterations: never`, and this \
+                 daemon cannot yet carry that: `Guardrails::max_iterations` is a `u32` with no \
+                 value meaning *no bound*. Giving it one is register item 941's second layer — it \
+                 changes every reader of that field — and clamping to the largest `u32` instead \
+                 would be a ceiling nobody reasoned about, which is what the clause refuses"
+                    .to_string(),
+            ));
         }
-    };
-    let max_iterations = match whole(
-        "max_iterations",
-        "`Guardrails::max_iterations` is a `u32` and has no value meaning *no bound*, and clamping \
-         it to the largest one would be a ceiling nobody reasoned about",
-    )? {
-        Some(held) => Some(
-            u32::try_from(held)
+        Some(Counted::Of(held)) => Some(
+            u32::try_from(*held)
                 .ok()
                 .filter(|it| *it > 0)
                 .ok_or_else(|| out_of_range("max_iterations"))?,
@@ -5095,42 +5110,34 @@ fn kind_guardrails(
     // this daemon's constant; the word means *the document decided there is no bound*, and reading
     // them as one would answer the owner's instruction with a six-hour default.
     let max_duration = match named.get("max_seconds") {
-        Some(Counted::Of(held)) => Some(Counted::Of(
-            i64::try_from(
-                u64::try_from(*held)
-                    .ok()
-                    .filter(|it| *it > 0)
-                    .ok_or_else(|| out_of_range("max_seconds"))?,
-            )
-            .map_err(|_| out_of_range("max_seconds"))?,
-        )),
-        Some(Counted::Never) => Some(Counted::Never),
+        Some(Counted::Of(held)) => Some(Declared::Of(Duration::from_secs(
+            u64::try_from(*held)
+                .ok()
+                .filter(|it| *it > 0)
+                .ok_or_else(|| out_of_range("max_seconds"))?,
+        ))),
+        Some(Counted::Never) => Some(Declared::Never),
         None => None,
     };
     // ⚠⚠ THE COST KEY IS THE UNIT'S OWN, so the same clause read for a token-spending plugin looks
     // for `max_tokens` — and `Cost::sized` is what keeps the currency from being crossed.
     let cost_key = unit.bound_key();
     let max_cost = match named.get(cost_key) {
-        Some(Counted::Of(held)) => Some(
+        Some(Counted::Of(held)) => Some(Declared::Of(
             unit.sized(
                 u64::try_from(*held)
                     .ok()
                     .filter(|it| *it > 0)
                     .ok_or_else(|| out_of_range(cost_key))?,
             ),
-        ),
-        // ⚠ The substrate CAN express this one — `max_cost` is an `Option` — and it is refused all
-        // the same, which is a decision this file's own doc argues rather than a limitation: the
-        // cost and step bounds are derived from one measured rate so they bite together, and they
-        // are what stops a run that has stopped making progress. Widening it is the owner's ask.
-        Some(Counted::Never) => {
-            return Err(cannot_decline(
-                cost_key,
-                "this loop's cost and step bounds are derived from one measured rate so they bite \
-                 at the same place, and they are the only rail that ends a run which has stopped \
-                 making progress and is still typing",
-            ));
-        }
+        )),
+        // ⛔ AND THIS ONE TAKES THE WORD — register item 941. It was refused for one round with a
+        // sentence reading *"widening it is the owner's to ask for"*, and the owner had already
+        // asked: the decision of 2026-09-07 was all three, and the round that wrote that refusal
+        // had read this item before the decision was recorded in it. `Guardrails::max_cost` is an
+        // `Option<Cost>` whose own doc says `None` *"leaves cost unbounded"*, so the substrate has
+        // carried this all along.
+        Some(Counted::Never) => Some(Declared::Never),
         None => None,
     };
     Ok(AuthoredGuardrails {
@@ -6094,15 +6101,21 @@ fn parse_guardrails(
     // daemon's 49 recorded runs ended `exhausted (cost)` at the 64 KiB default, while the largest
     // run that converged spent 516,020 bytes).
     let iterations = || authored.max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
-    let cost = || authored.max_cost.unwrap_or(default_cost);
+    // ⛔⛔⛔ AND THE COST BOUND HANDS BACK AN `Option` TOO — register item 941, all three states on
+    // the same three arms as the clock below it.
+    let cost = || match authored.max_cost {
+        Some(Declared::Never) => None,
+        Some(Declared::Of(amount)) => Some(amount),
+        None => Some(default_cost),
+    };
     // ⛔⛔⛔⛔⛔ AND THIS ONE HANDS BACK AN `Option`, WHICH IS THE WHOLE OF REGISTER ITEM 941. The
     // three states are the document's word (`never` ⇒ no bound at all), the document's number, and
     // the document saying nothing (⇒ this daemon's constant). Folding the first into the third is
     // what made the owner's instruction — *every sprag loop unbounded* — sayable only by a caller
     // overriding the bound every round, which is register item 853's forbidden shape.
     let duration = || match authored.max_duration {
-        Some(Counted::Never) => None,
-        Some(Counted::Of(secs)) => Some(Duration::from_secs(secs.unsigned_abs())),
+        Some(Declared::Never) => None,
+        Some(Declared::Of(held)) => Some(held),
         None => Some(Duration::from_secs(DEFAULT_MAX_SECONDS)),
     };
     // ⚠ DECLINED, not merely absent — see [`declined`](crate::external::declined). A client whose
@@ -6112,7 +6125,7 @@ fn parse_guardrails(
         return Ok(Resolved {
             bounds: Guardrails {
                 max_iterations: iterations(),
-                max_cost: Some(cost()),
+                max_cost: cost(),
                 max_duration: duration(),
             },
             // A caller that named no `guardrails` object at all took NOTHING, which is a different
@@ -6167,7 +6180,7 @@ fn parse_guardrails(
     Ok(Resolved {
         bounds: Guardrails {
             max_iterations,
-            max_cost: parse_max_cost(g, cost())?,
+            max_cost: parse_max_cost(g, default_cost, cost())?,
             max_duration,
         },
         // ⚠⚠⚠⚠⚠ READ OFF THE SAME `g` AND THE SAME `declined` THE THREE BRANCHES ABOVE READ —
@@ -6185,7 +6198,15 @@ fn parse_guardrails(
 /// currency. Both keys present, a non-integer, or the wrong unit → a synchronous
 /// [`InvokeError`] (a misloaded spend guardrail is a submit-time error, never a
 /// silently looser-by-a-factor bound).
-fn parse_max_cost(g: &Map<String, Value>, default_cost: Cost) -> Result<Option<Cost>, InvokeError> {
+fn parse_max_cost(
+    g: &Map<String, Value>,
+    // ⚠ THE UNIT AND THE RESOLVED BOUND ARE TWO ARGUMENTS SINCE REGISTER ITEM 941, because they
+    // stopped being one value: a document may now decline the bound, and *no bound* has no unit to
+    // read a currency off. The unit is the PLUGIN's and is always there; the bound is what a caller
+    // naming nothing falls through to, and `None` there is a run that spends without a ceiling.
+    unit: Cost,
+    fallen_through: Option<Cost>,
+) -> Result<Option<Cost>, InvokeError> {
     // ⚠⚠ A DECLINED KEY IS NOT A GIVEN ONE, and here that is load-bearing rather than tidy: the
     // XOR below refuses BOTH-given, so a client declining one unit with `null` would have been told
     // it had named two cost units when it had named one.
@@ -6200,12 +6221,12 @@ fn parse_max_cost(g: &Map<String, Value>, default_cost: Cost) -> Result<Option<C
         }
         (Some(v), None) => Cost::Bytes(v.as_u64().ok_or(InvokeError::TypeMismatch)?),
         (None, Some(v)) => Cost::Tokens(v.as_u64().ok_or(InvokeError::TypeMismatch)?),
-        (None, None) => return Ok(Some(default_cost)),
+        (None, None) => return Ok(fallen_through),
     };
-    if bound.unit() != default_cost.unit() {
+    if bound.unit() != unit.unit() {
         return Err(refused(format!(
             "this plugin spends {}, so a {} bound cannot guard it",
-            default_cost.unit(),
+            unit.unit(),
             bound.unit()
         )));
     }
@@ -16244,7 +16265,10 @@ mod tests {
                     resolved
                         .max_cost
                         .map_or(Bound::Never, |it| Bound::Of(it.amount())),
-                    authored.max_cost.map(|it| Bound::Of(it.amount())),
+                    authored.max_cost.map(|it| match it {
+                        Declared::Of(amount) => Bound::Of(amount.amount()),
+                        Declared::Never => Bound::Never,
+                    }),
                 ),
                 // ⛔⛔⛔⛔⛔ AND THIS ONE MAY SAY *NEVER BITES* — register item 941(4). It is
                 // rendered into the SAME pair as its neighbours rather than short-circuited past
@@ -16259,8 +16283,8 @@ mod tests {
                         .max_duration
                         .map_or(Bound::Never, |it| Bound::Of(it.as_secs())),
                     authored.max_duration.map(|it| match it {
-                        Counted::Of(secs) => Bound::Of(secs.unsigned_abs()),
-                        Counted::Never => Bound::Never,
+                        Declared::Of(held) => Bound::Of(held.as_secs()),
+                        Declared::Never => Bound::Never,
                     }),
                 ),
                 // ⚠ The plugin's own budget, which this kind DECLINES with a word rather than a
@@ -16322,11 +16346,17 @@ mod tests {
              eight of this daemon's forty-nine recorded runs mid-round. A debt run that converges \
              spends 516,020 bytes",
         );
+        // ⚠⚠⚠ AND IT MUST NOT CUT THE WORK THIS LOOP EXISTS TO DO — the same claim as ever, said
+        // over the two states this bound now has. It used to read *the number must exceed 516,020*
+        // (run 17: 1,231 iterations, the largest this daemon has recorded converging); since
+        // register item 941 the owner's answer for this kind is that there is no number, and a run
+        // with no cost ceiling cannot cut anything. `None` is therefore the STRONGER arm and not a
+        // hole — what would be a hole is a small number, which is exactly what is still refused.
         assert!(
-            resolved.max_cost.map(Cost::amount).unwrap_or_default() > 516_020,
-            "⚠⚠⚠⚠ and it must exceed the largest run this daemon has ever recorded CONVERGING \
-             (run 17: 1,231 iterations, 516,020 bytes), or the ceiling still cuts the work this \
-             loop exists to do. Read {:?}",
+            resolved.max_cost.is_none_or(|held| held.amount() > 516_020),
+            "⚠⚠⚠⚠ a cost ceiling that is a number must exceed the largest run this daemon has \
+             ever recorded CONVERGING (run 17: 1,231 iterations, 516,020 bytes), or it still cuts \
+             the work this loop exists to do. Read {:?}",
             resolved.max_cost,
         );
 
@@ -16344,12 +16374,24 @@ mod tests {
         let run_41 = parse_guardrails(partly.as_object().expect("an object"), unit, authored)
             .expect("the launch that filed this item resolves")
             .bounds;
-        assert_eq!(
-            run_41.max_cost, authored.max_cost,
+        assert_ne!(
+            run_41.max_cost,
+            Some(Cost::Bytes(DEFAULT_MAX_BYTES)),
             "⛔⛔⛔⛔⛔ THE LAUNCH THIS ITEM WAS FILED ON IS STILL ON THE DAEMON'S DEFAULT. Naming \
              two ceilings and forgetting the third is what a person does, and it is what run 41 \
              did — so a fall-through keyed on the whole object rather than on each field would fix \
              nothing that actually broke",
+        );
+        // ⚠⚠ AND WHAT IT IS INSTEAD, SAID EXACTLY — register item 941. The forgotten field now
+        // falls through to a document that DECLINES the bound, so run 41's shape comes up with no
+        // cost ceiling at all rather than with 64 KiB. Asserted as a value and not as *equal to
+        // whatever the document said*, which would have been this gate comparing one reader with
+        // itself.
+        assert_eq!(
+            run_41.max_cost, None,
+            "⛔ the caller forgot `max_bytes` and this repository's document declines it, so the \
+             run must come up unbounded in cost — a `Some` here is the daemon's constant wearing \
+             the document's name",
         );
         assert_eq!(
             (run_41.max_iterations, run_41.max_duration),
@@ -16862,13 +16904,24 @@ mod tests {
              arrives must not be this daemon's constant — a document that is read and then \
              overruled looks exactly like a document nobody read",
         );
-        // ⚠⚠ AND THE TWO THAT DID NOT MOVE, so *untimed* is never read as *unbounded*. These are
-        // what now ends a run of this kind, and a round that quietly widened them while widening
-        // the clock would be the escape hatch this item's own scope decision refused.
+        // ⛔⛔⛔⛔⛔ AND THE COST BOUND TOO, WHICH IS THE OWNER'S DECISION AND NOT A SECOND ONE —
+        // register item 941. The question put on 2026-09-07 was *the clock alone or all three*,
+        // and the answer was ALL THREE. A round shipped the clock alone first and wrote a refusal
+        // here reading *"widening it is the owner's to ask for"* — the owner had already asked,
+        // and this line is what stops that reading from coming back.
+        assert_eq!(
+            untimed.max_cost, None,
+            "⛔ REGISTER ITEM 941: this repository's document declines the cost bound and the run \
+             got one anyway: {untimed:?}",
+        );
+        // ⚠⚠⚠ AND THE ONE RAIL THAT REMAINS, ASSERTED SO THE REMAINING WORK IS VISIBLE. The owner
+        // asked for this one as well; `Guardrails::max_iterations` is a `u32` and has no value for
+        // *no bound*, so it still holds a number and register item 941's second layer is what
+        // removes it. **This is also the whole of what now ends a stopped run** — the residue the
+        // clause records, kept where a reader of the product meets it.
         assert!(
-            untimed.max_iterations > 0 && untimed.max_cost.is_some(),
-            "⛔ REGISTER ITEM 941: the step and cost rails are the whole of what stops a run that \
-             has stopped making progress and is still typing: {untimed:?}",
+            untimed.max_iterations > 0,
+            "⚠ the step ceiling is the last automatic ending this kind has: {untimed:?}",
         );
 
         // ⚠⚠ AND THE OTHER THREE — `--reference`, and the `--match`/`--marker` pair — resolved by

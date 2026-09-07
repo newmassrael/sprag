@@ -1646,48 +1646,84 @@ mod tests {
         // ⚠⚠ EXHAUSTIVE ON `Counted`, so a third classified value cannot arrive without an author
         // saying here which bounds admit it — item 918's shape, and the reason this is a `match`
         // and not an `if let`.
-        for key in ["max_bytes", "max_iterations"] {
-            match named[key] {
-                Counted::Of(_) => {}
-                Counted::Never => panic!(
-                    "⛔⛔⛔⛔⛔ REGISTER ITEM 941: `{key}` declines its bound, and neither the \
-                     substrate nor this loop's own argument admits that. `max_iterations` is a \
-                     `u32` in `Guardrails` — there is no value for *no bound* — and these two are \
-                     what stop a run that has stopped making progress and is still typing. Only \
-                     `max_seconds` may say `never`",
-                ),
+        // ⛔⛔⛔⛔⛔ AND THE NUMERIC ARGUMENTS APPLY TO THE KEYS THAT HOLD NUMBERS — register item
+        // 941. The owner's decision of 2026-09-07 was that all three of this kind's runs are
+        // unbounded, so *every bound is a number* stopped being true of this document and a gate
+        // that went on asserting it would be asserting the state the owner replaced.
+        //
+        // ⚠⚠⚠ WHAT IS NOT WEAKENED: every key is still CLASSIFIED (the loop above), and WHICH of
+        // them decline is pinned by name in its own test below — so a later round cannot quietly
+        // type a number back, nor quietly decline one more. This block is the argument for a
+        // number, and a key that holds none has no number to argue about.
+        if let Counted::Of(bytes) = named["max_bytes"] {
+            assert!(
+                bytes > 516_020,
+                "⛔⛔⛔ A COST BOUND THAT IS A NUMBER MUST EXCEED THE LARGEST RUN THIS DAEMON HAS \
+                 EVER RECORDED CONVERGING — run 17, 1,231 iterations, 516,020 bytes. A ceiling \
+                 under that cuts the work this loop exists to do, which is what the 64 KiB default \
+                 did eight times. Read {bytes}",
+            );
+            // ⚠⚠ AND TWO NUMERIC BOUNDS MUST AGREE RATHER THAN ONE BEING DECORATIVE. At the rate
+            // that same run measured — 516,020 bytes over 1,231 steps, about 419 a step — the step
+            // ceiling and the byte ceiling should bite at roughly the same place. Two bounds that
+            // fire an order of magnitude apart mean one of them is not a decision, and a run
+            // stopped by a number nobody reasoned about is item 738's defect wearing the other
+            // ceiling's name. ⚠ It is this document's OWN test, and it is what convicted
+            // `max_seconds`: measured on run 250 it bit 26 times earlier than either of these.
+            if let Counted::Of(steps) = named["max_iterations"] {
+                let implied = steps.saturating_mul(419);
+                assert!(
+                    implied * 4 > bytes && bytes * 4 > implied,
+                    "⚠⚠⚠ the step and byte ceilings must bite within a factor of four of each \
+                     other at this loop's own measured 419 bytes per step: {steps} steps implies \
+                     {implied} bytes against a bound of {bytes}",
+                );
             }
         }
-        let Counted::Of(bytes) = named["max_bytes"] else {
-            unreachable!("the loop above refused every other arm")
-        };
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHICH OF THIS KIND'S BOUNDS DECLINE, BY NAME** — register item 941, and the
+    /// thing that keeps the gate above from being relaxed by accident.
+    ///
+    /// # ⛔⛔⛔ Why the decisions are pinned one by one
+    ///
+    /// The gate above argues about NUMBERS, so a key holding `never` has nothing there to hold it.
+    /// That is correct and it is also a hole: a later round could type a number back into a bound
+    /// the owner asked to be unbounded, or decline one more, and every numeric assertion would
+    /// stay green. **So the decision itself is the assertion here**, one row per key.
+    ///
+    /// ⚠⚠ The owner's instruction of 2026-09-07 was ALL THREE. Two of them are `Option` in
+    /// `Guardrails` and decline today; `max_iterations` is a `u32` and cannot until register item
+    /// 941's second layer gives that field a value for *no bound*. **This test is where that
+    /// remaining work is visible**, rather than in a comment nobody re-reads.
+    #[test]
+    fn which_bounds_a_debt_run_declines_is_the_owners_decision_and_is_named_here() {
+        let named = debt()
+            .authored_bounds("guardrails")
+            .expect("readable")
+            .expect("this kind authors its guardrails");
+        for (key, decision) in [
+            ("max_seconds", Counted::Never),
+            ("max_bytes", Counted::Never),
+        ] {
+            assert_eq!(
+                named[key], decision,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 941: the owner asked on 2026-09-07 that every run of \
+                 this loop be unbounded, and `{key}` no longer says so. A number here is that \
+                 instruction undone, and the round that then forgets to override it at the door is \
+                 cut mid-work — which is what this item was filed on",
+            );
+        }
+        // ⚠⚠⚠ AND THE ONE THAT STILL HOLDS A NUMBER, ASSERTED SO THE REMAINING WORK IS VISIBLE
+        // RATHER THAN REMEMBERED. When `Guardrails::max_iterations` becomes an `Option`, this row
+        // is what fails and sends its reader to the clause — the honest shape for work that is
+        // decided and not yet done.
         assert!(
-            bytes > 516_020,
-            "⛔⛔⛔ AND THE COST BOUND MUST EXCEED THE LARGEST RUN THIS DAEMON HAS EVER RECORDED \
-             CONVERGING — run 17, 1,231 iterations, 516,020 bytes. A ceiling under that cuts the \
-             work this loop exists to do, which is what the 64 KiB default did eight times. Read \
-             {bytes}",
-        );
-        // ⚠⚠ AND THE TWO BOUNDS MUST AGREE RATHER THAN ONE BEING DECORATIVE. At the rate that same
-        // run measured — 516,020 bytes over 1,231 steps, about 419 a step — the step ceiling and
-        // the byte ceiling should bite at roughly the same place. Two bounds that fire an order of
-        // magnitude apart mean one of them is not a decision, and a run stopped by a number nobody
-        // reasoned about is this item's own defect wearing the other ceiling's name.
-        //
-        // ⚠⚠⚠ AND SINCE REGISTER ITEM 941 THE THIRD BOUND IS OUT OF THIS COMPARISON RATHER THAN
-        // IN IT WITH A LARGER NUMBER. The document's own test — *two bounds that fire far apart
-        // mean one of them is decorative* — was what convicted `max_seconds`: measured on run 250
-        // (278 iterations, 120,227 bytes, 8.8 hours) it bit **26 times earlier** than either of
-        // these, so the pair below is now the whole of what ends a run of this kind.
-        let Counted::Of(steps) = named["max_iterations"] else {
-            unreachable!("the loop above refused every other arm")
-        };
-        let implied = steps.saturating_mul(419);
-        assert!(
-            implied * 4 > bytes && bytes * 4 > implied,
-            "⚠⚠⚠ the step and byte ceilings must bite within a factor of four of each other at \
-             this loop's own measured 419 bytes per step: {steps} steps implies {implied} bytes \
-             against a bound of {bytes}",
+            matches!(named["max_iterations"], Counted::Of(_)),
+            "⚠⚠ REGISTER ITEM 941, SECOND LAYER: this bound may say `never` only once \
+             `Guardrails::max_iterations` has a value meaning *no bound*. If this line fails, the \
+             substrate changed and the document may now say it: {:?}",
+            named["max_iterations"],
         );
     }
 
