@@ -120,8 +120,26 @@ jobs:
       #
       # ⚠ The macOS job has had this step all along, which is why its failure was the OTHER defect
       # and not this one. Two jobs that differ in a step differ in what they can catch.
+      #
+      # ⛔⛔⛔⛔⛔ AND THE SECOND LINE IS `sprag-gui`'s BINARY, WHICH THE EXCLUSION ABOVE DOES NOT
+      # COVER — register item 948. `sprag_host::promotion::IMAGES` is FOUR — `sprag`, `sprag-term`,
+      # `sprag-gui`, `sprag-mcp` — and two suites in `sprag-host`'s `cli.rs` walk that list through
+      # `sibling_bin`, which panics on a binary that is not there. So this sweep ran two tests that
+      # drive `target/debug/sprag-gui` in a job that had never built it, and both failed on every
+      # push: measured 2026-09-07 on runs 34124187331 and 34128530278, in BOTH headless jobs, while
+      # every local round reported green because a developer's tree has the binary.
+      #
+      # ⚠⚠ THE EXCLUSION ABOVE IS ABOUT THE GUI CRATE'S *TESTS* AND STAYS. The pixel job says so in
+      # its own words — *"the GUI crate's own tests — 324 of them in two binaries — were green only
+      # on the machine that wrote them … so they run here as an ordinary test step"* — and nothing
+      # in that reason reaches the BINARY. `--bins` is the whole of what this adds.
+      #
+      # ⚠ A SECOND `cargo build` rather than a widened first one, because `--workspace` and `-p`
+      # cannot be spelled in one invocation. The order is what matters and both precede the sweep.
       - name: Build
-        run: cargo build --workspace --exclude sprag-gui
+        run: |
+          cargo build --workspace --exclude sprag-gui
+          cargo build -p sprag-gui --bins
 
       # `--no-fail-fast` because a plain run stops at the FIRST failing binary, which reports one
       # failure and hides the rest. The exit code is the verdict; a summary read out of the log is
@@ -331,8 +349,26 @@ jobs:
       # "Unix" has been a claim rather than a fact — `target_os = "macos"` appears in four places
       # against seventy-two for Linux. A red first run here is not a regression; it is the first
       # measurement, and what it finds is a defect that was already there.
+      #
+      # ⛔⛔⛔⛔⛔ THE SECOND LINE IS THE SAME REPAIR AS THE LINUX JOB'S — register item 948, and it
+      # is here because this job had the SAME two failures: `every_image_a_promotion_moves_says_
+      # which_build_it_is` and `the_door_can_ask_every_image_once_a_promotion_has_moved_them` drive
+      # `target/debug/sprag-gui` through `sibling_bin`, and this job never built it either.
+      #
+      # ⚠⚠ WHETHER `sprag-gui` BUILDS ON macOS IS EXACTLY WHAT THIS JOB EXISTS TO FIND OUT, and it
+      # was never asked: the exclusion mirrored the Linux job rather than working around a known
+      # failure. `Cargo.lock` already resolves the whole Apple stack (`objc2-app-kit`,
+      # `core-graphics`) because winit and wgpu ask for it, so the expectation is that it builds —
+      # and the paragraph above is this job's own answer to being wrong: *a red first run here is
+      # not a regression; it is the first measurement*.
+      #
+      # ⚠ THE RESIDUE, STATED: if it does NOT build, this step fails and the Test step below it
+      # never runs — so one round's macOS test results are lost to finding that out. That is the
+      # trade, and the alternative was leaving two tests failing on every push for ever.
       - name: Build
-        run: cargo build --workspace --exclude sprag-gui
+        run: |
+          cargo build --workspace --exclude sprag-gui
+          cargo build -p sprag-gui --bins
 
       # THE COMMIT-MESSAGE GATE NEEDS A grep THAT HAS -P, AND THIS RUNNER SHIPS BSD grep, WHICH
       # DOES NOT. Without it `.githooks/commit-msg` refuses every message — correctly, since its
