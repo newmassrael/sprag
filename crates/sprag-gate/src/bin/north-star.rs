@@ -141,6 +141,19 @@ fn main() -> std::process::ExitCode {
             }
         }
     }
+    // ⛔⛔⛔⛔⛔ AND THE DEFERRALS RESTING ON A LINK NOBODY CLASSIFIED — register item 920, asked
+    // here rather than in `read` for the reason `cap` itself is: the depth cap is the loop
+    // document's number and this binary is the only thing that has opened that document.
+    //
+    // ⚠⚠ PRINTED EVEN WHEN IT FOUND NOTHING, AND WITH THE COUNT OF WHAT IT ASKED — register item
+    // 924. This gate's population is the block above, which item 921 emptied: from that round on
+    // it walked NO links and reported exactly what it reports after walking some and finding them
+    // clean. `deferral links 0 judged` is the sentence that separates the two, and the round after
+    // this one is the reader it is for. The line is `north_star::Screening`'s and not this file's,
+    // which is what keeps *the set that reds* and *the number that prints* one object — the split
+    // register item 934 drew for the four backlogs, held by the same gate in `north_star`'s tests.
+    let unread = reading.deferred_unread(cap.depth());
+    println!("{unread}");
     println!("{}", backlogs.unrooted);
     // ⛔⛔⛔⛔⛔ AND THE PAID MARKS WHOSE CLAIM NOTHING CHECKED — register item 902, printed
     // beside its three ratchet neighbours because it is the same kind of statement: a backlog with
@@ -214,11 +227,6 @@ fn main() -> std::process::ExitCode {
     // must not read alike.
     println!("{}", reading.ending());
 
-    // ⛔⛔⛔⛔⛔ AND THE DEFERRALS RESTING ON A LINK NOBODY CLASSIFIED — register item 920. Asked
-    // here rather than in `read` for the reason `cap` itself is: the depth cap is the loop
-    // document's number and this binary is the only thing that has opened that document.
-    let unread = reading.deferred_unread(cap.depth());
-
     // ⛔⛔⛔⛔⛔ AND THE BACKLOGS WHOSE DECLARED OWNER IS NO LONGER OPEN — register item 937. Asked
     // here, beside `paid_unresolved` and `standing_reds`, for the reason
     // `north_star::Reading::backlog_owners_gone` records: the claim names an item of THIS ledger,
@@ -227,7 +235,7 @@ fn main() -> std::process::ExitCode {
 
     if reading.is_green()
         && unresolved.is_empty()
-        && unread.is_empty()
+        && unread.faults.is_empty()
         && refuted.is_empty()
         && ownerless.is_empty()
     {
@@ -236,7 +244,7 @@ fn main() -> std::process::ExitCode {
     let faults: Vec<&north_star::Fault> = reading
         .faults
         .iter()
-        .chain(unread.iter())
+        .chain(unread.faults.iter())
         .chain(ownerless.iter())
         .collect();
     if !faults.is_empty() {

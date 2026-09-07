@@ -1382,22 +1382,40 @@ impl Reading {
     /// ⚠ Takes the cap rather than reading it, because the cap is the loop document's and this
     /// crate does not open that document — the split register item 833(1) drew and `cap()` in the
     /// binary keeps.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Returns a [`Screening`] and not a `Vec<Fault>` — register item 924
+    ///
+    /// This gate's population is `deferred(cap)`'s chains, and register item 921 emptied it. From
+    /// that round on the walk put **zero questions** and returned the same empty vector it returns
+    /// after putting them all and having every one pass. See [`Screening`] for why the count is
+    /// carried out of the walk rather than reconstructed by a caller.
     #[must_use]
-    pub fn deferred_unread(&self, cap: u32) -> Vec<Fault> {
-        self.deferred(cap)
-            .into_iter()
-            .filter_map(|held| Some((held, self.chain(held)?)))
-            .flat_map(|(held, links)| {
-                links
-                    .into_iter()
-                    .filter(|link| link.says == Says::Neither)
-                    .map(move |link| Fault::DeferredByUnreadLink {
+    pub fn deferred_unread(&self, cap: u32) -> Screening {
+        let mut judged = 0;
+        let mut faults = Vec::new();
+        for held in self.deferred(cap) {
+            // ⚠ Unreachable while `deferred` reports it — an unwalkable chain has no depth and is
+            // takeable — and deliberately contributing NOTHING to `judged` if it ever happens: a
+            // question that could not be put is not a question answered.
+            let Some(links) = self.chain(held) else {
+                continue;
+            };
+            for link in links {
+                judged += 1;
+                if link.says == Says::Neither {
+                    faults.push(Fault::DeferredByUnreadLink {
                         held,
                         at: link.number,
                         named: link.named,
-                    })
-            })
-            .collect()
+                    });
+                }
+            }
+        }
+        Screening {
+            label: "deferral links",
+            judged,
+            faults,
+        }
     }
 
     /// 🎯🎯🎯🎯🎯 **DOES `to` COME OUT OF `from`?** — `Some(true)` where `to`'s chain of
@@ -2236,6 +2254,62 @@ impl Backlogs {
             paid_unnamed,
         } = self;
         [unclassified, unranked, unrooted, paid_unnamed]
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT A GATE PUT ITS QUESTION TO, BESIDE WHAT IT FOUND** — register item 924, and
+/// the answer to *green for WHICH population* at the one gate here that had no answer.
+///
+/// # ⛔⛔⛔ A gate whose population emptied, reading exactly like a gate that passed
+///
+/// [`Reading::deferred_unread`]'s population is not this ledger: it is the links of the chains that
+/// defer something, so it is `deferred(cap)`'s and empties whenever the deferrals do. Register item
+/// 921 paid them down to none, and **measured 2026-09-06 the gate then examined zero links against
+/// the real ledger** while the run exited 0 exactly as it had when it examined some. Nothing in the
+/// report moved, because an empty `Vec<Fault>` is printed as ABSENCE — and absence is the one shape
+/// that cannot separate *asked, and found nothing wrong* from *never asked*.
+///
+/// ⇒ So the count travels beside the faults and is printed on BOTH verdicts. That is what
+/// `reds N claimed, M standing` already does two gates over, and what register items 914 and 918
+/// found in two other instruments: **a green gate has to say which population it is green for.**
+///
+/// # ⚠⚠⚠ Why `judged` is counted by the walk and never recomputed beside it
+///
+/// A second `filter().count()` over the same set is register item 445's two authors for one
+/// question, and register item 934 is this file's own case of what that costs: the printed number
+/// and the judged number drift, and the report goes on reading fine. So
+/// [`Reading::deferred_unread`] builds this in ONE pass — every question it puts increments
+/// `judged`, and the ones that fail land in `faults`. `faults.len() <= judged` is therefore a fact
+/// about the walk rather than an invariant somebody has to keep.
+///
+/// ⚠ `judged` counts QUESTIONS PUT, not distinct links: a link shared by two deferred chains is
+/// asked about once per chain, because that is what the walk does, and a count describing a
+/// different walk would be the drift this type exists to refuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Screening {
+    /// The words this screening's report line opens with, e.g. `deferral links`.
+    pub label: &'static str,
+    /// How many questions this run actually put. **Zero is the reading register item 924 was
+    /// opened by**, and it is printed rather than inferred from an empty `faults`.
+    pub judged: usize,
+    /// The questions that failed, in the order the walk met them.
+    pub faults: Vec<Fault>,
+}
+
+impl fmt::Display for Screening {
+    /// The report line: `deferral links 0 judged, 0 unread`.
+    ///
+    /// ⚠ No list after a colon, unlike [`Backlog`] and the `population` line: these are FAULTS, and
+    /// the report already prints every one of them as its own sentence. What this line adds is the
+    /// denominator those sentences are silent about.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} judged, {} unread",
+            self.label,
+            self.judged,
+            self.faults.len(),
+        )
     }
 }
 
@@ -4029,14 +4103,21 @@ mod tests {
              reach this and no other fault does either: {:?}",
             reading.faults,
         );
+        let screened = reading.deferred_unread(1);
         assert_eq!(
-            reading.deferred_unread(1),
+            screened.faults,
             vec![Fault::DeferredByUnreadLink {
                 held: 902,
                 at: 902,
                 named: 901,
             }],
             "the deferral names the link it rests on",
+        );
+        // 🎯 REGISTER ITEM 924: and the denominator, so this assertion is about a walk that
+        // happened. 902's chain is `902 → 901` and `901 → 900`: two links, one of them unread.
+        assert_eq!(
+            screened.judged, 2,
+            "both links of 902's chain were asked about, and one of them answered: {screened}",
         );
     }
 
@@ -4050,10 +4131,14 @@ mod tests {
             vec![902],
             "there IS a deferral here, so the silence below is not an empty population",
         );
-        assert!(
-            reading.deferred_unread(1).is_empty(),
-            "{:?}",
-            reading.deferred_unread(1),
+        let screened = reading.deferred_unread(1);
+        assert!(screened.faults.is_empty(), "{:?}", screened.faults);
+        // 🎯🎯🎯 REGISTER ITEM 924: AND THE SILENCE IS THE SECOND KIND. The line above said the
+        // population was not empty by asking a NEIGHBOURING predicate; this says it in the gate's
+        // own terms, which is the only place the two kinds of empty can actually be told apart.
+        assert_eq!(
+            screened.judged, 2,
+            "a control that examined nothing controls nothing: {screened}",
         );
     }
 
@@ -4073,8 +4158,9 @@ mod tests {
             Some(1),
             "901 sits AT the cap, so nothing is held back by this link",
         );
+        let screened = reading.deferred_unread(1);
         assert_eq!(
-            reading.deferred_unread(1),
+            screened.faults,
             vec![Fault::DeferredByUnreadLink {
                 held: 902,
                 at: 901,
@@ -4082,6 +4168,13 @@ mod tests {
             }],
             "⚠ 902 IS still deferred and its chain runs through that link, so it is named — the \
              link is charged where it costs, and 901's own takeability is not this gate's subject",
+        );
+        // 🎯 REGISTER ITEM 924: the denominator is LINKS and not deferred items. One item is held
+        // back here and two links hold it, so a `judged` reading 1 would be counting the line
+        // above's set under this line's name.
+        assert_eq!(
+            screened.judged, 2,
+            "both links of the one deferred chain were asked about: {screened}",
         );
     }
 
@@ -4447,6 +4540,20 @@ mod tests {
 
     /// A cap that holds nothing back has nothing to audit, and must not manufacture a finding out
     /// of the same unread lines — working rule 5, asked of this gate's own population.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND THIS IS REGISTER ITEM 924's OWN SHAPE, WRITTEN DOWN
+    ///
+    /// The silence asserted below is the VACUOUS one: nothing was examined. Until item 924 this
+    /// test could not say so and neither could the report — it read exactly like
+    /// [`a_chain_whose_every_link_states_its_verdict_is_silent`], which examines two links and
+    /// finds them clean. Measured 2026-09-06, that is not a hypothetical: after register item 921
+    /// the real ledger's deferrals went to none and this gate ran vacuously for a whole round while
+    /// its `rc` stayed 0.
+    ///
+    /// ⚠⚠ The `judged` line is also the counter-example a wrong denominator dies on. This ledger
+    /// still carries two `@from:` links and one of them is unread — a `judged` counting the LEDGER
+    /// rather than the WALK reads 2 here, and a `judged` that were just `faults.len()` reads 1 in
+    /// the sibling test. Only the walk reads 0.
     #[test]
     fn a_cap_that_defers_nothing_finds_nothing_to_read() {
         let ledger = with_a_chain().replace(
@@ -4455,10 +4562,33 @@ mod tests {
         );
         let reading = read(&ledger);
         assert!(reading.deferred(9).is_empty(), "{:?}", reading.deferred(9),);
+        let screened = reading.deferred_unread(9);
         assert!(
-            reading.deferred_unread(9).is_empty(),
+            screened.faults.is_empty(),
             "the reason is as unread as ever; what changed is that it now costs nothing: {:?}",
-            reading.deferred_unread(9),
+            screened.faults,
+        );
+        assert_eq!(
+            screened.judged, 0,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 924: this gate examined NOTHING, and the difference between \
+             that and examining things and finding them clean is the whole of the item",
+        );
+        assert_eq!(
+            screened.to_string(),
+            "deferral links 0 judged, 0 unread",
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 924(1): and it is PRINTED. A count a reader never sees is \
+             the state this item was opened in",
+        );
+        // ⚠⚠ THE PREMISE OF THE COUNTER-EXAMPLE, MEASURED RATHER THAN ASSERTED: the links are
+        // still there and one of them is still unread. Without this the `0` above would be
+        // satisfied by a ledger that simply had no links, and the mutation it is meant to catch
+        // — a denominator taken from the ledger — would walk through.
+        let links = reading.chain(902).expect("902's chain is still walkable");
+        assert_eq!(links.len(), 2, "{links:?}");
+        assert_eq!(
+            links.iter().filter(|l| l.says == Says::Neither).count(),
+            1,
+            "{links:?}",
         );
     }
 
@@ -5126,6 +5256,25 @@ mod tests {
             "⛔⛔⛔⛔⛔ REGISTER ITEM 936(1): the reply that hands over an unread block no longer \
              says what to do with it, so the procedure is back to living in a register entry a \
              hundred and sixty rounds away from the round that needs it",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE SCREENING'S DENOMINATOR — register item 924, held by both halves for
+        // the reason this test's own doc gives. `prints it` alone would pass a binary that printed
+        // it and a hand-rolled copy; `formats no label` alone would pass a binary that had gone
+        // back to printing nothing, which is the exact state the item was opened in.
+        let screened = read(LEDGER).deferred_unread(1);
+        assert!(
+            BIN.contains("println!(\"{unread}\")"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 924: the report no longer says how many links this gate put \
+             its question to, so a run that examined nothing and a run that examined some and \
+             found them clean go back to reading identically — and the assertions above are about \
+             a string nobody sees",
+        );
+        assert!(
+            !BIN.contains(&format!("\"{} ", screened.label)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 924: the binary formats a line opening with `{}` itself. Two \
+             authors for one line is how the printed count and the walked count come to disagree \
+             — the line belongs to `Screening`, for register item 934's reason one gate over",
+            screened.label,
         );
         for (backlog, field) in [
             (&unclassified, "backlogs.unclassified"),
