@@ -697,6 +697,22 @@ pub enum Fault {
         /// The parent that line names.
         named: u32,
     },
+    /// ⛔⛔⛔⛔⛔ **A [`Tag::Paid`] MARK NAMING A COMMIT THIS TREE CANNOT RESOLVE** — register 902,
+    /// and a [`Fault`] rather than a caller's own sentence since register item 940.
+    ///
+    /// ⚠⚠ It became one so that [`Reading::paid_commits`] could carry a [`Screening`] like its two
+    /// neighbours: the count of ids ASKED ABOUT is the thing the report had no way to say, and a
+    /// gate whose findings are not `Fault`s cannot travel in [`Screenings`]. The sentence is
+    /// unchanged from the one `north-star.rs` printed — it simply has one author now.
+    ///
+    /// ⚠ NEVER raised for a question that could not be PUT: being unable to reach `git` is
+    /// [`Reading::paid_commits`]'s `Err`, never forty of these. See [`Commits::resolves`].
+    PaidCommitUnresolved {
+        /// The item whose mark names it.
+        number: u32,
+        /// The id, exactly as the ledger spells it.
+        id: String,
+    },
     /// ⛔⛔⛔⛔⛔ **A [`RED`] CLAIM THIS INSTRUMENT CANNOT PUT TO THE REPOSITORY** — register item
     /// 843. Empty, or carrying a token outside `safe_argument` — spelled and not linked, for
     /// [`RED`]'s stated reason.
@@ -965,6 +981,10 @@ impl fmt::Display for Fault {
                  is in neither vocabulary — nobody ever said whether paying {named} MADE it or a \
                  round MET it, so this deferral rests on a sentence no round argued. Say it in the \
                  line (a creation word, or `{PARENT} none`); do not widen the vocabulary",
+            ),
+            Self::PaidCommitUnresolved { number, id } => write!(
+                f,
+                "item {number} names commit {id}, which this tree cannot resolve",
             ),
             Self::UnrunnableRed { number, line } => write!(
                 f,
@@ -1260,7 +1280,7 @@ impl Reading {
     /// # Errors
     ///
     /// A sentence naming why the suite could not be RUN. **A failure to ask is its own fault and
-    /// never a verdict about any claim** — [`Reading::paid_unresolved`]'s rule exactly, and the
+    /// never a verdict about any claim** — [`Reading::paid_commits`]'s rule exactly, and the
     /// reason both of these return a [`Result`] rather than folding *could not tell* into *no*.
     ///
     /// ⚠⚠ THE COST, STATED: this runs the named selection. With no claims it runs nothing at all,
@@ -1413,6 +1433,7 @@ impl Reading {
         }
         Screening {
             label: "deferral links",
+            found: "unread",
             judged,
             faults,
         }
@@ -1614,7 +1635,7 @@ impl Reading {
     /// because none of their miniature ledgers contains the item this repository's register filed
     /// the work under. A gate that reds on every document except one is not a gate.
     ///
-    /// ⚠⚠ So it joins [`Reading::paid_unresolved`] and [`Reading::standing_reds`] as a question
+    /// ⚠⚠ So it joins [`Reading::paid_commits`] and [`Reading::standing_reds`] as a question
     /// **only the caller should put** — the caller being the one thing that knows which ledger is
     /// the one the claim is about. The binary folds these into its exit code beside the others.
     ///
@@ -1624,21 +1645,54 @@ impl Reading {
     /// invisibly"*. Register item 833(1) is the same disagreement one policy over. Making the
     /// LEDGER declare its own backlog owners is register item 939's.
     #[must_use]
-    pub fn backlog_owners_gone(&self) -> Vec<Fault> {
+    pub fn backlog_owners(&self) -> Screening {
         let population = self.population();
         let backlogs = self.backlogs();
-        let mut gone = Vec::new();
+        let mut judged = 0;
+        let mut faults = Vec::new();
         for backlog in backlogs.each() {
-            if let Reckoning::Owned(owner) = backlog.reckoning
-                && !population.contains(&owner)
-            {
-                gone.push(Fault::BacklogOwnerClosed {
-                    token: backlog.token,
-                    owner,
-                });
+            // ⚠⚠ THE DENOMINATOR IS THE `Owned` BACKLOGS AND NOT ALL FOUR — register item 940.
+            // The question this gate puts is *is this owner still open*, and there is no such
+            // question to put to a backlog that declares no owner. Counting four would say four
+            // owner-claims were checked when one was, which is the drift a denominator exists to
+            // refuse. ⇒ The day the last `Owned` becomes `Exempt` this reads `0 judged`, which is
+            // exactly the vacuity register item 924 measured one gate over.
+            if let Reckoning::Owned(owner) = backlog.reckoning {
+                judged += 1;
+                if !population.contains(&owner) {
+                    faults.push(Fault::BacklogOwnerClosed {
+                        token: backlog.token,
+                        owner,
+                    });
+                }
             }
         }
-        gone
+        Screening {
+            label: "backlog owners",
+            found: "closed",
+            judged,
+            faults,
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY GATE THAT CAN RED, ASKED IN ONE PLACE** — register item 940. See
+    /// [`Screenings`] for why one place and not three call sites, and for the two verdict terms
+    /// that are deliberately outside it.
+    ///
+    /// ⚠ Takes the cap and the [`Commits`] answerer for the reason each of them is injected at all:
+    /// the cap is the loop document's number and the repository is the caller's, and this crate
+    /// opens neither. The split is register item 833(1)'s and register item 902's, kept.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `commits` said when it could not answer at all — never a verdict about one id. See
+    /// [`Reading::paid_commits`].
+    pub fn screenings(&self, cap: u32, commits: &dyn Commits) -> Result<Screenings, String> {
+        Ok(Screenings {
+            deferrals: self.deferred_unread(cap),
+            paid_commits: self.paid_commits(commits)?,
+            backlog_owners: self.backlog_owners(),
+        })
     }
 
     /// 🎯🎯🎯🎯🎯 **WHETHER THE NORTH STAR IS REACHED, AS A READING RATHER THAN A JUDGEMENT** —
@@ -1735,16 +1789,26 @@ impl Reading {
     /// # Errors
     ///
     /// Whatever `commits` said when it could not answer at all.
-    pub fn paid_unresolved(&self, commits: &dyn Commits) -> Result<Vec<(u32, String)>, String> {
-        let mut found = Vec::new();
+    pub fn paid_commits(&self, commits: &dyn Commits) -> Result<Screening, String> {
+        let mut judged = 0;
+        let mut faults = Vec::new();
         for item in self.items.iter().filter(|it| it.tag == Some(Tag::Paid)) {
             for id in &item.commits {
+                judged += 1;
                 if !commits.resolves(id)? {
-                    found.push((item.number, id.clone()));
+                    faults.push(Fault::PaidCommitUnresolved {
+                        number: item.number,
+                        id: id.clone(),
+                    });
                 }
             }
         }
-        Ok(found)
+        Ok(Screening {
+            label: "paid commits",
+            found: "unresolved",
+            judged,
+            faults,
+        })
     }
 
     /// Whether this reading is clean.
@@ -1766,7 +1830,7 @@ pub trait Commits {
     ///
     /// A sentence naming why the question could not be PUT — never why one id failed. An id that
     /// simply is not there is `Ok(false)`, and the difference is the whole of why this returns a
-    /// [`Result`]: see [`Reading::paid_unresolved`].
+    /// [`Result`]: see [`Reading::paid_commits`].
     fn resolves(&self, id: &str) -> Result<bool, String>;
 }
 
@@ -2176,7 +2240,7 @@ pub struct Backlog {
 ///
 /// ⚠⚠ **AN UNSTATED DISPOSITION IS A RED, NOT A DEFAULT.** There is no `Unknown` arm and no
 /// [`Default`]: a fifth backlog cannot be added without its author writing one of these three, and
-/// the three are checked rather than taken at their word — see [`Reading::backlog_owners_gone`]
+/// the three are checked rather than taken at their word — see [`Reading::backlog_owners`]
 /// for the arm a document can take away after the fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reckoning {
@@ -2289,6 +2353,10 @@ impl Backlogs {
 pub struct Screening {
     /// The words this screening's report line opens with, e.g. `deferral links`.
     pub label: &'static str,
+    /// What a FAILED question is called here, e.g. `unread`. ⚠ Register item 940: this was the
+    /// word `unread` written into [`fmt::Display`] itself, which read correctly for the one gate
+    /// that existed and would have said *unresolved commits are unread* for the next.
+    pub found: &'static str,
     /// How many questions this run actually put. **Zero is the reading register item 924 was
     /// opened by**, and it is printed rather than inferred from an empty `faults`.
     pub judged: usize,
@@ -2305,11 +2373,84 @@ impl fmt::Display for Screening {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} {} judged, {} unread",
+            "{} {} judged, {} {}",
             self.label,
             self.judged,
             self.faults.len(),
+            self.found,
         )
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERY GATE THAT CAN RED, BUILT IN ONE PLACE** — register item 940, and the half of
+/// register item 924 that one gate could not buy.
+///
+/// # ⛔⛔⛔ Why an enumeration alone would NOT have forced the next gate
+///
+/// Register item 940's own prescription was *"put a single enumeration point and a fifth gate
+/// cannot ship silent"*, reasoning from [`Backlogs::each`]. **Measured before writing this: that is
+/// only half of what makes `each` work.** The four backlogs are forced because
+/// [`Reading::backlogs`] BUILDS them in one struct literal — a fifth naturally goes there, and then
+/// `each`'s destructuring will not compile. Gates are independent `pub fn`s on [`Reading`], so a
+/// sixth could simply live outside any struct and `each` would never hear of it.
+///
+/// ⇒ So the forcing is TWO things together, and this type is both:
+///
+/// * **built in one place** ([`Reading::screenings`]), which is what makes a new gate's author land
+///   here at all; and
+/// * **the only thing the verdict reads** — `north-star.rs` decides success from `each()` and
+///   nothing else, so a gate outside this struct cannot red AT ALL. It is not that a silent gate is
+///   forbidden: it is that a silent gate has no effect, which its own mutation test says out loud.
+///
+/// # ⚠⚠ The two verdict terms that are deliberately NOT here, and why that is not an escape hatch
+///
+/// `north-star.rs`'s verdict also reads `Reading::is_green` and the refuted red claims. Neither is
+/// a gate over an injected population, and **both already print theirs**: the parse's population is
+/// `items N in section A`, and the refuted claims' is the `claimed` half of
+/// `reds N claimed, M standing`. So after register item 940 every term of that verdict has a
+/// printed denominator — which is the sentence the item was actually asking for, and is asserted
+/// rather than left as this paragraph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Screenings {
+    /// Deferrals resting on a link nobody classified — register items 920 and 924.
+    pub deferrals: Screening,
+    /// [`Tag::Paid`] marks whose named commit this tree cannot resolve — register item 902.
+    pub paid_commits: Screening,
+    /// Backlogs whose declared owner is no longer open — register item 937.
+    pub backlog_owners: Screening,
+}
+
+impl Screenings {
+    /// 🎯🎯🎯🎯🎯 **ALL OF THEM, ENUMERATED IN ONE PLACE** — register item 940, the shape
+    /// [`Backlogs::each`] holds for the backlogs and for the reason recorded there: destructuring
+    /// `Self` makes a fourth screening a compile error in **this one place**, and everything that
+    /// prints or judges a screening walks it through here.
+    #[must_use]
+    pub fn each(&self) -> [&Screening; 3] {
+        let Self {
+            deferrals,
+            paid_commits,
+            backlog_owners,
+        } = self;
+        [deferrals, paid_commits, backlog_owners]
+    }
+
+    /// Whether every gate here found nothing. ⚠ The verdict `north-star.rs` reads — see this
+    /// type's doc for the two terms beside it and why they are not escape hatches.
+    #[must_use]
+    pub fn all_clean(&self) -> bool {
+        self.each()
+            .iter()
+            .all(|screening| screening.faults.is_empty())
+    }
+
+    /// Every fault any of them found, in enumeration order.
+    #[must_use]
+    pub fn faults(&self) -> Vec<&Fault> {
+        self.each()
+            .into_iter()
+            .flat_map(|screening| screening.faults.iter())
+            .collect()
     }
 }
 
@@ -3012,22 +3153,39 @@ mod tests {
             "     @ns: paid — 2026-09-02 `deadbee`\n",
         );
         let reading = read(&ledger);
+        let refused = reading.paid_commits(&Answers(Ok(false))).expect("asked");
         assert_eq!(
-            reading.paid_unresolved(&Answers(Ok(false))).expect("asked"),
-            vec![(899, "deadbee".to_string())],
+            refused.faults,
+            vec![Fault::PaidCommitUnresolved {
+                number: 899,
+                id: "deadbee".to_owned(),
+            }],
             "⛔⛔⛔⛔⛔ REGISTER ITEM 902: an id that is WRITTEN and does not resolve has no \
              backlog — it is a typo or a claim about a commit nobody made, and there is no round \
              in which it is acceptable",
         );
+        let clean = reading.paid_commits(&Answers(Ok(true))).expect("asked");
         assert!(
-            reading
-                .paid_unresolved(&Answers(Ok(true)))
-                .expect("asked")
-                .is_empty(),
+            clean.faults.is_empty(),
             "⚠ THE CONTROL: an id that resolves is the state this gate wants and must be silent",
         );
+        // 🎯🎯🎯 REGISTER ITEM 940: AND THE TWO SILENCES ARE NOW DIFFERENT SENTENCES. Both arms
+        // above walked the SAME one id, and until this item the clean arm's report was
+        // indistinguishable from a ledger with no `paid` mark carrying a commit at all.
         assert_eq!(
-            reading.paid_unresolved(&Answers(Err("no git here".to_owned()))),
+            (refused.judged, clean.judged),
+            (1, 1),
+            "one id was written, so one question was put on both arms: {refused} / {clean}",
+        );
+        assert_eq!(
+            clean.to_string(),
+            "paid commits 1 judged, 0 unresolved",
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 940: the clean arm has to SAY it asked, and say it in this \
+             gate's own words — `unresolved`, not the `unread` that was written into `Display` \
+             when only one gate existed",
+        );
+        assert_eq!(
+            reading.paid_commits(&Answers(Err("no git here".to_owned()))),
             Err("no git here".to_owned()),
             "⚠⚠⚠ AND THE SHARPEST ARM: a broken asker must come back as ONE error about the \
              instrument, never as a finding against the ledger — see the doc above",
@@ -3491,6 +3649,15 @@ mod tests {
     }
 
     // ── register item 833(2): the debt chain ───────────────────────────────────────────────────
+
+    /// An asker that says every id is a commit — the CONTROL shape, so a test about something
+    /// else is never red for a reason it is not about. Register item 940.
+    struct EveryIdResolves;
+    impl Commits for EveryIdResolves {
+        fn resolves(&self, _id: &str) -> Result<bool, String> {
+            Ok(true)
+        }
+    }
 
     /// A chain hung off 900: 901 was found while paying it, 902 while paying 901.
     ///
@@ -4744,7 +4911,11 @@ mod tests {
             // ⚠ Register item 937's fault names ONE backlog and ONE item, both in its message —
             // and this arm is the gate above working: the variant could not be added without its
             // author saying here whether it carries a set.
-            | Fault::BacklogOwnerClosed { .. } => None,
+            | Fault::BacklogOwnerClosed { .. }
+            // ⚠⚠ Register item 940's fault names ONE item and ONE id, both in its message. This
+            // arm is the gate working a second time: adding the variant would not compile until
+            // its author answered here, which is what register item 903 bought.
+            | Fault::PaidCommitUnresolved { .. } => None,
         }
     }
 
@@ -5001,20 +5172,40 @@ mod tests {
     /// document can take away after the fact.
     #[test]
     fn a_backlog_whose_owner_left_the_population_is_red() {
-        // ⚠ ASKED OF THE READING, not read off `faults` — see `backlog_owners_gone`, which records
+        // ⚠ ASKED OF THE READING, not read off `faults` — see `backlog_owners`, which records
         // the eleven tests that went red when this lived inside `read`.
         let reading = read(LEDGER);
+        let screened = reading.backlog_owners();
         assert!(
-            reading
-                .backlog_owners_gone()
-                .contains(&Fault::BacklogOwnerClosed {
-                    token: PAID_DECLARATION,
-                    owner: 938,
-                }),
+            screened.faults.contains(&Fault::BacklogOwnerClosed {
+                token: PAID_DECLARATION,
+                owner: 938,
+            }),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 937: a backlog naming an owner that is not open has no owner \
              at all, and nothing said so. The remedy is to judge it again — a new owner, or an \
              exemption with its sentence: {:?}",
-            reading.backlog_owners_gone(),
+            screened.faults,
+        );
+        // ⛔⛔⛔ REGISTER ITEM 940: AND THE DENOMINATOR IS THE OWNED BACKLOGS, NOT ALL FOUR. One
+        // of the four declares an owner, so one question was put. A `judged` of 4 would say four
+        // owner-claims were verified when three of them have no owner to verify — and the day the
+        // last `Owned` becomes `Exempt` this must read 0 rather than going quietly green, which
+        // is the vacuity register item 924 measured one gate over.
+        assert_eq!(
+            screened.judged, 1,
+            "exactly one backlog declares an owner: {screened}",
+        );
+        assert_eq!(
+            reading
+                .backlogs()
+                .each()
+                .iter()
+                .filter(|backlog| matches!(backlog.reckoning, Reckoning::Owned(_)))
+                .count(),
+            screened.judged,
+            "⚠⚠ THE PREMISE OF THAT COUNT, MEASURED RATHER THAN ASSERTED: without this the `1` \
+             above would be satisfied by a walk that counted something else and happened to reach \
+             the same number on this one fixture",
         );
         // ⚠ AND THE MESSAGE SAYS WHAT TO DO, which is register item 926's rule for every refusal
         // in this file: a reader told only *the owner is gone* has to re-derive the two remedies.
@@ -5257,24 +5448,41 @@ mod tests {
              says what to do with it, so the procedure is back to living in a register entry a \
              hundred and sixty rounds away from the round that needs it",
         );
-        // ⛔⛔⛔⛔⛔ AND THE SCREENING'S DENOMINATOR — register item 924, held by both halves for
-        // the reason this test's own doc gives. `prints it` alone would pass a binary that printed
-        // it and a hand-rolled copy; `formats no label` alone would pass a binary that had gone
-        // back to printing nothing, which is the exact state the item was opened in.
-        let screened = read(LEDGER).deferred_unread(1);
+        // ⛔⛔⛔⛔⛔ AND EVERY SCREENING'S DENOMINATOR — register items 924 and 940, held by both
+        // halves for the reason this test's own doc gives. `prints it` alone would pass a binary
+        // that printed it and a hand-rolled copy; `formats no label` alone would pass a binary
+        // that had gone back to printing nothing, which is the exact state 924 was opened in.
         assert!(
-            BIN.contains("println!(\"{unread}\")"),
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 924: the report no longer says how many links this gate put \
-             its question to, so a run that examined nothing and a run that examined some and \
-             found them clean go back to reading identically — and the assertions above are about \
-             a string nobody sees",
+            BIN.contains("for screening in screenings.each()")
+                && BIN.contains("println!(\"{screening}\")"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 940: the report no longer prints the screenings from their \
+             own enumeration, so a gate can be added without a line and every assertion in this \
+             file about a `Screening`'s rendering is about a string nobody sees",
         );
+        // ⚠⚠⚠ AND IT IS THE ENUMERATION AND NOT THREE HAND-WRITTEN PRINTS. Written first as the
+        // `contains` above alone, this passed against a binary that ALSO printed a fourth line of
+        // its own; the labels below are what refuse that, one per screening, sourced from the
+        // struct so a fourth screening's label is checked the moment it exists.
+        let screenings = read(LEDGER)
+            .screenings(1, &EveryIdResolves)
+            .expect("the fixture asker never fails");
+        for screening in screenings.each() {
+            assert!(
+                !BIN.contains(&format!("\"{} ", screening.label)),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 924: the binary formats a line opening with `{}` itself. \
+                 Two authors for one line is how the printed count and the walked count come to \
+                 disagree — the line belongs to `Screening`, for register item 934's reason",
+                screening.label,
+            );
+        }
+        // ⛔⛔⛔⛔⛔ AND THE VERDICT READS THEM AS ONE VALUE — register item 940, the half an
+        // enumeration alone does not buy. While the `if` named each gate's own local, a fourth
+        // gate could red without ever being a `Screening`; reading `all_clean()` means a gate
+        // outside `Screenings` cannot red AT ALL, which its own mutation test then says out loud.
         assert!(
-            !BIN.contains(&format!("\"{} ", screened.label)),
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 924: the binary formats a line opening with `{}` itself. Two \
-             authors for one line is how the printed count and the walked count come to disagree \
-             — the line belongs to `Screening`, for register item 934's reason one gate over",
-            screened.label,
+            BIN.contains("screenings.all_clean()") && BIN.contains("screenings.faults()"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 940: the verdict no longer reads the screenings as one \
+             value, so a gate can once again reach the exit code without saying what it asked",
         );
         for (backlog, field) in [
             (&unclassified, "backlogs.unclassified"),
@@ -5294,6 +5502,66 @@ mod tests {
                  itself. Two authors for one line is how the printed number and the ratcheted \
                  number come to disagree — the line belongs to `Backlog`",
                 backlog.label,
+            );
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY TERM OF THE VERDICT HAS A PRINTED POPULATION** — register item 940's own
+    /// sentence, made into the predicate this workspace's rule 10 asks for instead of a paragraph.
+    ///
+    /// # ⛔⛔⛔ What this refuses, and why the three terms are counted rather than listed
+    ///
+    /// The exit code is decided by exactly three things, and each has to be a question whose
+    /// denominator a reader can see:
+    ///
+    /// | term | its population | the line that prints it |
+    /// |---|---|---|
+    /// | `reading.is_green()` | the items parsed | `items N in section A` |
+    /// | `refuted.is_empty()` | the red claims | the `claimed` half of `reds N claimed, …` |
+    /// | `screenings.all_clean()` | each gate's own | one `Screening` line per gate |
+    ///
+    /// ⚠⚠ **A FOURTH TERM IS A RED HERE**, and that is the whole point: it would be a gate whose
+    /// population nothing states, which is what register items 914, 924 and 940 are all one case
+    /// of. The remedy is never to widen this count — it is to make the new gate a [`Screening`], at
+    /// which point it is inside `all_clean` and needs no term of its own.
+    #[test]
+    fn the_verdict_is_three_terms_and_each_one_prints_its_population() {
+        const BIN: &str = include_str!("bin/north-star.rs");
+        // ⚠ The opening term is kept rather than consumed by the split — written the other way
+        // first, this reported *the verdict no longer reads `reading.is_green()`* about a verdict
+        // that opened with exactly that. A gate whose refusal names the wrong cause is register
+        // item 901's shape, and it took one run to meet it here.
+        const OPENS: &str = "if reading.is_green()";
+        let tail = BIN
+            .split_once(OPENS)
+            .expect("the verdict opens with the parse")
+            .1
+            .split_once('{')
+            .expect("the verdict has a body")
+            .0;
+        let verdict = format!("{OPENS}{tail}");
+        assert_eq!(
+            verdict.matches("&&").count(),
+            2,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 940: the verdict is no longer three terms. A term that is \
+             not `screenings` is a gate whose population nothing prints — make it a `Screening` \
+             instead, which puts it inside `all_clean` and gives it a line: `{}`",
+            verdict.trim(),
+        );
+        for (term, printed) in [
+            ("reading.is_green()", "items {} in section A"),
+            ("refuted.is_empty()", "reds {} claimed, {} standing: {}"),
+            ("screenings.all_clean()", "{screening}"),
+        ] {
+            assert!(
+                verdict.contains(term),
+                "⛔ the verdict no longer reads `{term}`: `{}`",
+                verdict.trim(),
+            );
+            assert!(
+                BIN.contains(printed),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 940: `{term}` decides the exit code and the report no \
+                 longer prints `{printed}`, so its population is once again a number nobody sees",
             );
         }
     }

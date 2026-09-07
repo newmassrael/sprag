@@ -141,19 +141,31 @@ fn main() -> std::process::ExitCode {
             }
         }
     }
-    // ⛔⛔⛔⛔⛔ AND THE DEFERRALS RESTING ON A LINK NOBODY CLASSIFIED — register item 920, asked
-    // here rather than in `read` for the reason `cap` itself is: the depth cap is the loop
-    // document's number and this binary is the only thing that has opened that document.
+    // ⛔⛔⛔⛔⛔ AND EVERY GATE THAT CAN RED, EACH SAYING HOW MANY QUESTIONS IT PUT — register
+    // items 920, 902, 937 for the three of them, 924 for the count and 940 for the enumeration.
     //
-    // ⚠⚠ PRINTED EVEN WHEN IT FOUND NOTHING, AND WITH THE COUNT OF WHAT IT ASKED — register item
-    // 924. This gate's population is the block above, which item 921 emptied: from that round on
-    // it walked NO links and reported exactly what it reports after walking some and finding them
-    // clean. `deferral links 0 judged` is the sentence that separates the two, and the round after
-    // this one is the reader it is for. The line is `north_star::Screening`'s and not this file's,
-    // which is what keeps *the set that reds* and *the number that prints* one object — the split
-    // register item 934 drew for the four backlogs, held by the same gate in `north_star`'s tests.
-    let unread = reading.deferred_unread(cap.depth());
-    println!("{unread}");
+    // ⚠⚠ PRINTED EVEN WHEN THEY FOUND NOTHING. A gate whose population emptied and a gate that
+    // examined its population and found it clean report the same empty set, and item 924 measured
+    // exactly that happening to the first of these after item 921 paid its deferrals to none.
+    //
+    // ⚠⚠⚠ ASKED IN ONE CALL AND JUDGED FROM ONE VALUE, which is the whole of item 940: the
+    // verdict below reads `screenings` and NOTHING else about these three, so a fourth gate that
+    // is not in `north_star::Screenings` cannot red at all. The lines are `Screening`'s and never
+    // this file's — the split register item 934 drew for the four backlogs, held by the same gate
+    // in `north_star`'s tests.
+    let screenings = match reading.screenings(cap.depth(), &Repository) {
+        Ok(screenings) => screenings,
+        // ⚠⚠ A FAILURE TO ASK IS ITS OWN FAULT and never forty item faults — see
+        // `north_star::Reading::paid_commits`. Being unable to reach `git` says nothing about any
+        // ledger line, and a RED that fires on a broken environment is one readers learn to skip.
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    for screening in screenings.each() {
+        println!("{screening}");
+    }
     println!("{}", backlogs.unrooted);
     // ⛔⛔⛔⛔⛔ AND THE PAID MARKS WHOSE CLAIM NOTHING CHECKED — register item 902, printed
     // beside its three ratchet neighbours because it is the same kind of statement: a backlog with
@@ -162,24 +174,6 @@ fn main() -> std::process::ExitCode {
     // ⚠ A TOTAL AND NOT A BACKLOG, so it names no items and register item 934 does not widen to
     // it: nothing is held back by this number and there is nothing in it for a round to take.
     println!("items {} in section A", reading.items.len());
-
-    // ⛔⛔⛔⛔⛔ AND THE OTHER HALF, WHICH NEEDS THE REPOSITORY AND NOT THE DOCUMENT — register
-    // item 902. An id that is WRITTEN and does not resolve has no backlog and no floor: it is a
-    // typo or a claim about a commit nobody made, so any one of them is a RED on the spot.
-    //
-    // ⚠⚠ A FAILURE TO ASK IS ITS OWN FAULT and never forty item faults — see
-    // `north_star::Reading::paid_unresolved`. Being unable to reach `git` says nothing about any
-    // ledger line, and a RED that fires on a broken environment is one readers learn to skip.
-    let unresolved = match reading.paid_unresolved(&Repository) {
-        Ok(found) => found,
-        Err(why) => {
-            eprintln!("north-star: {why}");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
-    for (number, id) in &unresolved {
-        eprintln!("north-star: item {number} names commit {id}, which this tree cannot resolve");
-    }
 
     // ⛔⛔⛔⛔⛔ AND THE REDS THE LEDGER CLAIMS, AGAINST WHAT THE SUITE SAYS — register item 843.
     //
@@ -204,7 +198,7 @@ fn main() -> std::process::ExitCode {
     );
     // ⛔ A CLAIM THE SUITE REFUTES IS A FAULT ABOUT THE DOCUMENT, and the mirror of item 902's
     // wrongly-paid mark: this one would buy an item past the severity gate on a red that is not
-    // there. It is reported here, beside `paid_unresolved`, because only the caller could ask.
+    // there. It is reported here, beside `standing_reds`, because only the caller could ask.
     for number in &refuted {
         eprintln!(
             "north-star: item {number} claims a red the suite says is green — the claim is stale, \
@@ -227,26 +221,19 @@ fn main() -> std::process::ExitCode {
     // must not read alike.
     println!("{}", reading.ending());
 
-    // ⛔⛔⛔⛔⛔ AND THE BACKLOGS WHOSE DECLARED OWNER IS NO LONGER OPEN — register item 937. Asked
-    // here, beside `paid_unresolved` and `standing_reds`, for the reason
-    // `north_star::Reading::backlog_owners_gone` records: the claim names an item of THIS ledger,
-    // and putting the check inside `read` made eleven tests over other ledgers red at once.
-    let ownerless = reading.backlog_owners_gone();
-
-    if reading.is_green()
-        && unresolved.is_empty()
-        && unread.faults.is_empty()
-        && refuted.is_empty()
-        && ownerless.is_empty()
-    {
+    // ⛔⛔⛔⛔⛔ THE VERDICT, AND IT READS THE SCREENINGS AS ONE VALUE — register item 940.
+    //
+    // ⚠⚠⚠ THREE TERMS AND NOT FIVE, AND THE TWO BESIDE `screenings` ARE NOT AN ESCAPE HATCH: each
+    // already prints its own denominator. `is_green` is the PARSE, whose population is the
+    // `items N in section A` line above; `refuted` is judged against the claims counted by the
+    // `claimed` half of the `reds` line. So every term here has a printed population — which is
+    // what register item 940 was actually asking for, and `north_star`'s tests assert it rather
+    // than leaving it to this comment.
+    if reading.is_green() && refuted.is_empty() && screenings.all_clean() {
         return std::process::ExitCode::SUCCESS;
     }
-    let faults: Vec<&north_star::Fault> = reading
-        .faults
-        .iter()
-        .chain(unread.faults.iter())
-        .chain(ownerless.iter())
-        .collect();
+    let faults: Vec<&north_star::Fault> =
+        reading.faults.iter().chain(screenings.faults()).collect();
     if !faults.is_empty() {
         eprintln!("\n{} fault(s):", faults.len());
         for fault in faults {
