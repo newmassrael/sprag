@@ -1327,6 +1327,11 @@ fn impl_type(line: &str) -> Option<String> {
 
 /// `const NAME: &str = "…";` as `(name, value)`, for a line that is one.
 fn string_const(line: &str) -> Option<(String, String)> {
+    // ⚠⚠ THIS READER SEES `pub const` AND `const` AND NOTHING ELSE — register item 944. A key
+    // declared `pub(crate) const` resolves to no value, and the payload claim then reds naming the
+    // IDENTIFIER about a payload that carried exactly what the document read. Registered rather
+    // than widened here, because a reader change with no product behind it is a change nothing
+    // holds; the keys this workspace writes are declared the way `REAIM_MAX` is.
     let rest = line
         .strip_prefix("pub const ")
         .or_else(|| line.strip_prefix("const "))?;

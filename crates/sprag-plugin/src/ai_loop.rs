@@ -2232,6 +2232,13 @@ mod tests {
             // 833(2) want: they move the document's number and watch the run's behaviour move with
             // it, and a number named here would be a caller overriding the thing being measured.
             reaim_max: None,
+            // ⛔ DECLINED, so the TEMPLATE's own `never` and empty list stand — register item 942.
+            // These fixtures drive a stand-in peer against no repository at all, so there is
+            // nothing here whose movement would mean progress; a bound named here would end every
+            // gate below at the same step for a reason none of them is about. The gates that
+            // measure this ceiling arm both halves themselves, in both directions.
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             // ⚠ DECLINED, so the template's own number stands. The base brief must not author a
@@ -4440,6 +4447,136 @@ mod tests {
             }
             access.lifecycle().expect("lifecycle").close(pane);
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A STALLED RUN REALLY ENDS, AND ITS AGENT IS TOLD WHY** — register item 942, and
+    /// the whole road rather than the decision at the top of it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a latch is not a bite
+    ///
+    /// `outer.rs`'s `a_run_that_moves_nothing_meets_a_ceiling_and_one_that_moves_something_does_not`
+    /// asserts the COUNT decides correctly in both directions, and that is a different claim: it
+    /// stops at [`crate::outer::OuterLoop::stopped_short_by`]. A ceiling that latched and never
+    /// ended a run would satisfy it exactly — which is the shape register item 942 exists to end,
+    /// because *nothing stops a run that has stopped working* is true of a latch nobody reads.
+    ///
+    /// ⇒ So this drives a REAL [`Driver`] to its outcome and asserts the three publications the
+    /// gate below asserts of the other four ceilings: the run's terminal
+    /// [`OutcomeState::Exhausted`] names `stall`, the agent was asked the document's own `stall`
+    /// clause, and it was NOT asked another ceiling's.
+    ///
+    /// # ⚠⚠⚠ Why the guardrails are the ones this repository's kind actually declines
+    ///
+    /// A step or clock ceiling that bit first would make every assertion here a claim about some
+    /// other run — the table below this one states that as its own control — so the two spending
+    /// bounds are far out of reach and the step count is a backstop four hundred times the stall
+    /// bound. That arrangement is also the LIVE one: register item 941 left this kind's runs
+    /// declining all three, and `stall_after_steps` is the only ceiling left that can end them.
+    ///
+    /// ⚠⚠ THE MARKS NEVER MOVE, and they are files this gate created — not the repository's own,
+    /// which a suite running beside a commit would move under it. That is the fixture's whole
+    /// content: a run typing at a peer that answers, with nothing its work is supposed to move
+    /// having moved.
+    #[test]
+    fn a_stalled_run_ends_and_its_agent_is_told_which_ceiling_ended_it() {
+        // ⛔ `sprag_scratch::scratch_for` AND NOT `std::env::temp_dir()` — register item 794.
+        let home = sprag_scratch::scratch_for("sprag-stall-ends", "");
+        std::fs::create_dir_all(&home).expect("a directory to put the marks in");
+        let marks: Vec<String> = ["never-moves-a", "never-moves-b"]
+            .iter()
+            .map(|name| {
+                let at = home.join(name);
+                std::fs::write(&at, b"still").expect("a mark that will not move");
+                at.display().to_string()
+            })
+            .collect();
+        assert_eq!(
+            marks.len(),
+            2,
+            "⚠ the control: one mark is the predicate register item 942 measured and rejected",
+        );
+
+        /// Small enough that the run reaches its first judgements first, and the number this
+        /// repository ships is derived in `debt_loop.scxml` rather than here.
+        const STALLS_AFTER: i64 = 12;
+
+        let (workspace, pane) = crate::testing::standin_agent_reporting(
+            crate::testing::Accounts::ForARunThatRanOutOfTurns,
+            NO_THINKING,
+        );
+        let access = supervised(&workspace);
+        let brief = Brief {
+            stall_after_steps: Some(crate::outer::Counted::Of(STALLS_AFTER)),
+            progress_marks: Some(marks),
+            // ⚠ OUT OF REACH, so the document's own budget cannot be what ends this run — the
+            // fixture next door drives `turns` and this one must not.
+            ..brief_for(1_000_000)
+        };
+        let mut loops =
+            AiLoop::new(engine(), pane, &brief, &standin_spec()).expect("a well-briefed loop");
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            // ⚠ A BACKSTOP AND NOT A CEILING THIS GATE IS ABOUT: four hundred times the stall
+            // bound, so a run that reaches it has proved the stall count never fired at all.
+            max_iterations: Some(4_000),
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+
+        let walked: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|entry| entry.note.clone())
+            .collect();
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Stall),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 942: a run typed at its peer for {} steps with nothing its \
+             work is supposed to move having moved, and it did not end on that. A ceiling that \
+             latches and never becomes an ending is the state this item was filed on wearing the \
+             shape of a repair. Walked {walked:?}",
+            4_000,
+        );
+
+        let asked = loops
+            .authored()
+            .expect("the datamodel must still answer for its prompts")
+            .stop;
+        let clause = crate::testing::stop_said(Ceiling::Stall)
+            .expect("this ceiling asks for an account, so the document owes it a clause");
+        assert!(
+            asked.contains(clause),
+            "⚠⚠⚠ REGISTER ITEM 264, on the sixth ceiling: a run stopped by {:?} was asked \
+             {asked:?}, which does not name it. This sentence is TYPED INTO THE AGENT'S PANE in \
+             the turn that asks where it got to, and a stalled run is the one ending where that \
+             account is worth most — the whole finding was that nobody could see what the run had \
+             been doing. Expected {clause:?}",
+            Ceiling::Stall,
+        );
+        for other in Ceiling::ALL {
+            let Some(theirs) = crate::testing::stop_said(other) else {
+                continue;
+            };
+            assert!(
+                other == Ceiling::Stall || !asked.contains(theirs),
+                "⚠⚠⚠ AND IT NAMED A CEILING THAT DID NOT STOP IT: a stalled run was asked \
+                 {asked:?}, which carries {other:?}'s clause ({theirs:?}) — item 264's defect, \
+                 which the agent cannot check",
+            );
+        }
+        // ⚠⚠ AND THE ACCOUNT CAME BACK, which is what makes the question more than a courtesy:
+        // this ending is the one a person most needs an account of, and a run that asked and got
+        // nothing would report `exhausted` and silence — the state the account edge removed.
+        assert!(
+            loops.captured().is_some_and(|said| !said.trim().is_empty()),
+            "⚠⚠⚠ the stalled run asked its agent where it got to and came back with nothing, so a \
+             person reading this run has the word and no account. Walked {walked:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 
     /// ⚠⚠⚠ **A CLOCK THAT RUNS OUT *INSIDE* A TURN IS NOT A PERSON'S CANCEL** — the one shape a

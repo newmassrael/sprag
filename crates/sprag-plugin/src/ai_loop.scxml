@@ -863,7 +863,8 @@
             turns:      'This run has spent every turn its document budgeted for it.',
             iterations: 'This run has taken every step its run was allowed.',
             cost:       'This run has spent everything its run was allowed to spend.',
-            duration:   'This run has run out of the wall-clock time its run was given.'
+            duration:   'This run has run out of the wall-clock time its run was given.',
+            stall:      'This run has gone as far as it may go without moving anything its work is supposed to move.'
           }"/>
     <!--
       ⚠⚠ WHAT IS ACTUALLY ASKED, kept apart from the opening so the ceiling
@@ -1489,6 +1490,93 @@
       nobody reviewed, which is `working_rules`' own argument one `<data>` over.
     -->
     <data id="reaim_max" expr="1"/>
+
+    <!--
+      ⛔⛔⛔⛔⛔ HOW MANY STEPS THIS RUN MAY TAKE WITH NOTHING ITS WORK MOVES
+      HAVING MOVED — register item 942, and the only bound in this file that is
+      about PROGRESS rather than about spend, patience or a count of turns.
+
+      ⚠⚠⚠⚠⚠ WHY IT HAD TO EXIST, and the measurement is register item 941's own
+      residue. `Ceiling::ALL` names the things that can end a run, and after 941
+      declined all three guardrails on the owner's instruction NONE of them
+      measured whether the run was getting anywhere: they count steps, spend,
+      seconds, turns and a person's patience. The one that had stood in for
+      progress was the byte ceiling, argued in the kind's own words as *"a loop
+      that has stopped making progress and is still typing meets it"* — a
+      progress claim made with a spend number, and it left with the other two.
+      So a run that stopped working could be stopped only by bounding one that
+      was working fine.
+
+      ⚠⚠⚠ IT COUNTS DRIVER STEPS AND NOT TURNS OR REFLECTIONS, and the unit is
+      the decision rather than a detail. A turn is the agent's and a reflection
+      is this document's cadence, so both move when `reflect_every` or a peer's
+      speed moves; a step is the loop's own smallest act and it is the unit the
+      run's own `iterations` are already counted in. Measured against the run
+      registry's own `iterations` over nine of this daemon's run logs, one
+      timestamped journal line is one step to within **2.4%** (worst: 126 lines
+      for 123 steps; the `continue` lines alone agree to 1.2%). The excess is
+      header lines, so a bound derived in LINES is slightly the larger of the
+      two — the safe direction for a ceiling.
+
+      ⚠⚠ `never` DECLINES THE BOUND, spelled the way `max_turns` and `reaim_max`
+      spell it, and THE TEMPLATE DECLINES IT — because a template other
+      repositories copy cannot know what their work moves. A kind that names no
+      `progress_marks` below has nothing to observe, so the count never advances
+      and this ceiling never falls due: the ceiling fails toward NOT firing, and
+      that direction is stated rather than fixed.
+
+      ⚠⚠⚠ AND AN ABSENT VALUE IS REFUSED AT THE DOOR, never silently unbounded —
+      `reaim_max`'s rule, which is the escape hatch that disables its own gate.
+      `Briefed::NotHeld` answers for a document that declares neither this nor
+      the marks below.
+
+      ⚠ IT IS THE KIND'S TO AUTHOR and deliberately NOT a wire key, on
+      `reaim_max`'s argument exactly: a caller who could name it could delete the
+      bound by spelling `never` on a launch nobody reviewed.
+    -->
+    <data id="stall_after_steps" expr="'never'"/>
+
+    <!--
+      ⛔⛔⛔⛔⛔ WHAT THIS RUN'S WORK MOVES WHEN IT IS GETTING SOMEWHERE — the
+      other half of the bound above, and the half that makes its predicate more
+      than one thing. Register item 942.
+
+      ⚠⚠⚠⚠⚠ WHY A LIST AND NOT ONE SIGNAL, which is the finding the item was
+      filed on. The obvious predicate is *the agent has not said it reached a
+      milestone*, and it is WRONG in the direction that matters: a run doing one
+      large piece of work properly reaches no checkpoint for a long time, so a
+      one-signal bound catches the runs doing the best work first. Measured
+      across every run log this daemon holds, over the runs that CONVERGED:
+
+        longest stretch with no milestone claimed          1197 steps
+        longest stretch with no mark moved                  325 steps
+        longest stretch with NEITHER                        325 steps
+
+      ⇒ the second signal cuts the base by 3.7x, and it is what lets the bound
+      be a number rather than a formality.
+
+      ⚠⚠⚠ AND THE AGENT'S OWN CLAIM IS NOT ONE OF THE SIGNALS, which is a
+      DEPARTURE from the shape the item proposed and it was measured before it
+      was taken: on the same population, dropping the milestone claim moved the
+      largest stretch not at all (325 either way). Register item 428 is why that
+      is the right way round — *a milestone cannot be certified by the agent that
+      worked on it* — and a run that keeps announcing progress while nothing
+      moves is exactly the run this ceiling exists to stop. Every mark here is a
+      fact on a filesystem that somebody's work really changed.
+
+      ⚠⚠ EACH ENTRY IS A PATH. A relative one is resolved against the tree the
+      run's pane was opened in (`PaneOrigin::pane_start_dir` — the same read
+      `works_in` and the milestone checker already take); an absolute one is
+      taken as it stands, because a mark may perfectly well live outside the
+      tree. What is compared is the pair (length, modified-at) of each, so a file
+      that is appended to and one that is rewritten in place both count.
+
+      ⚠ THE TEMPLATE NAMES NONE, and empty is *this kind cannot see progress*
+      rather than *this kind never progresses*. The bound above therefore has
+      nothing to advance and never fires — see it for why that direction.
+    -->
+    <data id="progress_marks" expr="[]"/>
+
     <!--
       HOW FAR THIS RUN HAS RE-AIMED ITSELF ALREADY - incremented by
       `reflect.applied` below, and only where that transition ACTUALLY MOVES
@@ -3264,6 +3352,18 @@
         did before this datum existed.
       -->
       <assign location="reaim_max" expr="_event.data.reaim_max"/>
+      <!--
+        ⛔⛔⛔ AND WHAT THIS RUN'S WORK MOVES, WITH THE BOUND ON GOING NOWHERE —
+        register item 942, on the terms of every neighbour here.
+
+        ⚠⚠ UNCONDITIONAL, like the rest: the driver echoes this document's own
+        values back when nobody named them, and a nil assigned here would delete
+        a kind's progress axis. That failure reads as SAFE from every direction —
+        the run simply goes back to having no such ceiling — which is the shape
+        this file refuses everywhere else it appears.
+      -->
+      <assign location="stall_after_steps" expr="_event.data.stall_after_steps"/>
+      <assign location="progress_marks" expr="_event.data.progress_marks"/>
       <!--
         🎯🎯🎯 AND HOW MANY TIMES A RUN MAY ASK AGAIN WHEN THAT CAP TURNS A
         PROPOSAL AWAY — register item 840, on the line above's exact terms. The

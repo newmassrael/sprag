@@ -1206,8 +1206,23 @@ impl ScopeAsk {
 ///   nothing starts. The handshake is for the callers that do not fill from a published form, and
 ///   nothing else reaches them.
 ///
+/// * **46 — A SIXTH CEILING, AND THE FIRST ONE THAT MEASURES PROGRESS.** Register item 942. A run
+///   may now end `exhausted (stall)`: the loop took every step its document allowed with nothing its
+///   work is supposed to move having moved. The five words before it are all quantities — steps,
+///   spend, seconds, turns, a person's patience — and after register item 941 declined all three
+///   guardrails on the owner's instruction, none of them could say whether a run was getting
+///   anywhere.
+///
+///   ⚠⚠⚠⚠⚠ **AN ANSWER WORD THAT BREAKS ITS READER QUIETLY, WHICH IS WHY IT COSTS THE NUMBER.**
+///   Nothing decodes `ceiling` whole — both renderers print the string — so no peer fails loudly.
+///   The reader that DOES decode it is this daemon's own `outcome_from_words`, restoring a run from
+///   the durable log, and an unknown word there is not a parse error but `iterations`: an older
+///   build reading a newer log tells somebody their run took every step it was allowed, about a run
+///   that never came near a step budget. R384's *only `ai_loop` can produce it* escape does not
+///   reach this — the peer that meets the word is a build of this daemon, not a client.
+///
 /// [`CLIENT_BUILD_PARAM`]: crate::CLIENT_BUILD_PARAM
-pub const WIRE_PROTOCOL: u32 = 45;
+pub const WIRE_PROTOCOL: u32 = 46;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
 /// this crate's build script as the commit it was compiled from (or `unknown`).

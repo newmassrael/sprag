@@ -405,7 +405,13 @@ pub(crate) mod grammar {
         // answered red. **A window asks no launcher's question** — it has no run to check and no
         // spawn to withhold — so this pin moves for a thirteenth cause it takes no part in.
         // Thirteen for thirteen, and the eighth is still the only one this surface authors.
-        45,
+        // 🎯🎯🎯 THE FOURTEENTH, and it is a word a RUN'S ROW can carry: register item 942 gave
+        // `Ceiling` a sixth arm (`stall`), so an exhausted run can say it kept typing while nothing
+        // its work moves had moved. **A window renders panes and reads no run's outcome** — the row
+        // is the multiplexer's answer, not a pane surface's — so this pin moves for a fourteenth
+        // cause it takes no part in. Fourteen for fourteen, and the eighth is still the only one
+        // this surface authors.
+        46,
         &[
             (
                 "the command palette",

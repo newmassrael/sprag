@@ -9704,7 +9704,20 @@ mod tests {
         // than pinned: the `null` is answered only to a request that CARRIED `dry_run`, so a
         // caller that has never heard of the key cannot meet it. A widening a peer can only reach
         // by opting in is not a widening of what any existing peer decodes.
-        45,
+        // ⚠⚠⚠⚠⚠ 46 — REGISTER ITEM 942, AND THE NUMBER IS MOVED RATHER THAN ARGUED AWAY. A SIXTH
+        // `ceiling` word (`ceiling:stall`) is the break this pin's own message calls the QUIET one:
+        // nothing decodes that key whole, so no reader fails loudly — `outcome_from_words` reads it
+        // back through `Ceiling::from_wire` and answers `iterations` for a word it does not know,
+        // which is a restored run naming a guardrail it never met. The message offers two ways out,
+        // *say out loud why no older reader can meet it* or *move the number*, and the first is not
+        // available: this word reaches a run's row through `outcome_ceiling`, the same renderer
+        // every other ceiling uses, and any daemon restart reading an older log gets the wrong
+        // sentence with nothing anywhere saying so.
+        // ⚠ R384's escape (*only `ai_loop` produces it*) does not save it either. That escape is
+        // about which PLUGIN a client may select; this word is written into the DURABLE run log and
+        // read back by the daemon itself, so the peer that meets it is a future build of this
+        // daemon rather than somebody's client.
+        46,
         &[
             "check:pane-isolation",
             "check:pane-admission",
@@ -9878,6 +9891,7 @@ mod tests {
             "ceiling:duration",
             "ceiling:turns",
             "ceiling:hold",
+            "ceiling:stall",
         ],
     );
 
@@ -10300,7 +10314,13 @@ mod tests {
             // `dry_run` is a `bool` — its two values are the type's own and not a closed set this
             // pin walks — so the SHAPE pin above is the one that saw it, and the number it moved
             // is recorded there.
-            45,
+            // ⚠ 46: re-stamped with every published REQUEST vocabulary unchanged. Register item
+            // 942's `ceiling:stall` is an ANSWER word, and the bound behind it (`stall_after_steps`)
+            // is deliberately NOT a wire argument at all — a caller who could name it could spell
+            // `never` and delete the only ceiling that measures progress, which is `reaim_max`'s
+            // own argument. So nothing a caller may SAY moved, and the value-space pin above is the
+            // one that saw this.
+            46,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -10660,7 +10680,11 @@ mod tests {
             // `Ok(Int(5))`, a STARTED RUN — which is exactly what an older daemon does with a key
             // it has never heard of. The parse is now a refusal; the handshake is what covers the
             // daemons that will never have the parse.
-            45,
+            //
+            // ⚠ 46: re-stamped with every published EVENT unchanged. Register item 942 moved the
+            // number for an ANSWER vocabulary (`ceiling:stall`); no event gained, lost or re-typed
+            // a key, which is what this says.
+            46,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -11322,7 +11346,11 @@ mod tests {
         // `dry_run` is an ARGUMENT on forms the `run` address already served; what it changes is
         // whether that address SPAWNS, which is a meaning under a name that did not move — the
         // case this pin's own message calls legitimate. The shape pin is the one that saw it.
-        45,
+        // ⚠ 46 — REGISTER ITEM 942: re-stamped with the SURFACE unchanged. A sixth `ceiling` word
+        // is a VALUE a run's row can carry at an address that already served it, and the bound
+        // behind it is not on this wire at all — it is the kind document's, deliberately. The
+        // value-space pin is the one that saw this.
+        46,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

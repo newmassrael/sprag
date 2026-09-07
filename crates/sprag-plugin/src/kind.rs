@@ -892,6 +892,48 @@ impl LoopKind {
         OuterLoop::authored_count_in(&self.script, &self.session, "reaim_max")
     }
 
+    /// ⛔⛔⛔⛔⛔ **HOW MANY STEPS A RUN OF THIS KIND MAY TAKE WITHOUT MOVING ANYTHING ITS WORK IS
+    /// SUPPOSED TO MOVE** — or [`None`] where this kind says nothing and the template's own decline
+    /// stands. Register item 942, and the bound behind [`Ceiling::Stall`](crate::Ceiling::Stall).
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why it is the KIND's, which is the whole shape of this ceiling
+    ///
+    /// The count is in the substrate's own unit — driver steps — but the PREDICATE is not: what
+    /// makes a stretch of them stalled is that nothing this repository's work moves has moved, and
+    /// [`progress_marks`](Self::progress_marks) is where that lives. The bound and the marks are
+    /// one decision, so they are authored together and read together. A caller who could name
+    /// either could delete the ceiling by naming the wrong file, which is
+    /// [`reaim_max`](Self::reaim_max)'s argument and why neither is a wire key.
+    ///
+    /// ⚠⚠ **IT READS THROUGH THE INTERPRETING READER**, like [`reaim_max`](Self::reaim_max):
+    /// [`Counted`] is a union of a number and the word `never`, and the template declines while
+    /// this repository's kind names a number — two documents whose literals have different types.
+    #[must_use]
+    pub fn stall_after_steps(&self) -> Option<Counted> {
+        OuterLoop::authored_count_in(&self.script, &self.session, "stall_after_steps")
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT A RUN OF THIS KIND MOVES WHEN IT IS GETTING SOMEWHERE**, as paths — or
+    /// [`None`] where this kind names none, which is the template's shipped state and means *this
+    /// kind cannot see progress*. Register item 942.
+    ///
+    /// # ⚠⚠⚠⚠ Why a LIST, and why the agent's own claim is not on it
+    ///
+    /// The obvious signal is *the agent has not said it reached a milestone*, and measured over
+    /// every run log this daemon holds it is the wrong one: across the runs that converged, the
+    /// longest stretch with no milestone claimed is **1197 steps** while the longest with no mark
+    /// moved is **325**. A one-signal bound catches the runs paying off one large debt properly,
+    /// which is the opposite of what it is for. Register item 428 is the other half — *a milestone
+    /// cannot be certified by the agent that worked on it* — and a run that keeps announcing
+    /// progress while nothing moves is exactly what this ceiling exists to stop.
+    ///
+    /// ⚠ A relative path resolves against the tree the run's pane was opened in; an absolute one
+    /// stands as it is, because a mark may live outside the tree — this repository's register does.
+    #[must_use]
+    pub fn progress_marks(&self) -> Option<Vec<String>> {
+        OuterLoop::authored_paths_in(&self.script, &self.session, "progress_marks")
+    }
+
     /// **WHO DECIDES A MILESTONE OF THIS KIND WAS REACHED**, as an argv — or [`None`] where this
     /// kind says nothing and the working agent's own word stands.
     ///
@@ -1808,6 +1850,65 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND THE ONE CEILING LEFT THAT MEASURES PROGRESS IS A NUMBER, NOT A WORD** —
+    /// register item 942, and the pair this kind's own document promises a gate for.
+    ///
+    /// # ⛔⛔⛔ What this refuses is the tempting next move, exactly as the hold gate above does
+    ///
+    /// Register item 941 declined all three guardrails on the owner's instruction, and its own
+    /// residue named what that left: *nothing in `Ceiling::ALL` measures PROGRESS any more*. This
+    /// bound is what answers that, so declining it too — one word, in a clause that already spells
+    /// `never` three times — would put the document back where item 942 found it, with every gate
+    /// green.
+    ///
+    /// ⚠⚠⚠ **AND THE MARKS ARE ASSERTED WITH IT, BECAUSE THE BOUND ALONE DECIDES NOTHING.** A count
+    /// with no marks never advances, so a document authoring `1300` and no list would satisfy a
+    /// gate that only read the number while ending no run ever — the *unclassified ceiling* item
+    /// 738's gate refuses, wearing the shape of a classified one.
+    ///
+    /// ⚠⚠ **TWO MARKS AND NOT ONE**, which is measured rather than tidy: across every run log this
+    /// daemon holds, over the runs that CONVERGED, the longest stretch with no milestone claimed is
+    /// **1197 steps** and the longest with no mark moved is **325**. A one-signal predicate catches
+    /// the runs paying off a large debt properly, which is the opposite of what this is for.
+    #[test]
+    fn the_only_ceiling_that_measures_progress_is_one_this_kind_really_sets() {
+        let kind = debt();
+        for declined in ["max_bytes", "max_iterations", "max_seconds"] {
+            assert_eq!(
+                kind.authored_bounds("guardrails")
+                    .expect("readable")
+                    .expect("authored")[declined],
+                Counted::Never,
+                "the premise: this gate is about a kind whose runs are unbounded on {declined}, \
+                 which is what leaves this ceiling the only one measuring progress",
+            );
+        }
+        let Some(Counted::Of(steps)) = kind.stall_after_steps() else {
+            panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 942: every guardrail is declined and this bound is \
+                 {:?}, so NOTHING this kind admits measures whether its runs are getting \
+                 anywhere. That is the state item 942 was filed on, and a `never` here is how it \
+                 comes back — see `debt_loop.scxml`, where the number's derivation is written",
+                kind.stall_after_steps(),
+            );
+        };
+        assert!(
+            steps > 0,
+            "a bound of zero ends every run on its first step, which is `cancel` spelled as a \
+             ceiling: {steps}",
+        );
+        let marks = kind.progress_marks().unwrap_or_default();
+        assert!(
+            marks.len() >= 2,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 942: this kind names {} progress mark(s), and a bound whose \
+             marks never move is a ceiling that never fires — green here, and silent in the one \
+             direction this ceiling exists to be loud in. Measured: one signal is also the WRONG \
+             signal, because the longest stretch a converged run went without claiming a \
+             milestone is 1197 steps against 325 without moving a mark. Marks: {marks:?}",
+            marks.len(),
+        );
+    }
+
     /// ⚠⚠⚠⚠ **AND HOW LONG SOMEBODY MAY HOLD ONE** — register item 738, layer 1's fifth ceiling,
     /// and it is in the document because a GATE asked rather than because anybody noticed.
     ///
@@ -2013,9 +2114,11 @@ mod tests {
         // clauses is read by the same needle. This repository's own kind is that document, and the
         // count is what says the reader still sees what it used to.
         let mine = declared(include_str!("debt_loop.scxml"));
+        // ⛔ 28 SINCE REGISTER ITEM 942, which added `stall_after_steps` and `progress_marks` —
+        // the bound and the marks behind `Ceiling::Stall`, each with a reader on `LoopKind`.
         assert_eq!(
             mine.len(),
-            26,
+            28,
             "⚠⚠ the needle stopped seeing this repository's own kind, so the assertion above is \
              green about a document nobody read: {mine:?}",
         );

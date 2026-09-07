@@ -2313,6 +2313,13 @@ pub(crate) const fn stop_said(ceiling: Ceiling) -> Option<&'static str> {
         Ceiling::Cost => Some("allowed to spend"),
         Ceiling::Duration => Some("wall-clock time"),
         Ceiling::Hold => None,
+        // ⛔⛔⛔ THE SIXTH, AND IT IS ON THE *ASKS* SIDE — register item 942. A stalled run's agent
+        // is AT its pane mid-work, so `stopping` reaches it and the document composes a clause; the
+        // class is `Ceiling::asks_for_an_account`'s to answer and this agrees with it by
+        // construction. ⚠ The needle deliberately avoids the word *step*, which `Iterations` above
+        // already owns — the exclusivity the doc demands is what makes the second half of that
+        // gate's assertion mean anything.
+        Ceiling::Stall => Some("without moving anything its work"),
     }
 }
 

@@ -5691,6 +5691,13 @@ fn ai_loop_brief(
         // second resolved in `OuterLoop::brief`, which is the only place that can read it,
         // and which REFUSES a document that declares neither.
         reaim_max: kind.reaim_max(),
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 942 — the two-step fall-through above, twice, and for its exact
+        // reason. This is the only ceiling in `Ceiling::ALL` that measures PROGRESS, so a caller who
+        // could name either half could delete it silently: `never` for the bound, or a file the
+        // work never touches for the marks. Both are the kind's, then the template's own — the
+        // second resolved in `OuterLoop::brief`, which REFUSES a document declaring neither.
+        stall_after_steps: kind.stall_after_steps(),
+        progress_marks: kind.progress_marks(),
         // ⚠⚠ ABSENT MEANS "WHAT THE DOCUMENT'S AUTHOR WROTE", not *"screen nothing"*.
         // The rules live in the loop template, so a caller who says nothing about
         // screening is not overriding it — and the driver echoes the document's own
@@ -16325,6 +16332,47 @@ mod tests {
                         .map_or(Bound::Never, |it| Bound::Of(it as u64)),
                     kind.hold_within_ms().map(|it| Bound::Of(it as u64)),
                 ),
+                // ⛔⛔⛔⛔⛔ THE SIXTH — register item 942, and the arm this gate's own doc promised
+                // would have to be written rather than slipped past. It is rendered into the same
+                // pair as its neighbours, so a channel that handed back a constant reds on the line
+                // every other ceiling reds on.
+                //
+                // ⚠⚠⚠ AND ITS MARKS ARE ASSERTED HERE TOO, because this is the ONE ceiling whose
+                // bound alone decides nothing: a number with no marks never advances its count, so
+                // a document that authored `1300` and forgot the list would satisfy the general
+                // assertion below while ending no run ever. That is the *unclassified ceiling* this
+                // gate exists to refuse, wearing the shape of a classified one.
+                Ceiling::Stall => {
+                    let marks = kind.progress_marks().unwrap_or_default();
+                    assert!(
+                        marks.len() >= 2,
+                        "⛔⛔⛔⛔⛔ {ceiling:?}: this kind names {} progress mark(s). Register item \
+                         942 was filed on the finding that ONE signal is the wrong predicate — \
+                         measured over every run log this daemon holds, the runs that converged \
+                         went 1197 steps without a milestone claimed and 325 without a mark moved, \
+                         so a one-signal bound catches the runs paying off a large debt properly. \
+                         Author the marks in `debt_loop.scxml`; do NOT weaken this count",
+                        marks.len(),
+                    );
+                    assert_eq!(
+                        brief.progress_marks.as_deref(),
+                        Some(marks.as_slice()),
+                        "⚠⚠⚠⚠⚠ {ceiling:?}: the document names what its work moves and the run did \
+                         not get it — the channel is broken between the clause and the driver, \
+                         which is item 492's shape and is SILENT here in the worst way: a run \
+                         nothing can stop looks exactly like a run nothing needs to stop",
+                    );
+                    (
+                        brief.stall_after_steps.map_or(Bound::Never, |it| match it {
+                            Counted::Of(steps) => Bound::Of(steps.unsigned_abs()),
+                            Counted::Never => Bound::Never,
+                        }),
+                        kind.stall_after_steps().map(|it| match it {
+                            Counted::Of(steps) => Bound::Of(steps.unsigned_abs()),
+                            Counted::Never => Bound::Never,
+                        }),
+                    )
+                }
             };
             let said = said.unwrap_or_else(|| {
                 panic!(

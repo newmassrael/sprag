@@ -1051,6 +1051,115 @@
     <data id="hold_within_ms" expr="21600000"/>
 
     <!--
+      ══════════════════════════════════════════════════════════════════════════
+      ⛔⛔⛔⛔⛔ HOW MANY STEPS A RUN OF THIS KIND MAY TAKE WITHOUT GETTING
+      ANYWHERE — register item 942, and the rail the clause under `max_bytes`
+      above said to build if declining all three guardrails cost something.
+
+      ⚠⚠⚠⚠⚠ IT COST SOMETHING THE SAME DAY. That clause reads: *"with the two
+      spending bounds gone, nothing left in `Ceiling::ALL` measures PROGRESS"*,
+      and it named the repair — *build a ceiling that measures progress, N steps
+      with no commit and no ledger edit, not a number put back here.* This is
+      that ceiling. The number below is derived, and the derivation is written
+      beside it because the clause it replaces was convicted for not having one.
+
+      ⚠⚠⚠⚠ THE DERIVATION, RE-RUN OVER EVERY RUN LOG THIS DAEMON HOLDS
+      (2026-09-07; 241 logs that hold a walk, **60 of them runs that CONVERGED**
+      — the same population `max_bytes` was derived on, and named here rather
+      than chosen afterwards). ⚠ THE POPULATION IS THE SIXTY, not the 241: a
+      live daemon writes another log while anybody is reading this, so the file
+      count is a moving number and was one WITHIN THIS ROUND (240, then 241).
+      What the bound rests on is the converged set and the stretch below. One timestamped journal line is one driver step to within
+      **2.4%**, checked against the run registry's own `iterations` on nine runs
+      — the worst is run 245, 126 lines for 123 steps, and the excess is header
+      lines, so a bound derived in lines errs slightly LARGE, which is the safe
+      direction for a ceiling. For each step, *did a mark move in the interval
+      since the previous step*, taken from this repository's git history:
+
+        predicate                              longest stretch, converged runs
+        no milestone claimed                       1197 steps   (run 17)
+        no mark moved                               325 steps   (run 17)
+        NEITHER                                     325 steps   (run 17)
+
+      ⇒ **325 x 4 = 1300**, four times the largest stretch a run that finished
+      its work has ever actually passed through — the same multiplier and the
+      same anchor `max_bytes` used, which took *"four times the largest run this
+      daemon has ever recorded converging"* and landed on run 17 as well.
+
+      ⚠⚠⚠ AND WHAT THE DERIVATION REFUTED, recorded because the register asked
+      for the re-run rather than the answer. The item proposed 48, from a sample
+      of four runs whose longest stretch was 12 REFLECTIONS. Two things were
+      wrong with it. The command it derived from drops the stretch AFTER the last
+      milestone, so a run that banked nothing at all reports its longest stretch
+      as ZERO — measured, run 142 reports 0 where the true answer is 18, and 35
+      of the 170 runs with reflections bank nothing. And four runs is not the
+      population: over all of them the same predicate reaches 29 reflections, not
+      12. The unit moved too, for the reason `stall_after_steps` states.
+
+      ⚠⚠ WHAT THIS IS NOT, so *unbounded* stays true where 941 left it: it is not
+      a clock and not a spend. A run that works for a week and commits is never
+      touched by it, which is the property the owner's instruction of 2026-09-07
+      asked for and the one a wall clock could not give. What it ends is a run
+      that is still typing while nothing it is supposed to move has moved.
+
+      ⛔ AND IT MUST NOT BECOME `never`, which is the tempting move the day it
+      fires on something inconvenient: this is now the ONLY ceiling of the five
+      this kind admits that measures progress at all, and declining it would put
+      this document back where item 942 found it. A gate in `kind.rs` asserts
+      exactly that pair — the run declines its three guardrails AND this stays a
+      number.
+    -->
+    <data id="stall_after_steps" expr="1300"/>
+
+    <!--
+      ⛔⛔⛔⛔⛔ WHAT A ROUND OF THIS KIND MOVES WHEN IT IS GETTING SOMEWHERE —
+      the other half of the bound above, and the half that keeps its predicate
+      from being one thing. Register item 942.
+
+      ⚠⚠⚠⚠⚠ THESE TWO ARE THIS REPOSITORY'S DEFINITION OF A ROUND, and they are
+      not a guess: the standing rules a run of this kind is given say *round end
+      = commit + ledger update + push*, so a round that has got anywhere has
+      moved BOTH of these files and one that has got nowhere has moved neither.
+
+        `.git/logs/HEAD`  the reflog, appended by every commit and every ref this
+                          tree moves — MEASURED rather than assumed, 2026-09-07:
+                          **2,041** of its lines are `commit` entries against
+                          **2,043** commits on `main` (the two older than the
+                          reflog itself), and 92 further lines are the other ref
+                          movements. Relative, so it resolves against whatever
+                          checkout the run's pane was opened in — the same read
+                          `works_in` above takes, and the only spelling that is
+                          true in every checkout this document is compiled into.
+                          ⚠ NOT `.git/refs/heads/main`: a packed ref is not a
+                          loose file, and a mark that vanishes when somebody runs
+                          `git gc` is a mark that reads as *nothing ever moves*.
+
+        the register       absolute, and named absolutely for `successor_check`'s
+                          own stated reason one clause up: this path is this
+                          repository's, and a mark resolved against whatever tree
+                          a run happened to land in would answer about somebody
+                          else's work. It is the SAME file `successor_check`
+                          reads and `reference` points a run at.
+
+      ⚠⚠⚠ WHY THE REGISTER IS A MARK AT ALL, when a commit is the durable act:
+      the register is not in git. A round that has judged an item, written its
+      measurement and not yet committed has done real work that no commit shows,
+      and a bound that could not see it would count that round as stalled.
+
+      ⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN: this tree has TWO WRITERS
+      (register item 196 — a person's session and the loop share it), so a commit
+      made by the OTHER writer clears this run's stall count. That is the same
+      residue the item's own proposal (a `git log` window) carries, and it fails
+      in the safe direction: it can only make this ceiling fire LATER, never
+      sooner, and the bound is four times the largest stretch anything has needed.
+    -->
+    <data id="progress_marks"
+          expr="[
+            '.git/logs/HEAD',
+            '/home/coin/.claude/projects/-home-coin-sprag/memory/debt-open.md'
+          ]"/>
+
+    <!--
       ⛔⛔⛔⛔⛔ WHERE A RUN OF THIS KIND WORKS — register item 738, layer 4, and the
       one fact about a debt run that nothing anywhere had ever written down.
 

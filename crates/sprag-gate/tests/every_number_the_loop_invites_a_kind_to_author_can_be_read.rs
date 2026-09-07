@@ -77,6 +77,12 @@ const CLAIMED: &[&str] = &[
     "reference",
     "working_rules",
     "reaim_max",
+    // ⛔ Register item 942: how many steps a run may take with nothing its work moves having
+    // moved. It sits here, after `reaim_max`, because that is where the template declares it — and
+    // it is the only bound in the file that is about PROGRESS rather than about spend, patience or
+    // a count of turns. ⚠ `progress_marks` beside it in the document is NOT on this list: this pin
+    // holds the NUMBERS a kind is invited to author, and the marks are paths.
+    "stall_after_steps",
     // 🎯 Register item 840: how many times a run whose checkpoint is finished may ask its agent
     // again when the successor it named was turned away. It sits beside `reaim_max` because it is
     // that cap's other half — the cap used to END such a run, and this is what lets it carry on.

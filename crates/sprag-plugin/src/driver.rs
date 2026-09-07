@@ -204,6 +204,45 @@ pub enum Ceiling {
     /// typed pane on the verdict. The durable log writes the word and `outcome_from_words` reads it
     /// back, so a run abandoned before a daemon died still says so afterwards.
     Hold,
+    /// ⛔⛔⛔⛔⛔ **THE RUN IS STILL TYPING AND NOTHING IT WORKS ON HAS MOVED** — [`ai_loop.scxml`]'s
+    /// `stall_after_steps`, the THIRD ceiling the [`Driver`] does not own, and the only one in this
+    /// set that measures PROGRESS rather than spend. Register item 942.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the set needed a sixth arm at all
+    ///
+    /// The five above are quantities — steps, spend, seconds, turns, patience — and every one of
+    /// them answers *how much has been used up*. None answers *is any of it getting anywhere*. That
+    /// gap was covered by accident for as long as [`Guardrails::max_cost`] held a byte ceiling: the
+    /// document argued that number as *"a loop that has stopped making progress and is still typing
+    /// meets it"*, which is a progress claim made with a spend number. Register item 941 declined
+    /// all three guardrails on the owner's instruction and the proxy left with them — so this set
+    /// could bound a run that had stopped working only by bounding one that was working fine.
+    ///
+    /// # ⚠⚠⚠⚠ Why it is the PLUGIN's and not a fourth [`Guardrails`] field
+    ///
+    /// [`Turns`](Self::Turns)' argument, and sharper here. A guardrail is a number in the
+    /// substrate's own units, and the substrate can count steps — but the STEPS are not the hard
+    /// half. What makes a stretch of them *stalled* is that nothing the work is supposed to move
+    /// has moved, and what a run's work moves is a fact about somebody's repository: a ref a commit
+    /// advances, a register a round edits. The Driver can see neither, so a `max_stall` beside
+    /// [`Guardrails::max_iterations`] would be a bound whose predicate lived somewhere else — and a
+    /// caller could set it on a plugin that reports no progress at all, ending every such run at
+    /// exactly N steps. **The bound and the marks are ONE decision and they are the kind's.**
+    ///
+    /// ⚠⚠ **AND IT FAILS TOWARD NOT FIRING, stated rather than fixed** — `ReflectReason::Capacity`'s
+    /// shape, one crate over. A kind that names no marks has no progress to observe, so the count
+    /// never advances and this ceiling never falls due. The alternative — reading *I cannot see* as
+    /// *nothing moved* — would end every run of every plugin that never learned to answer, at the
+    /// first bound anybody typed.
+    ///
+    /// ⚠⚠⚠ **IT ASKS FOR AN ACCOUNT, AND THAT IS THE POINT OF IT**
+    /// ([`asks_for_an_account`](Self::asks_for_an_account)). A stalled run's agent is AT its pane,
+    /// mid-work, which puts it in the four-ceiling class rather than [`Hold`](Self::Hold)'s — and
+    /// it is the ending where an account is worth most, because the whole finding is that nobody
+    /// can see what the run has been doing.
+    ///
+    /// [`ai_loop.scxml`]: ../../ai_loop.scxml
+    Stall,
 }
 }
 
@@ -230,6 +269,7 @@ impl Ceiling {
             Self::Duration => "duration",
             Self::Turns => "turns",
             Self::Hold => "hold",
+            Self::Stall => "stall",
         }
     }
 
@@ -257,8 +297,12 @@ impl Ceiling {
     /// the ratchet rejects a key no live ceiling selects.
     #[must_use]
     pub const fn asks_for_an_account(self) -> bool {
+        // ⚠⚠⚠ THE SIXTH JOINS THE *YES* SIDE, and the question this method exists to force was
+        // worth asking about it rather than inheriting: a stalled run is the one ending where the
+        // account is worth MOST. Register item 942 filed it because nothing could see what such a
+        // run had been doing, and the agent is at its pane mid-work with the answer.
         match self {
-            Self::Iterations | Self::Cost | Self::Duration | Self::Turns => true,
+            Self::Iterations | Self::Cost | Self::Duration | Self::Turns | Self::Stall => true,
             Self::Hold => false,
         }
     }
@@ -305,6 +349,19 @@ impl Ceiling {
                  the brief the plugin was given, or come back sooner. Nothing was typed at the \
                  pane while it waited and no turn was spent, so the work stands where the hold \
                  found it"
+            }
+            // ⚠⚠⚠ IT NAMES NO GUARDRAIL EITHER, for `Turns`' reason, AND IT NAMES TWO REMEDIES
+            // BECAUSE THE BOUND IS HALF THE DECISION. Raising the count buys a stalled run more
+            // room; so does telling the plugin about a mark its work really moves, and a run whose
+            // kind named a file its work never touches meets this ceiling while working perfectly
+            // well. A sentence offering only the number would send that reader to the wrong end
+            // of it. ⚠ It says what the run DID do, because *still typing* is the fact that
+            // separates this ending from every other one in the set.
+            Self::Stall => {
+                "the run kept typing for every step its plugin allowed with nothing its work is \
+                 supposed to move having moved — no guardrail bounds it, so raising one buys \
+                 nothing; raise `stall_after_steps` in the brief the plugin was given, or name \
+                 marks the work really moves"
             }
         }
     }
@@ -2609,6 +2666,58 @@ impl Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⛔⛔⛔⛔⛔ **EVERY CEILING TELLS THE PERSON WHO MEETS IT WHAT TO CHANGE** — register item 942,
+    /// and the property [`Ceiling`]'s own doc has always claimed in prose.
+    ///
+    /// # ⚠⚠⚠⚠ Why the claim needed a gate rather than a paragraph
+    ///
+    /// The type's doc says an exhausted run that does not say WHICH ceiling *"tells a caller to
+    /// change something without telling it what"*, and the whole reason this closed set exists is
+    /// to end that. But nothing measured the other half: a ceiling can be in the set, have a word,
+    /// reach `sprag words` — and still hand a reader a sentence naming nothing they can act on.
+    /// That is this workspace's rule 10 (*a reason written in prose is a reason nobody measures*),
+    /// and the sixth arm is what made it worth closing: a ceiling nobody had written yet was
+    /// exactly the case the paragraph could not hold.
+    ///
+    /// ⚠⚠⚠ **EXHAUSTIVE, WITH NO WILDCARD AND NO EXEMPTION ARM.** A seventh ceiling stops the build
+    /// here until somebody says which knob it is, which is the same device
+    /// [`asks_for_an_account`](Ceiling::asks_for_an_account) uses one level up. Two of the six name
+    /// no guardrail at all and must not be made to: their number lives in whatever brief their
+    /// plugin was given, and the sentence says so — so what this walks is *the token a reader could
+    /// search for*, not *a `Guardrails` field*.
+    #[test]
+    fn every_ceiling_tells_its_reader_what_to_change() {
+        for ceiling in Ceiling::ALL {
+            let knob = match ceiling {
+                Ceiling::Iterations => "`max_iterations`",
+                Ceiling::Cost => "`max_cost`",
+                Ceiling::Duration => "`max_duration`",
+                // ⚠ The plugin's own budgets name no guardrail — `Turns`' doc holds the argument —
+                // so what a reader is pointed at is where the number really lives.
+                Ceiling::Turns | Ceiling::Hold => "the brief the plugin was given",
+                Ceiling::Stall => "`stall_after_steps`",
+            };
+            assert!(
+                ceiling.describe().contains(knob),
+                "⛔⛔⛔⛔⛔ {ceiling:?} ended somebody's run and its sentence names nothing they \
+                 can change. `Ceiling`'s own doc says an answer without that *tells a caller to \
+                 change something without telling it what*, which is the defect this whole closed \
+                 set exists to end. Expected {knob:?} in: {:?}",
+                ceiling.describe(),
+            );
+            // ⚠⚠ AND THE JOURNAL LINE CARRIES BOTH, which is the reader this is actually for: a
+            // person with one line of a walk in front of them. `noted` is where the word and the
+            // sentence meet, and a ceiling whose word were missing there would leave the remedy
+            // floating free of what asked for it.
+            let noted = ceiling.noted();
+            assert!(
+                noted.starts_with(ceiling.wire_str()) && noted.contains(knob),
+                "⚠⚠⚠ {ceiling:?}: the one journal line a reader may have must carry the word AND \
+                 the remedy. Got {noted:?}",
+            );
+        }
+    }
 
     /// ⚠⚠ **THE PUBLISHED OUTCOME LIST IS HELD TO THE ONE THAT IS SERVED** — the residue R365 named
     /// on the answers pin, and the reason `OutcomeState` finally spells its own words.

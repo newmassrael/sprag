@@ -1064,6 +1064,8 @@ fn a_live_judge_hears_the_marker_whatever_the_milestone_asked_for() {
         // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
         milestone_check: None,
         successor_check: None,
         reask_max: None,
@@ -1261,6 +1263,8 @@ fn a_live_judge_hears_the_marker_on_the_budget_the_deaf_runs_shared() {
         // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
         milestone_check: None,
         successor_check: None,
         reask_max: None,
@@ -1454,6 +1458,8 @@ fn a_turn_that_outran_its_bound_is_looked_at_again_and_never_judged() {
         // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
         milestone_check: None,
         successor_check: None,
         reask_max: None,
@@ -1611,6 +1617,8 @@ fn a_briefed_loop_converges_against_a_live_agent() {
         // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
         milestone_check: None,
         successor_check: None,
         reask_max: None,
@@ -1852,6 +1860,8 @@ fn a_run_that_runs_out_of_turns_says_where_it_got_to_against_a_live_agent() {
         // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
         milestone_check: None,
         successor_check: None,
         reask_max: None,
@@ -2069,6 +2079,8 @@ fn a_run_that_runs_out_of_time_says_where_it_got_to_against_a_live_agent() {
         // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
         milestone_check: None,
         successor_check: None,
         reask_max: None,
@@ -2325,6 +2337,8 @@ fn a_live_loop_does_work_that_changes_something_on_the_callers_consent() {
         // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
         milestone_check: None,
         successor_check: None,
         reask_max: None,
@@ -2538,6 +2552,8 @@ fn a_live_loop_is_carried_past_a_dialog_by_its_authors_standing_instruction() {
         // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
         milestone_check: None,
         successor_check: None,
         reask_max: None,
@@ -2782,6 +2798,8 @@ fn a_live_loop_replaces_its_session_and_tells_the_replacement_what_it_learned() 
         // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
         milestone_check: None,
         successor_check: None,
         reask_max: None,
@@ -4159,6 +4177,8 @@ fn a_loop_holds_what_its_live_agent_has_been_charged_to_read() {
         // briefs: what a live gate is about is the peer, not how far a run may re-aim itself, and a
         // number named here would be one these runs assert nothing about.
         reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
         milestone_check: None,
         successor_check: None,
         reask_max: None,

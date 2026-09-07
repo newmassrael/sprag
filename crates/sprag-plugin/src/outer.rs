@@ -1031,6 +1031,24 @@ const STANDING: &str = "standing";
 /// for is the DOOR: [`OuterLoop::brief`] refuses a document that declares no cap, because a policy
 /// whose absence means *do whatever you like* is the escape hatch that disables its own gate.
 const REAIM_MAX: &str = "reaim_max";
+/// ⛔⛔⛔ **HOW MANY STEPS A RUN MAY TAKE WITH NOTHING ITS WORK MOVES HAVING MOVED** — register item
+/// 942, and the bound behind [`crate::Ceiling::Stall`].
+///
+/// ⚠⚠ **UNLIKE [`REAIM_MAX`], THIS DRIVER DOES HOLD THE COMPARISON**, and the reason is that the
+/// document cannot: what advances the count is a fact about a filesystem, decided between steps, in
+/// exactly the class `stopping`'s outside door already exists for. So the number is read here, the
+/// marks are read here, and the ceiling reaches the machine as `_event.data.stop_short` — the same
+/// word every ceiling the document cannot see arrives as.
+/// ⚠ PRIVATE, and spelled a second time as a literal in [`crate::kind::LoopKind`] — `REAIM_MAX`'s
+/// arrangement exactly, and the two are not drift: the template's own `<data id>` is the SSOT, and
+/// `every_number_the_template_claims_for_a_kind_has_a_reader_and_an_assignment` is what binds the
+/// three. A gate that resolved a constant across crates would be trusting a text scan with a
+/// question the pin already answers.
+const STALL_AFTER_KEY: &str = "stall_after_steps";
+/// ⛔⛔⛔ **WHAT A RUN'S WORK MOVES WHEN IT IS GETTING SOMEWHERE**, as paths — the other half of
+/// [`STALL_AFTER_KEY`], and the half that keeps its predicate from being one signal. Register item
+/// 942, and see [`OuterLoop::authored_paths_in`].
+const PROGRESS_MARKS_KEY: &str = "progress_marks";
 /// The datamodel variable counting **how far this run has re-aimed itself already** — incremented by
 /// the `reflect.applied` arm that moves the milestone, and read by [`OuterLoop::re_aimed`]. See
 /// [`REAIM_MAX`].
@@ -1360,6 +1378,27 @@ pub struct Brief {
     /// delete the cap by spelling `never` on a launch nobody reviewed, and the cap would then be
     /// exactly as absent as it was before — silently, and on the runs least likely to be watched.
     pub reaim_max: Option<Counted>,
+
+    /// ⛔⛔⛔ **HOW MANY STEPS THIS RUN MAY TAKE WITH NOTHING ITS WORK MOVES HAVING MOVED**, or
+    /// [`None`] to keep what the document says. Register item 942, and the bound behind
+    /// [`crate::Ceiling::Stall`].
+    ///
+    /// ⚠⚠ **NO WIRE KEY EITHER**, on [`reaim_max`](Self::reaim_max)'s argument exactly: a caller
+    /// who could name it could spell `never` on a launch nobody reviewed, and the only ceiling this
+    /// substrate has that measures PROGRESS would be as absent as it was before register item 942 —
+    /// silently, and on the runs least likely to be watched. It is a [`Brief`] field because that
+    /// is the road a KIND's clause travels to the document (`LoopKind::stall_after_steps`).
+    pub stall_after_steps: Option<Counted>,
+
+    /// ⛔⛔⛔ **WHAT THIS RUN'S WORK MOVES WHEN IT IS GETTING SOMEWHERE**, as paths, or [`None`] to
+    /// keep what the document says. The other half of
+    /// [`stall_after_steps`](Self::stall_after_steps) — register item 942.
+    ///
+    /// ⚠ An empty list is a REAL answer (*this kind cannot see progress*) and not the same as
+    /// [`None`] (*keep the document's own*), which is [`screen_rules`](Self::screen_rules)' own
+    /// distinction one field down.
+    pub progress_marks: Option<Vec<String>>,
+
     /// **STANDING INSTRUCTIONS FOR DIALOGS THIS CALLER HAS ALREADY DECIDED ABOUT** — the authored
     /// `screen_rules`, supplied by somebody who did not edit the file.
     ///
@@ -6537,6 +6576,14 @@ pub struct OuterLoop {
     /// (register item 264). The word is [`Ceiling::wire_str`](crate::driver::Ceiling::wire_str)'s,
     /// so the vocabulary the machine echoes back is the one the Driver already publishes.
     stopping_short: Option<crate::driver::Ceiling>,
+    /// ⛔⛔⛔ **WHAT THIS RUN'S MARKS READ WHEN THEY LAST MOVED** — register item 942, and the
+    /// reference the next reading is compared against. [`None`] until the first pass has looked, so
+    /// the first reading is a CHANGE and a run never starts its life one step into a stall.
+    progress_seen: Option<String>,
+    /// ⛔⛔⛔ **HOW MANY STEPS THIS RUN HAS TAKEN SINCE THEY LAST MOVED** — register item 942, and
+    /// the count [`crate::Ceiling::Stall`] is spent from. Reset by any reading that differs, so
+    /// there is a path back to zero from every value it can hold.
+    stalled: u64,
     /// ⚠⚠⚠ **THE LAST PROMPT WAS TYPED AND NEVER SUBMITTED** — the run's clock landed between the
     /// two. Written by [`say`](Self::say) on every prompt, so it describes the CURRENT turn and
     /// cannot go stale; read by [`asked_nothing`](Self::asked_nothing).
@@ -7087,6 +7134,8 @@ impl OuterLoop {
             reported: None,
             ended: Vec::new(),
             stopping_short: None,
+            progress_seen: None,
+            stalled: 0,
             unasked: false,
             // ⚠ Nothing has been typed at this peer, so nothing can have been refused by it — see
             // the field, and [`Retyped`] for why the memory belongs to the run rather than to the
@@ -7183,11 +7232,20 @@ impl OuterLoop {
     /// terminal [`Verdict::Exhausted`](crate::plugin::Verdict::Exhausted) — so this is the ONE place
     /// the fact enters the plugin, and nothing downstream keeps a second copy of it.
     ///
-    /// ⚠ FIRST WRITER WINS is not asserted here because there is only ever one: the Driver asks for
-    /// an account exactly once per run (`Driver::spend_or_account`, which pins its own
-    /// `exhausted_by` before it calls).
+    /// ⛔⛔⛔⛔⛔ **FIRST WRITER WINS, AND IT IS ASSERTED SINCE REGISTER ITEM 942.** This paragraph
+    /// read *"not asserted here because there is only ever one: the Driver asks for an account
+    /// exactly once per run"*, which was true of the Driver alone and stopped being true the moment
+    /// a ceiling of the PLUGIN's own reached the same latch — `watch_for_progress`, SPELLED rather
+    /// than linked because it is private and this doc is public, which is register item 365's own
+    /// rule and the rustdoc gate is what holds it. Two writers means a second one can land
+    /// on a run already stopping, and the ceiling a caller is shown decides which knob they go and
+    /// raise — so the one that FELL FIRST is the one that ended the run, and a later word
+    /// overwriting it would send that reader to a bound their run never came near. ⚠ Register item
+    /// 264's defect exactly, arriving from the other side.
     pub const fn stop_short(&mut self, ceiling: crate::driver::Ceiling) {
-        self.stopping_short = Some(ceiling);
+        if self.stopping_short.is_none() {
+            self.stopping_short = Some(ceiling);
+        }
     }
 
     /// **WHICH OF THE RUN'S OWN CEILINGS STOPPED THIS LOOP**, or [`None`] for a loop ending on its
@@ -7199,6 +7257,117 @@ impl OuterLoop {
     #[must_use]
     pub const fn stopped_short_by(&self) -> Option<crate::driver::Ceiling> {
         self.stopping_short
+    }
+
+    /// ⛔⛔⛔⛔⛔ **LOOK AT WHAT THIS RUN'S WORK IS SUPPOSED TO MOVE, AND COUNT THE STEPS SINCE IT
+    /// LAST DID** — register item 942, and the whole of [`crate::Ceiling::Stall`]'s mechanism.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this ceiling exists at all
+    ///
+    /// `Ceiling::ALL` names what can end a run and, after register item 941 declined all three
+    /// guardrails on the owner's instruction, **none of them measured progress**: they count steps,
+    /// spend, seconds, turns and a person's patience. What had stood in for progress was the byte
+    /// ceiling, argued in the kind's own document as *"a loop that has stopped making progress and
+    /// is still typing meets it"* — a progress claim made with a spend number — and it left with
+    /// the other two. So the set could stop a run that had stopped working only by also stopping
+    /// one that was working fine.
+    ///
+    /// # ⚠⚠⚠⚠ Why it reads a FILESYSTEM and not this loop's own milestone signal
+    ///
+    /// Measured over every run log this daemon holds, across the runs that CONVERGED: the longest
+    /// stretch with **no milestone claimed is 1197 steps**, and the longest with **no mark moved is
+    /// 325**. A bound on the first would catch the runs paying off one large debt properly, which
+    /// is the opposite of what it is for. Register item 428 is the other half of the answer — *a
+    /// milestone cannot be certified by the agent that worked on it* — and a run that keeps
+    /// announcing progress while nothing moves is exactly what this exists to stop.
+    ///
+    /// # ⚠⚠⚠ Every way it cannot see is a way it does NOT fire
+    ///
+    /// A document that declines the bound, one that names no marks, and a mark that cannot be
+    /// stat'd all leave the count where it was. The alternative — reading *I cannot see* as
+    /// *nothing moved* — would end every run of every kind that never learned to answer, at the
+    /// first bound anybody typed. ⚠ A mark that DISAPPEARS is a change like any other, because its
+    /// reading changes; that is deliberate and it is the safe direction.
+    ///
+    /// ⚠⚠ The bound and the marks are re-read on every pass rather than cached at construction, on
+    /// `rules_in`'s rule: what an author wrote is the authority for as long as the run lasts.
+    fn watch_for_progress(&mut self, panes: &dyn PaneAccess) {
+        // ⚠ A run already stopping short has its ceiling; counting on would only ever produce a
+        // second word for one ending, and `stop_short` above keeps the first either way.
+        if self.stopping_short.is_some() {
+            return;
+        }
+        let Some(Counted::Of(bound)) = self.authored_count(STALL_AFTER_KEY) else {
+            return;
+        };
+        let marks = self.authored_paths(PROGRESS_MARKS_KEY).unwrap_or_default();
+        if marks.is_empty() || bound < 0 {
+            return;
+        }
+        // ⚠⚠ RESOLVED AGAINST THE TREE THE PANE WAS OPENED IN, which is the same read `works_in`
+        // and the milestone checker take (`PaneOrigin::pane_start_dir`, register item 684's first
+        // half — never `/proc/<pid>/cwd`, which answers `None` the moment the child exits). A mark
+        // this cannot place is read as unreadable rather than as a path in whatever directory this
+        // process happens to stand in.
+        let standing_in = panes
+            .origin()
+            .and_then(|origin| origin.pane_start_dir(self.driving.pane));
+        let reading = Self::progress_reading(&marks, standing_in.as_deref());
+        if self.progress_seen.as_deref() == Some(reading.as_str()) {
+            self.stalled = self.stalled.saturating_add(1);
+        } else {
+            self.progress_seen = Some(reading);
+            self.stalled = 0;
+        }
+        if self.stalled >= bound.unsigned_abs() {
+            self.stop_short(crate::driver::Ceiling::Stall);
+        }
+    }
+
+    /// **WHAT THE MARKS READ, AS ONE STRING** — register item 942, and the value
+    /// [`watch_for_progress`](Self::watch_for_progress) compares.
+    ///
+    /// # ⚠⚠⚠ Why a length AND a modified-at, and why both of them
+    ///
+    /// **The two marks this repository's own kind names change differently, and that is the whole
+    /// reason — not a timestamp resolution.** A reflog is APPENDED to, so its length moves on every
+    /// commit (measured: 2,041 of its lines are `commit` entries against 2,043 commits). A register
+    /// is REWRITTEN in place, and a round that judges an item and shortens the entry leaves the
+    /// length exactly where it was. Either field alone is a mark that misses half of what it is
+    /// watching.
+    ///
+    /// ⚠⚠ **AND THE COARSE-TIMESTAMP ARGUMENT IS NOT THE LOCAL ONE, which is stated because the
+    /// first draft of this doc had it backwards.** Measured 2026-09-07 on this machine: modified-at
+    /// carries NANOSECONDS, and five same-length writes about a millisecond apart gave five
+    /// distinct readings — so here the timestamp alone would separate two steps of any loop. The
+    /// length is carried for the paragraph above, and because a filesystem with second-granularity
+    /// timestamps is a real place this may run and the reading must not depend on which one it is.
+    ///
+    /// ⚠ An unreadable mark reads as one fixed word rather than being dropped, so a file that comes
+    /// and goes CHANGES the reading — which is the direction that lets the count go back to zero.
+    fn progress_reading(marks: &[String], standing_in: Option<&std::path::Path>) -> String {
+        marks
+            .iter()
+            .map(|mark| {
+                let path = std::path::Path::new(mark);
+                let full = match standing_in {
+                    Some(tree) if path.is_relative() => tree.join(path),
+                    _ => path.to_path_buf(),
+                };
+                match std::fs::metadata(&full) {
+                    Ok(seen) => format!(
+                        "{mark}={}:{}",
+                        seen.len(),
+                        seen.modified()
+                            .ok()
+                            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map_or(0, |since| since.as_nanos()),
+                    ),
+                    Err(_) => format!("{mark}=unreadable"),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// **HOW LONG ONE OF THIS LOOP'S TURNS MAY TAKE**, as its DOCUMENT authors it — [`None`] for a
@@ -7478,6 +7647,37 @@ impl OuterLoop {
                 held: None,
             };
         };
+        // ⛔⛔⛔⛔⛔ **AND THE PROGRESS AXIS, REFUSED WHEN A DOCUMENT DECLARES NEITHER HALF** —
+        // register item 942, on `reaim_max`'s exact argument three refusals up. The comparison that
+        // spends this bound is THIS driver's, and a datamodel holding nil for the count would make
+        // it read `Counted::Never` — so a document that simply forgot the key would get the
+        // behaviour of one that had thought about going nowhere and decided against bounding it.
+        //
+        // ⚠⚠ THE MARKS ARE REFUSED ON THE SAME LINE AND NOT SEPARATELY, because the failure they
+        // fall into is the same one: a bound whose marks are missing never advances, so a document
+        // that named a number and forgot the list is a run this ceiling silently cannot end. An
+        // EMPTY list is a different thing and is accepted — see `authored_paths_in`.
+        let Some(stalling) = brief
+            .stall_after_steps
+            .or_else(|| self.authored_count(STALL_AFTER_KEY))
+        else {
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Briefed::NotHeld {
+                part: STALL_AFTER_KEY,
+                held: None,
+            };
+        };
+        let Some(marks) = brief
+            .progress_marks
+            .clone()
+            .or_else(|| self.authored_paths(PROGRESS_MARKS_KEY))
+        else {
+            self.machine.process_event(AiLoopEvent::Fail);
+            return Briefed::NotHeld {
+                part: PROGRESS_MARKS_KEY,
+                held: None,
+            };
+        };
         let payload = serde_json::json!({
             "north_star": brief.north_star,
             "context_ceiling": ceiling,
@@ -7517,6 +7717,14 @@ impl OuterLoop {
             // what makes *this many wrong guesses for this checkpoint* a true sentence: a bound
             // arriving on a later edge would be measuring against a checkpoint the run had left.
             REASK_MAX: reasks,
+            // ⛔⛔⛔ AND THE PROGRESS AXIS — register item 942. The bound and the marks travel on
+            // ONE edge because they are one decision: a bound with nobody's marks bounds nothing,
+            // and marks with nobody's bound are stat calls no ceiling reads.
+            //
+            // ⚠ Through `Counted::as_json` like the cap above, so a document that DECLINED the
+            // bound crosses as the word `never` — the workspace's one spelling of unbounded.
+            STALL_AFTER_KEY: stalling.as_json(),
+            PROGRESS_MARKS_KEY: marks.clone(),
             // ⚠ Unconditional, like `screen_rules` beside it and for the same reason: the template
             // ships `''` and a caller who adds nothing must not delete what the document composes.
             "closing_rules": brief.closing_rules.clone().unwrap_or_default(),
@@ -7615,16 +7823,17 @@ impl OuterLoop {
             return Briefed::TooLate(at);
         }
 
-        let briefing = match self.held_as_briefed(brief, rules.as_ref(), (turns, reflect)) {
-            Ok(briefing) => briefing,
-            Err(held) => {
-                // The mangled or missing part is already in the datamodel; there is no un-assigning
-                // it from out here. `fail` is what the document says happens to a run that cannot
-                // go on, and it is what stops a caller pumping past this answer.
-                self.machine.process_event(AiLoopEvent::Fail);
-                return held;
-            }
-        };
+        let briefing =
+            match self.held_as_briefed(brief, rules.as_ref(), (turns, reflect), stalling, &marks) {
+                Ok(briefing) => briefing,
+                Err(held) => {
+                    // The mangled or missing part is already in the datamodel; there is no
+                    // un-assigning it from out here. `fail` is what the document says happens to a
+                    // run that cannot go on, and it stops a caller pumping past this answer.
+                    self.machine.process_event(AiLoopEvent::Fail);
+                    return held;
+                }
+            };
         // ⚠⚠⚠⚠⚠ **AND HOW BIG WHAT IT TOOK IS** — register item 719's second direction, and the one
         // fact this door used to discard. The read-back above is the only place the three parts
         // exist as the MACHINE holds them, so the size is taken from it rather than measured again
@@ -7672,11 +7881,18 @@ impl OuterLoop {
     /// is **what this driver actually put on the wire a moment ago**, whoever chose it. Weakening a
     /// standing check while widening who may decide the value would have traded one of item 316's
     /// answers for this one.
+    ///
+    /// ⛔⛔⛔ **AND `stalling` / `marks` FOR THE SAME REASON** — register item 942. Both may be the
+    /// document's or the caller's, both were resolved a moment ago by the same door that resolved
+    /// the pair, and neither can be read off `brief` without asking a second time and getting a
+    /// possibly different answer.
     fn held_as_briefed(
         &self,
         brief: &Brief,
         rules: Option<&ScreenRules>,
         counts: (Counted, Counted),
+        stalling: Counted,
+        marks: &[String],
     ) -> Result<Briefing, Briefed> {
         // ⚠⚠⚠⚠⚠ **MEASURED HERE, OFF WHAT THE DATAMODEL HELD, AND NOWHERE ELSE** — register item
         // 719's second direction. This loop is the one place in the product that has the three
@@ -7722,7 +7938,14 @@ impl OuterLoop {
         // that a number crossing unverified is a run bounded by something nobody asked for, and a
         // WORD crossing unverified is a run bounded by nothing at all — the louder half of the same
         // failure. So each is checked in the shape it was sent.
-        for (part, sent) in [("max_turns", counts.0), ("reflect_every", counts.1)] {
+        // ⛔⛔⛔ AND THE STALL BOUND WITH THEM — register item 942, added WITH the key on item 316's
+        // finding: a brief that reported success on a bound the datamodel does not hold is a run
+        // whose only progress ceiling ends it at a number nobody asked for, or never at all.
+        for (part, sent) in [
+            ("max_turns", counts.0),
+            ("reflect_every", counts.1),
+            (STALL_AFTER_KEY, stalling),
+        ] {
             match (self.script.get_variable(&self.session, part), sent) {
                 (Ok(ScriptValue::Int(held)), Counted::Of(count)) if held == count => {}
                 (Ok(ScriptValue::String(held)), Counted::Never) if held == Self::NEVER => {}
@@ -7774,6 +7997,26 @@ impl OuterLoop {
                     });
                 }
                 _ => return Err(Briefed::NotHeld { part, held: None }),
+            }
+        }
+        // ⛔⛔⛔ AND THE MARKS, READ BACK THROUGH THE PRODUCT'S OWN READER — register item 942, on
+        // the terms the standing instructions are read back below. A list that crossed as something
+        // `authored_paths_in` cannot read is a run whose stall count never advances, and the whole
+        // failure of this ceiling is that it is SILENT: a run nothing can stop looks exactly like a
+        // run nothing needs to.
+        match self.authored_paths(PROGRESS_MARKS_KEY) {
+            Some(held) if held == marks => {}
+            Some(held) => {
+                return Err(Briefed::NotHeld {
+                    part: PROGRESS_MARKS_KEY,
+                    held: Some(format!("{held:?}")),
+                });
+            }
+            None => {
+                return Err(Briefed::NotHeld {
+                    part: PROGRESS_MARKS_KEY,
+                    held: None,
+                });
             }
         }
         // ⚠⚠⚠ AND THE STANDING INSTRUCTIONS, READ BACK THROUGH THE PRODUCT'S OWN READER — the one
@@ -9338,6 +9581,14 @@ impl OuterLoop {
         if run.stood_down() {
             self.stand_down();
         }
+        // ⛔⛔⛔⛔⛔ **AND WHETHER THIS RUN IS GETTING ANYWHERE, WHICH IS ALSO A FACT CARRIED IN
+        // RATHER THAN A JUDGEMENT MADE** — register item 942, and it is at the top of a pass for
+        // the two reasons directly above. The marks are read off a filesystem that nothing here
+        // controls, so the only place they can be read without racing a decision is here; and
+        // `step` has THREE early returns below this funnel (an answered dialog, a screened call,
+        // and the walk), so a count kept anywhere further in would skip exactly the passes on
+        // which a run does something.
+        self.watch_for_progress(panes);
         // ⚠⚠⚠⚠⚠ AND WHETHER SOMEBODY HAS IT HELD — register item 9's live half. `ai_loop.scxml` has
         // carried *"a watching person can halt the loop between turns"* since R378 and NOTHING could
         // raise it: the edge was authored, documented, reachable in the machine, and dead. What a
@@ -12363,6 +12614,12 @@ impl OuterLoop {
         Self::authored_count_in(&self.script, &self.session, name)
     }
 
+    /// [`authored_paths_in`](Self::authored_paths_in) over this loop's own document — register item
+    /// 942, and [`authored_count`](Self::authored_count)'s shape.
+    pub(crate) fn authored_paths(&self, name: &str) -> Option<Vec<String>> {
+        Self::authored_paths_in(&self.script, &self.session, name)
+    }
+
     /// [`authored_count`](Self::authored_count)'s reading, separated from the loop that holds the
     /// engine — `consents_in`'s shape, and for its reason: a loop KIND authors these in its own
     /// document ([`crate::kind`]), and a kind and a template that disagreed about what a decline IS
@@ -12383,6 +12640,43 @@ impl OuterLoop {
     /// The word a document spells to decline a count. Spelled here and in `ai_loop.scxml`'s guard,
     /// held together by a gate.
     pub(crate) const NEVER: &'static str = "never";
+
+    /// **THE PATHS A DOCUMENT NAMES UNDER `name`**, or [`None`] where it names the key at all.
+    /// Register item 942, and [`authored_count_in`](Self::authored_count_in)'s shape — separated
+    /// from the loop that holds the engine for its reason: a KIND authors these in its own
+    /// document, and a kind and a template that read a list differently would be two spellings of
+    /// one rule.
+    ///
+    /// # ⚠⚠⚠⚠ Why an EMPTY list answers `Some(vec![])` and a missing key answers [`None`]
+    ///
+    /// They are opposite claims and the caller acts on both. Empty is the TEMPLATE's shipped state
+    /// and means *this kind cannot see progress* — a real decision, and the one that makes
+    /// [`crate::Ceiling::Stall`] fail toward not firing. A missing key is a document that never
+    /// considered the question, and [`brief`](Self::brief) refuses it at the door on `reaim_max`'s
+    /// argument: an absence that reads as *do whatever you like* is the escape hatch that disables
+    /// its own gate.
+    ///
+    /// ⚠ A non-string member is DROPPED rather than refusing the list, on `service_needles_in`'s
+    /// terms: what a mark is, is a path, and an author who wrote something else there has not named
+    /// a file this can stat. The refusal that matters is the empty-versus-absent one above.
+    pub(crate) fn authored_paths_in(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+        name: &str,
+    ) -> Option<Vec<String>> {
+        let ScriptValue::Array(items) = script.get_variable(session, name).ok()? else {
+            return None;
+        };
+        Some(
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    ScriptValue::String(path) if !path.trim().is_empty() => Some(path.clone()),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
 
     // ⚠⚠⚠ `authored_text_in` STOOD HERE AND IS GONE — SCE PR-86 R-86.4, consumed 2026-08-20.
     // Its one caller (`LoopKind::closing_rules`) now reads the generated accessor, which is the
@@ -18519,6 +18813,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -18640,6 +18936,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -19727,6 +20025,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -19792,6 +20092,142 @@ mod tests {
              text where that part should be. Prompt:\n{start}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THAT MOVES NOTHING IS STOPPED, AND ONE THAT MOVES SOMETHING IS NOT** —
+    /// register item 942, both directions, against a real loop driving a real pane.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why both halves are one gate
+    ///
+    /// A ceiling that fires is worth nothing on its own: the number it fires at was derived to sit
+    /// four times above the longest stretch a run that FINISHED its work has ever passed through,
+    /// and a bound that also stopped those would be strictly worse than the byte ceiling register
+    /// item 941 removed. So the fixture is run twice against one bound — once with its marks left
+    /// alone and once with a mark moving under it — and the second half runs **four times as many
+    /// steps as the first**, which is the derivation's own margin made into a fixture.
+    ///
+    /// ⚠⚠ **THE MARK IS APPENDED TO RATHER THAN TOUCHED**, and the reason is that this fixture must
+    /// not depend on the machine it runs on. Measured 2026-09-07 here, modified-at resolves to
+    /// nanoseconds and five same-length writes a millisecond apart gave five distinct readings — so
+    /// touching WOULD work on this machine, and would make the gate a flake on a filesystem whose
+    /// timestamps are coarser than one of the loop's steps. An append moves the length, which every
+    /// filesystem reports exactly.
+    ///
+    /// ⚠ Marks named ABSOLUTELY, so this gate is about the counting and not about a pane's start
+    /// directory; the relative half is resolved by the same read `works_in` takes and belongs to
+    /// the kind's own gates.
+    #[test]
+    fn a_run_that_moves_nothing_meets_a_ceiling_and_one_that_moves_something_does_not() {
+        // ⛔ `sprag_scratch::scratch_for` AND NOT `std::env::temp_dir()` — register item 794.
+        let home = sprag_scratch::scratch_for("sprag-stall-marks", "");
+        std::fs::create_dir_all(&home).expect("a directory to put the marks in");
+
+        /// Small, so the ceiling falls due inside a handful of passes; the NUMBER this repository
+        /// ships is derived in `debt_loop.scxml` and asserted by the kind's own gate.
+        const BOUND: i64 = 3;
+
+        let drive = |name: &str, moving: bool| -> Option<crate::driver::Ceiling> {
+            let still = home.join(format!("{name}-still"));
+            let moves = home.join(format!("{name}-moves"));
+            std::fs::write(&still, b"nothing here ever changes").expect("the still mark");
+            std::fs::write(&moves, b"").expect("the moving mark");
+
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+            let pane = {
+                let mut command = CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg("exec cat");
+                command.env("TERM", "dumb");
+                workspace
+                    .lock()
+                    .unwrap()
+                    .spawn(command, "sh".to_string(), 80, 8)
+                    .expect("spawn pane")
+            };
+            let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_millis(200))
+                .expect("the document's datamodel must carry its authored strings");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "prove a stalled run is stopped and a working one is not"
+                        .to_string(),
+                    milestone: "take some steps".to_string(),
+                    reference: "this gate".to_string(),
+                    closing_rules: None,
+                    working_rules: None,
+                    unverified_rules: None,
+                    context_ceiling: None,
+                    reflect_after_refusals: None,
+                    reaim_max: None,
+                    stall_after_steps: Some(Counted::Of(BOUND)),
+                    progress_marks: Some(vec![
+                        still.display().to_string(),
+                        moves.display().to_string(),
+                    ]),
+                    milestone_check: None,
+                    successor_check: None,
+                    reask_max: None,
+                    service: None,
+                    // ⚠ Large, so nothing else can end this run first: the subject is which
+                    // ceiling falls due, and a turn budget spent underneath would answer a
+                    // different question with the same colour.
+                    max_turns: Some(Counted::Of(9999)),
+                    reflect_every: Some(9999),
+                    screen_rules: None,
+                    may_answer: None,
+                    await_person_ms: Some(0),
+                    handback_still_ms: None,
+                    hold_within_ms: None,
+                    ready_timeout_ms: None,
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the control: the bound and the marks must reach the datamodel, or this gate is \
+                 measuring a loop that was never told about either",
+            );
+
+            let run = RunContext::uncancellable();
+            // ⚠ FOUR TIMES THE BOUND, plus the pass that takes the first reading: the stalled half
+            // must have room to reach it several times over, and the moving half is then running
+            // the derivation's own 4x margin with its marks alive.
+            let passes = usize::try_from(BOUND).expect("a small bound") * 4 + 2;
+            for pass in 0..passes {
+                if moving {
+                    // ⚠ APPENDED — see the gate's doc: the length is what makes this deterministic
+                    // at the speed a loop steps.
+                    let mut open = std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&moves)
+                        .expect("the moving mark stays writable");
+                    use std::io::Write as _;
+                    writeln!(open, "step {pass}").expect("a byte of progress");
+                }
+                if loops.pump(&access, &run).is_err() {
+                    break;
+                }
+            }
+            loops.stopped_short_by()
+        };
+
+        assert_eq!(
+            drive("stalled", false),
+            Some(crate::driver::Ceiling::Stall),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 942: a run took every step its document allowed with nothing \
+             it is supposed to move having moved, and NOTHING STOPPED IT. That is the state this \
+             item was filed on — after item 941 declined all three guardrails, no ceiling in \
+             `Ceiling::ALL` measured progress, so a loop that had stopped working would type until \
+             a person happened to look",
+        );
+        assert_eq!(
+            drive("working", true),
+            None,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 942, THE OTHER DIRECTION AND THE ONE THAT MATTERS MORE: a run \
+             whose marks were moving under it was stopped anyway. A ceiling that ends working runs \
+             is worse than the byte ceiling item 941 removed, and item 659 names the failure it \
+             would cause — a loop that cannot finish an axis because paying off one large debt \
+             properly looks like going nowhere",
+        );
     }
 
     /// ⚠⚠⚠⚠⚠ **THE RULES THIS REPOSITORY WROTE DOWN REACH THE PROMPT ITS AGENT READS** — register
@@ -19868,6 +20304,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -20023,6 +20461,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 // ⚠ NO CHECKER AUTHORED — the world that must stay silent, and the control.
                 milestone_check: None,
                 successor_check: None,
@@ -20108,6 +20548,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -20206,6 +20648,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -20302,6 +20746,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -20400,6 +20846,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -20489,6 +20937,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -20649,6 +21099,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -20846,6 +21298,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -22081,6 +22535,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: Some("/bin/echo YES".to_string()),
                 successor_check: None,
                 reask_max: None,
@@ -22472,6 +22928,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: Some(check.to_string()),
             successor_check: None,
             reask_max: None,
@@ -22848,6 +23306,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: Some(format!("/bin/sh {}", script.display())),
                 successor_check: None,
                 reask_max: None,
@@ -23696,6 +24156,8 @@ mod tests {
                     context_ceiling: Some(ROOMY),
                     reflect_after_refusals: None,
                     reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -23915,6 +24377,8 @@ mod tests {
                     context_ceiling: Some(ceiling),
                     reflect_after_refusals: None,
                     reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -24098,6 +24562,8 @@ mod tests {
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -24587,6 +25053,8 @@ mod tests {
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -24780,6 +25248,8 @@ mod tests {
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -25002,6 +25472,8 @@ mod tests {
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -25244,6 +25716,8 @@ mod tests {
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -25444,6 +25918,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -25627,6 +26103,8 @@ mod tests {
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -25942,6 +26420,8 @@ mod tests {
                 context_ceiling: Some(ceiling),
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -26045,6 +26525,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -26283,6 +26765,8 @@ mod tests {
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -26372,6 +26856,8 @@ mod tests {
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -26925,6 +27411,8 @@ mod tests {
                 context_ceiling: Some(ceiling),
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -27188,6 +27676,8 @@ mod tests {
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -27458,6 +27948,8 @@ mod tests {
                 context_ceiling: Some(ROOMY),
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -27752,6 +28244,8 @@ mod tests {
                     // datamodel by a door no caller had.
                     reflect_after_refusals: Some(ceiling),
                     reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
                     milestone_check: Some(DENIES.to_string()),
                     successor_check: None,
                     reask_max: None,
@@ -27963,6 +28457,8 @@ mod tests {
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
                     // ⚠⚠⚠ THROUGH THE BRIEF, WHICH IS THE CHANNEL A KIND'S CHECK ACTUALLY TRAVELS.
                     // This used to `set_variable` the slot behind the brief's back, on the reading
                     // that no caller could name one — true of the WIRE and never of a kind. What
@@ -28281,6 +28777,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: check.map(ToOwned::to_owned),
                 successor_check: None,
                 reask_max: None,
@@ -29117,6 +29615,8 @@ mod tests {
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -29314,6 +29814,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -29635,6 +30137,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -29818,6 +30322,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -30013,6 +30519,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -30254,6 +30762,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: Some(NEVER),
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: Some(DENIES.to_string()),
                 successor_check: None,
                 reask_max: None,
@@ -30468,6 +30978,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: Some(NEVER),
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: Some(CANNOT_ANSWER.to_string()),
                 successor_check: None,
                 reask_max: None,
@@ -30753,6 +31265,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -30869,6 +31383,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -30999,6 +31515,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -31620,6 +32138,8 @@ mod tests {
                         context_ceiling: None,
                         reflect_after_refusals: None,
                         reaim_max: None,
+                        stall_after_steps: None,
+                        progress_marks: None,
                         milestone_check: None,
                         successor_check: None,
                         reask_max: None,
@@ -32186,6 +32706,8 @@ mod tests {
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -32369,6 +32891,8 @@ mod tests {
                 context_ceiling: None,
                 reflect_after_refusals: None,
                 reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -32576,6 +33100,8 @@ mod tests {
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -32859,6 +33385,8 @@ mod tests {
                     context_ceiling: None,
                     reflect_after_refusals: None,
                     reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -33188,6 +33716,8 @@ mod tests {
             context_ceiling: None,
             reflect_after_refusals: None,
             reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
