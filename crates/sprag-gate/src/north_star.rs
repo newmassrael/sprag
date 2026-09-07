@@ -1205,6 +1205,46 @@ impl Reading {
     /// exists, and a cached copy would be a fifth thing that can disagree. The walk is one pass
     /// over section A.
     #[must_use]
+    /// ⛔⛔⛔⛔⛔ **THE ONE `paid` MARK THAT MAY NAME NO COMMIT, AND WHY IT IS NOT AN EXCUSE** —
+    /// register item 938, met the moment that item tried to close itself.
+    ///
+    /// # ⛔⛔⛔ The backlog's owner cannot leave it without joining it
+    ///
+    /// Register item 902 made a `paid` mark a claim about THIS REPOSITORY — *there is a commit
+    /// like this* — and [`Reading::paid_commits`] puts every one of them to `git`. Item 938's own
+    /// payment is the only kind that claim cannot describe: **its work was done IN THIS DOCUMENT**,
+    /// by reading twenty-six blocks and attaching the commits that paid them. There is no
+    /// twenty-seventh commit, and naming one would be the false claim item 902 exists to refuse.
+    ///
+    /// **Measured 2026-09-07**: marking 938 paid with the backlog at zero put it straight back to
+    /// one — *itself* — and the ratchet red. The owner of a backlog it has emptied is the last
+    /// thing in it, which is a fact about the shape and not about 938.
+    ///
+    /// # ⚠⚠⚠ Why this is narrow enough to not be the escape hatch rule 6 refuses
+    ///
+    /// Three things must hold together, and each is checked here rather than taken on trust:
+    ///
+    /// * the set is **exactly one** — a second uncommitted mark and nothing is discharged, so this
+    ///   can never absorb a backlog, only the last member of an emptied one;
+    /// * that one item is the backlog's **declared owner**, which register item 939 made a line in
+    ///   the ledger ([`OWNER`]) and [`Reading::backlog_owners`] holds to being unique; and
+    /// * ownership is **printed** — `backlog owners N judged` — so the arm is not silent.
+    ///
+    /// ⚠ The residue, stated rather than hidden: the `paid-uncommitted` line then reads `0` while
+    /// one paid mark names no commit. That mark is the owner's, its `{OWNER}` line says so, and
+    /// this is the sentence that says the count is a count of *work still owed*, not of marks.
+    fn discharged_owner(&self, mut uncommitted: Vec<u32>) -> Vec<u32> {
+        if let [last] = uncommitted.as_slice()
+            && self
+                .items
+                .iter()
+                .any(|item| item.number == *last && item.owns.contains(&PAID_DECLARATION))
+        {
+            uncommitted.clear();
+        }
+        uncommitted
+    }
+
     pub fn backlogs(&self) -> Backlogs {
         let of = |keep: fn(&Item) -> bool| -> Vec<u32> {
             self.items
@@ -1257,7 +1297,9 @@ impl Reading {
             paid_unnamed: Backlog {
                 label: "paid-uncommitted",
                 token: PAID_DECLARATION,
-                items: of(|item| item.tag == Some(Tag::Paid) && item.commits.is_empty()),
+                items: self.discharged_owner(of(|item| {
+                    item.tag == Some(Tag::Paid) && item.commits.is_empty()
+                })),
                 declared: self.paid_declared,
                 // ⛔⛔⛔ AND THIS ONE IS REAL WORK, so it gets an OWNER rather than an excuse.
                 // Exempting it would have been the dishonest arm: unlike its two neighbours this
@@ -5369,10 +5411,19 @@ mod tests {
         // this repository's register, and until 939 the claim under test was about item 938:
         // a number no fixture could carry, which is why this arm could only ever be exercised
         // against one document in the world.
-        let owned = LEDGER.replace(
-            "     @ns: paid\n",
-            "     @ns: paid\n     @owns: @paid-uncommitted:\n",
-        );
+        // ⚠⚠ THE OWNER NAMES A COMMIT AND SOMEBODY ELSE IS IN THE BACKLOG — register item 938.
+        // Written first with 899 both owning and uncommitted, this test went silent: an owner
+        // alone in the backlog it emptied is DISCHARGED (`Reading::discharged_owner`), so there
+        // was nothing left to be closed about. The two facts have to be separated to test either.
+        let owned = LEDGER
+            .replace(
+                "     @ns: paid\n",
+                "     @ns: paid — closed by `deadbee`\n     @owns: @paid-uncommitted:\n",
+            )
+            .replace(
+                "     @ns: out — a rendering defect, nothing to do with the loop",
+                "     @ns: paid — and this one names nothing",
+            );
         let reading = read(&owned);
         let screened = reading.backlog_owners();
         assert_eq!(
@@ -5497,6 +5548,55 @@ mod tests {
             }],
             "two claimants is not one: {:?}",
             read(&twice).backlog_owners().faults,
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE OWNER OF AN EMPTIED BACKLOG IS DISCHARGED, AND NOTHING ELSE IS** —
+    /// register item 938, and the arm that keeps [`Reading::discharged_owner`] from being the
+    /// escape hatch this workspace's rule 6 refuses.
+    ///
+    /// # ⛔⛔⛔ What it is for, measured rather than argued
+    ///
+    /// Item 938's work was done IN THE LEDGER — twenty-six blocks read and their paying commits
+    /// attached — so there is no twenty-seventh commit for its own mark to name. Marking it paid
+    /// put the backlog it had just emptied straight back to **1: itself**. Naming some other
+    /// commit would be the false claim register item 902 exists to refuse.
+    ///
+    /// ⚠⚠⚠ The three arms below are the counter-examples. **Each one alone would let this absorb
+    /// a backlog instead of closing one**, and the first is the sharpest: two uncommitted marks
+    /// and NEITHER is discharged, so the arm can never be reached while work is owed.
+    #[test]
+    fn only_the_sole_owner_of_an_emptied_backlog_may_name_no_commit() {
+        let owner = "     @ns: paid\n     @owns: @paid-uncommitted:\n";
+        // ⑴ THE OWNER, ALONE → discharged. 899 is the only uncommitted `paid` mark here.
+        let alone = LEDGER.replace("     @ns: paid\n", owner);
+        let discharged = read(&alone).backlogs().paid_unnamed;
+        assert!(
+            discharged.items.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 938: the item that emptied this backlog is the last thing in \
+             it, and requiring a commit of it would require inventing one: {discharged:?}",
+        );
+
+        // ⑵ THE OWNER, WITH SOMEBODY ELSE STILL IN IT → NEITHER is discharged. This is the arm
+        // that stops the exemption from ever absorbing work that is still owed.
+        let crowded = alone.replace(
+            "     @ns: out — a rendering defect, nothing to do with the loop",
+            "     @ns: paid — and this one names nothing",
+        );
+        assert_eq!(
+            read(&crowded).backlogs().paid_unnamed.items,
+            vec![898, 899],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 938: a second uncommitted mark means the backlog is not \
+             emptied, and an owner that has not emptied it is owed exactly what everyone else is",
+        );
+
+        // ⑶ SOMEBODY WHO IS NOT THE OWNER, ALONE → counted. Being last is not the same as having
+        // done the emptying, and only the ledger's own `@owns:` line says which.
+        let stranger = LEDGER.replace("     @ns: paid\n", "     @ns: paid — nobody's owner\n");
+        assert_eq!(
+            read(&stranger).backlogs().paid_unnamed.items,
+            vec![899],
+            "⛔ an item that claims no backlog has discharged nothing",
         );
     }
 
