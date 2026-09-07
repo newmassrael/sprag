@@ -1491,6 +1491,31 @@ impl Reading {
     /// question. THE RESIDUE, STATED: a red held back by the cap is still unreachable. Since
     /// register item 921 the cap holds only chains whose ancestors are still owed, so this is a
     /// narrow case rather than the standing one it was.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND WHEN NOTHING MARKED IS TAKEABLE, THE UNCLASSIFIED ARE — register item 936
+    ///
+    /// Working rule 11 says *while anything is critical take from those, otherwise work the
+    /// population*. It says nothing about the population being EMPTY, and this returned an empty
+    /// set there — *nothing to do*, which is the reassuring reading of an unstated case that this
+    /// workspace's rule 6 exists to refuse. **Measured on a two-item ledger** (one `paid`, one
+    /// never marked): `population 0`, `critical 0`, every floor matching its count, `rc=0`,
+    /// **stderr empty** — and `--admits … "Take item 899"` answered `NO` with *"What a round may
+    /// take:"* followed by nothing. So a run standing there could neither finish honestly nor move:
+    /// the register said a block was an unpaid debt and simultaneously that no round might take it.
+    ///
+    /// ⚠⚠ **THIS IS RULE 6 BEING ENFORCED, NOT A NEW POLICY OUT-VOTING THE DOCUMENT.** Register
+    /// item 833(1) is the standing warning about this direction — an instrument holding a value the
+    /// loop document no longer declares — and it does not reach here, because the document declares
+    /// nothing for this case. This module's own doc already calls an unmarked item *"a debt with a
+    /// ratchet on it rather than a silence"*; the arm below is that sentence being true of the set
+    /// a round may take, and it can only ever ADD work.
+    ///
+    /// ⚠ **THIRD, never blended.** It fires only where the two above are empty, so the 330 standing
+    /// on the real ledger cannot drown the 82 marked debts — which would be the same *widen it
+    /// until it is green* this repository keeps paying for, wearing the opposite sign.
+    ///
+    /// ⚠ The cap does not reach these and must not: an unclassified block states no parentage, so
+    /// there is no chain to be deep in. What it needs first is a mark, and that is the work.
     #[must_use]
     pub fn admits(&self, cap: u32, reds: &[u32]) -> Vec<u32> {
         let takeable = self.takeable(cap);
@@ -1502,7 +1527,23 @@ impl Reading {
             .collect();
         first.sort_unstable();
         first.dedup();
-        if first.is_empty() { takeable } else { first }
+        if !first.is_empty() {
+            return first;
+        }
+        if !takeable.is_empty() {
+            return takeable;
+        }
+        self.backlogs().unclassified.items
+    }
+
+    /// 🎯🎯🎯🎯🎯 **WHETHER THE NORTH STAR IS REACHED, AS A READING RATHER THAN A JUDGEMENT** —
+    /// register item 936. See [`Ending`] for the population and how it was measured.
+    #[must_use]
+    pub fn ending(&self) -> Ending {
+        Ending {
+            open: self.population(),
+            unclassified: self.backlogs().unclassified.items,
+        }
     }
 
     /// **WHICH REGISTER ITEM A PROPOSAL NAMES** — the FIRST number in `text` that this ledger files
@@ -1923,11 +1964,15 @@ fn declared_floor(
 /// ⚠⚠ **AT LEAST ONE ITEM IS NAMED WHATEVER THE BUDGET**, see [`name_some`]. A line that named a
 /// count and no item is the whole of register item 934, and a budget that could bring that back by
 /// being set low would be the defect returning through the knob meant to bound it.
-const NAMED_IN_A_LINE: usize = 120;
+///
+/// ⚠ **PUBLIC alongside [`name_some`] since register item 936**: a caller that can render a
+/// bounded list must be able to read what the bound IS, or the number becomes the same unmeasured
+/// thing this constant was written to stop being.
+pub const NAMED_IN_A_LINE: usize = 120;
 
 /// Which end of a set [`name_some`] shows when it cannot show all of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ends {
+pub enum Ends {
     /// The lowest numbers — the OLDEST items. What a report line shows: this ledger's rule 13 is
     /// that old debt sinks, so the end a reader must be handed is the end that sinks.
     Lowest,
@@ -1951,7 +1996,13 @@ enum Ends {
 /// ⚠⚠ Ascending in both directions. The ORDER a set is read in is not the END it is cut at, and
 /// printing the high end backwards would make two lines of one report disagree about what a list
 /// looks like.
-fn name_some(items: &[u32], from: Ends) -> String {
+///
+/// ⚠ **PUBLIC since register item 936**, because the admissible set is now one of the lists that
+/// can run to three hundred: `--admits`'s refusal prints *"What a round may take"* whole, and once
+/// [`Reading::admits`] falls through to the unclassified that line is the 1,300-byte one register
+/// item 934 was opened by. One bound, one place.
+#[must_use]
+pub fn name_some(items: &[u32], from: Ends) -> String {
     if items.is_empty() {
         return String::new();
     }
@@ -2038,6 +2089,73 @@ pub struct Backlogs {
     pub unrooted: Backlog,
     /// PAID items naming no commit — register item 902.
     pub paid_unnamed: Backlog,
+}
+
+/// 🎯🎯🎯🎯🎯 **WHETHER THIS LEDGER'S NORTH STAR IS REACHED** — register item 936, and the
+/// sentence that had never been anything but prose.
+///
+/// # ⛔⛔⛔⛔⛔ The ending was a WORD THE AGENT SAYS, judged against a sentence in a runtime string
+///
+/// Measured 2026-09-07: `ai_loop.scxml` carries `north_star_marker = 'NORTH STAR REACHED'` and
+/// `north_star` itself is assigned from `_event.data.north_star` — a string handed to the run. The
+/// only thing that ends a run is the agent emitting that marker (`ai_loop.rs`, *ARM 1: THE AGENT
+/// SAID THE NORTH STAR WAS REACHED*). **Nothing anywhere evaluates the condition.** So the most
+/// consequential predicate in the loop was the one thing this workspace's rule 10 says goes
+/// unmeasured, and register item 936's own guess — *"`is_green` already sees the four through its
+/// faults"* — is FALSE: [`Reading::is_green`] is `faults.is_empty()`, and on the two-item ledger
+/// above every floor matched its count, so it was green with a debt standing.
+///
+/// # ⛔⛔⛔⛔⛔ Why these TWO and not the four — working rule 5, asked of each
+///
+/// *Is there a path by which this number becomes 0?* A population carrying a role that cannot
+/// reach zero is one that makes the ending unreachable rather than honest.
+///
+/// | number | path to 0 | in the ending |
+/// |---|---|---|
+/// | `population` (`@ns: open`) | paying them | ✅ |
+/// | `unclassified` (no [`TAG`]) | reading the block and marking it — and it is what makes the population TOTAL | ✅ |
+/// | `unranked` (OPEN with no [`SEVERITY`]) | subsumed: it is a subset of `population`, so `population == 0` forces it to 0 | ⛔ counted twice otherwise |
+/// | `unrooted` (no [`PARENT`], **any** mark) | only by annotating every historical block; a PAID item still has none, so paying never moves it | ⛔ would make the ending unreachable |
+/// | `paid-uncommitted` (PAID naming no commit) | adding ids to old marks — real work, but it says nothing about whether anything is OWED | ⛔ not the question |
+///
+/// ⚠⚠ **AND IT NAMES ITS POPULATION ON EVERY LINE, REACHED OR NOT** — register item 914's finding:
+/// a gate that says *green* without saying *green for what* cannot be audited. Both counts are
+/// printed either way, so a reader never has to know which of the five this line was about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ending {
+    /// The items still marked [`Tag::Open`].
+    pub open: Vec<u32>,
+    /// The items carrying no [`TAG`] at all — unread rather than answered.
+    pub unclassified: Vec<u32>,
+}
+
+impl Ending {
+    /// Whether the north star is reached: nothing open **and** nothing unclassified.
+    ///
+    /// ⚠ `unclassified` is not a second opinion about the same set. An unmarked block has never
+    /// been asked whether it is this loop's, so a `population` of zero beside it means *nothing
+    /// MARKED is owed* — which is the claim register item 823 spent itself replacing, arriving one
+    /// level up.
+    #[must_use]
+    pub fn reached(&self) -> bool {
+        self.open.is_empty() && self.unclassified.is_empty()
+    }
+}
+
+impl fmt::Display for Ending {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "north star: {} — open {}, unclassified {}",
+            if self.reached() {
+                "REACHED"
+            } else {
+                "NOT REACHED"
+            },
+            self.open.len(),
+            self.unclassified.len(),
+        )
+    }
 }
 
 /// Judge one backlog against the floor its ledger declares — **in both directions**.
@@ -4379,6 +4497,166 @@ mod tests {
         );
     }
 
+    // ⛔⛔⛔⛔⛔ ───── REGISTER ITEM 936: A LEDGER THAT IS GREEN, FINISHED, AND STILL OWED ─────
+    //
+    // The end state, as a fixture: everything marked has been paid, and one block was never read.
+    // On this the instrument printed `population 0`, `critical 0`, `rc=0` and an EMPTY stderr —
+    // and `--admits` offered nothing at all. A run standing here could neither finish honestly nor
+    // move. These tests hold both halves of that: the ending must not read as reached, and the
+    // block must become the thing to take.
+    const AT_THE_END: &str = "\
+# Ledger
+## A. THE SHARPEST THINGS OPEN
+@ns-unclassified: 1
+@sev-unclassified: 0
+@from-unclassified: 2
+@paid-uncommitted: 1
+
+900. Everything the loop ever owed, paid
+     @ns: paid
+
+899. A block nobody ever classified
+     no mark of any kind
+";
+
+    /// 🎯🎯🎯🎯🎯 **AN UNREAD BLOCK IS NOT AN ENDING** — register item 936(3), and the mutation
+    /// that item asks for by name: *make one unclassified, ask the ending, and `finished` is red.*
+    #[test]
+    fn the_ending_is_not_reached_while_one_block_was_never_classified() {
+        let reading = read(AT_THE_END);
+        // ⚠⚠ THE PREMISE FIRST, because without it this test could pass on a fixture that simply
+        // had work left: what makes it item 936's case is that everything MARKED is done and the
+        // instrument is otherwise perfectly green.
+        assert!(
+            reading.population().is_empty(),
+            "{:?}",
+            reading.population()
+        );
+        assert!(reading.critical().is_empty(), "{:?}", reading.critical());
+        assert!(
+            reading.is_green(),
+            "⚠ the premise: every floor matches its count, so nothing here is a FAULT — which is \
+             exactly why `is_green` could not have answered this: {:?}",
+            reading.faults,
+        );
+
+        let ending = reading.ending();
+        assert!(
+            !ending.reached(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 936: nothing is open and the register is green, but item 899 \
+             has never been ASKED whether it is this loop's. Reading that as finished is the claim \
+             register item 823 spent itself replacing — *nothing marked is owed* standing in for \
+             *nothing is owed*. Said: {ending}",
+        );
+        assert_eq!(ending.unclassified, vec![899], "{ending:?}");
+        assert!(
+            ending.to_string().contains("open 0") && ending.to_string().contains("unclassified 1"),
+            "⚠ register item 914: the line must name the population it judged, on both verdicts — \
+             a reader must never have to know which of the five backlogs it meant: {ending}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **AND THE TWO THAT CANNOT FALL BY PAYING ARE NOT IN IT** — working rule 5, asked of
+    /// the ending's own population. See [`Ending`] for the table this asserts.
+    ///
+    /// `unrooted` counts PAID items too, so paying never moves it; putting it in the ending would
+    /// make the north star unreachable rather than honest. `paid-uncommitted` is real work that
+    /// says nothing about whether anything is owed.
+    #[test]
+    fn the_ending_counts_only_what_paying_can_bring_to_zero() {
+        let done = AT_THE_END.replace(
+            "899. A block nobody ever classified\n     no mark of any kind\n",
+            "899. A block that WAS classified\n     @ns: out — a rendering defect\n",
+        );
+        let lowered = done.replace("@ns-unclassified: 1", "@ns-unclassified: 0");
+        let reading = read(&lowered);
+        assert!(
+            reading.is_green(),
+            "the fixture must be green for this to say anything: {:?}",
+            reading.faults,
+        );
+        let backlogs = reading.backlogs();
+        // ⚠ The premise: these two are still standing, and the ending must be REACHED anyway.
+        assert_eq!(backlogs.unrooted.items, vec![899, 900], "{backlogs:?}");
+        assert_eq!(backlogs.paid_unnamed.items, vec![900], "{backlogs:?}");
+        assert!(
+            reading.ending().reached(),
+            "⛔ WORKING RULE 5: `unrooted` counts paid items, so no amount of paying brings it to \
+             0 — an ending that waited for it would be a condition with no path. Said: {}",
+            reading.ending(),
+        );
+        // ⚠⚠ AND `unranked` IS SUBSUMED RATHER THAN DROPPED: it is a subset of the population, so
+        // an empty population forces it empty. Asserted so the omission is a proof and not a
+        // preference — the difference register item 924 is about.
+        assert!(
+            backlogs.unranked.items.is_empty(),
+            "an empty population must force the severity backlog empty, which is why the ending \
+             does not name it separately: {backlogs:?}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AND THE UNREAD BLOCK BECOMES THE THING TO TAKE** — register item 936(1). The
+    /// ending refusing to close is only half: a run told *not finished* with nothing admissible is
+    /// the `unadmitted` stall, which is the failure this repository has already watched happen.
+    #[test]
+    fn when_nothing_marked_is_takeable_the_unclassified_become_so() {
+        let reading = read(AT_THE_END);
+        assert!(
+            reading.takeable(1).is_empty(),
+            "the premise: nothing marked is takeable: {:?}",
+            reading.takeable(1),
+        );
+        assert_eq!(
+            reading.admits(1, &[]),
+            vec![899],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 936: with nothing marked to take, the register must offer the \
+             block nobody read — otherwise it says a debt stands and that no round may take it, \
+             and the run stalls with `unadmitted`. Working rule 6: an unstated case is not a pass",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **AND IT IS A THIRD TIER, NOT A BLEND** — the guard on the arm above. On the real
+    /// ledger the unclassified outnumber the population four to one; admitting them beside marked
+    /// work would drown it, which is *widen it until it is green* wearing the opposite sign.
+    #[test]
+    /// ⚠⚠⚠ **AND IT IS THE FALL-THROUGH TIER THAT IS TESTED, NOT THE CRITICAL ONE.** Written first
+    /// against `LEDGER` unchanged, this was VACUOUS: that fixture's item 900 is `@sev: critical`,
+    /// so the FIRST tier answered and a blended third tier never ran. The mutation *blend instead
+    /// of tier* was caught only by two unrelated tests while this one — the guard written for it —
+    /// stayed green. So the severity is dropped here on purpose: nothing critical, marked work
+    /// still standing, which is the only shape that puts the second and third tiers side by side.
+    fn the_unclassified_are_not_admitted_while_marked_work_stands() {
+        let ordinary = LEDGER.replace(
+            "     @sev: critical — it stops the loop dead",
+            "     @sev: ordinary — it does not stop the loop",
+        );
+        assert_ne!(
+            ordinary, LEDGER,
+            "the mutation of the fixture changed nothing"
+        );
+        let reading = read(&ordinary);
+        assert!(
+            reading.critical().is_empty(),
+            "the premise: nothing critical, so the SECOND tier is the one answering: {:?}",
+            reading.critical(),
+        );
+        let unclassified = reading.backlogs().unclassified.items;
+        assert_eq!(unclassified, vec![897], "the premise: {unclassified:?}");
+        assert!(
+            !reading.takeable(9).is_empty(),
+            "the premise: marked work stands: {:?}",
+            reading.takeable(9),
+        );
+        assert_eq!(
+            reading.admits(9, &[]),
+            vec![900],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 936: the third tier is a TIER and not a blend. On the real \
+             ledger the unclassified outnumber the population four to one, so admitting them \
+             beside marked work would drown it — *widen it until it is green* wearing the \
+             opposite sign",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **AND THE PRINTED LINE IS THE ONE THESE TESTS JUDGE** — register item 934(3).
     ///
     /// # ⛔⛔⛔ Why a source gate and not another assertion
@@ -4404,6 +4682,14 @@ mod tests {
         assert!(
             BIN.contains("reading.backlogs()"),
             "⛔ the binary no longer asks for the backlogs at all",
+        );
+        // 🎯 AND THE ENDING — register item 936, held by the same gate for the same reason: the
+        // `Ending` tests above judge a string, and only this says the string is the one printed.
+        assert!(
+            BIN.contains("println!(\"{}\", reading.ending())"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 936: the report no longer prints whether the north star is \
+             reached, so the only mechanical answer to that question is one nobody sees — and the \
+             ending goes back to being a sentence an agent judges by eye",
         );
         for (backlog, field) in [
             (&unclassified, "backlogs.unclassified"),

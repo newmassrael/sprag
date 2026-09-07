@@ -201,6 +201,19 @@ fn main() -> std::process::ExitCode {
         );
     }
 
+    // 🎯🎯🎯🎯🎯 AND WHETHER THE WHOLE THING IS FINISHED — register item 936, printed LAST because
+    // it is the conclusion the lines above are the evidence for.
+    //
+    // ⚠⚠ NOT AN EXIT CODE. `rc` answers *is this ledger well-formed*, and `NOT REACHED` is the
+    // ordinary state of a repository with work in it — reding on it would make every round red and
+    // teach the reader to skip the one line that matters. The line is the answer; the faults are a
+    // different question.
+    //
+    // ⚠ Printed on BOTH verdicts, with both counts, for register item 924's reason one instrument
+    // over: a run that examined nothing and a run that examined everything and found it finished
+    // must not read alike.
+    println!("{}", reading.ending());
+
     // ⛔⛔⛔⛔⛔ AND THE DEFERRALS RESTING ON A LINK NOBODY CLASSIFIED — register item 920. Asked
     // here rather than in `read` for the reason `cap` itself is: the depth cap is the loop
     // document's number and this binary is the only thing that has opened that document.
@@ -447,13 +460,16 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
         }
     };
     let admitted = reading.admits(cap.depth(), &standing);
-    let spelled: Vec<String> = admitted.iter().map(ToString::to_string).collect();
+    // ⚠⚠ BOUNDED, since register item 936 gave this set a third tier: where nothing marked is
+    // takeable it falls through to the unclassified, which is 330 items on the real ledger. An
+    // unbounded `join` there is the 1,300-byte line register item 934 was opened by, re-created on
+    // the one line a refused run reads to find out what it may do instead.
+    let spelled = north_star::name_some(&admitted, north_star::Ends::Lowest);
     let proposal = proposal.to_string_lossy();
     let Some(number) = reading.names(&proposal) else {
         println!(
             "NO — this proposal names no item of the register, so nothing here can say it is one \
-             to take now. What a round may take: {}",
-            spelled.join(" "),
+             to take now. What a round may take: {spelled}",
         );
         return std::process::ExitCode::SUCCESS;
     };
@@ -500,6 +516,6 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
     } else {
         format!("item {number} is not in this register's open population")
     };
-    println!("NO — {why}. What a round may take: {}", spelled.join(" "));
+    println!("NO — {why}. What a round may take: {spelled}");
     std::process::ExitCode::SUCCESS
 }
