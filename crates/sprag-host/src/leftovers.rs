@@ -279,10 +279,20 @@ mod tests {
 
     /// A state directory of this test's own, with the stems it is handed.
     fn a_state_dir(name: &str, stems: &[(&str, &str, Option<&str>)]) -> std::path::PathBuf {
-        let dir = sprag_scratch::scratch_for(
-            &format!("sprag-leftovers-{name}"),
-            &format!("{:?}", std::thread::current().id()),
-        );
+        // ⛔⛔⛔⛔⛔ SHORT ON PURPOSE, AND THE NEIGHBOUR'S TECHNIQUE — register item 950 ⑴. One case
+        // below binds a unix socket under this directory, and `sun_path` is 104 bytes on macOS
+        // against 108 on Linux. `sprag-leftovers-{name}-{pid}-ThreadId(N)` plus `/run/<stem>.sock`
+        // is 59 bytes of tail, and the macOS runner's scratch root is 48 — **measured 107, four
+        // over**, which is why that case failed there on every push while being invisible under
+        // Linux's four-byte `/tmp`.
+        //
+        // ⚠⚠ A per-CALL counter rather than the thread id, which is `cli.rs`'s
+        // `default_named_runtime_dir` repair for the same ceiling: the pid keeps two test BINARIES
+        // apart and the counter keeps two threads of one binary apart, in three characters instead
+        // of thirteen. `sprag_scratch::socket_fits` is what holds this, asserted at the bind.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = sprag_scratch::scratch_for(&format!("sprag-lo-{name}"), &format!("{n}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a state directory of this test's own");
         for (stem, runs, snapshot) in stems {
@@ -453,6 +463,20 @@ mod tests {
         // the arm that matters most here — *not a daemon I recognise* must not read as *nobody is
         // there*. A real daemon would be `Serving`, and both are keeps.
         let socket = runtime.join("listening.sock");
+        // ⛔⛔⛔⛔⛔ **THE CEILING IS ASSERTED BEFORE THE BIND, ON EVERY PLATFORM** — register item
+        // 950 ⑴. `bind` refuses a path over `sun_path` with *"path must be shorter than SUN_LEN"*,
+        // and that limit is 104 on macOS against 108 on Linux — so this test passed here and failed
+        // on the macOS runner on every push. `socket_fits` measures the part below the scratch root
+        // against the LONGEST root this project must tolerate (48 bytes, measured on that runner),
+        // which is what makes the answer the same on this machine as on that one.
+        assert!(
+            sprag_scratch::socket_fits(&socket),
+            "⛔ REGISTER ITEM 950 ⑴: {} would be refused by `bind` on the platform with the \
+             tightest `sun_path` ({} bytes). Shorten this fixture's own names — a short prefix and \
+             a per-call counter, never an embedded file name",
+            socket.display(),
+            sprag_scratch::TIGHTEST_SUN_PATH,
+        );
         let listener =
             std::os::unix::net::UnixListener::bind(&socket).expect("a socket of this test's own");
 

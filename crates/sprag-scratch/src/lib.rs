@@ -409,9 +409,120 @@ pub fn scratch_for(prefix: &str, tail: &str) -> PathBuf {
     root.join(mine)
 }
 
+/// ⛔⛔⛔⛔⛔ **THE TIGHTEST `sun_path` A PLATFORM THIS PROJECT RUNS ON HAS** — register item 950 ⑴,
+/// and the ceiling a scratch path under which somebody binds a socket has to fit.
+///
+/// # ⚠⚠⚠⚠ Why a number here rather than a `cfg` at each bind site
+///
+/// A `cfg(target_os)` would make every check pass on the machine it was written on, which is the
+/// whole defect: **a socket path is refused by the platform it is bound on, and this workspace is
+/// developed on the one with the LOOSER limit.** Linux gives 108 bytes and macOS gives 104, so a
+/// path measured against the running platform is measured against the wrong one on every developer
+/// machine. The tightest of them is the only number a claim can be made with.
+///
+/// ⚠⚠ MEASURED rather than quoted: the macOS CI runner refused
+/// `a_live_daemons_residue_is_never_removable_however_empty_its_files_are` with *"path must be
+/// shorter than SUN_LEN"* on 2026-09-07 (runs 34128530278 and 34132101073), and the same face had
+/// already been paid once by hand in `sprag-host`'s `cli.rs` — *"measured at 109 bytes, five
+/// over"* — which is why this is here and not a third copy of the arithmetic.
+///
+/// ⚠ 104 is the size of the FIELD; one byte of it is the terminator, so [`socket_fits`] compares
+/// against it strictly.
+pub const TIGHTEST_SUN_PATH: usize = 104;
+
+/// ⛔⛔⛔⛔ **THE LONGEST SCRATCH ROOT THIS PROJECT MUST TOLERATE**, measured on the runner that has
+/// the tightest limit — register item 950 ⑴.
+///
+/// Read out of the macOS CI log of 2026-09-07 rather than guessed — see [`MEASURED_TIGHT_ROOT`],
+/// which is the evidence this is the LENGTH OF. Linux's `/tmp` is 4, so a path checked against the
+/// local root is checked against a root twelve times shorter than the one that refuses it.
+///
+/// ⚠⚠ **DERIVED AND NOT TYPED, which is register item 946's finding turned on this constant**: a
+/// measurement written as a bare number is the escape hatch of every check that rests on it — a
+/// round that found this inconvenient could lower it and every socket path would pass again in
+/// silence. Measured here, by mutation: setting it to `4` by hand left the whole suite green.
+/// Computed from the evidence, lowering it means shortening a path that is asserted to have the
+/// shape a macOS scratch root has.
+///
+/// ⚠ It is a BUDGET and not a fact about this machine: [`socket_fits`] asks whether the part of a
+/// path BELOW the scratch root would still fit if the root were that long. That is what makes the
+/// answer the same on every machine, which is the only way a developer here can be told.
+pub const LONGEST_SCRATCH_ROOT: usize = MEASURED_TIGHT_ROOT.len();
+
+/// ⛔⛔⛔⛔ **THE EVIDENCE [`LONGEST_SCRATCH_ROOT`] IS THE LENGTH OF** — register item 950 ⑴, read
+/// out of the macOS CI log of 2026-09-07 (runs 34128530278 and 34132101073).
+///
+/// macOS gives every session an opaque scratch root of this shape, and its length is the thing
+/// that matters: two path components of fixed width and a `/T`. It is kept as the PATH rather than
+/// as its length so the number above cannot be lowered without falsifying something a test can
+/// check — `a_measured_root_is_the_shape_macos_actually_gives` asserts exactly that.
+pub const MEASURED_TIGHT_ROOT: &str = "/var/folders/d8/hvxvltxn0fl4rmnd52sncbth0000gn/T";
+
+/// Whether `path` may be bound as a unix socket on **every** platform this project runs on.
+///
+/// The part of `path` below [`scratch_root`] is measured against
+/// [`LONGEST_SCRATCH_ROOT`] + [`TIGHTEST_SUN_PATH`], so the answer does not depend on the machine
+/// asking. A path outside the scratch root is measured whole — there is no budget to reason about.
+///
+/// # ⚠⚠ What it does NOT do, said plainly
+///
+/// It does not create anything and it does not bind. A caller that wants a path this answers `true`
+/// for shortens its own names — the technique its neighbour in `cli.rs` already uses: a short
+/// prefix plus a per-call counter, never an embedded file name.
+#[must_use]
+pub fn socket_fits(path: &std::path::Path) -> bool {
+    let shown = path.as_os_str().as_encoded_bytes().len();
+    let root = scratch_root();
+    let below = path
+        .strip_prefix(&root)
+        .map_or(shown, |rest| rest.as_os_str().as_encoded_bytes().len() + 1);
+    LONGEST_SCRATCH_ROOT + below < TIGHTEST_SUN_PATH
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⛔⛔⛔⛔⛔ **THE MEASUREMENT BEHIND THE SOCKET BUDGET IS THE SHAPE macOS ACTUALLY GIVES** —
+    /// register item 950 ⑴, and the assertion that keeps [`LONGEST_SCRATCH_ROOT`] from being a
+    /// number somebody can lower.
+    ///
+    /// # ⛔⛔⛔ Why the evidence is checked and not just the number
+    ///
+    /// Measured by mutation while this was written: with the budget typed as a bare `4`, the whole
+    /// suite stayed **green** — nothing in this workspace was asking whether it was right. That is
+    /// register item 946's finding one crate over: *the measurement constant is the escape hatch of
+    /// every check built on it.* So the budget is the LENGTH OF A PATH, and this asserts the path
+    /// is the thing it claims to be — two opaque components under `/var/folders` and a `/T`. A
+    /// round that wants a smaller budget has to falsify that, which is visible.
+    ///
+    /// ⚠ It does NOT assert this is the root of the machine running it — on Linux it never is. The
+    /// claim is about what the tightest platform hands out, which is why a `cfg` would be wrong
+    /// here for the reason [`TIGHTEST_SUN_PATH`] states.
+    #[test]
+    fn a_measured_root_is_the_shape_macos_actually_gives() {
+        let parts: Vec<&str> = MEASURED_TIGHT_ROOT.split('/').skip(1).collect();
+        assert_eq!(
+            (parts.first().copied(), parts.last().copied(), parts.len()),
+            (Some("var"), Some("T"), 5),
+            "⛔ REGISTER ITEM 950 ⑴: the budget behind `socket_fits` is the LENGTH of \
+             {MEASURED_TIGHT_ROOT:?}, and that is supposed to be a macOS session scratch root — \
+             `/var/folders/<two opaque components>/T`. It is not one any more, so the number it \
+             feeds is no longer a measurement of anything",
+        );
+        assert!(
+            LONGEST_SCRATCH_ROOT + "/x.sock".len() < TIGHTEST_SUN_PATH,
+            "⚠⚠ THE BUDGET LEAVES NO ROOM AT ALL: a root of {LONGEST_SCRATCH_ROOT} bytes under a \
+             {TIGHTEST_SUN_PATH}-byte ceiling cannot hold even a one-character socket name, so \
+             `socket_fits` would refuse every path and say nothing useful about any of them",
+        );
+        assert_eq!(
+            LONGEST_SCRATCH_ROOT, 48,
+            "⚠ AND THE NUMBER IS PINNED, because the two constants have to move together: a \
+             re-measurement on a different runner is a decision somebody takes, and it changes \
+             this line as well as the path above it",
+        );
+    }
 
     /// An absolute root is handed back unchanged — the case every correctly configured machine is.
     #[test]
