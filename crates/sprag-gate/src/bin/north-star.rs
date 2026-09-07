@@ -219,10 +219,26 @@ fn main() -> std::process::ExitCode {
     // document's number and this binary is the only thing that has opened that document.
     let unread = reading.deferred_unread(cap.depth());
 
-    if reading.is_green() && unresolved.is_empty() && unread.is_empty() && refuted.is_empty() {
+    // ⛔⛔⛔⛔⛔ AND THE BACKLOGS WHOSE DECLARED OWNER IS NO LONGER OPEN — register item 937. Asked
+    // here, beside `paid_unresolved` and `standing_reds`, for the reason
+    // `north_star::Reading::backlog_owners_gone` records: the claim names an item of THIS ledger,
+    // and putting the check inside `read` made eleven tests over other ledgers red at once.
+    let ownerless = reading.backlog_owners_gone();
+
+    if reading.is_green()
+        && unresolved.is_empty()
+        && unread.is_empty()
+        && refuted.is_empty()
+        && ownerless.is_empty()
+    {
         return std::process::ExitCode::SUCCESS;
     }
-    let faults: Vec<&north_star::Fault> = reading.faults.iter().chain(unread.iter()).collect();
+    let faults: Vec<&north_star::Fault> = reading
+        .faults
+        .iter()
+        .chain(unread.iter())
+        .chain(ownerless.iter())
+        .collect();
     if !faults.is_empty() {
         eprintln!("\n{} fault(s):", faults.len());
         for fault in faults {

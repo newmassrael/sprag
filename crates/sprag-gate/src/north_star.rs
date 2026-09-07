@@ -775,6 +775,18 @@ pub enum Fault {
         /// The line as written.
         line: String,
     },
+    /// ⛔⛔⛔⛔⛔ **A BACKLOG WHOSE DECLARED OWNER HAS LEFT THE POPULATION** — register item 937.
+    ///
+    /// [`Reckoning::Owned`] is a claim about the ledger, and the ledger moves: the day that item
+    /// is paid, the backlog silently has no owner again and nothing would have said so. **This is
+    /// the disposition asking to be re-stated**, not a defect in the payment — the remedy is to
+    /// judge the backlog again (a new owner, or an exemption with its sentence).
+    BacklogOwnerClosed {
+        /// The declaration whose backlog said it, e.g. [`PAID_DECLARATION`].
+        token: &'static str,
+        /// The item it named.
+        owner: u32,
+    },
     /// A declared floor standing **above** what this reading counted — register item 926.
     ///
     /// # ⛔⛔⛔⛔⛔ Why slack is a RED and not a tidy-up
@@ -870,6 +882,13 @@ impl fmt::Display for Fault {
                 // is BELOW the floor — so there is no new item to point at, and the end worth
                 // handing a reader is the one this ledger's rule 13 says sinks.
                 name_some(counted, Ends::Lowest),
+            ),
+            Self::BacklogOwnerClosed { token, owner } => write!(
+                f,
+                "`{token}`'s backlog says item {owner} owns bringing it to zero, and {owner} is \
+                 not in the open population — so nothing carries that work and no round can be \
+                 routed to it. Judge the backlog again: name an open owner, or write why it needs \
+                 none",
             ),
             Self::UnreadableDeclaration { line } => write!(
                 f,
@@ -1076,6 +1095,8 @@ impl Reading {
                 token: DECLARATION,
                 items: of(|item| item.tag.is_none()),
                 declared: self.declared,
+                // Register item 936: the ending counts it, and the third tier hands it over.
+                reckoning: Reckoning::Counted,
             },
             // ⚠⚠⚠ OPEN ONLY, and that is the measured choice register item 926 recorded rather
             // than an oversight — counting every item's severity would make a ratchet that grows
@@ -1086,18 +1107,42 @@ impl Reading {
                 token: SEVERITY_DECLARATION,
                 items: of(|item| item.tag == Some(Tag::Open) && item.severity.is_none()),
                 declared: self.severity_declared,
+                // ⚠ SUBSUMED, and that is a proof rather than a preference: this counts OPEN items
+                // only, so it is a subset of `population` and an empty population forces it empty.
+                // Naming it in the ending as well would count one fact twice.
+                reckoning: Reckoning::Exempt(
+                    "a subset of the population, so an empty population forces it empty",
+                ),
             },
             unrooted: Backlog {
                 label: "unrooted",
                 token: PARENT_DECLARATION,
                 items: of(|item| item.parent.is_none()),
                 declared: self.parent_declared,
+                // ⚠⚠ ZERO IS NOT THE GOAL HERE, which is why this is an exemption and not a debt.
+                // It counts items under EVERY mark, so a paid item still states no parent and
+                // paying never moves it — register item 926 measured that asymmetry and chose to
+                // leave the population wide. What it is FOR is refusing a NEW item that states no
+                // parentage, and that works: measured 2026-09-07, a fresh block with no `@from:`
+                // raises the count above the floor and reds.
+                reckoning: Reckoning::Exempt(
+                    "a ratchet on new items rather than a queue: it counts paid items too, so \
+                     paying never lowers it and zero is not what it is for",
+                ),
             },
             paid_unnamed: Backlog {
                 label: "paid-uncommitted",
                 token: PAID_DECLARATION,
                 items: of(|item| item.tag == Some(Tag::Paid) && item.commits.is_empty()),
                 declared: self.paid_declared,
+                // ⛔⛔⛔ AND THIS ONE IS REAL WORK, so it gets an OWNER rather than an excuse.
+                // Exempting it would have been the dishonest arm: unlike its two neighbours this
+                // number CAN reach zero — twenty-six paid marks, and a sample of five showed three
+                // already citing hashes in their own prose (823 cites three, so which one paid it
+                // is a judgement, not a move — 823's own warning about item 212). Register item
+                // 938 carries it, which is what puts it in `population` where `admits` can reach
+                // it: register item 937's finding that opening an item IS the route.
+                reckoning: Reckoning::Owned(938),
             },
         }
     }
@@ -1537,6 +1582,49 @@ impl Reading {
             return takeable;
         }
         self.backlogs().unclassified.items
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE BACKLOGS WHOSE DECLARED OWNER IS NOT OPEN IN THIS LEDGER** — register item
+    /// 937, and asked HERE rather than inside [`read`] for a measured reason.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What putting it in `read` did, measured
+    ///
+    /// [`Reckoning::Owned`] carries an item number, which is a claim about **one** ledger. This
+    /// crate reads *a* ledger: every fixture in this file is a different one. Checking the claim
+    /// inside `read` turned **eleven** tests red at once — not because any of them was wrong, but
+    /// because none of their miniature ledgers contains the item this repository's register filed
+    /// the work under. A gate that reds on every document except one is not a gate.
+    ///
+    /// ⚠⚠ So it joins [`Reading::paid_unresolved`] and [`Reading::standing_reds`] as a question
+    /// **only the caller should put** — the caller being the one thing that knows which ledger is
+    /// the one the claim is about. The binary folds these into its exit code beside the others.
+    ///
+    /// ⚠ **THE RESIDUE, STATED RATHER THAN HIDDEN**: the number is still spelled in this crate,
+    /// and this file's own [`DECLARATION`] doc says the opposite — *"the number lives in the LEDGER
+    /// rather than in this crate for the reason a written-down expectation always rots
+    /// invisibly"*. Register item 833(1) is the same disagreement one policy over. Making the
+    /// LEDGER declare its own backlog owners is register item 939's.
+    #[must_use]
+    pub fn backlog_owners_gone(&self) -> Vec<Fault> {
+        let population = self.population();
+        let backlogs = self.backlogs();
+        let mut gone = Vec::new();
+        for backlog in [
+            &backlogs.unclassified,
+            &backlogs.unranked,
+            &backlogs.unrooted,
+            &backlogs.paid_unnamed,
+        ] {
+            if let Reckoning::Owned(owner) = backlog.reckoning
+                && !population.contains(&owner)
+            {
+                gone.push(Fault::BacklogOwnerClosed {
+                    token: backlog.token,
+                    owner,
+                });
+            }
+        }
+        gone
     }
 
     /// 🎯🎯🎯🎯🎯 **WHETHER THE NORTH STAR IS REACHED, AS A READING RATHER THAN A JUDGEMENT** —
@@ -2056,6 +2144,40 @@ pub struct Backlog {
     pub items: Vec<u32>,
     /// The floor the ledger declares, or [`None`] when it declares none readably.
     pub declared: Option<usize>,
+    /// ⛔ **How this backlog ever reaches zero — register item 937.** See [`Reckoning`].
+    pub reckoning: Reckoning,
+}
+
+/// ⛔⛔⛔⛔⛔ **HOW ONE RATCHETED BACKLOG EVER REACHES ZERO** — register item 937, and the
+/// generalisation register item 936 turned out to be one case of.
+///
+/// # ⛔⛔⛔ What 936 fixed for one backlog and left standing for two
+///
+/// Register item 936 gave `unclassified` two things: the ending counts it, and
+/// [`Reading::admits`] hands it over. Measured 2026-09-07, **neither of the other two had
+/// anything**: the ending deliberately excludes them (working rule 5 — neither falls by paying),
+/// no open register item named them (902 and 926, which opened and studied them, are both `paid`),
+/// and no sentence anywhere said why they needed neither. So a later round would have re-discovered
+/// them as a fresh defect — register item 933's shape, arriving a third time.
+///
+/// ⚠⚠ **AN UNSTATED DISPOSITION IS A RED, NOT A DEFAULT.** There is no `Unknown` arm and no
+/// [`Default`]: a fifth backlog cannot be added without its author writing one of these three, and
+/// the three are checked rather than taken at their word — see [`Reading::backlog_owners_gone`]
+/// for the arm a document can take away after the fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reckoning {
+    /// **The ending counts it**, so the north star cannot be reached while it stands. See
+    /// [`Ending`], whose own doc carries why only two of the five qualify.
+    Counted,
+    /// **An open register item owns the work**, so `population` carries it and
+    /// [`Reading::admits`] can hand it over like any other debt. The number is checked: an owner
+    /// that has been paid is [`Fault::BacklogOwnerClosed`], which is the disposition asking to be
+    /// re-stated rather than quietly expiring.
+    Owned(u32),
+    /// **It needs neither, and this is why.** The sentence is the whole of this arm's honesty, and
+    /// the COUNT of backlogs standing on it is asserted by a gate — an exemption nobody counts is
+    /// the escape hatch this workspace's rule 6 exists to refuse.
+    Exempt(&'static str),
 }
 
 impl fmt::Display for Backlog {
@@ -4394,6 +4516,7 @@ mod tests {
             token: DECLARATION,
             items: many.clone(),
             declared: Some(many.len()),
+            reckoning: Reckoning::Counted,
         };
         let line = backlog.to_string();
         let named = numbers_named_by(&line);
@@ -4464,7 +4587,11 @@ mod tests {
             | Fault::ParentDeclaration { .. }
             | Fault::UnreadableParentDeclaration { .. }
             | Fault::Declaration { .. }
-            | Fault::UnreadableDeclaration { .. } => None,
+            | Fault::UnreadableDeclaration { .. }
+            // ⚠ Register item 937's fault names ONE backlog and ONE item, both in its message —
+            // and this arm is the gate above working: the variant could not be added without its
+            // author saying here whether it carries a set.
+            | Fault::BacklogOwnerClosed { .. } => None,
         }
     }
 
@@ -4648,6 +4775,107 @@ mod tests {
             "⛔⛔⛔⛔⛔ REGISTER ITEM 936: with nothing marked to take, the register must offer the \
              block nobody read — otherwise it says a debt stands and that no round may take it, \
              and the run stalls with `unadmitted`. Working rule 6: an unstated case is not a pass",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **EVERY RATCHETED BACKLOG IS JUDGED, AND THE EXEMPTIONS ARE COUNTED** —
+    /// register item 937.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The three checks, and why a bare `match` would not be one
+    ///
+    /// [`Reckoning`] has no `Unknown` arm, so a fifth backlog cannot be added without its author
+    /// writing a disposition — but a written disposition is a CLAIM, and item 937 exists because
+    /// three of four backlogs had claims nobody had ever checked. So each arm is checked against
+    /// something:
+    ///
+    /// * `Counted` — [`Ending`] must actually count it. A backlog that says the ending waits for
+    ///   it while the ending has never heard of it is register item 936 returning.
+    /// * `Owned(n)` — `n` must be an OPEN item. Checked on every reading, not here: see
+    ///   [`Fault::BacklogOwnerClosed`], because only a reading of the ledger can answer it.
+    /// * `Exempt(why)` — the sentence must be there, **and the number standing on this arm is
+    ///   asserted**. That last clause is the whole of working rule 6 here: an exemption list
+    ///   nobody counts is how a gate is switched off one honest-looking sentence at a time.
+    #[test]
+    fn every_backlog_is_judged_and_the_exemptions_are_counted() {
+        let reading = read(LEDGER);
+        let Backlogs {
+            unclassified,
+            unranked,
+            unrooted,
+            paid_unnamed,
+        } = reading.backlogs();
+        let ending = reading.ending();
+
+        let mut exempt: Vec<&'static str> = Vec::new();
+        for backlog in [&unclassified, &unranked, &unrooted, &paid_unnamed] {
+            match &backlog.reckoning {
+                Reckoning::Counted => assert_eq!(
+                    backlog.items, ending.unclassified,
+                    "⛔⛔⛔⛔⛔ REGISTER ITEM 937: `{}` says the ending counts it, and the ending \
+                     counts something else. A disposition nothing checks is the claim item 937 was \
+                     opened by",
+                    backlog.label,
+                ),
+                // ⚠ The owner is checked by `read` against the ledger's own population — a unit
+                // test cannot, because the fixture is not the ledger the claim is about.
+                Reckoning::Owned(owner) => assert!(
+                    *owner > 0,
+                    "`{}` names item {owner} as its owner",
+                    backlog.label,
+                ),
+                Reckoning::Exempt(why) => {
+                    assert!(
+                        !why.trim().is_empty(),
+                        "⛔ `{}` is exempt for no stated reason, which is the escape hatch working \
+                         rule 6 refuses",
+                        backlog.label,
+                    );
+                    exempt.push(why);
+                }
+            }
+        }
+        // ⛔⛔⛔⛔⛔ AND THE COUNT — register item 903's shape, which this ledger has paid for
+        // twice: *an exemption is written as a sentence and its NUMBER is asserted*. A third
+        // exemption cannot be added quietly; whoever adds one has to come here and say so.
+        assert_eq!(
+            exempt.len(),
+            2,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 937: exactly two backlogs stand on an exemption today — \
+             `unranked` (a subset of the population) and `unrooted` (a ratchet on new items, which \
+             counts paid items so paying never lowers it). A third means a backlog stopped being \
+             owned or counted, and that is the defect item 937 is: {exempt:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND AN OWNER THAT HAS BEEN PAID IS A RED** — register item 937, the one arm a
+    /// document can take away after the fact.
+    #[test]
+    fn a_backlog_whose_owner_left_the_population_is_red() {
+        // ⚠ ASKED OF THE READING, not read off `faults` — see `backlog_owners_gone`, which records
+        // the eleven tests that went red when this lived inside `read`.
+        let reading = read(LEDGER);
+        assert!(
+            reading
+                .backlog_owners_gone()
+                .contains(&Fault::BacklogOwnerClosed {
+                    token: PAID_DECLARATION,
+                    owner: 938,
+                }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 937: a backlog naming an owner that is not open has no owner \
+             at all, and nothing said so. The remedy is to judge it again — a new owner, or an \
+             exemption with its sentence: {:?}",
+            reading.backlog_owners_gone(),
+        );
+        // ⚠ AND THE MESSAGE SAYS WHAT TO DO, which is register item 926's rule for every refusal
+        // in this file: a reader told only *the owner is gone* has to re-derive the two remedies.
+        let said = Fault::BacklogOwnerClosed {
+            token: PAID_DECLARATION,
+            owner: 938,
+        }
+        .to_string();
+        assert!(
+            said.contains("name an open owner, or write why it needs none"),
+            "the refusal must name both remedies: {said}",
         );
     }
 
