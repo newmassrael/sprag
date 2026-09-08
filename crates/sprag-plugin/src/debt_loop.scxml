@@ -438,14 +438,31 @@
       making it stop.
 
       📊📊📊📊📊 TWO, AND IT IS A READING NOW RATHER THAN AN ESTIMATE — register
-      item 846, measured 2026-09-08 over the 247 run logs this loop has kept
-      since 2026-08-26. **What settles it is how often asking again LANDED**, and
-      the answer is that the second ask lands:
+      item 846. **What settles it is how often asking again LANDED**, and the
+      answer is that the second ask does:
 
-        ask     │ it happened │ the next proposal was ADOPTED
-        ════════╪═════════════╪═══════════════════════════════════════════
-        first   │     38      │  19  (50%; 79% of the 24 with a classifier)
-        second  │     19      │   3  (16%; 60% of the 5  with a classifier)
+        ask     │ it was made │ the next proposal was ADOPTED
+        ════════╪═════════════╪══════════════════════════════
+        first   │     24      │  19   (79%)
+        second  │      5      │   3   (60%)
+
+      ⚠⚠ READ AT 2026-09-08T05:20:16Z over the 247 run logs this loop has kept
+      since 2026-08-26, and THE MOMENT IS PART OF THE NUMBER — register item 918,
+      whose rule `sprag-samples` already prints beside its own count: a total over
+      a live file is true of an instant. This loop writes into that population
+      WHILE it is being read, and a first draft of this table went stale between
+      being measured and being committed.
+
+      ⛔⛔ AND THE POPULATION IS RUNS THAT HAD A CLASSIFIER, because in the others
+      a landing is IMPOSSIBLE rather than merely unobserved. With no
+      `successor_check` the admission key is falsy, so nothing can ever answer
+      *fresh*, and the template charges an unclassified movement as a step by the
+      same rule 6 clause that guards `reaimed`. Once the depth budget is spent,
+      every proposal is refused for ever.
+      ⇒ Measured in the same breath: those runs made 15 ask-agains and landed
+      ZERO, while adopting 22 proposals they were never made to ask twice for. So
+      it is not a thin sample. Averaging them in reported *the second ask lands
+      15%* by diluting a rate with a population that cannot contribute to it.
 
       ⇒ ⭐ **A BOUND OF ONE WOULD HAVE CLOSED THREE RUNS THAT RECOVERED** — runs
       189, 242 and 250, each turned away twice and then naming something its
