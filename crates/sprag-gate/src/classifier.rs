@@ -30,8 +30,15 @@
 //!
 //! ⚠ And it is red under the real mutation, measured before this module was written: one
 //! `sprag-detect = { workspace = true }` added to the classifier's `[dependencies]` took the
-//! closure from **1 crate to 100** — `proc-macro2`, `syn`, `regex`, `termwiz` and the rest of the
+//! closure from **1 crate to 97** — `proc-macro2`, `syn`, `regex`, `termwiz` and the rest of the
 //! product's tree, all of them now able to stop an answer.
+//!
+//! ⚠ 97 DISTINCT CRATES off 100 `Compiling` LINES, and the two numbers are not a disagreement: a
+//! proc-macro is built for the host and again for the target, so the lines are not the crates.
+//! [`crate::classifier::compiled_crates`] answers a SET, which is why 97 is the number this gate
+//! refuses on. ⚠ Spelled absolutely: a `//!` link to this module's own item is resolved in the
+//! scope of the `mod` declaration that carries its other doc fragment, and a bare name is
+//! `unresolved link` there — measured 2026-09-08, and it failed a whole commit's doc gate.
 //!
 //! # ⚠⚠ What this module does NOT claim, stated because a gate's name is a claim
 //!
@@ -510,7 +517,7 @@ mod tests {
         );
     }
 
-    /// The real shape cargo prints, both arms — one crate, and the hundred a dependency drags in.
+    /// The real shape cargo prints, both arms — one crate, and the 97 a dependency drags in.
     #[test]
     fn the_closure_is_read_off_cargos_own_lines() {
         let alone = compiled_crates(

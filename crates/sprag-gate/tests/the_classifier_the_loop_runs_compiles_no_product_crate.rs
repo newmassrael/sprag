@@ -11,9 +11,12 @@
 //!
 //! Measured 2026-09-08, in a throwaway worktree, what the comment is worth: adding one
 //! `sprag-detect = { workspace = true }` to that `[dependencies]` took the closure from **one crate
-//! to a hundred** — `proc-macro2`, `syn`, `regex`, `termwiz`, `sprag-vt` and the rest — every one
-//! of them then able to leave a round unable to re-aim. That edit passes every other gate in this
+//! to 97** — `proc-macro2`, `syn`, `regex`, `termwiz`, `sprag-vt` and the rest — every one of them
+//! then able to leave a round unable to re-aim. That edit passes every other gate in this
 //! workspace.
+//!
+//! ⚠ 97 CRATES off 100 `Compiling` LINES: a proc-macro is built for the host and again for the
+//! target, so the lines are not the crates. This gate reads a SET, which is the 97.
 //!
 //! # ⚠⚠⚠ Why this drives cargo instead of walking `[dependencies]`
 //!

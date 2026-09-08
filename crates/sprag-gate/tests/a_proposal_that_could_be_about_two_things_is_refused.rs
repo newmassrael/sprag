@@ -4,9 +4,15 @@
 //!
 //! `--admits` reads a proposal's subject as the FIRST register item it names. That is this ledger's
 //! convention — *"항목 839 를 갚아라 — …"* — and **a convention is not a predicate**. A proposal
-//! that CITES an admissible item and is about an inadmissible one, *"669 가 말한 얼굴을 837 에서
-//! 갚는다"*, was answered `YES` about 669, and the enforcement this mode exists to be was silently
-//! past. One direction only: citing an inadmissible item first costs a refusal, which is safe.
+//! that CITES an admissible item and is about an inadmissible one is read as being about the
+//! citation, and the enforcement this mode exists to be is silently past. One direction only:
+//! citing an inadmissible item first costs a refusal, which is safe.
+//!
+//! ⚠ The register states the shape in its own words at item 842 — *"669 가 말한 얼굴을 837 에서
+//! 갚는다"*, written 2026-09-02 while 669 was open and `@sev: critical`. **That pair reproduces
+//! nothing now**: measured 2026-09-08, both are paid (`57067cb`, `b5d5aba`) and the same proposal
+//! is answered *"NO — item 669 is not in this register's open population"*. It is quoted as the
+//! register's example and never as a reading; what is measured here is the fixture below.
 //!
 //! Nothing in this workspace drove the `--admits` MODE at all before this file. `Reading::admits`
 //! and `Reading::names` each had unit tests; what a caller runs — the argument handling, the
@@ -19,8 +25,9 @@
 //! currently has `critical 0` — so `admits` hands back the whole population and there is nothing to
 //! be confused about. A gate pointed at the live ledger would be green today and green for the
 //! wrong reason. The fixture is three open items, one of them critical, which is the shape the
-//! enforcement is FOR — and the two withheld ones are written LOW-then-LOWER so the order a
-//! refusal prints them in is a claim this file can check.
+//! enforcement is FOR. ⚠ TWO withheld items rather than one, so a refusal has an ORDER to print —
+//! and the arm that checks it names them DESCENDING in the PROPOSAL, because it is the proposal's
+//! wording `Reading::names_all` scans and never the fixture's.
 //!
 //! ⚠ The binary is still the real one, built from this tree by cargo. What is substituted is the
 //! document it judges, which is an argument it already takes.
