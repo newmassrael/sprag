@@ -156,6 +156,12 @@ fn the_classifier_the_loop_runs_compiles_no_product_crate() {
          {A_CRATE_THAT_IS_NOT_THE_CLASSIFIERS} in this very log and this reader does not see it, \
          so the claim above is green about nothing. Cargo said: {control_closure:?}",
     );
+
+    // ⚠ AND IT TAKES ITS OWN BUILD DIRECTORY WITH IT: measured 2026-09-08, this leaves **20 MB**
+    // per run, and every commit and every push runs it. `scratch_for` sweeps a DEAD predecessor,
+    // which bounds the pile but never empties it — a gate that is not run again leaves its last
+    // one for good. The sibling test in this crate removes its fixture for the same reason.
+    let _ = std::fs::remove_dir_all(&empty);
 }
 
 /// ⛔⛔⛔⛔⛔ **THE CLASSIFIER CANNOT REWRITE THE LOCKFILE OF THE TREE IT IS JUDGING** — item 841,

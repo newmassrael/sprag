@@ -1964,13 +1964,22 @@ impl Reading {
     /// item at all still reads as being about its citation. Nothing here can see a subject the
     /// register has never heard of — that one wants the label item 842's `Done when` ⑴ describes,
     /// which is the template's to add.
+    /// ⚠ ASCENDING, which is [`name_some`]'s stated precondition rather than a preference: it
+    /// prints the LOW end of a long list and says the rest are *all higher*. This is a SET of item
+    /// numbers, and nothing a reader needs is carried by the order they were mentioned in.
     #[must_use]
     pub fn unadmitted_named(&self, text: &str, admitted: &[u32]) -> Vec<u32> {
         let open = self.population();
-        self.names_all(text)
+        let mut muddled: Vec<u32> = self
+            .names_all(text)
             .into_iter()
             .filter(|number| open.contains(number) && !admitted.contains(number))
-            .collect()
+            .collect();
+        // ⛔⛔ Measured on the first build of this: two withheld items came out `(895 894)` and the
+        // suite was GREEN, because `starts_with("NO")` and a name are both true of a reply whose
+        // TAIL lies. What found it was printing the four refusals and reading them.
+        muddled.sort_unstable();
+        muddled
     }
 
     /// The items that state no [`PARENT`] — the backlog [`Fault::ParentRatchetGrew`] holds.
@@ -4156,11 +4165,13 @@ mod tests {
     /// A ledger with a SECOND open item that nobody called critical — what [`LEDGER`] cannot
     /// express, because its whole population is one critical item and every proposal about it is
     /// admissible by construction.
-    fn two_open_items() -> String {
+    fn three_open_items() -> String {
         LEDGER.replace(
             "899. ✅✅ **PAID 2026-09-02**",
             "895. ⛔ **Open, and nobody called it critical**\n     @ns: open — ordinary work\n     \
-             @sev: ordinary — it waits\n     @from: none\n\n899. ✅✅ **PAID 2026-09-02**",
+             @sev: ordinary — it waits\n     @from: none\n\n894. ⛔ **Open too, and lower than \
+             the one above**\n     @ns: open — ordinary work\n     @sev: ordinary — it waits\n     \
+             @from: none\n\n899. ✅✅ **PAID 2026-09-02**",
         )
     }
 
@@ -4168,7 +4179,7 @@ mod tests {
     /// the one pass both readings come off.
     #[test]
     fn a_proposal_is_read_for_every_register_item_it_names() {
-        let reading = read(&two_open_items());
+        let reading = read(&three_open_items());
         assert_eq!(
             reading.names_all("900 이 말한 얼굴을 895 에서 갚는다 — 900 도 참고"),
             vec![900, 895],
@@ -4191,7 +4202,7 @@ mod tests {
     /// the hole was that the FIRST-named rule is a convention rather than a predicate.
     #[test]
     fn a_proposal_naming_an_open_item_this_register_withholds_is_muddled() {
-        let reading = read(&two_open_items());
+        let reading = read(&three_open_items());
         let admitted = reading.admits(1, &[]);
         assert_eq!(
             admitted,
@@ -4226,6 +4237,16 @@ mod tests {
             "⚠⚠⚠ AND THE HONEST HALF: a proposal openly about the withheld item is caught here \
              too. It was already refused one line down for naming an inadmissible subject, so \
              nothing changes for it — but a reader must not be told this only fires on citations",
+        );
+
+        // ── AND THE ORDER, WHICH IS A FORMATTER'S STATED PRECONDITION ────────────────────────
+        assert_eq!(
+            reading.unadmitted_named("900 이 말한 얼굴을 895 와 894 에서 갚는다", &admitted),
+            vec![894, 895],
+            "⛔⛔ ASCENDING, whatever order they were mentioned in. `name_some` prints the LOW end \
+             of a long list and claims the rest are *all higher*, so naming order makes that tail \
+             a false sentence — and the first build of this really did print `(895 894)` while \
+             every assertion in the suite stayed green",
         );
     }
 

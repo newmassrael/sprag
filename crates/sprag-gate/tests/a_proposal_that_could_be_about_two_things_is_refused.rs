@@ -18,8 +18,9 @@
 //! The confusion only exists where the admissible set is NARROW, and this repository's register
 //! currently has `critical 0` — so `admits` hands back the whole population and there is nothing to
 //! be confused about. A gate pointed at the live ledger would be green today and green for the
-//! wrong reason. The fixture is two open items, one of them critical, which is the shape the
-//! enforcement is FOR.
+//! wrong reason. The fixture is three open items, one of them critical, which is the shape the
+//! enforcement is FOR — and the two withheld ones are written LOW-then-LOWER so the order a
+//! refusal prints them in is a claim this file can check.
 //!
 //! ⚠ The binary is still the real one, built from this tree by cargo. What is substituted is the
 //! document it judges, which is an argument it already takes.
@@ -28,8 +29,8 @@ use sprag_gate::sources::workspace_root;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// A register with two open items — one critical, one not — so that exactly one of them is
-/// admissible and a proposal can be genuinely ambiguous.
+/// A register with three open items — one critical, two not — so that exactly one of them is
+/// admissible, a proposal can be genuinely ambiguous, and a refusal has two items to order.
 const LEDGER: &str = "\
 # Ledger
 ## A. THE SHARPEST THINGS OPEN
@@ -44,6 +45,11 @@ const LEDGER: &str = "\
      @from: none
 
 895. **Open, and nobody called it critical**
+     @ns: open — ordinary work
+     @sev: ordinary — it waits
+     @from: none
+
+894. **Open too, and LOWER than the one above**
      @ns: open — ordinary work
      @sev: ordinary — it waits
      @from: none
@@ -146,6 +152,40 @@ fn a_proposal_that_could_be_about_two_things_is_refused() {
         muddled.contains("895"),
         "⚠⚠ AND IT NAMES WHAT CONFUSED IT: a refusal that does not say which item sends the \
          reader to re-read their own sentence with no idea what to change:\n{muddled}",
+    );
+
+    // ── ⑵ A PROPOSAL THAT NAMES NOTHING IS A REFUSAL, NOT A PASS ─────────────────────────────
+    let (none_ok, none) = asked(&ledger, holding, "무엇도 이름 대지 않는 제안");
+    assert!(
+        none_ok && none.starts_with("NO"),
+        "⛔⛔⛔ ITEM 842 ⑵: this proposal names no item of the register, and working rule 6 is \
+         that an unclassified thing is not a pass. It said:\n{none}",
+    );
+
+    // ── AND THE PRECISE REFUSAL IS NOT REPLACED BY THE VAGUER ONE ────────────────────────────
+    //
+    // ⚠ The ambiguity sentence above is right for a proposal that could be about two things. A
+    // proposal openly ABOUT the withheld item is not ambiguous at all, and its remedy differs —
+    // *wait for the critical set to empty*, which only the refusal naming that rule tells anyone.
+    let (withheld_ok, withheld) = asked(&ledger, holding, "항목 895 를 갚아라");
+    assert!(
+        withheld_ok && withheld.contains("not in the set to take next"),
+        "⚠⚠ a proposal openly about the withheld item must keep the refusal that names WHICH RULE \
+         held it back. It said:\n{withheld}",
+    );
+
+    // ── AND THE LIST A REFUSAL NAMES IS ASCENDING, BECAUSE THE FORMATTER'S TAIL CLAIMS IT ────
+    let (two_ok, two) = asked(
+        &ledger,
+        holding,
+        "900 이 말한 얼굴을 895 와 894 에서 갚는다",
+    );
+    assert!(
+        two_ok && two.contains("(894 895)"),
+        "⛔⛔ `name_some` prints the LOW end of a long list and says the rest are *all higher*, so \
+         this list has to be ascending. In naming order the first build of this printed \
+         `(895 894)` — a tail that would lie the moment the list outgrew one line, with every \
+         assertion still green. It said:\n{two}",
     );
 
     let _ = std::fs::remove_file(&ledger);
