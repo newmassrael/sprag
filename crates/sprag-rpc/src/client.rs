@@ -2894,6 +2894,22 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A ZERO BUDGET AND `Once` ARE THE SAME KNOCK, WHICH IS WHY THE NAME MATTERS** —
+    /// register item 976.
+    ///
+    /// # ⚠⚠⚠ What item 972's rename did not reach
+    ///
+    /// That round split the policy by NAME so no caller could inherit *keep knocking* by saying
+    /// nothing, and moved 218 sites to [`connect_until_it_answers`](HostConn::connect_until_it_answers).
+    /// **Five of them passed `Duration::ZERO`** — two in `sprag-client`'s product code — which is
+    /// *do not retry* spelled as a budget. So the rename left five sites whose name says the
+    /// opposite of what they ask for, and each one's own doc already said so: `WireHost::kill`'s
+    /// reads *"Retrying for five seconds serves none of them"*.
+    ///
+    /// ⇒ They are [`Dial::Once`] now. This gate holds the equivalence that makes that safe — the
+    /// two produce ONE knock each — so a reader who meets the old spelling can see it was a
+    /// rename and not a behaviour change.
+    ///
     /// ⚠⚠ **A ZERO BUDGET IS STILL ONE KNOCK** — the boundary the two arms share, said out loud.
     ///
     /// `UntilItAnswers(ZERO)` and `Once` agree here and they agree for different reasons: the first
@@ -2911,6 +2927,14 @@ mod tests {
             !Dial::UntilItAnswers(Duration::ZERO).knock_again(Duration::ZERO),
             "⚠⚠ and the decision that says so is `knock_again`, which is the one place the loop \
              asks — a spent budget is not a reason for another knock",
+        );
+        assert_eq!(
+            Dial::UntilItAnswers(Duration::ZERO).knocks_against_a_refusing_socket(),
+            Dial::Once.knocks_against_a_refusing_socket(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 976: the two spell one behaviour, so a call site asking for \
+             *no retry* with a zero budget is asking for `Dial::Once` under a name that says the \
+             opposite. Five sites did, two of them in product code. If these ever diverge, the \
+             rename that moved them was a behaviour change and its sites need re-reading.",
         );
     }
 

@@ -33,7 +33,7 @@ use serde_json::json;
 use sprag_client::{BootError, BootSpec, WireHost};
 use sprag_host::mux_action_path;
 use sprag_host::wire::WINDOWS_SLOT;
-use sprag_rpc::{HostConn, HostEndpoint};
+use sprag_rpc::{Dial, HostConn, HostEndpoint};
 
 /// How long the daemon gets to bind its socket before the test gives up on it.
 const BOOT_WAIT: Duration = Duration::from_secs(10);
@@ -157,7 +157,8 @@ fn session_exists(sock: &Path, name: &str) -> bool {
 fn await_daemon(sock: &Path) {
     let deadline = Instant::now() + BOOT_WAIT;
     while Instant::now() < deadline {
-        if HostConn::connect_until_it_answers(sock, Duration::ZERO).is_ok() {
+        // ⚠ The waiting is THIS loop's, so the dial must not do any of its own — item 976.
+        if HostConn::dial(sock, Dial::Once).is_ok() {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));

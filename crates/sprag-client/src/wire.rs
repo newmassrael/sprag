@@ -110,7 +110,7 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseInput};
 use sprag_rpc::{
-    CLIENT_ATTACH_METHOD, CLIENT_MESSAGES_METHOD, CLIENT_SIZE_METHOD, COLS_PARAM, HostConn,
+    CLIENT_ATTACH_METHOD, CLIENT_MESSAGES_METHOD, CLIENT_SIZE_METHOD, COLS_PARAM, Dial, HostConn,
     HostEndpoint, MESSAGE_FIELD, ROWS_PARAM, new_gui_client_id,
 };
 use sprag_terminal::{
@@ -1711,7 +1711,9 @@ impl BornSession<'_> {
     /// five seconds serves none of them, and it would spend those seconds with a failing client
     /// showing nothing.
     fn kill(&self) -> io::Result<()> {
-        let mut conn = HostConn::connect_until_it_answers(self.endpoint.path(), Duration::ZERO)?;
+        // ⚠ `Dial::Once` and not a zero budget — register item 976. The doc above says retrying
+        // serves none of the three outcomes; the dial now says the same thing in the call.
+        let mut conn = HostConn::dial(self.endpoint.path(), Dial::Once)?;
         conn.set_read_deadline(Some(REQUEST_DEADLINE))?;
         conn.call(
             "scene/invoke",
@@ -1998,7 +2000,9 @@ impl WireHost {
     /// retry. Both outcomes are logged WITH the endpoint's provenance, so even a successful boot
     /// records which daemon it chose and what pointed it there.
     fn reach_daemon(endpoint: &HostEndpoint) -> io::Result<HostConn> {
-        match HostConn::connect_until_it_answers(endpoint.path(), Duration::ZERO) {
+        // ⚠ *Join a running daemon* is a question about NOW — register item 976. Waiting here
+        // would delay the spawn that is the whole point of the `Err` arm below.
+        match HostConn::dial(endpoint.path(), Dial::Once) {
             Ok(conn) => {
                 tracing::info!(target: "sprag_gui::wire", %endpoint, "joined a running host");
                 Ok(conn)
