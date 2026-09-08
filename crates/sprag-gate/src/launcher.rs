@@ -8,6 +8,19 @@
 //! on 2026-08-25, and put *"no server running at `/run/user/1000/sprag-host.sock`"* on screen while
 //! a daemon served six windows on `/run/user/1000/sprag-loop.sock`. **Every word of it was true.**
 //!
+//! # ⛔⛔⛔⛔ And the same defect again, on the other noun — register item 963
+//!
+//! Six days later the icon stopped opening again, and the survey this gate had bought was **right
+//! and still not enough**: `refused — this daemon speaks wire protocol 45 and the client speaks
+//! 46`. Ordinary rounds bump the wire, so both builds under `target/` were 46; the daemon serving
+//! four windows had been started from the PROMOTED copy and still spoke 45. A build that fitted
+//! was on the machine, and the launcher's candidate population — `$REPO/target/*`, and nothing
+//! else — could not see it.
+//!
+//! ⇒ **825 was *which socket*; 963 is *which builds*.** The lesson each cost is one sentence: a
+//! launcher that hardcodes either half of its own question fails the day that half changes, and
+//! fails as a window that never appears.
+//!
 //! # ⚠⚠⚠⚠⚠ Why the claim lives HERE and not in a test beside the GUI
 //!
 //! This crate's charter is *the gates a test cannot be*, and the launcher is the shape that charter
@@ -42,8 +55,13 @@ use std::path::PathBuf;
 /// Where the tracked launcher lives, relative to the workspace root.
 ///
 /// ⚠ Beside the GUI it launches rather than in a `scripts/` directory of its own: the one job it
-/// has that the product cannot do for itself is choosing among **this tree's builds of
+/// has that the product cannot do for itself is choosing among **this machine's builds of
 /// `sprag-gui`**, so it belongs to that crate the way a `build.rs` does.
+///
+/// ⚠⚠ *This machine's* and no longer *this tree's* — register item 963 widened the population to
+/// the promoted copy, because the build that fits a daemon this tree has moved past is the one
+/// that was promoted to it. The sentence above said *tree* for six days while the script meant it,
+/// and the day it stopped being true is the day the dock stopped opening.
 pub const LAUNCHER: &str = "crates/sprag-gui/desktop/sprag-gui-launch";
 
 /// The launcher, as the running tree holds it.
@@ -115,7 +133,28 @@ mod tests {
             Self { root }
         }
 
-        /// Stage one build of the GUI and its sibling client under `target/<profile>/`.
+        /// Stage one of THIS TREE's builds, under `target/<profile>/`.
+        fn build(&self, profile: &str, tape: &[(&str, &str)]) -> PathBuf {
+            self.stage(self.root.join("target").join(profile), tape)
+        }
+
+        /// Stage the PROMOTED build — the copy this repository puts in front of the loop.
+        ///
+        /// ⚠⚠⚠ THE DIRECTORY IS READ FROM THE TOOL THAT OWNS IT (`promoted_dir`) rather than
+        /// retyped here. `promotion.rs` says why in its own words — *a second spelling is how a
+        /// fifth binary gets built, promoted and never asked* — and a fixture that spelled the
+        /// path itself would go on staging the old place after somebody moved it, staying green
+        /// over a launcher that had stopped finding anything.
+        fn promote(&self, tape: &[(&str, &str)]) -> PathBuf {
+            self.stage(self.home().join(promoted_dir()), tape)
+        }
+
+        /// The `$HOME` the launcher runs with, which is this fixture's and never the runner's.
+        fn home(&self) -> PathBuf {
+            self.root.join("home")
+        }
+
+        /// Put the doubles and a tape in one directory and hand it back.
         ///
         /// ⚠⚠ THE PROGRAMS ARE SYMLINKS to the tracked doubles, never copies and never written
         /// here — register item 467: a file this process wrote is a file `execve` can refuse with
@@ -123,8 +162,7 @@ mod tests {
         /// flake for months.
         ///
         /// `serving` and `survey` are the TAPE, and staging them is not writing a program.
-        fn build(&self, profile: &str, tape: &[(&str, &str)]) -> PathBuf {
-            let dir = self.root.join("target").join(profile);
+        fn stage(&self, dir: PathBuf, tape: &[(&str, &str)]) -> PathBuf {
             std::fs::create_dir_all(&dir).expect("a staged build directory");
             let doubles = Doubles::of(env!("CARGO_MANIFEST_DIR")).set("gui-launch");
             for program in ["sprag", "sprag-gui"] {
@@ -145,6 +183,13 @@ mod tests {
             let log = self.root.join("gui-launch.log");
             let status = Command::new(launcher_path())
                 .env("SPRAG_REPO", &self.root)
+                // ⛔⛔⛔⛔⛔ AND NEITHER MAY THE RUNNER'S HOME. Register item 963 made `$HOME` part
+                // of the launcher's build population — the promoted copy lives under it — so a
+                // fixture that left this alone would put THIS MACHINE's promoted `sprag-gui` into
+                // every case below, and the developer's own machine has one. Every case here
+                // would then be answering about a build the case never staged, and the two that
+                // claim *nothing fitted* would be green or red by whatever the loop last promoted.
+                .env("HOME", self.home())
                 .env("SPRAG_GUI_LAUNCH_LOG", &log)
                 // ⚠ NO `notify-send`: the notification is the product of the failing path, so it
                 // is captured as a file rather than fired at whatever daemon the runner happens to
@@ -207,6 +252,50 @@ mod tests {
 /run/user/1000/sprag-loop.sock  serving — a daemon answered and speaks this build's wire
 asked 4 socket(s) matching sprag*.sock under /run/user/1000
 ";
+
+    /// ⛔⛔⛔ **THE SURVEY OF 2026-09-08T05:50Z, VERBATIM** — register item 963's own measurement,
+    /// and the difference from [`DEAD`] is the whole point: a daemon IS there, it is serving four
+    /// windows, and this tree simply cannot speak to it any more.
+    const AHEAD: &str = "\
+/run/user/1000/sprag-gui.sock  silent — nothing is listening; the file is what a daemon left behind
+/run/user/1000/sprag-loop-gui.sock  silent — nothing is listening; the file is what a daemon left behind
+/run/user/1000/sprag-loop.sock  refused — something is listening and would not talk: client/hello: host rpc error: this daemon speaks wire protocol 45 and the client speaks 46; they cannot understand each other. Rebuild the client, or restart this daemon to the client's build — `sprag kill-server` (sessions are restored from the durability snapshot)
+asked 3 socket(s) matching sprag*.sock under /run/user/1000
+";
+
+    /// The file that owns the name of the directory a promotion writes into.
+    const PROMOTABLE: &str = "crates/sprag-host/src/bin/sprag-promotable.rs";
+
+    /// Where this repository promotes its images, READ from the tool that owns the name.
+    ///
+    /// ⚠ Read as TEXT rather than imported: this crate declares no dependencies, deliberately, so
+    /// that a gate cannot fail to build when the product does.
+    fn promoted_dir() -> String {
+        let path = crate::sources::workspace_root().join(PROMOTABLE);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|why| {
+            panic!(
+                "⛔ REGISTER ITEM 963: {} is the one authority on where a promotion puts its \
+                 images, and both this gate and the dock's launcher answer from it — {why}",
+                path.display(),
+            )
+        });
+        let line = text
+            .lines()
+            .find(|line| line.trim_start().starts_with("const PROMOTED:"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "⛔⛔ REGISTER ITEM 963: {PROMOTABLE} no longer declares `const PROMOTED`. \
+                     Wherever that name went, the launcher's population has to follow it — a dock \
+                     looking in a directory nothing promotes into is item 963 again"
+                )
+            });
+        line.split('"')
+            .nth(1)
+            .unwrap_or_else(|| {
+                panic!("⛔ `const PROMOTED` is no longer a plain string literal: {line:?}")
+            })
+            .to_string()
+    }
 
     /// The same machine with the daemon gone: three sockets and not one of them serving.
     const DEAD: &str = "\
@@ -315,6 +404,162 @@ asked 3 socket(s) matching sprag*.sock under /run/user/1000
             "⚠ the newest build is asked FIRST — the mtime pick is what keeps a rebuild current \
              with no edit anywhere. Asked: {:?}",
             run.asked,
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE BUILD THAT FITS MAY NOT BE ONE OF THIS TREE'S** — register item 963, and
+    /// the afternoon of 2026-09-08.
+    ///
+    /// # 📊 What was measured
+    ///
+    /// The owner pressed the icon and no window opened. `sprag daemons` from this tree answered
+    /// [`AHEAD`] — `refused — this daemon speaks wire protocol 45 and the client speaks 46` on the
+    /// only live socket — and **both** of `target/debug` and `target/release` were 46, because
+    /// ordinary rounds bump the wire. The daemon serving four windows had been started on
+    /// 2026-09-05 from `~/.local/share/sprag-loop/bin/sprag-term`, and the GUI promoted beside it
+    /// still spoke 45.
+    ///
+    /// **So a build that fitted was on the machine and the launcher could not see it**: its
+    /// population was `$REPO/target/*` and nothing else. That is item 825's defect one noun over —
+    /// the script had never asked which BUILDS were candidates, only which SOCKET — and it wears
+    /// the same face: a window that never appears, with a true sentence for the reason.
+    #[test]
+    fn a_daemon_this_tree_has_moved_past_is_opened_by_the_build_that_was_promoted_to_it() {
+        let fixture = Fixture::new("promoted");
+        // ⚠ OLDEST, which is what it is in life: a promotion is a copy of a build this tree has
+        // since replaced. The 50 ms is the same measured pause the skew case above explains.
+        let promoted = fixture.promote(&[
+            ("survey", LIVE),
+            ("serving", "/run/user/1000/sprag-loop.sock\n"),
+        ]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fixture.build("release", &[("survey", AHEAD)]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let newest = fixture.build("debug", &[("survey", AHEAD)]);
+
+        let run = fixture.launch(&[]);
+
+        assert!(
+            run.ok,
+            "⛔ ITEM 963: a daemon is serving and a build on this machine can talk to it, so a \
+             window must open. Shown instead: {:?}",
+            run.shown,
+        );
+        assert_eq!(
+            run.endpoint().get("SPRAG_GUI_HOST_SOCK").copied(),
+            Some("/run/user/1000/sprag-loop.sock"),
+            "and at the socket the fitting build's own survey named — {:?}",
+            run.gui,
+        );
+        assert!(
+            run.gui
+                .contains(&format!("ran {}", promoted.join("sprag-gui").display())),
+            "⛔⛔ THE PROMOTED BUILD IS THE ONE THAT RUNS, because it is the only one whose wire \
+             the daemon speaks. A launcher that reached this line having run something else is \
+             back at `client/hello` with a panic and no window — {:?}",
+            run.gui,
+        );
+        assert!(
+            run.asked.starts_with(&format!("{}", newest.display())),
+            "⚠⚠ AND THIS TREE IS ASKED FIRST. The promoted copy is a FALLBACK: it is reached by \
+             mtime order, so a rebuild that can talk still wins with no edit anywhere. Asked: {:?}",
+            run.asked,
+        );
+        assert!(
+            run.shown.contains(&format!("{}", promoted.display())),
+            "⚠⚠⚠ AND THE PERSON IS TOLD WHICH BUILD THEY GOT. A window opened in silence from a \
+             build this tree has moved past teaches nothing: the skew that produced the click \
+             survives the click, and tomorrow's press is the same puzzlement. The multi-daemon \
+             case below sets the precedent — open it, and NAME the choice. Shown: {:?}",
+            run.shown,
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **AND THE PROMOTED COPY IS A FALLBACK, NEVER A PREFERENCE** — the control on the case
+    /// above, which a widening that merely appended a path could pass while being wrong.
+    ///
+    /// Both fit here. The tree's build is newer, so it must be the one that runs — otherwise a
+    /// promotion would freeze the dock at whatever was promoted, and every fix this repository
+    /// makes would stop reaching the person who clicks. That is the launcher's ORIGINAL purpose,
+    /// which item 963's widening must not have spent.
+    ///
+    /// ⚠ And nothing may be SHOWN. A note on an ordinary click is noise that teaches its reader to
+    /// dismiss the one that matters, which is the note the case above requires.
+    ///
+    /// ⚠⚠ **THIS CASE WAS GREEN BEFORE THE FIX AND THAT IS NOT A FAULT — it is what a control is.**
+    /// Measured: with the population still `$REPO/target/*`, the promoted copy was not a candidate
+    /// at all, so of course the tree's build won. It proves nothing about item 963's defect and
+    /// everything about the repair not overshooting into *always use the promoted one*, which is
+    /// the failure a widening reaches for next.
+    #[test]
+    fn a_build_of_this_tree_that_fits_is_preferred_to_the_promoted_copy() {
+        let fixture = Fixture::new("prefers-tree");
+        let promoted = fixture.promote(&[
+            ("survey", LIVE),
+            ("serving", "/run/user/1000/sprag-loop.sock\n"),
+        ]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mine = fixture.build(
+            "debug",
+            &[
+                ("survey", LIVE),
+                ("serving", "/run/user/1000/sprag-loop.sock\n"),
+            ],
+        );
+
+        let run = fixture.launch(&[]);
+
+        assert!(run.ok, "both builds fit, so a window must open");
+        assert!(
+            run.gui
+                .contains(&format!("ran {}", mine.join("sprag-gui").display())),
+            "⛔ THIS TREE'S BUILD MUST WIN WHEN IT CAN TALK — {:?}",
+            run.gui,
+        );
+        assert!(
+            !run.gui
+                .contains(&format!("ran {}", promoted.join("sprag-gui").display())),
+            "⛔⛔ and the promoted copy must not have run: a dock frozen at the last promotion is \
+             a repository whose fixes never reach the person clicking it",
+        );
+        assert!(
+            run.shown.is_empty(),
+            "⚠⚠ NOTHING IS SHOWN ON AN ORDINARY CLICK. The note item 963 adds is for the case \
+             where the window is NOT this tree's build; firing it every time would train its \
+             reader to dismiss it. Shown: {:?}",
+            run.shown,
+        );
+    }
+
+    /// ⚠⚠⚠ **THE LAUNCHER AND THE TOOL THAT PROMOTES NAME ONE DIRECTORY** — register item 963,
+    /// holding the rule `promotion.rs` states about its own list.
+    ///
+    /// > *a second spelling is how a fifth binary gets built, promoted and never asked*
+    ///
+    /// A shell script cannot import a Rust `const`, so the two can only be held together from
+    /// outside — which is this crate's charter. Without this, moving `PROMOTED` would leave the
+    /// dock looking in the old place with nothing anywhere going red, and the failure that
+    /// produces is the silent one item 963 is about: no window, and no message either.
+    ///
+    /// ⚠ The COMMENTS are skipped, and that is load-bearing in the same way the bash-3 scan's
+    /// skip is: the launcher's own paragraph names this directory while explaining it, so a scan
+    /// that counted prose would pass a script that had stopped looking there.
+    #[test]
+    fn the_launcher_looks_where_this_repository_actually_promotes() {
+        let promoted = promoted_dir();
+        let text = std::fs::read_to_string(launcher_path()).expect("read the tracked launcher");
+        let named = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .any(|line| line.contains(&promoted));
+
+        assert!(
+            named,
+            "⛔⛔⛔ REGISTER ITEM 963: {PROMOTABLE} promotes this repository's images into \
+             {promoted:?}, and the launcher's CODE must look there — a build the loop is actually \
+             running is the one that fits a daemon this tree has moved past, and on 2026-09-08 it \
+             was the only one on the machine that did. Prose does not count: a path that appears \
+             only in a comment is a path nothing opens.",
         );
     }
 

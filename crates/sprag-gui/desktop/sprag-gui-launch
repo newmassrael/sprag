@@ -72,14 +72,52 @@ tell() {
 # with the user's PATH, so that would turn the CI green while every real Mac stayed broken. Item
 # 454's rule: the answer to *this host cannot run it* is to make the file able, never to move the
 # goalposts.
+#
+# ⛔⛔⛔⛔⛔ AND THE POPULATION IS NOT THIS TREE'S BUILDS ALONE — register item 963, measured
+# 2026-09-08: the owner pressed the icon, no window opened, and the survey said *refused — this
+# daemon speaks wire protocol 45 and the client speaks 46*. BOTH builds under `target/` were 46,
+# because ordinary rounds bump the wire; the daemon serving four windows had been started on
+# 2026-09-05 from `~/.local/share/sprag-loop/bin/sprag-term` and still spoke 45. **A build that
+# fitted was on the machine and this line could not see it.** Item 825's defect one noun over: the
+# script had never asked which BUILDS were candidates, only which SOCKET.
+#
+# ⚠⚠ AND NOT A HARDCODED SECOND PATH, which the header rejects for sockets and which would be the
+# same defect here. `.local/share/sprag-loop/bin` is where THIS REPOSITORY promotes its own images
+# — `crates/sprag-host/src/bin/sprag-promotable.rs` owns that name and `sprag_host::promotion`
+# owns the four it moves — so it is a product-owned location the way `/run/user/1000` is, not a
+# path invented in this file. `sprag-gate::launcher` holds the two spellings to naming one
+# directory, because a shell script cannot import a Rust `const`.
+#
+# ⚠ THE ORDER IS STILL MTIME, AND THAT IS WHAT KEEPS THIS TREE WINNING. A promoted copy is older
+# than the build that superseded it, so `ls -t` asks `target/` FIRST and reaches the promoted one
+# only when nothing there can talk — the fallback appears exactly when it is the only answer, and
+# a rebuild is still picked up with no edit anywhere.
+PROMOTED=${HOME:-}/.local/share/sprag-loop/bin
 GUIS=()
-while IFS= read -r one; do GUIS+=("$one"); done < <(ls -t "$REPO"/target/*/sprag-gui 2>/dev/null)
+while IFS= read -r one; do GUIS+=("$one"); done < <(ls -t "$REPO"/target/*/sprag-gui "$PROMOTED/sprag-gui" 2>/dev/null)
 if [[ ${#GUIS[@]} -eq 0 ]]; then
-    say "no sprag-gui built under $REPO/target"
+    say "no sprag-gui under $REPO/target, none promoted to $PROMOTED"
     tell "sprag" "No sprag-gui is built.
 Run: cargo build -p sprag-gui"
     exit 1
 fi
+
+# ⚠⚠⚠ A BUILD THAT IS NOT THIS TREE'S OPENS A WINDOW *AND SAYS SO*. Silence here would be item 963
+# one turn later: the person gets their window, the window is a build this tree has moved past, and
+# nothing on screen says so — the skew that produced the click survives the click and is met again
+# tomorrow with the same puzzlement. The multi-daemon branch below is the precedent this follows:
+# open it, and NAME the choice. ⚠ Only on the branch that took the fallback — a note fired on every
+# ordinary click is what teaches its reader to dismiss the one that matters.
+note_if_outside_tree() {
+    case "$1" in
+        "$REPO"/target/*) return 0 ;;
+    esac
+    tell "sprag opened a build this tree has moved past" "$1
+
+No build under $REPO/target could speak to that daemon, so the promoted copy was used.
+The window is as old as the daemon. To put this tree's build in it, restart the daemon to it:
+  sprag kill-server"
+}
 
 # ⚠⚠ AN ENDPOINT SOMEBODY NAMED IS NOT THIS SCRIPT'S TO REPLACE. When the environment already says
 # which daemon this session belongs to — a launch from inside a pane, an operator's override — the
@@ -104,6 +142,7 @@ for gui in "${GUIS[@]}"; do
         # connect instead of a panic.
         if out=$(SPRAG_HOST_RPC_SOCK="$NAMED" "$client" ls 2>&1); then
             say "launching $gui on $NAMED (named by the environment)"
+            note_if_outside_tree "$gui"
             exec "$gui" "$@"
         fi
         [[ -z $refusal ]] && refusal="$out"
@@ -128,6 +167,7 @@ Others are running. To open one of them:
 $serving"
         fi
         say "launching $gui on $sock"
+        note_if_outside_tree "$gui"
         exec env SPRAG_GUI_HOST_SOCK="$sock" "$gui" "$@"
     fi
 
