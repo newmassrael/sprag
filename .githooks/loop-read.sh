@@ -1356,6 +1356,16 @@ STRANDEDONLY
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    # ⛔⛔⛔ THE CALLER'S GIT ENVIRONMENT IS CUT ON THE COMMAND PATH — register item
+    # 965. This selftest is the one that did NOT contaminate under an inherited
+    # index (measured 2026-09-08: 2 entries in, 2 entries out, 41/41), and it is
+    # cut anyway: it is one `git add` away from the other three, and a guard that
+    # only covers the harnesses that already failed is a guard that arrives after
+    # each one.
+    #
+    # ⚠ EVERY arm. `--baseline` and `--seen` write a marker under the git dir
+    # they are standing in, which must be the repository the person is in.
+    scratch_guard_cut_ambient
     case "${1:-}" in
         --selftest)  loop_read_selftest ;;
         --baseline)  loop_read_baseline ;;

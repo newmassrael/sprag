@@ -63,11 +63,111 @@ scratch_guard_refusal() {
     fi
 }
 
+# ⛔⛔⛔⛔⛔ THE THIRD ROAD INTO THE CALLER'S REPOSITORY, AND THE ONE `git -C`
+# CANNOT CLOSE -- register item 965.
+#
+# Every refusal above compares DIRECTORIES, because the two failures it was
+# written for arrived as a directory: an empty `-C`, and a scratch that was the
+# caller. An AMBIENT git environment arrives as neither. `git commit --
+# <pathspec>` hands its hooks an ABSOLUTE `GIT_INDEX_FILE` -- the temporary
+# index it is about to commit -- and that variable outranks `-C`, `cd` and the
+# repository discovery all three: `git -C <scratch> add a` finds the file in the
+# scratch and writes the entry into the CALLER'S index.
+#
+# ⚠⚠ MEASURED 2026-09-08, in a throwaway repository, so the numbers are this
+# machine's rather than the register's: a scratch holding ONE file answered
+# `git -C <scratch> ls-files --cached --others` with **343** paths under an
+# ambient index and **1** without it, and driving the three selftests that build
+# a repository took the caller's index from **2** entries to **4**, **5** and
+# **7**. The caller's index is then what git commits, so where the scratch's
+# blobs happened to exist already the commit SUCCEEDED and published the
+# scratch's content -- four such commits reached `main` -- and where they did not
+# it failed with `invalid object ... for 'src/main.rs'`.
+#
+# ⚠⚠⚠ AND THE PREMISE THAT LOOKED LIKE SAFETY. An ordinary `git commit` sets the
+# variable TOO; it is simply RELATIVE (`.git/index`), so it re-resolves inside
+# whatever directory git was given and lands on the scratch's own index by
+# accident. Nothing about the ordinary path is defended -- it is one absolute
+# value away from this, which is why the cut below is unconditional.
+
+# THE GIT ENVIRONMENT THIS PROCESS WOULD HAND A CHILD -- every exported `GIT_`
+# name, one per line, or nothing.
+#
+# ⛔⛔⛔ THE WHOLE NAMESPACE, NOT A LIST OF THE DANGEROUS ONES. A list of names to
+# refuse passes every variable nobody has thought of yet, and the one that cost
+# this repository four commits on `main` was already unlisted by the guard that
+# exists for exactly this failure. A harness that builds its own repository
+# needs NO inherited git environment: `git` finds its exec path, its config, its
+# object store and its index from the directory it is handed. So the population
+# is the namespace, and there is no exemption list to keep current.
+#
+# ⚠ EXPORTED, because that is what a child process can read. A `local GIT_DIR`
+# in some function reaches no `git` at all, and refusing it would be this guard
+# reporting on itself.
+scratch_guard_ambient_names() {
+    local name
+    for name in $(compgen -e 2>/dev/null); do
+        case "$name" in
+            GIT_*) printf '%s\n' "$name" ;;
+        esac
+    done
+}
+
+# WHY A HARNESS MUST NOT RUN WITH THE GIT ENVIRONMENT IT INHERITED, or empty
+# where it carries none.
+#
+# `$1` is that environment as NAMES, whitespace-separated -- a string rather
+# than the live environment, so every case can be handed to it. The values are
+# deliberately not read: a value that is safe today (`.git/index`, relative) is
+# the same variable that was absolute yesterday, and a guard that judged the
+# value would have to be right about git's resolution rules forever.
+#
+# ⚠⚠ WHAT IT CLAIMS IS *NOT CUT*, NOT *REACHES THE SCRATCH*, and the difference
+# was measured rather than reasoned: the first draft said the environment
+# "reaches past -C into the scratch" and the mutation run printed that sentence
+# about `GIT_EDITOR`, which this session exports and which can reach nothing.
+# The claim has to be true of every member of the population it is written over,
+# and the population is the namespace -- so the fact is that the cut did not
+# happen, which is true of `GIT_EDITOR` and of `GIT_INDEX_FILE` alike.
+scratch_guard_ambient_refusal() {
+    local carried
+    carried="$(printf '%s' "${1:-}" | tr '\n' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')"
+    if [ -n "$carried" ]; then
+        printf 'the git environment this run inherited was not cut -- %s %s\n' \
+               "$carried still set, and a scratch harness needs none of it:" \
+               "cut it rather than moving the scratch"
+    fi
+}
+
+# CUT that environment out of THIS shell, so nothing it starts inherits it.
+#
+# ⚠⚠ `unset` HERE rather than an `env -u` prefix at each call site. A harness
+# runs git from subshells, from `cd`-ed blocks and from functions it does not
+# own; one that had to remember a prefix everywhere would be one forgotten
+# prefix away from the defect coming back. Its callers run it in the dispatch of
+# a directly-executed file, never on the sourced path, so a HOOK -- which needs
+# the very index this removes -- keeps its own environment untouched.
+scratch_guard_cut_ambient() {
+    local name
+    for name in $(scratch_guard_ambient_names); do
+        unset "$name"
+    done
+}
+
 # The same decision asked about a LIVE directory: prints why `$1` must not be
 # used as a scratch repository, or nothing.
+#
+# ⚠ THE AMBIENT ENVIRONMENT IS ASKED FIRST, and not because it is likelier --
+# because its remedy is the only one that is not *use a different directory*.
+# A caller told to move its scratch would move it and be contaminated there too.
 scratch_guard_check() {
-    local dir scratch_git scratch_dir caller_git
+    local dir scratch_git scratch_dir caller_git ambient
     dir="${1:-}"
+    ambient="$(scratch_guard_ambient_refusal "$(scratch_guard_ambient_names)")"
+    if [ -n "$ambient" ]; then
+        printf '%s\n' "$ambient"
+        return 0
+    fi
     caller_git="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
     scratch_git="$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null || true)"
     scratch_dir="$(cd "$dir" 2>/dev/null && pwd -P || true)"
@@ -216,6 +316,76 @@ scratch_guard_selftest() {
             fail=$((fail + 1)) ;;
     esac
 
+    # ⛔⛔⛔⛔⛔ THE AMBIENT-ENVIRONMENT ARMS — register item 965, and they are
+    # driven as a PURE function for the reason this whole file exists: the
+    # dispatch below cuts that environment before any harness in this tree can
+    # meet it, so no real run here can produce the case. Handed the case, the
+    # decision is measured; asserted around a process that cannot misbehave, it
+    # would be the dead control item 792 left behind.
+    said="$(scratch_guard_ambient_refusal '')"
+    if [ -z "$said" ]; then
+        echo "  ok    a process carrying no git environment is not a finding"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  an empty git environment was refused: $said"
+        fail=$((fail + 1))
+    fi
+    # ⛔ The variable that cost four commits on `main`, by name in the refusal --
+    # a sentence that named no variable would send the reader looking for a
+    # directory, which is the one thing that is not wrong here.
+    said="$(scratch_guard_ambient_refusal 'GIT_INDEX_FILE')"
+    case "$said" in
+        *GIT_INDEX_FILE*cut\ it*)
+            echo "  ok    an inherited index is refused, and the remedy is to cut it"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  an inherited index said: '$said'"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⚠ EVERY name is carried into the sentence, not just the first: a harness
+    # told about one of three would cut one of three and meet the next round.
+    said="$(scratch_guard_ambient_refusal 'GIT_DIR
+GIT_INDEX_FILE GIT_WORK_TREE')"
+    case "$said" in
+        *GIT_DIR*GIT_INDEX_FILE*GIT_WORK_TREE*)
+            echo "  ok    three inherited variables are all named"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  three inherited variables said: '$said'"
+            fail=$((fail + 1)) ;;
+    esac
+    # ⛔⛔ AND THE LIVE PAIR, which is what makes the cut a measurement rather
+    # than a claim: a subshell that exports the variable is seen, and the same
+    # subshell after `scratch_guard_cut_ambient` is not.
+    said="$( export GIT_INDEX_FILE=/nowhere/index
+             scratch_guard_ambient_names | tr '\n' ' ' )"
+    case "$said" in
+        *GIT_INDEX_FILE*)
+            echo "  ok    an exported git variable is seen by the live reading"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  an exported git variable was invisible: '$said'"
+            fail=$((fail + 1)) ;;
+    esac
+    said="$( export GIT_INDEX_FILE=/nowhere/index GIT_DIR=/nowhere/.git
+             scratch_guard_cut_ambient
+             scratch_guard_ambient_names | tr '\n' ' ' )"
+    if [ -z "${said// /}" ]; then
+        echo "  ok    the cut leaves nothing for a child process to inherit"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  the cut left '$said' behind"
+        fail=$((fail + 1))
+    fi
+    # ⚠ A variable that is SET but not exported reaches no `git`, so it is not a
+    # finding -- otherwise this guard would report on its own local variables.
+    said="$( GIT_INDEX_FILE=/nowhere/index
+             scratch_guard_ambient_names | tr '\n' ' ' )"
+    if [ -z "${said// /}" ]; then
+        echo "  ok    an unexported git variable is not a finding"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  an unexported git variable was refused: '$said'"
+        fail=$((fail + 1))
+    fi
+
     # ⛔⛔⛔⛔⛔ THE MARKER-HOME AND WRITE ARMS — register item 804. A write whose
     # status nobody reads is the defect, so these drive the status.
     said="$(scratch_guard_marker_home)"
@@ -275,6 +445,13 @@ scratch_guard_selftest() {
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    # ⛔⛔⛔⛔⛔ THE CUT IS HERE AND NOT IN THE FUNCTION — register item 965. This
+    # branch is the ONE place a file in this directory is a command rather than a
+    # library, so it is the one place where removing the caller's git environment
+    # is certainly right. Inside the selftest function it would also run when
+    # `pre-commit` sources this file, and a hook stripped of `GIT_INDEX_FILE` is a
+    # hook that judges the wrong index — the defect, reflected.
+    scratch_guard_cut_ambient
     case "${1:-}" in
         --selftest) scratch_guard_selftest ;;
         --check)    shift; scratch_guard_check "${1:-}" ;;

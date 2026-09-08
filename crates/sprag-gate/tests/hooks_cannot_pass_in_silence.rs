@@ -26,7 +26,6 @@
 //! for the same reason: this crate takes no dependencies by charter, so there is no parser here.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 /// The tree this gate is part of — through the one door, register item 809.
 ///
@@ -241,9 +240,12 @@ fn no_hook_uses_a_scratch_it_never_checked_it_got() {
 /// What a fresh clone would get, as git records it — not what this developer's filesystem happens
 /// to say. The two can differ, and it is the recorded bit that decides on everybody else's machine.
 fn recorded_modes() -> Vec<(String, String)> {
-    let listing = Command::new("git")
+    // ⚠ THROUGH `ambient::git_in`, register item 965 — and here it is a correction as well as a
+    // safety. `pre-commit` runs this suite, and under a partial commit the inherited
+    // `GIT_INDEX_FILE` names a TEMPORARY index holding HEAD plus the pathspec, so a mode staged
+    // for a path outside that pathspec would go unread. The repository's own index is the subject.
+    let listing = sprag_gate::ambient::git_in(&repo_root())
         .args(["ls-files", "-s", ".githooks/"])
-        .current_dir(repo_root())
         .output()
         .expect("git on PATH — the recorded mode is the subject and only git knows it");
     assert!(

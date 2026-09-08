@@ -473,10 +473,24 @@ tree_drift_selftest() {
     # does NOT discriminate an explicit `trap ... TERM` — removing three such traps left it
     # green, which is what showed them to be dead code. What it pins is the EXIT trap and
     # the cleanup: delete either and this arm goes red while the still-tree arms stay green.
-    local before_dirs after_dirs sig_out sig_pid
-    before_dirs="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'sprag-tree-drift.*' -type d 2>/dev/null | wc -l | tr -d ' ')"
+    # ⛔⛔⛔ THE COUNT IS OF THIS ARM'S OWN TMPDIR, NOT THE MACHINE'S — register item 965,
+    # which added a SECOND driver of this selftest to `sprag-gate` and made the difference
+    # visible within the hour. `${TMPDIR:-/tmp}` is shared: two `tree-drift.sh --selftest`
+    # processes running at once each see the other's transient scratch, and this arm read
+    # `0 -> 1` and called the cleanup broken when nothing was.
+    #
+    # ⚠⚠ NARROWER IS STRONGER HERE, not weaker. The claim is *this hook cleaned up after
+    # itself*, and a count over the whole machine could be green because somebody else's
+    # directory happened to balance the books, or red because it did not. With a private
+    # TMPDIR the population IS the subject: delete the EXIT trap or the cleanup and the
+    # count still goes 0 -> 1, which is the mutation this arm was built to catch.
+    local before_dirs after_dirs sig_out sig_pid sig_tmp
+    sig_tmp="$tmp/interrupted"
+    mkdir -p "$sig_tmp"
+    before_dirs="$(find "$sig_tmp" -maxdepth 1 -name 'sprag-tree-drift.*' -type d 2>/dev/null | wc -l | tr -d ' ')"
     sig_out="$tmp/signalled"
     (
+        export TMPDIR="$sig_tmp"
         tree_drift_begin "interrupted" "$repo"
         printf 'ready\n' >"$tmp/ready"
         sleep 30
@@ -489,7 +503,7 @@ tree_drift_selftest() {
     done
     kill -TERM "$sig_pid" 2>/dev/null
     wait "$sig_pid" 2>/dev/null
-    after_dirs="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'sprag-tree-drift.*' -type d 2>/dev/null | wc -l | tr -d ' ')"
+    after_dirs="$(find "$sig_tmp" -maxdepth 1 -name 'sprag-tree-drift.*' -type d 2>/dev/null | wc -l | tr -d ' ')"
     if command grep -q 'held still' "$sig_out" && [ "$after_dirs" -eq "$before_dirs" ]; then
         echo "  ok    an interrupted hook still reports, and leaves no scratch behind"
         pass=$((pass + 1))
@@ -526,6 +540,14 @@ tree_drift_selftest() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     # shellcheck source-path=SCRIPTDIR
     . "$(dirname "${BASH_SOURCE[0]}")/scratch-guard.sh"
+    # ⛔⛔⛔⛔⛔ AND THE CALLER'S GIT ENVIRONMENT IS CUT BEFORE ANY ARM RUNS —
+    # register item 965. `git commit -- <pathspec>` hands its hooks an ABSOLUTE
+    # `GIT_INDEX_FILE`, and that outranks the `cd "$repo"` every arm below relies
+    # on: the fixture's `git add .gitignore src` wrote into the CALLER'S index,
+    # which git then committed. Measured 2026-09-08: this selftest alone took a
+    # throwaway repository's index from 2 entries to 4, and the one-line
+    # `.gitignore` it stages here is the file that reached `main`.
+    scratch_guard_cut_ambient
     case "${1:-}" in
         --selftest) tree_drift_selftest; exit $? ;;
         *) echo "tree-drift.sh is a LIBRARY, not a command: it is sourced by pre-commit and pre-push." >&2

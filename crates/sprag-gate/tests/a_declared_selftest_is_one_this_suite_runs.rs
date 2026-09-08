@@ -620,3 +620,130 @@ fn the_script_filter_tells_a_hook_from_a_document() {
          would make the boundary gate red on prose",
     );
 }
+
+/// A throwaway repository under `at`, and the path of the index it now has.
+///
+/// ⛔ A file of arbitrary bytes would not serve. The arms below hand this index to `git`, which
+/// refuses a header it does not recognise — and a refusal would arrive looking exactly like the
+/// safety this gate exists to assert.
+fn index_of_a_scratch_repository(at: &Path) -> PathBuf {
+    std::fs::create_dir_all(at).expect("the inherited repository must be creatable");
+    let git = |args: &[&str]| {
+        // ⛔ THROUGH `ambient::git_in` — this helper builds the very subject the gate measures, so
+        // one built with a plain `Command::new("git")` would write the caller's index while asking
+        // whether anything writes the caller's index (register item 965).
+        let done = sprag_gate::ambient::git_in(at)
+            .args(args)
+            .output()
+            .unwrap_or_else(|why| panic!("git {args:?} must be runnable: {why}"));
+        assert!(
+            done.status.success(),
+            "git {args:?} must succeed to build the subject: {}",
+            String::from_utf8_lossy(&done.stderr),
+        );
+    };
+    git(&["init", "-q", "-b", "main", "."]);
+    std::fs::write(at.join("one"), "1\n").expect("a file in the inherited repository");
+    std::fs::write(at.join("two"), "2\n").expect("a second file in the inherited repository");
+    git(&["add", "one", "two"]);
+    at.join(".git").join("index")
+}
+
+/// ⛔⛔⛔⛔⛔ **NO DECLARED SELFTEST WRITES THE INDEX IT INHERITED** — register item 965, and the
+/// only shape in this file whose verdict is not *did it pass*.
+///
+/// # What it is about
+///
+/// `git commit -- <pathspec>` is a PARTIAL commit, and git hands its hooks the temporary index it
+/// is about to commit through an **absolute** `GIT_INDEX_FILE`. That variable outranks `git -C`,
+/// `cd` and repository discovery all three: a harness standing in its own scratch, doing
+/// `git add a`, writes the entry into the CALLER'S index — and git then commits it. Measured
+/// 2026-09-08 in a throwaway repository: three of the five declared selftests took its index from
+/// **2** entries to **4**, **5** and **7**, and a partial commit made over that index failed with
+/// `invalid object … for 'src/main.rs'` where the scratch's blobs were absent and SUCCEEDED where
+/// they happened to exist — which is how four selftest commits reached `main`.
+///
+/// # ⚠⚠ Why passing is not the question
+///
+/// All three of those runs were RED already. A gate reading the status alone was therefore green
+/// on the very failure, twice over: red is what the contamination produced, not what it was
+/// prevented by. So the verdict here is the **bytes of the inherited index**, before and after.
+///
+/// # ⚠⚠⚠ And the control, because an environment that does nothing is green for free
+///
+/// The first arm proves the inherited index is genuinely reachable on this machine: a plain
+/// `git add` run in a DIFFERENT repository under the same variable must change it. Without that,
+/// a git that ignored the variable — or a typo in the path — would make every arm below pass
+/// while measuring nothing at all.
+#[test]
+fn no_declared_selftest_writes_the_index_it_inherited() {
+    let scratch = scratch_under(&format!("inherited-index-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let index = index_of_a_scratch_repository(&scratch.join("caller"));
+    let pristine = std::fs::read(&index).expect("the inherited index must be readable");
+    let probe = scratch.join("inherited.index");
+
+    std::fs::write(&probe, &pristine).expect("the probe index must be writable");
+    let elsewhere = scratch.join("elsewhere");
+    let _ = index_of_a_scratch_repository(&elsewhere);
+    let control = sprag_gate::ambient::git_in(&elsewhere)
+        .args(["add", "one"])
+        .env("GIT_INDEX_FILE", &probe)
+        .output()
+        .expect("the control must be runnable");
+    let reached =
+        std::fs::read(&probe).expect("the probe index must still be readable") != pristine;
+
+    let declared = declared_selftests();
+    let mut refused: Vec<String> = Vec::new();
+    for (name, path) in &declared {
+        std::fs::write(&probe, &pristine).expect("the probe index must be re-writable");
+        let run = Command::new("bash")
+            .arg(path)
+            .arg("--selftest")
+            .current_dir(repo_root())
+            .env("GIT_INDEX_FILE", &probe)
+            .output()
+            .unwrap_or_else(|why| panic!("{name} --selftest must be runnable: {why}"));
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr),
+        );
+        let under = format!("{name} [under an inherited index]");
+        if let Some(why) = refusal_for(&under, run.status.code(), run.status.success(), &said) {
+            refused.push(why);
+        }
+        let after = std::fs::read(&probe).expect("the probe index must survive the run");
+        if after != pristine {
+            refused.push(format!(
+                "{name}: WROTE the index it inherited — {} bytes became {}. Its git calls are \
+                 reaching past the scratch they were given, and on a real `git commit -- \
+                 <pathspec>` those entries are what git commits",
+                pristine.len(),
+                after.len(),
+            ));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        reached,
+        "⛔ THE CONTROL FAILED: a plain `git add` in another repository did not change the index \
+         named by GIT_INDEX_FILE, so this gate measured NOTHING and every arm below is green for \
+         free. git said: {}",
+        String::from_utf8_lossy(&control.stderr),
+    );
+    assert!(
+        !declared.is_empty(),
+        "⛔ no `.githooks/` script declares a `--selftest`, so this gate has an empty population \
+         and passes by reading nothing",
+    );
+    assert!(
+        refused.is_empty(),
+        "⛔ ITEM 965: a `.githooks/` selftest works in the caller's repository rather than its \
+         own. A harness that builds a repository must cut the inherited git environment — \
+         `scratch_guard_cut_ambient`, in the dispatch that makes the file a command — because \
+         `git -C` cannot override it:\n{}",
+        refused.join("\n"),
+    );
+}

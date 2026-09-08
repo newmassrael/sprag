@@ -278,9 +278,19 @@ impl Sandbox {
     }
 
     fn git(&self, args: &[&str]) -> String {
-        let run = Command::new("git")
+        // ⛔⛔⛔⛔⛔ THE INHERITED GIT ENVIRONMENT IS CUT FIRST — register item 965, and this
+        // helper was one variable short of the reasoning already written below it. `pre-commit`
+        // runs this suite, and `git commit -- <pathspec>` exports an ABSOLUTE `GIT_INDEX_FILE`
+        // naming the index it is about to commit; that outranks `current_dir`, so every `add` in
+        // every sandbox here wrote into the caller's index. Measured 2026-09-08: twenty-one
+        // sandboxes running in parallel collided on the caller's `index.lock` and git said
+        // "another git process seems to be running" — the sandboxes were fighting over the
+        // OPERATOR's repository.
+        //
+        // ⚠ The two `env` calls below still stand and still say what they are for. They are set
+        // AFTER the cut, so they survive it.
+        let run = sprag_gate::ambient::git_in(&self.dir)
             .args(args)
-            .current_dir(&self.dir)
             // The developer's own git configuration must not reach in: it is not part of the
             // subject, and `core.hooksPath` in particular would change what these runs mean.
             .env("HOME", &self.dir)
@@ -303,6 +313,14 @@ impl Sandbox {
     /// Run a hook the way git runs it: from the work tree, with the refs (if any) on stdin.
     fn run(&self, hook: &str, refs_on_stdin: Option<&str>, report: Option<&str>) -> Output {
         let mut command = Command::new(self.dir.join(".githooks").join(hook));
+        // ⛔⛔⛔⛔⛔ THE HOOK UNDER TEST IS A CHILD TOO — register item 965, and this is the half a
+        // fix to `Self::git` alone would have missed. A hook's whole subject is *what is being
+        // committed*, and it reads that from `GIT_INDEX_FILE`. Run from a real `git commit --
+        // <pathspec>`, this suite inherits the OUTER repository's index, so every hook here judged
+        // sprag's staged bytes while standing in the sandbox: measured 2026-09-08, nine cases
+        // failed with `unable to read sha1 file of .githooks/pre-commit` — the sandbox had the
+        // paths and not the blobs. The verdicts were about the wrong repository.
+        sprag_gate::ambient::cut(&mut command, &sprag_gate::ambient::inherited_git_names());
         command
             .current_dir(&self.dir)
             .env("HOME", &self.dir)

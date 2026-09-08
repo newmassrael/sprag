@@ -165,6 +165,16 @@ pub mod launcher;
 /// crate cargo compiles for that classifier is its own.
 pub mod classifier;
 
+/// The git environment a suite must not hand a child — register item 965.
+///
+/// Here for [`doubles`]'s reason, and the register measured the cost of it being anywhere else:
+/// `pre-commit` runs this suite, `git commit -- <pathspec>` hands its hooks the temporary index it
+/// is about to commit, and a sandbox that inherited that variable wrote into it. The fix at any ONE
+/// call site is a seam; nothing makes the next one take it, which is why the constructor lives here
+/// and `no_suite_hands_a_child_the_git_environment_it_inherited` refuses a suite that names `git`
+/// any other way.
+pub mod ambient;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};

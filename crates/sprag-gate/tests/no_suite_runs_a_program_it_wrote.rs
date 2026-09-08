@@ -208,9 +208,11 @@ fn every_exemption_is_still_load_bearing() {
 /// the machine that added the file and absent everywhere else.
 #[test]
 fn every_tracked_double_is_executable_in_the_index() {
-    let listed = std::process::Command::new("git")
+    // ⚠ THROUGH `ambient::git_in`, register item 965: `pre-commit` runs this suite, and under a
+    // partial commit an inherited `GIT_INDEX_FILE` names a temporary index rather than this
+    // repository's own — which is the thing "what a fresh clone receives" is a claim about.
+    let listed = sprag_gate::ambient::git_in(&workspace_root())
         .args(["ls-files", "-s", "--", "crates"])
-        .current_dir(workspace_root())
         .output()
         .expect("git lists what this repository carries");
     assert!(

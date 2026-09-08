@@ -1598,6 +1598,20 @@ ASKED
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    # ⛔⛔⛔⛔⛔ THE CALLER'S GIT ENVIRONMENT IS CUT ON THE COMMAND PATH — register
+    # item 965, and this file is where it cost the most. `git commit --
+    # <pathspec>` exports an ABSOLUTE `GIT_INDEX_FILE`, which outranks the
+    # `git -C "$tmp"` and the `cd "$tmp"` the selftest below is built on: its
+    # `git add a` wrote into the CALLER'S index and git committed the result.
+    # Measured 2026-09-08 in a throwaway repository, this selftest alone took
+    # that index from 2 entries to 7.
+    #
+    # ⚠ EVERY arm, not just `--selftest`. `--seen` writes a marker under the git
+    # dir it is standing in, and a person typing it means the repository they are
+    # in — not one an inherited variable names. Nothing here is invoked by a
+    # hook: `pre-push` SOURCES this file and calls the functions, so no hook
+    # loses the index it must judge.
+    scratch_guard_cut_ambient
     case "${1:-}" in
         --selftest) hosted_read_selftest ;;
         --seen) shift; hosted_read_seen "${1:-HEAD}" "${2:-}" ;;

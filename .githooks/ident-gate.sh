@@ -207,6 +207,27 @@ ident_gate_selftest() {
             GIT_COMMITTER_EMAIL="$bad" GIT_COMMITTER_NAME=probe git commit -q -m 'bad committer'
     ) >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
 
+    # ⛔⛔⛔⛔⛔ THE SUBJECT IS THE SCRATCH REPOSITORY OR THIS DOES NOT RUN AT ALL —
+    # register item 965, and this harness was the LAST of the four that build a
+    # repository to have no such check at all. Item 792 wrote the decision and
+    # `tree-drift.sh` and `hosted-read.sh` adopted it; nothing carried it here,
+    # so `cd "$tmp" && git init -q .` above had exactly one thing keeping it out
+    # of the operator's tree, which was `mktemp` not failing.
+    #
+    # ⚠ It STOPS rather than scoring an arm, for the reason its siblings give: a
+    # run that is not standing in its own subject has no verdict about anything.
+    # `$tmp` is removed first, because a refusal that also littered would make
+    # the next round's `scratch root` ratchet the thing anybody looked at.
+    local scratch_refusal
+    scratch_refusal="$(scratch_guard_check "$tmp" 2>/dev/null || true)"
+    if [ -n "$scratch_refusal" ]; then
+        echo "ident-gate selftest: REFUSING to run -- ${scratch_refusal}, so every arm" \
+             "would commit into $(git rev-parse --absolute-git-dir 2>/dev/null \
+                || echo "some other repository") instead" >&2
+        rm -rf "$tmp"
+        return 1
+    fi
+
     local base tip
     base="$(git -C "$tmp" rev-list --max-parents=0 HEAD)"
     tip="$(git -C "$tmp" rev-parse HEAD)"
@@ -283,6 +304,19 @@ ident_gate_selftest() {
 # restores: they ANSWER a bare invocation (a gap report, an owed list). A file with nothing to say
 # says so with a status, which is `scratch-guard.sh`'s shape.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    # shellcheck source-path=SCRIPTDIR
+    . "$(dirname "${BASH_SOURCE[0]}")/scratch-guard.sh"
+    # ⛔⛔⛔⛔⛔ THE CALLER'S GIT ENVIRONMENT IS CUT BEFORE ANY ARM RUNS — register
+    # item 965. The fixture below does `cd "$tmp" && git init -q . && git add a`,
+    # and an ABSOLUTE `GIT_INDEX_FILE` — which `git commit -- <pathspec>` exports
+    # to its hooks — outranks that `cd`: measured 2026-09-08, this selftest took a
+    # throwaway repository's index from 2 entries to 5 and then returned 1, so the
+    # damage arrived WITH a red rather than instead of one.
+    #
+    # ⚠ SOURCED HERE, not at the top of the file. `pre-commit` sources this one,
+    # and the library it would then pull in defines a cut that must never run on
+    # a hook's own process.
+    scratch_guard_cut_ambient
     case "${1:-}" in
         --selftest) ident_gate_selftest; exit $? ;;
         *) echo "ident-gate.sh is a LIBRARY, not a command: it is sourced by pre-commit." >&2
