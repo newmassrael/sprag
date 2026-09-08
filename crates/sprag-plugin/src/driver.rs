@@ -1195,6 +1195,10 @@ pub struct Driver {
     forward: Option<ProgressSink>,
     /// What each step did, bounded to the last [`JOURNAL_LIMIT`].
     journal: Vec<StepRecord>,
+    /// 🎯 **HOW MANY ENTRIES THAT JOURNAL NO LONGER HOLDS** — register item 845, and the number
+    /// that turns a silent eviction into something the walk can say. Incremented in
+    /// [`remember`](Self::remember), which is the ONE place an entry is ever dropped.
+    forgotten: u32,
     /// **WHERE THE PLUGIN'S OWN MACHINE IS** — [`Plugin::at`]'s last answer, asked once per
     /// completed step. [`None`] before the first step and for a plugin that walks no statechart.
     at: Option<&'static str>,
@@ -1389,6 +1393,30 @@ pub struct Progress {
     ///
     /// See [`StepRecord`] for why a run that reports only its total is not diagnosable.
     pub journal: Vec<StepRecord>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY STEPS THIS WALK NO LONGER HOLDS** — register item 845, and the fact
+    /// without which an assertion about the FRONT of a long run is neither green nor red.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The front used to disappear in silence
+    ///
+    /// [`JOURNAL_LIMIT`] is a bound, and the entry that falls off is deleted with nothing said. So
+    /// a gate scanning this vector for an edge that happened on step 3 of a 120-step run found
+    /// nothing and reported *it did not happen* — measured 2026-09-03 on a walk whose assertion
+    /// silently began at the fourth reflection. The gate that met it dodged by capping its own run
+    /// at twenty steps, **which fixes one gate and leaves the shape for the next one.**
+    ///
+    /// # ⛔⛔ And the discriminator this file used to advertise is unsound
+    ///
+    /// [`JOURNAL_LIMIT`]'s own doc said a reader could *always tell a truncated journal from a
+    /// complete one* by comparing [`iterations`](Self::iterations) with the journal's length. That
+    /// rests on the two moving together, and **they do not**: three sites write an entry
+    /// (`Driver::record`, `Driver::note_failure`, `Driver::note_to_itself`) and only the first is
+    /// paired with an increment. A run that spent two of those extra lines can therefore fill the
+    /// bound while `iterations` is still below it — the journal has lost an entry and the
+    /// comparison says it has not.
+    ///
+    /// ⚠⚠ `0` IS A CLAIM, not an absence: this walk is the whole run. Use
+    /// [`recall`](Self::recall) rather than reading it directly, so the check cannot be forgotten.
+    pub forgotten: u32,
     /// HOW MANY OF ITS PEER'S QUESTIONS THIS RUN HAS ANSWERED SO FAR, on the caller's consent —
     /// [`Outcome::answered`] read mid-flight, under the same name for this type's stated reason.
     ///
@@ -1664,13 +1692,74 @@ pub struct Progress {
     pub inherited: bool,
 }
 
+impl Progress {
+    /// 🎯🎯🎯🎯🎯 **SEARCH THIS RUN'S WALK AND GET AN ANSWER THAT KNOWS WHAT IT CANNOT SEE** —
+    /// register item 845 ⑵, and the call a gate should make instead of scanning
+    /// [`journal`](Self::journal) itself.
+    ///
+    /// # ⚠⚠⚠ Why this exists rather than *read `forgotten` and remember to check it*
+    ///
+    /// A published number nobody is obliged to read is the defect one level up: the count would sit
+    /// there while every gate went on concluding *it did not happen* from an empty filter. Here the
+    /// check cannot be skipped, because there is no way to spell the negative answer without the
+    /// type saying which negative it is.
+    ///
+    /// ⚠⚠ **[`Found`](Recalled::Found) NEVER depends on `forgotten`.** A match in what remains is a
+    /// fact about the run whatever fell off the front — truncation can only cost this call a
+    /// certainty, never give it a wrong one.
+    ///
+    /// ⚠ The predicate takes a whole [`StepRecord`], so a caller may ask about the note, the
+    /// verdict or the edges walked. Counting matches is deliberately NOT offered: a count over a
+    /// truncated walk is a lower bound wearing an exact number, which is this item's whole subject.
+    pub fn recall(&self, mut which: impl FnMut(&StepRecord) -> bool) -> Recalled {
+        if self.journal.iter().any(&mut which) {
+            Recalled::Found
+        } else if self.forgotten == 0 {
+            Recalled::Absent
+        } else {
+            Recalled::BeyondRecord
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT A SEARCH OF A RUN'S WALK IS ALLOWED TO CONCLUDE** — register item 845, and
+/// the third arm is the whole type.
+///
+/// A gate asking *did this run take that edge?* of a bounded journal has always had two answers
+/// available to it and needed three. [`Absent`](Self::Absent) is a claim about the RUN;
+/// [`BeyondRecord`](Self::BeyondRecord) is a claim about the RECORD, and collapsing them is how an
+/// assertion about the front of a long run becomes neither green nor red.
+///
+/// ⚠⚠ It is the shape `sprag_host::runs::Sampled` already uses for a stored row's counters, for
+/// the same reason register item 895 states there: *nobody counted* and *the count was zero* are
+/// different facts, and one word over both answers a question nobody asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recalled {
+    /// The walk holds a step the caller's predicate matched.
+    Found,
+    /// Nothing matched AND the walk is the whole run — so the run did not do it.
+    Absent,
+    /// Nothing matched and the walk has FORGOTTEN entries, so this search cannot say. ⚠ The right
+    /// repair is a shorter run or a bigger bound, never treating this as [`Absent`](Self::Absent).
+    BeyondRecord,
+}
+
 /// HOW MANY STEPS A RUN REMEMBERS.
 ///
 /// A bound rather than the whole history, because a run may take as many steps as its iteration
 /// ceiling allows and this is held in memory for the life of the daemon. The LAST ones are kept
 /// because the question a journal is read to answer — *why did it not converge?* — is asked about
-/// the end of a run. ⚠ The TOTAL is never lost: `iterations` counts every step, so a reader can
-/// always tell a truncated journal from a complete one by comparing the two.
+/// the end of a run.
+///
+/// ⛔⛔⛔⛔⛔ **WHAT THIS DOC USED TO SAY, AND WHY IT WAS WRONG** — register item 845. It read:
+/// *"The TOTAL is never lost: `iterations` counts every step, so a reader can always tell a
+/// truncated journal from a complete one by comparing the two."* That comparison rests on the two
+/// moving together, and **they do not.** Three sites write a journal entry — `Driver::record`,
+/// `Driver::note_failure` and `Driver::note_to_itself` — and only the first is paired with the
+/// single `iterations += 1`. So a run that spent the other two can reach this bound while
+/// `iterations` is still under it: an entry is gone and the advertised discriminator reports a
+/// whole record. ⇒ [`Progress::forgotten`] is the number that actually says so, and
+/// [`Progress::recall`] is how a reader asks without having to remember to.
 pub const JOURNAL_LIMIT: usize = 64;
 
 /// WHAT ONE STEP DID — one entry of a run's journal.
@@ -1729,6 +1818,7 @@ impl Driver {
             progress: None,
             forward: None,
             journal: Vec::new(),
+            forgotten: 0,
             at: None,
             waiting: None,
             place: None,
@@ -1821,6 +1911,10 @@ impl Driver {
             iterations: self.iterations,
             cost: self.cost,
             journal: self.journal.clone(),
+            // 🎯 AND WHAT THAT CLONE IS MISSING — register item 845. It travels WITH the vector it
+            // qualifies and on every publish, because a reader holding the walk without this
+            // number is exactly the reader the item is about.
+            forgotten: self.forgotten,
             answered: self.answered,
             screened: self.screened,
             // 🎯 AND WHAT IT HAS SET ASIDE SO FAR — register item 833(2), published WHILE THE RUN
@@ -2015,6 +2109,12 @@ impl Driver {
     fn remember(&mut self, record: StepRecord) {
         if self.journal.len() == JOURNAL_LIMIT {
             self.journal.remove(0);
+            // 🎯 AND THE WALK SAYS IT LOST ONE — register item 845. This is the ONLY line in the
+            // product that destroys a record, so it is the only line that can honestly report the
+            // loss; a count taken anywhere else would be a second authority on what this `remove`
+            // did. See `Progress::forgotten`, and `Progress::recall` for why a bare count is not
+            // enough on its own.
+            self.forgotten = self.forgotten.saturating_add(1);
         }
         self.journal.push(record);
     }
@@ -3744,6 +3844,143 @@ mod tests {
         fn driving(&self) -> Option<PaneId> {
             Some(PaneId(1))
         }
+    }
+
+    /// A plugin that marks its FIRST step and then steps for ever — the stand-in for a fact that
+    /// happened at the front of a long run, which is register item 845's whole subject.
+    struct Marking {
+        taken: u32,
+    }
+
+    impl Plugin for Marking {
+        fn step(&mut self, _panes: &dyn PaneAccess, _run: &RunContext) -> Result<Step, PaneError> {
+            self.taken += 1;
+            let step = Step::new(Cost::Bytes(1), Verdict::Continue);
+            Ok(if self.taken == 1 {
+                step.noting(OPENING)
+            } else {
+                step.noting("an ordinary step")
+            })
+        }
+
+        /// ⚠ Nothing: this fixture is about the JOURNAL and drives no pane, so a run cut short has
+        /// nothing to stop and the walk is the only thing under test.
+        fn driving(&self) -> Option<PaneId> {
+            None
+        }
+    }
+
+    /// What [`Marking`] writes on its first step and never again.
+    const OPENING: &str = "the opening move";
+
+    /// 🎯🎯🎯🎯🎯 **A SEARCH OF A TRUNCATED WALK IS TOLD IT CANNOT SEE THAT FAR** — register item
+    /// 845, and the silent green this closes.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What went wrong, measured 2026-09-03
+    ///
+    /// [`JOURNAL_LIMIT`] evicts the oldest entry and says nothing. So a gate scanning a 120-step
+    /// run's walk for an edge that happened on step 3 found nothing and concluded **it did not
+    /// happen** — an assertion that was neither green nor red. The gate that met it capped its own
+    /// run at twenty steps, which repairs that one gate and leaves the shape for the next.
+    ///
+    /// # ⛔⛔ And the discriminator this file used to advertise could not have caught it
+    ///
+    /// `JOURNAL_LIMIT`'s doc claimed a reader could always compare [`Progress::iterations`] with
+    /// the journal's length. Three sites write an entry — `record`, `note_failure`,
+    /// `note_to_itself` — and only the first increments that counter, so the two do not move
+    /// together and the comparison can report a whole record over a journal that lost one.
+    ///
+    /// # ⚠⚠⚠ Two arms, and the short one is what makes the long one mean something
+    ///
+    /// | arm | steps | the opening move | a thing never done |
+    /// |---|---:|---|---|
+    /// | truncated | 70 | [`Recalled::BeyondRecord`] | `BeyondRecord` |
+    /// | whole | 10 | [`Recalled::Found`] | [`Recalled::Absent`] |
+    ///
+    /// **Without the short arm a `BeyondRecord` returned unconditionally is green**, and the
+    /// answer that actually costs something — *the run did not do it* — would never be reachable.
+    #[test]
+    fn a_search_of_a_walk_that_lost_its_front_cannot_answer_that_it_never_happened() {
+        /// Something no step of this fixture ever writes.
+        const NEVER: &str = "a step this plugin never takes";
+
+        let walked = |steps: u32| -> Progress {
+            let cell = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: Some(steps),
+                max_cost: None,
+                max_duration: None,
+            })
+            .reporting_to(Arc::clone(&cell))
+            .run(
+                &mut Marking { taken: 0 },
+                &RecordingPanes::new(),
+                &RunContext::uncancellable(),
+            );
+            assert_eq!(
+                outcome.iterations, steps,
+                "⚠⚠⚠ THE PREMISE: the run must actually have taken the steps this arm is about, or \
+                 the walk below is a walk of something else",
+            );
+            cell.lock().expect("the progress cell").clone()
+        };
+
+        // ── THE TRUNCATED ARM: more steps than the journal holds ──────────────────────────────
+        let long = walked(70);
+        assert_eq!(
+            long.journal.len(),
+            JOURNAL_LIMIT,
+            "⚠⚠ THE PREMISE: the journal must be FULL, or nothing was evicted and this arm is \
+             about a walk that never lost anything",
+        );
+        assert_eq!(
+            long.forgotten,
+            6,
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 845 ⑴: the walk SAYS what it lost. Seventy steps into a \
+             journal of {JOURNAL_LIMIT} leaves six evictions, and every one of them was a silent \
+             `Vec::remove(0)` before this number existed. Walk of {} entries",
+            long.journal.len(),
+        );
+        assert_eq!(
+            long.recall(|step| step.note.as_deref() == Some(OPENING)),
+            Recalled::BeyondRecord,
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 845 ⑵, AND THIS IS THE MUTATION: the opening move DID happen \
+             and this walk no longer holds it. The answer must be *I cannot see that far* and \
+             never `Absent`, which is a claim about the RUN. A gate told `Absent` here reports \
+             that a thing which happened did not.",
+        );
+        assert_eq!(
+            long.recall(|step| step.note.as_deref() == Some(NEVER)),
+            Recalled::BeyondRecord,
+            "⚠⚠ AND IT IS HONEST IN THE OTHER DIRECTION TOO: this really never happened, and a \
+             truncated walk still may not say so. Being right by luck is not being able to tell.",
+        );
+
+        // ── THE WHOLE ARM: the same searches over a walk that lost nothing ─────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ WITHOUT THIS, `BeyondRecord` RETURNED UNCONDITIONALLY PASSES EVERYTHING ABOVE.
+        let short = walked(10);
+        assert_eq!(
+            (short.journal.len(), short.forgotten),
+            (10, 0),
+            "⚠⚠⚠ THE CONTROL'S OWN PREMISE: it must have kept every step, or it controls for \
+             nothing. Walk: {:?}",
+            short.journal.len(),
+        );
+        assert_eq!(
+            short.recall(|step| step.note.as_deref() == Some(OPENING)),
+            Recalled::Found,
+            "⚠⚠ THE SAME SEARCH, AND HERE THE RECORD REACHES IT. `Found` never depends on \
+             `forgotten` — truncation can cost this call a certainty, never give it a wrong one.",
+        );
+        assert_eq!(
+            short.recall(|step| step.note.as_deref() == Some(NEVER)),
+            Recalled::Absent,
+            "🎯🎯🎯 AND THIS IS THE ANSWER THAT COSTS SOMETHING — the one arm that is a claim about \
+             the RUN rather than about the record. A `recall` that answered `BeyondRecord` \
+             everywhere would be green above and useless: nothing could ever be shown not to have \
+             happened.",
+        );
     }
 
     /// ⚠⚠⚠ **A RUN CUT SHORT STOPS ITS WORK; A RUN THAT ENDED ON ITS OWN TERMS TOUCHES NOTHING.**

@@ -7838,6 +7838,19 @@ impl RunRegistry {
                     // over and unresumable, and keeping it would grow the file with every step of
                     // every run this daemon ever ran. The totals survive; the steps do not.
                     journal: Vec::new(),
+                    // 🎯🎯🎯🎯🎯 AND THE EMPTY VECTOR ABOVE MUST SAY SO — register item 845, and
+                    // this is the sharpest place that item reaches. `forgotten: 0` would mean *this
+                    // walk is the whole run*, so `Progress::recall` would answer `Absent` — **the
+                    // run did not do it** — about every edge of a run whose record was never kept.
+                    //
+                    // ⚠⚠ IT IS THE WORST SITE RATHER THAN AN EDGE CASE, on the authority of the
+                    // comment six lines up: register item 606 measured that EVERY run anybody reads
+                    // has been through a restart. A silent zero here would be the default answer.
+                    //
+                    // ⚠ EVERY step is forgotten, which is what `saved.iterations` counts — so this
+                    // is the one restored field that is derived rather than carried, and it is
+                    // derived from the total precisely because the steps behind it are gone.
+                    forgotten: saved.iterations,
                     // ⚠ NOR IS THE ANSWER TALLY, for `Outcome::answered`'s reason at this end too:
                     // the durable log has no column for it, and `0` would be this record asserting
                     // that a restored run approved nothing when nobody wrote that down.
@@ -8449,6 +8462,88 @@ mod tests {
             crate::plugins::outcome_from_words(Some("blocked"), None, None),
             OutcomeState::Blocked(None),
             "⚠ AND THE CONTROL: an older log carries no such column and must still read as blocked",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A RESTORED RUN'S EMPTY WALK SAYS IT FORGOT EVERYTHING, NOT THAT NOTHING
+    /// HAPPENED** — register item 845, at the sharpest site that item reaches.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this is the worst place for the silence, and not an edge case
+    ///
+    /// The journal is NOT persisted — `RunRegistry::restore` builds its `Progress` with
+    /// `journal: Vec::new()`, deliberately, because keeping every step of every run would grow the
+    /// file for ever. So a restored run's walk is empty **however many steps it took**. With
+    /// `forgotten` left at zero, [`sprag_plugin::Progress::recall`] would answer
+    /// [`Recalled::Absent`] — *the run did not do it* — about every edge of every restored run.
+    ///
+    /// ⚠⚠ And that is the DEFAULT answer rather than a corner: register item 606 measured that
+    /// every run anybody reads has been through a restart, which is the same authority the
+    /// `context_high_water` line in that constructor already cites.
+    ///
+    /// # ⚠⚠⚠ The control is a restored run that really did nothing
+    ///
+    /// | arm | stored `iterations` | `forgotten` | what `recall` may say |
+    /// |---|---:|---:|---|
+    /// | restored | 12 | 12 | [`Recalled::BeyondRecord`] |
+    /// | took no step | 0 | 0 | [`Recalled::Absent`] — and it is TRUE |
+    ///
+    /// **Without the control, `BeyondRecord` on every restored run is green** — and the honest
+    /// answer for a run that genuinely took no steps would be unreachable. An empty walk is the
+    /// whole record exactly when the run has no steps behind it.
+    #[test]
+    fn a_restored_run_says_its_walk_forgot_every_step_it_took() {
+        let restored = |iterations: u32| -> sprag_plugin::Progress {
+            let saved: RunLog = serde_json::from_str(&format!(
+                "{{\"version\":{RUN_LOG_VERSION},\"runs\":[{{\"id\":4,\"label\":\"ai_loop \
+                 pane=2\",\"iterations\":{iterations},\"finished\":true,\
+                 \"outcome\":\"converged\"}}]}}"
+            ))
+            .expect("a log naming a finished run parses");
+            let mut successor = RunRegistry::default();
+            successor.restore(&saved);
+            let rows = successor.snapshot();
+            assert_eq!(rows.len(), 1, "⚠ THE PREMISE: exactly one run came back");
+            rows[0].progress.clone()
+        };
+
+        // ── THE RESTORED ARM: twelve steps happened and none of them is in this walk ───────────
+        let walked = restored(12);
+        assert!(
+            walked.journal.is_empty(),
+            "⚠⚠⚠ THE PREMISE: the journal is not persisted, so a restored walk is empty by \
+             construction. If this ever holds steps, this gate is measuring something else",
+        );
+        assert_eq!(
+            walked.forgotten, 12,
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 845: EVERY step is forgotten, and the count comes from the \
+             total precisely because the steps behind it are gone. A zero here would be this row \
+             claiming its empty walk is the whole run",
+        );
+        assert_eq!(
+            walked.recall(|step| step.note.is_some()),
+            sprag_plugin::Recalled::BeyondRecord,
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 845 ⑵, AND THIS IS THE MUTATION: a search of a restored run \
+             may not conclude `Absent`. Register item 606 measured that EVERY run anybody reads \
+             has been through a restart — so `Absent` here is not an edge case, it is the answer \
+             every reader would get about every edge of every run in the file",
+        );
+
+        // ── THE CONTROL: a restored run that genuinely took no step ───────────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ WITHOUT THIS, `BeyondRecord` FOR EVERY RESTORED RUN IS GREEN ABOVE.
+        let idle = restored(0);
+        assert_eq!(
+            (idle.forgotten, idle.journal.len()),
+            (0, 0),
+            "⚠⚠⚠ THE CONTROL'S OWN PREMISE: nothing was taken, so nothing can have been forgotten",
+        );
+        assert_eq!(
+            idle.recall(|step| step.note.is_some()),
+            sprag_plugin::Recalled::Absent,
+            "🎯🎯🎯 AND HERE THE EMPTY WALK IS THE WHOLE RECORD, so the answer that costs \
+             something is available: this run really did take no step. A `forgotten` that keyed \
+             off *was this restored* rather than off *what was lost* would say `BeyondRecord` here \
+             and never be able to say anything did not happen",
         );
     }
 

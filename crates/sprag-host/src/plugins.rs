@@ -15687,6 +15687,10 @@ mod tests {
                 at: None,
                 place: None,
                 journal: Vec::new(),
+                // ⚠ ZERO because this fixture's walk is empty by CONSTRUCTION rather than by
+                // eviction — register item 845. Nothing was dropped, so nothing is forgotten, and
+                // these gates assert about the row a report renders rather than about a walk.
+                forgotten: 0,
                 answered: 0,
                 screened: 0,
                 deferred,
@@ -15870,6 +15874,10 @@ mod tests {
                 at: None,
                 place: None,
                 journal: Vec::new(),
+                // ⚠ ZERO because this fixture's walk is empty by CONSTRUCTION rather than by
+                // eviction — register item 845. Nothing was dropped, so nothing is forgotten, and
+                // these gates assert about the row a report renders rather than about a walk.
+                forgotten: 0,
                 answered: 0,
                 screened: 0,
                 deferred: None,

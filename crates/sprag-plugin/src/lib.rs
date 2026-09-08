@@ -237,7 +237,7 @@ pub use dialogue::{Dialogue, DialogueSpec, Endpoint, ReplyFormat};
 pub use document::{Faulted, faults, opened};
 pub use driver::{
     Ceiling, Driver, Guardrails, JOURNAL_LIMIT, Outcome, OutcomeState, Progress, ProgressCell,
-    ProgressSink, StepRecord, Stopped,
+    ProgressSink, Recalled, StepRecord, Stopped,
 };
 pub use orchestrator::{Closed as OrchestratorClosed, OrchestrationSpec, Orchestrator};
 pub use outer::{
