@@ -695,7 +695,10 @@ fn socket_host() -> Option<(SocketHost, sprag_rpc::HostConn)> {
     // `sprag-latency-<pid>.sock` — because `sprag_scratch::owner_in` reads the pid only as a whole
     // segment directly after the prefix, and a `.` ends the segment where a `-` continues it.
     // Nothing derives this path: it is handed on through `SPRAG_HOST_RPC_SOCK` and connected to.
-    let sock = sprag_scratch::scratch_for("sprag-latency", "0.sock");
+    // ⛔ AND THROUGH THE DOOR — register item 959. The line above already says this path is *handed
+    // on and connected to*, which is exactly why item 955's bind gate could not see it: `sun_path`
+    // bounds the socket ADDRESS, so a name nothing here listens on meets the same ceiling.
+    let sock = sprag_scratch::may_address(&sprag_scratch::scratch_for("sprag-latency", "0.sock"));
     let _ = std::fs::remove_file(&sock);
     let child = std::process::Command::new(&daemon)
         .arg("--size")
@@ -1028,7 +1031,12 @@ fn chatty_host(
     daemon: &std::path::Path,
     program: &str,
 ) -> Option<(SocketHost, sprag_rpc::HostConn)> {
-    let sock = sprag_scratch::scratch_for("sprag-latency-poll", &format!("{}.sock", program.len()));
+    // ⛔⛔ THROUGH THE DOOR — register item 959, and this one earns it twice: the tail is a LENGTH
+    // computed from a caller's string, so how long this name comes out is not decided on this line.
+    let sock = sprag_scratch::may_address(&sprag_scratch::scratch_for(
+        "sprag-latency-poll",
+        &format!("{}.sock", program.len()),
+    ));
     let _ = std::fs::remove_file(&sock);
     let child = std::process::Command::new(daemon)
         .arg("--size")

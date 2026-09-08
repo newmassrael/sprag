@@ -250,7 +250,12 @@ fn sibling_bin(name: &str) -> PathBuf {
 fn socket_path() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    sprag_scratch::scratch_for("sprag-tui-pty", &format!("{n}.sock"))
+    // ⛔ AND THROUGH THE DOOR — register item 959: the ceiling is on the socket ADDRESS, so this
+    // name meets it whether the daemon this file spawns binds it or this side connects to it.
+    sprag_scratch::may_address(&sprag_scratch::scratch_for(
+        "sprag-tui-pty",
+        &format!("{n}.sock"),
+    ))
 }
 
 /// The state home every process this file spawns is given, derived from the socket it is about.

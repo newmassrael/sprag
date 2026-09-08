@@ -94,7 +94,12 @@ fn socket_path() -> PathBuf {
     // ⛔ And `scratch_for` rather than `scratch_root().join(…)` — item 795: the root being usable
     // says nothing about who removes this when the run that made it is killed, and the name
     // carries that run's pid, so nothing ever could.
-    sprag_scratch::scratch_for("sprag-tab", &format!("{n}.sock"))
+    // ⛔ AND THROUGH THE DOOR — register item 959: the ceiling is on the socket ADDRESS, so a name
+    // this side only ever connects to meets it exactly as one it binds would.
+    sprag_scratch::may_address(&sprag_scratch::scratch_for(
+        "sprag-tab",
+        &format!("{n}.sock"),
+    ))
 }
 
 /// A private daemon whose boot pane runs `cat` — an idle child that keeps its PTY open, so the

@@ -91,7 +91,11 @@ fn sprag_term_bin() -> PathBuf {
 fn socket_path() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!("sprag-boot-rb-{}-{n}.sock", std::process::id()))
+    // ⛔ THROUGH THE DOOR — register item 959: `sun_path` bounds the socket ADDRESS, so this name
+    // meets the ceiling whether it is bound or connected to.
+    sprag_scratch::may_address(
+        &std::env::temp_dir().join(format!("sprag-boot-rb-{}-{n}.sock", std::process::id())),
+    )
 }
 
 /// A private daemon whose boot pane runs `cat` — an idle child that keeps its PTY open, so the

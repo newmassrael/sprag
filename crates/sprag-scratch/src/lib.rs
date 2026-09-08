@@ -458,7 +458,50 @@ pub const LONGEST_SCRATCH_ROOT: usize = MEASURED_TIGHT_ROOT.len();
 /// check — `a_measured_root_is_the_shape_macos_actually_gives` asserts exactly that.
 pub const MEASURED_TIGHT_ROOT: &str = "/var/folders/d8/hvxvltxn0fl4rmnd52sncbth0000gn/T";
 
+/// 🎯🎯🎯🎯🎯 **THE PATH A UNIX SOCKET MAY BE ADDRESSED AT, ON EVERY PLATFORM THIS PROJECT RUNS
+/// ON** — register item 959, and the name [`may_bind`] should have had.
+///
+/// # ⛔⛔⛔⛔⛔ `sun_path` is the ADDRESS, and both ends of a socket build one
+///
+/// `bind` and `connect` fill the same `sockaddr_un`, so the ceiling binds them equally. The door
+/// this workspace got from register item 955 was called `may_bind`, and the name was read as a
+/// scope: **measured 2026-09-08, `sprag-rpc`'s survey built a path EIGHT bytes over the budget and
+/// nothing saw it, because that case only ever CONNECTED** and no bind was there to be checked.
+/// The check had been right the whole time; what was narrow was the word on the door.
+///
+/// ⇒ So this is the one that states the constraint, [`may_bind`] delegates to it, and a caller
+/// whose path is never bound has a name it can use without lying.
+///
+/// # ⚠⚠ What it does NOT do, said plainly
+///
+/// It does not create anything, it does not bind and it does not connect. A caller that wants a
+/// path this accepts shortens its own names — a short prefix plus a per-call counter, never an
+/// embedded file name.
+///
+/// # Panics
+///
+/// When [`socket_fits`] is false — the message names the path, the ceiling, and the repair.
+#[must_use]
+pub fn may_address(path: &std::path::Path) -> PathBuf {
+    assert!(
+        socket_fits(path),
+        "⛔ REGISTER ITEM 955: {} cannot hold a unix socket on every platform this project runs \
+         on — `sun_path` is {TIGHTEST_SUN_PATH} bytes at its tightest and the longest scratch root \
+         this project must tolerate is {LONGEST_SCRATCH_ROOT} ({MEASURED_TIGHT_ROOT}). Shorten the \
+         names this path is built from: a short prefix and a per-call counter, never an embedded \
+         file name. ⚠ REGISTER ITEM 959: this bounds `connect` exactly as it bounds `bind` — a \
+         path nothing ever listens on is refused here for the same reason",
+        path.display(),
+    );
+    path.to_path_buf()
+}
+
 /// Whether `path` may be bound as a unix socket on **every** platform this project runs on.
+///
+/// ⚠⚠⚠ **THE CEILING IS NOT ABOUT BINDING** — register item 959. This delegates whole to
+/// [`may_address`], which is where the constraint is stated: `sun_path` bounds the socket ADDRESS,
+/// so `connect` meets it too. This name survives because it is the right word at a bind site and
+/// twenty-two of them read better for it; a caller that never binds should say [`may_address`].
 ///
 /// The part of `path` below [`scratch_root`] is measured against
 /// [`LONGEST_SCRATCH_ROOT`] + [`TIGHTEST_SUN_PATH`], so the answer does not depend on the machine
@@ -489,16 +532,7 @@ pub const MEASURED_TIGHT_ROOT: &str = "/var/folders/d8/hvxvltxn0fl4rmnd52sncbth0
 /// When [`socket_fits`] is false — the message names the path, the ceiling, and the repair.
 #[must_use]
 pub fn may_bind(path: &std::path::Path) -> PathBuf {
-    assert!(
-        socket_fits(path),
-        "⛔ REGISTER ITEM 955: {} cannot hold a unix socket on every platform this project runs \
-         on — `sun_path` is {TIGHTEST_SUN_PATH} bytes at its tightest and the longest scratch root \
-         this project must tolerate is {LONGEST_SCRATCH_ROOT} ({MEASURED_TIGHT_ROOT}). Shorten the \
-         names this path is built from: a short prefix and a per-call counter, never an embedded \
-         file name",
-        path.display(),
-    );
-    path.to_path_buf()
+    may_address(path)
 }
 
 #[must_use]

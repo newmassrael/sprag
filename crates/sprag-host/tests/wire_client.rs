@@ -212,7 +212,14 @@ fn open_a_pane_in_a_tree(sock: &Path) {
 fn socket_path() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    sprag_scratch::scratch_for("sprag-wire-it", &format!("{n}.sock"))
+    // ⛔⛔⛔ AND THROUGH THE DOOR — register item 959. This file never BINDS: the daemon it spawns
+    // does that and this side only connects, so item 955's bind gate could not reach here and the
+    // budget was going unasked at the one place that MAKES the name. `sun_path` bounds the address
+    // rather than the act, so a connect meets the same ceiling.
+    sprag_scratch::may_address(&sprag_scratch::scratch_for(
+        "sprag-wire-it",
+        &format!("{n}.sock"),
+    ))
 }
 
 /// ⛔⛔⛔⛔⛔ **EVERYTHING THIS FILE MAKES UNDER THE TEMP DIR GOES WITH THE TEST THAT MADE IT** —

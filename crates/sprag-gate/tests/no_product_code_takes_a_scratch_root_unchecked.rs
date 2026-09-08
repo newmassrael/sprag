@@ -968,6 +968,103 @@ fn bind_sites() -> Vec<(String, usize, String)> {
     found
 }
 
+/// Every workspace site that MINTS a unix socket path, as `(file, line, code)`.
+///
+/// A line is one when it BUILDS a path (`join`, `format!`, `scratch_for`) out of a string literal
+/// ending in `.sock`. Walked rather than listed, for [`bind_sites`]' reason exactly.
+///
+/// ⚠⚠ **THE LITERAL IS THE HANDLE AND IT IS ALSO THE LIMIT.** A factory that takes the file name as
+/// a PARAMETER — `fn sock(dir, name)` in `sprag-rpc`'s survey, `resolve_socket_path`'s
+/// `socket_name` — has no `.sock` on its own line and is invisible here. That is stated rather than
+/// implied: this scan finds the places a name is SPELLED, which is where item 959's measured
+/// silences were, and a factory that took the name from elsewhere would walk past it.
+fn socket_mints() -> Vec<(String, usize, String)> {
+    let mut found = Vec::new();
+    for (name, text) in rust_files() {
+        for (line, code) in code_lines(&text) {
+            let spells_a_socket = code
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .any(|literal| literal.ends_with(".sock"));
+            let builds_a_path =
+                code.contains("join(") || code.contains("format!") || code.contains("scratch_for(");
+            if spells_a_socket && builds_a_path {
+                found.push((name.clone(), line, code.trim().to_owned()));
+            }
+        }
+    }
+    found
+}
+
+/// 🎯🎯🎯🎯🎯 **A FILE THAT MINTS A UNIX SOCKET PATH ASKS WHETHER IT CAN HOLD ONE** — register item
+/// 959, and the half of item 955's adoption that the word `bind` hid.
+///
+/// # ⛔⛔⛔⛔⛔ The check was right and the NAME was read as its scope
+///
+/// `sun_path` bounds the socket ADDRESS: `bind` and `connect` fill the same `sockaddr_un`. The door
+/// item 955 built was called `may_bind`, so the gate beside this one asks only of files that BIND —
+/// and *"nothing here listens, so nothing here is at risk"* became a thing a reader could believe.
+///
+/// **Measured 2026-09-08, while paying item 958.** `sprag-rpc`'s survey minted a path EIGHT bytes
+/// over the budget and stood green, because that case only ever connected. Asking the same question
+/// of every MINTING file rather than every binding one moved the population from 22 bind sites to
+/// **14 files and 28 lines**, of which **7 files were silent** — every one of them a place that
+/// hands its name to a process it spawns and then connects to.
+///
+/// # ⚠⚠⚠ Why MINTING and not connecting, which is the other shape this could have taken
+///
+/// A connect site usually receives a path it did not make — `sprag.rs` connects to whatever
+/// `HostEndpoint` resolved — so demanding the call there would demand it on lines that legitimately
+/// cannot have it, which is the objection [`every_file_that_binds_a_socket_asks_whether_the_path_can_hold_one`]
+/// already states against a per-bind rule. **The place that can answer is the place that MADE the
+/// name**, and the checking constructor hands the path back, so the asking cannot be decorative.
+///
+/// ⚠⚠ THE COUNT IS ASSERTED, for that gate's reason: a walk that stopped finding mints would be
+/// green for the wrong reason.
+///
+/// ⚠ There is NO exemption arm, deliberately — all seven were brought in before this was written,
+/// so the honest number today is zero and an array here would be the escape hatch working rule 6
+/// refuses. A site that genuinely cannot ask belongs in the ledger.
+#[test]
+fn every_file_that_mints_a_socket_path_asks_whether_it_can_hold_one() {
+    let sites = socket_mints();
+    assert!(
+        sites.len() >= 24,
+        "⚠⚠⚠ THE POPULATION COLLAPSED: this walk found {} minting line(s), and measured \
+         2026-09-08 this workspace has 28 across 14 files. A scan of nothing is green for the \
+         wrong reason: {sites:#?}",
+        sites.len(),
+    );
+
+    // ⚠ Spelled once so the search and the message cannot drift, and BOTH doors count: `may_bind`
+    // is a delegate to `may_address` and a bind site reads better for keeping its own word.
+    let doors = ["may_address(", "may_bind("];
+    let asking: std::collections::BTreeSet<String> = rust_files()
+        .into_iter()
+        .filter(|(_, text)| {
+            code_lines(text).any(|(_, line)| doors.iter().any(|door| line.contains(door)))
+        })
+        .map(|(name, _)| name)
+        .collect();
+    let silent: Vec<String> = sites
+        .iter()
+        .filter(|(name, _, _)| !asking.contains(name))
+        .map(|(name, line, code)| format!("  {name}:{line}  {code}"))
+        .collect();
+    assert!(
+        silent.is_empty(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 959: a file MAKES a unix socket path and never asks whether it \
+         can hold one on the platform with the tightest `sun_path`. macOS gives {} bytes and a \
+         {}-byte scratch root against Linux's 4 — and this bites whether or not anything here \
+         BINDS, because `bind` and `connect` fill the same `sockaddr_un`. Take the path back \
+         through `may_address(` in `sprag_scratch`, at the factory that MAKES it:\n{}",
+        sprag_scratch::TIGHTEST_SUN_PATH,
+        sprag_scratch::LONGEST_SCRATCH_ROOT,
+        silent.join("\n"),
+    );
+}
+
 /// ⛔⛔⛔⛔⛔ **A FILE THAT BINDS A UNIX SOCKET ASKS WHETHER THE PATH CAN HOLD ONE** — register item
 /// 955, and the adoption item 950's budget did not have.
 ///

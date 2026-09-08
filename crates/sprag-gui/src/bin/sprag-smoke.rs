@@ -6474,8 +6474,11 @@ impl Smoke {
         // appeared in neither scratch ratchet, both of which read the code with its string literals
         // blanked. `scratch_for` also mints the pid in the one place `owner_in` reads it, so a
         // smoke killed before `Drop` runs is collected by the next run rather than standing.
-        let host_sock = sprag_scratch::scratch_for("spsm", "h.sock");
-        let gui_sock = sprag_scratch::scratch_for("spsm", "g.sock");
+        // ⛔ BOTH THROUGH THE DOOR — register item 959. This binary binds neither: it hands the two
+        // names to processes it spawns and connects to them, so item 955's bind gate never reached
+        // the place that MAKES them. `sun_path` bounds the address, not the act.
+        let host_sock = sprag_scratch::may_address(&sprag_scratch::scratch_for("spsm", "h.sock"));
+        let gui_sock = sprag_scratch::may_address(&sprag_scratch::scratch_for("spsm", "g.sock"));
         let state = sprag_scratch::scratch_for("spsm", "state");
         std::fs::create_dir_all(&state)?;
         install_notify_stand_in(&state)?;

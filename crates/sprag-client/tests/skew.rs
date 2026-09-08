@@ -81,7 +81,12 @@ static LATE_ADDRESS: std::sync::LazyLock<String> =
 fn socket_path(tag: &str) -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!("sprag-skew-{tag}-{}-{n}.sock", std::process::id()))
+    // ⛔⛔ THROUGH THE DOOR — register item 959, and this one has the most to gain: the name takes a
+    // CALLER'S `tag`, so how long it comes out is not decided here at all. The ceiling is on the
+    // socket ADDRESS, which a connect meets as squarely as a bind.
+    sprag_scratch::may_address(
+        &std::env::temp_dir().join(format!("sprag-skew-{tag}-{}-{n}.sock", std::process::id())),
+    )
 }
 
 /// A private daemon whose boot pane runs `cat` — an idle child that keeps its PTY open.
