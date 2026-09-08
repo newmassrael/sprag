@@ -3228,6 +3228,106 @@ impl Tally {
             Self::Banked => "banked",
         }
     }
+
+    /// 🎯 **HOW THIS COLUMN IS READ WHEN SEVERAL ROWS ARE PUT TOGETHER** — register item 962.
+    ///
+    /// # ⛔⛔ Why the classification is here and not in a reader's head
+    ///
+    /// [`ReaskLandedDeepest`](Self::ReaskLandedDeepest)'s own doc says it is *a maximum rather than
+    /// a total* and that read across rows it answers *what could the bound be lowered to*. Nothing
+    /// carried that sentence into a machine, so the only way to ask it was a hand-written filter
+    /// over the store file — which is the disease [`Sampled`] exists to end, and its doc names four
+    /// readers who each wrote their own. A round following the prose would have been the fifth.
+    ///
+    /// ⚠⚠ THREE ARMS AND NO `_`, because a fourth kind of column added tomorrow must be a
+    /// compile error here rather than a silent [`Total`](AcrossRows::Total). This workspace's
+    /// rule 6: an unclassified member is refused, never defaulted.
+    #[must_use]
+    pub const fn across_rows(self) -> AcrossRows {
+        match self {
+            // ⚠ A TABLE, not a number. Adding two of these across rows is a merge and not a sum,
+            // and calling them `Total` would be a claim wider than anything measured.
+            Self::Deliveries
+            | Self::FoldsByReason
+            | Self::DeliveredByRoad
+            | Self::SaidBySentence
+            | Self::WidthWithheld
+            | Self::Banked
+            | Self::Checks => AcrossRows::Table,
+            // Counts. Adding them answers *how many, over all these runs*.
+            Self::Answered
+            | Self::Screened
+            | Self::Deferred
+            | Self::Unchecked
+            | Self::Unadmitted
+            | Self::ReaskCapped
+            | Self::ReaskLanded => AcrossRows::Total,
+            // ⛔ THE ONE. A sum over rows would be a number about nothing.
+            Self::ReaskLandedDeepest => AcrossRows::Maximum,
+        }
+    }
+}
+
+/// **WHAT PUTTING A COLUMN'S ROWS TOGETHER MEANS** — register item 962, and see
+/// [`Tally::across_rows`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcrossRows {
+    /// Rows carry a count, and the reading over several is their SUM.
+    Total,
+    /// Rows carry a depth, and the reading over several is the LARGEST any of them reached — never
+    /// a sum, which would be a number about nothing.
+    Maximum,
+    /// Rows carry a table rather than a number, so there is no single figure to take across them.
+    /// Said out loud rather than folded into [`Total`](Self::Total): a merge is not a sum.
+    Table,
+}
+
+/// 🎯🎯🎯 **THE LARGEST DEPTH ANY ROW REACHED, AND THE POPULATION IT WAS TAKEN OVER** — register
+/// item 962.
+///
+/// # ⛔⛔⛔⛔⛔ Why the population travels with the number
+///
+/// Measured 2026-09-08 over the live loop's store: **261 rows, and `reask_landed_deepest` is
+/// `unsaid` on every one of them** — the daemon that wrote them predates the column. So the honest
+/// answer today is *no row carries a depth*, and a reader handed a bare `0` would read it as
+/// *every ask-again landed on the first try*, which is the opposite of what the file says.
+///
+/// ⚠⚠ That is register item 924's shape exactly — a number that is green because its population is
+/// empty — and it is why [`reached`](Self::reached) is an [`Option`] beside its two counts rather
+/// than a `u32` with a comment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deepest {
+    /// The largest depth any row carries, or [`None`] where NO row carries one.
+    pub reached: Option<u32>,
+    /// How many rows carried a depth — the population the maximum was taken over.
+    pub over: usize,
+    /// How many carried none, so a reader can see how much of the store had nothing to say.
+    pub unsaid: usize,
+}
+
+impl Deepest {
+    /// **THE READING IN WORDS**, with the direction it may be read in.
+    ///
+    /// ⚠⚠ THE DIRECTION IS PART OF THE SENTENCE, not a caveat somewhere else — the column's doc
+    /// says this answers *what could the bound be lowered to* and **never** *could it be raised*,
+    /// because an ask the bound forbade was never made and a deeper landing is censored rather than
+    /// absent. Item 962 is that a prose instruction nobody carries is one nobody follows.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self.reached {
+            None => format!(
+                "no row carries a depth ({} row(s), all of them unsaid), so there is nothing to \
+                 lower a bound to — this is not a depth of 0",
+                self.unsaid
+            ),
+            Some(deepest) => format!(
+                "the deepest any row reached is {deepest}, over {} row(s) that carried one ({} \
+                 said nothing) — read it as *the bound could be lowered to this*, never as *it \
+                 could be raised*: an ask the bound forbade was never made",
+                self.over, self.unsaid
+            ),
+        }
+    }
 }
 
 /// ⛔⛔⛔⛔⛔ **WHETHER A STORED RUN IS IN A POPULATION** — register item 895, and the answer has
@@ -4209,6 +4309,46 @@ pub struct RunLog {
 }
 
 impl RunLog {
+    /// 🎯🎯🎯 **THE DEEPEST ASK-AGAIN ANY ROW LANDED ON**, with the population — register item 962,
+    /// and the mouth [`PersistedRun::reask_landed_deepest`]'s own doc had been asking for in prose.
+    ///
+    /// # ⛔⛔ Why this is a method and not a filter each asker writes
+    ///
+    /// The column's doc instructs a reading — *read across rows it answers what could the bound be
+    /// lowered to* — and until this existed the only way to obey it was a `python3 -c` over the
+    /// store file. [`Sampled`]'s doc records four such filters, two of which counted one population
+    /// **8 against 10**. A prose instruction that no command carries is one nobody follows the same
+    /// way twice.
+    ///
+    /// ⚠⚠ THE POPULATION IS [`Sampled`]'s, NOT `Option::is_some`. A row is in it when the column
+    /// said something — [`Sampled::Counted`] or [`Sampled::Zeroed`] — and out of it when nobody was
+    /// counting. That keeps a store written before item 891 from contributing zeroes that mean
+    /// *never counted*, which is the whole reason that type has three arms.
+    #[must_use]
+    pub fn deepest_reask_landing(&self) -> Deepest {
+        let mut deepest = Deepest {
+            reached: None,
+            over: 0,
+            unsaid: 0,
+        };
+        for run in &self.runs {
+            match run.sampled(Tally::ReaskLandedDeepest) {
+                Sampled::Unsaid => deepest.unsaid += 1,
+                Sampled::Counted | Sampled::Zeroed => {
+                    deepest.over += 1;
+                    // ⚠ `Zeroed` contributes its zero rather than being skipped: a run that
+                    // counted and found nothing IS in the population, and leaving it out would
+                    // make `over` disagree with the number it qualifies.
+                    let depth = run.reask_landed_deepest.unwrap_or(0);
+                    deepest.reached = Some(deepest.reached.map_or(depth, |so_far: u32| {
+                        if depth > so_far { depth } else { so_far }
+                    }));
+                }
+            }
+        }
+        deepest
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE PANES A LOOP WAS STILL TYPING AT WHEN THIS LOG WAS WRITTEN** — register item
     /// 869, and the one question a restore has to answer before it brings an agent back to its own
     /// conversation.

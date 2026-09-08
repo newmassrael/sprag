@@ -29,7 +29,7 @@
 //! out beside each other and the reader decides, in writing.
 
 use sprag_host::moment::Reading;
-use sprag_host::runs::{RunLog, Sampled, Tally};
+use sprag_host::runs::{AcrossRows, RunLog, Sampled, Tally};
 
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -111,6 +111,27 @@ fn lines(log: &RunLog, path: &std::path::Path, at: Reading) -> Vec<String> {
             .collect::<Vec<_>>()
             .join("  ");
         said.push(format!("  {:18} {counted}", tally.word()));
+        // 🎯🎯🎯 AND THE READING THE COLUMN'S OWN DOC INSTRUCTS, for the one kind of column where
+        // the three arms above do not carry it — register item 962.
+        //
+        // ⛔⛔ The arms answer *how many rows had a non-zero depth*. `reask_landed_deepest` exists
+        // to answer *how deep did the deepest go*, and those are different questions: twenty
+        // landings on FIRST asks are no evidence at all for a bound of two. Until this line, the
+        // second question could only be put by writing a filter over the store file by hand —
+        // which is the disease `Sampled` was built to end.
+        //
+        // ⚠ Driven off `Tally::across_rows` rather than by naming the column, so a second maximum
+        // added tomorrow gets a mouth here or fails the gate in this file.
+        match tally.across_rows() {
+            AcrossRows::Maximum => {
+                said.push(format!(
+                    "  {:18} {}",
+                    "",
+                    log.deepest_reask_landing().describe()
+                ));
+            }
+            AcrossRows::Total | AcrossRows::Table => {}
+        }
     }
     // ⚠⚠⚠ AND THE SUM IS PRINTED AS A CHECK A READER CAN DO — nothing here can be unclassified,
     // so a total that does not match the row count is this tool disagreeing with itself rather
@@ -125,7 +146,129 @@ fn lines(log: &RunLog, path: &std::path::Path, at: Reading) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Reading, RunLog, lines};
+    use super::{AcrossRows, Reading, RunLog, Tally, lines};
+
+    /// A store of `depths`, each a row whose `reask_landed_deepest` is that value — `None` for a
+    /// row from a build that never carried the column.
+    fn store_of(depths: &[Option<u32>]) -> RunLog {
+        let runs: Vec<serde_json::Value> = depths
+            .iter()
+            .enumerate()
+            .map(|(at, depth)| {
+                let mut row = serde_json::json!({
+                    "id": at + 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
+                });
+                if let Some(depth) = depth {
+                    row["reask_landed_deepest"] = serde_json::json!(depth);
+                }
+                row
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "version": sprag_host::runs::RUN_LOG_VERSION,
+            "runs": runs,
+        }))
+        .expect("the log a predecessor leaves is what this reads")
+    }
+
+    /// What this tool printed for `depths`, as one string.
+    fn page(depths: &[Option<u32>]) -> String {
+        lines(
+            &store_of(depths),
+            std::path::Path::new("/tmp/one.runs.json"),
+            Reading::at(1_788_681_668),
+        )
+        .join("\n")
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE READING THE COLUMN'S DOC INSTRUCTS COMES OUT OF THIS COMMAND** — register
+    /// item 962, and its `Done when` ⑵.
+    ///
+    /// # ⛔⛔⛔ The mutation this is built to catch
+    ///
+    /// *Lower the maximum and it must go red.* A reader that answered the LAST row, or the first,
+    /// or the count of non-zero rows — which is what the three `Sampled` arms already say — passes
+    /// a page that merely mentions a number. So the rows are ordered with the deepest in the
+    /// MIDDLE: last-wins answers 2, first-wins answers 1, counting answers 3, and only a maximum
+    /// answers 7.
+    #[test]
+    fn the_page_says_the_deepest_any_row_reached_and_not_how_many_reached_one() {
+        let said = page(&[Some(1), Some(7), Some(2)]);
+        assert!(
+            said.contains("the deepest any row reached is 7"),
+            "⛔ ITEM 962: `reask_landed_deepest` is a MAXIMUM, and the three sampled arms answer \
+             *how many rows had one*. Lowering it to any row but the deepest is the mutation this \
+             arm exists for. Got:\n{said}",
+        );
+        // ⚠⚠ AND THE POPULATION TRAVELS WITH IT — a maximum over a population nobody stated is the
+        // number item 895 spent four readers proving is not a measurement.
+        assert!(
+            said.contains("over 3 row(s) that carried one"),
+            "⚠ the maximum must say what it was taken over. Got:\n{said}",
+        );
+        // ⛔ AND THE DIRECTION, because the column's doc says this answers *lowered to* and never
+        // *raised to* — a censored deeper landing is not an absent one, and that sentence is the
+        // whole reason the number is safe to act on.
+        assert!(
+            said.contains("lowered to this") && said.contains("never"),
+            "⚠⚠ the direction is part of the reading, not a caveat kept elsewhere. Got:\n{said}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN EMPTY POPULATION SAYS SO AND DOES NOT SAY ZERO** — register item 962, and the
+    /// case the live store is actually in.
+    ///
+    /// Measured 2026-09-08 over the loop's own file: **261 rows and `unsaid` on every one** — the
+    /// daemon that wrote them predates the column. A page printing `0` there would be read as
+    /// *every ask-again landed on the first try*, which is the opposite of what the file says, and
+    /// it is register item 924's shape: a number that is green because nothing was in its
+    /// population.
+    #[test]
+    fn a_store_where_nobody_recorded_a_depth_says_that_rather_than_zero() {
+        let said = page(&[None, None]);
+        assert!(
+            said.contains("no row carries a depth") && said.contains("this is not a depth of 0"),
+            "⛔ ITEM 962/924: an empty population must SAY it is empty. Got:\n{said}",
+        );
+        // ⚠ And a genuine zero is a different page — `Some(0)` is *counted and found none*, which
+        // item 891 put a whole third arm into `Sampled` to keep apart from *nobody counted*.
+        let counted = page(&[Some(0)]);
+        assert!(
+            counted.contains("the deepest any row reached is 0"),
+            "⚠⚠ a recorded zero is a reading, not an absence — the two must not share a page. \
+             Got:\n{counted}",
+        );
+    }
+
+    /// ⚠⚠ **EVERY COLUMN READ AS A MAXIMUM HAS A MOUTH HERE** — the arm that stops a second one
+    /// added tomorrow from being printed as three row-counts and nothing else.
+    ///
+    /// ⚠ It walks `Tally::ALL` rather than naming the column, so the population is the enum's and
+    /// not a list kept in this file.
+    #[test]
+    fn every_maximum_column_is_printed_as_a_maximum() {
+        let said = page(&[Some(4)]);
+        let maxima: Vec<Tally> = Tally::ALL
+            .into_iter()
+            .filter(|tally| tally.across_rows() == AcrossRows::Maximum)
+            .collect();
+        assert!(
+            !maxima.is_empty(),
+            "⛔ no column is classified as a maximum, so this gate has an empty population and \
+             passes by reading nothing — `Tally::across_rows` is where that is decided",
+        );
+        for tally in maxima {
+            assert!(
+                said.contains(tally.word()),
+                "⚠ {} is read as a maximum and this page never names it. Got:\n{said}",
+                tally.word(),
+            );
+        }
+        assert!(
+            said.contains("the deepest any row reached is 4"),
+            "⚠⚠ naming the column is not printing its reading. Got:\n{said}",
+        );
+    }
 
     /// ⛔⛔⛔⛔⛔ **THE PARTITION IS PRINTED BESIDE THE MOMENT IT WAS READ** — register item 918,
     /// and the third mouth of the three this workspace publishes live-store numbers through.
