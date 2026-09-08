@@ -26,6 +26,7 @@
 //! of item 839.
 
 use sprag_gate::north_star;
+use sprag_gate::north_star::Reds;
 
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -181,20 +182,38 @@ fn main() -> std::process::ExitCode {
     // machinery that examined nothing and a machinery that examined things and found them clean
     // read identically unless the count is stated. `claimed 0` is the sentence a later round needs
     // in order to know this said nothing rather than said yes.
+    // ⛔⛔⛔⛔⛔ AND A CLAIM ABOUT ANOTHER PLATFORM IS COUNTED RATHER THAN SILENT — register item
+    // 949. Measured over four hosted runs on 2026-09-08: `headless (macos)` failed at `Test` on
+    // every one while this line printed `reds 0 claimed, 0 standing`. The counter was not wrong
+    // about its population; it had no way to HOLD that population, so *nobody asked* and *asked
+    // and clean* were the same zero. This third number is that distinction, and item 924 is the
+    // rule it is written under.
     let claims = reading.red_claims();
-    let (standing, refuted) = match reading.standing_reds(&RunTheSuite) {
+    let here = std::env::consts::OS;
+    let found = match reading.standing_reds(&RunTheSuite, here) {
         Ok(found) => found,
         Err(why) => {
             eprintln!("north-star: {why}");
             return std::process::ExitCode::FAILURE;
         }
     };
+    let Reds {
+        standing,
+        refuted,
+        elsewhere,
+    } = found;
     let confirmed: Vec<String> = standing.iter().map(ToString::to_string).collect();
+    let others: Vec<String> = elsewhere.iter().map(ToString::to_string).collect();
     println!(
         "reds {} claimed, {} standing: {}",
         claims.len(),
         standing.len(),
         confirmed.join(" "),
+    );
+    println!(
+        "  {} claim(s) are about another platform, so this {here} run did not judge them: {}",
+        elsewhere.len(),
+        others.join(" "),
     );
     // ⛔ A CLAIM THE SUITE REFUTES IS A FAULT ABOUT THE DOCUMENT, and the mirror of item 902's
     // wrongly-paid mark: this one would buy an item past the severity gate on a red that is not
@@ -311,8 +330,13 @@ impl north_star::Commits for Repository {
 ///
 /// `cargo test` exits 101 for a failing test and 101 for a compile error alike, so this cannot tell
 /// them apart and does not pretend to: both are RED, which is the conservative side and the honest
-/// one — a tree that does not build is not a tree with no failing tests. What is an [`Err`] is
-/// cargo not being runnable at all, which says nothing about any claim.
+/// one — a tree that does not build is not a tree with no failing tests.
+///
+/// ⚠⚠⚠ **AND EVERY OTHER NON-ZERO CODE IS *COULD NOT ASK*** — register item 949, which is a
+/// correction to this paragraph and not an addition to it. It used to end *what is an `Err` is
+/// cargo not being runnable at all*, and that was too narrow: cargo also refuses the ARGUMENTS,
+/// with exit 1, and this reader called that a standing red. See [`verdict_of`], where the three
+/// answers are and where the measurement is.
 struct RunTheSuite;
 
 impl north_star::Suite for RunTheSuite {
@@ -325,16 +349,48 @@ impl north_star::Suite for RunTheSuite {
             .map_err(|why| {
                 format!("cannot run the suite to ask whether `{names}` is red: {why}")
             })?;
-        match asked.status.code() {
-            Some(0) => Ok(false),
-            Some(_) => Ok(true),
-            // ⚠ Killed by a signal. Nothing was decided, so nothing is reported — the rule
-            // `Commits::resolves` states one fact over.
-            None => Err(format!(
-                "the suite was killed while being asked whether `{names}` is red ({})",
-                asked.status,
-            )),
-        }
+        verdict_of(asked.status.code(), names)
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT AN EXIT CODE FROM `cargo test` SAYS ABOUT A CLAIM** — register item 949, and a
+/// function taking its input rather than a `match` inside the call that spawns the process.
+///
+/// The three cases below cannot all be produced by a real run of this binary: `Ok(false)` needs a
+/// green selection, `Ok(true)` a red one, and the [`Err`] arms a malformed claim — so asserting
+/// around the process would leave two of them unmeasured, which is the dead control this workspace
+/// keeps paying for. Handed the code, every case is driven.
+fn verdict_of(code: Option<i32>, names: &str) -> Result<bool, String> {
+    match code {
+        Some(0) => Ok(false),
+        // ⛔⛔⛔⛔⛔ 101 IS *THE SUITE RAN AND SOMETHING FAILED*, AND EVERY OTHER NON-ZERO IS
+        // *THE QUESTION COULD NOT BE PUT* — register item 949, measured the hard way.
+        //
+        // `Some(_) => Ok(true)` was here, on the reasoning that a tree which does not build is
+        // not a tree with no failing tests. That is right about a COMPILE error, which cargo
+        // also exits 101 for. It is wrong about cargo refusing the ARGUMENTS: measured
+        // 2026-09-08 while writing the first two platform claims of item 949, `cargo test
+        // --quiet -p sprag-host --test cli <name> --exact` exits **1** with *"unexpected
+        // argument '--exact' found"* — because `--exact` belongs to the harness, past `--`.
+        //
+        // ⇒ Both of this round's own `@red:` lines were malformed, and this reader called them
+        // STANDING REDS. A typo in the mark manufactured the very fact the mark exists to
+        // claim, and it would have bought both items past the severity gate. That is item 902's
+        // shape from the third side: not a mark that is false, a mark that MAKES itself true.
+        //
+        // ⚠ A failure to ask is its own fault and never a verdict — `Commits::resolves`' rule,
+        // and the reason this function returns a `Result` at all.
+        Some(101) => Ok(true),
+        Some(other) => Err(format!(
+            "cargo refused the question `{names}` with exit {other} rather than running it — a \
+             test failure and a compile error are both 101, so this is the arguments themselves. \
+             Harness flags such as `--exact` go after a bare `--`"
+        )),
+        // ⚠ Killed by a signal. Nothing was decided, so nothing is reported — the rule
+        // `Commits::resolves` states one fact over.
+        None => Err(format!(
+            "the suite was killed while being asked whether `{names}` is red (no exit code)"
+        )),
     }
 }
 
@@ -463,8 +519,11 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
     // ⚠⚠ IT RUNS NOTHING WHERE NOTHING IS CLAIMED, which is the ordinary case; where a red IS
     // claimed this costs that test on every proposal, and that is the price of the answer being the
     // repository's. A failure to ask is a REFUSAL to judge and never a silent `NO`.
-    let standing = match reading.standing_reds(&RunTheSuite) {
-        Ok((standing, _)) => standing,
+    // ⚠⚠ AND `admits` GETS THE CONFIRMED ONES ONLY — register item 949. A claim about another
+    // platform is not a red this machine can put anybody onto: it would be admitting an item on a
+    // fact nothing here checked, which is the same purchase-past-the-gate `refuted` refuses.
+    let standing = match reading.standing_reds(&RunTheSuite, std::env::consts::OS) {
+        Ok(found) => found.standing,
         Err(why) => {
             eprintln!("north-star: {why}");
             return std::process::ExitCode::FAILURE;
@@ -564,4 +623,58 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
     };
     println!("NO — {why}. What a round may take: {spelled}");
     std::process::ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verdict_of;
+
+    /// ⛔⛔⛔⛔⛔ **A MALFORMED CLAIM MUST NOT MANUFACTURE THE RED IT CLAIMS** — register item 949,
+    /// and this round's own two `@red:` lines are what found it.
+    ///
+    /// # ⛔⛔⛔ What it costs, measured 2026-09-08
+    ///
+    /// `--exact` is a HARNESS flag and belongs past a bare `--`. Written as a cargo argument,
+    /// `cargo test --quiet -p sprag-host --test cli <name> --exact` exits **1** with *"unexpected
+    /// argument '--exact' found"* — nothing ran. The reader here answered `Ok(true)`, so
+    /// `north-star` printed `reds 2 claimed, 2 standing: 951 952` about two tests that pass on this
+    /// machine, and both items would have been admitted past the severity gate on it.
+    ///
+    /// ⇒ **A mark that makes itself true is worse than one that is false**, because the refutation
+    /// item 843 built cannot catch it: there is nothing stale about a claim the instrument keeps
+    /// confirming. So a code that is not the harness's own is a REFUSAL to judge.
+    ///
+    /// ⚠⚠ 101 STAYS RED, and that is not an oversight: cargo exits 101 for a failing test and for
+    /// a compile error alike, and a tree that does not build is not a tree with no failing tests.
+    /// That fold is deliberate and stated; the one this arm ends is between *the suite answered*
+    /// and *cargo refused the question*.
+    #[test]
+    fn a_code_cargo_gives_for_refusing_the_arguments_is_not_a_red() {
+        assert_eq!(
+            verdict_of(Some(0), "-p sprag-gate --lib"),
+            Ok(false),
+            "a green selection is a claim the suite refutes",
+        );
+        assert_eq!(
+            verdict_of(Some(101), "-p sprag-gate --lib"),
+            Ok(true),
+            "⚠ 101 is the harness's own failure — and a compile error's, deliberately",
+        );
+        let refused = verdict_of(Some(1), "-p sprag-host --test cli name --exact").expect_err(
+            "⛔ ITEM 949: exit 1 is cargo refusing the arguments, and calling that a RED lets a \
+             typo in a `@red:` line confirm itself for ever",
+        );
+        assert!(
+            refused.contains("refused the question") && refused.contains("--exact"),
+            "⚠ the refusal must name the shape that causes it, or the next author writes the same \
+             line: {refused}",
+        );
+        let killed = verdict_of(None, "-p sprag-gate --lib")
+            .expect_err("a signal decided nothing, so nothing is reported");
+        assert!(
+            killed.contains("killed"),
+            "⚠ and *killed* is a different sentence from *refused*, because the remedy is: \
+             {killed}",
+        );
+    }
 }

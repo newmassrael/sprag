@@ -370,6 +370,146 @@ pub fn met_while(reason: &str) -> Option<&'static str> {
 /// was never this loop's to run.
 pub const RED: &str = "@red:";
 
+/// ⛔⛔⛔⛔⛔ **THE PLATFORMS A [`RED`] CLAIM MAY BE ABOUT** — register item 949.
+///
+/// # ⛔⛔⛔ Why a closed set and not whatever `std::env::consts::OS` says
+///
+/// A platform nobody spelled correctly is the escape hatch this workspace's rule 6 exists for: a
+/// claim marked `@macOS` or `@osx` would match no machine, so it would be *never checkable
+/// anywhere* — which is precisely the unfalsifiable red item 843 built `refuted` to prevent. So
+/// the vocabulary is two words, both of which some job in this fleet actually runs, and anything
+/// else is [`Fault::UnknownRedPlatform`] rather than a line that quietly means *not here*.
+///
+/// ⚠ Adding a third is a deliberate edit, and that is the point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    /// `std::env::consts::OS` = `"linux"` — this repository's `headless (linux)` and `pixel` jobs.
+    Linux,
+    /// `std::env::consts::OS` = `"macos"` — the `headless (macos)` job.
+    Macos,
+}
+
+impl Platform {
+    /// The word a claim spells it with, which is also `std::env::consts::OS`.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Linux => "linux",
+            Self::Macos => "macos",
+        }
+    }
+
+    /// Read one, or [`None`] for a word outside the set.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Self> {
+        match word {
+            "linux" => Some(Self::Linux),
+            "macos" => Some(Self::Macos),
+            _ => None,
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT A [`RED`] LINE CLAIMS** — register item 949: an argv, and the platform it is a
+/// claim about.
+///
+/// # ⛔⛔⛔⛔⛔ What the missing half cost, measured
+///
+/// [`Reading::standing_reds`] puts the argv to the repository THIS INSTRUMENT IS RUN IN, and a
+/// claim the suite finds green is `refuted` — the binary then prints *the claim is stale, so remove
+/// the `@red:` line* and exits 1. That is right, and it made a macOS-only red **impossible to
+/// write down**: mark it and Linux refutes it; leave it unmarked and `reds N claimed` does not
+/// count it.
+///
+/// ⇒ Measured 2026-09-08, over four hosted runs (`b5073c4e`, `7047fa1f`, `d598a1cf`): the
+/// `headless (macos)` job failed at `Test` on every one of them, while `north-star` printed
+/// `reds 0 claimed, 0 standing` throughout. **The end-condition counter was reading zero over a
+/// population it could not express.** Register item 924's shape, on the one line whose whole job is
+/// to say whether anything is still red.
+///
+/// # ⚠⚠ Why the platform rides INSIDE the value
+///
+/// A second mark beside it (`@red-on: macos`) can drift from the `@red:` it qualifies — an item
+/// could carry one and not the other, and that case would need a fault of its own. Written as the
+/// value's first token it cannot drift, because it IS the value.
+///
+/// ⚠⚠⚠ AND IT IS FAIL-CLOSED. `@` is outside `safe_argument`, so a platform token this reader
+/// failed to strip could never reach `cargo test` as an argument: it would be
+/// [`Fault::UnrunnableRed`] instead. A grammar whose failure mode is *execute something unintended*
+/// would not be worth the expressiveness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedClaim {
+    /// The platform it is about, or [`None`] for *wherever this instrument is run* — which is what
+    /// every claim written before item 949 means, and stays the default.
+    pub on: Option<Platform>,
+    /// The argv `cargo test` is to be asked with, every token checked by `safe_argument`.
+    pub argv: String,
+}
+
+/// Why a [`RED`] line could not be read — see [`RedClaim::parse`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedUnread {
+    /// A leading `@word` this reader has no [`Platform`] for.
+    Platform,
+    /// Empty, or a token `cargo test` must not be handed.
+    Argv,
+}
+
+impl RedClaim {
+    /// Read a [`RED`] line's value: an optional leading `@<platform>`, then the argv.
+    ///
+    /// # Errors
+    ///
+    /// [`RedUnread::Platform`] for a leading `@word` outside [`Platform`]'s set — never a silent
+    /// *not here*, which would make the claim unfalsifiable everywhere. [`RedUnread::Argv`] for an
+    /// empty argv or a token outside `safe_argument`.
+    pub fn parse(value: &str) -> Result<Self, RedUnread> {
+        let named = value.trim();
+        let (on, rest) = match named.split_once(char::is_whitespace) {
+            Some((first, rest)) if first.starts_with('@') => (
+                Some(Platform::parse(&first[1..]).ok_or(RedUnread::Platform)?),
+                rest,
+            ),
+            // ⚠ A lone `@word` with no argv after it lands here and is refused as an ARGV fault,
+            // which is the true reading: the platform may be spelled right and there is still
+            // nothing to ask.
+            _ if named.starts_with('@') => (None, named),
+            _ => (None, named),
+        };
+        let argv = rest.trim();
+        if argv.is_empty() || !argv.split_whitespace().all(safe_argument) {
+            return Err(RedUnread::Argv);
+        }
+        Ok(Self {
+            on,
+            argv: argv.to_string(),
+        })
+    }
+}
+
+/// 🎯🎯🎯 **WHAT THE REPOSITORY SAID ABOUT THE LEDGER'S RED CLAIMS** — register item 949.
+///
+/// ⚠⚠ A NAMED STRUCT AND NOT A TUPLE. Three lists of item numbers are indistinguishable by type,
+/// and this workspace has already paid for that: a tuple is a separation only for the members
+/// somebody named. [`elsewhere`](Self::elsewhere) in particular must never be read as a verdict —
+/// it is the count of claims this machine was not entitled to judge.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Reds {
+    /// Claims the suite confirmed, ascending.
+    pub standing: Vec<u32>,
+    /// Claims the suite ran and found GREEN — a ledger claiming a red there is none, which is
+    /// item 902's mirror and a fault about the document.
+    pub refuted: Vec<u32>,
+    /// ⛔⛔⛔ Claims about ANOTHER platform, which this machine neither confirmed nor refuted.
+    ///
+    /// ⚠⚠ NOT a third verdict and never folded into either neighbour: into `standing` it would
+    /// claim a red nothing here checked, and into `refuted` it would call a red stale for the
+    /// crime of being somebody else's platform — which is exactly the refutation that made these
+    /// claims unwritable. It is counted and printed, so *nobody asked* is a sentence a reader can
+    /// see rather than a zero they cannot tell from *asked and clean*.
+    pub elsewhere: Vec<u32>,
+}
+
 /// Whether one token of a [`RED`] value may be handed to `cargo test`.
 ///
 /// ⛔⛔⛔ **A CLOSED SET RATHER THAN A LIST OF THINGS TO REFUSE.** A denylist of shell
@@ -628,7 +768,11 @@ pub struct Item {
     ///
     /// ⚠ A CLAIM AND NOT A FACT. Whether it is true is [`Reading::standing_reds`]' question, and it
     /// is put to the repository — see [`Suite`].
-    pub red: Option<String>,
+    ///
+    /// ⚠⚠ IT CARRIES THE PLATFORM IT IS ABOUT — register item 949. A claim about another platform
+    /// is one this machine may not refute, and until that rode along it could not be written at
+    /// all. See [`RedClaim`].
+    pub red: Option<RedClaim>,
     /// ⛔⛔⛔ **THE SENTENCE THAT FOLLOWS [`PARENT`]'s VALUE**, kept rather than dropped once the
     /// number is read — register item 920. It comes off the SAME block that settled
     /// [`Item::parent`], so a superseded block cannot explain a mark that beat it. [`None`] where
@@ -796,6 +940,20 @@ pub enum Fault {
     /// checked reads exactly like a checked one, and this claim buys an item past the severity
     /// gate. **An unrunnable claim must not be the cheap answer.**
     UnrunnableRed {
+        /// The item that made it.
+        number: u32,
+        /// The line as written.
+        line: String,
+    },
+    /// ⛔⛔⛔⛔⛔ **A [`RED`] CLAIM NAMING A PLATFORM THIS READER HAS NO WORD FOR** — register item
+    /// 949, and a SEPARATE fault from [`UnrunnableRed`](Self::UnrunnableRed) because the remedy is
+    /// somewhere else: that one says *your argv cannot be run*, this one says *your platform is
+    /// spelled wrong*, and an author handed the first about the second edits a line that was fine.
+    ///
+    /// ⚠⚠ It is a RED and not a silence for the reason the whole platform grammar is fail-closed:
+    /// a claim matching no machine is checked by nobody, which is the unfalsifiable red item 843
+    /// built `refuted` to prevent — arriving by the back door.
+    UnknownRedPlatform {
         /// The item that made it.
         number: u32,
         /// The line as written.
@@ -1096,6 +1254,14 @@ impl fmt::Display for Fault {
                  flag, a crate name, a module path or a file (letters, digits and `-_:./`). A \
                  claim nothing can check buys an item past the severity gate on a line nobody \
                  verified",
+                line.trim()
+            ),
+            Self::UnknownRedPlatform { number, line } => write!(
+                f,
+                "item {number}: `{}` names a platform this instrument has no word for. A `{RED}` \
+                 value may open with `@linux` or `@macos` and nothing else — a platform matching \
+                 no machine is a red no job ever checks, which is the unfalsifiable claim the \
+                 refutation exists to refuse",
                 line.trim()
             ),
             Self::DanglingParent { number, named } => write!(
@@ -1410,11 +1576,11 @@ impl Reading {
     /// whether this machinery looked at anything — register item 924, which is the same hazard one
     /// gate over.
     #[must_use]
-    pub fn red_claims(&self) -> Vec<(u32, String)> {
+    pub fn red_claims(&self) -> Vec<(u32, RedClaim)> {
         self.items
             .iter()
             .filter(|item| item.tag == Some(Tag::Open))
-            .filter_map(|item| item.red.clone().map(|argv| (item.number, argv)))
+            .filter_map(|item| item.red.clone().map(|claim| (item.number, claim)))
             .collect()
     }
 
@@ -1436,17 +1602,28 @@ impl Reading {
     /// which is the ordinary case — measured 2026-09-06, this ledger carries none. With one it
     /// costs whatever that test costs, on every call, which is the price of the answer being the
     /// repository's rather than the document's.
-    pub fn standing_reds(&self, suite: &dyn Suite) -> Result<(Vec<u32>, Vec<u32>), String> {
-        let mut red = Vec::new();
-        let mut green = Vec::new();
-        for (number, argv) in self.red_claims() {
-            if suite.is_red(&argv)? {
-                red.push(number);
+    /// ⛔⛔⛔⛔⛔ AND `here` IS A PARAMETER, NEVER `std::env::consts::OS` READ IN HERE — register
+    /// item 949. The case that matters most is *a claim about a platform this is not*, and a
+    /// reader that asked the machine could only be driven on the machine it was asked about. The
+    /// binary passes the real value; the arms below pass both.
+    pub fn standing_reds(&self, suite: &dyn Suite, here: &str) -> Result<Reds, String> {
+        let mut found = Reds::default();
+        for (number, claim) in self.red_claims() {
+            // ⚠⚠ AN UNQUALIFIED CLAIM IS CHECKED EXACTLY AS BEFORE. Item 949's done-when ⑶ says
+            // it in as many words: do not make `refuted` tolerant. The platform mark buys one
+            // thing only — a claim about ANOTHER platform is not refuted here — and every claim
+            // about this one is still put to the repository.
+            if claim.on.is_some_and(|on| on.word() != here) {
+                found.elsewhere.push(number);
+                continue;
+            }
+            if suite.is_red(&claim.argv)? {
+                found.standing.push(number);
             } else {
-                green.push(number);
+                found.refuted.push(number);
             }
         }
-        Ok((red, green))
+        Ok(found)
     }
 
     /// 🎯🎯🎯🎯🎯 **HOW MANY STILL-OPEN DEBTS THIS ONE SITS UNDER** — register item 921, and the
@@ -2956,7 +3133,7 @@ pub fn read(text: &str) -> Reading {
             let mut severities: Vec<Severity> = Vec::new();
             let mut parents: Vec<Parent> = Vec::new();
             let mut reasons: Vec<String> = Vec::new();
-            let mut reds: Vec<String> = Vec::new();
+            let mut reds: Vec<RedClaim> = Vec::new();
             let mut owned: Vec<&'static str> = Vec::new();
             for line in body {
                 if let Some(value) = parent_value(line) {
@@ -2994,14 +3171,20 @@ pub fn read(text: &str) -> Reading {
                 // would otherwise sit in the ledger looking like a checked one, which is exactly
                 // the shape item 902 measured on a `paid` mark that named no commit.
                 if let Some(value) = red_value(line) {
-                    let named = value.trim();
-                    if named.is_empty() || !named.split_whitespace().all(safe_argument) {
-                        faults.push(Fault::UnrunnableRed {
+                    // ⚠⚠ AND A PLATFORM THIS READER HAS NO WORD FOR IS ITS OWN FAULT — register
+                    // item 949. Folded into `UnrunnableRed` it would tell the author to fix an
+                    // argv that is fine; left silent it would mean *no machine ever checks this*,
+                    // which is the unfalsifiable claim item 843 exists to refuse.
+                    match RedClaim::parse(value) {
+                        Ok(claim) => reds.push(claim),
+                        Err(RedUnread::Platform) => faults.push(Fault::UnknownRedPlatform {
                             number: *number,
                             line: (*line).to_string(),
-                        });
-                    } else {
-                        reds.push(named.to_string());
+                        }),
+                        Err(RedUnread::Argv) => faults.push(Fault::UnrunnableRed {
+                            number: *number,
+                            line: (*line).to_string(),
+                        }),
                     }
                 }
                 if let Some(value) = severity_value(line) {
@@ -4767,7 +4950,13 @@ mod tests {
         let claims = reading.red_claims();
         assert_eq!(
             claims,
-            vec![(898, "-p sprag-gate --lib north_star".to_string())],
+            vec![(
+                898,
+                RedClaim {
+                    on: None,
+                    argv: "-p sprag-gate --lib north_star".to_string(),
+                },
+            )],
             "⚠ THE CONTROL: the ledger claims exactly one red, so the two arms below differ by the \
              SUITE's answer and by nothing else",
         );
@@ -4818,15 +5007,27 @@ mod tests {
 
         let red = Answers([(asked.clone(), Ok(true))].into_iter().collect());
         assert_eq!(
-            reading.standing_reds(&red).expect("the suite answered"),
-            (vec![898], Vec::new()),
+            reading
+                .standing_reds(&red, "linux")
+                .expect("the suite answered"),
+            Reds {
+                standing: vec![898],
+                refuted: Vec::new(),
+                elsewhere: Vec::new(),
+            },
             "the suite ran it and it failed, so the claim stands",
         );
 
         let green = Answers([(asked.clone(), Ok(false))].into_iter().collect());
         assert_eq!(
-            reading.standing_reds(&green).expect("the suite answered"),
-            (Vec::new(), vec![898]),
+            reading
+                .standing_reds(&green, "linux")
+                .expect("the suite answered"),
+            Reds {
+                standing: Vec::new(),
+                refuted: vec![898],
+                elsewhere: Vec::new(),
+            },
             "⛔ THE SAME LEDGER, THE OPPOSITE ANSWER. A `@red:` line is a CLAIM about a tree, and \
              an item whose claim the suite refutes must not be admitted on it — item 902's \
              wrongly-paid mark, pointing the other way",
@@ -4838,11 +5039,139 @@ mod tests {
                 .collect(),
         );
         assert_eq!(
-            reading.standing_reds(&mute),
+            reading.standing_reds(&mute, "linux"),
             Err("cargo is not on the path".to_string()),
             "⚠⚠ AND *COULD NOT ASK* IS ITS OWN ANSWER, never folded into `false`: a suite that \
              cannot be run says nothing about any claim, which is `Commits::resolves`' rule and \
              the reason both of these return a `Result`",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A CLAIM ABOUT ANOTHER PLATFORM IS NOT REFUTED HERE — AND IS STILL COUNTED** —
+    /// register item 949, and both halves of its `Done when`.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The case, and why it could not be written down before
+    ///
+    /// The suite runs where this instrument runs. So a macOS-only red marked `@red:` was refuted by
+    /// every Linux run — the binary printing *the claim is stale, so remove the `@red:` line* and
+    /// exiting 1 — and left unmarked it was not in `reds N claimed` at all. Measured 2026-09-08
+    /// across `b5073c4e`, `7047fa1f` and `d598a1cf`: `headless (macos)` failed at `Test` on every
+    /// one while this instrument printed `reds 0 claimed, 0 standing`.
+    ///
+    /// # ⚠⚠ The mirror arm is the one that keeps `refuted` sharp
+    ///
+    /// Item 949's done-when ⑶ forbids making the refutation tolerant, so the SAME claim read on the
+    /// platform it names is checked exactly as an unqualified one is — and found green, it is
+    /// refuted. A platform mark buys one thing: *not here*. It does not buy *nowhere*.
+    #[test]
+    fn a_red_claimed_on_another_platform_is_neither_confirmed_nor_refuted_here() {
+        let ledger = with_a_standing_red().replace(
+            "@red: -p sprag-gate --lib north_star",
+            "@red: @macos -p sprag-gate --lib north_star",
+        );
+        let reading = read(&ledger);
+        assert_eq!(
+            reading.red_claims(),
+            vec![(
+                898,
+                RedClaim {
+                    on: Some(Platform::Macos),
+                    argv: "-p sprag-gate --lib north_star".to_string(),
+                },
+            )],
+            "⚠ THE CONTROL: the platform came off the value and the argv is what is left — a \
+             reader that kept `@macos` in the argv would hand it to cargo",
+        );
+        // ⛔ A suite that would answer GREEN. On Linux it is never asked, so its answer cannot be
+        // what makes the arm pass — and on macOS the same answer refutes the claim.
+        let green = Answers(
+            [("-p sprag-gate --lib north_star".to_string(), Ok(false))]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            reading
+                .standing_reds(&green, "linux")
+                .expect("nothing was asked, so nothing could fail"),
+            Reds {
+                standing: Vec::new(),
+                refuted: Vec::new(),
+                elsewhere: vec![898],
+            },
+            "⛔ ITEM 949: a Linux run must not REFUTE a macOS claim. Before this, marking the red \
+             made the instrument exit 1 and not marking it left `reds` blind — those were the only \
+             two options a ledger had",
+        );
+        assert_eq!(
+            reading
+                .standing_reds(&green, "macos")
+                .expect("the suite answered"),
+            Reds {
+                standing: Vec::new(),
+                refuted: vec![898],
+                elsewhere: Vec::new(),
+            },
+            "⛔⛔ AND DONE-WHEN ⑶: on the platform it names, the claim is put to the suite exactly \
+             as an unqualified one is. A platform mark that made a claim unfalsifiable EVERYWHERE \
+             would kill the protection item 843 bought",
+        );
+        // ⚠⚠ AND THE UNQUALIFIED CLAIM IS UNTOUCHED — the regression this could most easily cause,
+        // asserted rather than assumed: every red written before item 949 means *here*.
+        let plain = read(&with_a_standing_red());
+        assert_eq!(
+            plain
+                .standing_reds(&green, "linux")
+                .expect("the suite answered"),
+            Reds {
+                standing: Vec::new(),
+                refuted: vec![898],
+                elsewhere: Vec::new(),
+            },
+            "a claim naming no platform is a claim about wherever this runs, as it always was",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PLATFORM THIS READER HAS NO WORD FOR IS A FAULT, NOT A QUIET *NOT HERE*** —
+    /// register item 949, and the escape hatch its grammar would otherwise open.
+    ///
+    /// A claim marked `@osx` or `@macOS` matches no machine, so it is checked by nobody — which is
+    /// the unfalsifiable red `refuted` exists to refuse, arriving by the back door. Rule 6: an
+    /// unclassified value is refused, never defaulted.
+    ///
+    /// ⚠⚠ AND IT IS A DIFFERENT FAULT FROM AN UNRUNNABLE ARGV, because the author is sent to a
+    /// different line. Folding them would hand somebody *your argv cannot be run* about an argv
+    /// that is perfectly good — register item 901's shape, which this file has met before.
+    #[test]
+    fn a_red_claiming_a_platform_outside_the_vocabulary_is_refused_at_the_door() {
+        for spelled in ["@macOS", "@osx", "@windows", "@"] {
+            let ledger = with_a_standing_red().replace(
+                "@red: -p sprag-gate --lib north_star",
+                &format!("@red: {spelled} -p sprag-gate --lib north_star"),
+            );
+            let reading = read(&ledger);
+            assert!(
+                reading
+                    .faults
+                    .iter()
+                    .any(|fault| matches!(fault, Fault::UnknownRedPlatform { number: 898, .. })),
+                "⛔ `{spelled}` names no platform and must be a fault of its own: {:?}",
+                reading.faults,
+            );
+            assert!(
+                reading.red_claims().is_empty(),
+                "⚠ and it carries no claim, so nothing downstream can act on a line this reader \
+                 could not read: {:?}",
+                reading.red_claims(),
+            );
+        }
+        // ⛔⛔⛔ AND THE GRAMMAR IS FAIL-CLOSED. `@` is outside `safe_argument`, so a platform
+        // token this reader failed to strip could not reach `cargo test` — it would be an
+        // UNRUNNABLE argv instead. Asserted on the predicate rather than trusted from the comment.
+        assert!(
+            !safe_argument("@macos"),
+            "⛔⛔⛔⛔⛔ if `@macos` were a safe argument, a reader that stopped stripping the \
+             platform would silently pass it to `cargo test` as a filter — the grammar's whole \
+             safety is that its failure mode is a refusal",
         );
     }
 
@@ -5281,6 +5610,7 @@ mod tests {
             | Fault::MetWhileNotMade { .. }
             | Fault::DeferredByUnreadLink { .. }
             | Fault::UnrunnableRed { .. }
+            | Fault::UnknownRedPlatform { .. }
             | Fault::DanglingParent { .. }
             | Fault::ParentCycle { .. }
             | Fault::PaidDeclaration { .. }
@@ -6173,9 +6503,17 @@ mod tests {
              instead, which puts it inside `all_clean` and gives it a line: `{}`",
             verdict.trim(),
         );
+        // ⚠⚠ THE THIRD LINE IS NOT A FOURTH TERM — register item 949. A claim about another
+        // platform is neither confirmed nor refuted here, so it decides no exit code; it is
+        // printed because *nobody asked* and *asked and clean* are otherwise the same zero, and
+        // the four hosted runs that were red on macOS under `reds 0 standing` are what that cost.
         for (term, printed) in [
             ("reading.is_green()", "items {} in section A"),
             ("refuted.is_empty()", "reds {} claimed, {} standing: {}"),
+            (
+                "refuted.is_empty()",
+                "claim(s) are about another platform, so this {here} run did not judge them",
+            ),
             ("screenings.all_clean()", "{screening}"),
         ] {
             assert!(
