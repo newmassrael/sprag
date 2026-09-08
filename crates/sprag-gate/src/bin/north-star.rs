@@ -484,6 +484,32 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
         );
         return std::process::ExitCode::SUCCESS;
     };
+    // ⛔⛔⛔⛔⛔ **AMBIGUITY IS A REFUSAL, NOT A PASS** — register item 842, and working rule 6.
+    //
+    // The subject is read as the FIRST item a proposal names, which is a CONVENTION. A proposal
+    // that cites an admissible item and is about an inadmissible one reads as being about the
+    // citation, and this mode's whole job is then silently past. The two readings are
+    // indistinguishable, so both are refused and the reply says how to re-propose. See
+    // `Reading::unadmitted_named` for why the population is the OPEN items and for what this costs.
+    //
+    // ⚠ IT ASKS THE ADMISSION TOO, and that is not redundant: a proposal whose SUBJECT this
+    // register withholds is already refused further down, with a reason naming which rule held it
+    // back. Answering that one here instead would replace a precise refusal with a vaguer one.
+    let muddled = reading.unadmitted_named(&proposal, &admitted);
+    if !muddled.is_empty() && admitted.contains(&number) {
+        println!(
+            "NO — this proposal names item {number}, which may be taken, AND {} this register \
+             would not hand out ({}). Nothing here can tell a citation from the work itself, so \
+             neither reading is acted on: name the item you are taking, alone. What a round may \
+             take: {spelled}",
+            match muddled.len() {
+                1 => "an open item".to_owned(),
+                many => format!("{many} open items"),
+            },
+            north_star::name_some(&muddled, north_star::Ends::Lowest),
+        );
+        return std::process::ExitCode::SUCCESS;
+    }
     if admitted.contains(&number) {
         // 🎯🎯🎯🎯🎯 AND WHETHER TAKING IT GOES DEEPER OR SIDEWAYS — register item 840, carried as
         // a SECOND MARKED WORD on the same reply the verdict rides. `FRESH` is an unrelated root:

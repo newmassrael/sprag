@@ -1889,12 +1889,27 @@ impl Reading {
     /// Numbers are filtered through [`Reading::items`] rather than through a shape, so a year and a
     /// byte count are skipped for the reason they should be: **nothing is filed under them.**
     ///
-    /// ⚠ The residue, stated rather than hidden: a proposal that cites another item before naming
-    /// its own is read as being about the citation. The remedy is the ledger's convention, not a
-    /// longer rule — and where the citation is outside the admissible set the answer is a REFUSAL,
-    /// which is the safe direction for a check whose whole job is to hold a run to its brief.
+    /// ⛔⛔⛔⛔⛔ **THE RESIDUE THIS ONCE STATED IS NOW HELD BY A PREDICATE** — register item 842.
+    /// A proposal that cites another item before naming its own is still read as being about the
+    /// citation, and that is a FALSE REFUSAL where the citation is inadmissible. The other
+    /// direction — a citation that is admissible smuggling in a subject that is not — is what
+    /// [`unadmitted_named`](Self::unadmitted_named) refuses, so the convention no longer has to be
+    /// trusted.
     #[must_use]
     pub fn names(&self, text: &str) -> Option<u32> {
+        // ⚠ WRITTEN ON THE PLURAL rather than beside it. Two scanners over one text are free to
+        // disagree about what a number is, and the whole of item 842's repair is that the set this
+        // refuses on and the number it judges are read off ONE pass.
+        self.names_all(text).first().copied()
+    }
+
+    /// **EVERY REGISTER ITEM A PROPOSAL NAMES**, in the order it names them, each once.
+    ///
+    /// Numbers are filtered through [`Reading::items`] rather than through a shape, so a year and a
+    /// byte count are skipped for the reason they should be: **nothing is filed under them.**
+    #[must_use]
+    pub fn names_all(&self, text: &str) -> Vec<u32> {
+        let mut found: Vec<u32> = Vec::new();
         let mut digits = String::new();
         for character in text.chars().chain(std::iter::once(' ')) {
             if character.is_ascii_digit() {
@@ -1905,11 +1920,57 @@ impl Reading {
             digits.clear();
             // ⚠ A number the ledger files nothing under is not a citation of anything, so the scan
             // goes on rather than stopping at the first integer it meets.
-            if read.is_some_and(|number| self.items.iter().any(|item| item.number == number)) {
-                return read;
+            if let Some(number) = read
+                && self.items.iter().any(|item| item.number == number)
+                && !found.contains(&number)
+            {
+                found.push(number);
             }
         }
-        None
+        found
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE OPEN ITEMS A PROPOSAL NAMES THAT THIS REGISTER WOULD NOT ADMIT** — register
+    /// item 842, and empty for a proposal nothing here can be confused about.
+    ///
+    /// # ⛔⛔⛔ The hole this closes, and why it was a hole rather than a preference
+    ///
+    /// [`names`](Self::names) reads a proposal's subject as the FIRST item it names, which is this
+    /// ledger's own convention (*"항목 839 를 갚아라 — …"*). A convention is not a predicate. So a
+    /// proposal that CITES an admissible item and is actually about an inadmissible one —
+    /// *"669 가 말한 얼굴을 837 에서 갚는다"* — was answered `YES`, **about 669**, and the
+    /// enforcement this whole mode exists to be was silently past.
+    ///
+    /// The two directions were never symmetric: citing an inadmissible item FIRST costs a refusal,
+    /// which is safe. Citing an admissible one first costs the gate.
+    ///
+    /// # ⚠⚠⚠ Why OPEN and not every item it names
+    ///
+    /// A proposal cites paid work constantly — *"959 를 갚으며 만든"* — and a paid item cannot be a
+    /// smuggled subject: nobody proposes to pay what is paid. The same goes for `out`. **What can
+    /// be smuggled is an OPEN item this register would not hand out**, so that is the population,
+    /// and refusing on any wider one would refuse the ledger's ordinary voice.
+    ///
+    /// # ⚠⚠ What it costs, measured rather than argued
+    ///
+    /// Measured on this repository's own register, 2026-09-08: `critical` is empty, so
+    /// [`admits`](Self::admits) hands back the whole population and **no open item is unadmitted**
+    /// — this refuses nothing at all today. Its cost rises exactly when the admissible set is
+    /// narrow, which is when a run is being held to a critical item and a refusal is the answer
+    /// that holds it there. ⚠ It cannot separate the two readings and does not try: a citation and
+    /// a smuggled subject look identical, so both are refused and the reply says how to re-propose.
+    ///
+    /// ⚠ The residue, stated rather than hidden: a proposal whose real subject is filed under NO
+    /// item at all still reads as being about its citation. Nothing here can see a subject the
+    /// register has never heard of — that one wants the label item 842's `Done when` ⑴ describes,
+    /// which is the template's to add.
+    #[must_use]
+    pub fn unadmitted_named(&self, text: &str, admitted: &[u32]) -> Vec<u32> {
+        let open = self.population();
+        self.names_all(text)
+            .into_iter()
+            .filter(|number| open.contains(number) && !admitted.contains(number))
+            .collect()
     }
 
     /// The items that state no [`PARENT`] — the backlog [`Fault::ParentRatchetGrew`] holds.
@@ -4089,6 +4150,82 @@ mod tests {
             reading.names("항목 896 은 섹션 B 다"),
             None,
             "and section B is not this ledger's population, so nothing here is filed under 896",
+        );
+    }
+
+    /// A ledger with a SECOND open item that nobody called critical — what [`LEDGER`] cannot
+    /// express, because its whole population is one critical item and every proposal about it is
+    /// admissible by construction.
+    fn two_open_items() -> String {
+        LEDGER.replace(
+            "899. ✅✅ **PAID 2026-09-02**",
+            "895. ⛔ **Open, and nobody called it critical**\n     @ns: open — ordinary work\n     \
+             @sev: ordinary — it waits\n     @from: none\n\n899. ✅✅ **PAID 2026-09-02**",
+        )
+    }
+
+    /// **EVERY ITEM A PROPOSAL NAMES**, in order and once each — [`Reading::names`]'s plural, and
+    /// the one pass both readings come off.
+    #[test]
+    fn a_proposal_is_read_for_every_register_item_it_names() {
+        let reading = read(&two_open_items());
+        assert_eq!(
+            reading.names_all("900 이 말한 얼굴을 895 에서 갚는다 — 900 도 참고"),
+            vec![900, 895],
+            "in the order named, each once: a repeat is the same citation, not a second one",
+        );
+        assert_eq!(
+            reading.names_all("2026-09-02 에 잰 72 바이트"),
+            Vec::<u32>::new(),
+            "⚠ a year and a byte count are filtered by what the ledger files, as in the singular",
+        );
+        assert_eq!(
+            reading.names("900 이 말한 얼굴을 895 에서 갚는다"),
+            Some(900),
+            "⚠⚠ THE PAIR: the singular is the plural's head, so the number this judges and the \
+             set it refuses on cannot come from two scanners that disagree",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PROPOSAL THAT COULD BE ABOUT TWO THINGS IS REFUSED** — register item 842, and
+    /// the hole was that the FIRST-named rule is a convention rather than a predicate.
+    #[test]
+    fn a_proposal_naming_an_open_item_this_register_withholds_is_muddled() {
+        let reading = read(&two_open_items());
+        let admitted = reading.admits(1, &[]);
+        assert_eq!(
+            admitted,
+            vec![900],
+            "⚠ THE STAGING: 900 is critical, so this register hands out that and nothing else — \
+             without a withheld OPEN item beside it there is nothing here to be confused about",
+        );
+
+        assert_eq!(
+            reading.unadmitted_named("900 이 말한 얼굴을 895 에서 갚는다", &admitted),
+            vec![895],
+            "⛔ THE ARM: read by the convention this is a proposal about 900, which may be taken. \
+             It is written to be about 895, which may not. Both readings are refused",
+        );
+
+        // ── AND THE TWO CONTROLS, because a rule that refused every proposal carrying two
+        //    numbers would pass the arm above and be useless ────────────────────────────────────
+        assert_eq!(
+            reading.unadmitted_named("항목 900 을 갚아라 — 899 도 같은 얼굴이다", &admitted),
+            Vec::<u32>::new(),
+            "⚠⚠ THE CONTROL: 899 is PAID, and nobody proposes to pay what is paid — citing paid \
+             work is this ledger's ordinary voice and must not cost a refusal",
+        );
+        assert_eq!(
+            reading.unadmitted_named("항목 900 을 갚아라", &admitted),
+            Vec::<u32>::new(),
+            "⚠ and the plain case stays plain",
+        );
+        assert_eq!(
+            reading.unadmitted_named("항목 895 를 갚아라", &admitted),
+            vec![895],
+            "⚠⚠⚠ AND THE HONEST HALF: a proposal openly about the withheld item is caught here \
+             too. It was already refused one line down for naming an inadmissible subject, so \
+             nothing changes for it — but a reader must not be told this only fires on citations",
         );
     }
 
