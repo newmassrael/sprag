@@ -5804,6 +5804,33 @@ mod tests {
             "the second session exists: {created}"
         );
 
+        // ⛔⛔⛔⛔⛔ **AND WAIT FOR IT TO STOP MOVING FIRST** — register item 974, and this is the
+        // repair rather than the tidying.
+        //
+        // `new_session` answers as soon as the session exists; the pane it was born with then
+        // writes its first output, and `bump_on_dirty` advances that session's revision
+        // ASYNCHRONOUSLY. A baseline read before that lands is STALE, so the wait below parks
+        // against a number the session has already passed and its own late bump answers it —
+        // which looks exactly like another session's change leaking in, and the assertion further
+        // down used to say so.
+        //
+        // ⇒ **Measured on this machine 2026-09-08 by oversubscribing the test threads**, which is
+        // what a small CI runner does to a big suite: at `RUST_TEST_THREADS` 64, 128 and 256 this
+        // gate failed **5 runs out of 6** (at the machine's own 32-thread default it had passed 12
+        // times running). Every failure was INTERVAL TWO, `work` moving from 1 to 2 on its own.
+        // That is the condition item 974 asked to be named, and CI's `headless (linux)` had it
+        // twice in five runs.
+        //
+        // ⚠⚠ **Waiting here is not the flaky shape this register warns about.** The wall clock is
+        // in the FIXTURE, not in a predicate: nothing below asserts a duration, and the two
+        // INTERVAL assertions state exactly what this wait has to have achieved — so if it ever
+        // stops achieving it, they say which half moved rather than blaming the wrong session.
+        settle("`work` to stop bumping its own revision", || {
+            let before = state.revision("work").current();
+            sleep(Duration::from_millis(20));
+            state.revision("work").current() == before
+        });
+
         // Park a wait scoped to `work`, against `work`'s OWN baseline. The baseline is read under
         // that name for the same reason a client re-reads `scene/revision` after re-scoping: two
         // sessions' counters advance independently, so a number from one is not a baseline in the
@@ -5867,11 +5894,12 @@ mod tests {
         let work_now = state.revision("work").current();
         assert_eq!(
             work_now, since,
-            "⚠⚠⚠ REGISTER ITEM 974, INTERVAL TWO: `work` was at {since} when the wait parked and \
-             is at {work_now} now, so THIS session moved while the default one was being spawned \
-             into. The wake below is then its own change arriving late rather than another \
-             session's leaking in — a different defect with a different repair, and the assertion \
-             after this one would have blamed the wrong half.",
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 975, INTERVAL TWO: `work` was at {since} when the wait parked \
+             — AFTER settling, which INTERVAL ONE asserts — and is at {work_now} now, having been \
+             asked to do NOTHING in between; the only request that ran was a spawn into the \
+             DEFAULT session. That is the measurement. WHY this session's counter moved is not, \
+             and item 975 is open on it: the settle above rules out its own late bump, which is \
+             the half item 974's intervals were built to separate.",
         );
         let answered = sink.lock().unwrap();
         assert!(
