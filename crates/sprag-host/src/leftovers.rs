@@ -474,8 +474,7 @@ mod tests {
         // refused that: twenty other sites needed the same check, so the shape that spreads has to
         // be the one that HANDS THE PATH BACK. One spelling, twenty-one sites.
         let socket = sprag_scratch::may_bind(&runtime.join("listening.sock"));
-        let listener =
-            std::os::unix::net::UnixListener::bind(&socket).expect("a socket of this test's own");
+        let listener = sprag_scratch::bind_socket(&socket).expect("a socket of this test's own");
 
         let found = survey(&dir, &runtime);
         let residue = found.first().expect("the stem is surveyed");

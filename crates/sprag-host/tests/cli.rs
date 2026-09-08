@@ -1089,8 +1089,6 @@ fn version_answers_without_a_daemon() {
 /// only thing that says so.
 #[test]
 fn a_daemon_on_a_socket_nobody_named_is_found_by_the_survey() {
-    use std::os::unix::net::UnixListener;
-
     // A runtime directory of this case's own. The survey's population is a DIRECTORY, so a daemon
     // in the shared temporary directory would drag every parallel case's socket into the answer.
     let runtime = socket_path().with_extension("runtime");
@@ -1108,11 +1106,11 @@ fn a_daemon_on_a_socket_nobody_named_is_found_by_the_survey() {
     std::fs::write(&dead, b"").expect("a file where a daemon used to be");
     // ⛔ CHECKED BEFORE THE BIND — register item 955; `socket_path` above holds the reason.
     let taken = sprag_scratch::may_bind(&runtime.join("sprag-gui.sock"));
-    let _listener = UnixListener::bind(&taken).expect("a socket some other program owns");
+    let _listener = sprag_scratch::bind_socket(&taken).expect("a socket some other program owns");
     // Not this product's, so it must not be knocked on at all — connecting to a stranger's socket
     // to see what it says is not this product's business.
     let stranger = sprag_scratch::may_bind(&runtime.join("ssh-askpass-1a2b.sock"));
-    let _stranger = UnixListener::bind(&stranger).expect("another program's socket");
+    let _stranger = sprag_scratch::bind_socket(&stranger).expect("another program's socket");
 
     let elsewhere = runtime.join("nothing-here.sock");
     let env: &[(&str, &str)] = &[
@@ -3245,7 +3243,7 @@ fn a_socket_nothing_serves_still_takes_the_state_home_it_was_written_to_with_it(
         // was never there* were one sentence. Bound and dropped immediately: dropping a
         // `UnixListener` does NOT unlink its path, so what is left is a socket file with nothing
         // behind it — a connect fails at once and the breadcrumb below is still written.
-        drop(std::os::unix::net::UnixListener::bind(&sock).expect("a socket file to leave behind"));
+        drop(sprag_scratch::bind_socket(&sock).expect("a socket file to leave behind"));
         assert!(
             sock.exists(),
             "⚠ the fixture must actually make the file the tail assertion is about: {}",
@@ -13348,7 +13346,7 @@ fn a_pane_that_inherits_a_dead_panes_number_is_not_taken_off_its_hook() {
 #[test]
 fn a_wedged_daemon_cannot_stall_a_request_verb() {
     let sock = socket_path();
-    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("a stand-in daemon");
+    let listener = sprag_scratch::bind_socket(&sock).expect("a stand-in daemon");
     std::thread::spawn(move || {
         // HELD, not dropped, for the reason the hook's stand-in holds it: a closed stream is an EOF,
         // and an EOF is an answer. Being ignored is the case under test. The sleep outlasts the
@@ -13421,7 +13419,7 @@ fn no_verb_of_this_vocabulary_stalls_or_reports_success_against_a_wedged_daemon(
 
     let sock = socket_path();
     let _site = SocketSite(sock.clone());
-    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("a stand-in daemon");
+    let listener = sprag_scratch::bind_socket(&sock).expect("a stand-in daemon");
     std::thread::spawn(move || {
         // HELD, never answered: a stream this thread dropped early would hand its client an EOF,
         // which is an answer, and being ignored is the case under test.
@@ -13772,7 +13770,7 @@ fn a_wedged_daemon_cannot_stall_the_agents_hook() {
     // the hook below writes there BY CONSTRUCTION, because it is the delivery failure that files
     // the breadcrumb. Measured leaking one `hook-mute.0` per run until this line.
     let _site = SocketSite(sock.clone());
-    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("a stand-in daemon");
+    let listener = sprag_scratch::bind_socket(&sock).expect("a stand-in daemon");
     std::thread::spawn(move || {
         // HELD, not dropped: closing the stream would give the client an EOF, which is an answer of
         // a kind. Being ignored is the case under test.

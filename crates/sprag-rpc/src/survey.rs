@@ -241,8 +241,6 @@ pub fn runtime_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::net::UnixListener;
-
     use super::*;
 
     /// A directory of this test's own, removed by the caller.
@@ -362,7 +360,7 @@ mod tests {
         let dead = sock(&dir, "sprag-dead.sock");
         std::fs::write(&dead, b"").expect("a file where a socket used to be");
         let taken = sock(&dir, "sprag-taken.sock");
-        let _listener = UnixListener::bind(&taken).expect("a socket this test owns");
+        let _listener = sprag_scratch::bind_socket(&taken).expect("a socket this test owns");
 
         let survey = survey(&dir, "gate", Duration::from_millis(500));
         let words: Vec<(&str, &str)> = survey

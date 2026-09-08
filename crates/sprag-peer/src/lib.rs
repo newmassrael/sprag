@@ -44,7 +44,7 @@
 //! Cargo allows, and it is what keeps a test double out of a shipped binary.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -387,7 +387,11 @@ impl OldDaemon {
         // older daemon did not answer"*, which is a sentence about the product and not about a
         // path four bytes too long.
         let sock = &sprag_scratch::may_bind(sock);
-        let listener = UnixListener::bind(sock).expect("bind the older daemon's socket");
+        // ⛔⛔ AND THE BIND ITSELF GOES THROUGH THE SEAM — register item 957. The line above is the
+        // MINT-side check that item 959's ratchet holds this file to; this one is the BIND-side
+        // one, and it is bundled rather than remembered because a per-file gate cannot see a
+        // second bind added beside a checking factory.
+        let listener = sprag_scratch::bind_socket(sock).expect("bind the older daemon's socket");
         listener
             .set_nonblocking(true)
             .expect("a stoppable accept loop");

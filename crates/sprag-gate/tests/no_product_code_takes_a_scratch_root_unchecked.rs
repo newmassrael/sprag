@@ -1065,8 +1065,8 @@ fn every_file_that_mints_a_socket_path_asks_whether_it_can_hold_one() {
     );
 }
 
-/// ⛔⛔⛔⛔⛔ **A FILE THAT BINDS A UNIX SOCKET ASKS WHETHER THE PATH CAN HOLD ONE** — register item
-/// 955, and the adoption item 950's budget did not have.
+/// ⛔⛔⛔⛔⛔ **NO SITE BINDS A UNIX SOCKET EXCEPT THROUGH THE SEAM THAT MEASURES THE PATH** —
+/// register item 957, and what register item 955's per-FILE claim could not say.
 ///
 /// # ⛔⛔⛔⛔ What was measured, and why a budget alone was not enough
 ///
@@ -1077,51 +1077,79 @@ fn every_file_that_mints_a_socket_path_asks_whether_it_can_hold_one() {
 /// budget nothing consults is *somebody's memory* wearing a function's name, which is the shape
 /// register items 738 and 853 refuse.
 ///
-/// # ⚠⚠⚠ Why the claim is per FILE and not per bind, said plainly
+/// # ⛔⛔⛔⛔⛔ Why this replaces *every file that binds a socket asks*, which stood here first
 ///
-/// The paths come from about six FACTORIES — two `socket_path()`s, one `sock_path(tag)` feeding ten
-/// binds, a few `dir.join(…)` — and the right place for the check is where the path is MADE, so a
-/// caller cannot forget it. A per-bind rule would demand the call on lines that legitimately do not
-/// have it. What every binding file can be held to is that it asks SOMEWHERE, and the checking
-/// constructor hands the path back, so the asking cannot be decorative.
+/// That test's claim was per FILE — *it asks SOMEWHERE* — because the paths come from a handful of
+/// factories and a per-bind rule would have demanded the call on lines that legitimately make no
+/// path. **A file with a checking factory and a second, UNCHECKED bind beside it satisfies it**:
+/// `sprag-client`'s `wire.rs` fed ten binds from one factory and `sprag-host`'s `cli.rs` had a
+/// factory plus two `runtime.join(…)`, so both were exactly that shape. Item 957 was opened because
+/// the gate's own doc had written this limit down and nobody had measured it — working rule 10.
 ///
-/// ⚠⚠ THE COUNT IS ASSERTED, because a walk that stopped finding binds would satisfy this claim
-/// vacuously — register item 924's shape, and the reason every population in this file is printed.
+/// ⇒ The repair is not a cleverer scan. `sprag_scratch::bind_socket` hands back the LISTENER, with
+/// the door on the inside, so **a bind and its check are joined by the type** and this gate has
+/// only to count the sites that go round it. That is a claim about SITES, which is what item 957
+/// asked for, and it needs no data flow to make it.
 ///
-/// ⚠ There is NO exemption arm. This gate is written after all twenty-one were brought in, so the
-/// honest number today is zero; an exemption array here would be the escape hatch this workspace's
-/// rule 6 refuses, and a site that genuinely cannot ask belongs in the ledger instead.
+/// ⚠⚠ THE COUNT IS ASSERTED — of the seam's callers, not of the direct calls, because the direct
+/// calls are supposed to be zero and *zero of zero* is register item 924's vacuous green. A walk
+/// that stopped finding binds altogether would fail here rather than pass.
+///
+/// ⚠⚠ THE SEAM ITSELF IS FOUND, NOT LISTED. `crates/sprag-scratch/src/` is where the wrapper lives
+/// because that is the crate every binder already depends on; the count inside it is held at ONE so
+/// a second wrapper cannot appear beside the first and skip the door. That is a derived boundary
+/// with an asserted size, and deliberately not an exemption array — item 957's own done-when ⑶.
 #[test]
-fn every_file_that_binds_a_socket_asks_whether_the_path_can_hold_one() {
-    let sites = bind_sites();
-    assert!(
-        sites.len() >= 20,
-        "⚠⚠⚠ THE POPULATION COLLAPSED: this walk found {} bind site(s), and measured 2026-09-08 \
-         this workspace has 21. A scan of nothing is green for the wrong reason: {sites:#?}",
-        sites.len(),
-    );
+fn no_site_binds_a_unix_socket_except_through_the_door() {
+    /// Where the one bundled constructor lives — a path rather than a file list, so a second
+    /// wrapper anywhere else is a direct bind like any other.
+    const SEAM: &str = "crates/sprag-scratch/src/";
 
-    // ⚠ Spelled once, so the message below and the search cannot drift apart.
-    let door = "may_bind(";
-    let asking: std::collections::BTreeSet<String> = rust_files()
-        .into_iter()
-        .filter(|(_, text)| code_lines(text).any(|(_, line)| line.contains(door)))
-        .map(|(name, _)| name)
-        .collect();
-    let silent: Vec<String> = sites
+    let sites = bind_sites();
+    let (seam, direct): (Vec<_>, Vec<_>) = sites
         .iter()
-        .filter(|(name, _, _)| !asking.contains(name))
+        .partition(|(name, _, _)| name.starts_with(SEAM));
+    let loose: Vec<String> = direct
+        .iter()
         .map(|(name, line, code)| format!("  {name}:{line}  {code}"))
         .collect();
     assert!(
-        silent.is_empty(),
-        "⛔⛔⛔⛔⛔ REGISTER ITEM 955: a file binds a unix socket and never asks whether the path \
-         can hold one on the platform with the tightest `sun_path`. macOS gives {} bytes and a \
-         {}-byte scratch root against Linux's 4, so a path that binds here is refused there and the \
-         test then reports something else entirely. Take the path back through `{door}` in \
-         `sprag_scratch`, at the factory that MAKES it:\n{}",
+        loose.is_empty(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 957: a site binds a unix socket without going through the door \
+         that measures the path. macOS gives {} bytes of `sun_path` and a {}-byte scratch root \
+         against Linux's 4, so a path that binds here is refused there and the test then reports \
+         something else entirely. ⚠ A neighbouring line calling `may_bind` is NOT this claim — \
+         that was the per-file rule this replaced, and it is satisfied by a checked factory with \
+         an unchecked bind beside it. Use `sprag_scratch::bind_socket`, which hands back the \
+         listener:\n{}",
         sprag_scratch::TIGHTEST_SUN_PATH,
         sprag_scratch::LONGEST_SCRATCH_ROOT,
-        silent.join("\n"),
+        loose.join("\n"),
+    );
+    assert_eq!(
+        seam.len(),
+        1,
+        "⚠⚠⚠⚠ AND THE SEAM IS ONE DOOR, not a corridor: a second direct bind under {SEAM} could \
+         skip `may_address` and every caller of it would be unmeasured with this gate green. \
+         Found {seam:#?}",
+    );
+
+    // ⚠ Spelled once so the search and the message cannot drift apart.
+    let door = "bind_socket(";
+    let through: Vec<String> = rust_files()
+        .into_iter()
+        .flat_map(|(name, text)| {
+            code_lines(&text)
+                .filter(|(_, line)| outside_strings(line).contains(door))
+                .map(|(line, code)| format!("  {name}:{line}  {}", code.trim()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        through.len() >= 20,
+        "⚠⚠⚠ THE POPULATION COLLAPSED: this workspace binds 21 unix sockets (measured 2026-09-08) \
+         and this walk found {} call(s) of `{door}`. Zero direct binds is only worth asserting \
+         while there are binds: {through:#?}",
+        through.len(),
     );
 }

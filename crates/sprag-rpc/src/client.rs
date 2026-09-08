@@ -3311,7 +3311,7 @@ mod tests {
             std::process::id()
         )));
         let _ = std::fs::remove_file(&path);
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the test socket");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind the test socket");
         // HOLD the accepted stream: dropping it would close the connection and the read would end
         // with EOF, which is the very outcome this test must not be able to pass by.
         let accepted = thread::spawn(move || listener.accept().map(|(stream, _)| stream));

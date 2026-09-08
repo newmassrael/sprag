@@ -56,7 +56,7 @@
 //! the notification produced none.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -412,7 +412,7 @@ impl DaemonRelay {
     /// Stand in front of the daemon at `daemon`, on an address of this relay's own.
     fn in_front_of(daemon: &Path) -> Self {
         let path = socket_path();
-        let listener = UnixListener::bind(&path).expect("bind the relay socket");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind the relay socket");
         // Non-blocking accept plus a short sleep, rather than a wake-up connection on drop: a
         // connection made to unblock `accept` would be counted, and a counter with an exemption in
         // it is the thing this gate exists to refuse.

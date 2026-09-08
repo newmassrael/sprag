@@ -6191,7 +6191,7 @@ mod tests {
     /// is harmless and unlinking never is what leaves a stale socket for the next run.
     fn a_dead_host_conn(tag: &str) -> (HostConn, SockGuard) {
         let path = sock_path(tag);
-        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
         let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
         // Accept then drop the server side: the client's next read returns EOF, which is
         // what `HostConn::call` maps to `UnexpectedEof` — the host is gone.
@@ -6213,7 +6213,7 @@ mod tests {
     /// as an answered refusal, and the client left a daemon that was still there.
     fn a_torn_connection_on_a_live_host(tag: &str) -> (HostConn, UnixListener, SockGuard) {
         let path = sock_path(tag);
-        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
         let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
         let (server, _) = listener.accept().expect("accept the client");
         drop(server);
@@ -6241,7 +6241,7 @@ mod tests {
         use std::io::{BufRead as _, Write as _};
 
         let path = sock_path("activity-wedged");
-        let listener = UnixListener::bind(&path).expect("bind the wedged host socket");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind the wedged host socket");
         let guard = SockGuard(path.clone());
         let held = std::thread::spawn(move || {
             // It answers the HANDSHAKE and nothing after it — a daemon that WEDGES once it is
@@ -6425,7 +6425,7 @@ mod tests {
     ) -> (HostConn, JoinHandle<()>, SockGuard) {
         use std::io::Write;
         let path = sock_path(tag);
-        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
         let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
         let viewing = viewing.to_owned();
         let list: Vec<SessionInfo> = survivors
@@ -6570,7 +6570,7 @@ mod tests {
     ) -> (HostConn, JoinHandle<()>, SockGuard, Arc<AtomicUsize>) {
         use std::io::Write;
         let path = sock_path(tag);
-        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
         let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
         let seen = Arc::new(AtomicUsize::new(0));
         let seen_srv = Arc::clone(&seen);
@@ -6653,7 +6653,7 @@ mod tests {
     fn a_wake_then_refuse_host_conn(tag: &str) -> (HostConn, JoinHandle<()>, SockGuard) {
         use std::io::Write;
         let path = sock_path(tag);
-        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
         let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept the client");
@@ -6920,7 +6920,7 @@ mod tests {
     fn our_own_teardown_under_a_switch_policy_does_not_flag_a_switch() {
         use std::io::Write;
         let path = sock_path("teardown-switch");
-        let listener = UnixListener::bind(&path).expect("bind");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind");
         let _guard = SockGuard(path.clone());
         let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect");
         let (server, _) = listener.accept().expect("accept");
@@ -6993,7 +6993,7 @@ mod tests {
     #[test]
     fn our_own_teardown_does_not_ask_the_shell_to_quit() {
         let path = sock_path("teardown");
-        let listener = UnixListener::bind(&path).expect("bind");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind");
         let _guard = SockGuard(path.clone());
         let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect");
         let (server, _) = listener.accept().expect("accept");
@@ -8024,7 +8024,7 @@ mod tests {
     ) -> (HostConn, JoinHandle<()>, SockGuard, Arc<Mutex<Vec<Value>>>) {
         use std::io::Write;
         let path = sock_path(tag);
-        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
         let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_srv = Arc::clone(&seen);
@@ -8140,7 +8140,7 @@ mod tests {
     ) -> (PathBuf, JoinHandle<()>, SockGuard, Arc<Mutex<Vec<Value>>>) {
         use std::io::Write;
         let path = sock_path(tag);
-        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
         listener
             .set_nonblocking(true)
             .expect("poll the listener rather than park on it");

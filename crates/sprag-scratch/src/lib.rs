@@ -535,6 +535,51 @@ pub fn may_bind(path: &std::path::Path) -> PathBuf {
     may_address(path)
 }
 
+/// 🎯🎯🎯🎯🎯 **A LISTENER ON A PATH THIS PLATFORM CAN ACTUALLY HOLD** — register item 957, and the
+/// step that stops the check being something a bind site has to REMEMBER.
+///
+/// # ⛔⛔⛔⛔⛔ What a per-FILE gate cannot see, measured on this workspace
+///
+/// Item 955 brought twenty-one bind sites through [`may_bind`] and gated it — but the gate's claim
+/// was *this FILE asks somewhere*, because the paths come from a handful of factories and a per-bind
+/// rule would have demanded the call on lines that legitimately do not make a path. That claim is
+/// satisfied by a file with a checking factory **and a second, unchecked bind beside it**:
+/// `sprag-client`'s `wire.rs` feeds ten binds from one factory and `sprag-host`'s `cli.rs` has a
+/// factory plus two `runtime.join(…)`, so both are exactly that shape. Measured 2026-09-08 there was
+/// no such site — the hole was in the GATE, not in the tree, and item 957 was opened for it.
+///
+/// ⇒ **So the bind is bundled instead.** A caller cannot reach a listener without handing the path
+/// through the door, because the door is on the inside; and the gate beside this counts DIRECT
+/// `UnixListener::bind` calls, which is a claim about SITES rather than about files.
+///
+/// ⚠⚠ This is register item 950's lesson one level up. There, an `assert!` that twenty sites had to
+/// remember became a constructor that hands the path back. Here, a CALL twenty-one sites had to
+/// remember becomes a constructor that hands the LISTENER back. The shape that spreads is the one a
+/// caller has to take a value from.
+///
+/// ⚠ It does not remove the file first. Every site that wants that already spells its own
+/// `remove_file`, and a constructor that silently unlinked whatever was there would be a very
+/// different promise from *bind this*.
+///
+/// ⚠ `UnixDatagram` has no wrapper here because this workspace binds none — the gate forbids the
+/// direct call all the same, so the first one to want it arrives at a red that says to add it
+/// rather than at a socket nobody measured.
+///
+/// # Errors
+///
+/// Whatever `bind(2)` answered — the caller's to report, since only the caller knows what the
+/// socket was for.
+///
+/// # Panics
+///
+/// Through [`may_address`], when the path cannot hold a socket on every platform this project runs
+/// on. That is a defect in the NAME rather than a runtime condition, which is why it is not an
+/// error arm.
+#[cfg(unix)]
+pub fn bind_socket(path: &std::path::Path) -> std::io::Result<std::os::unix::net::UnixListener> {
+    std::os::unix::net::UnixListener::bind(may_address(path))
+}
+
 #[must_use]
 pub fn socket_fits(path: &std::path::Path) -> bool {
     let shown = path.as_os_str().as_encoded_bytes().len();
