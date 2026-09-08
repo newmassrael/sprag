@@ -5822,6 +5822,19 @@ mod tests {
             1,
             "the wait parked on its own session",
         );
+        // ⚠⚠ AND THE BASELINE WAS STILL THE BASELINE WHEN IT PARKED — register item 974, the FIRST
+        // of the two intervals this gate now measures separately. A session whose own revision
+        // advanced between the read above and the park has a wait that is already answerable, and
+        // a wake arriving after it says nothing about scopes at all. Splitting the intervals is
+        // what lets a failure on a machine nobody can reach name which one it happened in.
+        let at_park = state.revision("work").current();
+        assert_eq!(
+            at_park, since,
+            "⚠⚠⚠ REGISTER ITEM 974, INTERVAL ONE: `work` was read at {since} and had reached \
+             {at_park} by the time the wait parked, so this session was still settling — the \
+             baseline is stale and the wait below can be answered by `work`'s own late bump. That \
+             is timing rather than a scope leak, and it is likelier on a slow or loaded machine.",
+        );
 
         // The DEFAULT session moves — a real mutation through the real dispatch, so pinion's own
         // OCC bump is what advances that session's token, not a hand-written bump this test could
@@ -5834,10 +5847,40 @@ mod tests {
             spawned["error"].is_null(),
             "the default session moved: {spawned}"
         );
-        assert!(
-            sink.lock().unwrap().is_empty(),
-            "another session's change is not this client's business",
+        // ⛔⛔⛔⛔⛔ **THE PREMISE, MEASURED RATHER THAN ASSUMED** — register item 974.
+        //
+        // This gate failed ONCE on CI's `headless (linux)` (run 34222541543, `8c427df5`) and has
+        // not been reproduced: the two runs either side of it were green, and `-p sprag-host --lib`
+        // was run three times on the owner's machine for three passes. So the round that met it
+        // could not diagnose it — and the reason is that the assertion below could not say WHICH
+        // of two different defects it had caught:
+        //
+        // * the default session's bump reached a waiter parked on `work` — the claim this gate is
+        //   about, and the one its name states;
+        // * `work` moved on its OWN after the baseline was read, so the wake is its own change
+        //   arriving late. That needs no cross-session leak at all, it is timing, and it is more
+        //   likely on a slow or loaded machine — which is exactly where the one failure happened.
+        //
+        // ⇒ So the premise is now a separate assertion with its own sentence. A future failure
+        // names its own cause instead of leaving the next round to guess, which is what register
+        // item 974's ⑴ asks for on a red nobody can reproduce.
+        let work_now = state.revision("work").current();
+        assert_eq!(
+            work_now, since,
+            "⚠⚠⚠ REGISTER ITEM 974, INTERVAL TWO: `work` was at {since} when the wait parked and \
+             is at {work_now} now, so THIS session moved while the default one was being spawned \
+             into. The wake below is then its own change arriving late rather than another \
+             session's leaking in — a different defect with a different repair, and the assertion \
+             after this one would have blamed the wrong half.",
         );
+        let answered = sink.lock().unwrap();
+        assert!(
+            answered.is_empty(),
+            "⛔⛔⛔⛔⛔ another session's change is not this client's business. `work` stood still \
+             at {since} (asserted above), so this wake carries the DEFAULT session's bump across \
+             a scope that should have contained it. What arrived: {answered:?}",
+        );
+        drop(answered);
         assert_eq!(
             state.waiters("work").parked_count(),
             1,
