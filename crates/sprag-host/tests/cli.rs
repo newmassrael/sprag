@@ -97,6 +97,27 @@ impl Drop for SocketSite {
     }
 }
 
+/// A DIRECTORY this file minted, removed when the test ends — including on a panicked assertion.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is a SECOND guard and not a shape [`SocketSite`] grew
+///
+/// That one removes a socket and the files named AFTER it, and every gate holding it mints its
+/// socket directly in the scratch root. Teaching it to remove a DIRECTORY would therefore mean
+/// teaching it which of the two it was handed — and getting that wrong once is `remove_dir_all`
+/// on the scratch root itself. Two values with two scopes cannot make that mistake.
+///
+/// ⚠⚠ It replaces a TRAILING `remove_dir_all` at the one site that already had one, and that is
+/// not tidiness: a trailing call is skipped by the panic a failing assertion raises, so the shape
+/// left its whole tree behind on exactly the runs somebody was going to re-run. Register item 795
+/// is what a prefix nothing collects grows to — 399 directories under one of them.
+struct ScratchDir(PathBuf);
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// **A DIRECTORY THAT IS A TREE**, for the daemon this harness boots — register item 738, layer 4.
 ///
 /// ⚠⚠⚠⚠⚠ The daemon's boot pane is born in the daemon's own working directory, and under `cargo`
@@ -1093,6 +1114,9 @@ fn a_daemon_on_a_socket_nobody_named_is_found_by_the_survey() {
     // in the shared temporary directory would drag every parallel case's socket into the answer.
     let runtime = socket_path().with_extension("runtime");
     std::fs::create_dir_all(&runtime).expect("a runtime directory for this case");
+    // ⚠ THE GUARD RATHER THAN THE TRAILING CALL THIS USED TO END WITH — see [`ScratchDir`]: a
+    // `remove_dir_all` at the foot of a test is skipped by the panic a failing assertion raises.
+    let _runtime_site = ScratchDir(runtime.clone());
 
     // ⚠ Named `sprag-loop.sock` because that is the socket the owner's daemon was actually on, and
     // the point of the item is that the name is not what makes it a daemon.
@@ -1188,7 +1212,6 @@ fn a_daemon_on_a_socket_nobody_named_is_found_by_the_survey() {
 
     drop(_listener);
     drop(_stranger);
-    let _ = std::fs::remove_dir_all(&runtime);
 }
 
 /// A session does NOT outlive its last pane, and `kill-pane` says so — R309.
@@ -13413,14 +13436,62 @@ fn a_wedged_daemon_cannot_stall_a_request_verb() {
 /// (`~/.claude/settings.json`, `~/.codex/config.toml`). A gate that walks the whole table runs
 /// them, and pointed at a person's real home it would edit the file this repository's own loop is
 /// driven through. Measured: under an isolated `HOME` both answer *not on this machine, skipped*.
+///
+/// # ⛔⛔⛔⛔⛔ AND SO IS `XDG_RUNTIME_DIR` — the THIRD thing this had to hand over
+///
+/// The socket and `HOME` were isolated and **one verb here reads neither**:
+/// [`sprag_rpc::survey::runtime_dir`] is what `daemons` draws its population from, and that
+/// population is a DIRECTORY. Measured 2026-09-08 on this machine — a CLI whose
+/// `SPRAG_HOST_RPC_SOCK` named a socket that does not exist surveyed `/run/user/1000` and printed
+/// the three sockets standing there. What that verb answered was decided OUTSIDE this gate.
+///
+/// ⇒ **The leak has two faces and CI could only ever show one.** The macOS runner has no
+/// `XDG_RUNTIME_DIR`, so `runtime_dir()` falls back to the shared scratch root, the survey reaches
+/// a parallel sibling's SERVING socket, and `daemons` exits 0 — `cli.rs:13512` on `d598a1cf`'s
+/// `headless (macos)`, which is register item 951. On Linux the same leak is SILENT: the real
+/// runtime directory holds no wedged socket, so the verb prints no [`HOST_SILENT`] and drops out of
+/// the population this gate DISCOVERS. One of the sixty-nine was not being measured at all, and
+/// the floor below has the slack to hide exactly that.
+///
+/// ⇒ So the wedged socket is minted INSIDE a runtime directory of this gate's own and every verb
+/// is handed it. The survey's population becomes this gate's one silent socket, `serving` is
+/// necessarily empty, and both halves of the claim stop depending on the neighbours.
+///
+/// ⛔⛔ **The fallback inside `runtime_dir()` is NOT touched.** It is why the product works on a
+/// machine that has no `XDG_RUNTIME_DIR`, so deleting it would repair this gate by breaking the
+/// product — register item 951's own ⛔, and what is wrong here is the gate's isolation.
 #[test]
 fn no_verb_of_this_vocabulary_stalls_or_reports_success_against_a_wedged_daemon() {
     /// Below the 31 measured, with slack for a verb that grows a required argument — and far above
     /// the ONE the gate beside this walks, which is the defect it exists to close.
     const REACHED_THE_WIRE_AT_LEAST: usize = 20;
+    /// ⛔⛔⛔⛔⛔ **THE ONE VERB HERE WHOSE POPULATION IS A DIRECTORY AND NOT THIS SOCKET** —
+    /// register item 951, and the name the two assertions at the foot of this gate are about.
+    ///
+    /// ⚠ Written down, and it cannot go stale quietly: a vocabulary that stops offering this verb
+    /// in a shell leaves the batch below with nothing under this name, and the `else` arm that
+    /// meets that is a panic rather than a skip. A name this gate could lose silently would put
+    /// the isolation back where it was — decided by whatever the machine happens to hold.
+    const SURVEYS_THE_RUNTIME_DIRECTORY: &str = "daemons";
 
-    let sock = socket_path();
-    let _site = SocketSite(sock.clone());
+    // ⛔⛔⛔⛔⛔ A RUNTIME DIRECTORY OF THIS GATE'S OWN, WITH THE WEDGED SOCKET INSIDE IT — register
+    // item 951; the doc above holds the measurement. `.runtime` beside a minted socket path is the
+    // spelling `a_daemon_on_a_socket_nobody_named_is_found_by_the_survey` already uses, for the
+    // same stated reason: the survey's population is a directory, so a socket in the shared
+    // scratch root drags every parallel case's into the answer.
+    let runtime = socket_path().with_extension("runtime");
+    std::fs::create_dir_all(&runtime).expect("a runtime directory of this gate's own");
+    let _site = ScratchDir(runtime.clone());
+    // ⚠⚠ THE PRODUCT'S OWN NAME FOR IT, not a name this file invented. The condition being
+    // reproduced is *a runtime directory with this product's socket in it* — register item 945's
+    // rule, that a platform's CONDITION is what a gate stages rather than the platform — and the
+    // survey narrows its population by exactly that prefix.
+    //
+    // ⛔ CHECKED AT THE FACTORY — register item 955. This path is a socket ADDRESS twice over: it
+    // is bound here and it is connected to by the survey, and `sun_path` bounds both. One
+    // directory deeper than `socket_path`'s own answer, so it is measured again rather than
+    // inherited.
+    let sock = sprag_scratch::may_bind(&runtime.join(sprag_rpc::HOST_SOCKET_NAME));
     let listener = sprag_scratch::bind_socket(&sock).expect("a stand-in daemon");
     std::thread::spawn(move || {
         // HELD, never answered: a stream this thread dropped early would hand its client an EOF,
@@ -13448,6 +13519,7 @@ fn no_verb_of_this_vocabulary_stalls_or_reports_success_against_a_wedged_daemon(
     let home = sock.with_extension("home");
     std::fs::create_dir_all(&home).expect("a home of this test's own");
     let home = home.to_string_lossy().into_owned();
+    let runtime_env = runtime.to_string_lossy().into_owned();
 
     let verbs: Vec<&'static str> = sprag_host::vocabulary::Verb::ALL
         .iter()
@@ -13469,12 +13541,20 @@ fn no_verb_of_this_vocabulary_stalls_or_reports_success_against_a_wedged_daemon(
     let batch: Vec<(&str, std::thread::JoinHandle<(CliRun, Duration)>)> = verbs
         .iter()
         .map(|verb| {
-            let (sock, home, verb) = (sock.clone(), home.clone(), *verb);
+            let (sock, home, runtime_env, verb) =
+                (sock.clone(), home.clone(), runtime_env.clone(), *verb);
             (
                 verb,
                 std::thread::spawn(move || {
                     let at = Instant::now();
-                    let run = sprag_env(&sock, &[verb], &[("HOME", home.as_str())]);
+                    let run = sprag_env(
+                        &sock,
+                        &[verb],
+                        &[
+                            ("HOME", home.as_str()),
+                            ("XDG_RUNTIME_DIR", runtime_env.as_str()),
+                        ],
+                    );
                     (run, at.elapsed())
                 }),
             )
@@ -13484,10 +13564,14 @@ fn no_verb_of_this_vocabulary_stalls_or_reports_success_against_a_wedged_daemon(
     let mut reached: Vec<&str> = Vec::new();
     let mut succeeded_silently: Vec<&str> = Vec::new();
     let mut slow: Vec<(&str, Duration)> = Vec::new();
+    let mut surveyed: Option<String> = None;
     for (verb, handle) in batch {
         let (run, took) = handle.join().expect("a verb's run");
         if took > Duration::from_secs(30) {
             slow.push((verb, took));
+        }
+        if verb == SURVEYS_THE_RUNTIME_DIRECTORY {
+            surveyed = Some(run.stdout.clone());
         }
         if run.stderr.contains(HOST_SILENT) || run.stdout.contains(HOST_SILENT) {
             reached.push(verb);
@@ -13524,6 +13608,39 @@ fn no_verb_of_this_vocabulary_stalls_or_reports_success_against_a_wedged_daemon(
          nothing — 31 did when this was measured (2026-09-05T19:00:01Z). A gate whose population \
          can empty is the escape hatch this repository's rule 6 is about. Reached: {reached:?}",
         reached.len(),
+    );
+
+    // ══ ⛔⛔⛔⛔⛔ AND THE ONE VERB WHOSE POPULATION IS A DIRECTORY LOOKED IN THIS GATE'S — item 951
+    let Some(surveyed) = surveyed else {
+        panic!(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 951: `{SURVEYS_THE_RUNTIME_DIRECTORY}` is no longer a verb \
+             this vocabulary runs in a shell, so the two claims below have no subject and the \
+             isolation they assert is back to being decided by whatever the machine holds. Rename \
+             the constant at the head of this gate to whichever verb now surveys \
+             `runtime_dir()`, or drop the pair with the verb. Walked: {verbs:?}",
+        );
+    };
+    assert!(
+        surveyed.contains(&format!(
+            "asked 1 socket(s) matching sprag*.sock under {}",
+            runtime.display()
+        )),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 951: the survey's population must be THIS GATE'S directory \
+         holding THIS GATE'S one socket. A run that says any other directory is the leak itself — \
+         on the macOS runner it reads the shared scratch root and finds a parallel sibling's \
+         serving socket, and the `succeeded_silently` claim above then depends on what else the \
+         suite happens to be doing. A count other than 1 says something else put a socket in here \
+         while this ran, which is the same defect with a shorter path. Got:\n{surveyed}",
+    );
+    assert!(
+        surveyed.contains(&format!("{}  refused", sock.display()))
+            && surveyed.contains(HOST_SILENT),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 951, THE OTHER FACE: the one socket it found must be the WEDGED \
+         one, answering the silence. That is what puts this verb INTO the population the two \
+         claims above are made over — on Linux the leak was silent precisely because the real \
+         runtime directory holds no wedged socket, so the verb printed no {HOST_SILENT:?}, and one \
+         of the {} walked here was never measured by anything. Got:\n{surveyed}",
+        verbs.len(),
     );
 }
 
