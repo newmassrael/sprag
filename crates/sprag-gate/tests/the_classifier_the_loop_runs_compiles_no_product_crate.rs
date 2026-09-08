@@ -78,10 +78,17 @@ fn somewhere_empty(prefix: &str) -> std::path::PathBuf {
 /// workspace from where it stands, and `workspace_root` is the reader that refuses when the tree
 /// compiled in and the tree being run in disagree (register item 809). A `--manifest-path` spelled
 /// beside it would be a second authority on the same question.
-fn built(args: &[&str], into: &std::path::Path) -> (bool, String) {
+///
+/// ⛔⛔⛔⛔⛔ `CARGO_TERM_COLOR` IS NAMED HERE AND NEVER INHERITED — register item 964. It is the
+/// asymmetry that hid the defect for five runs: `.github/workflows/ci.yml` sets it to `always`, a
+/// developer's terminal sets it to nothing, and so the shape CI reads was the one shape no local
+/// run ever produced. Inherited, this harness measures whichever machine it is on; named, the
+/// shape is chosen and both are driven everywhere.
+fn built(args: &[&str], into: &std::path::Path, colour: &str) -> (bool, String) {
     let run = Command::new(env!("CARGO"))
         .args(args)
         .env("CARGO_TARGET_DIR", into)
+        .env("CARGO_TERM_COLOR", colour)
         .current_dir(workspace_root())
         .output()
         .unwrap_or_else(|why| panic!("cargo runs `{}`: {why}", args.join(" ")));
@@ -99,23 +106,49 @@ fn built(args: &[&str], into: &std::path::Path) -> (bool, String) {
 #[test]
 fn the_classifier_the_loop_runs_compiles_no_product_crate() {
     let read = deployed();
-    let empty = somewhere_empty("sprag-classifier-closure");
+    let build = ["build", LOCKED, "-p", &read.package, "--bin", &read.bin];
 
-    let (ok, log) = built(
-        &["build", LOCKED, "-p", &read.package, "--bin", &read.bin],
-        &empty,
-    );
-    // ⚠ THE STAGING, NOT THE CLAIM. A build that did not finish says nothing about a closure, and
-    // everything below would be about whatever cargo printed on its way out.
-    assert!(
-        ok,
-        "⚠⚠ the classifier's own binary must build before this gate can say anything about what \
-         it is built FROM. `cargo build -p {} --bin {}` failed:\n{log}",
-        read.package, read.bin,
+    // ⛔⛔⛔⛔⛔ BOTH COLOURS, ON EVERY MACHINE — register item 964. CI sets
+    // `CARGO_TERM_COLOR: always`, so its `Compiling` lines arrive wrapped in SGR escapes; the
+    // reader matched a plain prefix and saw NOTHING in a log that answered the question perfectly,
+    // and this gate was red on five consecutive runs while the closure it asks about was correct
+    // throughout. The uncoloured shape is the only one a developer's terminal ever produces, so
+    // waiting to meet the other one costs a round each time.
+    //
+    // ⚠⚠ THE TWO MUST AGREE, and that is the claim rather than *each is non-empty*: a reader that
+    // dropped every line would make both empty, and `compiled_crates` refusing an empty closure is
+    // what catches that — so the pair asserts the colour makes NO DIFFERENCE, which is the property
+    // the defect broke.
+    let mut closures = Vec::new();
+    let mut made = Vec::new();
+    for colour in ["always", "never"] {
+        let empty = somewhere_empty(&format!("sprag-classifier-closure-{colour}"));
+        let (ok, log) = built(&build, &empty, colour);
+        made.push(empty);
+        // ⚠ THE STAGING, NOT THE CLAIM. A build that did not finish says nothing about a closure,
+        // and everything below would be about whatever cargo printed on its way out.
+        assert!(
+            ok,
+            "⚠⚠ the classifier's own binary must build before this gate can say anything about \
+             what it is built FROM. `cargo build -p {} --bin {}` failed under \
+             CARGO_TERM_COLOR={colour}:\n{log}",
+            read.package, read.bin,
+        );
+        let closure = classifier::compiled_crates(&log).unwrap_or_else(|why| {
+            panic!(
+                "⚠⚠ THE STAGING [CARGO_TERM_COLOR={colour}]: {}\n{log}",
+                why.describe()
+            )
+        });
+        closures.push(closure);
+    }
+    assert_eq!(
+        closures[0], closures[1],
+        "⛔ ITEM 964: this reader answers differently about a coloured log and a plain one, so \
+         what this gate says depends on which machine ran it — and CI is the coloured one",
     );
 
-    let compiled = classifier::compiled_crates(&log)
-        .unwrap_or_else(|why| panic!("⚠⚠ THE STAGING: {}\n{log}", why.describe()));
+    let compiled = closures.remove(0);
     let foreign = classifier::foreign_to(&compiled, &read.package);
     assert!(
         foreign.is_empty(),
@@ -134,7 +167,10 @@ fn the_classifier_the_loop_runs_compiles_no_product_crate() {
     // ⚠⚠⚠ A reader that answered *nothing foreign* for every log would pass the assertion above
     // no matter what the manifest said, which is the vacuous green this workspace keeps meeting
     // (register item 799). So the same reader is shown a build of a DIFFERENT member, by the same
-    // cargo, into the same directory — and it has to name it.
+    // cargo, into a directory of its own — and it has to name it.
+    //
+    // ⚠ COLOURED, because that is CI's shape and a control that only ever ran in the developer's
+    // shape is what let item 964 stand for five runs. The claim above reads both.
     let (control_ok, control) = built(
         &[
             "build",
@@ -143,7 +179,11 @@ fn the_classifier_the_loop_runs_compiles_no_product_crate() {
             A_CRATE_THAT_IS_NOT_THE_CLASSIFIERS,
             "--lib",
         ],
-        &empty,
+        {
+            made.push(somewhere_empty("sprag-classifier-control"));
+            made.last().expect("the control's directory was just made")
+        },
+        "always",
     );
     assert!(
         control_ok,
@@ -160,11 +200,16 @@ fn the_classifier_the_loop_runs_compiles_no_product_crate() {
          so the claim above is green about nothing. Cargo said: {control_closure:?}",
     );
 
-    // ⚠ AND IT TAKES ITS OWN BUILD DIRECTORY WITH IT: measured 2026-09-08, this leaves **20 MB**
+    // ⚠ AND IT TAKES ITS OWN BUILD DIRECTORIES WITH IT: measured 2026-09-08, this leaves **20 MB**
     // per run, and every commit and every push runs it. `scratch_for` sweeps a DEAD predecessor,
     // which bounds the pile but never empties it — a gate that is not run again leaves its last
     // one for good. The sibling test in this crate removes its fixture for the same reason.
-    let _ = std::fs::remove_dir_all(&empty);
+    //
+    // ⚠ THREE OF THEM NOW, not one: item 964 made this read both colours, and each build needs a
+    // directory that is EMPTY or cargo prints nothing for what it did not have to compile.
+    for left in &made {
+        let _ = std::fs::remove_dir_all(left);
+    }
 }
 
 /// ⛔⛔⛔⛔⛔ **THE CLASSIFIER CANNOT REWRITE THE LOCKFILE OF THE TREE IT IS JUDGING** — item 841,

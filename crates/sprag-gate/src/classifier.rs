@@ -149,24 +149,93 @@ impl Unreadable {
     }
 }
 
-/// A cargo log that reported compiling nothing — see [`compiled_crates`].
+/// Why a cargo log yielded no compile closure — see [`compiled_crates`].
+///
+/// # ⛔⛔⛔⛔⛔ TWO FACTS, AND FOLDING THEM COST FIVE RED RUNS — register item 964
+///
+/// The first version of this was one struct saying *cargo printed no `Compiling` line … a cached
+/// target directory or a build that never started*. Both of those causes were **guesses the reader
+/// never measured**, and the real one was neither: in CI the log carried
+/// `\x1b[1m\x1b[92m   Compiling\x1b[0m sprag-gate v0.0.1 …` and this reader's `strip_prefix` did
+/// not match a coloured line. **The record was there. The reader could not read it.**
+///
+/// A sentence that names a cause it did not observe sends the person who reads it to the wrong
+/// place, and this one sent five runs' worth of readers to look at a target directory that was
+/// already empty. So the two facts are separate here, and each says only what was seen.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NothingCompiled {
-    /// The first line the build printed, or the empty string where it printed none.
-    pub said: String,
+pub enum ClosureUnread {
+    /// Nothing in the log names a compilation at all. **The honest state of a warm target
+    /// directory**, and of a build that never started — which is why the caller must empty it.
+    NoCompiling {
+        /// The first line the build printed, or the empty string where it printed none.
+        said: String,
+    },
+    /// The log DOES name compilation, in a shape this reader did not match — carrying the line, so
+    /// the difference is in front of whoever reads the refusal rather than left to be guessed.
+    Unmatched {
+        /// The first line carrying the word, exactly as cargo printed it, escapes and all.
+        sample: String,
+    },
 }
 
-impl NothingCompiled {
-    /// **WHAT A READER SHOULD DO ABOUT IT.**
+impl ClosureUnread {
+    /// **WHAT A READER SHOULD DO ABOUT IT** — the sentence a refusal carries.
     #[must_use]
     pub fn describe(&self) -> String {
-        format!(
-            "cargo printed no `Compiling` line, so this log says nothing about what the classifier \
-             is built from — a cached target directory or a build that never started, and either \
-             way the question was not asked. It printed: {:?}",
-            self.said
-        )
+        match self {
+            Self::NoCompiling { said } => format!(
+                "cargo named no compilation at all, so this log says nothing about what the \
+                 classifier is built from and the question was not asked. Empty the target \
+                 directory before building, or check the build started. It printed: {said:?}"
+            ),
+            Self::Unmatched { sample } => format!(
+                "cargo DID name a compilation and this reader could not read the line, so the \
+                 record is present and unread — which is not the same as absent, and the remedy \
+                 is here rather than in the staging. The line, escapes and all: {sample:?}"
+            ),
+        }
     }
+}
+
+/// A line with its ANSI escape sequences removed.
+///
+/// # ⛔⛔⛔⛔⛔ Why this exists at all — register item 964
+///
+/// `.github/workflows/ci.yml` sets `CARGO_TERM_COLOR: always`, so every `Compiling` line CI
+/// produces is wrapped in SGR sequences and none of them matched a plain `strip_prefix`. The gate
+/// that reads these logs was red on five consecutive runs for that and nothing else, while the
+/// closure it was asked about was correct the whole time.
+///
+/// ⚠⚠ IT SURVIVED BECAUSE EVERY FIXTURE WAS AUTHORED. The unit tests below all typed the line the
+/// way a developer's own terminal prints it — uncoloured — so the shape CI actually produces was
+/// never once fed to this reader. The arms now carry the CAPTURED bytes.
+///
+/// ⚠ CSI sequences (`ESC [ … final`) are what cargo emits and what this removes. A lone `ESC` that
+/// does not begin one is dropped ALONE — the character after it is somebody's text and is kept.
+/// Measured while writing this: the first draft consumed that character to test it, and its own arm
+/// said `ab` while the code said `a`. This is a reader of one program's output, not a terminal.
+#[must_use]
+pub fn without_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(char) = chars.next() {
+        if char != '\u{1b}' {
+            out.push(char);
+            continue;
+        }
+        if chars.peek() != Some(&'[') {
+            continue;
+        }
+        chars.next();
+        // ⚠ The parameter and intermediate bytes run 0x20..=0x3f, and the FINAL byte is
+        // 0x40..=0x7e — consumed with them, which is what ends the sequence.
+        for inside in chars.by_ref() {
+            if !('\u{20}'..='\u{3f}').contains(&inside) {
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// The classifier's argv as its document authors it — the quoted segments of the `expr`, joined.
@@ -283,18 +352,34 @@ pub fn deployed_classifier(scxml: &str) -> Result<Deployed, Unreadable> {
 ///
 /// # Errors
 ///
-/// [`NothingCompiled`] for a log with no such line — never an empty set, which would read as
-/// *nothing product-side is in the closure* about a question that was never put.
-pub fn compiled_crates(log: &str) -> Result<BTreeSet<String>, NothingCompiled> {
+/// [`ClosureUnread`] for a log this yields no closure from — never an empty set, which would read
+/// as *nothing product-side is in the closure* about a question that was never put.
+///
+/// ⚠⚠ THE LINE IS READ WITH ITS COLOUR OFF, [`without_ansi`] — register item 964. CI sets
+/// `CARGO_TERM_COLOR: always`, so the line arrives as `ESC[1mESC[92m   CompilingESC[0m name …` and
+/// a plain prefix match sees nothing at all in a log that answers the question perfectly.
+pub fn compiled_crates(log: &str) -> Result<BTreeSet<String>, ClosureUnread> {
     let compiled: BTreeSet<String> = log
         .lines()
-        .filter_map(|line| line.trim_start().strip_prefix("Compiling "))
-        .filter_map(|rest| rest.split_whitespace().next())
-        .map(ToOwned::to_owned)
+        .map(without_ansi)
+        .filter_map(|line| {
+            line.trim_start()
+                .strip_prefix("Compiling ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .map(ToOwned::to_owned)
+        })
         .collect();
     if compiled.is_empty() {
-        return Err(NothingCompiled {
-            said: log.lines().next().unwrap_or_default().to_owned(),
+        // ⚠⚠ WHICH OF THE TWO, decided by looking rather than by guessing. A log that carries the
+        // word and did not match is a defect in THIS reader; one that does not carry it at all is
+        // a staging that did not happen, and the remedies are in different files.
+        return Err(match log.lines().find(|line| line.contains("Compiling")) {
+            Some(sample) => ClosureUnread::Unmatched {
+                sample: (*sample).to_owned(),
+            },
+            None => ClosureUnread::NoCompiling {
+                said: log.lines().next().unwrap_or_default().to_owned(),
+            },
         });
     }
     Ok(compiled)
@@ -355,8 +440,8 @@ fn quoted(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Deployed, LOCKED, NAME_CAP, NothingCompiled, Unreadable, authored_argv, compiled_crates,
-        deployed_classifier, foreign_to, named,
+        ClosureUnread, Deployed, LOCKED, NAME_CAP, Unreadable, authored_argv, compiled_crates,
+        deployed_classifier, foreign_to, named, without_ansi,
     };
     use std::collections::BTreeSet;
     use std::path::PathBuf;
@@ -506,14 +591,96 @@ mod tests {
             .expect_err("a warm build says nothing about a closure");
         assert_eq!(
             why,
-            NothingCompiled {
+            ClosureUnread::NoCompiling {
                 said: "    Finished `dev` profile in 0.04s".to_owned(),
             },
         );
         assert!(
-            why.describe().contains("Compiling"),
+            why.describe().contains("Compiling") || why.describe().contains("compilation"),
             "⚠ the refusal must name what it looked for: {}",
             why.describe(),
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE LINE CI ACTUALLY PRINTS, CAPTURED AND NOT TYPED** — register item 964, and
+    /// the arm whose absence cost five red runs.
+    ///
+    /// Every other fixture in this module was AUTHORED: written the way a developer's own terminal
+    /// prints, which is uncoloured. `.github/workflows/ci.yml` sets `CARGO_TERM_COLOR: always`, so
+    /// the shape CI produces had never once been handed to this reader — and it read a log that
+    /// answered the question perfectly as *nothing was compiled*.
+    ///
+    /// ⚠ These bytes are a capture. The first is from job `101949158519` (2026-09-08, commit
+    /// `b5073c4e`) as the failure itself quoted them; the second is the same shape reproduced
+    /// locally with `CARGO_TERM_COLOR=always`.
+    #[test]
+    fn a_coloured_log_is_read_because_that_is_the_shape_ci_prints() {
+        let from_ci = "\u{1b}[1m\u{1b}[92m   Compiling\u{1b}[0m sprag-gate v0.0.1 \
+                       (/home/runner/work/sprag/sprag/crates/sprag-gate)\n";
+        assert_eq!(
+            compiled_crates(from_ci).expect(
+                "⛔ ITEM 964: this is a log that ANSWERS the question, and a reader that refuses \
+                 it turns a correct closure into a red run"
+            ),
+            ["sprag-gate".to_owned()].into_iter().collect(),
+        );
+        let reproduced = "\u{1b}[1m\u{1b}[92m   Compiling\u{1b}[0m sprag-scratch v0.0.1 \
+                          (/home/coin/sprag/crates/sprag-scratch)\n\u{1b}[1m\u{1b}[92m    \
+                          Finished\u{1b}[0m `dev` profile in 0.28s\n";
+        assert_eq!(
+            compiled_crates(reproduced).expect("the locally reproduced shape reads too"),
+            ["sprag-scratch".to_owned()].into_iter().collect(),
+        );
+    }
+
+    /// ⚠⚠ **THE STRIPPER, DRIVEN ON ITS OWN** — the shapes the capture above cannot reach.
+    #[test]
+    fn colour_is_removed_and_ordinary_text_is_not_touched() {
+        assert_eq!(without_ansi("   Compiling x v1"), "   Compiling x v1");
+        assert_eq!(
+            without_ansi("\u{1b}[1m\u{1b}[92m   Compiling\u{1b}[0m x v1"),
+            "   Compiling x v1",
+        );
+        assert_eq!(without_ansi(""), "");
+        // ⚠ A multi-parameter sequence, which `\x1b[38;5;12m` is — the ordinary shape of a
+        // 256-colour set, and one a stripper written for `\x1b[NNm` alone would leave `;5;12m` of.
+        assert_eq!(without_ansi("\u{1b}[38;5;12mx\u{1b}[0m"), "x");
+        // ⚠ A bare ESC with no bracket is not a CSI, and this reader drops it rather than
+        // pretending to be a terminal — stated as a limit rather than left to be discovered.
+        assert_eq!(without_ansi("a\u{1b}b"), "ab");
+    }
+
+    /// ⛔⛔⛔⛔ **PRESENT-AND-UNREAD IS NOT ABSENT** — item 964's whole shape, in one arm.
+    ///
+    /// The two facts had one sentence, and that sentence named two causes nobody had measured. The
+    /// remedy for one of them is in the caller's staging and for the other in this file, so a
+    /// reader given the wrong one looks in the wrong place — which is what happened, for five runs.
+    #[test]
+    fn a_line_that_carries_the_word_unread_is_a_different_refusal_from_one_that_does_not() {
+        let unmatched = compiled_crates("warning: Compiling is mentioned inside this sentence\n")
+            .expect_err("a mention is not a compile line");
+        assert_eq!(
+            unmatched,
+            ClosureUnread::Unmatched {
+                sample: "warning: Compiling is mentioned inside this sentence".to_owned(),
+            },
+        );
+        assert!(
+            unmatched.describe().contains("present and unread"),
+            "⛔ the refusal must say the record is THERE, or it sends the reader to the staging: {}",
+            unmatched.describe(),
+        );
+        let absent = compiled_crates("    Finished `dev` profile in 0.04s\n")
+            .expect_err("a warm build says nothing");
+        assert!(
+            !absent.describe().contains("present and unread"),
+            "⛔ the two facts must not share a sentence — that fold is register item 964: {}",
+            absent.describe(),
+        );
+        assert_ne!(
+            unmatched.describe(),
+            absent.describe(),
+            "⛔ two different facts with one sentence is the defect this item is about",
         );
     }
 
