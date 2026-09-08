@@ -673,7 +673,7 @@ impl RemotePaneAccess {
         let Some(path) = conn.socket().map(std::path::Path::to_path_buf) else {
             return false;
         };
-        let Ok(fresh) = HostConn::connect(&path, REDIAL_WITHIN) else {
+        let Ok(fresh) = HostConn::connect_until_it_answers(&path, REDIAL_WITHIN) else {
             return false;
         };
         *conn = fresh;

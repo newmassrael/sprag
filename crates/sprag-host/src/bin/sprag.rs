@@ -2210,12 +2210,13 @@ fn connect() -> io::Result<HostConn> {
 /// somebody else's process while that process waits.
 fn connect_within(deadline: Duration) -> io::Result<HostConn> {
     let endpoint = HostEndpoint::for_opts(HOST_SOCKET);
-    let mut conn = HostConn::connect(endpoint.path(), CONNECT_TIMEOUT).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("no server running at {endpoint}"),
-        )
-    })?;
+    let mut conn =
+        HostConn::connect_until_it_answers(endpoint.path(), CONNECT_TIMEOUT).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no server running at {endpoint}"),
+            )
+        })?;
     // Set BEFORE the handshake, so the very first reply this process waits for is covered.
     conn.set_read_deadline(Some(deadline))?;
     conn.handshake(&cli_client_id())?;

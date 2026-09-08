@@ -110,7 +110,8 @@ fn spawn_daemon() -> (Daemon, PathBuf) {
 }
 
 fn connect(sock: &Path) -> HostConn {
-    let mut conn = HostConn::connect(sock, BOOT_WAIT).expect("connect to the daemon socket");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, BOOT_WAIT).expect("connect to the daemon socket");
     conn.set_read_deadline(Some(Duration::from_secs(10)))
         .expect("bound the probe's reads");
     conn
@@ -119,7 +120,7 @@ fn connect(sock: &Path) -> HostConn {
 fn await_daemon(sock: &Path) {
     let deadline = Instant::now() + BOOT_WAIT;
     while Instant::now() < deadline {
-        if HostConn::connect(sock, Duration::ZERO).is_ok() {
+        if HostConn::connect_until_it_answers(sock, Duration::ZERO).is_ok() {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));

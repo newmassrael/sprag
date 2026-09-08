@@ -119,7 +119,9 @@ impl Drop for Daemon {
         // `sprag kill-server` does: kill every session, which takes its last pane with it, and a
         // daemon with nothing left to serve exits. The last kill severs the connection — that is
         // the success case, not an error.
-        if let Ok(mut conn) = sprag_rpc::HostConn::connect(&self.0, Duration::from_millis(500)) {
+        if let Ok(mut conn) =
+            sprag_rpc::HostConn::connect_until_it_answers(&self.0, Duration::from_millis(500))
+        {
             let names: Vec<String> = conn
                 .call(
                     "scene/query",

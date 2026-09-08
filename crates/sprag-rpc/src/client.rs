@@ -1751,8 +1751,9 @@ fn write_request(writer: &mut impl Write, line: &str) -> io::Result<()> {
 /// A blocking JSON-RPC connection to a host socket — the client end of the wire.
 ///
 /// One request/response at a time (see the module docs). Construct with
-/// [`connect`](Self::connect) (which tolerates the spawn race by retrying until
-/// the socket accepts), then [`call`](Self::call) per request.
+/// [`connect_until_it_answers`](Self::connect_until_it_answers) (which tolerates the spawn race by
+/// retrying until the socket accepts) or with [`dial`](Self::dial) under a policy of your own —
+/// [`Dial`] holds why that choice has no default — then [`call`](Self::call) per request.
 pub struct HostConn {
     /// The write half (requests out). A `UnixStream` is bidirectional; this clone
     /// owns writes while `reader` owns the buffered read half.
@@ -1863,16 +1864,101 @@ pub struct Outstanding {
     label: String,
 }
 
+/// ⛔⛔⛔⛔⛔ **WHETHER A REFUSED CONNECT IS KNOCKED AGAIN** — register item 972, and the choice
+/// that had no name for as long as every caller inherited one answer.
+///
+/// # ⛔⛔⛔ The measurement this exists for
+///
+/// [`HostConn::dial`] is a RETRY LOOP, and that is right for the caller it was written for: a
+/// client that just spawned its own daemon connects before the child has bound, so the loop is
+/// what makes the bind race survivable.
+///
+/// It is wrong for a SURVEY. `sprag_rpc::survey` asks *what is serving right now*, and a retry
+/// cannot change that answer — the socket that refused this instant is the answer. Measured
+/// 2026-09-08 on the owner's machine: `sprag daemons` pointed at a directory of **435 socket files
+/// with no listener** answered `asked 435 socket(s)` in **218.95 s**, every one of them `silent`.
+/// 435 × the 500 ms connect budget, spent knocking at doors that had already answered.
+///
+/// ⚠⚠ **That verb is reached from a dock click** — [`survey::ask`](crate::survey::ask)'s own doc
+/// says *"it is run from a dock click that has no terminal to interrupt"* — so the wait is a
+/// person's. On the owner's real runtime directory the same read costs one budget rather than 435,
+/// because `sprag-loop-gui.sock` has sat there with nothing behind it since 2026-09-05.
+///
+/// # ⚠⚠⚠ Why this is a TYPE and not a bool, and why there is no default
+///
+/// Register item 906 measured what a default costs: [`HostConn::call`]'s deadline was
+/// `Option<Duration>`, twenty-six of twenty-seven callers passed [`None`], and the twenty-seventh
+/// inherited *wait forever* by saying nothing — two CLI runs then waited **3 h 38 min** on a macOS
+/// runner. The survey inherited this policy exactly the same way. So [`HostConn::dial`] takes the
+/// choice as an argument with no default, and the waiting one is named
+/// [`connect_until_it_answers`](HostConn::connect_until_it_answers) so a caller reaching for it
+/// says what it is asking for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dial {
+    /// Knock again until `within` is spent — a caller that expects the socket to appear, or to
+    /// start accepting, in the moments after it asks.
+    UntilItAnswers(Duration),
+    /// Knock ONCE. A caller asking what is alive at this instant, for whom a second knock cannot
+    /// change the answer.
+    Once,
+}
+
+impl Dial {
+    /// How long a knock waits before the next one — the pause inside [`HostConn::dial`]'s loop.
+    ///
+    /// ⚠ Named rather than written into the loop, because
+    /// [`knocks_against_a_refusing_socket`](Self::knocks_against_a_refusing_socket) counts with it
+    /// and a second spelling of 20 ms would let the count and the loop drift apart.
+    pub const RETRY_PAUSE: Duration = Duration::from_millis(20);
+
+    /// **WHETHER TO KNOCK AGAIN**, having spent `spent` so far — the only place the retry decision
+    /// is made.
+    ///
+    /// ⚠⚠ PURE, and that is what makes item 972's ⑴ possible: the clock and the socket belong to
+    /// the caller, so a gate can COUNT the knocks a policy makes without spending any of the wall
+    /// time they would take. `sprag_scratch`'s `root_from` is the same seam for the same reason.
+    #[must_use]
+    pub const fn knock_again(self, spent: Duration) -> bool {
+        match self {
+            // ⛔ NO SECOND KNOCK, and no clock is even consulted. A survey that retried would be
+            // asking a question whose answer it already had.
+            Self::Once => false,
+            Self::UntilItAnswers(within) => spent.as_nanos() < within.as_nanos(),
+        }
+    }
+
+    /// **HOW MANY TIMES THIS DIAL KNOCKS AT A SOCKET THAT REFUSES EVERY ATTEMPT** — register item
+    /// 972's ⑴, and the predicate a gate reads instead of a stopwatch.
+    ///
+    /// ⛔⛔⛔ A gate whose predicate is WALL TIME is a flake on a loaded machine, and *flake* is
+    /// this register's name for having stopped diagnosing (items 700 and 701). So the question is
+    /// asked as a COUNT: it drives [`knock_again`](Self::knock_again) with the same
+    /// [`RETRY_PAUSE`](Self::RETRY_PAUSE) the loop uses and returns how many knocks that policy
+    /// would make. Nothing sleeps and no socket is touched.
+    #[must_use]
+    pub fn knocks_against_a_refusing_socket(self) -> usize {
+        let mut spent = Duration::ZERO;
+        let mut knocks = 1;
+        while self.knock_again(spent) {
+            knocks += 1;
+            spent = spent.saturating_add(Self::RETRY_PAUSE);
+        }
+        knocks
+    }
+}
+
 impl HostConn {
-    /// Connect to the host socket at `path`, retrying until it accepts or `timeout`
-    /// elapses — so a client that spawned its host tolerates the bind race (the
-    /// child has not yet bound the socket at the instant the parent connects).
+    /// Connect to the host socket at `path` under `dial`'s retry policy.
+    ///
+    /// ⚠⚠ **`dial` HAS NO DEFAULT** — see [`Dial`], and register item 972 for the survey that
+    /// inherited *keep knocking* by saying nothing. The waiting policy is also reachable as
+    /// [`connect_until_it_answers`](Self::connect_until_it_answers), whose name says what it does.
     ///
     /// # Errors
     ///
-    /// Returns the last connect error if `timeout` elapses before the socket
-    /// accepts, or an I/O error if the accepted stream cannot be split for reading.
-    pub fn connect(path: &Path, timeout: Duration) -> io::Result<Self> {
+    /// Returns the last connect error once `dial` stops knocking, or an I/O error if the accepted
+    /// stream cannot be split for reading.
+    pub fn dial(path: &Path, dial: Dial) -> io::Result<Self> {
         let start = Instant::now();
         loop {
             match UnixStream::connect(path) {
@@ -1883,13 +1969,31 @@ impl HostConn {
                     });
                 }
                 Err(error) => {
-                    if start.elapsed() >= timeout {
+                    // ⚠ ONE PLACE DECIDES — `Dial::knock_again`, which a gate counts. A condition
+                    // spelled here as well would be a second policy nobody could count.
+                    if !dial.knock_again(start.elapsed()) {
                         return Err(error);
                     }
-                    sleep(Duration::from_millis(20));
+                    sleep(Dial::RETRY_PAUSE);
                 }
             }
         }
+    }
+
+    /// [`dial`](Self::dial) with [`Dial::UntilItAnswers`] — the policy for a client that spawned
+    /// its own host and has to tolerate the bind race (the child has not yet bound the socket at
+    /// the instant the parent connects).
+    ///
+    /// ⚠⚠⚠ **THE NAME IS THE POINT** — register item 972's ⑵. This used to be `connect`, and a
+    /// name that does not say *waiting* is one every later caller inherits by not thinking about
+    /// it; the survey did exactly that and spent 218.95 s on 435 dead sockets. A caller reaching
+    /// for this name is asking to wait.
+    ///
+    /// # Errors
+    ///
+    /// [`dial`](Self::dial)'s, for its reasons.
+    pub fn connect_until_it_answers(path: &Path, within: Duration) -> io::Result<Self> {
+        Self::dial(path, Dial::UntilItAnswers(within))
     }
 
     /// Wrap an already-connected stream (splitting it into read + write halves).
@@ -2746,6 +2850,70 @@ mod tests {
 
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    /// ⛔⛔⛔⛔⛔ **THE TWO DIALS KNOCK A DIFFERENT NUMBER OF TIMES, AND THE COUNT IS WHAT IS
+    /// ASSERTED** — register item 972's ⑴.
+    ///
+    /// # ⛔⛔⛔ Why a count and not a stopwatch
+    ///
+    /// The defect is *the survey spent 435 × 500 ms knocking at dead sockets*, and the obvious gate
+    /// for it is a timed one: stage N dead sockets, assert the survey finished quickly. That gate
+    /// is a **flake on a loaded machine**, and this register's name for a flake is *having stopped
+    /// diagnosing* (items 700 and 701). So the policy answers how many knocks it would make and
+    /// nothing sleeps — [`Dial::knocks_against_a_refusing_socket`] drives
+    /// [`Dial::knock_again`], which is the same decision the loop in [`HostConn::dial`] makes.
+    ///
+    /// # ⚠⚠ No number is written down here either
+    ///
+    /// The waiting arm's count is asserted as *more than one* and as *growing with the budget*,
+    /// which is the SHAPE item 972 measured (N × the budget) rather than a constant somebody has
+    /// to re-derive when `RETRY_PAUSE` moves. A constant would be green for the wrong reason the
+    /// day the pause changes.
+    #[test]
+    fn a_dial_that_waits_knocks_again_and_the_one_that_does_not_knocks_once() {
+        assert_eq!(
+            Dial::Once.knocks_against_a_refusing_socket(),
+            1,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 972: `Dial::Once` is the whole repair — one knock at a socket \
+             that refused, because the refusal IS the answer. A second knock is what the survey \
+             inherited by saying nothing, and it cost 218.95 s over 435 dead sockets",
+        );
+        let brief =
+            Dial::UntilItAnswers(Duration::from_millis(100)).knocks_against_a_refusing_socket();
+        let longer =
+            Dial::UntilItAnswers(Duration::from_millis(400)).knocks_against_a_refusing_socket();
+        assert!(
+            brief > 1,
+            "⚠⚠ THE CONTRAST ARM: a waiting dial has to actually wait, or the assertion above is \
+             true of every dial and this gate is a constant. Knocks {brief}",
+        );
+        assert!(
+            longer > brief,
+            "⚠⚠⚠ AND IT GROWS WITH THE BUDGET, which is the shape item 972 measured — N dead \
+             sockets cost N budgets because each one is knocked at for the whole of its own. \
+             100 ms {brief} knock(s), 400 ms {longer}",
+        );
+    }
+
+    /// ⚠⚠ **A ZERO BUDGET IS STILL ONE KNOCK** — the boundary the two arms share, said out loud.
+    ///
+    /// `UntilItAnswers(ZERO)` and `Once` agree here and they agree for different reasons: the first
+    /// has spent its budget before it starts, the second has no budget to spend. That they agree is
+    /// worth a line, because a `<=` in [`Dial::knock_again`] would make the waiting arm knock
+    /// TWICE on a zero budget — a caller that asked for no waiting getting some.
+    #[test]
+    fn a_dial_always_knocks_at_least_once_however_small_its_budget() {
+        assert_eq!(
+            Dial::UntilItAnswers(Duration::ZERO).knocks_against_a_refusing_socket(),
+            1,
+            "⚠ a budget of nothing buys the first knock and no retry",
+        );
+        assert!(
+            !Dial::UntilItAnswers(Duration::ZERO).knock_again(Duration::ZERO),
+            "⚠⚠ and the decision that says so is `knock_again`, which is the one place the loop \
+             asks — a spent budget is not a reason for another knock",
+        );
+    }
+
     /// What a [`HostConn::settle`] answered, in the one shape a test can compare — [`CallError`] is
     /// deliberately not [`PartialEq`] (a fault carries a daemon's own words, and comparing two by
     /// value would invite matching on a rendering), so the discrimination a gate here needs is
@@ -3211,8 +3379,8 @@ mod tests {
             .expect("bind the test socket");
         control.set_enabled(true);
 
-        let mut conn =
-            HostConn::connect(&path, Duration::from_secs(2)).expect("connect to the socket");
+        let mut conn = HostConn::connect_until_it_answers(&path, Duration::from_secs(2))
+            .expect("connect to the socket");
         // Two calls prove the id increments and the read stream stays in sync. Each carries the
         // shape declaration every request does ([`WIRE_PROTOCOL`]), which the echo mirrors back.
         assert_eq!(
@@ -3272,8 +3440,8 @@ mod tests {
             .expect("bind the test socket");
         control.set_enabled(true);
 
-        let mut conn =
-            HostConn::connect(&path, Duration::from_secs(2)).expect("connect to the socket");
+        let mut conn = HostConn::connect_until_it_answers(&path, Duration::from_secs(2))
+            .expect("connect to the socket");
         assert_eq!(
             conn.call("scene/echo", json!({})).unwrap(),
             json!({ "mine": true }),
@@ -3316,8 +3484,8 @@ mod tests {
         // with EOF, which is the very outcome this test must not be able to pass by.
         let accepted = thread::spawn(move || listener.accept().map(|(stream, _)| stream));
 
-        let mut conn =
-            HostConn::connect(&path, Duration::from_secs(2)).expect("connect to the socket");
+        let mut conn = HostConn::connect_until_it_answers(&path, Duration::from_secs(2))
+            .expect("connect to the socket");
         let deadline = Duration::from_millis(200);
         conn.set_read_deadline(Some(deadline))
             .expect("bound the reads");
@@ -3367,8 +3535,8 @@ mod tests {
             .expect("bind the test socket");
         control.set_enabled(true);
 
-        let mut conn =
-            HostConn::connect(&path, Duration::from_secs(2)).expect("connect to the socket");
+        let mut conn = HostConn::connect_until_it_answers(&path, Duration::from_secs(2))
+            .expect("connect to the socket");
 
         // Unscoped: no SESSION is added — but the shape declaration is, on every request there
         // is. The two are different kinds of fact: a session is this connection's, and a

@@ -48,7 +48,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::client::HostConn;
+use crate::client::{Dial, HostConn};
 
 /// The name every socket this product binds by default begins with — `sprag-host.sock`,
 /// `sprag-gui.sock`, and by the same convention the ones an operator names for a second daemon
@@ -192,6 +192,26 @@ pub fn candidates(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// The dial a survey knocks with — [`Dial::Once`], and register item 972 is why it is named here.
+///
+/// # ⛔⛔⛔⛔⛔ A retry cannot change what this asks
+///
+/// The question is *what is serving right now*. The socket that refused this instant IS the
+/// answer, so a second knock buys nothing and costs the whole connect budget — and this verb is
+/// reached from a dock click, so that budget is a person's time. Measured 2026-09-08 against a
+/// directory of **435 socket files with no listener**: `asked 435 socket(s)` came back in
+/// **218.95 s**, all `silent`, which is 435 × 500 ms of knocking at doors that had answered.
+///
+/// # ⚠⚠ Why a FUNCTION rather than `Dial::Once` written at the call site
+///
+/// So the gate below asks the same value [`ask`] uses instead of a copy of it. Put
+/// [`Dial::UntilItAnswers`] here and `a_survey_knocks_each_socket_once…` reddens; write the literal
+/// into `ask` and there is nothing for a gate to hold.
+#[must_use]
+pub const fn dial() -> Dial {
+    Dial::Once
+}
+
 /// Knock on one socket and report what answered.
 ///
 /// ⚠⚠⚠ **CONNECT AND HANDSHAKE, BECAUSE EITHER ALONE ANSWERS THE WRONG QUESTION.** A connect that
@@ -199,8 +219,13 @@ pub fn candidates(dir: &Path) -> Vec<PathBuf> {
 /// and then refuses `client/hello`. A handshake is what separates *a daemon* from *a program that
 /// happens to own this path*, and it is the same exchange every real client makes, so a socket this
 /// says is serving is one a client can really use.
+///
+/// ⚠⚠ **`timeout` BOUNDS THE HANDSHAKE AND NOT THE CONNECT** — register item 972. The connect is
+/// [`dial`]'s single knock, so a socket with nothing behind it answers `Silent` at once; the budget
+/// is spent only on a socket that ACCEPTED and then went quiet, which is the one case where waiting
+/// tells a reader something.
 pub fn ask(path: &Path, client_id: &str, timeout: Duration) -> Answered {
-    let Ok(mut conn) = HostConn::connect(path, timeout) else {
+    let Ok(mut conn) = HostConn::dial(path, dial()) else {
         return Answered::Silent;
     };
     // Set BEFORE the handshake, so a socket that accepts and then says nothing is bounded by this
@@ -242,6 +267,34 @@ pub fn runtime_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⛔⛔⛔⛔⛔ **A SURVEY KNOCKS EACH SOCKET ONCE** — register item 972, and the claim the
+    /// 218.95 s measurement was about.
+    ///
+    /// # ⚠⚠⚠ What this holds that the `Dial` gates next door do not
+    ///
+    /// `a_dial_that_waits_knocks_again_and_the_one_that_does_not_knocks_once` holds that the two
+    /// POLICIES differ. This holds that **this module picked the right one** — which is the half
+    /// that actually regressed: the retry loop was always there and always correct for the client
+    /// it was written for, and the defect was a survey reaching for it by default. Put
+    /// [`Dial::UntilItAnswers`] into [`dial`] and this reddens; the gates next door stay green.
+    ///
+    /// ⚠⚠ It asks [`dial`] rather than naming [`Dial::Once`], so it is the value [`ask`] uses and
+    /// not a copy of it. A gate asserting the literal would pass while `ask` dialled something
+    /// else.
+    #[test]
+    fn a_survey_knocks_each_socket_once_because_a_retry_cannot_change_what_is_alive_now() {
+        assert_eq!(
+            dial().knocks_against_a_refusing_socket(),
+            1,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 972: a survey asks what is serving RIGHT NOW, so the socket \
+             that refused this instant is the answer and a second knock only spends the connect \
+             budget. Measured 2026-09-08 over 435 socket files with no listener: `asked 435 \
+             socket(s)` in 218.95 s, every one `silent` — and this verb is reached from a dock \
+             click, so that is a person's wait. The dial is {:?}",
+            dial(),
+        );
+    }
 
     /// A directory of this test's own, removed by the caller.
     fn scratch(tag: &str) -> PathBuf {

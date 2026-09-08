@@ -296,7 +296,7 @@ fn wait_gone(sock: &Path) -> Option<u32> {
 /// # ⛔⛔⛔⛔⛔ THE SOCKET FILE IS NOT THE DAEMON, AND ASKING THE SOCKET IS A DEAD CONTROL
 ///
 /// Measured 2026-09-01 while proving this file's item-802 gate: the teardown assertion first read
-/// *`HostConn::connect` fails*, and the mutation that removed the `kill-server` from [`Site`]
+/// *`HostConn::connect_until_it_answers` fails*, and the mutation that removed the `kill-server` from [`Site`]
 /// stayed **GREEN**. The guard unlinks the socket either way, so a connect to a path with no file
 /// at it fails exactly as a connect to a dead daemon does — *the socket is gone* and *the daemon is
 /// gone* were two states sharing one sentence, which is the very shape item 802 is about.
@@ -370,7 +370,7 @@ fn spawn_daemon_with_config(program: &[&str], config: Option<&str>) -> (Daemon, 
 
 /// A request connection to the daemon, for the assertions the SCREEN cannot make.
 fn observe(sock: &Path) -> HostConn {
-    HostConn::connect(sock, DEADLINE).expect("connect to the daemon socket")
+    HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon socket")
 }
 
 /// One registry-wide `sessions` row, by name.
@@ -1783,7 +1783,7 @@ impl Tui {
         // ⚠ A SHORT BOUND, not `DEADLINE`. This runs only on a path that has ALREADY spent the
         // deadline, and a daemon that has stopped answering would otherwise add another 45s to
         // every failure in the file — turning the diagnostic into a cost the next round pays.
-        let mut conn = match HostConn::connect(sock, Duration::from_secs(2)) {
+        let mut conn = match HostConn::connect_until_it_answers(sock, Duration::from_secs(2)) {
             Ok(conn) => conn,
             Err(why) => return format!("pane 0 cannot be read here (no connection: {why})"),
         };
@@ -2116,7 +2116,8 @@ fn a_daemon_a_client_brought_into_being_writes_where_this_test_said_and_ends_wit
 
         // ── 1. THE PREMISE: something came to serve a socket this test never bound ────────────
         wait_for("the client to bring a daemon into being", || {
-            let serving = HostConn::connect(&sock, Duration::from_millis(200)).is_ok();
+            let serving =
+                HostConn::connect_until_it_answers(&sock, Duration::from_millis(200)).is_ok();
             if serving && daemon_on(&sock).is_some() {
                 return Ok(());
             }
@@ -2154,7 +2155,7 @@ fn a_daemon_a_client_brought_into_being_writes_where_this_test_said_and_ends_wit
 
     // ── 3. AND IT GOES WITH THE TEST — item 802's own done-when ───────────────────────────────
     // ⚠⚠ ASKED OF THE PROCESS TABLE, NOT OF THE SOCKET — see [`daemon_on`]. The first draft of
-    // this line read `HostConn::connect(...).is_err()` and the mutation that deleted the
+    // this line read `HostConn::connect_until_it_answers(...).is_err()` and the mutation that deleted the
     // `kill-server` was GREEN against it, because the guard unlinks the socket either way.
     let survivor = wait_gone(&sock);
     assert!(

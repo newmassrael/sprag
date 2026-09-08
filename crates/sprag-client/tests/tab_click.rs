@@ -125,7 +125,7 @@ fn spawn_daemon() -> (Daemon, PathBuf) {
 fn await_daemon(sock: &Path) {
     let deadline = Instant::now() + BOOT_WAIT;
     while Instant::now() < deadline {
-        if HostConn::connect(sock, Duration::ZERO).is_ok() {
+        if HostConn::connect_until_it_answers(sock, Duration::ZERO).is_ok() {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -256,7 +256,8 @@ fn a_tab_click_lands_on_a_window_this_client_never_opened() {
 
     // ⚠ MADE FROM ANOTHER CONNECTION, which is the whole point: the client is not the caller, so
     // everything it knows about these windows arrived on its own poll — the launcher's shape.
-    let mut elsewhere = HostConn::connect(&sock, BOOT_WAIT).expect("a second connection");
+    let mut elsewhere =
+        HostConn::connect_until_it_answers(&sock, BOOT_WAIT).expect("a second connection");
     for _ in 0..2 {
         elsewhere
             .call(
@@ -366,7 +367,8 @@ fn another_partys_work_in_the_session_does_not_move_this_client() {
 
     // ⚠⚠ SOMEBODY ELSE WORKS IN THE SAME SESSION. A second connection is what the repayment loop,
     // the CLI and the MCP server all are to the owner's daemon.
-    let mut elsewhere = HostConn::connect(&sock, BOOT_WAIT).expect("a second connection");
+    let mut elsewhere =
+        HostConn::connect_until_it_answers(&sock, BOOT_WAIT).expect("a second connection");
     let other = rows
         .iter()
         .find(|w| w.name != home_name)

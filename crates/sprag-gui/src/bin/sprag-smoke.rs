@@ -6507,7 +6507,7 @@ impl Smoke {
             Launch::Bare,
         )?;
         wait_for_path(&gui_sock)?;
-        let conn = HostConn::connect(&gui_sock, PATIENCE)?;
+        let conn = HostConn::connect_until_it_answers(&gui_sock, PATIENCE)?;
 
         let mut smoke = Self {
             daemon,
@@ -7059,8 +7059,8 @@ impl Smoke {
         )
         .map_err(|error| format!("relaunch the gui: {error}"))?;
         wait_for_path(&self.gui_sock).map_err(|error| error.to_string())?;
-        self.conn =
-            HostConn::connect(&self.gui_sock, PATIENCE).map_err(|error| error.to_string())?;
+        self.conn = HostConn::connect_until_it_answers(&self.gui_sock, PATIENCE)
+            .map_err(|error| error.to_string())?;
         // The OS-focus gate `boot` applies to the first launch: without it `os_focused_window` is null
         // under Xvfb and anything reading the focused pane reads nothing.
         self.call("scene/window_focus", json!({ "focused": true }))
@@ -7098,7 +7098,8 @@ impl Smoke {
     /// and it is the only place a pane's INPUT can be written: the client's socket answers
     /// `NoExternalAtPath` for the same path, because the input external belongs to the host.
     fn daemon(&self) -> Result<HostConn, String> {
-        HostConn::connect(&self.host_sock, PATIENCE).map_err(|error| error.to_string())
+        HostConn::connect_until_it_answers(&self.host_sock, PATIENCE)
+            .map_err(|error| error.to_string())
     }
 
     /// Watch every frame the client paints, from the one standing at `from` until `arrived`.

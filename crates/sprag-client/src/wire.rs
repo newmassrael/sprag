@@ -1540,7 +1540,7 @@ impl ActivityThread {
 /// If the endpoint refuses the connection or the handshake fails. Best-effort at the call site: what
 /// this drives is a subtitle, and the deadline is what keeps a failure that size.
 fn activity_connection(endpoint: &HostEndpoint, client_id: &str) -> io::Result<HostConn> {
-    let mut conn = HostConn::connect(endpoint.path(), CONNECT_TIMEOUT)?;
+    let mut conn = HostConn::connect_until_it_answers(endpoint.path(), CONNECT_TIMEOUT)?;
     conn.set_read_deadline(Some(REQUEST_DEADLINE))?;
     shake_hands(&mut conn, client_id)?;
     Ok(conn)
@@ -1711,7 +1711,7 @@ impl BornSession<'_> {
     /// five seconds serves none of them, and it would spend those seconds with a failing client
     /// showing nothing.
     fn kill(&self) -> io::Result<()> {
-        let mut conn = HostConn::connect(self.endpoint.path(), Duration::ZERO)?;
+        let mut conn = HostConn::connect_until_it_answers(self.endpoint.path(), Duration::ZERO)?;
         conn.set_read_deadline(Some(REQUEST_DEADLINE))?;
         conn.call(
             "scene/invoke",
@@ -1998,7 +1998,7 @@ impl WireHost {
     /// retry. Both outcomes are logged WITH the endpoint's provenance, so even a successful boot
     /// records which daemon it chose and what pointed it there.
     fn reach_daemon(endpoint: &HostEndpoint) -> io::Result<HostConn> {
-        match HostConn::connect(endpoint.path(), Duration::ZERO) {
+        match HostConn::connect_until_it_answers(endpoint.path(), Duration::ZERO) {
             Ok(conn) => {
                 tracing::info!(target: "sprag_gui::wire", %endpoint, "joined a running host");
                 Ok(conn)
@@ -2006,7 +2006,7 @@ impl WireHost {
             Err(_) => {
                 spawn_daemon(endpoint.path())?;
                 tracing::info!(target: "sprag_gui::wire", %endpoint, "spawned a daemon host");
-                HostConn::connect(endpoint.path(), CONNECT_TIMEOUT)
+                HostConn::connect_until_it_answers(endpoint.path(), CONNECT_TIMEOUT)
             }
         }
     }
@@ -2118,7 +2118,7 @@ impl WireHost {
         // its `waitFor`/`revision`/re-queries watch the client's own session and never another's —
         // which after R303 means the same ATTACHMENT, not merely the same name. It attaches nothing
         // itself; saying hello with this client's id is what puts it on the same view.
-        let mut poll_conn = HostConn::connect(endpoint.path(), CONNECT_TIMEOUT)?;
+        let mut poll_conn = HostConn::connect_until_it_answers(endpoint.path(), CONNECT_TIMEOUT)?;
         scope_to_view(&mut poll_conn, &session, attached);
         // The poll connection is a SECOND connection of the SAME client: announce the same id so the
         // daemon groups both under one attached client (not two). Only the request conn attaches.
@@ -2329,8 +2329,9 @@ impl WireHost {
         // Reported through the endpoint: this is the one failure a user meets AFTER the boot, and
         // "Connection refused" naming no daemon is the same silence the boot's own failures were
         // taught out of ([`HostEndpoint::context`](sprag_rpc::HostEndpoint::context)).
-        let mut poll_conn = HostConn::connect(self.endpoint.path(), CONNECT_TIMEOUT)
-            .map_err(|error| self.endpoint.context(&error))?;
+        let mut poll_conn =
+            HostConn::connect_until_it_answers(self.endpoint.path(), CONNECT_TIMEOUT)
+                .map_err(|error| self.endpoint.context(&error))?;
         scope_to_view(&mut poll_conn, &session, attached);
         // The fresh poll conn is a new connection of the SAME client (the old one was torn down by
         // the switch): re-announce the shared id so the daemon keeps grouping both under one client.
@@ -5334,12 +5335,15 @@ fn handle_poll_error(
 /// address always had: unable to ask is not the same as *the host is alive*, and the arm that reads
 /// this is the one that decides whether to stay.
 ///
-/// ⚠ The timeout is short and is a CEILING rather than a wait: [`HostConn::connect`] retries until
+/// ⚠ The timeout is short and is a CEILING rather than a wait:
+/// [`HostConn::connect_until_it_answers`] retries until
 /// it elapses, and this runs on a path that has already ended — a client deciding whether to leave
 /// should not sit here. Long enough to cross a busy machine's accept queue, short enough that a
 /// person does not read it as a hang.
 fn host_answers(socket: Option<&Path>) -> bool {
-    socket.is_some_and(|path| HostConn::connect(path, Duration::from_millis(250)).is_ok())
+    socket.is_some_and(|path| {
+        HostConn::connect_until_it_answers(path, Duration::from_millis(250)).is_ok()
+    })
 }
 
 /// Ask the shell to end — the tmux detach — unless WE initiated the teardown (`stopped`), in
@@ -6192,7 +6196,8 @@ mod tests {
     fn a_dead_host_conn(tag: &str) -> (HostConn, SockGuard) {
         let path = sock_path(tag);
         let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
-        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        let conn = HostConn::connect_until_it_answers(&path, Duration::from_secs(2))
+            .expect("connect to it");
         // Accept then drop the server side: the client's next read returns EOF, which is
         // what `HostConn::call` maps to `UnexpectedEof` — the host is gone.
         let (server, _) = listener.accept().expect("accept the client");
@@ -6214,7 +6219,8 @@ mod tests {
     fn a_torn_connection_on_a_live_host(tag: &str) -> (HostConn, UnixListener, SockGuard) {
         let path = sock_path(tag);
         let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
-        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        let conn = HostConn::connect_until_it_answers(&path, Duration::from_secs(2))
+            .expect("connect to it");
         let (server, _) = listener.accept().expect("accept the client");
         drop(server);
         (conn, listener, SockGuard(path))
@@ -6426,7 +6432,8 @@ mod tests {
         use std::io::Write;
         let path = sock_path(tag);
         let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
-        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        let conn = HostConn::connect_until_it_answers(&path, Duration::from_secs(2))
+            .expect("connect to it");
         let viewing = viewing.to_owned();
         let list: Vec<SessionInfo> = survivors
             .iter()
@@ -6571,7 +6578,8 @@ mod tests {
         use std::io::Write;
         let path = sock_path(tag);
         let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
-        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        let conn = HostConn::connect_until_it_answers(&path, Duration::from_secs(2))
+            .expect("connect to it");
         let seen = Arc::new(AtomicUsize::new(0));
         let seen_srv = Arc::clone(&seen);
         let server = std::thread::spawn(move || {
@@ -6654,7 +6662,8 @@ mod tests {
         use std::io::Write;
         let path = sock_path(tag);
         let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
-        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        let conn = HostConn::connect_until_it_answers(&path, Duration::from_secs(2))
+            .expect("connect to it");
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept the client");
             let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
@@ -6922,7 +6931,8 @@ mod tests {
         let path = sock_path("teardown-switch");
         let listener = sprag_scratch::bind_socket(&path).expect("bind");
         let _guard = SockGuard(path.clone());
-        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect");
+        let conn =
+            HostConn::connect_until_it_answers(&path, Duration::from_secs(2)).expect("connect");
         let (server, _) = listener.accept().expect("accept");
 
         let quit = Arc::new(RecordingQuit::default());
@@ -6995,7 +7005,8 @@ mod tests {
         let path = sock_path("teardown");
         let listener = sprag_scratch::bind_socket(&path).expect("bind");
         let _guard = SockGuard(path.clone());
-        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect");
+        let conn =
+            HostConn::connect_until_it_answers(&path, Duration::from_secs(2)).expect("connect");
         let (server, _) = listener.accept().expect("accept");
 
         let quit = Arc::new(RecordingQuit::default());
@@ -8025,7 +8036,8 @@ mod tests {
         use std::io::Write;
         let path = sock_path(tag);
         let listener = sprag_scratch::bind_socket(&path).expect("bind the throwaway host socket");
-        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        let conn = HostConn::connect_until_it_answers(&path, Duration::from_secs(2))
+            .expect("connect to it");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_srv = Arc::clone(&seen);
         let server = std::thread::spawn(move || {

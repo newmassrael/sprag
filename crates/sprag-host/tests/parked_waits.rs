@@ -137,8 +137,8 @@ fn a_driver_that_walks_three_panes_leaves_at_most_one_park_per_pane() {
     let _ = std::fs::remove_file(&path);
     let channels = daemon_in_this_process(&path);
 
-    let mut setup =
-        HostConn::connect(&path, Duration::from_secs(5)).expect("the test's own connection");
+    let mut setup = HostConn::connect_until_it_answers(&path, Duration::from_secs(5))
+        .expect("the test's own connection");
     let session = setup
         .call(
             "scene/query",
@@ -154,10 +154,10 @@ fn a_driver_that_walks_three_panes_leaves_at_most_one_park_per_pane() {
 
     // The driver, exactly as `crate::drive` builds it: its own reading connection and its own park
     // connection, both unscoped and both reaching this daemon.
-    let driving =
-        HostConn::connect(&path, Duration::from_secs(5)).expect("the driver's connection");
-    let parking =
-        HostConn::connect(&path, Duration::from_secs(5)).expect("the driver's park socket");
+    let driving = HostConn::connect_until_it_answers(&path, Duration::from_secs(5))
+        .expect("the driver's connection");
+    let parking = HostConn::connect_until_it_answers(&path, Duration::from_secs(5))
+        .expect("the driver's park socket");
     let driver = RemotePaneAccess::over(driving)
         .parking_on(parking)
         .expect("two connections to one daemon, both unscoped, resolve to one session");

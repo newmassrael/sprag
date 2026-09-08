@@ -8709,7 +8709,7 @@ fn host_call_unscoped_answered(
             io::ErrorKind::NotFound,
         )
     })?;
-    let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT).map_err(|e| {
+    let mut conn = HostConn::connect_until_it_answers(&sock, CONNECT_TIMEOUT).map_err(|e| {
         let kind = e.kind();
         (
             format!("cannot reach the sprag host at {}: {e}", sock.display()),
@@ -8842,7 +8842,7 @@ fn parking_conn(timeout: Duration) -> Result<HostConn, String> {
          ancestor); these pane tools do not apply to this session"
             .to_owned()
     })?;
-    let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)
+    let mut conn = HostConn::connect_until_it_answers(&sock, CONNECT_TIMEOUT)
         .map_err(|e| format!("cannot reach the sprag host at {}: {e}", sock.display()))?;
     conn.handshake(&mcp_client_id())
         .map_err(|error| error.to_string())?;

@@ -119,8 +119,8 @@ fn spawn_daemon() -> (Daemon, PathBuf) {
 /// The name of the daemon's boot session, read off the wire — the naming rule belongs to the
 /// daemon, not to this test.
 fn boot_session(upstream: &Path) -> String {
-    let mut conn =
-        sprag_rpc::HostConn::connect(upstream, BOOT_WAIT).expect("connect to the daemon");
+    let mut conn = sprag_rpc::HostConn::connect_until_it_answers(upstream, BOOT_WAIT)
+        .expect("connect to the daemon");
     let sessions = conn
         .call(
             "scene/query",

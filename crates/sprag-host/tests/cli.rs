@@ -266,7 +266,7 @@ fn spawn_host_on(
     // server running"* and passed alone. The product's budget is right; the harness owed the wait.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if HostConn::connect(&sock, Duration::from_millis(200)).is_ok() {
+        if HostConn::connect_until_it_answers(&sock, Duration::from_millis(200)).is_ok() {
             break;
         }
         assert!(
@@ -1193,7 +1193,7 @@ fn a_daemon_on_a_socket_nobody_named_is_found_by_the_survey() {
     // success above is the survey finding it rather than this directory always saying yes.
     drop(_host);
     let deadline = Instant::now() + Duration::from_secs(10);
-    while HostConn::connect(&live, Duration::from_millis(200)).is_ok() {
+    while HostConn::connect_until_it_answers(&live, Duration::from_millis(200)).is_ok() {
         assert!(Instant::now() < deadline, "the daemon never let go");
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -1396,7 +1396,8 @@ fn ls_joins_the_activity_sample_onto_the_session_it_belongs_to() {
 #[test]
 fn the_cli_breaks_and_joins_panes_over_the_socket() {
     let (_host, sock) = spawn_host();
-    let mut c = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let mut c = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the host");
 
     // The boot window "0" has one pane; break-pane on the ONLY pane is refused, cleanly.
     let refused = sprag(&sock, &["break-pane", "-t", "0", "0"]);
@@ -1905,8 +1906,8 @@ fn the_cli_lists_attached_clients_and_shows_the_attached_count() {
 
     {
         // Attach a real client to the default session "0" and HOLD the connection open.
-        let mut attacher =
-            HostConn::connect(&sock, Duration::from_secs(5)).expect("attacher connects");
+        let mut attacher = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+            .expect("attacher connects");
         attacher
             .call(
                 CLIENT_HELLO_METHOD,
@@ -1983,7 +1984,8 @@ fn killing_a_session_releases_its_viewers_and_a_new_session_of_that_name_inherit
     assert!(sprag(&sock, &["new", "alpha"]).ok, "create alpha");
     assert!(sprag(&sock, &["new", "keeper"]).ok, "create keeper");
 
-    let mut attacher = HostConn::connect(&sock, Duration::from_secs(5)).expect("attacher connects");
+    let mut attacher = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("attacher connects");
     attacher
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "viewer" }))
         .expect("client/hello accepted");
@@ -2493,7 +2495,8 @@ fn the_cli_ssh_tmux_preset_reaches_exec_and_rejects_a_conflict() {
 fn the_cli_find_narrows_to_one_pane_and_rejects_an_absent_one() {
     let printer = "printf 'shared marker\\n'; exec cat";
     let (_host, sock) = spawn_host_running(&["sh", "-c", printer]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the host");
     let second: u64 = conn
         .call(
             "scene/invoke",
@@ -3870,7 +3873,8 @@ fn still_running(pid: u32) -> bool {
 /// and a control — and a session name is unique per daemon. Every caller that wants only one passes
 /// `work`, which is the name this fixture used to hard-code.
 fn start_a_run_that_cannot_converge(sock: &Path, session: &str) {
-    let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, Duration::from_secs(5)).expect("connect");
     conn.call(
         "scene/invoke",
         json!({
@@ -4171,7 +4175,8 @@ fn a_killed_daemon_gives_its_panes_back_with_their_scrollback() {
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({
@@ -4285,7 +4290,8 @@ fn kill_server_leaves_every_session_in_the_saved_workspace() {
     );
 
     // Two named sessions, each holding a pane that stays put.
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     for name in ["first", "second"] {
         conn.call(
             "scene/invoke",
@@ -4424,7 +4430,8 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("the test's connection");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the test's connection");
     // ⚠ A `--daemon` boots with no session of its own, so the surface is given one to read — the
     // sibling gate below stages its pane the same way, and for the same reason.
     conn.call(
@@ -4450,8 +4457,8 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
     // daemon serves a pane read against the session the connection resolves to, and an unscoped one
     // resolves to a session holding no panes — which reads as *I cannot see that pane* and would
     // stage this whole gate against a surface that never worked.
-    let mut driving =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the driver's socket");
+    let mut driving = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the driver's socket");
     driving.scope_to("work");
     let remote = sprag_host::remote_access::RemotePaneAccess::over(driving);
     assert!(
@@ -4573,7 +4580,8 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
     );
 
     // ── THE PREMISE, READ ON THE TEST'S OWN CONNECTION ─────────────────────────────────────────
-    let mut fresh = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to successor");
+    let mut fresh = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to successor");
     let withheld = fresh
         .call(
             "scene/query",
@@ -4652,7 +4660,8 @@ fn a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody() {
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
     conn.call(
         "scene/invoke",
         json!({
@@ -4820,7 +4829,8 @@ fn a_run_launched_from_a_pane_records_the_conversation_that_asked_for_it() {
         "the daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ── A STAND-IN AGENT, named the way `launched_identity` reads one ───────────────────────────
     //
@@ -5121,7 +5131,8 @@ fn a_conversation_can_ask_which_runs_it_is_on() {
         "the daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ⚠⚠ A TRACKED DOUBLE, LINKED — register item 467, and under this daemon's own state directory
     // so `DaemonGuard` takes it away. The daemon reads a pane's ARGV for its identity, so what the
@@ -5392,7 +5403,8 @@ fn a_runs_row_says_whose_decisions_it_is_being_judged_by() {
         "the daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ⚠⚠ EVERY ARGUMENT THE SAME BUT THE KIND. Written as one closure so the pair cannot drift:
     // a second literal would let the two calls come to differ somewhere else and the assertion
@@ -5544,7 +5556,8 @@ fn a_pane_listing_says_which_conversation_is_living_in_each_pane() {
         "the daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ⚠ THE TRACKED DOUBLE, LINKED — register item 467, and under the daemon's own state directory
     // so `DaemonGuard` takes it away (item 794's population). See the gate above for both reasons.
@@ -5858,7 +5871,8 @@ fn a_daemon_restarted_under_a_live_loop_brings_that_loop_back_running() {
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
     let pane_of = |conn: &mut HostConn, session: &str| {
         conn.call(
             "scene/query",
@@ -5999,7 +6013,8 @@ fn a_daemon_restarted_under_a_live_loop_brings_that_loop_back_running() {
         why_not_serving(&sock),
     );
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
     let listed = conn
         .call(
             "scene/query",
@@ -6115,7 +6130,8 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ── OURS: the loop whose repository is the one being promoted ────────────────────────────
     let ours = loop_session(&mut conn, "ours");
@@ -6309,7 +6325,8 @@ fn a_promotion_brings_every_loop_back_on_exactly_one_driver() {
     );
 
     // ── AND THE ROWS AGREE, in both directions ───────────────────────────────────────────────
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
     let rows_of = |conn: &mut HostConn, session: &str| {
         conn.call(
             "scene/query",
@@ -6435,7 +6452,8 @@ fn a_promotion_that_changes_the_documents_says_which_runs_it_is_not_bringing_bac
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ── THE PROMOTED REPOSITORY'S LOOP, one whose record is left alone, and one left ADRIFT ──
     let promoted = loop_session(&mut conn, "promoted");
@@ -6729,7 +6747,8 @@ fn a_promotion_that_changes_the_documents_ends_the_drivers_it_is_not_bringing_ba
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ── THE STRANDED LOOP: its driver is left exactly as the dying daemon left it ────────────
     let stranded = loop_session(&mut conn, "stranded");
@@ -7092,7 +7111,8 @@ fn a_promotion_follows_a_loop_that_replaced_its_session_and_says_when_it_cannot(
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ── FIVE LOOPS THROUGH ONE PROMOTION, and the fifth is the one that keeps a control alive ──
     let moved = loop_session(&mut conn, "moved");
@@ -7266,7 +7286,8 @@ fn a_promotion_follows_a_loop_that_replaced_its_session_and_says_when_it_cannot(
     // number, and *it came back* would say nothing about which address was used. Asked of the
     // daemon's own pane list rather than reasoned from the counter: the successor restored these
     // three sessions and nothing else, so their panes are every pane there is.
-    let mut back = HostConn::connect(&sock, Duration::from_secs(5)).expect("reconnect");
+    let mut back =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("reconnect");
     let mut held: Vec<u64> = Vec::new();
     for session in ["moved", "lost", "refused", "elsewhere", "control"] {
         held.extend(
@@ -7582,7 +7603,8 @@ fn a_rescued_run_types_its_first_prompt_and_a_pane_that_came_back_a_shell_types_
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     let restored = loop_session_running(
         &mut conn,
@@ -7711,7 +7733,8 @@ fn a_rescued_run_types_its_first_prompt_and_a_pane_that_came_back_a_shell_types_
     // ⚠⚠ Read off `RUN_RESUMED_KEY` — the fact only the registry can answer (`put_back` writes it
     // and nothing clears it) — rather than inferred from a status word, because `running` is also
     // what a run this daemon started fresh says.
-    let mut back = HostConn::connect(&sock, Duration::from_secs(10)).expect("reconnect");
+    let mut back =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(10)).expect("reconnect");
     // ⚠⚠ BY THE RUN'S OWN LABEL AND NEVER BY POSITION: the runs slot answers with EVERY run this
     // daemon holds whichever session is asked, so a reader that took the first row would read one
     // arm twice and call the other one green. The label is composed once at the run's birth from
@@ -7931,7 +7954,8 @@ fn a_rescued_runs_row_says_its_counters_are_a_predecessors_until_a_driver_here_s
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
     let quiet = loop_session(&mut conn, "quiet");
     start_loop(
         &mut conn,
@@ -8016,7 +8040,8 @@ fn a_rescued_runs_row_says_its_counters_are_a_predecessors_until_a_driver_here_s
     );
 
     // ── THE PREMISE THE CLAIM RESTS ON: the boot really put it back ──────────────────────────
-    let mut back = HostConn::connect(&sock, Duration::from_secs(10)).expect("reconnect");
+    let mut back =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(10)).expect("reconnect");
     // ⚠⚠ BY THE RUN'S OWN LABEL AND NEVER BY POSITION: the runs slot answers with every run this
     // daemon holds whichever session is asked, so a reader that took the first row would read one
     // arm twice and call the other one green.
@@ -8219,7 +8244,8 @@ fn a_daemon_whose_binary_was_replaced_under_it_can_still_start_a_driver() {
         why_not_serving(&sock),
     );
     let daemon = daemon_pid(&sock).expect("the daemon is running");
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ── TWO LOOPS: one killed before the copy, one after ────────────────────────────────────
     let before_pane = loop_session(&mut conn, "before");
@@ -8466,7 +8492,8 @@ fn a_run_whose_driver_process_dies_is_put_back_on_a_new_one() {
         why_not_serving(&sock),
     );
     let daemon = daemon_pid(&sock).expect("the daemon is running");
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ── THE SUBJECT: a LOOP, because only a run with a machine records a place ───────────────
     let pane = loop_session(&mut conn, "subject");
@@ -8669,7 +8696,8 @@ fn a_pane_that_survived_a_reboot_can_still_ask_for_a_person() {
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({
@@ -8711,7 +8739,8 @@ fn a_pane_that_survived_a_reboot_can_still_ask_for_a_person() {
     // A client the message can be addressed TO. Held open for the rest of the test: the router
     // walks the attachment map at the moment the child speaks, so a connection that had dropped
     // would make the claim below fail for the wrong reason.
-    let mut viewer = HostConn::connect(&sock, Duration::from_secs(5)).expect("the viewer connects");
+    let mut viewer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the viewer connects");
     viewer
         .call(
             CLIENT_HELLO_METHOD,
@@ -8831,7 +8860,8 @@ fn a_killed_daemon_gives_its_panes_back_with_their_inline_images() {
         "the first daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({
@@ -8877,7 +8907,8 @@ fn a_killed_daemon_gives_its_panes_back_with_their_inline_images() {
         why_not_serving(&sock),
     );
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("reconnect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("reconnect");
     let mut seen = Vec::new();
     let restored = wait_for(Duration::from_secs(15), || {
         seen = image_summaries(&mut conn, "art");
@@ -8988,7 +9019,8 @@ fn the_cli_run_lists_a_projects_commands_and_types_one_at_the_prompt() {
 /// Poll pane 0's full text until it contains `needle`, returning it. Waits on the CONDITION the
 /// assertion reads rather than on a timer.
 fn wait_for_pane_text(sock: &Path, needle: &str) -> String {
-    let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, Duration::from_secs(5)).expect("connect");
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut last = String::new();
     while Instant::now() < deadline {
@@ -9310,7 +9342,8 @@ fn the_cli_splits_lists_and_kills_panes_over_the_socket() {
 #[test]
 fn the_pane_listing_says_which_pane_asked_for_a_pane() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the host");
     let opened = conn
         .call(
             "scene/invoke",
@@ -10322,7 +10355,8 @@ fn the_cli_shows_where_the_placement_verbs_put_a_pane() {
 #[test]
 fn split_window_divides_the_pane_it_is_given_from_the_shell() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the host");
 
     // Bare: no direction, no target — the append tmux's bare `split-window` gives.
     let appended = split_id(&sock, &["split-window", "--", "cat"]);
@@ -13144,7 +13178,8 @@ impl Drop for SharedStateHome {
 /// Which generation the daemon on `sock` says it is, off its own handshake — the READER's half of
 /// the comparison item 711 is about.
 fn handshake_generation(sock: &Path) -> Option<String> {
-    let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.handshake("cli-it-generation")
         .expect("the daemon answers the handshake");
     conn.daemon_generation().map(str::to_owned)
@@ -16188,7 +16223,8 @@ fn daemon_with_one_pane_told(label: &str, options: &[(&str, &str)]) -> (DaemonGu
         "the daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({
@@ -16538,7 +16574,8 @@ fn a_signalled_daemon_whose_run_is_driven_elsewhere_is_gone_promptly() {
         why_not_serving(&sock),
     );
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({
@@ -17887,7 +17924,8 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
         "the daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // Each half gets its OWN session and pane, so the control cannot be answered by the subject's
     // run and the two dialogs cannot be confused for one another.
@@ -18094,7 +18132,8 @@ fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_no
     let pane = blocked_pane(&mut conn, "supervised", ASKING_CLAUDE_TWICE);
     let outcome = std::thread::scope(|watching| {
         watching.spawn(|| {
-            let mut theirs = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+            let mut theirs =
+                HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
             // ⚠ THEY WAIT FOR THE SECOND QUESTION, not for a clock. The first is the RUN's to
             // answer, and a person who typed during it would be answering it for them — which
             // would make this gate pass with the wait never happening at all.
@@ -18253,7 +18292,8 @@ fn a_supervised_run_driven_elsewhere_waits_for_its_person_and_goes_on() {
         "the daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     conn.call(
         "scene/invoke",
@@ -18343,7 +18383,8 @@ fn a_supervised_run_driven_elsewhere_waits_for_its_person_and_goes_on() {
     let after = std::sync::Mutex::new(Value::Null);
     let outcome = std::thread::scope(|watching| {
         watching.spawn(|| {
-            let mut theirs = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+            let mut theirs =
+                HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
             let showed = wait_for(Duration::from_secs(60), || {
                 theirs
                     .call(
@@ -18522,7 +18563,8 @@ fn a_pane_born_with_its_session_wakes_a_wait_parked_on_that_session() {
         "the daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     // ⚠ THE FIXTURE SPEAKS TWICE, ON ITS OWN CLOCK AND NOBODY ELSE'S. The first line says the pane
     // is alive; the second lands well after the park below, with no client having asked for it —
@@ -18590,7 +18632,8 @@ fn a_pane_born_with_its_session_wakes_a_wait_parked_on_that_session() {
     // opens a park connection of its own for exactly this reason), and — more to the point here —
     // every INVOKE on this session bumps its revision through the dispatch funnel. A gate that
     // chattered while parked would be supplying the very wake it is measuring.
-    let mut parking = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut parking =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
     let parked = parking
         .begin(
             sprag_host::wire::PANE_WAIT_REVISION_METHOD,
@@ -19721,7 +19764,8 @@ fn answer_pane_reaches_a_pane_of_a_window_that_is_not_the_current_one() {
 /// The name of the window `session` is CURRENTLY showing — the fact this gate pins and then keeps
 /// asserting, read from the daemon rather than assumed from the call that was supposed to set it.
 fn current_window(sock: &Path, session: &str) -> String {
-    let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/query",
         json!({ "session": session, "path": mux_action_path(WINDOWS_SLOT) }),
@@ -19782,7 +19826,8 @@ fn a_run_drives_its_pane_while_the_session_is_looking_at_another_window() {
 
     // The loop's peer: a stand-in agent that announces itself and echoes, so the run gets PAST its
     // readiness barrier and injects — which is the first thing a driver does that touches the pane.
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({
@@ -20244,7 +20289,8 @@ fn a_current_builds_daemon_leaves_a_log_whose_runs_can_be_paired() {
         "the daemon never started serving -- {}",
         why_not_serving(&sock),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
     conn.call(
         "scene/invoke",
         json!({
@@ -20490,7 +20536,8 @@ fn a_current_builds_daemon_leaves_a_log_saying_which_ceiling_its_runs_were_judge
         why_not_serving(&sock),
     );
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
     conn.call(
         "scene/invoke",
         json!({

@@ -172,7 +172,8 @@ fn a_tree_to_stand_in(sock: &Path) -> PathBuf {
 /// comparison. See `ai_loop_keeps_what_its_kind_keeps`.
 fn open_a_pane_in_a_tree(sock: &Path) {
     let tree = a_tree_to_stand_in(sock);
-    let mut conn = HostConn::connect(sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({
@@ -308,7 +309,7 @@ fn everything_this_file_makes_under_the_temp_dir_goes_with_the_test_that_made_it
 fn wire_client_drives_a_real_sprag_term_host() {
     let (_host, sock) = spawn_host();
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // The mux pane list — exactly one boot pane (the `cat`).
@@ -476,7 +477,7 @@ fn a_mux_spawn_and_the_new_panes_output_both_advance_the_wire_notification() {
     // deterministically by the rpc-level unit tests); here we cross the OS socket +
     // the real `/sprag_mux` dispatch and read the non-blocking `scene/revision`.
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // One boot pane to start.
@@ -542,7 +543,7 @@ fn a_mux_close_shrinks_the_set_and_advances_the_wire_notification() {
     // client long-polling change-notification learns the host lost a pane — exactly what
     // the GUI wire poll re-queries and mirrors as a freed slot.
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // Grow to two panes, capturing the 2nd pane's id.
@@ -600,7 +601,7 @@ fn connect_fails_cleanly_when_no_host_is_listening() {
     // child + a clean error.
     let sock = socket_path(); // never bound: no host is spawned for it
     let start = Instant::now();
-    let result = HostConn::connect(&sock, Duration::from_millis(300));
+    let result = HostConn::connect_until_it_answers(&sock, Duration::from_millis(300));
     assert!(result.is_err(), "connect to an unbound socket must fail");
     assert!(
         matches!(
@@ -734,7 +735,7 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
 #[test]
 fn the_window_layout_crosses_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     // The boot pane alone arranges as a bare leaf — no split to divide.
@@ -779,7 +780,7 @@ fn the_window_layout_crosses_the_real_socket() {
 #[test]
 fn a_floated_pane_docks_back_at_its_home_across_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     // Boot pane + two more: `0 | 1 | 2`.
@@ -840,7 +841,7 @@ fn a_floated_pane_docks_back_at_its_home_across_the_real_socket() {
 #[test]
 fn a_directional_split_lands_where_the_caller_named_across_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     // Boot pane + two more: `0 | 1 | 2`.
@@ -914,7 +915,7 @@ fn a_directional_split_lands_where_the_caller_named_across_the_real_socket() {
 #[test]
 fn two_sessions_under_one_daemon_are_independent_over_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     // The daemon boots with one session, "0", holding its boot `cat` pane (id 0).
@@ -1052,7 +1053,7 @@ fn two_sessions_under_one_daemon_are_independent_over_the_real_socket() {
 #[test]
 fn killing_a_session_over_the_real_socket_refuses_its_reads_and_keeps_the_others() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     // Boot session "0" (pane 0); create a second, "work", born with its own pane.
@@ -1137,7 +1138,7 @@ fn killing_a_session_over_the_real_socket_refuses_its_reads_and_keeps_the_others
 #[test]
 fn a_dead_scope_still_reads_the_registry_and_still_refuses_a_session_over_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     conn.call(
         "scene/invoke",
@@ -1147,8 +1148,8 @@ fn a_dead_scope_still_reads_the_registry_and_still_refuses_a_session_over_the_re
 
     // SOMEBODY IS IN THE SURVIVOR. A real second connection that really attaches, so the count the
     // dying client is about to read is one the daemon derived rather than one this test wrote.
-    let mut neighbour =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the neighbour connects");
+    let mut neighbour = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the neighbour connects");
     neighbour
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "neighbour" }))
         .expect("client/hello is accepted");
@@ -1162,7 +1163,8 @@ fn a_dead_scope_still_reads_the_registry_and_still_refuses_a_session_over_the_re
 
     // THE DYING CLIENT: it says hello and attaches to `work`, so BOTH ways of naming a dead scope
     // are available to it once `work` goes.
-    let mut dying = HostConn::connect(&sock, Duration::from_secs(5)).expect("the dying client");
+    let mut dying = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the dying client");
     dying
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "dying" }))
         .expect("client/hello is accepted");
@@ -1290,8 +1292,8 @@ fn client_attachment_is_counted_and_released_on_disconnect_over_the_real_socket(
     let (_host, sock) = spawn_host();
 
     // The observer only READS the badge — it never sends client/hello or client/attach.
-    let mut observer =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("observer connects to the host");
+    let mut observer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("observer connects to the host");
     let session = session_names(&mut observer)
         .into_iter()
         .next()
@@ -1304,7 +1306,7 @@ fn client_attachment_is_counted_and_released_on_disconnect_over_the_real_socket(
 
     {
         // The attacher announces a client id, then attaches to the default session (unscoped).
-        let mut attacher = HostConn::connect(&sock, Duration::from_secs(5))
+        let mut attacher = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
             .expect("attacher connects to the host");
         attacher
             .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "test-client" }))
@@ -1345,8 +1347,8 @@ fn client_attachment_is_counted_and_released_on_disconnect_over_the_real_socket(
 fn the_clients_slot_lists_attached_clients_and_releases_them_over_the_real_socket() {
     let (_host, sock) = spawn_host();
 
-    let mut observer =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("observer connects to the host");
+    let mut observer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("observer connects to the host");
     let session = session_names(&mut observer)
         .into_iter()
         .next()
@@ -1357,7 +1359,7 @@ fn the_clients_slot_lists_attached_clients_and_releases_them_over_the_real_socke
     );
 
     {
-        let mut attacher = HostConn::connect(&sock, Duration::from_secs(5))
+        let mut attacher = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
             .expect("attacher connects to the host");
         attacher
             .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "wire-client" }))
@@ -1395,8 +1397,8 @@ fn the_clients_slot_lists_attached_clients_and_releases_them_over_the_real_socke
 fn a_child_raised_osc_9_notification_reaches_the_panes_slot() {
     let (_host, sock) =
         spawn_host_running(&["sh", "-c", "printf '\\033]9;from-child\\007'; sleep 30"]);
-    let mut conn =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the spawned host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host");
 
     assert!(
         wait_until(Duration::from_secs(5), || {
@@ -1436,8 +1438,8 @@ fn notification_of(conn: &mut HostConn) -> Option<(Option<String>, String, u64)>
 #[test]
 fn a_child_rung_bell_reaches_the_panes_slot() {
     let (_host, sock) = spawn_host_running(&["sh", "-c", "printf '\\007\\007'; sleep 30"]);
-    let mut conn =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the spawned host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host");
 
     assert!(
         wait_until(Duration::from_secs(5), || {
@@ -1478,8 +1480,8 @@ fn a_child_osc_133_cycle_reaches_the_panes_slot() {
         "-c",
         "printf '\\033]133;A\\007$ \\033]133;C\\007out\\033]133;D;3\\007'; sleep 30",
     ]);
-    let mut conn =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the spawned host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host");
 
     assert!(
         wait_until(Duration::from_secs(5), || {
@@ -1502,8 +1504,8 @@ fn a_child_osc_8_hyperlink_reaches_the_links_slot() {
         "-c",
         "printf '\\033]8;;https://example.com/spec\\007docs\\033]8;;\\007'; sleep 30",
     ]);
-    let mut conn =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the spawned host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host");
 
     assert!(
         wait_until(Duration::from_secs(5), || {
@@ -1537,8 +1539,8 @@ fn a_child_kitty_image_summarises_on_the_panes_slot_and_serves_rgba_on_demand() 
     let b64 = STANDARD.encode(&rgba);
     let cmd = format!("printf '\\033_Ga=T,f=32,s=2,v=2,i=1;{b64}\\033\\\\'; sleep 30");
     let (_host, sock) = spawn_host_running(&["sh", "-c", &cmd]);
-    let mut conn =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the spawned host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host");
 
     // The panes slot carries the SUMMARY only — id/size/anchor/seq, and NO rgba on the poll.
     assert!(
@@ -1640,7 +1642,7 @@ fn clients_of(conn: &mut HostConn) -> Vec<(String, String)> {
 #[test]
 fn re_scoping_one_connection_switches_which_session_it_serves_over_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     // The daemon boots session "0" holding its boot pane (id 0). Create "work", born with its own
@@ -1716,7 +1718,7 @@ fn re_scoping_one_connection_switches_which_session_it_serves_over_the_real_sock
 #[test]
 fn an_attached_client_follows_a_rename_where_a_name_scoped_one_is_captured_by_an_impostor() {
     let (_host, sock) = spawn_host();
-    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut admin = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     admin
         .call(
@@ -1739,8 +1741,8 @@ fn an_attached_client_follows_a_rename_where_a_name_scoped_one_is_captured_by_an
 
     // The DISPLAY client: hello, attach by name, then off the name and onto the attachment — the
     // exact sequence `sprag-client`'s `attach_and_follow` performs at boot.
-    let mut viewer =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    let mut viewer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the display client connects");
     viewer
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
         .expect("client/hello is accepted");
@@ -1751,8 +1753,8 @@ fn an_attached_client_follows_a_rename_where_a_name_scoped_one_is_captured_by_an
     viewer.scope_to_attached();
 
     // The client this round is fixing: identical, except that it keeps re-sending the name.
-    let mut by_name =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the name-scoped client connects");
+    let mut by_name = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the name-scoped client connects");
     by_name
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "by-name" }))
         .expect("client/hello is accepted");
@@ -1879,7 +1881,7 @@ fn an_attached_client_follows_a_rename_where_a_name_scoped_one_is_captured_by_an
 #[test]
 fn a_client_goes_back_to_the_session_it_visited_not_to_the_name_it_wore() {
     let (_host, sock) = spawn_host();
-    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut admin = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     let new_session = |conn: &mut HostConn, name: &str| {
         conn.call(
@@ -1893,8 +1895,8 @@ fn a_client_goes_back_to_the_session_it_visited_not_to_the_name_it_wore() {
 
     // A display client that visits `work` and then moves to `here` — `attach_and_follow`'s exact
     // sequence, twice, which is what a switch is.
-    let mut viewer =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    let mut viewer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the display client connects");
     viewer
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
         .expect("client/hello is accepted");
@@ -1957,8 +1959,8 @@ fn a_client_goes_back_to_the_session_it_visited_not_to_the_name_it_wore() {
     assert_eq!(go_back(&mut viewer, false), json!("here"));
 
     // A client with nowhere to go back to is ANSWERED, not refused: `null`, and it stays put.
-    let mut fresh =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("a fresh client connects");
+    let mut fresh = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("a fresh client connects");
     fresh
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "fresh" }))
         .expect("client/hello is accepted");
@@ -2005,7 +2007,7 @@ fn a_client_goes_back_to_the_session_it_visited_not_to_the_name_it_wore() {
 #[test]
 fn a_client_steps_along_the_session_ring_the_daemon_walks_from_where_it_is() {
     let (_host, sock) = spawn_host();
-    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut admin = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     let new_session = |conn: &mut HostConn, name: &str| {
         conn.call(
@@ -2025,8 +2027,8 @@ fn a_client_steps_along_the_session_ring_the_daemon_walks_from_where_it_is() {
         "the boot session, then the two created ones, in the registry's own order",
     );
 
-    let mut viewer =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    let mut viewer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the display client connects");
     viewer
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
         .expect("client/hello is accepted");
@@ -2083,8 +2085,8 @@ fn a_client_steps_along_the_session_ring_the_daemon_walks_from_where_it_is() {
 
     // A SECOND CLIENT steps from ITS OWN attachment, not from the first one's — the fact that
     // makes the origin the attachment map rather than anything the request carries.
-    let mut other =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("a second client connects");
+    let mut other = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("a second client connects");
     other
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "other" }))
         .expect("client/hello is accepted");
@@ -2143,8 +2145,8 @@ fn a_client_steps_along_the_session_ring_the_daemon_walks_from_where_it_is() {
     // Scoped to `alpha` and stepping forward, so the answer (`beta`) differs from BOTH the scope
     // itself and the session the other two clients are on — a fallback to the wrong thing could not
     // produce it.
-    let mut fresh =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("a fresh client connects");
+    let mut fresh = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("a fresh client connects");
     fresh
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "fresh" }))
         .expect("client/hello is accepted");
@@ -2174,7 +2176,7 @@ fn a_client_steps_along_the_session_ring_the_daemon_walks_from_where_it_is() {
 #[test]
 fn a_client_can_resume_where_it_already_is_and_is_told_the_current_name() {
     let (_host, sock) = spawn_host();
-    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut admin = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     admin
         .call(
@@ -2183,8 +2185,8 @@ fn a_client_can_resume_where_it_already_is_and_is_told_the_current_name() {
         )
         .expect("new_session answers");
 
-    let mut viewer =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    let mut viewer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the display client connects");
     viewer
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "resumer" }))
         .expect("client/hello is accepted");
@@ -2219,8 +2221,8 @@ fn a_client_can_resume_where_it_already_is_and_is_told_the_current_name() {
     );
 
     // The CONTROL that makes the claim mean something: the NAME it attached with is refused now.
-    let mut by_name =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("a name-scoped client connects");
+    let mut by_name = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("a name-scoped client connects");
     by_name
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "by-name" }))
         .expect("client/hello is accepted");
@@ -2245,7 +2247,8 @@ fn a_client_can_resume_where_it_already_is_and_is_told_the_current_name() {
 #[test]
 fn a_malformed_attach_target_is_refused_with_the_sentence_that_says_which() {
     let (_host, sock) = spawn_host();
-    let mut client = HostConn::connect(&sock, Duration::from_secs(5)).expect("the client connects");
+    let mut client = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the client connects");
     client
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "malformed" }))
         .expect("client/hello is accepted");
@@ -2292,7 +2295,7 @@ fn a_malformed_attach_target_is_refused_with_the_sentence_that_says_which() {
 #[test]
 fn the_window_ring_is_walked_by_the_daemon_over_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     for _ in 0..2 {
         conn.call(
@@ -2411,7 +2414,7 @@ fn the_window_ring_is_walked_by_the_daemon_over_the_real_socket() {
 #[test]
 fn a_window_selected_by_identity_lands_over_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     for _ in 0..2 {
         conn.call(
@@ -2490,7 +2493,7 @@ fn a_window_selected_by_identity_lands_over_the_real_socket() {
 #[test]
 fn the_move_answers_which_window_and_how_over_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     for _ in 0..2 {
         conn.call(
@@ -2618,7 +2621,7 @@ fn the_move_answers_which_window_and_how_over_the_real_socket() {
 #[test]
 fn two_windows_in_one_session_are_independent_over_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     // The default session boots with one window "0" holding its boot `cat` pane (id 0).
@@ -2691,7 +2694,7 @@ fn two_windows_in_one_session_are_independent_over_the_real_socket() {
 #[test]
 fn break_and_join_move_a_pane_between_windows_over_the_real_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     // Window "0" boots with pane 0; add a second pane so window 0 has one to break out.
@@ -2773,7 +2776,7 @@ fn break_and_join_move_a_pane_between_windows_over_the_real_socket() {
 #[test]
 fn a_layout_write_tagged_with_the_wrong_window_is_refused_over_the_socket() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     // The current window (boot "0") gets a second pane, so it has a two-pane even split to author
@@ -2914,7 +2917,7 @@ fn an_arrangement_far_deeper_than_the_old_ceiling_crosses_the_socket() {
     const LEAVES: u64 = 200;
 
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     conn.call(
         "scene/invoke",
@@ -2982,7 +2985,7 @@ fn an_arrangement_far_deeper_than_the_old_ceiling_crosses_the_socket() {
 #[test]
 fn a_clients_settled_arrangement_crosses_the_real_socket_and_is_named() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     conn.call(
@@ -3101,7 +3104,7 @@ fn a_dropped_file_on_a_remote_pane_uploads_and_pastes_the_remote_path() {
     let dropped = fixture.dropped.clone();
     let argv_file = fixture.argv_file.clone();
     let (_host, sock) = spawn_host_with(&["cat"], &[("PATH", &fixture.path_env())]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     // A pane MARKED as a remote workspace — the same `{cmd, remote}` birth spec `sprag ssh` sends.
@@ -3173,7 +3176,7 @@ fn a_failed_upload_leaves_the_pane_untouched() {
     let dropped = fixture.dropped.clone();
     let argv_file = fixture.argv_file.clone();
     let (_host, sock) = spawn_host_with(&["cat"], &[("PATH", &fixture.path_env())]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     let pane = conn
@@ -3302,7 +3305,7 @@ fn a_panes_project_commands_reach_a_wire_client() {
     .expect("write the project config");
 
     let (_host, sock) = spawn_host_with(&["cat"], &[("HOME", &project.display().to_string())]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term");
 
     let answer = conn
@@ -3365,7 +3368,7 @@ fn a_broken_project_config_is_reported_rather_than_read_as_empty() {
     .expect("write a broken config");
 
     let (_host, sock) = spawn_host_with(&["cat"], &[("HOME", &project.display().to_string())]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term");
     let answer = conn
         .call(
@@ -3432,7 +3435,7 @@ fn an_idle_agent_pane_settles_with_no_client_activity_and_no_output() {
         "printf '\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[H\\342\\235\\257\\n  \
          \\342\\217\\270 manual mode on \\302\\267 ? for shortcuts\\n'; cat",
     ]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // Wait for the paint to land, so the baseline below is taken after the pane's own output has
@@ -3463,8 +3466,8 @@ fn an_idle_agent_pane_settles_with_no_client_activity_and_no_output() {
     let since = read_revision(&mut conn);
     let (tx, rx) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
-        let mut parked =
-            HostConn::connect(&sock, Duration::from_secs(5)).expect("second connection");
+        let mut parked = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+            .expect("second connection");
         let woken = parked.call("scene/waitFor", json!({ "since": since }));
         let _ = tx.send(woken.map(|v: Value| v["revision"].as_u64().unwrap_or(0)));
     });
@@ -3551,7 +3554,7 @@ fn an_edited_manifest_reaches_a_pane_that_is_not_moving() {
         ],
         &[("XDG_CONFIG_HOME", &dir.display().to_string())],
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // Settled under the BUILT-IN rules first, so what the edit changes is an answer this daemon has
@@ -3570,8 +3573,8 @@ fn an_edited_manifest_reaches_a_pane_that_is_not_moving() {
     let (tx, rx) = std::sync::mpsc::channel();
     let parked_sock = sock.clone();
     let waiter = std::thread::spawn(move || {
-        let mut parked =
-            HostConn::connect(&parked_sock, Duration::from_secs(5)).expect("second connection");
+        let mut parked = HostConn::connect_until_it_answers(&parked_sock, Duration::from_secs(5))
+            .expect("second connection");
         let woken = parked.call("scene/waitFor", json!({ "since": since }));
         let _ = tx.send(woken.map(|v: Value| v["revision"].as_u64().unwrap_or(0)));
     });
@@ -3673,7 +3676,7 @@ fn a_broken_agent_manifest_is_reported_and_the_report_clears_when_it_is_fixed() 
 
     let (_host, sock) =
         spawn_host_with(&["cat"], &[("XDG_CONFIG_HOME", &dir.display().to_string())]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     assert_eq!(
@@ -3753,7 +3756,7 @@ fn pane_entry(conn: &mut HostConn, id: u64) -> Value {
 #[test]
 fn a_shell_pane_carries_no_agent_key_and_one_query_answers_a_settled_one() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // The boot pane is `cat`: a blank screen no manifest claims.
@@ -3790,8 +3793,8 @@ fn a_shell_pane_carries_no_agent_key_and_one_query_answers_a_settled_one() {
 
     // A FRESH connection asking exactly once. It has driven no evaluation of its own, so anything it
     // sees was confirmed by the daemon.
-    let mut fresh =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("a second, naive connection");
+    let mut fresh = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("a second, naive connection");
     let entry = pane_entry(&mut fresh, 1);
     assert_eq!(
         entry["agent"]["state"], "idle",
@@ -3840,7 +3843,7 @@ fn one_query_on_a_never_queried_daemon_answers_a_settled_verdict() {
     // Blind. No connection, no query, no input — the daemon is alone with its own clock.
     std::thread::sleep(Duration::from_secs(12));
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
     let entry = pane_entry(&mut conn, 0);
     assert_eq!(
@@ -3873,7 +3876,7 @@ fn one_query_on_a_never_queried_daemon_answers_a_settled_verdict() {
 #[test]
 fn the_events_family_reads_a_change_by_cursor_and_reading_does_not_bump() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // A read before anything has moved: the daemon has observed a shape but recorded no change, and
@@ -4008,7 +4011,7 @@ fn a_filtered_wait_sleeps_through_output_where_the_scene_wait_does_not() {
         "-c",
         "while :; do echo building a thing; sleep 0.02; done",
     ]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
     // Let the pane actually start writing, so the control below is measuring output and not a race
     // with the boot.
@@ -4039,7 +4042,7 @@ fn a_filtered_wait_sleeps_through_output_where_the_scene_wait_does_not() {
     );
 
     // THE SUBJECT: the same daemon, the same output, a wait that named what it cares about.
-    let mut waiter = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut waiter = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("a second connection for the filtered wait");
     let since = read_revision(&mut waiter);
     waiter
@@ -4060,7 +4063,7 @@ fn a_filtered_wait_sleeps_through_output_where_the_scene_wait_does_not() {
 
     // And it is not merely broken: the change it asked for wakes it. A fresh connection, because the
     // one above tripped its deadline and is finished — which is also what releases the parked wait.
-    let mut waiter = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut waiter = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("a third connection for the wait that gets its answer");
     let since = read_revision(&mut waiter);
     waiter
@@ -4119,10 +4122,10 @@ fn a_filtered_wait_sleeps_through_output_where_the_scene_wait_does_not() {
 #[test]
 fn a_rename_wakes_the_client_parked_on_the_name_it_moved() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
-    let mut waiter = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut waiter = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("a second connection to park the wait on");
     let since = read_revision(&mut waiter);
     waiter
@@ -4176,7 +4179,7 @@ fn a_rename_wakes_the_client_parked_on_the_name_it_moved() {
 #[test]
 fn a_filter_a_daemon_cannot_honour_is_refused_with_a_sentence() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     let error = conn
@@ -4231,7 +4234,7 @@ fn the_sweeps_own_verdict_reaches_a_reader_as_a_typed_change() {
     // The daemon alone with its clock, long enough for the candidate to settle and publish.
     std::thread::sleep(Duration::from_secs(12));
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // From the beginning of time, because this reader was not here when it happened — which is the
@@ -4361,7 +4364,7 @@ fn an_agent_this_daemon_launched_reports_the_turn_boundaries_it_alone_knows() {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect::<Vec<_>>(),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     let text = |conn: &mut HostConn| {
@@ -4530,7 +4533,7 @@ fn sprag_cli_output(
 #[test]
 fn the_hook_states_which_build_reported_on_the_same_terms_a_person_does() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // THE CONTROL: `cat` paints nothing any rule reads, so this pane has no agent key whatever.
@@ -4700,7 +4703,7 @@ fn a_person_is_told_whether_the_reporter_that_answered_is_this_daemons_image() {
     const NOT_THIS_IMAGE: &str = "0000deadbeef";
 
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     let before = pane_entry(&mut conn, 0);
@@ -4847,8 +4850,8 @@ fn a_person_is_told_which_of_the_windows_on_their_screen_is_this_daemons_build()
     );
 
     // ── THE PRODUCT'S OWN SEAM states this image; nothing here writes the happy case by hand ──
-    let mut current =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the current window connects");
+    let mut current = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the current window connects");
     current
         .handshake("gui-current")
         .expect("the real handshake is accepted");
@@ -4857,8 +4860,8 @@ fn a_person_is_told_which_of_the_windows_on_their_screen_is_this_daemons_build()
         .expect("client/attach is accepted");
 
     // ── THE WINDOW STARTED FROM SOMEWHERE ELSE ──
-    let mut foreign =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the foreign window connects");
+    let mut foreign = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the foreign window connects");
     foreign
         .call(
             CLIENT_HELLO_METHOD,
@@ -4870,8 +4873,8 @@ fn a_person_is_told_which_of_the_windows_on_their_screen_is_this_daemons_build()
         .expect("client/attach is accepted");
 
     // ── AND A CLIENT OLDER THAN THE KEY, which says nothing at all ──
-    let mut quiet =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the quiet window connects");
+    let mut quiet = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the quiet window connects");
     quiet
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "tui-quiet" }))
         .expect("a hello with no build — every client older than this key");
@@ -4964,7 +4967,7 @@ fn an_agent_this_daemon_launched_talks_to_the_mcp_server_of_the_image_that_made_
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect::<Vec<_>>(),
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // ⚠ THE LOGICAL LINES THE CHILD WROTE, not the rows a 40-column pane broke them into — see
@@ -5152,7 +5155,7 @@ fn a_real_claude_this_daemon_launched_reports_its_own_turn() {
         &["claude", "-p", "reply with the single word: ok"],
         &[("XDG_CONFIG_HOME", &dir.display().to_string())],
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // A real turn takes real time; the bound is generous because what is under test is WHETHER the
@@ -5201,7 +5204,7 @@ fn a_daemon_born_pane_is_told_which_pane_it_is_and_where_to_report() {
         "-c",
         "printf 'PANEENV %s-%s\\n' \"$SPRAG_PANE\" \"$SPRAG_HOST_RPC_SOCK\"; cat",
     ]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // The boot pane's id, read from the wire rather than assumed to be 0 — the assertion below is
@@ -5279,7 +5282,7 @@ fn a_report_outranks_the_daemons_scrape_and_a_release_gives_the_pane_back() {
         ],
         &[("XDG_CONFIG_HOME", &dir.display().to_string())],
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // The daemon's own reading first, so what the report overrides is a real scraped verdict rather
@@ -5418,7 +5421,8 @@ fn a_report_outranks_the_daemons_scrape_and_a_release_gives_the_pane_back() {
 /// (`HostConn` adds the key at its one seam).
 ///
 /// Returns the daemon's whole reply line, so the test reads exactly what an old client would have.
-/// The connect retries like [`HostConn::connect`] does, for the same reason: the daemon binds
+/// The connect retries like [`HostConn::connect_until_it_answers`] does, for the same reason: the
+/// daemon binds
 /// asynchronously and a bare connect would race it.
 fn raw_request(sock: &std::path::Path, line: &str) -> Value {
     use std::io::{BufRead, BufReader, Write};
@@ -5519,7 +5523,8 @@ fn the_same_request_carrying_this_protocol_is_served() {
 #[test]
 fn the_hello_reply_carries_the_daemons_protocol() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    let mut conn =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("connect");
 
     let reply = conn
         .call(
@@ -5558,7 +5563,7 @@ fn the_hello_reply_carries_the_daemons_protocol() {
 #[test]
 fn a_pick_lands_on_the_session_it_named_after_a_stranger_takes_its_name() {
     let (_host, sock) = spawn_host();
-    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut admin = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     let new_session = |conn: &mut HostConn, name: &str| {
         conn.call(
@@ -5580,8 +5585,8 @@ fn a_pick_lands_on_the_session_it_named_after_a_stranger_takes_its_name() {
         .as_u64()
         .expect("a tree row carries its identity");
 
-    let mut viewer =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    let mut viewer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the display client connects");
     viewer
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
         .expect("client/hello is accepted");
@@ -5676,7 +5681,7 @@ fn a_pick_lands_on_the_session_it_named_after_a_stranger_takes_its_name() {
 #[test]
 fn a_pick_naming_a_window_selects_it_and_a_dead_one_refuses_the_whole_path() {
     let (_host, sock) = spawn_host();
-    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut admin = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     admin
         .call(
@@ -5719,8 +5724,8 @@ fn a_pick_naming_a_window_selects_it_and_a_dead_one_refuses_the_whole_path() {
     );
     let build_id = build["id"].as_u64().expect("a window carries its identity");
 
-    let mut viewer =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    let mut viewer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the display client connects");
     viewer
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
         .expect("client/hello is accepted");
@@ -5792,7 +5797,7 @@ fn tree_of(conn: &mut HostConn) -> Vec<Value> {
 #[test]
 fn the_tree_publishes_an_identity_at_every_level_and_a_rename_does_not_move_it() {
     let (_host, sock) = spawn_host_running(&["cat"]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     let boot = session_names(&mut conn)
         .into_iter()
@@ -5873,7 +5878,7 @@ fn the_tree_publishes_an_identity_at_every_level_and_a_rename_does_not_move_it()
 #[test]
 fn the_tree_and_the_pane_list_name_the_same_active_pane() {
     let (_host, sock) = spawn_host_running(&["cat"]);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     let boot = session_names(&mut conn)
         .into_iter()
@@ -5955,7 +5960,7 @@ fn the_tree_and_the_pane_list_name_the_same_active_pane() {
 #[test]
 fn a_pick_naming_a_pane_selects_it_and_a_dead_one_refuses_the_whole_path() {
     let (_host, sock) = spawn_host();
-    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut admin = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
     admin
         .call(
@@ -5989,8 +5994,8 @@ fn a_pick_naming_a_pane_selects_it_and_a_dead_one_refuses_the_whole_path() {
         .expect("a pane the window is not on");
     let pane_id = wanted["id"].as_u64().expect("a pane carries its id");
 
-    let mut viewer =
-        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    let mut viewer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the display client connects");
     viewer
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
         .expect("client/hello is accepted");
@@ -6065,7 +6070,8 @@ fn a_pick_naming_a_pane_selects_it_and_a_dead_one_refuses_the_whole_path() {
 #[test]
 fn the_display_message_grammar_is_enforced_by_the_daemon_itself() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the host");
 
     let say = |conn: &mut HostConn, args: Value| -> Result<Value, sprag_rpc::CallError> {
         conn.try_call(
@@ -6153,7 +6159,7 @@ fn the_display_message_grammar_is_enforced_by_the_daemon_itself() {
 #[test]
 fn a_client_can_drive_a_pane_from_its_published_grammar() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned sprag-term host");
 
     let panes: Value = conn
@@ -6315,7 +6321,7 @@ fn a_client_can_drive_a_pane_from_its_published_grammar() {
 #[test]
 fn a_pane_whose_child_has_exited_says_so_at_an_address_a_remote_driver_can_ask() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     let eof = |conn: &mut HostConn, pane: u64| -> Option<bool> {
@@ -6411,7 +6417,7 @@ fn a_pane_whose_child_has_exited_says_so_at_an_address_a_remote_driver_can_ask()
 #[test]
 fn a_pane_serves_its_screen_at_two_addresses_a_driver_cannot_derive_from_each_other() {
     let (_host, sock) = spawn_host();
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .expect("connect to the spawned host socket");
 
     // Five columns wide and three rows tall, printing `OLD`, `GO`, then `TOOL UP`. The last line
@@ -6510,9 +6516,10 @@ fn spawn_pane(conn: &mut HostConn, args: Value) -> PaneId {
 
 /// A driver's own surface over a real daemon's socket, plus a test-side connection for setup.
 fn remote_driver(sock: &Path) -> (RemotePaneAccess, HostConn) {
-    let setup = HostConn::connect(sock, Duration::from_secs(5)).expect("the test's own connection");
-    let driving =
-        HostConn::connect(sock, Duration::from_secs(5)).expect("the driver's own connection");
+    let setup = HostConn::connect_until_it_answers(sock, Duration::from_secs(5))
+        .expect("the test's own connection");
+    let driving = HostConn::connect_until_it_answers(sock, Duration::from_secs(5))
+        .expect("the driver's own connection");
     (RemotePaneAccess::over(driving), setup)
 }
 
@@ -6520,7 +6527,8 @@ fn remote_driver(sock: &Path) -> (RemotePaneAccess, HostConn) {
 /// ([`RemotePaneAccess::parking_on`], register item 631).
 fn parking_remote_driver(sock: &Path) -> (RemotePaneAccess, HostConn) {
     let (driver, setup) = remote_driver(sock);
-    let parks = HostConn::connect(sock, Duration::from_secs(5)).expect("the driver's park socket");
+    let parks = HostConn::connect_until_it_answers(sock, Duration::from_secs(5))
+        .expect("the driver's park socket");
     // ⚠ Both connections are unscoped and reach the same daemon, so the scope check register item
     // 641 added cannot refuse here — and `expect` is right rather than lenient: a refusal would
     // mean the check itself is wrong, which is a thing every gate below deserves to hear about.
@@ -6680,7 +6688,8 @@ impl PaneAccess for CountingRemote {
 #[test]
 fn a_park_connection_scoped_to_another_session_is_refused_where_it_is_handed_over() {
     let (_host, sock) = spawn_host();
-    let mut setup = HostConn::connect(&sock, Duration::from_secs(5)).expect("the test's own");
+    let mut setup =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("the test's own");
     setup
         .call(
             "scene/invoke",
@@ -6701,8 +6710,10 @@ fn a_park_connection_scoped_to_another_session_is_refused_where_it_is_handed_ove
     );
 
     // ── THE CLAIM: a park connection on another session is refused, by name ────────────────────
-    let driving = HostConn::connect(&sock, Duration::from_secs(5)).expect("the driver's own");
-    let mut parks = HostConn::connect(&sock, Duration::from_secs(5)).expect("the park socket");
+    let driving = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("the driver's own");
+    let mut parks =
+        HostConn::connect_until_it_answers(&sock, Duration::from_secs(5)).expect("the park socket");
     parks.scope_to("work");
     let refused = RemotePaneAccess::over(driving)
         .parking_on(parks)
@@ -9249,7 +9260,8 @@ fn the_world_a_run_is_checked_against_answers_the_same_two_things_over_the_wire(
     // it is deliberately neither 80x24 nor the boot pane's 40x6, so no constant available to the
     // implementation can match it by luck.
     const REPORTED: (u16, u16) = (117, 41);
-    let mut viewer = HostConn::connect(&sock, Duration::from_secs(5)).expect("a viewing client");
+    let mut viewer = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("a viewing client");
     viewer
         .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "sizer" }))
         .expect("client/hello is accepted");
@@ -9320,8 +9332,8 @@ fn the_world_a_run_is_checked_against_answers_the_same_two_things_over_the_wire(
 fn print_into_pane_after(sock: &Path, pane: PaneId, after: Duration, text: &'static str) {
     let sock = sock.to_path_buf();
     std::thread::spawn(move || {
-        let mut conn =
-            HostConn::connect(&sock, Duration::from_secs(5)).expect("the prodder's connection");
+        let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+            .expect("the prodder's connection");
         std::thread::sleep(after);
         let _ = conn.call(
             "scene/invoke",
@@ -10449,7 +10461,7 @@ fn a_remote_driver_waiting_on_a_verdict_stops_asking_for_it_every_slice() {
     let sock_for_peer = sock.to_path_buf();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(400));
-        let mut conn = HostConn::connect(&sock_for_peer, Duration::from_secs(5))
+        let mut conn = HostConn::connect_until_it_answers(&sock_for_peer, Duration::from_secs(5))
             .expect("the peer's own connection");
         // The turn: the peer takes a question (`asked_seq` moves) and then comes back to rest
         // (`seq` moves). Neither writes a byte to the pane, which is the whole hazard.
@@ -11678,7 +11690,7 @@ const DRIVEN: &str = "inner-session";
 /// A test-side connection to `sock` — the first one dies with the daemon it was made to, so a gate
 /// that outlives a restart needs another.
 fn setup_at(sock: &Path) -> HostConn {
-    HostConn::connect(sock, Duration::from_secs(5))
+    HostConn::connect_until_it_answers(sock, Duration::from_secs(5))
         .expect("connect to the daemon that is there now")
 }
 
@@ -11921,7 +11933,7 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
     // The new daemon has to be accepting before the driver's next read, or the read fails for
     // "nobody is listening" rather than for the reason this gate is about.
     let reachable = wait_until(Duration::from_secs(10), || {
-        HostConn::connect(&sock, Duration::from_millis(200)).is_ok()
+        HostConn::connect_until_it_answers(&sock, Duration::from_millis(200)).is_ok()
     });
     assert!(reachable, "the replacement daemon never bound {sock:?}");
     // ⚠⚠⚠ THE REPLACEMENT CARRIES THE NAME, which is what a daemon RESTORING its snapshot does —
@@ -11963,7 +11975,7 @@ fn a_driver_stops_when_the_daemon_under_it_is_replaced_and_goes_again_when_told_
     // measured against a write that WOULD have landed. Without the latch this injection succeeds:
     // the run's stimulus goes into a `cat` nobody here started, and the door reports how many bytes
     // it wrote.
-    let stranger = HostConn::connect(&sock, Duration::from_secs(5))
+    let stranger = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
         .ok()
         .and_then(|mut fresh| {
             fresh
@@ -12373,11 +12385,9 @@ fn a_real_run_driven_from_another_process_outlives_the_daemon_it_drives() {
     // re-adoption was decorative and the mutation that removed it passed.
     let _second = spawn_host_at(&sock, &["cat"]);
     assert!(
-        wait_until(Duration::from_secs(10), || HostConn::connect(
-            &sock,
-            Duration::from_millis(200)
-        )
-        .is_ok()),
+        wait_until(Duration::from_secs(10), || {
+            HostConn::connect_until_it_answers(&sock, Duration::from_millis(200)).is_ok()
+        }),
         "the replacement daemon never bound {sock:?}",
     );
     let mut fresh = setup_at(&sock);
@@ -12515,11 +12525,9 @@ fn a_run_that_could_not_read_its_pane_does_not_report_what_was_running_in_it() {
     drop(host);
     let _successor = spawn_host_at(&sock, &["cat"]);
     assert!(
-        wait_until(Duration::from_secs(10), || HostConn::connect(
-            &sock,
-            Duration::from_millis(200)
-        )
-        .is_ok()),
+        wait_until(Duration::from_secs(10), || {
+            HostConn::connect_until_it_answers(&sock, Duration::from_millis(200)).is_ok()
+        }),
         "the replacement daemon never bound {sock:?}",
     );
     assert!(
@@ -13533,7 +13541,8 @@ const PEER_ANSWERED: &str = "ANSWER:";
 fn a_run_driven_by_a_separate_process_converges_against_a_real_daemon() {
     let (_host, sock) = spawn_host_running(&["sh", "-c", ANSWERING_PEER]);
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the host");
     let pane = *pane_ids(&mut conn).first().expect("the boot pane");
 
     let request = json!({
@@ -13578,7 +13587,8 @@ fn a_run_driven_by_a_separate_process_converges_against_a_real_daemon() {
 fn a_driver_given_a_request_no_plugin_spells_reports_nothing_and_fails() {
     let (_host, sock) = spawn_host_running(&["sh", "-c", ANSWERING_PEER]);
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the host");
     let pane = *pane_ids(&mut conn).first().expect("the boot pane");
 
     let out = drive_child(
@@ -13638,7 +13648,8 @@ fn the_daemon_drives_a_run_in_a_process_of_its_own() {
         &[("XDG_CONFIG_HOME", config.to_str().expect("a utf-8 path"))],
     );
 
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the host");
     let pane = *pane_ids(&mut conn).first().expect("the boot pane");
 
     let started = conn
@@ -14115,7 +14126,8 @@ fn a_persons_cancel_wakes_a_driver_in_another_process_rather_than_waiting_for_it
         &["sh", "-c", COUNTING_PEER],
         &[("XDG_CONFIG_HOME", config.to_str().expect("a utf-8 path"))],
     );
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the host");
     // ⚠⚠⚠⚠⚠ A PANE OF ITS OWN, AND NOT THE BOOT PANE — measured, register item 660. A cancel that
     // lands makes the driver STOP THE WORK, and the work here IS the pane's own program; under the
     // wide reach that closes the pane, and a daemon whose last pane closes EXITS behind it (register

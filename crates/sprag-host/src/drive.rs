@@ -455,7 +455,7 @@ fn connect(
     session: Option<&str>,
     window: Option<&str>,
 ) -> std::io::Result<HostConn> {
-    let mut conn = HostConn::connect(socket, CONNECT_WITHIN)?;
+    let mut conn = HostConn::connect_until_it_answers(socket, CONNECT_WITHIN)?;
     if let Some(session) = session {
         conn.scope_to(session);
     }

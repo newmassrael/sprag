@@ -716,7 +716,7 @@ fn socket_host() -> Option<(SocketHost, sprag_rpc::HostConn)> {
         .spawn()
         .ok()?;
     let host = SocketHost(child, sock.clone());
-    let mut conn = sprag_rpc::HostConn::connect(&sock, CONTENT_TIMEOUT).ok()?;
+    let mut conn = sprag_rpc::HostConn::connect_until_it_answers(&sock, CONTENT_TIMEOUT).ok()?;
     // The boot pane is one; the in-process host has PANE_COUNT. Spawn the rest through the same
     // mux action a client uses, so both hosts serve a pane list of the same length.
     for _ in 1..PANE_COUNT {
@@ -1054,7 +1054,7 @@ fn chatty_host(
         .spawn()
         .ok()?;
     let host = SocketHost(child, sock.clone());
-    let conn = sprag_rpc::HostConn::connect(&sock, CONTENT_TIMEOUT).ok()?;
+    let conn = sprag_rpc::HostConn::connect_until_it_answers(&sock, CONTENT_TIMEOUT).ok()?;
     Some((host, conn))
 }
 
@@ -1076,7 +1076,7 @@ fn pairs_in(
     cursor: Cursor,
     deadline: Option<Duration>,
 ) -> Counted {
-    let Ok(mut conn) = sprag_rpc::HostConn::connect(sock, CONTENT_TIMEOUT) else {
+    let Ok(mut conn) = sprag_rpc::HostConn::connect_until_it_answers(sock, CONTENT_TIMEOUT) else {
         return Counted::Broke(0);
     };
     if conn.set_read_deadline(deadline).is_err() {

@@ -596,8 +596,9 @@ mod tests {
     fn a_peer_refuses_exactly_what_it_is_missing() {
         let sock = std::env::temp_dir().join(format!("sprag-peer-it-{}.sock", std::process::id()));
         let peer = OldDaemon::serving_nothing(&sock);
-        let mut conn = sprag_rpc::HostConn::connect(peer.sock(), Duration::from_secs(2))
-            .expect("connect to the peer");
+        let mut conn =
+            sprag_rpc::HostConn::connect_until_it_answers(peer.sock(), Duration::from_secs(2))
+                .expect("connect to the peer");
 
         // THE HANDSHAKE PASSES, at this build's number — the property that makes it OLD rather
         // than incompatible, and the one a client checks before anything else.

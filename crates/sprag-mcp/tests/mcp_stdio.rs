@@ -267,7 +267,8 @@ fn spawn_daemon_with(
 /// `WINDOW_PARAM`, used here to reach into a window an agent opened DETACHED (so it is by
 /// construction not the current one).
 fn mux_query_panes_in(sock: &Path, window: &str) -> Vec<u64> {
-    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon");
     conn.call(
         "scene/query",
         json!({
@@ -299,7 +300,8 @@ fn mux_query_panes_in(sock: &Path, window: &str) -> Vec<u64> {
 /// ⚠ The window is named because the wire requires it: a pane path with no window is resolved
 /// against the session's CURRENT window, which is item 766's whole finding.
 fn mux_pane_text(sock: &Path, window: &str, pane: u64) -> String {
-    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon");
     conn.call(
         "scene/query",
         json!({
@@ -326,7 +328,7 @@ fn mux_pane_text(sock: &Path, window: &str, pane: u64) -> String {
 /// `sprag-mcp` for a test to read would be a product surface built for a test — the shape the
 /// register forbids by name.
 ///
-/// What a harness may own instead is the SOCKET. `HostConn::connect` opens a FRESH connection per
+/// What a harness may own instead is the SOCKET. `HostConn::connect_until_it_answers` opens a FRESH connection per
 /// request — `host_call_unscoped_answered` resolves the socket and connects on every single call —
 /// so on this wire **one connection is one round trip**, and counting them needs no product change
 /// at all. That equivalence is the whole reason this works, and it is asserted rather than assumed:
@@ -395,7 +397,7 @@ struct DaemonRelay {
     /// connection on the floor would still have COUNTED it, so the arithmetic would look right while
     /// the server got `Connection reset by peer` — a red for a reason that is not this item's. It is
     /// how the first run of this gate was diagnosed: the daemon had not finished binding, and
-    /// `HostConn::connect` retries where a bare `UnixStream::connect` does not.
+    /// `HostConn::connect_until_it_answers` retries where a bare `UnixStream::connect` does not.
     unreachable: Arc<AtomicU64>,
     /// Set on drop, so the accept loop stops instead of outliving the test.
     stop: Arc<AtomicBool>,
@@ -502,7 +504,8 @@ impl DaemonRelay {
 /// The name of the window the session is CURRENTLY on — the one fact `open_window` must not move
 /// and `select_window` must.
 fn mux_current_window(sock: &Path) -> String {
-    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon");
     conn.call(
         "scene/query",
         json!({ "path": mux_action_path(sprag_host::wire::WINDOWS_SLOT) }),
@@ -518,7 +521,8 @@ fn mux_current_window(sock: &Path) -> String {
 }
 
 fn mux_query_panes(sock: &Path) -> Vec<u64> {
-    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon");
     conn.call(
         "scene/query",
         json!({ "path": mux_action_path(sprag_host::wire::PANES_SLOT) }),
@@ -535,7 +539,8 @@ fn mux_query_panes(sock: &Path) -> Vec<u64> {
 }
 
 fn add_pane(sock: &Path, program: &[&str]) -> u64 {
-    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({ "path": mux_action_path(SPAWN_ACTION), "args": { "cmd": program } }),
@@ -551,7 +556,8 @@ fn add_pane(sock: &Path, program: &[&str]) -> u64 {
 /// actions used here (`split`, `set_floating`, `zoom_pane`) have no `sprag-mcp` tool — this crate
 /// drives them the way any other client would, over the same wire.
 fn mux_invoke(sock: &Path, action: &str, args: Value) -> Value {
-    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({ "path": mux_action_path(action), "args": args }),
@@ -565,7 +571,8 @@ fn mux_invoke(sock: &Path, action: &str, args: Value) -> Value {
 /// a pane number, and only this says whose numbers those are. Read from the daemon rather than
 /// invented so that a fixture staging a LIVE mute stages a live one — see [`run_hook`].
 fn daemon_generation(sock: &Path) -> Option<String> {
-    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon");
     conn.handshake("mcp-it-generation")
         .expect("the daemon answers the handshake");
     conn.daemon_generation().map(str::to_owned)
@@ -2186,7 +2193,8 @@ fn wait_for_change_blocks_and_reports_what_moved() {
     // Now make a change while the tool is parked. The split runs on this thread AFTER the server has
     // been asked to wait, so the tool is genuinely blocked when it happens — a tool that polled once
     // and returned would report nothing.
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     let mover = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(300));
         conn.call(
@@ -2747,7 +2755,8 @@ fn an_agent_reads_a_pane_by_the_screens_line_breaks_or_by_the_programs() {
 #[test]
 fn select_pane_moves_the_session_and_list_panes_says_so() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({ "path": mux_action_path(SPAWN_ACTION), "args": {} }),
@@ -2811,7 +2820,8 @@ fn select_pane_moves_the_session_and_list_panes_says_so() {
 #[test]
 fn select_pane_takes_a_direction_and_says_when_there_is_nothing_that_way() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({ "path": mux_action_path(SPAWN_ACTION), "args": {} }),
@@ -2899,7 +2909,8 @@ fn select_pane_takes_a_direction_and_says_when_there_is_nothing_that_way() {
 #[test]
 fn an_agent_steps_a_direction_from_a_pane_it_names_and_from_its_own() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     for _ in 0..2 {
         conn.call(
             "scene/invoke",
@@ -3047,7 +3058,8 @@ fn an_agent_steps_a_direction_from_a_pane_it_names_and_from_its_own() {
 #[test]
 fn from_here_refuses_when_the_server_is_not_inside_a_pane() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
-    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    let mut conn = HostConn::connect_until_it_answers(&sock, Duration::from_secs(5))
+        .expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({ "path": mux_action_path(SPAWN_ACTION), "args": {} }),
@@ -5108,7 +5120,7 @@ const ROUND_TRIPS_PER_PANE_READ: u64 = 3;
 ///
 /// # ⚠⚠⚠ Why this counts CONNECTIONS, and why the assertion is `==` rather than `<=`
 ///
-/// See [`DaemonRelay`] for both: one connection is one round trip because `HostConn::connect` opens
+/// See [`DaemonRelay`] for both: one connection is one round trip because `HostConn::connect_until_it_answers` opens
 /// a fresh one per request, and a relay that saw only part of the traffic would under-report — which
 /// an upper bound would happily accept. An exact figure fails in both directions, so a bypass reads
 /// as a failure instead of as a pass.
@@ -5126,7 +5138,7 @@ const ROUND_TRIPS_PER_PANE_READ: u64 = 3;
 fn one_pane_addressed_message_costs_a_fixed_number_of_daemon_round_trips() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     // ⚠ The daemon is asked something BEFORE the relay is put in front of it, and the order is the
-    // fix rather than a tidy-up: `HostConn::connect` retries until the socket exists, a bare
+    // fix rather than a tidy-up: `HostConn::connect_until_it_answers` retries until the socket exists, a bare
     // `UnixStream::connect` does not, and a relay standing in front of a daemon that has not
     // finished binding resets the server's first connection.
     let window = mux_current_window(&sock);
@@ -6066,7 +6078,8 @@ fn an_agents_tools_answer_about_the_session_its_pane_is_in() {
 /// Written after the daemon refused the other spelling with `InvokeTypeMismatch`: a session name
 /// smuggled into an action's arguments is an unknown argument, and it says so rather than guessing.
 fn spawn_pane_in(sock: &Path, session: &str) -> u64 {
-    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    let mut conn =
+        HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon");
     conn.call(
         "scene/invoke",
         json!({
