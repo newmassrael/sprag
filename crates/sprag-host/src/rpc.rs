@@ -5844,16 +5844,21 @@ mod tests {
             ),
             &sink,
         );
-        assert_eq!(
-            state.waiters("work").parked_count(),
-            1,
-            "the wait parked on its own session",
-        );
-        // ⚠⚠ AND THE BASELINE WAS STILL THE BASELINE WHEN IT PARKED — register item 974, the FIRST
-        // of the two intervals this gate now measures separately. A session whose own revision
-        // advanced between the read above and the park has a wait that is already answerable, and
-        // a wake arriving after it says nothing about scopes at all. Splitting the intervals is
-        // what lets a failure on a machine nobody can reach name which one it happened in.
+        // ⚠⚠ THE BASELINE WAS STILL THE BASELINE WHEN IT PARKED — register item 974, the FIRST of
+        // the two intervals this gate measures separately, and it is asserted BEFORE the parked
+        // count on purpose.
+        //
+        // A session whose own revision advanced between the read above and the park has a wait
+        // that is ALREADY ANSWERABLE, so the registry answers it on the spot and parks nothing —
+        // and then `parked_count` is 0 and its sentence, *the wait parked on its own session*,
+        // blames the scope for what a stale baseline did.
+        //
+        // ⚠ Measured 2026-09-08 at `--test-threads 128`, which reddens this gate in **6 runs out of
+        // 6** on the owner's 32-core machine: with the count asserted first, one captured failure
+        // came back as `parked_count` `left: 0, right: 1` — a sentence about scopes for a stale
+        // baseline. With the interval first, six consecutive runs named INTERVAL TWO instead, which
+        // is the reading item 975 is open on. Same defect, and only one of the two orderings says
+        // so.
         let at_park = state.revision("work").current();
         assert_eq!(
             at_park, since,
@@ -5861,6 +5866,11 @@ mod tests {
              {at_park} by the time the wait parked, so this session was still settling — the \
              baseline is stale and the wait below can be answered by `work`'s own late bump. That \
              is timing rather than a scope leak, and it is likelier on a slow or loaded machine.",
+        );
+        assert_eq!(
+            state.waiters("work").parked_count(),
+            1,
+            "the wait parked on its own session",
         );
 
         // The DEFAULT session moves — a real mutation through the real dispatch, so pinion's own
