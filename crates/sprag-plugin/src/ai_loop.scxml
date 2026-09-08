@@ -1775,6 +1775,55 @@
     -->
     <data id="reask_capped" expr="0"/>
     <!--
+      🎯🎯🎯🎯🎯 HOW MANY TIMES ASKING AGAIN ACTUALLY WORKED — register item 846,
+      and the number without which the bound above rests on nobody's reading.
+
+      ⛔⛔⛔⛔⛔ EVERY OTHER NUMBER HERE COUNTS THE FAILURES. `deferred`,
+      `unadmitted` and `reask_capped` all count asks that were EATEN, and
+      `reask_capped` is RESET the moment a checkpoint is adopted — so a run that
+      asked again, got a better proposal, worked and finished publishes zeroes
+      and leaves no trace that the mechanism paid for itself. What survives to
+      the row somebody reads is exactly the runs where asking again FAILED.
+      ⇒ A later round asking *is this bound worth its price* would read the
+      losses and never the winnings. That is item 956's finding — a published
+      number that cannot answer the question it was nominated for — arriving one
+      level up, on the very number 956 nominated.
+
+      ⚠⚠⚠ IT IS PER RUN AND NOT PER CHECKPOINT, which is the opposite of
+      `reask_capped` beside it and for the opposite reason. That one answers
+      *what shut THIS door*, so a recovered episode must not colour the ending.
+      This one answers *has this mechanism ever worked*, and an episode the run
+      recovered from is precisely the evidence — so resetting it would erase the
+      only thing it exists to keep.
+
+      ⚠⚠ A LANDING IS AN ADOPTION AND NOT A REPLY. It is counted where a
+      reflection MOVES the checkpoint, so an agent that answered the second
+      question by naming nothing has not landed anything: the run is still on
+      the checkpoint it had, which is the state this budget exists to leave.
+    -->
+    <data id="reask_landed" expr="0"/>
+    <!--
+      🎯🎯🎯🎯🎯 AND HOW DEEP THE DEEPEST OF THOSE WENT — register item 846, and
+      the number that says what `reask_max` could be LOWERED to.
+
+      ⚠⚠⚠ THE COUNT BESIDE IT CANNOT ANSWER THAT. A run that landed twenty
+      times on its FIRST ask and a run that landed once on its second publish
+      the same count, and only the second is evidence that a bound of two buys
+      anything a bound of one does not. ⇒ The two numbers kill different
+      alternatives and neither is derivable from the other:
+
+        `reask_landed` = 0        ⇒ asking again never works; the answer is 0.
+        `deepest` < `reask_max`   ⇒ lower the bound to `deepest`.
+        `deepest` = `reask_max`   ⇒ the bound is paying for itself.
+
+      ⛔⛔ AND *RAISE IT* IS NOT ON THAT LIST, because this number CANNOT SAY
+      it. An ask the bound forbade was never made, so a landing deeper than
+      `reask_max` is unobservable by construction — censored rather than absent.
+      A reader who took `deepest` = `reask_max` as *and one more would land too*
+      would be reading a ceiling as a measurement.
+    -->
+    <data id="reask_landed_deepest" expr="0"/>
+    <!--
       WHAT AN AGENT WHOSE PROPOSAL WAS TURNED AWAY IS TOLD, and the parts are
       here for `dispute_opening`'s reason exactly: a template that shipped these
       empty would put `(edit me)` in front of a real agent, and what they say is
@@ -5857,6 +5906,35 @@
       -->
       <if cond="_event.data.milestone != milestone &amp;&amp; !_event.data.admits">
         <assign location="unchecked" expr="unchecked + 1"/>
+      </if>
+      <!--
+        🎯🎯🎯🎯🎯 AND WHETHER THIS ADOPTION IS ONE ASKING AGAIN BOUGHT —
+        register item 846. `reasked` is still standing here: the entry that
+        resets it runs only on a reflection that is NOT an ask-again, so a
+        non-zero value means the proposal being adopted is the answer to a
+        question this run asked BECAUSE the previous one was turned away.
+
+        ⚠⚠⚠ THE SAME `_event.data.milestone != milestone` AS THE TWO COUNTS
+        ABOVE, and for `unchecked`'s reason: what is being counted is an
+        ADOPTION. An agent that replied to the second question by naming
+        nothing left the run on the checkpoint it already had, and calling that
+        a landing would credit the budget with the outcome it exists to avoid.
+
+        ⚠⚠ WRITTEN BEFORE THE `<assign>` BELOW, exactly like `reaimed` above
+        and by the same W3C SCXML 6.2.3 rule: this compares the proposal
+        against the milestone the run still holds, and an increment written
+        after would compare a value with itself and never fire.
+      -->
+      <if cond="_event.data.milestone != milestone &amp;&amp; reasked &gt; 0">
+        <assign location="reask_landed" expr="reask_landed + 1"/>
+        <!--
+          ⚠ A MAXIMUM AND NOT A SUM, because what a later round needs is the
+          deepest ask that has ever been shown to pay — see the `<data>`. Two
+          landings at depth one are not evidence for a bound of two.
+        -->
+        <if cond="reasked &gt; reask_landed_deepest">
+          <assign location="reask_landed_deepest" expr="reasked"/>
+        </if>
       </if>
       <assign location="milestone" expr="_event.data.milestone"/>
       <!--

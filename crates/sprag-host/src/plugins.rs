@@ -488,6 +488,38 @@ pub const RUN_UNADMITTED_KEY: &str = "unadmitted";
 /// ⚠ It is PER CHECKPOINT, unlike its neighbours, because it answers *what shut this door* — and
 /// ABSENT / `0` / above are three claims on [`RUN_DEFERRED_KEY`]'s exact rule.
 pub const RUN_REASK_CAPPED_KEY: &str = "reask_capped";
+/// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS A RUN ADOPTED THAT ASKING AGAIN BOUGHT IT** — register item 846,
+/// and the only key on this road that reports a SUCCESS.
+///
+/// # ⛔⛔⛔⛔⛔ Every neighbour counts a refusal, and the nearest one is reset on success
+///
+/// [`RUN_DEFERRED_KEY`], [`RUN_UNADMITTED_KEY`] and [`RUN_REASK_CAPPED_KEY`] all count asks that
+/// were EATEN, and the last is per checkpoint — cleared the moment one is adopted. So a run that
+/// was turned away, asked again, took the better proposal and finished reported the same zeroes as
+/// a run that never asked at all: **the evidence that the bound pays for itself never left the
+/// process.** Measured over this repository's own runs on 2026-09-08, asking again landed 22
+/// proposals that no stored row could show.
+///
+/// ⚠⚠ It is PER RUN, which is the opposite of [`RUN_REASK_CAPPED_KEY`] and deliberate: that one
+/// answers *what shut this door*, this one *has this mechanism ever worked*, and an episode the run
+/// recovered from is noise for the first question and the whole answer to the second.
+///
+/// ⚠ ABSENT / `0` / above are three claims on [`RUN_DEFERRED_KEY`]'s exact rule.
+pub const RUN_REASK_LANDED_KEY: &str = "reask_landed";
+/// 🎯🎯🎯🎯🎯 **THE DEEPEST ASK-AGAIN ANY OF [`RUN_REASK_LANDED_KEY`] LANDED ON** — register item
+/// 846, and the number that says what the ask-again bound could be LOWERED to.
+///
+/// A run that landed twenty proposals on FIRST asks and one that landed a single proposal on its
+/// second report the same count, and only the second is evidence for a bound of two. So the count
+/// says *whether to ask again at all* and this says *how many times*, and neither is derivable from
+/// the other.
+///
+/// ⚠⚠ **AND IT CAN NEVER SAY *RAISE IT*.** An ask the bound forbade was never made, so a landing
+/// deeper than the bound is censored rather than absent — a reader taking *equal to the bound* as
+/// *one more would land too* would be reading a ceiling as a measurement.
+///
+/// ⚠ ABSENT / `0` / above are three claims on [`RUN_DEFERRED_KEY`]'s exact rule.
+pub const RUN_REASK_LANDED_DEEPEST_KEY: &str = "reask_landed_deepest";
 /// 🎯🎯🎯🎯🎯 **WHICH OF ITS BOUNDS A RUN IS NOT SPENDING UNDER ITS OWN DOCUMENT'S** — register
 /// item 853. A LIST of the field names the caller took, `[]` when it took none, and ABSENT for a
 /// run whose plugin has no document authoring any bound.
@@ -6344,6 +6376,15 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
     if let Some(reask_capped) = progress.reask_capped {
         answer[RUN_REASK_CAPPED_KEY] = json!(reask_capped);
     }
+    // 🎯🎯🎯 AND WHAT THOSE ASKS HAVE ALREADY BOUGHT IT — register item 846, live beside the number
+    // that counts what they cost, and for the opposite reading: a watcher who sees a run RECOVER
+    // from its refusals is the one who can leave the budget alone. See `RUN_REASK_LANDED_KEY`.
+    if let Some(reask_landed) = progress.reask_landed {
+        answer[RUN_REASK_LANDED_KEY] = json!(reask_landed);
+    }
+    if let Some(deepest) = progress.reask_landed_deepest {
+        answer[RUN_REASK_LANDED_DEEPEST_KEY] = json!(deepest);
+    }
     // ⚠⚠⚠⚠⚠ **AND WHERE THE RUN'S MACHINE IS — register item 662, and this renderer is the ONLY
     // way that fact can cross a process boundary.** A driver in another process reports through
     // here and nowhere else, so a key missing here is a fact the daemon cannot know about such a
@@ -9372,6 +9413,15 @@ pub fn outcome_to_json(outcome: &Outcome) -> Value {
     if let Some(reask_capped) = outcome.reask_capped {
         answer[RUN_REASK_CAPPED_KEY] = json!(reask_capped);
     }
+    // 🎯🎯🎯🎯🎯 AND WHAT ASKING AGAIN BOUGHT THIS RUN — register item 846. The line above says what
+    // the bound COST on the checkpoint that closed; without these two the file records the price of
+    // the mechanism and never its yield, and a round pricing it reads only the losses.
+    if let Some(reask_landed) = outcome.reask_landed {
+        answer[RUN_REASK_LANDED_KEY] = json!(reask_landed);
+    }
+    if let Some(deepest) = outcome.reask_landed_deepest {
+        answer[RUN_REASK_LANDED_DEEPEST_KEY] = json!(deepest);
+    }
     // WHICH CEILING, present only when there was one — so the key's presence is itself the claim,
     // the rule `run_to_json` follows for `opened_by`. `exhausted` with no ceiling beside it told a
     // caller to change something without saying what, and the three ceilings have three different
@@ -9704,6 +9754,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             checks: None,
             briefed: None,
             done_reason: None,
@@ -10269,6 +10321,8 @@ mod tests {
                 unchecked: None,
                 unadmitted: None,
                 reask_capped: None,
+                reask_landed: None,
+                reask_landed_deepest: None,
                 checks: None,
                 briefed: None,
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
@@ -10473,6 +10527,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             checks: None,
             briefed: None,
             done_reason: None,
@@ -10912,6 +10968,8 @@ mod tests {
                 unchecked: None,
                 unadmitted: None,
                 reask_capped: None,
+                reask_landed: None,
+                reask_landed_deepest: None,
                 checks: None,
                 briefed: None,
                 // ⚠ And item 706's, on the same argument: an older log names no ending, which
@@ -15641,6 +15699,8 @@ mod tests {
                 // beside the row that reads it.
                 unadmitted: None,
                 reask_capped: None,
+                reask_landed: None,
+                reask_landed_deepest: None,
                 waiting: None,
                 deliveries: Some(sprag_plugin::Deliveries::NONE),
                 folds_by_reason: Some(sprag_plugin::FoldsByReason::NONE),
@@ -15819,6 +15879,8 @@ mod tests {
                 unchecked: None,
                 unadmitted: None,
                 reask_capped: None,
+                reask_landed: None,
+                reask_landed_deepest: None,
                 waiting: None,
                 deliveries: Some(sprag_plugin::Deliveries::NONE),
                 folds_by_reason: Some(folds),
@@ -18608,6 +18670,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
@@ -21070,6 +21134,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(banked),
@@ -21126,6 +21192,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: Some(sprag_plugin::Banked {
@@ -21657,6 +21725,8 @@ mod tests {
                     unchecked: None,
                     unadmitted: None,
                     reask_capped: None,
+                    reask_landed: None,
+                    reask_landed_deepest: None,
                     checks: None,
                     briefed: None,
                     // ⚠ Item 706's field, absent for the reason every field above it is.

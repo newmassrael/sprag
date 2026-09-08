@@ -1102,6 +1102,18 @@ pub struct Outcome {
     /// door*. `Some(0)` beside a `capped`/`unadmitted` ending is a real claim: nothing worth
     /// relaunching at was set aside here.
     pub reask_capped: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS THIS RUN ADOPTED THAT ASKING AGAIN BOUGHT IT** — register
+    /// item 846. See [`Plugin::reask_landed`], where the measurement is: every other number on this
+    /// road counts a refusal, and the one beside it is RESET on success — so the rows a later round
+    /// would read to price the ask-again bound show only the runs where it failed.
+    ///
+    /// ⚠ It is per RUN, unlike [`reask_capped`](Self::reask_capped) directly above, and the
+    /// difference is the point rather than an inconsistency.
+    pub reask_landed: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **THE DEEPEST ASK-AGAIN ANY OF THOSE LANDED ON** — register item 846. See
+    /// [`Plugin::reask_landed_deepest`]: below the bound says *lower it to this*, equal to the bound
+    /// says *it is paying for itself*, and nothing here can ever say *raise it*.
+    pub reask_landed_deepest: Option<u32>,
     /// ⚠⚠⚠ **WHAT THE RUN PUT INTO ITS PANE AND HOW MUCH OF IT WAS NEVER VISIBLE THERE** —
     /// register item 591, [`Progress::deliveries`] read at the end.
     ///
@@ -1282,6 +1294,14 @@ pub struct Driver {
     /// held on `unadmitted`'s terms and read from the plugin at the same one place. ⚠ NEVER
     /// incremented here.
     reask_capped: Option<u32>,
+    /// 🎯 **WHAT THE PLUGIN LAST SAID ASKING AGAIN BOUGHT IT** — register item 846, held on
+    /// `reask_capped`'s terms and read from the plugin at the same one place. ⚠ NEVER incremented
+    /// here.
+    reask_landed: Option<u32>,
+    /// 🎯 **AND THE DEEPEST ASK ANY OF THOSE LANDED ON** — register item 846, held beside the count
+    /// it qualifies and read in the same breath. ⚠ NEVER maximised here: the document takes the
+    /// maximum inside the same `<if>` that counts, so the two cannot disagree.
+    reask_landed_deepest: Option<u32>,
     /// ⚠⚠⚠ **WHAT THE PLUGIN LAST SAID ITS DELIVERIES CAME TO** — register item 591, held for
     /// [`at`](Self::at)'s reason and read from the plugin at the same one place.
     ///
@@ -1431,6 +1451,13 @@ pub struct Progress {
     /// argument: a person watching a run burn its asks on good proposals is the one who can raise
     /// the budget before it closes.
     pub reask_capped: Option<u32>,
+    /// 🎯 **AND HOW MANY PROPOSALS ASKING AGAIN HAS ALREADY BOUGHT THIS RUN** — register item 846,
+    /// published WHILE THE RUN IS STILL GOING on the line above's argument, with the sign reversed:
+    /// a person watching a run RECOVER from its refusals is the one who can leave the budget alone.
+    pub reask_landed: Option<u32>,
+    /// 🎯 **AND THE DEEPEST ASK ANY OF THEM LANDED ON** — register item 846, live beside the count
+    /// it qualifies.
+    pub reask_landed_deepest: Option<u32>,
     /// ⚠⚠⚠⚠⚠ **WHERE THE RUN IS** — the plugin's own machine position, from [`Plugin::at`].
     ///
     /// # The fact that existed only as prose — register item 543
@@ -1739,6 +1766,10 @@ impl Driver {
             // ⚠ `None` FOR THE SAME REASON — register item 956. A run nobody has stepped has spent
             // no ask, and *nobody was counting* is not *nothing worth taking was set aside*.
             reask_capped: None,
+            // ⚠ `None` FOR THE SAME REASON — register item 846. A run nobody has stepped has
+            // adopted nothing, and *nobody was counting* is not *asking again never worked*.
+            reask_landed: None,
+            reask_landed_deepest: None,
             deliveries: Deliveries::NONE,
             folds_by_reason: crate::outer::FoldsByReason::NONE,
             delivered_by_road: crate::outer::DeliveredByRoad::NONE,
@@ -1818,6 +1849,11 @@ impl Driver {
             // 🎯 AND HOW MANY OF THIS CHECKPOINT'S ASKS WENT ON GOOD PROPOSALS — register item 956,
             // live because the budget can still be raised while the run is going.
             reask_capped: self.reask_capped,
+            // 🎯 AND HOW MANY ASKS ACTUALLY BOUGHT SOMETHING — register item 846, live beside the
+            // number that counts what they cost. A row carrying only the cost prices the bound
+            // wrong in one direction and never the other.
+            reask_landed: self.reask_landed,
+            reask_landed_deepest: self.reask_landed_deepest,
             at: self.at,
             waiting: self.waiting.clone(),
             place: self.place.clone(),
@@ -2247,6 +2283,14 @@ impl Driver {
                     // datamodel this number explains, so the last answer it could give is the
                     // whole of what the ending means.
                     self.reask_capped = plugin.reask_capped().or_else(|| self.reask_capped.take());
+                    // 🎯 AND WHAT THOSE ASKS BOUGHT — register item 846, read in the same breath
+                    // and kept on the same terms. It is per RUN rather than per checkpoint, so
+                    // unlike the line above it accumulates across the whole walk: the last answer
+                    // the plugin could give is the total, not the last episode's residue.
+                    self.reask_landed = plugin.reask_landed().or_else(|| self.reask_landed.take());
+                    self.reask_landed_deepest = plugin
+                        .reask_landed_deepest()
+                        .or_else(|| self.reask_landed_deepest.take());
                     // ⚠⚠⚠⚠⚠ AND HOW MUCH OF ITS WORK IS COMPLETE AND KEPT — register item 604, in
                     // the same breath as the three above and for their reason. It is asked EVERY
                     // step rather than once at the end because the last step is the one that ends
@@ -2679,6 +2723,8 @@ impl Driver {
             unchecked: self.unchecked,
             unadmitted: self.unadmitted,
             reask_capped: self.reask_capped,
+            reask_landed: self.reask_landed,
+            reask_landed_deepest: self.reask_landed_deepest,
             deliveries: self.deliveries,
             checks: self.checks.clone(),
             banked: self.banked,

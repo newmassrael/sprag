@@ -1569,6 +1569,26 @@ impl Plugin for AiLoop {
             .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
     }
 
+    /// 🎯 **THE DOCUMENT'S OWN `reask_landed`, ON ITS WAY TO THE ROW SOMEBODY READS** — register
+    /// item 846, delegated on `deferred`'s exact terms: the `<if>` that counts is written in
+    /// `ai_loop.scxml` on the very arm that ADOPTS a proposal, beside the guard that decides
+    /// whether the checkpoint moved, so nothing out here can come to disagree with it.
+    fn reask_landed(&self) -> Option<u32> {
+        self.inner
+            .reask_landed()
+            .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    /// 🎯 **THE DOCUMENT'S OWN `reask_landed_deepest`, ON ITS WAY TO THE ROW SOMEBODY READS** —
+    /// register item 846, delegated beside the count it qualifies and for that delegation's reason:
+    /// the maximum is taken in the document, inside the same `<if>`, so a run can never publish a
+    /// depth for a landing the count does not include.
+    fn reask_landed_deepest(&self) -> Option<u32> {
+        self.inner
+            .reask_landed_deepest()
+            .map(|depth| u32::try_from(depth).unwrap_or(u32::MAX))
+    }
+
     /// ⚠ DELEGATED for `deliveries`' reason — register item 719. The driver that put the brief in
     /// is the only thing that read it back out of the datamodel, and a size measured at this layer
     /// would be measuring the REQUEST rather than what the machine holds — a second authority on
@@ -7582,6 +7602,240 @@ mod tests {
              every refusal that shut THIS door would be refused again, so a reader must read the \
              proposals rather than register them. An ending that said `capped` here would send \
              somebody to relaunch at work no run may take. Walked {merit_walk:?}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A RUN PUBLISHES WHAT ASKING AGAIN BOUGHT IT, AND HOW DEEP IT HAD TO GO** —
+    /// register item 846, and the reading `reask_max = 2` had been standing without.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Every number on this road counted a failure, and the nearest one is reset on success
+    ///
+    /// `deferred`, `unadmitted` and `reask_capped` all count asks that were EATEN, and the last is
+    /// per checkpoint — cleared the moment one is adopted. So a run that was turned away, asked
+    /// again, took the better proposal and finished published the same zeroes as a run that never
+    /// asked: **the evidence the bound pays for itself never reached the row.** Measured over this
+    /// repository's own 247 run logs on 2026-09-08, asking again landed 22 proposals no stored row
+    /// could show — and those logs are on `tmpfs`, with 13 of them already gone.
+    ///
+    /// ⇒ That is register item 956's own finding — a published number that cannot answer the
+    /// question it was nominated for — arriving one level up, on the number 956 nominated.
+    ///
+    /// # ⚠⚠⚠ Four arms, because three different constants would otherwise be green
+    ///
+    /// | arm | the classifier answers | landed | deepest | what it kills |
+    /// |---|---|---:|---:|---|
+    /// | deep | `STEP`, `STEP`, `FRESH` | 1 | 2 | the count is not the asks spent — two were |
+    /// | shallow | `STEP`, `FRESH` | 1 | 1 | a depth hardcoded to the bound |
+    /// | never | `NO` for ever | 0 | 0 | any non-zero constant |
+    /// | unasked | `FRESH` for ever | 0 | 0 | *an adoption is a landing* — there are several here |
+    ///
+    /// ⚠⚠ `reaim_max` IS ZERO on the first three rather than declined, which is what makes a `STEP`
+    /// proposal get turned away at all: the depth budget is the refusal, and a `FRESH` one crosses
+    /// it untouched by the guard's own `chain != 'fresh'` clause. That asymmetry is the fixture —
+    /// `STEP` spends an ask, `FRESH` is what an ask can BUY.
+    ///
+    /// ⚠ Each arm closes on three refusals after its business is done, so the walk a premise reads
+    /// is short. Register item 845: the journal is finite, and an assertion about the front of a
+    /// long run reads a record that is no longer there.
+    #[test]
+    fn asking_again_publishes_what_it_bought_and_how_deep_it_had_to_go() {
+        /// The edge that IS asking again — a refusal the run answered by asking once more.
+        const ASK_AGAIN: &str = "Reflecting --ReflectApplied--> Reflecting";
+        /// The edge that ADOPTS what a reflection named.
+        const ADOPTED: &str = "Reflecting --ReflectApplied--> Reviewing";
+        /// What the peer proposes, before the counter that makes each one distinct.
+        const AFRESH: &str = "a register entry this run just found";
+        /// And what it says the replacement should read.
+        const READ_NEXT: &str = "the register entry itself";
+        /// Work turns before the peer says its checkpoint is done.
+        const PROMPTS: u32 = 2;
+        /// A proposal the classifier admits and calls a step off the work in hand — refused by a
+        /// depth budget of zero, and therefore an ask SPENT.
+        const STEP: &str = "YES STEP it comes out of the work in hand";
+        /// A proposal the classifier admits and calls an unrelated root — no depth budget touches
+        /// it, so it is what an ask can BUY.
+        const FRESH: &str = "YES FRESH nothing this run has done leads here";
+        /// A proposal the classifier refuses on merit.
+        const REFUSED: &str = "NO not one to take now";
+
+        /// Drive a run whose classifier answers `answers` in order, repeating the last answer once
+        /// the list runs out, and hand back the ending and the walk.
+        fn scripted(
+            answers: &[&str],
+            cap: crate::outer::Counted,
+            tag: &str,
+        ) -> (crate::driver::Outcome, Vec<String>) {
+            let stamp = format!(
+                "{}-{}-{tag}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.subsec_nanos()),
+            );
+            let proposals =
+                sprag_scratch::scratch_root().join(format!("sprag-bought-peer-{stamp}"));
+            let asked = sprag_scratch::scratch_root().join(format!("sprag-bought-asked-{stamp}"));
+            let script = sprag_scratch::scratch_root().join(format!("sprag-bought-say-{stamp}"));
+            let replies = sprag_scratch::scratch_root().join(format!("sprag-bought-lines-{stamp}"));
+            for path in [&proposals, &asked, &script, &replies] {
+                let _ = std::fs::remove_file(path);
+            }
+            // ⚠⚠ THE ANSWERS ARE A FILE AND THE COUNTER IS ANOTHER, for
+            // `standin_agent_reflecting_afresh`'s measured reason: an adoption RESPAWNS the pane
+            // and re-execs this program, so anything held in a shell variable is back at its first
+            // value on the very step that matters. A list on disk with a counter beside it is what
+            // survives.
+            std::fs::write(&replies, format!("{}\n", answers.join("\n")))
+                .expect("the answer list is writable");
+            std::fs::write(
+                &script,
+                format!(
+                    "n=0; [ -s '{c}' ] && n=$(cat '{c}'); n=$((n+1)); printf '%s' \"$n\" > '{c}'; \
+                     a=$(sed -n \"${{n}}p\" '{r}'); \
+                     [ -z \"$a\" ] && a=$(tail -n 1 '{r}'); \
+                     printf '%s\\n' \"$a\"\n",
+                    c = asked.display(),
+                    r = replies.display(),
+                ),
+            )
+            .expect("the classifier script is writable");
+
+            let (workspace, pane) = crate::testing::standin_agent_reflecting_afresh(
+                PROMPTS, AFRESH, READ_NEXT, &proposals,
+            );
+            let access = crate::testing::supervised(&workspace);
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    reaim_max: Some(cap),
+                    successor_check: Some(format!("/bin/sh {}", script.display())),
+                    // ⚠ TWO, which is what this repository's own kind authors — so the depths this
+                    // gate reaches are the depths its runs can reach.
+                    reask_max: Some(2),
+                    ..brief_for(40)
+                },
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: Some(60),
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(240)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &access, &RunContext::uncancellable());
+            let walk: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|step| step.note.clone())
+                .collect();
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            for path in [&proposals, &asked, &script, &replies] {
+                let _ = std::fs::remove_file(path);
+            }
+            (outcome, walk)
+        }
+
+        // ── THE DEEP ARM: TWO ASKS SPENT, AND THE SECOND ONE LANDS ────────────────────────────
+        let (deep, deep_walk) = scripted(
+            &[STEP, STEP, FRESH, REFUSED, REFUSED, REFUSED],
+            crate::outer::Counted::Of(0),
+            "deep",
+        );
+        assert!(
+            deep_walk
+                .iter()
+                .filter(|note| note.starts_with(ASK_AGAIN))
+                .count()
+                >= 2,
+            "⚠⚠⚠ THE PREMISE: the run must actually have been made to ask twice, or the depth \
+             below is a depth nothing reached. Walked {deep_walk:?}",
+        );
+        assert_eq!(
+            deep.reask_landed,
+            Some(1),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 846 ⑴: ONE proposal was adopted after an ask, and it is not \
+             two — two asks were SPENT and only the third proposal landed. A count that followed \
+             the asks rather than the adoptions would say two here, which is the number \
+             `reask_capped` already publishes. Walked {deep_walk:?}",
+        );
+        assert_eq!(
+            deep.reask_landed_deepest,
+            Some(2),
+            "🎯🎯🎯🎯🎯 REGISTER ITEM 846 ⑵: it landed on the SECOND ask, which is the whole \
+             evidence that a bound of two buys what a bound of one does not — under `reask_max = \
+             1` this run would have closed instead. Walked {deep_walk:?}",
+        );
+
+        // ── THE SHALLOW ARM: ONE ASK, AND IT LANDS ────────────────────────────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ WITHOUT THIS A DEPTH HARDCODED TO THE BOUND IS GREEN ABOVE.
+        let (shallow, shallow_walk) = scripted(
+            &[STEP, FRESH, REFUSED, REFUSED, REFUSED],
+            crate::outer::Counted::Of(0),
+            "shallow",
+        );
+        assert_eq!(
+            (shallow.reask_landed, shallow.reask_landed_deepest),
+            (Some(1), Some(1)),
+            "🎯🎯🎯 REGISTER ITEM 846 ⑵, AND THIS IS THE MUTATION: the same one landing, reached \
+             on the FIRST ask. A depth that read the bound rather than the ask that actually paid \
+             would say two here — and a round reading it would keep a budget its runs never \
+             needed. Walked {shallow_walk:?}",
+        );
+
+        // ── THE NEVER ARM: ASKS SPENT AND NOTHING BOUGHT ──────────────────────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ WITHOUT THIS ANY NON-ZERO CONSTANT IS GREEN ABOVE.
+        let (never, never_walk) = scripted(&[REFUSED], crate::outer::Counted::Never, "never");
+        assert!(
+            never_walk
+                .iter()
+                .filter(|note| note.starts_with(ASK_AGAIN))
+                .count()
+                >= 2,
+            "⚠⚠⚠ THE CONTROL'S OWN PREMISE: it must have spent asks too, or it controls for a run \
+             that simply never used the mechanism. Walked {never_walk:?}",
+        );
+        assert_eq!(
+            (never.reask_landed, never.reask_landed_deepest),
+            (Some(0), Some(0)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 846: asks were spent and NOTHING was bought, and that is the \
+             reading `reask_landed = 0` exists to make sayable — it is the one that answers *stop \
+             asking again*. Zero is a claim here, never an absence. Walked {never_walk:?}",
+        );
+
+        // ── THE UNASKED ARM: ADOPTIONS WITHOUT A SINGLE ASK ───────────────────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ WITHOUT THIS, *COUNT EVERY ADOPTION* IS GREEN IN ALL THREE ARMS ABOVE.
+        let (unasked, unasked_walk) = scripted(
+            &[FRESH, FRESH, REFUSED, REFUSED, REFUSED],
+            crate::outer::Counted::Of(0),
+            "unasked",
+        );
+        assert!(
+            unasked_walk
+                .iter()
+                .filter(|note| note.starts_with(ADOPTED))
+                .count()
+                >= 2,
+            "⚠⚠⚠ THE PREMISE: this arm must actually have ADOPTED proposals, or it controls for \
+             nothing. Walked {unasked_walk:?}",
+        );
+        assert_eq!(
+            unasked.reask_landed,
+            Some(0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 846: AN ADOPTION IS NOT A LANDING. Every proposal here was \
+             taken the first time it was named — no refusal, no ask, nothing bought — so a counter \
+             sitting on the adopting arm without the `reasked > 0` guard would credit this budget \
+             with work it did not do, and every run in this repository would report a landing. \
+             Walked {unasked_walk:?}",
         );
     }
 

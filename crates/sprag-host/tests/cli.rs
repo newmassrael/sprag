@@ -4527,6 +4527,8 @@ fn a_driver_a_promotion_left_behind_ends_with_the_successors_own_reason() {
                 unchecked: None,
                 unadmitted: None,
                 reask_capped: None,
+                reask_landed: None,
+                reask_landed_deepest: None,
                 checks: None,
                 briefed: None,
                 done_reason: None,

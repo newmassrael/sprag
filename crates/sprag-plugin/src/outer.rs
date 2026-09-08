@@ -1070,6 +1070,15 @@ const UNADMITTED_COUNT: &str = "unadmitted";
 /// above, because it answers *what shut this door* rather than *what did this run do*. Register
 /// item 956, and see [`OuterLoop::reask_capped`].
 const REASK_CAPPED: &str = "reask_capped";
+/// 🎯 The datamodel variable counting **how many proposals this run adopted after having been made
+/// to ask again** — per RUN, unlike [`REASK_CAPPED`] above and deliberately: that one is reset the
+/// moment a checkpoint is adopted, so the successes are exactly what it cannot keep. Register item
+/// 846, and see [`OuterLoop::reask_landed`].
+const REASK_LANDED: &str = "reask_landed";
+/// 🎯 The datamodel variable holding **the deepest ask-again that any of [`REASK_LANDED`] landed
+/// on** — a maximum rather than a total, and the number that says what the bound could be lowered
+/// to. Register item 846, and see [`OuterLoop::reask_landed_deepest`].
+const REASK_LANDED_DEEPEST: &str = "reask_landed_deepest";
 
 /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN WHOSE CHECKPOINT IS DONE MAY ASK ITS AGENT AGAIN** — register
 /// item 840, and the bound the owner's decision of 2026-09-02 needs in order to be safe.
@@ -12571,6 +12580,76 @@ impl OuterLoop {
     pub fn reask_capped(&self) -> Option<i64> {
         match self.script.get_variable(&self.session, REASK_CAPPED) {
             Ok(ScriptValue::Int(capped)) => Some(capped),
+            _ => None,
+        }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS THIS RUN ADOPTED THAT ASKING AGAIN BOUGHT IT** — register
+    /// item 846, and the only published number on this road that counts a SUCCESS.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Every other number here counts the failures, so the bound looked free to lose
+    ///
+    /// [`deferred`](Self::deferred), [`unadmitted_count`](Self::unadmitted_count) and
+    /// [`reask_capped`](Self::reask_capped) all count asks that were EATEN, and the last of those is
+    /// reset the moment a checkpoint is adopted. So a run that was turned away, asked again, got a
+    /// proposal it could take, worked and finished publishes zeroes on all three: **the runs where
+    /// this mechanism paid for itself are indistinguishable from runs that never used it.** A round
+    /// asking *is `reask_max` worth its price* off the stored rows would read only the losses.
+    ///
+    /// ⇒ That is register item 956's own finding — a published number that cannot answer the
+    /// question it was nominated for — arriving one level up, on the number 956 nominated.
+    ///
+    /// # ⚠⚠⚠ It is per RUN, which is the opposite of what it stands beside
+    ///
+    /// [`reask_capped`](Self::reask_capped) is per checkpoint because it answers *what shut this
+    /// door*, and an episode a run recovered from must not colour its ending. This answers *has
+    /// asking again ever worked*, where an episode the run recovered from is the whole evidence —
+    /// so the reset that is right there is destructive here.
+    ///
+    /// ⚠⚠ **A LANDING IS AN ADOPTION**, counted where a reflection MOVES the checkpoint. An agent
+    /// that answered the second question by naming nothing leaves the run on the checkpoint it
+    /// already had, which is the outcome this budget exists to bound rather than one it bought.
+    ///
+    /// ⚠ [`None`] on its neighbours' terms exactly: a datamodel that has stopped answering is
+    /// *nobody was counting*, never a zero.
+    #[must_use]
+    pub fn reask_landed(&self) -> Option<i64> {
+        match self.script.get_variable(&self.session, REASK_LANDED) {
+            Ok(ScriptValue::Int(landed)) => Some(landed),
+            _ => None,
+        }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE DEEPEST ASK-AGAIN THIS RUN EVER LANDED A PROPOSAL ON** — register item 846,
+    /// and the number that says what `reask_max` could be LOWERED to. That bound is SPELLED rather
+    /// than linked for [`reask_capped`](Self::reask_capped)'s stated reason: it is private and this
+    /// item is public.
+    ///
+    /// # ⚠⚠⚠ Why [`reask_landed`](Self::reask_landed) cannot answer it
+    ///
+    /// A run that landed twenty proposals on its FIRST ask and a run that landed one on its second
+    /// publish the same count, and only the second is evidence that a bound of two buys anything a
+    /// bound of one does not. The two numbers kill different alternatives and neither is derivable
+    /// from the other:
+    ///
+    /// * `reask_landed` is zero — asking again never worked, and the answer is zero asks.
+    /// * this is BELOW the bound — lower the bound to this.
+    /// * this EQUALS the bound — the bound is paying for itself.
+    ///
+    /// # ⛔⛔ And *raise it* is not on that list, because this number cannot say it
+    ///
+    /// An ask the bound forbade was never made, so a landing deeper than the bound is unobservable
+    /// **by construction** — censored rather than absent. A reader taking *this equals the bound* as
+    /// *and one more would land too* would be reading a ceiling as a measurement.
+    ///
+    /// ⚠ [`None`] on its neighbours' terms exactly.
+    #[must_use]
+    pub fn reask_landed_deepest(&self) -> Option<i64> {
+        match self
+            .script
+            .get_variable(&self.session, REASK_LANDED_DEEPEST)
+        {
+            Ok(ScriptValue::Int(deepest)) => Some(deepest),
             _ => None,
         }
     }

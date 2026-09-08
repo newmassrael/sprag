@@ -437,37 +437,58 @@
       moving is a change — so a mechanism built to make this loop go further was
       making it stop.
 
-      ⚠⚠⚠ TWO, AND THE NUMBER IS AN ESTIMATE THIS ROUND CANNOT MEASURE. Nobody
-      has yet watched an agent guess twice here, so what it rests on is the shape
-      of the failure rather than a reading: one retry is a typo's worth of
-      patience, and a large number is the livelock wearing a bound.
+      📊📊📊📊📊 TWO, AND IT IS A READING NOW RATHER THAN AN ESTIMATE — register
+      item 846, measured 2026-09-08 over the 247 run logs this loop has kept
+      since 2026-08-26. **What settles it is how often asking again LANDED**, and
+      the answer is that the second ask lands:
 
-      ⛔⛔⛔⛔⛔ AND THE SENTENCE THAT USED TO FOLLOW WAS WRONG ABOUT ITS OWN
-      INSTRUMENT — register item 956, measured 2026-09-08. It read: *"The data
-      that settles it is being collected — every refusal raises `deferred`, so a
-      later round can ask whether second guesses actually land and move this."*
-      **`deferred` cannot answer it.** That total counts refusals on all THREE
-      refusal arms, and the arm back to `working` never touches this budget: run
-      237 set 42 proposals aside on it while asking again exactly ONCE. A round
-      following that instruction would have read 43 and concluded a budget of two
-      was being exhausted by guessing.
+        ask     │ it happened │ the next proposal was ADOPTED
+        ════════╪═════════════╪═══════════════════════════════════════════
+        first   │     38      │  19  (50%; 79% of the 24 with a classifier)
+        second  │     19      │   3  (16%; 60% of the 5  with a classifier)
 
-      ⇒ 📊 SO IT WAS ASKED THE OTHER WAY, off the arms themselves, over the
-      eighteen runs that had a classifier: the bound was reached TWICE (runs 248
-      and 253) and **on neither occasion did a wrong guess eat an ask** — every
-      ask spent on both roads went on a proposal the classifier ADMITTED. So the
-      original estimate still stands unrefuted for the reason it was written: an
-      agent guessing twice is a shape nobody has yet observed — not in the 245
-      run logs this loop has kept since 2026-08-26, nor in the 18 of them where a
-      classifier could refuse anything at all. ⭐ What is collected NOW is the number that
-      can settle it — `reask_capped`, published on the run's row: an ask spent
-      that this does NOT count is a wrong guess, and the day that difference is
-      routinely two, this number is the one to move.
+      ⇒ ⭐ **A BOUND OF ONE WOULD HAVE CLOSED THREE RUNS THAT RECOVERED** — runs
+      189, 242 and 250, each turned away twice and then naming something its
+      classifier admitted outright.
+      ⇒ ⭐⭐ **AND THE COST IS COUNTED IN DEBTS RATHER THAN IN RUNS, because all
+      THREE of those checkpoints were subsequently PAID**: items 870 (`43dfb55`),
+      880 (`d19423e`) and 924 (`758ea6a`). Asked of the register per item, which
+      is the standard `reaim_max` above holds itself to. So lowering this to one
+      does not merely end three runs early — it is three entries of this
+      repository's own debt that the second ask is what got retired.
+      ⇒ ⛔⛔ **AND THERE IS NO READING THAT WOULD RAISE IT, because a third ask
+      was never made.** A landing deeper than this bound is censored by the bound
+      itself, so *the second one lands* is evidence FOR two and never for three.
+
+      ⛔⛔⛔⛔⛔ THE SENTENCE THIS REPLACES WAS WRONG TWICE, AND THE SECOND TIME
+      WAS TODAY. Register item 956 had already found the first: *"every refusal
+      raises `deferred`, so a later round can ask whether second guesses actually
+      land"* — **`deferred` cannot answer it**, being a total over all THREE
+      refusal arms, and the arm back to `working` never touches this budget (run
+      237 set 42 proposals aside there while asking again ONCE). ⇒ Item 956 then
+      nominated `reask_capped` in its place, and **that one cannot answer it
+      either**: it counts asks that were EATEN and is RESET the moment a
+      checkpoint is adopted, so all 22 landings above leave no trace on any
+      stored row. The same defect, one level up, on the very number named as its
+      repair. 🎯 The numbers that CAN answer it are `reask_landed` and
+      `reask_landed_deepest`, published per run since item 846.
+
+      ⛔ AND THE OLD DEFENCE — *"nobody has yet watched an agent guess twice
+      here"* — WAS TRUE OF THE WRONG POPULATION. Narrowly it holds: no run ever
+      spent two asks on proposals a classifier refused on merit. But this bound
+      does not count merit refusals, it counts **every** refusal on that arm, and
+      by the number it actually bounds a second refusal has happened 19 times.
+      A defence has to be about the thing the guard reads.
+
+      ⭐ WHAT WOULD OVERTURN THIS, stated so a later round can just measure it:
+      `reask_landed_deepest` never reaching two across a season of runs — the
+      second ask having stopped paying — and then the answer is one.
 
       ⚠⚠ IT IS NOT A DECLINE. Unbounded has no spelling in this slot, deliberately
       (see the template): an agent that keeps naming refused things would turn for
       ever. Zero would mean *never ask again*, which is the behaviour this item
-      exists to end.
+      exists to end — and the reading above is what says zero is wrong: asking
+      again bought 22 checkpoints that would otherwise have closed a run.
     -->
     <data id="reask_max" expr="2"/>
 

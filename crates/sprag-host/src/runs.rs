@@ -2801,6 +2801,30 @@ pub struct PersistedRun {
     /// ⚠ [`None`] is [`deferred`](Self::deferred)'s [`None`], for its reason.
     #[serde(default)]
     pub reask_capped: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS THIS RUN ADOPTED THAT ASKING AGAIN BOUGHT IT** — register
+    /// item 846, carrying [`sprag_plugin::Outcome::reask_landed`].
+    ///
+    /// ⚠⚠ **THE ONLY COLUMN ON THIS ROAD THAT COUNTS A SUCCESS.** [`deferred`](Self::deferred),
+    /// [`unadmitted`](Self::unadmitted) and [`reask_capped`](Self::reask_capped) all count asks that
+    /// were EATEN, and the last is reset the moment a checkpoint is adopted — so before this column
+    /// existed, a run that asked again and recovered stored the same zeroes as a run that never
+    /// asked. Pricing the ask-again bound off this file would have read the losses alone.
+    ///
+    /// ⚠ [`None`] is [`deferred`](Self::deferred)'s [`None`], for its reason.
+    #[serde(default)]
+    pub reask_landed: Option<u32>,
+    /// 🎯🎯🎯🎯🎯 **THE DEEPEST ASK-AGAIN ANY OF THOSE LANDED ON** — register item 846, carrying
+    /// [`sprag_plugin::Outcome::reask_landed_deepest`] and stored beside the count because neither
+    /// is derivable from the other: twenty landings on FIRST asks are no evidence at all for a bound
+    /// of two.
+    ///
+    /// ⚠⚠ Read across rows it answers *what could the bound be lowered to* and **never** *could it
+    /// be raised* — an ask the bound forbade was never made, so a deeper landing is censored rather
+    /// than absent.
+    ///
+    /// ⚠ [`None`] is [`deferred`](Self::deferred)'s [`None`], for its reason.
+    #[serde(default)]
+    pub reask_landed_deepest: Option<u32>,
     /// ⛔⛔⛔⛔⛔ **WHETHER ANYTHING INDEPENDENT VERIFIED WHAT THIS RUN SAID IT FINISHED** —
     /// register item 913. See [`PersistedChecks`], where the argument and the measurement are.
     ///
@@ -3057,6 +3081,10 @@ struct Ending {
     unadmitted: Option<u32>,
     /// [`PersistedRun::reask_capped`] — register item 956.
     reask_capped: Option<u32>,
+    /// [`PersistedRun::reask_landed`] — register item 846.
+    reask_landed: Option<u32>,
+    /// [`PersistedRun::reask_landed_deepest`] — register item 846.
+    reask_landed_deepest: Option<u32>,
     /// [`PersistedRun::checks`] — register item 913.
     checks: Option<PersistedChecks>,
 }
@@ -3141,6 +3169,15 @@ pub enum Tally {
     /// refusals that ate one checkpoint's ask-again budget), which is exactly why it is here at all
     /// rather than derived from the two above.
     ReaskCapped,
+    /// 🎯 [`PersistedRun::reask_landed`] — register item 846, and the first counter here that is a
+    /// SUCCESS. ⚠ Not a subset of [`Deferred`](Self::Deferred) and not its complement either: it
+    /// counts adoptions, where every other member of this family counts refusals.
+    ReaskLanded,
+    /// 🎯 [`PersistedRun::reask_landed_deepest`] — register item 846, and the one member of this
+    /// enum that is **a maximum rather than a total**. ⚠ That is why it is a separate word instead
+    /// of a qualification of [`ReaskLanded`](Self::ReaskLanded): a sum over rows would be a number
+    /// about nothing, and the reading it exists for is *the deepest any row reached*.
+    ReaskLandedDeepest,
     /// ⛔⛔ [`PersistedRun::banked`] — register item 915, and the one this item found that is not a
     /// scalar. It was outside this enum for a THIRD reason again: the fixture never filled it, so
     /// no amount of clearing columns would have surfaced it.
@@ -3149,7 +3186,7 @@ pub enum Tally {
 
 impl Tally {
     /// Every counter, in the order [`PersistedRun`] declares them.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::Deliveries,
         Self::FoldsByReason,
         Self::DeliveredByRoad,
@@ -3162,6 +3199,8 @@ impl Tally {
         Self::Unchecked,
         Self::Unadmitted,
         Self::ReaskCapped,
+        Self::ReaskLanded,
+        Self::ReaskLandedDeepest,
         Self::Checks,
     ];
 
@@ -3184,6 +3223,8 @@ impl Tally {
             Self::Unchecked => "unchecked",
             Self::Unadmitted => "unadmitted",
             Self::ReaskCapped => "reask_capped",
+            Self::ReaskLanded => "reask_landed",
+            Self::ReaskLandedDeepest => "reask_landed_deepest",
             Self::Banked => "banked",
         }
     }
@@ -3996,6 +4037,12 @@ impl PersistedRun {
             Tally::Unchecked => self.unchecked.map(|count| count == 0),
             Tally::Unadmitted => self.unadmitted.map(|count| count == 0),
             Tally::ReaskCapped => self.reask_capped.map(|count| count == 0),
+            // 🎯 AND THE TWO THAT COUNT A SUCCESS — register item 846, on the same terms as the
+            // five above. ⚠ For the depth, *empty* is the SAME reading as for the count and not a
+            // second one: a maximum of zero is reachable only where nothing landed, because the
+            // document maximises inside the very `<if>` that increments.
+            Tally::ReaskLanded => self.reask_landed.map(|count| count == 0),
+            Tally::ReaskLandedDeepest => self.reask_landed_deepest.map(|depth| depth == 0),
         };
         match empty {
             None => Sampled::Unsaid,
@@ -7007,6 +7054,8 @@ impl RunRegistry {
                         unchecked,
                         unadmitted,
                         reask_capped,
+                        reask_landed,
+                        reask_landed_deepest,
                         checks,
                     } = match &run.state {
                         RunState::Running | RunState::Interrupted => Ending::default(),
@@ -7069,6 +7118,11 @@ impl RunRegistry {
                             // ending word is chosen from this, so a row that stored one without
                             // the other would keep a verdict nobody could re-derive.
                             reask_capped: outcome.reask_capped,
+                            // 🎯 AND WHAT THOSE ASKS BOUGHT — register item 846, stored beside the
+                            // number that says what they cost. A file that kept only the cost would
+                            // price the ask-again bound off its failures alone.
+                            reask_landed: outcome.reask_landed,
+                            reask_landed_deepest: outcome.reask_landed_deepest,
                             // ⛔⛔ AND WHETHER ANYTHING INDEPENDENT CHECKED IT — register item
                             // 601's tally, register item 913's crossing. See `PersistedChecks`.
                             checks: Some(outcome.checks.clone().into()),
@@ -7139,6 +7193,17 @@ impl RunRegistry {
                             reask_capped: report_tally(
                                 reported,
                                 crate::plugins::RUN_REASK_CAPPED_KEY,
+                            ),
+                            // 🎯 AND THE EIGHTH AND NINTH — register item 846, read on the same
+                            // terms. An out-of-process run has this road and no other, so a key
+                            // missing here is a landing the file can never show.
+                            reask_landed: report_tally(
+                                reported,
+                                crate::plugins::RUN_REASK_LANDED_KEY,
+                            ),
+                            reask_landed_deepest: report_tally(
+                                reported,
+                                crate::plugins::RUN_REASK_LANDED_DEEPEST_KEY,
                             ),
                             // ⛔⛔⛔⛔⛔ AND THE FIFTH, WHICH USED TO HAVE NO ROAD AT ALL —
                             // register item 914. It is read here exactly as its four
@@ -7416,6 +7481,8 @@ impl RunRegistry {
                         unchecked,
                         unadmitted,
                         reask_capped,
+                        reask_landed,
+                        reask_landed_deepest,
                         // ⛔⛔⛔⛔⛔ THE CHECK TALLY TAKES A SECOND ROAD WHERE IT HAS ONE —
                         // register item 914's measurement, which corrected this round's own first
                         // answer. The ENDING's tally is authoritative and comes first; behind it
@@ -7604,6 +7671,12 @@ impl RunRegistry {
                         // ⚠ NOR WHAT ATE THE LAST CHECKPOINT'S ASKS — register item 956, restored
                         // beside its neighbour because the ending word is only re-derivable with it.
                         reask_capped: saved.reask_capped,
+                        // 🎯 AND WHAT ASKING AGAIN BOUGHT IT — register item 846, restored beside
+                        // its neighbour. ⚠ Unlike that one these are per RUN, so a restart that
+                        // dropped them would not lose an episode's residue but the whole run's
+                        // evidence that the bound is worth its price.
+                        reask_landed: saved.reask_landed,
+                        reask_landed_deepest: saved.reask_landed_deepest,
                         // ⚠⚠⚠ AND NOT HERE, THOUGH THE LOG NOW CARRIES IT — register item 606. The
                         // restored pair goes into `Progress` below, which is where every reader
                         // takes it from: `crate::plugins::run_to_json` publishes `delivered` out of
@@ -7781,6 +7854,8 @@ impl RunRegistry {
                     // ⚠ Nor what ate the last checkpoint's asks (register item 956), for the reason
                     // two lines up.
                     reask_capped: None,
+                    reask_landed: None,
+                    reask_landed_deepest: None,
                     // ⛔⛔⛔ AND NOTHING IS WAITED ON BY A RUN NOBODY IS DRIVING — register item
                     // 755. A restored run has no driver asking its plugin anything, so *is a
                     // person needed* has no answerer; `None` is the honest reading and the same one
@@ -8223,6 +8298,8 @@ mod tests {
                 unchecked: None,
                 unadmitted: None,
                 reask_capped: None,
+                reask_landed: None,
+                reask_landed_deepest: None,
                 deliveries: sprag_plugin::Deliveries::NONE,
                 checks: sprag_plugin::Checks::NONE,
                 banked: None,
@@ -8511,6 +8588,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             checks: None,
             briefed: None,
             request: None,
@@ -8567,6 +8646,8 @@ mod tests {
                     unchecked: None,
                     unadmitted: None,
                     reask_capped: None,
+                    reask_landed: None,
+                    reask_landed_deepest: None,
                     deliveries: sprag_plugin::Deliveries::NONE,
                     checks: sprag_plugin::Checks::NONE,
                     banked: None,
@@ -8679,6 +8760,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -10498,6 +10581,8 @@ mod tests {
             unchecked,
             unadmitted,
             reask_capped,
+            reask_landed,
+            reask_landed_deepest,
             checks,
             // ── Not counters. Each says what it is instead, and the COUNT is asserted below ──
             //
@@ -10615,6 +10700,19 @@ mod tests {
                 "reask_capped",
                 reask_capped.is_none() || reask_capped.is_some(),
                 Tally::ReaskCapped,
+            ),
+            // 🎯 AND THE TWO THAT COUNT A SUCCESS — register item 846. A rate may be taken over
+            // each, and the second is the one member of this table that is a MAXIMUM: *how deep
+            // did any run land* is a population question exactly as *how many* is.
+            (
+                "reask_landed",
+                reask_landed.is_none() || reask_landed.is_some(),
+                Tally::ReaskLanded,
+            ),
+            (
+                "reask_landed_deepest",
+                reask_landed_deepest.is_none() || reask_landed_deepest.is_some(),
+                Tally::ReaskLandedDeepest,
             ),
             (
                 "checks",
@@ -10838,6 +10936,8 @@ mod tests {
             unchecked: Some(9),
             unadmitted: Some(11),
             reask_capped: Some(15),
+            reask_landed: Some(21),
+            reask_landed_deepest: Some(23),
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks {
                 asked: 13,
@@ -10868,6 +10968,8 @@ mod tests {
             unchecked,
             unadmitted,
             reask_capped,
+            reask_landed,
+            reask_landed_deepest,
             deliveries,
             checks,
             banked,
@@ -10950,6 +11052,17 @@ mod tests {
                 "reask_capped",
                 reask_capped.is_none() || reask_capped.is_some(),
                 Crosses::Into(&["reask_capped"]),
+            ),
+            // 🎯 AND WHAT THOSE ASKS BOUGHT — register item 846, crossing beside what they cost.
+            (
+                "reask_landed",
+                reask_landed.is_none() || reask_landed.is_some(),
+                Crosses::Into(&["reask_landed"]),
+            ),
+            (
+                "reask_landed_deepest",
+                reask_landed_deepest.is_none() || reask_landed_deepest.is_some(),
+                Crosses::Into(&["reask_landed_deepest"]),
             ),
             // ⚠ The pair and the three splits it is summed by — items 606, 856(1), 856 and 866(2).
             (
@@ -11151,6 +11264,8 @@ mod tests {
             unchecked: Some(9),
             unadmitted: Some(11),
             reask_capped: Some(15),
+            reask_landed: Some(21),
+            reask_landed_deepest: Some(23),
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks {
                 asked: 13,
@@ -11182,6 +11297,8 @@ mod tests {
             unchecked,
             unadmitted,
             reask_capped,
+            reask_landed,
+            reask_landed_deepest,
             deliveries,
             checks,
             banked,
@@ -11260,6 +11377,17 @@ mod tests {
                 reask_capped.is_none() || reask_capped.is_some(),
                 Crosses::Into(&["reask_capped"]),
             ),
+            // 🎯 AND WHAT THOSE ASKS BOUGHT — register item 846, crossing beside what they cost.
+            (
+                "reask_landed",
+                reask_landed.is_none() || reask_landed.is_some(),
+                Crosses::Into(&["reask_landed"]),
+            ),
+            (
+                "reask_landed_deepest",
+                reask_landed_deepest.is_none() || reask_landed_deepest.is_some(),
+                Crosses::Into(&["reask_landed_deepest"]),
+            ),
             (
                 "deliveries",
                 !deliveries.is_empty() || deliveries.is_empty(),
@@ -11329,6 +11457,8 @@ mod tests {
                 unchecked: ending.unchecked,
                 unadmitted: ending.unadmitted,
                 reask_capped: ending.reask_capped,
+                reask_landed: ending.reask_landed,
+                reask_landed_deepest: ending.reask_landed_deepest,
                 // ⚠ A DELIVERY COUNT THAT IS NOT THE ENDING'S, deliberately: the row takes this
                 // road for these five columns, so a value equal to the ending's would leave which
                 // road it came down unmeasured.
@@ -11443,6 +11573,8 @@ mod tests {
             unchecked: Some(9),
             unadmitted: Some(11),
             reask_capped: Some(15),
+            reask_landed: Some(21),
+            reask_landed_deepest: Some(23),
             checks: Some(PersistedChecks {
                 asked: 13,
                 silent: 2,
@@ -11522,9 +11654,11 @@ mod tests {
                 row.unchecked,
                 row.unadmitted,
                 row.reask_capped,
+                row.reask_landed,
+                row.reask_landed_deepest,
                 row.checks.clone(),
             ),
-            (None, None, None, None, None, None, None),
+            (None, None, None, None, None, None, None, None, None),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 891, MET AGAIN AT 913: a log older than these columns must \
              read *nobody counted* and NEVER a zero. A `0` here would sign a count for a run this \
              build never watched — the exact laundering the restore path's own comment said it \
@@ -11553,6 +11687,8 @@ mod tests {
             unchecked: Some(9),
             unadmitted: Some(11),
             reask_capped: Some(15),
+            reask_landed: Some(21),
+            reask_landed_deepest: Some(23),
             checks: sprag_plugin::Checks {
                 asked: 13,
                 ..sprag_plugin::Checks::NONE
@@ -11595,9 +11731,21 @@ mod tests {
                 outcome.unchecked,
                 outcome.unadmitted,
                 outcome.reask_capped,
+                outcome.reask_landed,
+                outcome.reask_landed_deepest,
                 outcome.checks.asked,
             ),
-            (3, 5, Some(7), Some(9), Some(11), Some(15), 13),
+            (
+                3,
+                5,
+                Some(7),
+                Some(9),
+                Some(11),
+                Some(15),
+                Some(21),
+                Some(23),
+                13,
+            ),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 913 ⑵: the six tallies did not survive the restart. Item 606 \
              measured that EVERY run anybody reads has been through one — thirteen live runs, all \
              restored — so a column that dies here is a column readable only while nobody is \
@@ -11697,6 +11845,8 @@ mod tests {
             unchecked: Some(9),
             unadmitted: Some(11),
             reask_capped: Some(15),
+            reask_landed: Some(21),
+            reask_landed_deepest: Some(23),
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -11710,9 +11860,20 @@ mod tests {
                 row.deferred,
                 row.unchecked,
                 row.unadmitted,
-                row.reask_capped
+                row.reask_capped,
+                row.reask_landed,
+                row.reask_landed_deepest
             ),
-            (Some(3), Some(5), Some(7), Some(9), Some(11), Some(15)),
+            (
+                Some(3),
+                Some(5),
+                Some(7),
+                Some(9),
+                Some(11),
+                Some(15),
+                Some(21),
+                Some(23)
+            ),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 914: every tally the ending block publishes must be read off \
              the far driver's report rather than recomputed or dropped — it wrote them with THIS \
              daemon's own renderer, so there is one spelling and this side reads it. `screened` is \
@@ -11735,9 +11896,11 @@ mod tests {
                 older.unchecked,
                 older.unadmitted,
                 older.reask_capped,
+                older.reask_landed,
+                older.reask_landed_deepest,
                 older.checks.clone(),
             ),
-            (None, None, None, None, None, None, None),
+            (None, None, None, None, None, None, None, None, None),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 913: a report that carries no tally must land as *nobody \
              wrote it down* and never as a zero — the two images are the same binary only until \
              somebody promotes one. A `0` here would be this record signing a count for a run it \
@@ -12850,6 +13013,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
@@ -12879,6 +13044,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             checks: None,
             cost: None,
             unit: None,
@@ -12986,6 +13153,8 @@ mod tests {
                 unchecked: None,
                 unadmitted: None,
                 reask_capped: None,
+                reask_landed: None,
+                reask_landed_deepest: None,
                 checks: None,
                 briefed: None,
                 // ⚠ Item 706's field, absent on the line above's argument.
@@ -13255,6 +13424,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             checks: None,
             briefed: None,
             // ⚠ Item 706's field, absent on the line above's argument.
@@ -13388,6 +13559,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             checks: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -13512,6 +13685,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             checks: None,
             briefed: None,
             // ⚠ Item 706's field: these fixtures are about a PLACE crossing the file, and a run
@@ -13981,6 +14156,8 @@ mod tests {
                 unchecked: None,
                 unadmitted: None,
                 reask_capped: None,
+                reask_landed: None,
+                reask_landed_deepest: None,
                 checks: None,
                 briefed: None,
                 // ⚠ Nor which ending it closed under — item 706's field, on the same argument.

@@ -835,6 +835,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             checks: None,
             cancelled_by: None,
             briefed: None,

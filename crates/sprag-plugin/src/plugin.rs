@@ -1758,6 +1758,48 @@ pub trait Plugin {
         None
     }
 
+    /// 🎯🎯🎯🎯🎯 **HOW MANY PROPOSALS THIS RUN ADOPTED THAT ASKING AGAIN BOUGHT IT** — register
+    /// item 846, and the only number on this road that counts a SUCCESS.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Everything else here counts the failures, so the bound looked free to lose
+    ///
+    /// [`deferred`](Self::deferred), [`unadmitted`](Self::unadmitted) and
+    /// [`reask_capped`](Self::reask_capped) all count asks that were EATEN, and the last is reset
+    /// the moment a checkpoint is adopted. A run that was turned away, asked again, got a proposal
+    /// it could take and finished therefore publishes zeroes on all three — **indistinguishable
+    /// from a run that never asked at all.** A round asking whether the ask-again bound is worth
+    /// its price would read the losses and never the winnings.
+    ///
+    /// ⚠⚠ **PER RUN**, which is the opposite of [`reask_capped`](Self::reask_capped) beside it and
+    /// for the opposite reason: an episode a run recovered from must not colour that one's ending,
+    /// and here it is the whole evidence.
+    ///
+    /// ⚠ [`None`] on [`deferred`](Self::deferred)'s exact terms — never `Some(0)` for a plugin with
+    /// no such choice to make.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn reask_landed(&self) -> Option<u32> {
+        None
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE DEEPEST ASK-AGAIN ANY OF [`reask_landed`](Self::reask_landed) LANDED ON** —
+    /// register item 846, and the number that says what the ask-again bound could be LOWERED to.
+    ///
+    /// A run that landed twenty proposals on its FIRST ask and one that landed a single proposal on
+    /// its second publish the same count, and only the second is evidence that a bound of two buys
+    /// what a bound of one does not. So: a zero count says *never ask again*; a maximum BELOW the
+    /// bound says *lower it to this*; a maximum EQUAL to the bound says *it is paying for itself*.
+    ///
+    /// ⚠⚠ **AND *RAISE IT* IS NOT ON THAT LIST.** An ask the bound forbade was never made, so a
+    /// landing deeper than the bound is unobservable by construction — censored rather than absent.
+    ///
+    /// ⚠ [`None`] on [`deferred`](Self::deferred)'s exact terms.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    fn reask_landed_deepest(&self) -> Option<u32> {
+        None
+    }
+
     /// ⚠⚠⚠ **THE RUN'S BUDGET IS SPENT — CAN YOU SAY WHERE IT GOT TO, AND HOW LONG DO YOU NEED?**
     ///
     /// Called by the [`Driver`] the moment one of ITS ceilings binds, before the run is ended, and

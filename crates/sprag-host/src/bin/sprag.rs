@@ -12775,6 +12775,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             // ⚠ `None` and not a zero: this fixture is not a run that counted nothing, it is one
@@ -12806,6 +12808,8 @@ mod tests {
             unchecked: None,
             unadmitted: None,
             reask_capped: None,
+            reask_landed: None,
+            reask_landed_deepest: None,
             deliveries: sprag_plugin::Deliveries::NONE,
             checks: sprag_plugin::Checks::NONE,
             banked: None,
