@@ -349,8 +349,49 @@ impl north_star::Suite for RunTheSuite {
             .map_err(|why| {
                 format!("cannot run the suite to ask whether `{names}` is red: {why}")
             })?;
-        verdict_of(asked.status.code(), names)
+        verdict_of(
+            asked.status.code(),
+            tests_run(&String::from_utf8_lossy(&asked.stdout)),
+            names,
+        )
     }
+}
+
+/// ⛔⛔⛔⛔⛔ **HOW MANY TESTS THE SELECTION ACTUALLY RAN** — register item 971's ⑴, read from the
+/// harness's own line.
+///
+/// # ⛔⛔⛔ Why exit 0 was two different answers
+///
+/// Measured 2026-09-08: `cargo test --quiet -p sprag-gate --lib zzz_no_such_test_anywhere --
+/// --exact` exits **0** and prints
+///
+/// ```text
+/// running 0 tests
+///
+/// test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 185 filtered out; finished in 0.00s
+/// ```
+///
+/// ⇒ A `@red:` line whose test NAME has a typo therefore reads as *the suite says this is green*,
+/// and the register's answer to a green claim is *the claim is stale, remove the `@red:` line*. So
+/// a typo does not merely fail to confirm the red — it instructs the next round to DELETE the
+/// claim. That is item 949's shape from the other side: there, a malformed mark manufactured the
+/// red it claimed; here, it manufactures the refutation.
+///
+/// # ⚠⚠ Summed across targets, because one selection can reach several harnesses
+///
+/// `-p sprag-host` alone runs the lib and every integration test, and each prints its own line. A
+/// selection that ran nothing ANYWHERE is the case this exists for; one that ran nothing in one
+/// target and something in another has still had its question put.
+///
+/// ⚠ It reads `running N tests` rather than the `test result:` tally, because that line is printed
+/// BEFORE the tests and survives a run the harness never got to summarise.
+fn tests_run(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("running "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter_map(|count| count.parse::<usize>().ok())
+        .sum()
 }
 
 /// ⛔⛔⛔⛔⛔ **WHAT AN EXIT CODE FROM `cargo test` SAYS ABOUT A CLAIM** — register item 949, and a
@@ -360,8 +401,21 @@ impl north_star::Suite for RunTheSuite {
 /// green selection, `Ok(true)` a red one, and the [`Err`] arms a malformed claim — so asserting
 /// around the process would leave two of them unmeasured, which is the dead control this workspace
 /// keeps paying for. Handed the code, every case is driven.
-fn verdict_of(code: Option<i32>, names: &str) -> Result<bool, String> {
+fn verdict_of(code: Option<i32>, ran: usize, names: &str) -> Result<bool, String> {
     match code {
+        // ⛔⛔⛔⛔⛔ **EXIT 0 HAVING RUN NOTHING IS *THE QUESTION WAS NOT PUT*** — register item
+        // 971's ⑴, and the mirror of the 949 arm below.
+        //
+        // A selection no test matches exits 0 and says `running 0 tests` (see [`tests_run`] for
+        // the measurement). Read as green, that instructs the next round to delete the `@red:`
+        // line as stale — so a typo in the NAME refutes the claim just as surely as a typo in the
+        // FLAGS used to confirm it. Neither is an answer, and both are refusals to judge.
+        Some(0) if ran == 0 => Err(format!(
+            "the selection `{names}` matched no test at all — it exited 0 having run nothing, so \
+             the suite has said neither red nor green. A green answer here would read as *the \
+             claim is stale* and instruct its removal. Check the test NAME (a harness filter is a \
+             substring unless `--exact` follows a bare `--`, and either way it has to exist)"
+        )),
         Some(0) => Ok(false),
         // ⛔⛔⛔⛔⛔ 101 IS *THE SUITE RAN AND SOMETHING FAILED*, AND EVERY OTHER NON-ZERO IS
         // *THE QUESTION COULD NOT BE PUT* — register item 949, measured the hard way.
@@ -627,7 +681,11 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
 
 #[cfg(test)]
 mod tests {
-    use super::verdict_of;
+    use super::{tests_run, verdict_of};
+
+    /// How many tests a selection ran, in a run that ran SOME — the number every arm below that is
+    /// not about emptiness needs, named once so no assertion carries a bare literal.
+    const SOME_RAN: usize = 185;
 
     /// ⛔⛔⛔⛔⛔ **A MALFORMED CLAIM MUST NOT MANUFACTURE THE RED IT CLAIMS** — register item 949,
     /// and this round's own two `@red:` lines are what found it.
@@ -651,16 +709,16 @@ mod tests {
     #[test]
     fn a_code_cargo_gives_for_refusing_the_arguments_is_not_a_red() {
         assert_eq!(
-            verdict_of(Some(0), "-p sprag-gate --lib"),
+            verdict_of(Some(0), SOME_RAN, "-p sprag-gate --lib"),
             Ok(false),
             "a green selection is a claim the suite refutes",
         );
         assert_eq!(
-            verdict_of(Some(101), "-p sprag-gate --lib"),
+            verdict_of(Some(101), SOME_RAN, "-p sprag-gate --lib"),
             Ok(true),
             "⚠ 101 is the harness's own failure — and a compile error's, deliberately",
         );
-        let refused = verdict_of(Some(1), "-p sprag-host --test cli name --exact").expect_err(
+        let refused = verdict_of(Some(1), 0, "-p sprag-host --test cli name --exact").expect_err(
             "⛔ ITEM 949: exit 1 is cargo refusing the arguments, and calling that a RED lets a \
              typo in a `@red:` line confirm itself for ever",
         );
@@ -669,12 +727,95 @@ mod tests {
             "⚠ the refusal must name the shape that causes it, or the next author writes the same \
              line: {refused}",
         );
-        let killed = verdict_of(None, "-p sprag-gate --lib")
+        let killed = verdict_of(None, 0, "-p sprag-gate --lib")
             .expect_err("a signal decided nothing, so nothing is reported");
         assert!(
             killed.contains("killed"),
             "⚠ and *killed* is a different sentence from *refused*, because the remedy is: \
              {killed}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A SELECTION THAT MATCHED NOTHING IS NOT GREEN** — register item 971's ⑴, and the
+    /// mirror of the arm above.
+    ///
+    /// # ⛔⛔⛔ The two typos have opposite consequences and both are refusals to judge
+    ///
+    /// Item 949 found a typo in the FLAGS: cargo refused the arguments, exited 1, and the reader
+    /// called that a standing red — a mark that manufactured the fact it claimed. This is a typo in
+    /// the NAME: nothing matches, the harness exits 0 having run nothing, and a green answer means
+    /// *the claim is stale, remove the `@red:` line*. **So one typo confirms the claim for ever and
+    /// the other deletes it**, and neither is the suite answering.
+    ///
+    /// ⚠⚠ The distinction is visible ONLY in the output, which is why [`tests_run`] exists: the
+    /// exit code is 0 either way, and a run that genuinely passed everything is indistinguishable
+    /// from one that ran nothing without reading `running N tests`.
+    #[test]
+    fn a_selection_that_ran_no_test_is_neither_red_nor_green() {
+        let empty = verdict_of(
+            Some(0),
+            0,
+            "-p sprag-gate --lib zzz_no_such_test -- --exact",
+        )
+        .expect_err(
+            "⛔ ITEM 971: a selection that matched nothing has not been answered, and calling \
+                 it green tells the next round to delete a claim nobody checked",
+        );
+        assert!(
+            empty.contains("matched no test") && empty.contains("run nothing"),
+            "⚠ the refusal must say WHAT happened, because the remedy is to fix the name rather \
+             than the flags: {empty}",
+        );
+        // ⚠⚠ THE CONTRAST, so this is not an assertion about `Some(0)` in general: the same code
+        // with tests behind it is still the suite refuting the claim.
+        assert_eq!(
+            verdict_of(Some(0), 1, "-p sprag-gate --lib one_test -- --exact"),
+            Ok(false),
+            "⚠⚠ ONE test that ran and passed IS a green answer — the emptiness is the defect, not \
+             the exit code",
+        );
+    }
+
+    /// ⚠⚠ **THE COUNT IS READ FROM THE HARNESS'S OWN BYTES** — register item 971, and the fixture
+    /// is the output this round actually measured rather than a shape somebody remembered.
+    ///
+    /// ⛔ Register item 964 is the entry for a fixture written from memory: a gate whose fixtures
+    /// are all hand-typed only knows the author's idea of the format. These two blocks are copied
+    /// from runs of `cargo test --quiet` on 2026-09-08.
+    ///
+    /// ⚠ The multi-target block is what makes the SUM load-bearing — `-p sprag-host` alone reaches
+    /// the lib and every integration test, so a reader that took the first line would call a
+    /// selection empty because its first target had nothing to run.
+    #[test]
+    fn the_count_is_summed_over_every_harness_the_selection_reached() {
+        let nothing = "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 \
+                       measured; 185 filtered out; finished in 0.00s\n\n";
+        assert_eq!(tests_run(nothing), 0, "the measured empty selection");
+        let one_target = "\nrunning 185 tests\ntest a ... ok\n\ntest result: ok. 185 passed; 0 \
+                          failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s\n\n";
+        assert_eq!(
+            tests_run(one_target),
+            SOME_RAN,
+            "one harness, {SOME_RAN} tests"
+        );
+        // Two targets, the FIRST of which matched nothing — the shape that breaks a reader taking
+        // only the first line.
+        let two_targets = "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 \
+                           measured; 1050 filtered out; finished in 0.00s\n\n\nrunning 3 \
+                           tests\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 \
+                           filtered out; finished in 0.01s\n\n";
+        assert_eq!(
+            tests_run(two_targets),
+            3,
+            "⚠⚠ SUMMED: a selection whose first target ran nothing and whose second ran three has \
+             had its question put. Taking the first line would refuse to judge a real answer",
+        );
+        // ⛔ And nothing that merely says the word counts — a test NAMED `running_...` prints on a
+        // line of its own, and a compile error prints no `running` line at all.
+        assert_eq!(
+            tests_run("test running_a_verb_is_bounded ... ok\nerror: could not compile\n"),
+            0,
+            "⛔ only the harness's own `running N tests` line is a count",
         );
     }
 }
