@@ -246,18 +246,45 @@ mod tests {
     use super::*;
 
     /// A directory of this test's own, removed by the caller.
-    fn scratch(name: &str) -> PathBuf {
-        let dir = sprag_scratch::scratch_for(
-            &format!("sprag-survey-{name}"),
-            &format!(
-                "{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| since.subsec_nanos()),
-            ),
-        );
+    fn scratch(tag: &str) -> PathBuf {
+        // 🎯 A PER-CALL COUNTER AND A SHORT PREFIX, which is the repair the door's own message
+        // names — register item 958. A clock's nanoseconds are NINE bytes that say nothing a
+        // reader wants, and `sprag-survey-population` spent twenty-three more on a label the test
+        // name already carries. ⚠ The tag stays because a leftover directory has to say which case
+        // left it; three bytes is what that is worth.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = sprag_scratch::scratch_for("sprag-sv", &format!("{tag}{n}"));
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         dir
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A SOCKET PATH IN THAT DIRECTORY, TAKEN BACK FROM THE DOOR THAT MEASURES IT** —
+    /// register item 958.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the paths this module never BINDS go through it too
+    ///
+    /// `sun_path` bounds `connect` exactly as it bounds `bind` — and connecting is what this module
+    /// DOES. So a socket path here is at risk whether or not a listener is ever put on it, and only
+    /// one of the three cases below binds anything. Measured 2026-09-08 against the door's own
+    /// budget (55 bytes below the scratch root):
+    ///
+    /// | case | what it did | bytes below the root | verdict |
+    /// |---|---|---:|---|
+    /// | `population` | writes five sockets, SURVEYS them | 63 | **over by 8, and no bind to catch it** |
+    /// | `answers` | binds one, surveys two | 56 | **over by 1** — the red item 958 was opened on |
+    /// | `empty` | no files at all | 37 | fits |
+    ///
+    /// ⇒ **Two of three were over and the door saw one.** Repairing only the one it saw is the
+    /// shape register item 950 was filed over, and it would have left `population` eight bytes past
+    /// a limit nothing in this file measures.
+    ///
+    /// ⚠ `may_bind` is the door's name and this is not a bind. The constraint is the same one —
+    /// *can a unix socket live at this path on every platform this project runs on* — so the check
+    /// is the right check; what is narrow is the NAME. That is registered rather than worked
+    /// around here.
+    fn sock(dir: &Path, name: &str) -> PathBuf {
+        sprag_scratch::may_bind(&dir.join(name))
     }
 
     /// ⛔⛔⛔⛔⛔ **THE POPULATION IS THE DIRECTORY, NARROWED BY NAME AND BY NOTHING ELSE** —
@@ -273,7 +300,7 @@ mod tests {
     /// connected to them would be this product opening other programs' doors to see what they say.
     #[test]
     fn the_population_is_this_products_sockets_in_the_directory_and_nothing_elses() {
-        let dir = scratch("population");
+        let dir = scratch("pop");
         for name in [
             "sprag-host.sock",
             "sprag-loop.sock",
@@ -283,7 +310,11 @@ mod tests {
             "sprag-host.lock",
             "sprag-loop.log",
         ] {
-            std::fs::write(dir.join(name), b"").expect("a file in the scratch directory");
+            // ⚠ THROUGH THE DOOR EVEN THOUGH NOTHING BINDS HERE — register item 958, and `sock`'s
+            // own reason: this case's paths were the LONGEST in the file and the only ones no bind
+            // could ever measure. The two that are not sockets go through it as well, because a
+            // `.lock` and a `.log` sit beside a socket and share its directory's budget.
+            std::fs::write(sock(&dir, name), b"").expect("a file in the scratch directory");
         }
 
         let found: Vec<String> = candidates(&dir)
@@ -323,13 +354,14 @@ mod tests {
     /// daemon is `sprag-host`'s to boot, and the CLI's own gate drives this survey against one.
     #[test]
     fn a_socket_nobody_serves_and_a_socket_somebody_else_serves_answer_differently() {
-        let dir = scratch("answers");
-        let dead = dir.join("sprag-dead.sock");
+        let dir = scratch("ans");
+        // ⛔ BOTH THROUGH THE DOOR — register item 955 for the one that is bound, register item 958
+        // for the one that is not: `sun_path` is 104 bytes on macOS against 108 on Linux and it
+        // bounds the CONNECT this survey makes just as tightly as the bind below, so the file a
+        // dead daemon left behind is measured on the same terms as the socket this test owns.
+        let dead = sock(&dir, "sprag-dead.sock");
         std::fs::write(&dead, b"").expect("a file where a socket used to be");
-        // ⛔ CHECKED BEFORE THE BIND — register item 955: `sun_path` is 104 bytes on macOS against
-        // 108 on Linux, and this test's `dir` is a scratch path whose root is twelve times longer
-        // there than here.
-        let taken = sprag_scratch::may_bind(&dir.join("sprag-taken.sock"));
+        let taken = sock(&dir, "sprag-taken.sock");
         let _listener = UnixListener::bind(&taken).expect("a socket this test owns");
 
         let survey = survey(&dir, "gate", Duration::from_millis(500));
@@ -367,7 +399,7 @@ mod tests {
     /// the ambiguity item 825's own notification had.
     #[test]
     fn an_empty_survey_still_names_the_directory_and_the_pattern() {
-        let dir = scratch("empty");
+        let dir = scratch("emp");
         let survey = survey(&dir, "gate", Duration::from_millis(200));
         assert!(survey.asked.is_empty() && survey.serving().is_empty());
         assert_eq!(survey.under, dir, "⚠ the directory travels with the rows");
