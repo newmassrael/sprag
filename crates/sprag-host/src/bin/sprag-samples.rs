@@ -122,6 +122,13 @@ fn lines(log: &RunLog, path: &std::path::Path, at: Reading) -> Vec<String> {
         //
         // ⚠ Driven off `Tally::across_rows` rather than by naming the column, so a second maximum
         // added tomorrow gets a mouth here or fails the gate in this file.
+        //
+        // ⛔⛔⛔⛔⛔ AND SO DOES THE SUM — register item 967. `Total` sat in this match doing
+        // NOTHING while the classification said *the reading over several is their sum*: a claim
+        // wider than anything measured, made by the round that wrote the classification. The three
+        // arms above answer *how many rows carried a count*, which is a different question from
+        // *how many, over all these runs* — and `Table` is the one arm that stays empty here,
+        // because it is the one whose own doc says there is no single figure to take.
         match tally.across_rows() {
             AcrossRows::Maximum => {
                 said.push(format!(
@@ -130,7 +137,10 @@ fn lines(log: &RunLog, path: &std::path::Path, at: Reading) -> Vec<String> {
                     log.deepest_reask_landing().describe()
                 ));
             }
-            AcrossRows::Total | AcrossRows::Table => {}
+            AcrossRows::Total => {
+                said.push(format!("  {:18} {}", "", log.total(tally).describe()));
+            }
+            AcrossRows::Table => {}
         }
     }
     // ⚠⚠⚠ AND THE SUM IS PRINTED AS A CHECK A READER CAN DO — nothing here can be unclassified,
@@ -148,18 +158,26 @@ fn lines(log: &RunLog, path: &std::path::Path, at: Reading) -> Vec<String> {
 mod tests {
     use super::{AcrossRows, Reading, RunLog, Tally, lines};
 
-    /// A store of `depths`, each a row whose `reask_landed_deepest` is that value — `None` for a
-    /// row from a build that never carried the column.
-    fn store_of(depths: &[Option<u32>]) -> RunLog {
-        let runs: Vec<serde_json::Value> = depths
+    /// A store of `values`, each a row carrying that value in `tally` — `None` for a row from a
+    /// build that never carried the column.
+    ///
+    /// ⚠⚠ **THE KEY IS THE PRODUCT'S OWN** — [`Tally::word`] is the serde field name, so a fixture
+    /// here cannot name a column the record does not have. Register item 967 widened this from
+    /// `reask_landed_deepest` alone; a fixture that spelled seven more keys by hand would be seven
+    /// more places for the store's shape to drift away from the test's idea of it.
+    ///
+    /// ⛔ It takes a SCALAR column. A table column would need a table, and asking one for a
+    /// `u32` is refused by the decode below rather than quietly ignored.
+    fn store_of(tally: Tally, values: &[Option<u32>]) -> RunLog {
+        let runs: Vec<serde_json::Value> = values
             .iter()
             .enumerate()
-            .map(|(at, depth)| {
+            .map(|(at, value)| {
                 let mut row = serde_json::json!({
                     "id": at + 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
                 });
-                if let Some(depth) = depth {
-                    row["reask_landed_deepest"] = serde_json::json!(depth);
+                if let Some(value) = value {
+                    row[tally.word()] = serde_json::json!(value);
                 }
                 row
             })
@@ -171,14 +189,26 @@ mod tests {
         .expect("the log a predecessor leaves is what this reads")
     }
 
-    /// What this tool printed for `depths`, as one string.
-    fn page(depths: &[Option<u32>]) -> String {
+    /// What this tool printed for `values` in `tally`, as one string.
+    fn page(tally: Tally, values: &[Option<u32>]) -> String {
         lines(
-            &store_of(depths),
+            &store_of(tally, values),
             std::path::Path::new("/tmp/one.runs.json"),
             Reading::at(1_788_681_668),
         )
         .join("\n")
+    }
+
+    /// One column classified as a total, asked of the product rather than named here — the first
+    /// in [`Tally::ALL`] order, so this file holds no list of them.
+    fn a_summed_column() -> Tally {
+        Tally::ALL
+            .into_iter()
+            .find(|tally| tally.across_rows() == AcrossRows::Total)
+            .expect(
+                "⛔ no column is classified as a total, so every gate below reads nothing — \
+                 `Tally::across_rows` is where that is decided",
+            )
     }
 
     /// 🎯🎯🎯🎯🎯 **THE READING THE COLUMN'S DOC INSTRUCTS COMES OUT OF THIS COMMAND** — register
@@ -193,7 +223,7 @@ mod tests {
     /// answers 7.
     #[test]
     fn the_page_says_the_deepest_any_row_reached_and_not_how_many_reached_one() {
-        let said = page(&[Some(1), Some(7), Some(2)]);
+        let said = page(Tally::ReaskLandedDeepest, &[Some(1), Some(7), Some(2)]);
         assert!(
             said.contains("the deepest any row reached is 7"),
             "⛔ ITEM 962: `reask_landed_deepest` is a MAXIMUM, and the three sampled arms answer \
@@ -225,14 +255,14 @@ mod tests {
     /// population.
     #[test]
     fn a_store_where_nobody_recorded_a_depth_says_that_rather_than_zero() {
-        let said = page(&[None, None]);
+        let said = page(Tally::ReaskLandedDeepest, &[None, None]);
         assert!(
             said.contains("no row carries a depth") && said.contains("this is not a depth of 0"),
             "⛔ ITEM 962/924: an empty population must SAY it is empty. Got:\n{said}",
         );
         // ⚠ And a genuine zero is a different page — `Some(0)` is *counted and found none*, which
         // item 891 put a whole third arm into `Sampled` to keep apart from *nobody counted*.
-        let counted = page(&[Some(0)]);
+        let counted = page(Tally::ReaskLandedDeepest, &[Some(0)]);
         assert!(
             counted.contains("the deepest any row reached is 0"),
             "⚠⚠ a recorded zero is a reading, not an absence — the two must not share a page. \
@@ -247,7 +277,6 @@ mod tests {
     /// not a list kept in this file.
     #[test]
     fn every_maximum_column_is_printed_as_a_maximum() {
-        let said = page(&[Some(4)]);
         let maxima: Vec<Tally> = Tally::ALL
             .into_iter()
             .filter(|tally| tally.across_rows() == AcrossRows::Maximum)
@@ -257,6 +286,9 @@ mod tests {
             "⛔ no column is classified as a maximum, so this gate has an empty population and \
              passes by reading nothing — `Tally::across_rows` is where that is decided",
         );
+        // ⚠ The column is the ENUM's answer rather than a name written here — the whole point of
+        // this gate — so the fixture fills whichever one it nominates.
+        let said = page(maxima[0], &[Some(4)]);
         for tally in maxima {
             assert!(
                 said.contains(tally.word()),
@@ -267,6 +299,120 @@ mod tests {
         assert!(
             said.contains("the deepest any row reached is 4"),
             "⚠⚠ naming the column is not printing its reading. Got:\n{said}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE SUM COMES OUT, AND IT IS A SUM AND NOT ONE OF THE FIVE THINGS THAT LOOK
+    /// LIKE ONE** — register item 967, and its `Done when` ⑶.
+    ///
+    /// # ⛔⛔⛔ The mutation this is built around
+    ///
+    /// *Drop a row from the addition and it must go red.* The rows are `1, 2, 4` plus a recorded
+    /// zero and one that says nothing, so every near-miss answers a DIFFERENT number and only the
+    /// sum answers 7: last-wins says 0, first-wins 1, the maximum 4, the row count 5, and dropping
+    /// any single row gives 3, 5 or 6. Powers of two are what make that true of *any* row dropped
+    /// rather than of one somebody happened to pick.
+    ///
+    /// ⚠⚠ **THE RECORDED ZERO IS THE HALF THAT DECIDES A POLICY, not padding.** `over 4` is the
+    /// assertion that a `Some(0)` row is IN the population — item 967's ⑵ made that choice
+    /// something the page has to state, and `Totalled`'s doc holds why it is honest for these
+    /// columns and not for the tables beside them.
+    #[test]
+    fn the_page_adds_a_summed_column_over_the_rows_that_carried_a_count() {
+        let tally = a_summed_column();
+        let said = page(tally, &[Some(1), Some(2), Some(4), Some(0), None]);
+        assert!(
+            said.contains("these rows add to 7"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 967: `{}` is classified `Total` — *the reading over several \
+             rows is their SUM* — and until this line that sentence was a claim with no \
+             arithmetic under it. A reader answering the last row, the first, the maximum or the \
+             count passes a page that merely mentions a number. Got:\n{said}",
+            tally.word(),
+        );
+        assert!(
+            said.contains("over 4 row(s) that carried a count") && said.contains("1 said nothing"),
+            "⚠⚠ AND THE POPULATION TRAVELS WITH IT: a recorded 0 is in it (4, not 3) and the row \
+             that said nothing is out of it and counted separately. Item 895 is the entry for a \
+             number whose predicate travelled elsewhere. Got:\n{said}",
+        );
+        assert!(
+            said.contains("*it counted and found none*") && said.contains("never *nobody counted*"),
+            "⚠ AND THE CHOICE IS ON THE PAGE — item 967's ⑵. Which rows were added is part of the \
+             reading, not a decision left in the function that made it. Got:\n{said}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN EMPTY POPULATION SAYS SO AND DOES NOT SAY ZERO — for a TOTAL this time** —
+    /// register item 967, and the case the live store is actually in.
+    ///
+    /// Measured 2026-09-08 over the loop's own file: **263 rows and all seven summed columns read
+    /// `counted 0  zeroed 0  unsaid 263`**, because the daemon writing them predates the columns.
+    /// A page printing `0` there says *these runs answered nothing, screened nothing, deferred
+    /// nothing* — the opposite of what the file says, and register item 924's exact shape.
+    ///
+    /// ⚠ A recorded zero is a different page, and that pair is the whole of item 891: `Some(0)` is
+    /// a claim and `None` is an absence, so the two must never share a sentence.
+    #[test]
+    fn a_store_where_nobody_recorded_a_count_says_that_rather_than_zero() {
+        let tally = a_summed_column();
+        let said = page(tally, &[None, None, None]);
+        assert!(
+            said.contains("no row carries a count")
+                && said.contains("this is not a total of 0")
+                && said.contains("3 row(s), all of them unsaid"),
+            "⛔ ITEM 967/924: an empty population must SAY it is empty, and say how big it was. \
+             Got:\n{said}",
+        );
+        let counted = page(tally, &[Some(0)]);
+        assert!(
+            counted.contains("these rows add to 0")
+                && counted.contains("over 1 row(s) that carried a count"),
+            "⚠⚠ a recorded zero is a reading over a population of one, not an absence — item 891 \
+             put a third arm in `Sampled` to keep those apart. Got:\n{counted}",
+        );
+    }
+
+    /// ⚠⚠ **EVERY COLUMN READ AS A TOTAL HAS A MOUTH HERE** — register item 967, the twin of
+    /// `every_maximum_column_is_printed_as_a_maximum`, and the arm that stops an eighth summed
+    /// column from being printed as three row-counts and nothing else.
+    ///
+    /// ⛔ It walks `Tally::ALL` rather than naming the seven, so the population is the enum's. The
+    /// reading it looks for is `Totalled`'s own sentence, so a column that gets into the match arm
+    /// but hands back no page still fails.
+    #[test]
+    fn every_summed_column_is_printed_as_a_total() {
+        let totals: Vec<Tally> = Tally::ALL
+            .into_iter()
+            .filter(|tally| tally.across_rows() == AcrossRows::Total)
+            .collect();
+        assert!(
+            !totals.is_empty(),
+            "⛔ no column is classified as a total, so this gate has an empty population and \
+             passes by reading nothing — `Tally::across_rows` is where that is decided",
+        );
+        // One column carries a value; the rest are absent, so the page has to speak for the six
+        // that said nothing as well as the one that did.
+        let said = page(totals[0], &[Some(3)]);
+        for tally in &totals {
+            assert!(
+                said.contains(tally.word()),
+                "⚠ {} is read as a total and this page never names it. Got:\n{said}",
+                tally.word(),
+            );
+        }
+        assert!(
+            said.contains("these rows add to 3"),
+            "⚠⚠ naming the column is not printing its reading — the mouth has to be reached from \
+             the `Total` arm of the match, not merely exist. Got:\n{said}",
+        );
+        assert_eq!(
+            said.matches("no row carries a count").count(),
+            totals.len() - 1,
+            "⚠⚠⚠ AND EVERY OTHER SUMMED COLUMN SPEAKS TOO, saying its population is empty. A \
+             page that printed the one column with a value and stayed silent about the other {} \
+             would be the shape item 967 registered: a classification that only sometimes has a \
+             mouth. Got:\n{said}",
+            totals.len() - 1,
         );
     }
 

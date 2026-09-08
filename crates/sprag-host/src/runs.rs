@@ -3330,6 +3330,71 @@ impl Deepest {
     }
 }
 
+/// 🎯🎯🎯 **THE SUM OF A COLUMN OVER THESE ROWS, AND THE POPULATION IT WAS TAKEN OVER** — register
+/// item 967, and the reading [`AcrossRows::Total`] was declared without.
+///
+/// # ⛔⛔ Item 962 wrote *the reading over several is their SUM* and nothing summed
+///
+/// [`Tally::across_rows`] classified seven columns as [`Total`](AcrossRows::Total) and gave the one
+/// [`Maximum`](AcrossRows::Maximum) a mouth ([`Deepest`]); the seven got a sentence and no
+/// arithmetic, and **nothing in this crate read `across_rows` at all** except the tool that prints
+/// the maximum. That is a claim wider than anything measured, which is what item 967 registered.
+///
+/// # ⛔⛔⛔⛔⛔ Whether the sum MEANS anything — asked before it was printed
+///
+/// Item 967's own first question is that a sum might be as undecidable as a rate: `sprag-samples`
+/// deliberately prints no ratio because [`Sampled::Zeroed`] is two readings at once for the columns
+/// that hold a TABLE — *"every row the store already held had been re-serialised with a zeroed
+/// table, so for those rows a zero means counted and found none AND never counted"*.
+///
+/// ⇒ **Measured 2026-09-08, and that premise does not reach these seven.** Every column
+/// `across_rows` calls a total is an `Option<u32>` scalar, and each one's own doc states the split
+/// this type relies on — [`PersistedRun::answered`]: *"`None` is **nobody wrote it down** … Never
+/// *it answered nothing*, which is `Some(0)`."* The retroactive-zero problem is a property of the
+/// re-serialised tables, and item 891 is on record naming these scalars as the neighbours it was
+/// COPYING. So a recorded `0` here is a real claim and adding it is honest.
+///
+/// ⚠⚠ **And on the same day the whole population was empty**: over the live loop's 263 rows all
+/// seven read `counted 0  zeroed 0  unsaid 263`, because the daemon writing them predates the
+/// columns. That is register item 924's shape, so [`summed`](Self::summed) is an [`Option`] beside
+/// its counts for [`Deepest`]'s reason — a bare `0` there would read as *these runs answered
+/// nothing*, the opposite of what the file says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Totalled {
+    /// The sum over every row that carried a count, or [`None`] where NO row carried one.
+    pub summed: Option<u64>,
+    /// How many rows carried a count — the population the sum was taken over.
+    pub over: usize,
+    /// How many carried none, so a reader can see how much of the store had nothing to say.
+    pub unsaid: usize,
+}
+
+impl Totalled {
+    /// **THE READING IN WORDS**, with the population choice ON the sentence.
+    ///
+    /// ⚠⚠ WHICH ROWS WERE ADDED IS PART OF THE READING, not a decision kept in the function that
+    /// made it — item 967's `Done when` ⑵. A reader handed `adds to 47` cannot tell a total over
+    /// eleven rows from one over two hundred, and item 895 is the register entry for numbers whose
+    /// predicate travelled separately: two counts of one population came out 8 against 10 and both
+    /// were right.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self.summed {
+            None => format!(
+                "no row carries a count ({} row(s), all of them unsaid), so there is nothing to \
+                 add — this is not a total of 0",
+                self.unsaid
+            ),
+            Some(summed) => format!(
+                "these rows add to {summed}, over {} row(s) that carried a count ({} said \
+                 nothing) — a recorded 0 is IN that population and adds its zero, because \
+                 `Some(0)` is *it counted and found none* and never *nobody counted*",
+                self.over, self.unsaid
+            ),
+        }
+    }
+}
+
 /// ⛔⛔⛔⛔⛔ **WHETHER A STORED RUN IS IN A POPULATION** — register item 895, and the answer has
 /// THREE arms because two of them were one for as long as nobody wrote this down.
 ///
@@ -4151,6 +4216,52 @@ impl PersistedRun {
         }
     }
 
+    /// 🎯 **THE SCALAR THIS ROW HOLDS IN ONE COLUMN** — register item 967, and the value
+    /// [`Totalled`] adds.
+    ///
+    /// # ⚠⚠⚠ The two [`Option`]s are DIFFERENT FACTS and that is why they are not flattened
+    ///
+    /// The **outer** one is about the COLUMN: a column holding a table has no scalar in any row,
+    /// and that set is exactly the one [`Tally::across_rows`] answers
+    /// [`Table`](AcrossRows::Table) for. The **inner** one is about the ROW, and it is
+    /// [`sampled`](Self::sampled)'s own distinction: [`None`] is *nobody wrote it down* and
+    /// `Some(0)` is *it counted and found none*.
+    ///
+    /// ⇒ Flattening them would make *this column cannot be added* and *this row has nothing to
+    /// add* one answer, and a caller could then sum a table's rows to `0` and print it. This
+    /// workspace's rule on tuples applies to nested options too: they are apart only for the facts
+    /// somebody NAMED, so both are named here.
+    ///
+    /// ⚠⚠ The two classifications are held together by
+    /// `a_column_is_a_scalar_exactly_where_it_is_not_read_as_a_table`, so neither can drift into
+    /// disagreeing with the other — which is the whole failure mode of writing a set down twice.
+    #[must_use]
+    pub const fn scalar(&self, tally: Tally) -> Option<Option<u32>> {
+        match tally {
+            // The tables. Nothing here is a number, so there is no scalar to hand back — see
+            // `AcrossRows::Table`, which says the same thing about reading them across rows.
+            Tally::Deliveries
+            | Tally::FoldsByReason
+            | Tally::DeliveredByRoad
+            | Tally::SaidBySentence
+            | Tally::WidthWithheld
+            | Tally::Banked
+            | Tally::Checks => None,
+            Tally::Answered => Some(self.answered),
+            Tally::Screened => Some(self.screened),
+            Tally::Deferred => Some(self.deferred),
+            Tally::Unchecked => Some(self.unchecked),
+            Tally::Unadmitted => Some(self.unadmitted),
+            Tally::ReaskCapped => Some(self.reask_capped),
+            Tally::ReaskLanded => Some(self.reask_landed),
+            // ⚠ A SCALAR TOO, though it is read as a MAXIMUM and never summed. *Is there a number
+            // in this row* and *what does putting rows together mean* are different questions, and
+            // this one answers the first — which is why the gate above pairs `Table` with `None`
+            // rather than pairing `Total` with `Some`.
+            Tally::ReaskLandedDeepest => Some(self.reask_landed_deepest),
+        }
+    }
+
     /// ⚠⚠⚠⚠⚠ **WHERE THIS RUN STOPPED, IF THAT WORD STILL MEANS ANYTHING HERE** — the recorded
     /// position, but only when it came from the documents THIS build compiled.
     ///
@@ -4347,6 +4458,47 @@ impl RunLog {
             }
         }
         deepest
+    }
+
+    /// 🎯🎯🎯 **THE SUM OF ONE COLUMN OVER THESE ROWS** — register item 967, and the mouth
+    /// [`AcrossRows::Total`] was declared without. See [`Totalled`] for whether the number means
+    /// anything, which that item made the FIRST question.
+    ///
+    /// # ⚠⚠ It answers for a column the classification does not call a total
+    ///
+    /// A [`Table`](AcrossRows::Table) column has no scalar in any row
+    /// ([`PersistedRun::scalar`]), so every row lands in `unsaid` and the answer is the
+    /// *nothing to add* sentence rather than a silent `0`. That is deliberate: a caller reaching
+    /// here with the wrong column gets a reading it cannot mistake for arithmetic, and
+    /// `sprag-samples` still asks only inside the [`Total`](AcrossRows::Total) arm of its own
+    /// match so the classification stays the thing that decides.
+    ///
+    /// ⚠ **The population comes from [`PersistedRun::sampled`] rather than from a filter spelled
+    /// here** — item 967's `Done when` ⑵, and [`Sampled`]'s own reason: four readers wrote four
+    /// filters over this store and two counts of one population came out 8 against 10.
+    #[must_use]
+    pub fn total(&self, tally: Tally) -> Totalled {
+        let mut totalled = Totalled {
+            summed: None,
+            over: 0,
+            unsaid: 0,
+        };
+        for run in &self.runs {
+            match (run.scalar(tally), run.sampled(tally)) {
+                (None, _) | (_, Sampled::Unsaid) => totalled.unsaid += 1,
+                (Some(count), Sampled::Counted | Sampled::Zeroed) => {
+                    totalled.over += 1;
+                    // ⚠ `Zeroed` adds its zero rather than being skipped — `deepest_reask_landing`
+                    // makes the same call for the same reason: a run that counted and found
+                    // nothing IS in the population, and leaving it out would make `over` disagree
+                    // with the number it qualifies. `Totalled`'s doc holds why a recorded zero is
+                    // a real claim for these columns and not for the tables.
+                    totalled.summed =
+                        Some(totalled.summed.unwrap_or(0) + u64::from(count.unwrap_or(0)));
+                }
+            }
+        }
+        totalled
     }
 
     /// ⛔⛔⛔⛔⛔ **THE PANES A LOOP WAS STILL TYPING AT WHEN THIS LOG WAS WRITTEN** — register item
@@ -8413,6 +8565,69 @@ impl Drop for RunRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⛔⛔⛔⛔⛔ **THE TWO CLASSIFICATIONS OF A COLUMN CANNOT DISAGREE** — register item 967, and
+    /// the gate that stops one set of columns being written down twice.
+    ///
+    /// # ⚠⚠⚠ What is being held together, and why writing it once was not possible
+    ///
+    /// [`Tally::across_rows`] answers *what does putting rows together mean* and
+    /// [`PersistedRun::scalar`] answers *is there a number in this row at all*. They are different
+    /// questions — `reask_landed_deepest` is a scalar that is never summed — so neither can be
+    /// derived from the other. What they DO share is one edge: a column holding a table has no
+    /// scalar, and a column with no scalar cannot be read across rows as anything else.
+    ///
+    /// ⇒ So this is the equality on that edge, over the whole enum and with no `_`: a fifteenth
+    /// column classified into one and forgotten in the other reddens here rather than summing to
+    /// a quiet `0`. That silent zero is reachable — [`RunLog::total`] adds `scalar`'s answer, so a
+    /// table wrongly called a total would print arithmetic over nothing at all.
+    ///
+    /// ⚠ The population is asserted before the loop, because a gate over an empty enum is the
+    /// escape hatch this workspace's rule 6 is about — register item 924's shape.
+    #[test]
+    fn a_column_is_a_scalar_exactly_where_it_is_not_read_as_a_table() {
+        let bare: PersistedRun = serde_json::from_value(serde_json::json!({
+            "id": 1, "label": "ai_loop pane=1", "iterations": 1, "finished": true,
+        }))
+        .expect("a row with nothing but its identity");
+        // ⚠⚠ BOTH SIDES OF THE EQUALITY HAVE MEMBERS, ASSERTED FIRST. An equality is vacuous when
+        // one side is empty, and both directions are reachable by a single edit: classify every
+        // column a table and `is_none()` is trivially true everywhere, classify none and it is
+        // trivially false. Counting them is the only thing that tells a real agreement from either.
+        // ⚠ `Tally::ALL.len()` is not asserted — it is the array's own length, so a shrunken enum
+        // is a compile error rather than a green run, and a number written here would be one more
+        // thing to edit when a sixteenth column arrives.
+        let tables = Tally::ALL
+            .into_iter()
+            .filter(|tally| tally.across_rows() == AcrossRows::Table)
+            .count();
+        let scalars = Tally::ALL.len() - tables;
+        assert!(
+            tables > 0 && scalars > 0,
+            "⚠ THE TWO ARMS, FIRST: this gate reads nothing unless both sides of it are \
+             populated — tables {tables}, scalars {scalars}, and `Tally::across_rows` is where \
+             that is decided",
+        );
+        for tally in Tally::ALL {
+            let is_table = tally.across_rows() == AcrossRows::Table;
+            assert_eq!(
+                bare.scalar(tally).is_none(),
+                is_table,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 967: `{}` is read across rows as {:?} and \
+                 `PersistedRun::scalar` {} — the two say different things about whether this \
+                 column holds a number. A table called a total is summed to a quiet 0 by \
+                 `RunLog::total`; a scalar called a table loses its reading altogether. Fix \
+                 whichever of the two matches for the column, not this line.",
+                tally.word(),
+                tally.across_rows(),
+                if bare.scalar(tally).is_none() {
+                    "hands back no scalar"
+                } else {
+                    "hands one back"
+                },
+            );
+        }
+    }
 
     /// ⚠⚠ **EVERY TERMINAL STATE SURVIVES THE ROUND TRIP THROUGH ITS OWN WORDS** — the property
     /// the run log rests on, over the whole type rather than the one case the reboot gate drives.
