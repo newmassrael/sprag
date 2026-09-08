@@ -926,33 +926,59 @@ fn verdict_in(reply: &str, question: &str, took: Duration) -> Result<Judgement, 
 /// it exists: the opening word in any case, or capitals anywhere. `Error: no API key` is a checker
 /// that broke, not one that refused.
 fn verdict_word(said: &str) -> Option<(std::ops::Range<usize>, bool)> {
+    marked_words(said).find_map(|(at, word)| match word.to_ascii_uppercase().as_str() {
+        "YES" => Some((at, true)),
+        "NO" => Some((at, false)),
+        _ => None,
+    })
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERY MARKED WORD IN A CHECKER'S REPLY, IN ORDER** — where it stands and what it is,
+/// with what is not a letter trimmed off its ends. Register item 844.
+///
+/// # ⚠⚠ The mark, and the whole of it: the reply's own opening, or capitals
+///
+/// An `opening` that stayed true would make every word a candidate and the mark decorative — which
+/// is the state [`verdict_word`] was in when a fixture read `no API key` as a verdict.
+///
+/// ⚠ **WHAT IS NOT A LETTER IS TRIMMED OFF THE ENDS**, so `YES,` `**NO**` and `(yes)` are the words
+/// they plainly are. A TRIM and not a search: `NOTHING` and `YESTERDAY` come through whole and
+/// match no keyword, where a substring test finds one in both. A word with punctuation THROUGH it —
+/// `YES/NO` — survives as itself and matches nothing, which is right: that is a checker quoting its
+/// options rather than answering.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is a function and not two scans — register item 844
+///
+/// This driver read a classifier's reply with TWO rules. The verdict was found as a MARKED word
+/// anywhere in the sentence; the movement word beside it ([`crate::outer::Chain::in_reply`]) was
+/// read off the FIRST TOKEN and nothing further in. So a classifier that wrote its reason before
+/// its movement — `YES — item 840 …, FRESH` — kept the contract as the verdict reader publishes it
+/// and lost the second word **in silence**, and a chain nobody said is CHARGED as a step. The
+/// template sells that contract to other repositories, so the asymmetry was theirs to trip over.
+///
+/// ⚠ The first-token rule was defended, in its own doc, as refusing to *"find a word inside
+/// somebody's prose"*. That is what the MARK already does: capitals are the contract and a
+/// lower-case `fresh` mid-sentence is prose — this crate's own position one field over. What the
+/// old rule refused was not prose; it was a reply whose author put the reason first.
+pub(crate) fn marked_words(said: &str) -> impl Iterator<Item = (std::ops::Range<usize>, &str)> {
     let mut from = 0;
     let mut opening = true;
-    while let Some(offset) = said[from..].find(|c: char| !c.is_whitespace()) {
-        let start = from + offset;
-        let end = said[start..]
-            .find(char::is_whitespace)
-            .map_or(said.len(), |len| start + len);
-        // ⚠ WHAT IS NOT A LETTER IS TRIMMED OFF THE ENDS, so `YES,` `**NO**` and `(yes)` are the
-        // words they plainly are. A TRIM and not a search: `NOTHING` and `YESTERDAY` come through
-        // whole and match neither verdict, where a substring test finds one in both. And a word
-        // with punctuation THROUGH it — `YES/NO` — survives as itself and matches nothing, which
-        // is right: that is a checker quoting its options rather than answering.
-        let word = word_in(said, &(start..end));
-        // ⚠⚠ THE MARK, and the whole of it: the reply's own opening, or capitals. An `opening`
-        // that stayed true would make every word a candidate and the mark decorative — which is
-        // the state this function was in when a fixture read `no API key` as a verdict.
-        if opening || word.chars().all(|c| c.is_ascii_uppercase()) {
-            match word.to_ascii_uppercase().as_str() {
-                "YES" => return Some((start..end, true)),
-                "NO" => return Some((start..end, false)),
-                _ => {}
+    std::iter::from_fn(move || {
+        while let Some(offset) = said[from..].find(|c: char| !c.is_whitespace()) {
+            let start = from + offset;
+            let end = said[start..]
+                .find(char::is_whitespace)
+                .map_or(said.len(), |len| start + len);
+            let word = word_in(said, &(start..end));
+            let marked = opening || word.chars().all(|c| c.is_ascii_uppercase());
+            opening = false;
+            from = end;
+            if marked {
+                return Some((start..end, word));
             }
         }
-        opening = false;
-        from = end;
-    }
-    None
+        None
+    })
 }
 
 /// The word standing at `at` in `said`, with what is not a letter trimmed off its ends — spelled

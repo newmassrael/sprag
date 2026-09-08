@@ -5243,26 +5243,44 @@ impl Chain {
 
     /// **WHICH MOVEMENT A CLASSIFIER'S REPLY NAMED**, read off the words that follow its verdict.
     ///
-    /// ⚠⚠⚠ **THE FIRST TOKEN AND NOTHING FURTHER IN.** `Judgement::explained` is the line after
-    /// the verdict, so a classifier keeping this contract opens it with the movement word; a scan
-    /// that reached deeper would find a word inside somebody's prose, which is the fabrication
-    /// [`crate::judge`]'s own verdict reader refuses one field over.
+    /// ⛔⛔⛔⛔⛔ **THE FIRST MARKED WORD, BY THE SAME RULE THE VERDICT IS FOUND WITH** — register
+    /// item 844, and this used to be the FIRST TOKEN and nothing further in.
     ///
-    /// ⚠ Punctuation is trimmed off the ends and the case is held to CAPITALS, on that reader's
-    /// terms exactly: a marked word is the contract, and a lower-case `fresh` inside a sentence is
-    /// prose.
+    /// # ⛔⛔ What the two rules cost, and why the old one's defence did not hold
+    ///
+    /// [`crate::judge`] finds a verdict as a MARKED word — the reply's opening, or capitals —
+    /// anywhere in the sentence. This read the token at position zero. So a classifier that wrote
+    /// its reason before its movement, `YES — item 840 …, FRESH`, kept the contract as the verdict
+    /// reader publishes it and **lost the second word in silence**: [`Unsaid`](Self::Unsaid), which
+    /// is CHARGED as a step. The template sells that contract to other repositories, so the
+    /// asymmetry was theirs to trip over rather than this one's.
+    ///
+    /// The old rule was defended as refusing to *"find a word inside somebody's prose"*. **The mark
+    /// already does that**: capitals are the contract and a lower-case `fresh` mid-sentence is
+    /// prose — this workspace's own position one field over. What it refused was not prose; it was
+    /// a reply whose author put the reason first.
+    ///
+    /// ⚠ ONE READER, `crate::judge::marked_words`, so the two can no longer come to disagree about
+    /// what a marked word is. ⚠ The FIRST match wins, on that reader's own rule: a reply naming
+    /// both movements is the one it opens with, not the one it goes on to mention.
+    ///
+    /// ⚠⚠ NAMED RATHER THAN LINKED, and that is the rustdoc gate rather than a style: this item is
+    /// PUBLIC and that reader is `pub(crate)`, so an intra-doc link resolves under
+    /// `--document-private-items` and is refused by `-D rustdoc::private-intra-doc-links`. Measured
+    /// 2026-09-08 — it failed a whole commit's doc gate. `CHECK_WITHIN`'s doc names two
+    /// `#[cfg(test)]` items for the same reason.
     #[must_use]
     pub fn in_reply(explained: Option<&str>) -> Self {
         let Some(said) = explained else {
             return Self::Unsaid;
         };
-        let Some(first) = said.split_whitespace().next() else {
-            return Self::Unsaid;
-        };
-        let word = first.trim_matches(|c: char| !c.is_alphanumeric());
-        Self::ALL
-            .into_iter()
-            .find(|arm| arm.marker() == Some(word))
+        crate::judge::marked_words(said)
+            .find_map(|(_, word)| {
+                let spelled = word.to_ascii_uppercase();
+                Self::ALL
+                    .into_iter()
+                    .find(|arm| arm.marker() == Some(spelled.as_str()))
+            })
             .unwrap_or(Self::Unsaid)
     }
 
@@ -15199,6 +15217,80 @@ mod tests {
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// ⛔⛔⛔⛔⛔ **A CLASSIFIER THAT WRITES ITS REASON BEFORE ITS MOVEMENT IS STILL READ** —
+    /// register item 844, and the asymmetry this closes was SILENT and CHARGED.
+    ///
+    /// # ⛔⛔ The defect, and why no test could see it
+    ///
+    /// [`crate::judge`] finds a verdict as a MARKED word anywhere in the reply — the opening, or
+    /// capitals. [`Chain::in_reply`] read the FIRST TOKEN of `explained` and nothing further in.
+    /// The two rules agree on the reply this repository's own classifier prints (`YES FRESH — …`)
+    /// and disagree on every reply that puts the reason first, which the verdict reader accepts
+    /// happily. The loser is [`Chain::Unsaid`] — **charged as a step**, on a run that named its
+    /// movement.
+    ///
+    /// ⚠⚠ **THE CONTRACT IS SOLD TO OTHER REPOSITORIES.** `ai_loop.scxml` is copied, so the
+    /// classifier on the other side of it is somebody else's program, and nothing here would have
+    /// told them: the reply is accepted, the verdict is read, and one word is dropped in silence.
+    ///
+    /// ⚠ `in_reply` had NO test at all before this — the same shape item 842 found one door over,
+    /// where `--admits` had unit tests for its parts and none for the mode a caller runs.
+    #[test]
+    fn a_movement_word_is_read_wherever_the_mark_puts_it() {
+        // ── THE SHAPE THIS REPOSITORY'S OWN CLASSIFIER PRINTS, and the control ─────────────────
+        assert_eq!(
+            Chain::in_reply(Some(
+                "FRESH — item 844 is in what this register says to take next"
+            )),
+            Chain::Fresh,
+            "⚠ THE CONTROL: the movement word at the opening has always been read, and everything \
+             below is about a reader that still does that",
+        );
+
+        // ── THE ARM: the reason first, which the VERDICT reader accepts without complaint ──────
+        assert_eq!(
+            Chain::in_reply(Some("— item 840 is an unrelated root, FRESH")),
+            Chain::Fresh,
+            "⛔⛔⛔⛔⛔ ITEM 844: this reply names its movement in capitals and the verdict reader \
+             one field over would find it. Reading only the first token drops it, and a chain \
+             nobody said is CHARGED as a step — so a run that answered correctly pays for a \
+             wandering it did not do",
+        );
+        assert_eq!(
+            Chain::in_reply(Some("because 840 made it, this is a STEP")),
+            Chain::Step,
+            "⛔ and the other movement, so this is not one arm's accident",
+        );
+
+        // ── AND THE MARK IS STILL THE WHOLE OF IT ─────────────────────────────────────────────
+        assert_eq!(
+            Chain::in_reply(Some("a fresh look at the register suggests otherwise")),
+            Chain::Unsaid,
+            "⛔⛔ THE CONTROL FOR THE ARM ABOVE: a lower-case `fresh` in the middle of a sentence \
+             is PROSE. A reader that took it would fabricate a movement out of somebody's English, \
+             which is exactly what the first-token rule was defending against — the MARK is what \
+             does that job, not the position",
+        );
+        assert_eq!(
+            Chain::in_reply(Some("FRESHLY registered, and it is a STEP")),
+            Chain::Step,
+            "⚠⚠ a marked word is trimmed at its ENDS and never searched THROUGH: `FRESHLY` is not \
+             `FRESH`, so the movement here is the one the reply actually names",
+        );
+        assert_eq!(
+            Chain::in_reply(Some("FRESH and STEP are the two words")),
+            Chain::Fresh,
+            "⚠ the FIRST marked match wins, on the verdict reader's own rule: a reply naming both \
+             is the one it opens with, not the one it goes on to mention",
+        );
+        assert_eq!(Chain::in_reply(None), Chain::Unsaid);
+        assert_eq!(
+            Chain::in_reply(Some("   ")),
+            Chain::Unsaid,
+            "⚠ and an explanation that is only whitespace names nothing",
+        );
+    }
 
     /// ⚠⚠⚠ **THE CONFIRMATION NEEDLE IS MEASURED IN SCREEN COLUMNS, NOT IN CHARACTERS** — and a
     /// live run against a real `claude` is what measured the difference.
