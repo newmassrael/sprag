@@ -585,10 +585,38 @@
       directory, on `reference` below's terms: this document is this repository's
       own, and a classifier that silently answered about whatever tree it happened
       to land in would be worse than one that failed to start.
+
+      ⛔⛔⛔⛔⛔ THE `locked` SWITCH IN THE ARGV BELOW IS THE ONE THING HERE PUT
+      IN BY A MEASUREMENT RATHER THAN BY A DECISION — register item 841.
+
+      Without it this classifier WRITES THE TREE IT IS JUDGING. A `cargo run`
+      re-resolves whenever a manifest has moved past `Cargo.lock`, and
+      re-resolving writes: measured 2026-09-08 in a throwaway worktree, one path
+      dependency added to one member was enough, and the classifier answered
+      `YES STEP` and rewrote that lockfile in the same second. Register item 196
+      is that this tree has TWO writers, so a lock rewritten under the agent by
+      its own referee lands in whatever that agent commits next, unread.
+
+      ⚠⚠ SO A STALE LOCK NOW COSTS THIS RUN ITS CLASSIFIER, AND THAT TRADE IS
+      TAKEN DELIBERATELY: cargo refuses instead of writing, its first printed
+      line says exactly why, and `Unheard::NotAVerdict` carries that line into
+      the row as `Admits::Silent`. Silence sets a proposal aside and keeps the
+      brief, which is the safe direction this whole document takes about a
+      process that did not answer. A rewritten lockfile is not recoverable by
+      keeping a brief.
+
+      ⛔⛔⛔ AND WHAT THIS ARGV CLAIMS IS A PREDICATE RATHER THAN THIS PROSE —
+      `sprag_gate::classifier`, driven by
+      `the_classifier_the_loop_runs_compiles_no_product_crate`. It reads THIS
+      line, builds what it names into an empty target directory, and refuses
+      unless the only crate cargo compiles is the one named here. The four
+      measurements behind that, the register's own disproven headline included,
+      are in the module's documentation.
     -->
     <data id="successor_check"
           expr="'env CARGO_TARGET_DIR=/home/coin/.cache/sprag-admits ' +
-                'cargo run -q --manifest-path /home/coin/sprag/Cargo.toml ' +
+                'cargo run -q --locked ' +
+                '--manifest-path /home/coin/sprag/Cargo.toml ' +
                 '-p sprag-gate --bin north-star -- --admits ' +
                 '/home/coin/.claude/projects/-home-coin-sprag/memory/debt-open.md'"/>
 

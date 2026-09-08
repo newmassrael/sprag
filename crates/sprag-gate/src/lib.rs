@@ -156,6 +156,15 @@ pub mod litter;
 /// pointed at the wrong socket.
 pub mod launcher;
 
+/// What the loop's CLASSIFIER can be broken by — register item 841.
+///
+/// Beside [`north_star`] because it is the same instrument read from the other end: that one is the
+/// program the classifier runs, and this is what the loop's own document says to run it WITH. The
+/// register's sentence was *whether the loop can re-aim depends on whether this workspace compiles*
+/// — measured false, three ways, and what is true instead is narrower and now a predicate: the only
+/// crate cargo compiles for that classifier is its own.
+pub mod classifier;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
