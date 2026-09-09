@@ -650,6 +650,67 @@ impl Disposition {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHICH OF THESE SENTENCES STATES SOMETHING ONLY A CHECKER COULD HAVE SCORED** —
+    /// register item 968.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Two of the four are milestone verdicts, and neither said so
+    ///
+    /// Read [`describe`](Self::describe)'s arms. [`NextWork`](Self::NextWork) asserts *"This run
+    /// finished what it was given"* and [`SameWork`](Self::SameWork) asserts *"the work is
+    /// unfinished"* — opposite answers to ONE question, *is the work done*, which is precisely the
+    /// question a kind's `milestone_check` exists to answer and the only question it answers. The
+    /// other two make no such claim: [`Person`](Self::Person) says a person has not been yet and
+    /// [`Nothing`](Self::Nothing) says somebody already decided, and both are facts about who acted
+    /// rather than about what was achieved.
+    ///
+    /// ⚠⚠⚠ **THE MEASUREMENT.** Run 260 closed `exhausted (context)` and its row printed *the work
+    /// is unfinished*, flatly. The milestone it was pointed at had been finished, committed and
+    /// pushed (`e6da12c5`, level with `origin/main`), and the kind it ran under authors no checker
+    /// — so nothing had scored the claim and nothing on the row said so. The step one layer down
+    /// hedged the same fact and had done since register item 847.
+    ///
+    /// ⚠⚠ **EXHAUSTIVE, WITH NO `_`.** This is a *"every X has a Y"* predicate and this workspace's
+    /// rule for those is that a fifth disposition must arrive as a compile error rather than
+    /// defaulting onto the silent side of the split — where it would be a verdict that hedges
+    /// nothing and nobody notices.
+    #[must_use]
+    pub const fn states_a_milestone_verdict(self) -> bool {
+        match self {
+            Self::NextWork | Self::SameWork => true,
+            Self::Person | Self::Nothing => false,
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SENTENCE A RUN'S OWN ROW CARRIES** — [`describe`](Self::describe), plus what
+    /// nobody scored. Register item 968.
+    ///
+    /// # ⛔⛔⛔ It is this and not `describe` that a row prints
+    ///
+    /// [`describe`](Self::describe) answers *what happens next to a run that ended THIS WAY*, which
+    /// is a fact about the disposition alone and belongs to the table `sprag disposition` prints.
+    /// A ROW is about one run, and one run knows something the table cannot: whether its kind ever
+    /// authored anything that could have scored the verdict inside the sentence. Item 968 is the
+    /// measurement that those are different sentences.
+    ///
+    /// ⚠⚠⚠ **THE HEDGE'S CLAUSE IS [`Scoring::said`](crate::plugin::Scoring::said)'s AND NOT SPELLED
+    /// HERE** — item 968(3). The other layer that hedges this fact is
+    /// [`Checked::describe`](crate::outer::Checked::describe), which composes the same clause into
+    /// its own frame; a second spelling here is what would make the next asymmetry, this one being
+    /// the first.
+    ///
+    /// ⚠⚠ **A DISPOSITION THAT STATES NO VERDICT IS NEVER HEDGED**, whatever the scoring says. A
+    /// tail on *what happens next: A PERSON* would attach *nobody checked that* to a sentence
+    /// making no claim a checker could take — and a hedge that appears everywhere is one nobody
+    /// reads, which is the failure mode the sentence exists to avoid.
+    #[must_use]
+    pub fn said_of_run(self, scoring: crate::plugin::Scoring) -> String {
+        if self.states_a_milestone_verdict() && !scoring.could_be_scored() {
+            format!("{} (UNCHECKED — {})", self.describe(), scoring.said())
+        } else {
+            self.describe().to_owned()
+        }
+    }
+
     /// What happens next to a run recorded under `word`, or [`None`] when nothing has classified
     /// that word.
     ///
@@ -3381,6 +3442,132 @@ mod tests {
                 "two parties named the same way are one party: {spelling:?}",
             );
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A VERDICT NOBODY WAS EVER GOING TO SCORE SAYS SO IN THE RUN'S OWN ROW** —
+    /// register item 968, and the asymmetry it was filed on.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The row asserted it flatly, and the assertion was false
+    ///
+    /// Two of the four sentences [`Disposition::describe`] can print answer *is the work done* —
+    /// the one question a kind's `milestone_check` exists to settle. Run 260 closed under a context
+    /// ceiling and its row said **"the work is unfinished"**, unqualified. The milestone had been
+    /// finished, committed and pushed; the kind authored no checker, so nothing had ever been going
+    /// to score the sentence. The STEP one layer down had hedged the same fact since item 847.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Two axes, and each needs its own control or the gate is a constant
+    ///
+    /// Item 968(2) says so directly: *대조 팔이 없으면 상수로 초록이다*. A build that appended the
+    /// tail to everything passes any single-arm fixture, and so does one that appends it to
+    /// nothing. So the four arms below cross both axes — the SCORING (was anything going to look)
+    /// and the SENTENCE (does it claim something a checker could have looked at) — and the pair
+    /// that must stay silent is asserted as hard as the pair that must speak.
+    #[test]
+    fn a_row_hedges_a_verdict_nothing_was_going_to_score_and_only_that_verdict() {
+        use crate::plugin::Scoring;
+
+        // ══ ① THE ONE PLACE — item 968(3) ═══════════════════════════════════════════════════
+        //
+        // ⛔⛔⛔ The two layers must be saying the SAME WORDS about the same fact, not two
+        // sentences held equal by somebody's attention. Asserted as containment of the clause the
+        // type authors, so a second spelling anywhere is red rather than merely untidy.
+        let clause = Scoring::Unauthored.said();
+        let step = crate::outer::Checked::NotAsked.describe();
+        let row = Disposition::SameWork.said_of_run(Scoring::Unauthored);
+        assert!(
+            step.contains(clause) && row.contains(clause),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 968(3): the step and the row do not compose the same clause, \
+             so *nothing scored this* is spelled twice — which is exactly how the two layers came \
+             to disagree in the first place.\n  clause: {clause:?}\n  step: {step}\n  row: {row}",
+        );
+
+        // ══ ② THE SENTENCE THAT MAKES A CLAIM IS HEDGED ═════════════════════════════════════
+        for next in [Disposition::SameWork, Disposition::NextWork] {
+            assert!(
+                next.states_a_milestone_verdict(),
+                "⚠ THE PREMISE: `{}` is one of the two that answer *is the work done*",
+                next.wire_str(),
+            );
+            let said = next.said_of_run(Scoring::Unauthored);
+            assert!(
+                said.contains("UNCHECKED") && said.contains(clause),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 968(1): `{}`'s row states a milestone verdict with \
+                 nothing beside it, and nothing was ever going to score it. A reader who stops at \
+                 the row carries away an unhedged falsehood — which is what run 260 handed one.\n  \
+                 said: {said}",
+                next.wire_str(),
+            );
+            assert!(
+                said.starts_with(next.describe()),
+                "⚠⚠ AND THE HEDGE IS APPENDED RATHER THAN SUBSTITUTED: the row still has to say \
+                 what happens next, or item 827's whole answer is gone.\n  said: {said}",
+            );
+        }
+
+        // ══ ③ THE CONTROL ON THE SCORING AXIS — item 968(2) ═════════════════════════════════
+        //
+        // ⛔ A kind that authored a checker gets NO tail. Without this arm a build that appends the
+        // sentence unconditionally is green above and says *nobody checked* about every run of
+        // every repository that does check.
+        for next in Disposition::ALL {
+            let scored = next.said_of_run(Scoring::Authored);
+            assert_eq!(
+                scored,
+                next.describe(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 968(2): `{}`'s row is hedged for a kind that AUTHORS a \
+                 `milestone_check`. A hedge that appears on every row is one nobody reads, and it \
+                 is false here besides — something was going to score that verdict",
+                next.wire_str(),
+            );
+        }
+
+        // ══ ④ THE CONTROL ON THE SENTENCE AXIS ══════════════════════════════════════════════
+        //
+        // ⛔ A disposition that claims nothing a checker could take is never hedged, whatever the
+        // scoring says. *what happens next: A PERSON* is a fact about who has not acted yet.
+        for next in Disposition::ALL {
+            if next.states_a_milestone_verdict() {
+                continue;
+            }
+            for scoring in [Scoring::Unauthored, Scoring::Unrecorded] {
+                assert_eq!(
+                    next.said_of_run(scoring),
+                    next.describe(),
+                    "⛔⛔⛔⛔ REGISTER ITEM 968: `{}` states no verdict a `milestone_check` could \
+                     have scored, so hedging it attaches *nobody checked that* to a sentence \
+                     making no claim",
+                    next.wire_str(),
+                );
+            }
+        }
+
+        // ══ ⑤ AND *NOBODY WROTE IT DOWN* HEDGES TOO, IN ITS OWN WORDS — rule 6 ══════════════
+        //
+        // ⛔⛔⛔ A row restored from a log written before this key existed knows nothing, and an
+        // unclassified thing is a RED and not a pass. It must not read as a scored verdict, and it
+        // must not read as *no checker was authored* either — that is a claim an author made.
+        let unrecorded = Disposition::SameWork.said_of_run(Scoring::Unrecorded);
+        assert!(
+            unrecorded.contains("UNCHECKED") && unrecorded.contains(Scoring::Unrecorded.said()),
+            "⛔⛔⛔⛔⛔ RULE 6: a row that does not say whether anything was going to score this \
+             verdict states it as flatly as a row that knows: {unrecorded}",
+        );
+        assert!(
+            !unrecorded.contains(clause),
+            "⚠⚠ AND IT DOES NOT NAME A REPAIR NOBODY EARNED: *no checker is authored* would send a \
+             reader after a checker that may well exist and simply was not recorded: {unrecorded}",
+        );
+
+        // ⚠⚠ THE CONTROL UNDER THE CONTROL: the three arms must be three SENTENCES. A `said` that
+        // answered one string for every arm satisfies every assertion above.
+        let mut spellings: Vec<&str> = Scoring::ALL.iter().map(|arm| arm.said()).collect();
+        spellings.sort_unstable();
+        spellings.dedup();
+        assert_eq!(
+            spellings.len(),
+            Scoring::ALL.len(),
+            "⛔ two scoring arms say the same thing, so the split makes no difference to a reader",
+        );
     }
 
     use crate::access::{KeyStroke, PaneRow, Written};

@@ -442,6 +442,31 @@ pub const RUN_CONTEXT_BREAK_EVEN_KEY: &str = "context_break_even";
 /// not re-aim itself*, *every direction it took was checked*, and *it re-aimed on its agent's word
 /// alone this many times*.
 pub const RUN_UNCHECKED_KEY: &str = "unchecked";
+/// ⛔⛔⛔⛔⛔ **WHETHER ANYTHING WAS EVER GOING TO SCORE THIS RUN'S MILESTONE VERDICTS** — register
+/// item 968, and the fact a row needs before it may state one of them flatly.
+///
+/// # ⛔⛔⛔⛔⛔ The row asserted a verdict nobody had scored, and it was false
+///
+/// `sprag runs` prints *what happens next* for every ended run, and two of the four sentences it
+/// can print are answers to *is the work done* — the question a kind's `milestone_check` exists to
+/// settle. Run 260 closed under a context ceiling and its row said **"the work is unfinished"**
+/// with nothing beside it; the milestone had been finished, committed and pushed. The kind it ran
+/// under authors no checker, so nothing had ever been going to score that sentence, and the STEP
+/// one layer down had been saying so since register item 847 while the row said nothing.
+///
+/// ⚠⚠⚠ **THE WORD IS THE PLUGIN'S AND THE ROW ONLY FRAMES IT** — [`sprag_plugin::Scoring`], on
+/// [`RUN_DONE_REASON_KEY`]'s rule. A host that decided this for itself would have to re-read a kind
+/// document that may have changed since the run, which is exactly why [`RUN_OVERRIDDEN_KEY`] is
+/// recorded rather than re-derived.
+///
+/// ⚠⚠ **ABSENT IS *NOBODY SAID*, AND IT STILL HEDGES.** A run restored from a log written before
+/// this key existed carries no answer, and `Scoring::of_wire` reads that back as `Unrecorded` —
+/// which this workspace's rule 6 requires to be a hedge rather than a pass. The row that must never
+/// be reachable by default is the unhedged one.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_OVERRIDDEN_KEY`]'s argument unchanged: an added
+/// answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_MILESTONE_SCORING_KEY: &str = "milestone_scoring";
 /// 🎯🎯🎯🎯🎯 **HOW MANY OF [`RUN_DEFERRED_KEY`] THE CLASSIFIER REFUSED** — a SUBSET of that count
 /// and never a second total. Register item 833.
 ///
@@ -6481,6 +6506,12 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
             // is not a question anybody asked, and folding it in would make the denominator
             // flatter the checker by counting a question that never happened.
             "unasked": progress.checks.unasked,
+            // ⛔⛔⛔⛔⛔ AND WHETHER A CHECKER WAS EVER AUTHORED AT ALL — register item 968, and
+            // the one entry in this tally that is not a count. `asked: 0` cannot answer it: a kind
+            // that authors a checker and ended before it claimed any milestone publishes the same
+            // zero as one that authors none, and item 968's subject is exactly such a run — one a
+            // ceiling stopped. `null` for the arm that is the absence of an answer.
+            RUN_MILESTONE_SCORING_KEY: progress.checks.scoring.wire_str(),
         },
         // ⛔⛔⛔⛔⛔ AND THE TWO SIDES OF THE COMPARISON THE DOCUMENT DECIDES BY — register items
         // 856(1b) and 894. The ceiling rode the TOP LEVEL of this answer when it was first
@@ -6929,6 +6960,18 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             // that never said so — which is precisely the flattering silence item 674 exists to
             // end, re-created by the reader after the writer stopped making it.
             unasked: small(tally.get("unasked"))?,
+            // ⛔⛔⛔⛔⛔ AND THE ONE ENTRY HERE THAT IS *NOT* WHOLE-OR-NOTHING — register item 968,
+            // and the exception is the rule's own argument rather than a hole in it.
+            //
+            // Every `?` above refuses the tally because a MISSING COUNT filled in as `0` would be
+            // a measurement nobody made. This value has no such zero: its absence is already a
+            // named arm (`Scoring::Unrecorded`, *nothing in this record says*), which hedges the
+            // row exactly as a refusal would and keeps the counts a daemon DID publish. Refusing
+            // the whole tally over it would throw away item 601's numbers to say something item
+            // 968 can say by itself.
+            scoring: sprag_plugin::Scoring::of_wire(
+                tally.get(RUN_MILESTONE_SCORING_KEY).and_then(Value::as_str),
+            ),
         })
     })();
     // ⛔⛔⛔⛔⛔ AND THE TWO SIDES OF THE COMPARISON THE DOCUMENT RESTARTS BY — register items
@@ -9476,6 +9519,22 @@ pub fn outcome_to_json(outcome: &Outcome) -> Value {
     if let Some(done_reason) = &outcome.done_reason {
         answer[RUN_DONE_REASON_KEY] = json!(done_reason.as_ref());
     }
+    // ⛔⛔⛔⛔⛔ AND WHETHER ANYTHING WAS EVER GOING TO SCORE THE VERDICT THIS ENDING IMPLIES —
+    // register item 968, beside the word above and for a reason of the same shape: the sentence a
+    // person reads off `state` alone states *the work is unfinished* or *this run finished what it
+    // was given*, and neither is a claim the daemon is entitled to make flatly on behalf of a kind
+    // that authors no checker.
+    //
+    // ⚠⚠ IT IS PUBLISHED HERE RATHER THAN LEFT TO `RUN_CHECKS_KEY`, though it travels inside that
+    // tally: that key reaches the row as a composed SENTENCE (`checks_sentence`), and a sentence is
+    // not something the disposition clause can ask a question of. The same fact in two shapes is
+    // this surface's rule — the values cross, and each mouth composes its own words from them.
+    //
+    // ⚠ ABSENT IS `Scoring::Unrecorded` AND HEDGES ANYWAY, which is what makes the round trip total
+    // for a run restored from an older daemon's log. See `RUN_MILESTONE_SCORING_KEY`.
+    if let Some(word) = outcome.checks.scoring.wire_str() {
+        answer[RUN_MILESTONE_SCORING_KEY] = json!(word);
+    }
     answer
 }
 
@@ -10035,6 +10094,7 @@ mod tests {
                 refused: 0,
                 refused_in_a_row: 0,
                 unasked,
+                ..sprag_plugin::Checks::NONE
             })
         };
 
@@ -22622,6 +22682,11 @@ mod tests {
                             refused_in_a_row: 6,
                             // ⚠ AND DISTINCT AGAIN, on the same terms — register item 674.
                             unasked: 9,
+                            // ⚠⚠ AND NOT THE DEFAULT ARM — register item 968, on this gate's own
+                            // terms. `Unrecorded` is what a transport that dropped this key
+                            // produces, so a fixture carrying it would be satisfied by the exact
+                            // loss the gate is here to catch.
+                            scoring: sprag_plugin::Scoring::Authored,
                         },
                         driving: Some(pane),
                         banked: Some(sprag_plugin::Banked {

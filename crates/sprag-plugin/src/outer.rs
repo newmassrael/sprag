@@ -5078,24 +5078,44 @@ impl Checked {
     /// milestone (`Reflected(Milestone)`, `DoneReason::StoodDown`), and a clause that repeated it
     /// would put the same sentence in one line twice — measured, in the three neighbouring gates
     /// this first landed in.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why `NotAsked`'s clause is COMPOSED and every other arm's is a literal
+    ///
+    /// Register item 968. This sentence is one of TWO that hedge the same fact — the other is the
+    /// one a run's own row carries ([`Disposition::said_of_run`](crate::driver::Disposition::said_of_run))
+    /// — and until 968 only this one existed, so `sprag runs` asserted *the work is unfinished*
+    /// about a milestone that had in fact been finished, with nothing beside it to say that nobody
+    /// had scored the claim. The repair the item asks for is not a second sentence: *두 벌 스펠링은
+    /// 다음 비대칭을 만든다*. So the clause comes from [`crate::plugin::Scoring::said`], both frames
+    /// wrap the same words, and a change to it cannot reach one layer without the other.
+    ///
+    /// ⚠ That is what costs this method its `const` and its `&'static str`. The alternative was to
+    /// spell the clause here as well and hold the two equal with a gate, which is the *"one value,
+    /// two homes"* shape items 855 and 864 each paid for once already.
     #[must_use]
-    pub const fn describe(self) -> &'static str {
+    pub fn describe(self) -> String {
         match self {
             Self::NotAsked => {
-                "NOTHING CHECKED THAT CLAIM: this document authors no `milestone_check`, so the \
-                 party that did the work is the party that certified it (register item 428)"
+                format!(
+                    "NOTHING CHECKED THAT CLAIM: {}, so the party that did the work is the party \
+                     that certified it (register item 428)",
+                    crate::plugin::Scoring::Unauthored.said(),
+                )
             }
             Self::Passed => {
                 "and an independent process, shown the milestone and what this turn produced, agreed"
+                    .to_owned()
             }
             Self::Failed => {
                 "and an independent process shown the same disagreed, so this run bought one more \
                  turn rather than a convergence nobody earned"
+                    .to_owned()
             }
             Self::Silent => {
                 "and the check said nothing this run could read — it would not start, outran its \
                  bound, or answered something that is not a verdict. Silence is not agreement: fix \
                  the checker, or the milestone is resting on the working agent's own word"
+                    .to_owned()
             }
         }
     }
@@ -9593,9 +9613,42 @@ impl OuterLoop {
     /// is bounded and unpersisted, so *did anything actually verify this run's milestones?* is a
     /// question only a level can answer — and it is the question that decides what a `converged`
     /// is worth.
+    ///
+    /// ⚠⚠⚠ **AND WHETHER A CHECKER WAS EVER AUTHORED, READ HERE RATHER THAN TALLIED** — register
+    /// item 968. Every other field of this type is a count the run accumulated; that one is a
+    /// property of the KIND, true from the door and unchanged by anything the run does, so it is
+    /// answered from the datamodel at the moment the tally is handed over. Accumulating it would
+    /// mean a run that never reached `checked` published *nobody said* about a
+    /// document sitting right there — and item 968's own subject is a ceiling-bound run, which is
+    /// exactly the run that never gets that far.
     #[must_use]
     pub fn checks(&self) -> crate::plugin::Checks {
-        self.checks.clone()
+        crate::plugin::Checks {
+            scoring: self.milestone_scoring(),
+            ..self.checks.clone()
+        }
+    }
+
+    /// ⛔⛔⛔ **WHETHER THIS RUN'S KIND AUTHORS A `milestone_check` AT ALL** — register item 968.
+    ///
+    /// ⚠⚠ **THE SAME TWO TESTS [`checked`](Self::checked) APPLIES, IN THE SAME ORDER**, and that is
+    /// the point rather than an economy: that method turns a datamodel it cannot read and a
+    /// declaration that is empty into [`Checked::NotAsked`], so a second reader that judged the two
+    /// differently would let a row hedge a claim the step did not, or the reverse — which is the
+    /// asymmetry item 968 was filed on, rebuilt one layer over.
+    ///
+    /// ⚠ A datamodel that cannot answer reads as [`Scoring::Unrecorded`](crate::plugin::Scoring::Unrecorded)
+    /// and never as *no checker*: item 674's remaining half made exactly that distinction, and its
+    /// finding was that a run's own instrument failing must not be published as an author's
+    /// decision.
+    fn milestone_scoring(&self) -> crate::plugin::Scoring {
+        match self.text_of(MILESTONE_CHECK) {
+            None => crate::plugin::Scoring::Unrecorded,
+            Some(declared) if declared.split_whitespace().next().is_none() => {
+                crate::plugin::Scoring::Unauthored
+            }
+            Some(_) => crate::plugin::Scoring::Authored,
+        }
     }
 
     /// **RECORD WHAT PROVED THIS PASS'S DELIVERY ARRIVED**, and tally it — register item 591.
@@ -34141,6 +34194,132 @@ mod tests {
 
     /// A brief a gate can hand a loop twice and get the same datamodel both times — which is the
     /// property a resume rests on and the reason this is a function rather than two literals.
+    /// ⛔⛔⛔⛔⛔ **A RUN SAYS WHETHER ITS KIND EVER AUTHORED ANYTHING THAT COULD SCORE IT** —
+    /// register item 968, and the fact the row's hedge is composed from.
+    ///
+    /// # ⛔⛔⛔⛔⛔ `asked: 0` was carrying this and cannot
+    ///
+    /// [`crate::plugin::Checks::asked`]'s own doc reads *"`asked: 0` is a run whose document
+    /// authored no checker"*. It is not, and this gate is what makes that measurable: a kind that
+    /// authors one and ends before it claims any milestone publishes the same `0`. Item 968's
+    /// subject is exactly such a run — one a context ceiling stopped — and its row asserted *the
+    /// work is unfinished* with nothing beside it, about a milestone that had been finished.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THE CONTRAST ARM IS THE GATE — item 968(2)
+    ///
+    /// *대조 팔이 없으면 상수로 초록이다.* A build answering `Unauthored` for everything satisfies
+    /// any fixture that only ever briefs a document with no checker, and it would then hedge every
+    /// row of every repository that does check. So the two arms differ in the `milestone_check`
+    /// slot and in NOTHING else, and both answers are asserted.
+    ///
+    /// ⚠⚠⚠ **AND A LOOP THAT WAS NEVER BRIEFED IS `Unauthored`, NOT `Unrecorded`** — measured here
+    /// rather than assumed, and it disproved the assumption this gate was first written under. The
+    /// shipped document DECLARES the slot (`<data id="milestone_check" expr="''"/>`), so an
+    /// unbriefed run reads an empty string and not an absence. That is the same conclusion
+    /// [`checked`](OuterLoop::checked) reaches on the same value — *"the datamodel answered, and
+    /// what it answered was no checker"* — which is the agreement item 968 needs, since two readers
+    /// of one variable disagreeing is the asymmetry it was filed on.
+    ///
+    /// ⚠⚠ **SO [`Scoring::Unrecorded`](crate::plugin::Scoring::Unrecorded) IS NOT REACHABLE FROM
+    /// THIS SIDE** for a loop built on the shipped document, and this workspace's rule 5 says to ask
+    /// where a value's population actually is rather than to leave an arm nothing produces. Its two
+    /// real sources are item 674's world — a script session that is gone, or a value that is not a
+    /// string, where `text_of` answers `None` — and the WIRE, where a record written before item
+    /// 968 carries no word at all. The second is where the arm earns its keep, and it is gated at
+    /// the round trip below.
+    #[test]
+    fn a_run_says_whether_its_kind_authored_a_checker_at_all() {
+        use crate::plugin::Scoring;
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let scoring_of = |check: Option<&str>| -> Scoring {
+            let (_workspace, pane) = quiet_pane();
+            let mut ran = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+                .expect("the shipped document builds a loop");
+            assert_eq!(
+                ran.brief(&Brief {
+                    milestone_check: check.map(ToOwned::to_owned),
+                    ..a_brief()
+                }),
+                Briefed::Took,
+                "⚠⚠ THE FIXTURE'S PREMISE: an unbriefed loop is the THIRD arm below, so an arm \
+                 that meant to name a checker and did not take the brief would silently become it",
+            );
+            ran.checks().scoring
+        };
+
+        // ── THE ARM ITEM 968 WAS FILED ON: a kind that names nobody ─────────────────────────────
+        assert_eq!(
+            scoring_of(None),
+            Scoring::Unauthored,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 968: a run whose kind authors no `milestone_check` does not \
+             say so, so its row has nothing to hedge the verdict with — which is how run 260 came \
+             to print *the work is unfinished* about a milestone that was finished, committed and \
+             pushed",
+        );
+
+        // ── THE CONTROL: a kind that names one ──────────────────────────────────────────────────
+        assert_eq!(
+            scoring_of(Some("/bin/echo YES")),
+            Scoring::Authored,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 968(2): a run whose kind DOES author a `milestone_check` \
+             reports the same as one that authors none, so the answer is a constant and the row's \
+             hedge would appear on every run of every repository that checks its own work",
+        );
+
+        // ⚠ AND THE TWO READERS OF THIS ONE VARIABLE AGREE. `checked` turns a declaration it finds
+        // empty into `Checked::NotAsked` and calls that *the author's decision*; a second reader
+        // that judged emptiness differently would let a row hedge a claim the step did not, which
+        // is item 968's asymmetry rebuilt one layer over.
+        assert_eq!(
+            scoring_of(Some("   ")),
+            Scoring::Unauthored,
+            "⛔⛔⛔ REGISTER ITEM 968: a declaration that is present and empty is *no checker*, \
+             which is what `checked` already concludes from it — and two readers of one variable \
+             that disagree is the defect this item is about",
+        );
+
+        // ── WHERE THE THIRD ARM ACTUALLY LIVES — rule 5 ─────────────────────────────────────────
+        //
+        // ⛔⛔⛔ THE PREMISE THIS GATE WAS FIRST WRITTEN UNDER WAS FALSE, and the measurement is
+        // kept rather than the guess: an unbriefed loop reads `Unauthored`, because the document
+        // DECLARES the slot empty rather than leaving it absent. So `Unrecorded` has no population
+        // on this side at all, and an arm nothing can produce is the shape rule 5 says to go and
+        // find the real population of. It is the WIRE — a record written before item 968 carries
+        // no word — and that is what must round-trip.
+        let (_workspace, pane) = quiet_pane();
+        let unbriefed = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(4))
+            .expect("the shipped document builds a loop");
+        assert_eq!(
+            unbriefed.checks().scoring,
+            Scoring::Unauthored,
+            "⚠⚠ THE MEASUREMENT, kept as an assertion so it cannot quietly stop being true: the \
+             shipped document declares `milestone_check` as an empty string, so a run nobody \
+             briefed has an ANSWER and not an absence — and it is the same answer `checked` gives",
+        );
+        assert_eq!(
+            Scoring::of_wire(None),
+            Scoring::Unrecorded,
+            "⛔⛔⛔⛔⛔ RULE 6: a record that carries no word reads as one that does. A row \
+             restored from a log written before this key existed would then state a milestone \
+             verdict as flatly as a row that knows nothing was checked",
+        );
+        for arm in Scoring::ALL {
+            assert_eq!(
+                Scoring::of_wire(arm.wire_str()),
+                arm,
+                "⛔⛔ `{arm:?}` does not survive its own word, so the fact dies at the wire — which \
+                 is precisely where item 968's row reads it",
+            );
+        }
+        assert_eq!(
+            Scoring::of_wire(Some("a-word-no-build-here-publishes")),
+            Scoring::Unrecorded,
+            "⚠⚠⚠ AND AN UNKNOWN WORD IS *NOTHING CLASSIFIED IT* AND NEVER *IT WAS SCORED*: a newer \
+             daemon publishing a fourth arm must not have its rows read as though a check existed",
+        );
+    }
+
     fn a_brief() -> Brief {
         Brief {
             north_star: "carry what a walk wrote across a run log".to_string(),

@@ -8459,6 +8459,21 @@ fn render_run(run: &Value) -> String {
             // a seventh outcome that reached the wire without anybody deciding what to do about it
             // — which is precisely the state item 827 was filed on. Silence here would render that
             // state as *nothing to do*, inventing the answer the item says must be recorded.
+            //
+            // ⛔⛔⛔⛔⛔ AND IT IS `said_of_run` AND NOT `describe` — register item 968. Two of the
+            // four sentences below are answers to *is the work done*, which is the one question a
+            // kind's `milestone_check` exists to settle, and this row used to state them FLATLY. It
+            // was measured false: run 260 closed `exhausted (context)` and printed *the work is
+            // unfinished* about a milestone that had been finished, committed and pushed. The word
+            // the run published says whether anything was ever going to score that claim, and the
+            // sentence is composed from it rather than from the disposition alone.
+            //
+            // ⚠⚠ ASKED OF THE TYPE HERE TOO. `Scoring::of_wire` reads an absent or unknown word as
+            // *nothing said*, which hedges — so a row from a daemon that predates the key overstates
+            // nothing, and this binary spells no arm of that decision.
+            let scoring = sprag_plugin::Scoring::of_wire(
+                outcome[sprag_host::plugins::RUN_MILESTONE_SCORING_KEY].as_str(),
+            );
             let disposition = outcome["state"].as_str().map_or_else(String::new, |word| {
                 sprag_plugin::driver::Disposition::of_outcome_word(word).map_or_else(
                     || {
@@ -8467,7 +8482,7 @@ fn render_run(run: &Value) -> String {
                              spelled {word:?}, so this row cannot tell you — register item 827"
                         )
                     },
-                    |next| format!("\n  {}", next.describe()),
+                    |next| format!("\n  {}", next.said_of_run(scoring)),
                 )
             });
             format!(
@@ -12817,6 +12832,70 @@ mod tests {
             briefed: None,
             done_reason: ending.map(std::borrow::Cow::Borrowed),
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ROW A PERSON READS HEDGES A VERDICT NOBODY WAS GOING TO SCORE** — register
+    /// item 968, at the mouth the item was measured at.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The composer having a gate is not the mouth printing what it composes
+    ///
+    /// [`Disposition::said_of_run`](sprag_plugin::driver::Disposition::said_of_run) is gated where
+    /// it lives, over every arm. This file names the failure that is not enough for in five other
+    /// places: the clause is ONE interpolation in a format string, and swapping it back for
+    /// `describe()` leaves that gate perfectly green while every row goes back to asserting *the
+    /// work is unfinished* flatly. Item 968's whole subject is a person reading a row — run 260's,
+    /// which said exactly that about a milestone that had been finished, committed and pushed.
+    ///
+    /// ⚠⚠⚠ **AND IT CROSSES THE WIRE, WHICH IS THE HALF A UNIT GATE CANNOT SEE.** The fact starts
+    /// in the plugin's `Checks`, becomes a word in `outcome_to_json`, and is read back by
+    /// `Scoring::of_wire` here. A key dropped anywhere on that path renders as *nothing said*,
+    /// which hedges — so the arm that proves the path is the one that must NOT hedge.
+    ///
+    /// ⚠⚠ **TWO ROWS, because one cannot fail** — item 968(2)'s *대조 팔이 없으면 상수로 초록이다*.
+    /// They differ in the scoring word and in nothing else.
+    #[test]
+    fn a_row_says_when_nothing_was_going_to_score_the_verdict_it_prints() {
+        use sprag_plugin::driver::{Ceiling, Disposition, OutcomeState};
+
+        let row = |scoring: sprag_plugin::Scoring| {
+            render_run(&run_entry(&sprag_plugin::Outcome {
+                // ⚠ THE ENDING ITEM 968 WAS MEASURED ON: a ceiling bound, which is the one that
+                // makes the row say *the work is unfinished* — a milestone verdict, stated by a
+                // driver that never asked anybody.
+                state: OutcomeState::Exhausted(Ceiling::Duration),
+                checks: sprag_plugin::Checks {
+                    scoring,
+                    ..sprag_plugin::Checks::NONE
+                },
+                ..a_run_that_closed(None)
+            }))
+        };
+
+        let unscored = row(sprag_plugin::Scoring::Unauthored);
+        assert!(
+            unscored.contains(Disposition::SameWork.describe()),
+            "⚠⚠ THE PREMISE: this row has to be printing the sentence in question, or everything \
+             below is about a row that never made the claim:\n{unscored}",
+        );
+        assert!(
+            unscored.contains(sprag_plugin::Scoring::Unauthored.said()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 968: the row states *the work is unfinished* and says nothing \
+             about the fact that nothing was ever going to score that. A reader who stops here \
+             carries away an unhedged falsehood — run 260's row did, about a milestone that had \
+             been finished, committed and pushed:\n{unscored}",
+        );
+
+        // ── THE CONTROL, AND THE PROOF THE WORD CROSSED THE WIRE ────────────────────────────────
+        let scored = row(sprag_plugin::Scoring::Authored);
+        assert!(
+            scored.contains(Disposition::SameWork.describe())
+                && !scored.contains(sprag_plugin::Scoring::Unauthored.said())
+                && !scored.contains(sprag_plugin::Scoring::Unrecorded.said()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 968(2): a run whose kind AUTHORS a `milestone_check` gets the \
+             hedge anyway. Either the mouth appends it unconditionally — in which case it appears \
+             on every row and nobody reads it — or the word never crossed the wire and every row \
+             reads as *nothing said*:\n{scored}",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **THE ROW A PERSON READS SAYS HOW FULL THE SESSION GOT AGAINST ITS BOUND** —

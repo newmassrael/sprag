@@ -653,6 +653,111 @@ impl Deliveries {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHETHER ANYTHING WAS EVER GOING TO SCORE THIS RUN'S MILESTONE VERDICTS** — register
+/// item 968, and the ONE PLACE the two layers that hedge such a verdict both read.
+///
+/// # ⛔⛔⛔⛔⛔ Two layers said different things about one claim, and only one of them hedged
+///
+/// Register item 847 gave the STEP a sentence for *nobody looked* — [`crate::outer::Checked`],
+/// whose `NotAsked` arm says so where a walk shows it. **The RUN'S OWN ROW never got one.** Item
+/// 968 measured the asymmetry that follows: `sprag runs` printed *"A ceiling bound and the work is
+/// unfinished"* for run 260 of a kind that authors no checker, and the milestone that run was
+/// pointed at had in fact been finished, committed and pushed. A reader who stopped at the row
+/// carried away an UNHEDGED FALSEHOOD, and the step that would have hedged it was one layer down.
+///
+/// ⚠⚠⚠ **SO THE CLAUSE IS AUTHORED HERE AND NOWHERE ELSE** — [`said`](Self::said). Item 968(3) is
+/// explicit about why: *두 벌 스펠링은 다음 비대칭을 만든다*. A second spelling of *nothing scored
+/// this* is how the two layers came to disagree in the first place, so both frames now compose the
+/// same clause rather than each writing its own.
+///
+/// ⚠⚠ **THREE ARMS, BECAUSE A ROW THAT DOES NOT SAY MUST NOT READ AS ONE THAT SCORED.** A run
+/// restored from a log written before this key existed knows nothing about its kind's checker, and
+/// this workspace's rule 6 is that an unclassified thing is a RED and not a pass — so
+/// [`Unrecorded`](Self::Unrecorded) hedges the verdict too, in its own words. The arm a reader must
+/// never meet by default is [`Authored`](Self::Authored), which is the only one that suppresses a
+/// hedge and the only one nothing defaults to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scoring {
+    /// This run's kind names a program to put its milestone claims to.
+    Authored,
+    /// It names none, so no verdict about this run's milestone was ever going to be scored.
+    Unauthored,
+    /// **NOTHING IN THIS RECORD SAYS WHICH** — the default, and the arm a restored row takes.
+    ///
+    /// ⚠ It is not a flavour of [`Unauthored`](Self::Unauthored): that one is a decision an author
+    /// took and this one is a fact nobody wrote down. Both hedge; only one of them names a repair
+    /// (go and author a checker for that kind), and telling a reader to do that on a row that never
+    /// carried the answer would send them after a checker that may well exist.
+    #[default]
+    Unrecorded,
+}
+
+impl Scoring {
+    /// Every arm, so a walk over them cannot miss one — [`Checked`](crate::outer::Checked)'s `ALL`
+    /// for its reason exactly.
+    pub const ALL: [Self; 3] = [Self::Authored, Self::Unauthored, Self::Unrecorded];
+
+    /// ⛔⛔⛔⛔⛔ **THE ONE CLAUSE BOTH LAYERS SAY** — register item 968(3).
+    ///
+    /// The step frames it as *what nobody checked about a claim* and the run's row frames it as
+    /// *what nobody scored about the verdict in this sentence*. The FRAMES differ because the two
+    /// layers are answering different questions; the clause inside them does not, and this is where
+    /// it is written.
+    #[must_use]
+    pub const fn said(self) -> &'static str {
+        match self {
+            Self::Authored => "a `milestone_check` is authored for a run of this kind",
+            Self::Unauthored => "no `milestone_check` is authored for a run of this kind",
+            Self::Unrecorded => {
+                "nothing in this record says whether a `milestone_check` is authored for a run of \
+                 this kind"
+            }
+        }
+    }
+
+    /// **WHETHER A VERDICT OF THIS RUN'S CAN HAVE BEEN SCORED AT ALL.**
+    ///
+    /// ⚠⚠ Only [`Authored`](Self::Authored) answers `true`, and that is the whole discipline: this
+    /// is the one arm that SUPPRESSES a hedge, so every way of not knowing has to fall on the other
+    /// side of it. A `_` arm here would put the next variant on the silent side by default, which
+    /// is the escape hatch this workspace's rule 6 refuses.
+    #[must_use]
+    pub const fn could_be_scored(self) -> bool {
+        match self {
+            Self::Authored => true,
+            Self::Unauthored | Self::Unrecorded => false,
+        }
+    }
+
+    /// **THE WORD THIS TRAVELS AS**, or [`None`] for the arm that is the absence of a word.
+    ///
+    /// ⚠⚠ [`Unrecorded`](Self::Unrecorded) publishes NOTHING rather than a word, which is what
+    /// makes the round trip total: a record written before item 968 carries no key, and
+    /// [`of_wire`](Self::of_wire) reads that absence back as the same arm. A word for it would
+    /// claim a daemon had said *I do not know* where in fact no daemon said anything.
+    #[must_use]
+    pub const fn wire_str(self) -> Option<&'static str> {
+        match self {
+            Self::Authored => Some("authored"),
+            Self::Unauthored => Some("unauthored"),
+            Self::Unrecorded => None,
+        }
+    }
+
+    /// What a record's word means, with absence and any unknown word alike reading as
+    /// [`Unrecorded`](Self::Unrecorded).
+    ///
+    /// ⚠ An UNKNOWN word is *nothing here classified it* and never *it was scored*: a newer daemon
+    /// that publishes a fourth word must not have its rows read as though the check existed.
+    #[must_use]
+    pub fn of_wire(word: Option<&str>) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|arm| arm.wire_str().is_some() && arm.wire_str() == word)
+            .unwrap_or(Self::Unrecorded)
+    }
+}
+
 /// **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, and the answer to
 /// [`Plugin::checks`].
 ///
@@ -743,6 +848,21 @@ pub struct Checks {
     /// ⚠ `0` for a run whose checks all agreed, and that is the reading the item was registered
     /// for: *the ceiling was never approached*, which is a measurement and not an absence.
     pub refused_in_a_row: u32,
+    /// ⛔⛔⛔⛔⛔ **AND WHETHER A CHECKER WAS EVER AUTHORED AT ALL** — register item 968, and the
+    /// answer [`asked`](Self::asked)'s own doc claims and cannot give.
+    ///
+    /// # ⛔⛔⛔⛔⛔ `asked: 0` is TWO facts, and the doc above says it is one
+    ///
+    /// That field's doc reads *"`asked: 0` is a run whose document **authored no checker**"*. It is
+    /// not: a kind that authors one and ended before it claimed any milestone publishes the same
+    /// `0`. So the denominator cannot separate *nobody was ever going to look* from *nothing came
+    /// up to look at*, and item 968's whole subject is a sentence that needs exactly that split —
+    /// a row asserting a verdict has to know whether anything was ever going to score it.
+    ///
+    /// ⚠⚠ **IT IS THE KIND'S PROPERTY AND NOT A TALLY**, which is why it is a word beside the
+    /// numbers rather than another count, and why [`is_empty`](Self::is_empty) does not read it: a
+    /// run that put no claim to anybody is empty whichever answer this carries.
+    pub scoring: Scoring,
 }
 
 impl Checks {
@@ -757,6 +877,13 @@ impl Checks {
         refused: 0,
         refused_in_a_row: 0,
         unasked: 0,
+        // ⚠⚠⚠ **[`Scoring::Unrecorded`] AND NOT [`Scoring::Unauthored`]**, though three of the four
+        // bundled plugins really do author no checker. This constant has a SECOND caller that the
+        // name does not suggest: a run restored from a log with no checks record hands back exactly
+        // this value (`runs.rs` says so — *"which is honest and is also the whole loss"*), and for
+        // that run *no checker was authored* would be a claim nobody made. The arm that hedges
+        // without naming a repair is the only one both callers can afford.
+        scoring: Scoring::Unrecorded,
     };
 
     /// Whether EVERY check this run asked said nothing — the reading that says *this run's endings

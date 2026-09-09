@@ -3609,6 +3609,22 @@ pub struct PersistedChecks {
     /// [`sprag_plugin::Checks::refused_in_a_row`] — the run of consecutive refusals still standing.
     #[serde(default)]
     pub refused_in_a_row: u32,
+    /// ⛔⛔⛔⛔⛔ [`sprag_plugin::Checks::scoring`]'s WORD — register item 968, and the one column
+    /// here that carries a decision rather than a count.
+    ///
+    /// # ⛔⛔⛔ It has to cross a restart or the row it exists for is the row that loses it
+    ///
+    /// The sentence this feeds is *what happens next*, printed for a run that has ENDED — which is
+    /// the run most likely to be read out of a log after the daemon that drove it is gone. A column
+    /// that stopped at the daemon would leave every restored row hedging *nothing in this record
+    /// says*, which is honest and is also the whole loss: the answer WAS known while the run was
+    /// alive.
+    ///
+    /// ⚠⚠ [`None`] is *this record predates item 968* and reads back as
+    /// [`sprag_plugin::Scoring::Unrecorded`], which hedges. It is never *no checker was authored*:
+    /// that is a claim an author made and this is a claim nobody wrote down.
+    #[serde(default)]
+    pub milestone_scoring: Option<String>,
 }
 
 impl From<sprag_plugin::Checks> for PersistedChecks {
@@ -3620,6 +3636,10 @@ impl From<sprag_plugin::Checks> for PersistedChecks {
             unasked: live.unasked,
             refused: live.refused,
             refused_in_a_row: live.refused_in_a_row,
+            // ⚠ THE TYPE'S OWN WORD, never a spelling of the arms here: `Scoring::wire_str` is the
+            // one authority on them, and a fourth arm must arrive as a word this column carries
+            // rather than as a match this file forgot to widen.
+            milestone_scoring: live.scoring.wire_str().map(str::to_owned),
         }
     }
 }
@@ -3633,6 +3653,7 @@ impl From<PersistedChecks> for sprag_plugin::Checks {
             unasked: stored.unasked,
             refused: stored.refused,
             refused_in_a_row: stored.refused_in_a_row,
+            scoring: sprag_plugin::Scoring::of_wire(stored.milestone_scoring.as_deref()),
         }
     }
 }
@@ -12032,6 +12053,12 @@ mod tests {
                 unasked: 1,
                 refused: 4,
                 refused_in_a_row: 2,
+                // ⚠⚠ AND NOT THE ABSENT ARM — register item 968, on this fixture's own stated
+                // rule. `None` is what a column dropped in the round trip produces, so a fixture
+                // carrying it would pass on exactly the loss this gate is here to catch.
+                milestone_scoring: sprag_plugin::Scoring::Authored
+                    .wire_str()
+                    .map(str::to_owned),
             }),
             cost: None,
             unit: None,
@@ -12477,6 +12504,10 @@ mod tests {
                     unasked: 1,
                     refused: 0,
                     refused_in_a_row: 0,
+                    // ⚠ ABSENT ON BOTH SIDES ON PURPOSE: what this pair contrasts is a tally
+                    // holding only unputtable claims against an empty one, and a column that is
+                    // not a count has no business separating them.
+                    milestone_scoring: None,
                 })
                 .sampled(Tally::Checks),
                 row(PersistedChecks {
@@ -12486,6 +12517,7 @@ mod tests {
                     unasked: 0,
                     refused: 0,
                     refused_in_a_row: 0,
+                    milestone_scoring: None,
                 })
                 .sampled(Tally::Checks),
             ),
