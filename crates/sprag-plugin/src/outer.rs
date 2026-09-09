@@ -3502,6 +3502,57 @@ pub enum Counted {
     Never,
 }
 
+/// ⛔⛔⛔⛔⛔ **WHETHER THIS RUN CAN ANSWER FOR THE MODE ITS AGENT — AND EVERY REPLACEMENT OF IT —
+/// IS BORN IN** — register item 995.
+///
+/// # ⛔⛔⛔⛔⛔ A run that cannot answer this stands its whole night in front of a person
+///
+/// The mode decides whether the agent handles its own prompts or puts each one up as a dialog. A
+/// loop that is being watched can have a dialog answered; a loop left overnight cannot, and item
+/// 995 opened on a run that ended at 522 iterations because the session the loop made FOR ITSELF
+/// was born `manual` and everything after that waited for somebody.
+///
+/// ⚠⚠⚠ **THE QUESTION IS ABOUT THE ARGV AND NOT ABOUT THE SCREEN, and that is the finding rather
+/// than a convenience.** The footer (`⏵⏵ auto mode on`) reports a RUNTIME state that a person
+/// cycles with `S-Tab`, and [`crate::access::PaneLifecycle::respawn`] re-runs the pane's ARGV —
+/// argv is the one thing a replacement inherits, and a keystroke is not in it. So the footer
+/// answers *this session*, while this answers *this session and every replacement of it*, which is
+/// the only question a loop that replaces its own session can act on. See
+/// [`crate::spend::CLAUDE_MODE_FLAG`].
+///
+/// ⚠⚠ **THREE ARMS AND NOT AN [`Option`], for [`Counted`]'s reason one type up**: a run whose
+/// process table cannot be read has not learned that the mode is unnamed, it has learned nothing —
+/// and reporting the two as one word is how a loop would tell a person to go and fix a launcher
+/// that is already correct.
+/// **WHAT ONE COMMAND LINE SAYS ABOUT THE MODE ITS SESSIONS ARE BORN IN** — [`ModeNamed`]'s
+/// decision, taken apart from the process table it is normally read through.
+///
+/// ⚠⚠ **A FREE FUNCTION SO A GATE CAN ASK THE PRODUCT'S OWN DECISION**, which is register item
+/// 762's shape: reaching this through [`Session::mode_named`] needs a pane with a live foreground
+/// job, so a gate would either build one or re-implement the scan beside the product and let the
+/// two drift. Here the two arms that a launcher can produce are a pure function of argv, and
+/// `a_named_mode_is_read_off_the_argv_a_replacement_inherits` calls exactly this.
+///
+/// ⚠ [`ModeNamed::Unread`] is deliberately NOT reachable from here: it means *the argv could not be
+/// obtained*, which is a fact about the process table and not about any command line. Its one
+/// writer is the method above.
+pub(crate) fn mode_in(argv: &[String]) -> ModeNamed {
+    crate::spend::identity_in(argv, crate::spend::CLAUDE_MODE_FLAG)
+        .map_or(ModeNamed::Nowhere, ModeNamed::In)
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ModeNamed {
+    /// The launcher put the mode on the command line, so every replacement is born in it.
+    In(String),
+    /// The argv was read and names no mode: what the agent is born in comes from wherever it
+    /// remembers, and it will come from there again at every replacement.
+    Nowhere,
+    /// The argv could not be read at all — no process table, or no foreground job in that pane.
+    /// **Not the same as [`Nowhere`](Self::Nowhere)**: nothing was learned either way.
+    Unread,
+}
+
 impl Counted {
     /// What crosses the datamodel — the number, or the word.
     pub(crate) fn as_json(self) -> serde_json::Value {
@@ -4973,6 +5024,25 @@ impl Session {
                 });
         }
         self.identity.as_deref()
+    }
+
+    /// **WHAT MODE THIS SESSION'S AGENT — AND EVERY REPLACEMENT OF IT — IS BORN IN**, off the same
+    /// argv [`identify`](Self::identify) reads one flag up. See [`ModeNamed`].
+    ///
+    /// ⚠⚠ **NOT CACHED, WHERE THE IDENTITY ABOVE IS**, and the two differ for a reason rather than
+    /// by oversight. An identity is learned once and cannot change under a running session, so a
+    /// second read could only cost. This answer is about the argv of WHICHEVER pane the run is
+    /// driving now, and the run replaces that pane — so a cached answer would report the launcher's
+    /// argv about a session `respawn` had since re-exec'd, which is the exact substitution item 995
+    /// is about. Asked fresh, a replacement that lost the flag is visible the moment it happens.
+    fn mode_named(&self, panes: &dyn PaneAccess) -> ModeNamed {
+        let Some(leader) = panes
+            .foreground_job()
+            .and_then(|jobs| jobs.pane_foreground_leader(self.pane))
+        else {
+            return ModeNamed::Unread;
+        };
+        mode_in(&leader.argv)
     }
 
     /// Where this session's agent SAID it is writing — the newest statement if it is making one,
@@ -6704,6 +6774,18 @@ pub struct OuterLoop {
     /// per-PANE. A replacement clears it for a different reason — a question the old session asked is
     /// not the new one's — and so does every prompt.
     noticed: Option<Noticed>,
+    /// ⛔⛔⛔⛔⛔ **WHETHER THE PANE THAT RAISED THE LAST DIALOG COULD ANSWER FOR ITS MODE** — see
+    /// [`ModeNamed`] and register item 995.
+    ///
+    /// ⚠⚠ Written at ONE site, beside the notice above and in the same breath, because the two are
+    /// halves of one sentence a person reads: *a question is standing here, and this is whether it
+    /// had to be*. Read back by [`AiLoop::account_of`](crate::AiLoop), which is where that sentence
+    /// is built.
+    ///
+    /// ⚠ [`Unread`](ModeNamed::Unread) until a dialog is seen, which is honest rather than a
+    /// placeholder: a run nothing has stopped has not been asked the question, and the arm that
+    /// means *nothing was learned* is exactly that state.
+    mode: ModeNamed,
     /// **WHAT THE AGENT WROTE WHEN IT WAS ASKED TO ACCOUNT FOR THE RUN** — `closing`'s turn, read
     /// off the pane and published as [`Plugin::captured`](crate::plugin::Plugin::captured).
     ///
@@ -7306,6 +7388,8 @@ impl OuterLoop {
         Ok(Self {
             done: Completion::new(spec.done_when),
             noticed: None,
+            // Nothing has stopped this run, so nothing has asked the question — see the field.
+            mode: ModeNamed::Unread,
             // Nobody has said anything to a run that has not started — see the field.
             holding: None,
             // ⚠ A run being CONSTRUCTED is not one being put back: `resume_at` is the only writer,
@@ -8558,6 +8642,12 @@ impl OuterLoop {
     #[must_use]
     pub const fn noticed(&self) -> Option<&Noticed> {
         self.noticed.as_ref()
+    }
+
+    /// **WHETHER THE PANE THAT RAISED THE LAST DIALOG COULD ANSWER FOR ITS MODE** — see
+    /// [`ModeNamed`] and the field of the same name.
+    pub const fn mode_named(&self) -> &ModeNamed {
+        &self.mode
     }
 
     /// **TAKE THE APPROVAL THIS RUN JUST GAVE**, leaving every other notice where it is.
@@ -11235,6 +11325,18 @@ impl OuterLoop {
                 // The peer is asking and NOTHING this run holds answers it — the barrier's own reason
                 // rides along, so a caller learns whether to write a clause or fix the one they wrote.
                 Reached::Asking(unanswered) => {
+                    // ⛔⛔⛔⛔⛔ AND WHETHER THIS DIALOG HAD TO HAPPEN AT ALL — register item 995,
+                    // read HERE because this is the one moment both facts are true at once: a
+                    // question is standing on the pane, and the pane that raised it is still the
+                    // one to ask about. A reading taken later would be about whichever session the
+                    // run had moved on to.
+                    //
+                    // ⚠⚠ It decides nothing — the event below is unchanged, and a named mode does
+                    // not make a dialog answerable. What it buys is the SENTENCE:
+                    // `AiLoop::account_of` tells the person who finds this run stopped whether they
+                    // are looking at a dialog no rule covered (item 994's surface) or at a launcher
+                    // that never named a mode, which is a different repair in a different file.
+                    self.mode = self.driving.mode_named(panes);
                     self.noticed = Some(Noticed::Asking(unanswered));
                     Some(AiLoopEvent::TurnBlocked)
                 }

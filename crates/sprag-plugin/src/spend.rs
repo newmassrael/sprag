@@ -65,6 +65,33 @@ use serde_json::Value;
 /// `the_flag_that_names_a_session_is_the_flag_that_finds_it`. Change one and that goes red.
 pub const CLAUDE_IDENTITY_FLAG: &str = "--session-id";
 
+/// The argument `claude` takes its PERMISSION MODE on — what decides whether the agent answers its
+/// own prompts or stands every one of them in front of a person.
+///
+/// # ⛔⛔⛔⛔⛔ Why a flag, and not the mode showing on the screen — register item 995
+///
+/// The mode is also a RUNTIME state: a person cycles it with `S-Tab` and the footer says
+/// `⏵⏵ auto mode on`. Reading that footer answers *what is this session doing now*, and the loop's
+/// question is a different one, because the loop REPLACES its session. `PaneLifecycle::respawn`
+/// re-runs the argv the pane is currently running — argv is the ONE thing a replacement inherits —
+/// and a keystroke is not in it. So a mode cycled by hand dies with the process that held it, and
+/// every replacement is born from whatever the agent remembers instead.
+///
+/// ⇒ **The flag is the only spelling of this fact that outlives a replacement.** A run whose argv
+/// names the mode is one whose replacements are all born in it; a run whose argv does not is one
+/// nobody can answer for, however green the footer looked when a watcher last looked at it.
+///
+/// ⚠⚠ Measured 2026-09-09 on run 271, which is what opened item 995: two panes made the same way
+/// minutes apart were born in DIFFERENT modes, and the replacement the loop made for itself was
+/// born `manual` and stood every dialog in front of a person until the run ended at 522
+/// iterations. The watcher's own check (`(auto|manual) mode on`, then `S-Tab` to cycle) is a
+/// runtime repair and so could not survive the first replacement it was applied before.
+///
+/// ⚠ Read by [`identity_in`] exactly as the identity flag above is, because the two are the same
+/// shape of fact — a value the launcher put on the command line and the loop takes back off the
+/// running process — and one reader is what stops them drifting.
+pub const CLAUDE_MODE_FLAG: &str = "--permission-mode";
+
 /// Where `claude` files what it records about one session, given that session's identity.
 ///
 /// # ⚠⚠ Why the directory is not derived, when `claude` derives one

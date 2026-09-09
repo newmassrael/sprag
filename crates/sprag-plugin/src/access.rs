@@ -2221,7 +2221,19 @@ pub trait PaneLifecycle {
     ///   arrives, so a person watching sees the session they were reading appear somewhere else;
     /// * the OCCUPANT's own facts: the agent session id, what it had said, where it was writing.
     ///   Those are dropped deliberately and by their own gates — a loop replaces its inner session
-    ///   precisely to throw that away.
+    ///   precisely to throw that away;
+    /// * ⛔⛔⛔⛔⛔ **anything a person did INSIDE the old occupant, the PERMISSION MODE above all**
+    ///   — register item 995. This one is not a decision, it is arithmetic: the mode is state in a
+    ///   process, and re-running argv makes a new process. So a watcher who cycled `S-Tab` until
+    ///   the footer said `⏵⏵ auto mode on` repaired exactly one session, and the first replacement
+    ///   after that is born from whatever the agent remembers — which was measured, twice in
+    ///   minutes, landing on different answers.
+    ///
+    ///   ⇒ **the only spelling of the mode that survives this call is one that is IN the argv**,
+    ///   because argv is what the sentence at the top of this section says gets re-run. A launcher
+    ///   that names it (`crate::spend::CLAUDE_MODE_FLAG`) has answered for every replacement the
+    ///   run will ever make; one that does not has answered for none of them, and
+    ///   `crate::outer::ModeNamed` is how a run reports which of those it is.
     ///
     /// # Errors
     ///

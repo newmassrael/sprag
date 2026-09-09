@@ -782,7 +782,7 @@ impl AiLoop {
     /// took the pane. So this is exactly *"the account's turn did not finish, and here is who has
     /// the pane"* — the two facts nothing downstream can recover once the run is over.
     fn left_behind(&self) -> Option<String> {
-        Self::account_of(self.inner.noticed())
+        Self::account_of(self.inner.noticed(), self.inner.mode_named())
     }
 
     /// [`left_behind`](Self::left_behind)'s words, as a function of the notice ALONE.
@@ -793,11 +793,23 @@ impl AiLoop {
     /// first trades production encapsulation for a gate and the second measures the clock and calls
     /// it the report. Nothing here reads `self`, which is the point: these sentences are a pure
     /// function of what was noticed, and now they are written as one.
-    fn account_of(noticed: Option<&Noticed>) -> Option<String> {
+    fn account_of(noticed: Option<&Noticed>, mode: &crate::outer::ModeNamed) -> Option<String> {
         match noticed {
+            // ⛔⛔⛔⛔⛔ AND WHETHER THE QUESTION HAD TO BE ASKED AT ALL — register item 995, and
+            // the one arm that takes a second fact. A person who finds a loop stopped at a dialog
+            // has two very different repairs in front of them, and the sentence used to name
+            // neither: write a rule that covers this question (item 994's surface), or fix a
+            // launcher that never named a mode, in which case EVERY dialog this run met was
+            // avoidable and so is every one the next run will meet.
+            //
+            // ⚠⚠ The mode is not a cause and this does not claim it is: an agent in `auto` still
+            // raises questions its mode does not cover, which is why the clause is an ADDITION to
+            // the sentence rather than a replacement for it. What it removes is the reader having
+            // to go and look at a pane that has since been closed to find out.
             Some(Noticed::Asking(unanswered)) => Some(format!(
                 " — no account: the agent stopped to ask ({unanswered:?}) and the question is still \
-                 on the pane, unanswered by this run"
+                 on the pane, unanswered by this run{}",
+                what_a_mode_nobody_named_costs(mode),
             )),
             Some(Noticed::Interrupted(who)) => Some(format!(
                 " — no account: somebody took the pane ({who:?}) before the agent answered"
@@ -1358,6 +1370,43 @@ pub fn the_axis_this_product_retracted() -> [String; 3] {
 /// TYPE — `a_refused_questions_sentence_names_the_axis_and_prescribes_no_edit` walks
 /// [`crate::outer::Retyped::EVERY_SHAPE`] and a third variant cannot be added in silence, because
 /// this match is exhaustive and [`crate::outer::Retyped::wire_str`] is too.
+/// ⛔⛔⛔⛔⛔ **WHAT A MODE NOBODY NAMED COSTS THE PERSON WHO FINDS THIS RUN** — register item 995,
+/// as a clause the dialog sentence one function up appends.
+///
+/// # ⛔⛔⛔⛔⛔ Three answers, and the empty one is the point
+///
+/// [`In`](crate::outer::ModeNamed::In) says nothing, deliberately and not for brevity: a run whose
+/// launcher named the mode has nothing wrong with it that this clause could report, and a sentence
+/// that warned anyway would be a warning nobody can act on — which is the shape a reader learns to
+/// skip, taking the two that matter with it.
+///
+/// [`Nowhere`](crate::outer::ModeNamed::Nowhere) is the finding: the mode came from wherever the
+/// agent remembers, and — because [`crate::access::PaneLifecycle::respawn`] re-runs the pane's argv
+/// and a keystroke is not in argv — it will come from there again at every replacement this run
+/// makes. So the repair is in the LAUNCHER and it fixes every future run, which is a different
+/// place from the rule that would have covered this one dialog.
+///
+/// [`Unread`](crate::outer::ModeNamed::Unread) says that it could not be checked, rather than
+/// silently reading as the good answer. That is item 995's own rule 6: a run that learned nothing
+/// must not report the same word as a run that learned the launcher was right.
+///
+/// ⚠⚠ **A FREE FUNCTION FOR ITEM 762's REASON**, and the population is the TYPE: this match is
+/// exhaustive over [`crate::outer::ModeNamed`], so a fourth arm cannot be added in silence, and a
+/// gate can ask for these words directly instead of driving a whole run to reach a `format!`.
+fn what_a_mode_nobody_named_costs(mode: &crate::outer::ModeNamed) -> String {
+    match mode {
+        crate::outer::ModeNamed::In(_) => String::new(),
+        crate::outer::ModeNamed::Nowhere => " — and its launcher named no permission mode, so \
+             this session was born in whatever the agent remembered and every replacement of it \
+             will be too: the dialog is a symptom of the launch, not of this question"
+            .to_owned(),
+        crate::outer::ModeNamed::Unread => " — and whether its launcher named a permission mode \
+             could not be read (no foreground job in that pane), so this run cannot say whether \
+             the dialog was avoidable"
+            .to_owned(),
+    }
+}
+
 fn what_a_refused_question_says(
     retyped: crate::outer::Retyped,
     written: u64,
@@ -16735,6 +16784,179 @@ mod tests {
     /// that produced the same words for both, would satisfy a `contains` for either half; what a
     /// reader needs is that the two situations do not read alike. The `contains` arms then say
     /// which is which, so a build that merely made them differ cannot pass by swapping them.
+    /// ⛔⛔⛔⛔⛔ **A DIALOG SAYS WHETHER ITS LAUNCHER NAMED A MODE, AND A NAMED ONE SAYS NOTHING**
+    /// — register item 995, whose done-when ⑵ is *if it cannot be assured, the run SAYS SO*.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the run could not say, and what it cost
+    ///
+    /// Run 271 ended at 522 iterations because the session the loop made FOR ITSELF was born
+    /// `manual`: every dialog stood in front of a person, and the run stopped at the one whose own
+    /// screen said *auto mode handles these prompts for you*. The run's account named the question
+    /// and said nothing about the launch, so a reader had two repairs in front of them and no way
+    /// to tell which — write a rule that covers this dialog (item 994's surface), or name a mode
+    /// in the launcher, which removes this dialog and every future one.
+    ///
+    /// ⚠⚠⚠ **THE ANSWER IS READ OFF ARGV, WHICH IS WHY IT OUTLIVES A REPLACEMENT.** The screen's
+    /// `⏵⏵ auto mode on` is a RUNTIME state a person cycles with `S-Tab`;
+    /// [`crate::access::PaneLifecycle::respawn`] re-runs the pane's ARGV, and a keystroke is not in
+    /// argv. So a watcher's hand-repair dies with the first replacement, and only the flag answers
+    /// for the replacements a loop has not made yet. That is the whole reason this asks the
+    /// launcher rather than the footer, and `a_named_mode_is_read_off_the_argv_a_replacement_
+    /// inherits` is what holds the reading itself.
+    ///
+    /// ⚠⚠ **THE CONTROL ARM IS THE NAMED ONE, and without it *always warn* is green.** Item 995's
+    /// own mutation asks for exactly that pair: a replacement born `manual` must be reported, and
+    /// one born in a named mode must draw no comment at all.
+    ///
+    /// ⚠ **AND `Unread` IS ITS OWN ARM** rather than folded into either, which is this workspace's
+    /// rule 6: a run whose process table could not be read has learned nothing, and answering it
+    /// with the launcher-is-fine silence would hide the one case where the instrument itself is
+    /// blind.
+    /// ⛔⛔⛔⛔⛔ **A NAMED MODE IS READ OFF THE ARGV A REPLACEMENT INHERITS** — register item 995's
+    /// other half, and the reason the answer is not taken from the screen.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why argv is the only place this fact survives
+    ///
+    /// [`crate::access::PaneLifecycle::respawn`]'s own contract is *the replacement re-runs the
+    /// argv the pane is currently running*, and its doc lists what else travels (the seat's name,
+    /// provenance, grant) and what does not (position, the occupant's session id and output). A
+    /// permission mode a person cycled with `S-Tab` is in NEITHER list, because it is not the
+    /// pane's to carry: it is state inside the process, and `respawn` makes a new one.
+    ///
+    /// ⇒ so a watcher's repair — item 995's measured one, `(auto|manual) mode on` then `S-Tab` —
+    /// cannot outlive the first replacement it precedes, and the flag is the only spelling of the
+    /// mode that every future session of this run inherits. This gate holds the reading; the one
+    /// below holds what the run SAYS about it.
+    ///
+    /// ⚠⚠ **BOTH SPELLINGS, because a launcher may write either** — `--permission-mode auto` and
+    /// `--permission-mode=auto` are one fact, and a reader that took only the pair form would call
+    /// a correctly-launched run unnamed and send somebody to fix a file that is right.
+    ///
+    /// ⚠ Asked of [`crate::outer::mode_in`] — the PRODUCT's own decision over a command line, not
+    /// a scan re-spelled here. Reaching it through `Session::mode_named` would need a pane with a
+    /// live foreground job, and a gate that rebuilt the rule beside the product is two authorities
+    /// on one fact.
+    ///
+    /// ⚠⚠ **UNMEASURED, STATED** — and the boundary is exactly where the process table starts.
+    /// What no gate here drives is `Session::mode_named` finding the foreground leader, or
+    /// `OuterLoop::barrier_says` calling it when a dialog appears: both need a live child in a real
+    /// pane. So a build that stopped ASKING would leave every assertion in this file green. What
+    /// makes that visible rather than silent is that the two halves are one line each and sit at
+    /// named sites this doc points at, which is the honest report — not a claim that they are
+    /// covered.
+    #[test]
+    fn a_named_mode_is_read_off_the_argv_a_replacement_inherits() {
+        let flag = crate::spend::CLAUDE_MODE_FLAG;
+        let read = |argv: &[&str]| {
+            crate::outer::mode_in(&argv.iter().map(|it| (*it).to_owned()).collect::<Vec<_>>())
+        };
+
+        assert_eq!(
+            read(&["claude", flag, "acceptEdits"]),
+            crate::outer::ModeNamed::In("acceptEdits".to_owned()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 995: the pair spelling is what a launcher writes, and it is \
+             what `respawn` re-runs. A build that could not read it reports every run as unnamed.",
+        );
+        assert_eq!(
+            read(&["claude", &format!("{flag}=plan")]),
+            crate::outer::ModeNamed::In("plan".to_owned()),
+            "⛔⛔⛔⛔ AND THE JOINED SPELLING IS THE SAME FACT. Reading only the pair form would \
+             call a correctly-launched run unnamed and send somebody to repair a file that is \
+             already right — the opposite error, and a more expensive one because it is confident.",
+        );
+        assert_eq!(
+            read(&["claude"]),
+            crate::outer::ModeNamed::Nowhere,
+            "⛔⛔⛔⛔⛔ AND THE CONTROL IS THE ARGV ITEM 995 ACTUALLY MEASURED: the watcher launches \
+             `split-window … -- claude`, which names no mode at all. This is the reading that has \
+             to come back `Nowhere`, or the finding the whole item rests on cannot be detected.",
+        );
+        assert_eq!(
+            read(&["claude", flag]),
+            crate::outer::ModeNamed::Nowhere,
+            "⚠⚠ AND A FLAG WITH NOTHING AFTER IT IS NOT A NAMED MODE. A truncated command line \
+             would otherwise read as an assurance, which is the one direction this must never \
+             fail in.",
+        );
+        assert_eq!(
+            read(&["claude", "--session-id", "abc"]),
+            crate::outer::ModeNamed::Nowhere,
+            "⚠⚠⚠ AND THE SIBLING FLAG ON THE SAME ARGV MUST NOT BE MISTAKEN FOR IT. Both are read \
+             by `identity_in` off one command line — see `Session::identify`, which reads the other \
+             one — so a scan that matched loosely would report a session id as this run's \
+             permission mode.",
+        );
+    }
+
+    #[test]
+    fn a_dialog_says_whether_the_launcher_named_a_mode_and_a_named_one_says_nothing() {
+        /// The sentence this build leaves behind for a run stopped at a dialog, under one answer
+        /// about its launcher.
+        ///
+        /// ⚠ Asked of [`AiLoop::account_of`] rather than driven, for the sibling gate's reason
+        /// (register item 762): these words are a pure function of two facts, and a fixture that
+        /// could set `noticed` would be product surface built to reach a `format!`.
+        fn left_after(mode: &crate::outer::ModeNamed) -> String {
+            AiLoop::account_of(
+                Some(&Noticed::Asking(crate::consent::Unanswered::unreadable())),
+                mode,
+            )
+            .expect("a run stopped at a dialog leaves an account behind")
+        }
+
+        let named = left_after(&crate::outer::ModeNamed::In("acceptEdits".to_owned()));
+        let nowhere = left_after(&crate::outer::ModeNamed::Nowhere);
+        let unread = left_after(&crate::outer::ModeNamed::Unread);
+
+        assert_ne!(
+            named, nowhere,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 995: a run whose launcher named no mode must not leave the \
+             SAME sentence as one whose launcher did. The run this item opened on ended at 522 \
+             iterations with an account that named the question and nothing about the launch, so \
+             the reader could not tell a dialog that needed a rule from a session that should \
+             never have been raising dialogs at all.\n  named   {named}\n  nowhere {nowhere}",
+        );
+        assert!(
+            nowhere.contains("named no permission mode"),
+            "⛔⛔⛔⛔ AND IT MUST NAME THE LAUNCHER, because that is where the repair is. A \
+             sentence that said only *this run cannot answer for its mode* sends its reader to the \
+             pane, which is the one place the answer is not — the pane's footer reports a runtime \
+             state that the next replacement discards.\n  got {nowhere}",
+        );
+        assert!(
+            nowhere.contains("every replacement"),
+            "⛔⛔⛔⛔⛔ AND IT MUST SAY THE FACT REACHES THE REPLACEMENTS TOO, which is the whole \
+             difference between item 995 and a watcher noticing one pane. `respawn` re-runs argv, \
+             so an unnamed mode is not a property of this session — it is a property of every \
+             session this run will make. A reader told only about this one would cycle `S-Tab` and \
+             watch it come back.\n  got {nowhere}",
+        );
+        assert_eq!(
+            named,
+            AiLoop::account_of(
+                Some(&Noticed::Asking(crate::consent::Unanswered::unreadable(),)),
+                &crate::outer::ModeNamed::In("plan".to_owned()),
+            )
+            .expect("a run stopped at a dialog leaves an account behind"),
+            "⚠⚠⚠ AND THE CONTROL: a launcher that named a mode draws NO comment, whichever mode it \
+             named. Without this arm a build that appended a warning unconditionally passes every \
+             assertion above, and the sentence becomes noise a reader learns to skip — taking the \
+             two that matter with it.\n  got {named}",
+        );
+        assert_ne!(
+            unread, named,
+            "⚠⚠ AND A RUN THAT COULD NOT LOOK MUST NOT READ AS ONE THAT LOOKED AND WAS SATISFIED. \
+             `Unread` is no foreground job in that pane, which is this workspace's rule 6: the \
+             unclassified answer is not a pass.\n  unread {unread}\n  named  {named}",
+        );
+        assert_ne!(
+            unread, nowhere,
+            "⚠⚠ AND IT MUST NOT READ AS THE FINDING EITHER — a run that sent somebody to fix a \
+             launcher it never managed to read would be a wrong instruction, not a cautious \
+             one.\n  unread  {unread}\n  nowhere {nowhere}",
+        );
+    }
+
     #[test]
     fn the_account_of_an_outage_says_which_of_the_two_it_was() {
         /// The sentence this build leaves behind for an outage that arrived at one of the doors.
@@ -16744,11 +16966,20 @@ mod tests {
         /// clock and call it the report. That the notice's `resumes` is READ OFF THE DOCUMENT
         /// rather than guessed by the driver is a different claim, gated where the retry is.
         fn left_after(resumes: bool) -> String {
-            AiLoop::account_of(Some(&Noticed::ServiceDown {
-                retried: 12,
-                waited: Duration::from_secs(600),
-                resumes,
-            }))
+            // ⚠ The mode is `Unread` because THIS arm does not read it — item 995's clause hangs
+            // off the dialog arm alone, on the argument that a mode nobody named explains a
+            // question standing on a pane and explains nothing whatever about a service being
+            // down. `a_dialog_says_whether_the_launcher_named_a_mode_and_a_named_one_says_nothing`
+            // is what holds that split, so this call passes the arm that means *nothing learned*
+            // rather than a value that would read as a claim.
+            AiLoop::account_of(
+                Some(&Noticed::ServiceDown {
+                    retried: 12,
+                    waited: Duration::from_secs(600),
+                    resumes,
+                }),
+                &crate::outer::ModeNamed::Unread,
+            )
             .expect("an outage the run walked away from leaves an account behind")
         }
 
