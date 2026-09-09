@@ -6898,6 +6898,233 @@ fn the_surface_a_run_uses_cuts_a_copy_and_the_agents_tree_does_not_move() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+/// ⛔⛔⛔⛔⛔ **A CHECKER THAT ANSWERS WITHOUT A VERDICT MOVES BOTH OF THE RUN'S SILENCE COUNTS**
+/// — register item 997, and the arm this workspace could not build until it looked for it.
+///
+/// # ⛔⛔⛔⛔⛔ Every fixture asserted the checker ANSWERED, so nothing drove the other road
+///
+/// `Checks::silent` has been a field since register item 601 and `Checks::silent_by` since item
+/// 996, and both are raised in one arm of `OuterLoop` — two lines apart, which is the structural
+/// argument that keeps them equal. **Nothing drove that arm.** Measured 2026-09-10 by deleting the
+/// `silent_by.record(…)` call outright and running `-p sprag-plugin -p sprag-host` whole: **18
+/// suites, all green.** The one gate in the workspace that reads `checks.silent` is this file's
+/// neighbour below, and it asserts `== 0` — the premise that a checker answered.
+///
+/// ⇒ so this is the same run as that one with ONE thing changed: its checker prints a sentence
+/// with no verdict in it. Everything else — the daemon, the pane, the peer that reaches
+/// `MILESTONE REACHED`, the real `git` repository, the spawned `/bin/sh` checker — is the
+/// neighbour's, because a fixture that also changed the transport would be measuring the fixture.
+///
+/// ⚠⚠⚠ **`silent > 0` IS A PREMISE AND NOT A DECORATION.** The claim below is that the two counts
+/// moved TOGETHER, and `0 == 0` satisfies that for a run whose checker answered perfectly — which
+/// is every other run in this file. Without the premise this gate is green on the fixture it was
+/// written to be different from.
+///
+/// ⚠⚠ **AND THE KINDS ARE ASSERTED APART**, which is what item 996's split is for: a build that
+/// summed every silence into one row would satisfy `total() == silent` and still lose the fact
+/// that these were the PROMPT's failures rather than an outage's. `Unreadable` is the row a
+/// verdict-less reply belongs in — `judge::Unheard::NotAVerdict`'s own classification — and the
+/// other two must stay empty.
+///
+/// ⚠ **NO RESTORED VALUE IS READ HERE** — item 997's third clause. `outcome.checks` is what the
+/// RUN raised; a log written before item 996 carries the sum with no rows beneath it, and that
+/// asymmetry is `crate::runs`' deliberate one. The invariant belongs to the raising path, so the
+/// raising path is what this drives.
+#[test]
+fn a_checker_that_answers_without_a_verdict_moves_both_of_the_runs_silence_counts() {
+    // ⚠⚠ NO PARENTHESES IN THIS PATH, for the neighbour's measured reason: `milestone_check` is
+    // split on WHITESPACE and its words reach a shell.
+    // ⚠⚠ `sprag_scratch::scratch_for` and NOT `std::env::temp_dir()`, and not `scratch_root()`
+    // with a pid joined on either — register items 794 and 795, both of which refused this commit
+    // in turn. A bare std call lands inside this repository when `TMPDIR` is set-and-empty; a
+    // hand-minted per-run name carries a pid that only its own `remove_dir_all` matches, so a
+    // killed run leaves it for ever. This seam mints the name where the reaper reads it and sweeps
+    // the prefix's dead owners in the same call. ⚠ The neighbour below predates both rules and is
+    // counted in their recorded totals.
+    let under = sprag_scratch::scratch_for("sprag-997-silent", "");
+    let _ = std::fs::remove_dir_all(&under);
+    std::fs::create_dir_all(&under).expect("somewhere to put the fixture");
+    let repo = under.join("the-agents-tree");
+    std::fs::create_dir_all(&repo).expect("the run's repository");
+
+    // ── THE AGENT'S REPOSITORY, MID-CLAIM (the neighbour's shape, so the check really runs) ──
+    assert!(
+        git(&repo, &["init", "-q", "."]),
+        "the fixture needs a `git`"
+    );
+    assert!(git(&repo, &["config", "user.email", "gate@example"]));
+    assert!(git(&repo, &["config", "user.name", "gate"]));
+    std::fs::write(repo.join("door.txt"), "door returns 1\n").expect("the committed file");
+    assert!(git(&repo, &["add", "door.txt"]));
+    assert!(git(&repo, &["commit", "-qm", "base"]));
+    std::fs::write(repo.join("door.txt"), "door returns 2\n").expect("the uncommitted edit");
+
+    // ── THE CHECKER: it ANSWERS, and its answer holds no verdict ─────────────────────────────
+    //
+    // ⛔⛔⛔⛔⛔ THE WHOLE POINT IS THAT IT IS NOT SILENT ON THE WIRE. A checker that printed
+    // nothing, or failed to start, reaches `Unheard::Unstarted`/`Unaccountable` — a DIFFERENT
+    // silence with a different remedy, and one that would let this gate pass while saying nothing
+    // about the road item 997 is open on. This one exits 0 with a sentence, and the sentence
+    // simply carries no `YES` and no `NO`, which is `judge::verdict_in`'s `NotAVerdict`.
+    //
+    // ⚠⚠ It also writes where it woke, so *the checker never ran* is distinguishable from *it ran
+    // and said nothing readable* — the neighbour's rule, and the premise below reads it.
+    let stood_at = under.join("where-the-checker-stood");
+    let checker = under.join("checker.sh");
+    std::fs::write(
+        &checker,
+        format!(
+            "pwd > {stood}\n\
+             printf 'the tree looks fine to me\\n'\n",
+            stood = stood_at.display(),
+        ),
+    )
+    .expect("the stand-in checker");
+
+    // ── THE DAEMON, AND A PANE BORN IN THE REPOSITORY ────────────────────────────────────────
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let _host = spawn_host_at(&sock, &["cat"]);
+    let (driving, mut setup) = remote_driver(&sock);
+    let peer = "stty -echo; while IFS= read -r line; do printf '%s\\n' \"$line\"; \
+                case \"$line\" in *exactly:*) printf 'MILESTONE REACHED\\n'; exit 0;; esac; done";
+    let pane = spawn_pane(
+        &mut setup,
+        json!({
+            SPAWN_CMD_KEY: ["/bin/sh", "-c", peer],
+            SPAWN_CWD_KEY: repo.to_string_lossy(),
+            SPAWN_COLS_KEY: 80,
+            SPAWN_ROWS_KEY: 16,
+        }),
+    );
+
+    let script: std::sync::Arc<dyn sce_rust_runtime::IScriptEngine> =
+        std::sync::Arc::new(sce_rust_lua::LuaEngine::new());
+    let brief = sprag_plugin::Brief {
+        north_star: "the run counts the silences its checker leaves".to_string(),
+        milestone: "the door is open".to_string(),
+        reference: "register item 997".to_string(),
+        closing_rules: None,
+        working_rules: None,
+        unverified_rules: None,
+        context_ceiling: None,
+        reflect_after_refusals: None,
+        reaim_max: None,
+        stall_after_steps: None,
+        progress_marks: None,
+        milestone_check: Some(format!("/bin/sh {}", checker.display())),
+        successor_check: None,
+        reask_max: None,
+        service: None,
+        max_turns: Some(sprag_plugin::Counted::Of(4)),
+        // ⚠ EQUAL to the turn budget, which keeps `reflecting` unreachable — the neighbour's rule.
+        reflect_every: Some(4),
+        screen_rules: None,
+        // ⚠ NOBODY IS ASKED and nobody is waited for: this peer raises no dialog, and the shipped
+        // document's patience would hang the suite at the first one it did.
+        may_answer: None,
+        await_person_ms: Some(0),
+        handback_still_ms: None,
+        hold_within_ms: Some(3_600_000),
+        ready_timeout_ms: Some(10_000),
+        turn_within_ms: Some(20_000),
+    };
+    let mut spec = sprag_plugin::AiLoopSpec::driving("sh");
+    spec.ready_when = Some(ReadyWhen::Runs("sh".to_string()));
+    spec.done_when = sprag_plugin::DoneWhen::Exits;
+    // ⚠ A `/bin/sh` peer paints only once it holds a whole LINE — the neighbour's measured reason.
+    spec.shows_the_prompt = false;
+    let mut loops = sprag_plugin::AiLoop::new(script, pane, &brief, &spec)
+        .expect("a well-briefed loop over a live pane starts");
+
+    let progress = sprag_plugin::ProgressCell::default();
+    let outcome = Driver::new(Guardrails {
+        max_iterations: Some(40),
+        max_cost: None,
+        max_duration: Some(Duration::from_secs(120)),
+    })
+    .reporting_to(std::sync::Arc::clone(&progress))
+    .run(&mut loops, &driving, &RunContext::uncancellable());
+    let walk: Vec<String> = progress
+        .lock()
+        .expect("the progress cell")
+        .journal
+        .iter()
+        .filter_map(|step| step.note.clone())
+        .collect();
+
+    // ── ⚠⚠ THE PREMISES ─────────────────────────────────────────────────────────────────────
+    assert!(
+        outcome.checks.asked > 0,
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: this run never put a milestone claim to an independent \
+         process, so every claim below is about a check that did not happen. Ended {:?} after {} \
+         pumps; the walk: {walk:?}",
+        outcome.state,
+        outcome.iterations,
+    );
+    assert!(
+        !std::fs::read_to_string(&stood_at)
+            .unwrap_or_default()
+            .trim()
+            .is_empty(),
+        "⚠⚠⚠⚠⚠ THE PREMISE FAILED: no checker ever woke up, so this is a fixture that did not \
+         start rather than a checker whose answer carried no verdict. Ended {:?}; the walk: \
+         {walk:?}",
+        outcome.state,
+    );
+    assert!(
+        outcome.checks.silent > 0,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 997's PREMISE, AND THE ONE THAT KEEPS THE CLAIM BELOW FROM BEING \
+         `0 == 0`: a checker that answered *the tree looks fine to me* carries no YES and no NO, \
+         so `judge::verdict_in` hands back `NotAVerdict` and this run must COUNT that. Nothing \
+         counted: asked {}, silent {}, why {:?}. The walk: {walk:?}",
+        outcome.checks.asked,
+        outcome.checks.silent,
+        outcome.checks.why_silent,
+    );
+
+    // ── ⛔⛔⛔ THE CLAIM: the two counts moved TOGETHER ───────────────────────────────────────
+    assert_eq!(
+        outcome.checks.silent_by.total(),
+        outcome.checks.silent,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 997: `Checks::silent` and `Checks::silent_by` count ONE \
+         population and are raised two lines apart in a single arm of `OuterLoop`. That is a \
+         structural argument, and until this gate it was the ONLY thing holding them equal — \
+         measured by deleting the `record` call, which left 18 suites green. Got total {} against \
+         silent {}. The walk: {walk:?}",
+        outcome.checks.silent_by.total(),
+        outcome.checks.silent,
+    );
+    assert_eq!(
+        outcome
+            .checks
+            .silent_by
+            .of(sprag_plugin::judge::Silence::Unreadable),
+        outcome.checks.silent,
+        "⛔⛔⛔⛔ AND ON THE ROW THAT NAMES THE REMEDY — register item 996's whole reason. A reply \
+         that arrived and carried no verdict is `Unreadable`, which is *the PROMPT*; counting it \
+         anywhere else would send a reader to fix an outage or somebody's account. Rows: {:?}",
+        outcome.checks.silent_by.rows().collect::<Vec<_>>(),
+    );
+    for quiet in [
+        sprag_plugin::judge::Silence::Unanswered,
+        sprag_plugin::judge::Silence::Unwell,
+    ] {
+        assert_eq!(
+            outcome.checks.silent_by.of(quiet),
+            0,
+            "⚠⚠⚠ AND THE OTHER KINDS MUST STAY EMPTY, which is what makes the assertion above a \
+             SPLIT rather than a second spelling of the total: a build that added every silence to \
+             every row would satisfy both claims above and lose the distinction item 996 exists \
+             for. {quiet:?} counted {}. Rows: {:?}",
+            outcome.checks.silent_by.of(quiet),
+            outcome.checks.silent_by.rows().collect::<Vec<_>>(),
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&under);
+}
+
 /// ⛔⛔⛔⛔⛔ **A WHOLE RUN, DRIVEN, CUTS A REAL COPY AND WAKES ITS CHECKER UP INSIDE IT** —
 /// register item 705's last link, and the one its four other gates leave to the compiler and to
 /// each other.
@@ -7191,6 +7418,19 @@ fn a_driven_run_cuts_a_real_copy_and_its_checker_wakes_up_in_it() {
         "⚠⚠⚠ THE PREMISE FAILED: the check was asked and said nothing back, which is a fixture \
          that did not start rather than a verdict. What the run says about the silence: {:?}",
         outcome.checks.why_silent,
+    );
+    // ⛔⛔⛔ AND THE SPLIT AGREES WITH IT — register item 997, and this line is the CONTROL for
+    // `a_checker_that_answers_without_a_verdict_moves_both_of_the_runs_silence_counts`. That gate
+    // asserts the two counts move together on a run whose checker gave no verdict; without a run
+    // where both stay at ZERO, *they move together* is also satisfied by a build that raised the
+    // split on every check regardless of what came back.
+    assert_eq!(
+        outcome.checks.silent_by.total(),
+        0,
+        "⛔⛔⛔⛔ REGISTER ITEM 997's CONTROL: this checker answered `YES the work is on disk`, so \
+         nothing here was a silence and the split must be empty. A build that counted a kind for \
+         every check would still pass its sibling gate. Rows: {:?}",
+        outcome.checks.silent_by.rows().collect::<Vec<_>>(),
     );
     let stood_in = std::fs::read_to_string(&stood_at).unwrap_or_default();
     assert!(
