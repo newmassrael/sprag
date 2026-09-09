@@ -4928,6 +4928,47 @@
       264 and 265 are about.
     -->
     <!--
+      ⛔⛔⛔⛔⛔ THE SERVICE REFUSED THIS TURN, AND THIS DOCUMENT ALREADY KNOWS HOW
+      TO WAIT FOR ONE. Register item 991, and the door `service_down` was missing.
+
+      `produced` carries three words and this is the third (register item 988):
+      `'nothing'` counts toward `empty_max`, `'something'` clears it, and
+      `'refused'` does NEITHER, because nothing about the agent was learned. What
+      was learned is about the SERVICE, and that is the fact this edge acts on.
+
+      ⚠⚠⚠⚠⚠ ABOVE `max_turns` AND NOT UNDER IT, which inverts the `empty_max`
+      edge two blocks down, and the reason inverts with it. That one declines to
+      buy a cold start for a run already out of turns, because a replacement
+      nothing can use is wasted. THIS one buys nothing: the retries it leads to
+      reach `working` without a `turn.done`, so they spend no turns at all.
+      Ordered under `max_turns` it would be unreachable exactly when it is needed,
+      and the run would end `stopping` with `stop_reason` `'turns'` about an
+      outage it never waited out. Measured on run 270: forty judged turns at the
+      observed sixty second cadence is forty minutes of being refused, reported
+      as a run that used up its budget.
+
+      ⚠⚠⚠⚠ AND THE BUDGET IS CHOSEN HERE, EXPLICITLY, because
+      `service_resumes_itself` is a LEVEL that each of the other two doors writes
+      on the way through (register item 724): the driver reads it off the document
+      rather than remembering which event it raised. Left unwritten it would carry
+      whichever outage came last, and the report would name a budget this run was
+      not spending. `false` is this door's answer and it is the measured one: a
+      refusal lifts only when a prompt is sent and answered, so THIS loop has to
+      type to find out. That is `service_retry_max`, six waits of
+      `service_retry_ms`, one hour. The six hour budget belongs to a peer that
+      returns on its own while this loop types nothing, which a refused record is
+      not.
+      ⇒ Run 270's refusal lasted forty five minutes and fits inside the hour.
+
+      ⚠⚠ AND NOT BY FILLING `service_needles`, which is the repair this item
+      forbids: those are one tool's sentences, in one language, at one version,
+      and a template cannot know its peer. The record says it in the peer's OWN
+      account (`isApiErrorMessage`), which is where `Spend::refused` reads it.
+    -->
+    <transition event="judge" cond="produced == 'refused'" target="service_down">
+      <assign location="service_resumes_itself" expr="false"/>
+    </transition>
+    <!--
       ⚠⚠⚠⚠ THE BUDGET CAN BE DECLINED, AND THE SPELLING IS A WORD BECAUSE TWO
       PROBES KILLED THE ALTERNATIVES.
 

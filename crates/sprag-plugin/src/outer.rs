@@ -31999,6 +31999,138 @@ mod tests {
     /// which raises no notice at all — and the answer must still be yes. A change that moved the
     /// read to the hook instead of ahead of it passes the first arm and fails this one.
     ///
+    /// ⛔⛔⛔⛔⛔ **A REFUSED TURN WAITS THE OUTAGE OUT INSTEAD OF SPENDING THE RUN'S TURNS** —
+    /// register item 991, and the door item 988's repair left missing.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the missing door cost, measured
+    ///
+    /// Item 988 made a refused turn say so ([`Made::Refused`]) instead of accusing the agent of
+    /// silence, and `judging`'s streak correctly neither counts it nor clears it. But nothing then
+    /// ACTED on it: the run fell through to `working` and re-prompted a service that had just
+    /// refused it. Run 270 was refused once per prompt at a sixty second cadence, so the shipped
+    /// `max_turns` of forty is forty minutes of that, ending `stopping` with `stop_reason`
+    /// `'turns'` — a ceiling naming itself about an outage nobody waited out.
+    ///
+    /// ⚠⚠⚠ **THE ASSERTION IS ON `state()` AND ON NOTHING ELSE**, because that is the only thing
+    /// that tells the door FIRING from the door being unreachable. Item 988's own gate asserts on
+    /// `made`, `held` and `streak` — all written by `judging`'s `onentry`, BEFORE any `judge`
+    /// transition is evaluated — so it is green whether this edge exists or not. Measured: it
+    /// passed 8/8 with the door and without it. A gate that cannot go red for the thing it is named
+    /// after is the defect this workspace's rule 7 is about, and this file paid for that lesson one
+    /// item ago.
+    ///
+    /// ⚠⚠ **AND THE CONTROL ARM IS THE SAME RUN ANSWERED**, not a different fixture: a build that
+    /// routed EVERY judged turn to `service_down` would pass the first arm alone, and a run that
+    /// waits out its agent's ordinary work is worse than one that re-prompts.
+    #[test]
+    fn a_refused_turn_waits_the_service_out_and_an_answered_one_goes_back_to_work() {
+        /// Drive a fresh loop to the end of one turn whose record said `produced`, and say where
+        /// the document put it.
+        ///
+        /// ⚠ `advance` rather than `pump`: the fact under test is which state a `judge` lands in,
+        /// and a pump loop would also drive the pane, the clock and the delivery door — three more
+        /// ways for an arm to differ from its control for a reason this gate is not about.
+        fn judged(produced: &str) -> (AiLoopState, Vec<String>, Option<bool>) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let access = crate::access::WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let run = RunContext::uncancellable();
+            let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_millis(200))
+                .expect("the document's datamodel must carry its four authored strings");
+            // ⚠⚠ THE PATH IS CARRIED, not just the endpoint — a state this gate did not expect is
+            // a different bug from the door not firing, and an assertion that says only `Failed`
+            // sends its reader to guess which.
+            let mut walked: Vec<String> = Vec::new();
+            for raise in [
+                AiLoopEvent::Start.into(),
+                AiLoopEvent::PromptSent.into(),
+                // ⚠⚠ THE WORD TRAVELS ON THE EVENT, which is where `judging`'s `onentry` reads it
+                // (`produced` is assigned from `_event.data.produced` there). Writing the datamodel
+                // directly would test a variable this product never sets.
+                //
+                // ⚠⚠⚠ AND ALL FOUR KEYS ARE SENT, not just the one under test — measured: that
+                // `onentry` also computes `replacement_break_even` from `cold > 0 && floor > 0`,
+                // and this datamodel is Lua, where comparing an ABSENT key against a number is an
+                // error rather than a false. A payload carrying only `produced` took the run to
+                // `failed` through `error.execution` without ever reaching a `judge` transition,
+                // which looks exactly like the door not firing.
+                Raise::carrying(
+                    AiLoopEvent::TurnDone,
+                    serde_json::json!({
+                        "produced": produced,
+                        "context": 0,
+                        "cold": 0,
+                        "floor": 0,
+                    }),
+                ),
+                // ⚠⚠⚠ AND THE JUDGEMENT CARRIES ITS OWN KEYS FOR THE SAME REASON: the edges above
+                // this door read `_event.data.done` and `_event.data.stop_short`, and indexing an
+                // ABSENT `_event.data` is a Lua error, not a false. A bare `Judge` reached `failed`
+                // through `error.execution` — the same wrong answer the missing payload gave one
+                // event earlier, and it is not the same bug as a door that does not fire.
+                Raise::carrying(
+                    AiLoopEvent::Judge,
+                    serde_json::json!({
+                        "done": false,
+                        "checked": false,
+                        "stop_short": false,
+                    }),
+                ),
+            ] {
+                let named = format!("{:?}", raise.event);
+                loops
+                    .advance(&access, &run, raise)
+                    .expect("the pane stays readable");
+                walked.push(format!("{named} -> {:?}", loops.state()));
+            }
+            // ⚠⚠⚠ AND WHICH BUDGET THE DOOR CHOSE, read off the document the way the driver reads
+            // it (`Noticed::ServiceDown`'s `resumes`). Without this the arm below is green for a
+            // door that reaches the right STATE on the wrong CEILING: measured 2026-09-09 by
+            // flipping this assign to `true`, which left the whole gate passing while the run
+            // would have waited six hours where its own doc argues for one.
+            let resumes = match loops
+                .script
+                .get_variable(&loops.session, SERVICE_RESUMES_ITSELF)
+            {
+                Ok(ScriptValue::Bool(chose)) => Some(chose),
+                _ => None,
+            };
+            (loops.state(), walked, resumes)
+        }
+
+        let (refused, refused_walk, refused_budget) = judged("refused");
+        assert_eq!(
+            refused,
+            AiLoopState::ServiceDown,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 991: a turn the SERVICE refused must reach the state this \
+             document already has for waiting one out. Everything the wait needs is downstream of \
+             here and was already built — the retry clock is keyed on `In('service_down')`, the \
+             ceiling is `service_retry_max`, and the retries reach `working` without a `turn.done` \
+             so they spend no turns. The one thing missing was this door.\n  walked {refused_walk:?}",
+        );
+        assert_eq!(
+            refused_budget,
+            Some(false),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 991: AND ON THE TYPING DOOR'S BUDGET. `service_resumes_itself` \
+             is a LEVEL each door writes on the way through (register item 724), and the driver \
+             reports the ceiling by reading it back — so a door that leaves it carries whichever \
+             outage came last. `false` is the measured answer here: a refusal lifts only when a \
+             prompt is SENT and answered, so this loop has to type, which is `service_retry_max` \
+             (six waits, one hour) and not the six hour budget for a peer returning on its own.\n  \
+             walked {refused_walk:?}",
+        );
+
+        let (answered, answered_walk, _) = judged("something");
+        assert_ne!(
+            answered,
+            AiLoopState::ServiceDown,
+            "⚠⚠ AND THE CONTROL: a turn the agent actually answered must NOT be read as an outage. \
+             Without this arm a build that sent every judged turn to `service_down` would be green \
+             above, and a run that waits ten minutes between its agent's working turns is a worse \
+             failure than the one item 991 is about.\n  walked {answered_walk:?}",
+        );
+    }
+
     /// ⚠⚠ The two arms differ in ONE thing each and share everything else: same loop, same brief,
     /// same needle, same pane.
     #[test]
