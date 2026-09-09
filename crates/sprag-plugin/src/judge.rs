@@ -510,8 +510,16 @@ impl Silence {
 /// # ⛔⛔⛔⛔⛔ One tally over three remedies is a tally nobody can act on
 ///
 /// [`Silence`] splits *nothing answered* from *it answered and that was not a verdict* from *the
-/// checker was unwell*, and the three have nothing in common as repairs: the first is an
-/// infrastructure fault, the second is the PROMPT, the third is somebody's account. Register item
+/// checker was unwell*, and the three have nothing in common as repairs: the first is **the ASKING
+/// — ask again, and ask better**, the second is the PROMPT, the third is somebody's account.
+///
+/// ⚠⚠ **THAT FIRST ROW IS NOT *the infrastructure broke*, and this doc said so for one commit.**
+/// [`Silence::Unanswered`]'s own words are *not asked, could not be started, DID NOT FINISH, or
+/// its pane could not account for the answer … asking again is a remedy: the fault is in the
+/// asking*. Measured 2026-09-10 on this repository's own milestone check: the checker started
+/// fine, nothing was broken, and the wait ended `NotYet` — the remedy was a SMALLER QUESTION, not
+/// a repair. Naming the row after one of its members sends a reader to fix a machine that is
+/// working. Register item
 /// 741 carried that split into the DOCUMENT — the machine disposes of the three by different edges
 /// — and register item 601 carried a COUNT into the run's answer. What nothing carried is the
 /// split into the count: `Checks::silent` adds all three together, and `Checks::why_silent` keeps
@@ -519,7 +527,7 @@ impl Silence {
 ///
 /// ⇒ so *did the prompt get better* has no answer. `HOW_TO_ANSWER` was repaired five times between
 /// 2026-08-29 and 2026-09-09, each time on one live sample, and after each repair the only number a
-/// reader could consult moved for infrastructure faults and usage limits too. **A run that cannot
+/// reader could consult moved for timed-out askings and usage limits too. **A run that cannot
 /// separate its checker's failures cannot tell a prompt that is working from one that is not**,
 /// which is why item 996 forbids a seventh forbidden-form clause and asks for this instead.
 ///
@@ -1326,7 +1334,8 @@ mod tests {
     ///
     /// # ⛔⛔⛔⛔⛔ What one number over three remedies cost
     ///
-    /// [`Silence`] separates *nothing answered* (infrastructure), *it answered and that was not a
+    /// [`Silence`] separates *nothing answered* (the ASKING — including a wait that ended
+    /// `NotYet`, whose remedy is a smaller question), *it answered and that was not a
     /// verdict* (the PROMPT) and *the checker was unwell* (an account). `Checks::silent` adds all
     /// three, and `Checks::why_silent` keeps the newest sentence — so *did the prompt get better*
     /// had no answer at all. `crate::outer`'s closing instruction was repaired five times between
@@ -1362,7 +1371,7 @@ mod tests {
                 before + 1,
                 "⛔⛔⛔⛔⛔ REGISTER ITEM 996: recording {kind:?} must move {kind:?}'s OWN row. A \
                  tally that landed on a neighbour would report the prompt's failures as the \
-                 infrastructure's, which is the confusion this split exists to end.",
+                 asking's, which is the confusion this split exists to end.",
             );
             assert_eq!(
                 silent.total(),

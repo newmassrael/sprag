@@ -836,7 +836,8 @@ pub struct Checks {
     ///
     /// # ⛔⛔⛔⛔⛔ Three failures with three different remedies, added together
     ///
-    /// `crate::judge::Silence` separates *nothing answered* (infrastructure), *it answered and that
+    /// `crate::judge::Silence` separates *nothing answered* (the ASKING — a checker that could not
+    /// start, or a wait that ended `NotYet` and wants a SMALLER question), *it answered and that
     /// was not a verdict* (the PROMPT) and *the checker was unwell* (an account). Register item 741
     /// carried that split into the document; nothing carried it into a number, so the one figure a
     /// reader could consult moved for all three alike.

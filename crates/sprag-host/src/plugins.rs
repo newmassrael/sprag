@@ -6492,7 +6492,7 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
             "asked": progress.checks.asked,
             "silent": progress.checks.silent,
             // ⛔⛔⛔⛔⛔ AND WHICH KIND EACH SILENCE WAS — register item 996. `silent` above adds
-            // three failures with three different remedies (infrastructure, THE PROMPT, an
+            // three failures with three different remedies (the ASKING, THE PROMPT, an
             // account), and a reader holding only the sum cannot say whether a repair to the
             // prompt did anything. Keyed by `Silence::wire_str` for `RUN_FOLDS_BY_REASON_KEY`'s
             // reason: the arm's own word, so a fourth arm arrives as a key rather than as a
@@ -9387,7 +9387,8 @@ pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
 ///
 /// # ⛔⛔⛔⛔⛔ Why a count nobody can split is a count nobody can act on
 ///
-/// `sprag_plugin::Silence` separates *nothing answered* — an infrastructure fault — from *it
+/// `sprag_plugin::Silence` separates *nothing answered* — the ASKING failed, and a wait that ended
+/// `NotYet` is in here beside a checker that never started — from *it
 /// answered and that was not a verdict*, which is the PROMPT, from *the checker was unwell*, which
 /// is somebody's account. The sentence above reported the sum, so a reader was told how much went
 /// unverified and never which of three files to open.
@@ -10172,7 +10173,7 @@ mod tests {
     ///
     /// # ⛔⛔⛔⛔⛔ A total over three remedies sends a reader to the wrong file
     ///
-    /// `sprag_plugin::judge::Silence` separates *nothing answered* — an infrastructure fault —
+    /// `sprag_plugin::judge::Silence` separates *nothing answered* — the ASKING failed —
     /// from *it answered and that was not a verdict*, which is the PROMPT, from *the checker was
     /// unwell*, which is somebody's account. This row printed the sum, so a person was told how
     /// much went unverified and never which of three things to go and fix.
