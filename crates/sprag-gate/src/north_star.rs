@@ -390,6 +390,58 @@ pub enum Platform {
 }
 
 impl Platform {
+    /// ⚠⚠ **EVERY PLATFORM THIS BUILD KNOWS**, so a refusal that has to say which words it accepts
+    /// walks this rather than spelling a list of its own — register item 973, where a second mouth
+    /// needed to say what is spellable, and [`Fault::UnknownRedPlatform`]'s sentence, which had
+    /// spelled the two words in prose.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A THIRD PLATFORM CANNOT BE ADDED WITHOUT ARRIVING HERE
+    ///
+    /// The compiler holds that, and it is written down because a hand-kept list is exactly what
+    /// would leave a new platform spellable nowhere and unmentioned in the very sentence that says
+    /// what is spellable — an escape hatch disabling its own gate, which is this workspace's
+    /// working rule 6.
+    ///
+    /// Three things stand in the way of an incomplete list, and none of them is a habit:
+    /// `Platform::slot` is an exhaustive `match` with no `_` arm, so a variant added to this enum
+    /// does not compile until it names a slot; the constant that slot names does not compile until
+    /// THIS array holds that variant there, because `Platform::held_at` indexes the array and
+    /// checks it and an out-of-range slot is a const-eval error; and the assertion below this
+    /// `impl` walks the array the other way, so a slot no variant claims fails the build too.
+    ///
+    /// ⚠ Those two are SPELLED rather than linked: they are private and this is public, which is
+    /// `private_intra_doc_links` under `-D warnings` (register item 365).
+    pub const ALL: [Self; 2] = [Self::Linux, Self::Macos];
+
+    /// Slot 0 of [`Platform::ALL`] — see that constant for what naming a slot obliges.
+    const LINUX_AT: usize = Self::held_at(0, Self::Linux);
+
+    /// Slot 1 of [`Platform::ALL`].
+    const MACOS_AT: usize = Self::held_at(1, Self::Macos);
+
+    /// `at`, and a COMPILE ERROR when [`Platform::ALL`] does not hold `who` there — the half of
+    /// that constant's guarantee an exhaustive `match` cannot give on its own.
+    ///
+    /// ⚠ The discriminant rather than `==`: `PartialEq` is not const. The cast is also load-bearing
+    /// a second way — it refuses to compile for a variant carrying a field, and a platform that
+    /// carried one could not be a word a claim spells.
+    const fn held_at(at: usize, who: Self) -> usize {
+        assert!(
+            Self::ALL[at] as u8 == who as u8,
+            "Platform::ALL does not hold that platform at the slot it claims",
+        );
+        at
+    }
+
+    /// Where [`Platform::ALL`] holds it. ⛔ The exhaustive arm is the whole point — see that
+    /// constant.
+    const fn slot(self) -> usize {
+        match self {
+            Self::Linux => Self::LINUX_AT,
+            Self::Macos => Self::MACOS_AT,
+        }
+    }
+
     /// The word a claim spells it with, which is also `std::env::consts::OS`.
     #[must_use]
     pub const fn word(self) -> &'static str {
@@ -399,16 +451,57 @@ impl Platform {
         }
     }
 
+    /// ⚠⚠ **WHAT A [`RED`] VALUE MAY OPEN WITH, AS A REFUSAL HAS TO SAY IT** — `` `@linux` or
+    /// `@macos` ``, read off [`Platform::ALL`] so that a third platform reaches the sentence at the
+    /// same moment it reaches the enum. Register item 973.
+    #[must_use]
+    pub fn spellings() -> String {
+        Self::joined(" or ", |known| format!("`@{}`", known.word()))
+    }
+
+    /// ⚠ **THE WORDS A CALLER MAY NAME ONE WITH** — `linux, macos`, the bare form an argument
+    /// carries rather than the form a claim spells. Same source, same reason.
+    #[must_use]
+    pub fn words() -> String {
+        Self::joined(", ", |known| known.word().to_owned())
+    }
+
+    /// Every platform, said one way and stitched — the walk both sentences above share, so neither
+    /// can drift from [`Platform::ALL`] or from the other.
+    fn joined(by: &str, say: impl Fn(Self) -> String) -> String {
+        Self::ALL
+            .iter()
+            .copied()
+            .map(say)
+            .collect::<Vec<_>>()
+            .join(by)
+    }
+
     /// Read one, or [`None`] for a word outside the set.
+    ///
+    /// ⛔⛔⛔ **ASKED OF [`Platform::ALL`] AND [`Platform::word`] RATHER THAN A SECOND MAP** —
+    /// register item 973. Spelled out, this was the one place a new platform could be *listed and
+    /// unreadable*: the refusals name the set off `ALL`, so a `match` with its own arms here would
+    /// have told an author their word does not exist while the same sentence offered it.
     #[must_use]
     pub fn parse(word: &str) -> Option<Self> {
-        match word {
-            "linux" => Some(Self::Linux),
-            "macos" => Some(Self::Macos),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|known| known.word() == word)
     }
 }
+
+// ⛔⛔⛔ AND NO SLOT IS UNCLAIMED — [`Platform::ALL`]'s guarantee walked the other way, at compile
+// time. An array holding one platform twice, or holding one in a slot another platform claims, is a
+// build failure here rather than a platform that quietly answers for its neighbour.
+const _: () = {
+    let mut at = 0;
+    while at < Platform::ALL.len() {
+        assert!(
+            Platform::ALL[at].slot() == at,
+            "Platform::ALL holds a platform in a slot it does not claim",
+        );
+        at += 1;
+    }
+};
 
 /// ⛔⛔⛔⛔⛔ **WHAT A [`RED`] LINE CLAIMS** — register item 949: an argv, and the platform it is a
 /// claim about.
@@ -1256,13 +1349,17 @@ impl fmt::Display for Fault {
                  verified",
                 line.trim()
             ),
+            // ⚠ THE VOCABULARY IS `Platform::ALL`'s AND THIS ONLY SPEAKS IT — register item 973.
+            // It read `@linux` or `@macos` in prose here, so a third platform would have arrived in
+            // the enum and not in the sentence that says what a claim may spell.
             Self::UnknownRedPlatform { number, line } => write!(
                 f,
                 "item {number}: `{}` names a platform this instrument has no word for. A `{RED}` \
-                 value may open with `@linux` or `@macos` and nothing else — a platform matching \
-                 no machine is a red no job ever checks, which is the unfalsifiable claim the \
-                 refutation exists to refuse",
-                line.trim()
+                 value may open with {} and nothing else — a platform matching no machine is a red \
+                 no job ever checks, which is the unfalsifiable claim the refutation exists to \
+                 refuse",
+                line.trim(),
+                Platform::spellings(),
             ),
             Self::DanglingParent { number, named } => write!(
                 f,
@@ -5172,6 +5269,55 @@ mod tests {
             "⛔⛔⛔⛔⛔ if `@macos` were a safe argument, a reader that stopped stripping the \
              platform would silently pass it to `cargo test` as a filter — the grammar's whole \
              safety is that its failure mode is a refusal",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE REFUSAL NAMES EVERY PLATFORM THIS BUILD KNOWS** — register item 973,
+    /// which put a SECOND mouth on that vocabulary and would have left the first one behind.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this is a gate and not a restatement
+    ///
+    /// The sentence spelled `@linux` or `@macos` in prose. So a third platform would have arrived
+    /// in the enum, in [`Platform::ALL`] — the compiler sees to that — and NOT in the one sentence
+    /// whose job is to say what a claim may spell. An author sent a list that omits the word they
+    /// wanted is worse served than one sent no list at all.
+    ///
+    /// ⚠⚠ The population is [`Platform::ALL`] rather than two literals, which is what makes this
+    /// count a platform nobody has added yet. Hand-spelling either sentence again reds this arm.
+    #[test]
+    fn every_sentence_that_says_what_is_spellable_names_the_whole_vocabulary() {
+        let said = Fault::UnknownRedPlatform {
+            number: 898,
+            line: "@red: @darwin -p sprag-gate --lib north_star".to_owned(),
+        }
+        .to_string();
+        for known in Platform::ALL {
+            assert!(
+                said.contains(known.word()),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 973: the refusal does not name {:?}, so an author whose \
+                 claim is about it is told the platform does not exist: {said}",
+                known.word(),
+            );
+            assert!(
+                Platform::spellings().contains(known.word())
+                    && Platform::words().contains(known.word()),
+                "⛔⛔⛔ and both renderings owe the whole set: {} / {}",
+                Platform::spellings(),
+                Platform::words(),
+            );
+        }
+        // ⚠ THE CONTROL: a run naming no platform at all would satisfy every arm above vacuously,
+        // and `Platform::ALL`'s own guarantee is the thing being leaned on here.
+        assert_eq!(
+            Platform::ALL.len(),
+            Platform::words().split(", ").count(),
+            "⚠⚠ the bare rendering must name each platform once — {} for {:?}",
+            Platform::words(),
+            Platform::ALL,
+        );
+        assert!(
+            said.contains(&Platform::spellings()),
+            "⚠ and the refusal says it in the form a claim is WRITTEN in, `@` and all: {said}",
         );
     }
 

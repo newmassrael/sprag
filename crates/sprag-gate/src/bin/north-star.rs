@@ -24,6 +24,53 @@
 //! that counts a refused proposal and declines to take it is in `ai_loop.scxml`, which other
 //! repositories copy; the MEANING is here, where this ledger's marks are. That split is the whole
 //! of item 839.
+//!
+//! # ⛔⛔⛔⛔⛔ `--elsewhere <ledger> <platform> <report>` — register item 973
+//!
+//! ```text
+//! gh run view <run-id> --json jobs            # register item 948 already calls this every round
+//! gh api /repos/<owner>/<repo>/actions/jobs/<job-id>/logs > /tmp/macos.log
+//! north-star --elsewhere <debt-open.md> macos /tmp/macos.log
+//! ```
+//!
+//! ⛔⛔⛔⛔⛔ **`gh run view --log` IS NOT THAT COMMAND HERE, AND ITS FAILURE IS SILENT.** Measured
+//! 2026-09-09 on gh 2.45.0 against run `34304776948`: `--log`, `--log-failed`, per-job and
+//! whole-run alike, every one **exit 0, empty stdout, empty stderr** — including the job that had
+//! just reported three FAILED tests. `gh api …/jobs/<job-id>/logs` returned 579 kB of the same
+//! job. So the reachable road is the API one, and the doc that named the other was measured before
+//! it was written down — this workspace's rule 10.
+//!
+//! ⚠⚠⚠ **AND IT IS NOT *`--log-failed` NEVER WORKS*, WHICH IS WHAT THE PARAGRAPH ABOVE FIRST
+//! SAID.** Three runs of this same workflow, three tries each, all `run_attempt` 1 and all with
+//! `headless (macos)` as the one failing job: `34301982406` printed 600,181 B every time, while
+//! `34304776948` and `34243200719` printed 0 B every time. So it is deterministic PER RUN and it
+//! disagrees BETWEEN runs — neither a flake nor a property of this gh. ⛔ **What separates those
+//! runs is not measured, so do not build a cause from this.** What is measured is that the API road
+//! answered all three (578–579 kB), which is why it is the one named above: a command that is
+//! silently empty for some runs cannot be the one a gate's evidence comes through.
+//!
+//! **THE CLAIMS THIS HOST CANNOT JUDGE, JUDGED FROM THE PLATFORM'S OWN ANSWER.** The default run
+//! puts every `@red:` claim to the suite HERE and says so of the rest: *"N claim(s) are about
+//! another platform, so this linux run did not judge them"*. Item 949 bought the ability to WRITE a
+//! macOS-only red; nothing could ever retire one, so a claim that had since been fixed would stand
+//! for ever and go on admitting its item on a fact that had stopped being true.
+//!
+//! # ⚠⚠⚠ Why the evidence is handed in rather than fetched
+//!
+//! Item 973 measured two roads and called both the owner's: put the ledger where a runner can read
+//! it, or move the job-reading to a machine. This is the second, and it is the cheaper half of it —
+//! **nothing here opens a network connection.** The round already reads that job once, because
+//! register item 948 obliges it to; this turns that read into a JUDGEMENT instead of a glance. A
+//! gate that fetched for itself would need credentials inside a hook, and would be unrunnable
+//! exactly where this repository runs its gates.
+//!
+//! ⚠⚠ **IT FORECLOSES NEITHER ROAD.** Putting the ledger in the repository stays open and would
+//! make this mode redundant rather than wrong; until somebody decides that, a stale claim can be
+//! retired today instead of never.
+//!
+//! ⚠ **AN UNREADABLE REPORT IS *COULD NOT ASK*, NEVER *GREEN*** — see [`ReportedFailures`]. The
+//! register's answer to a green claim is *delete the `@red:` line*, so a report this could not
+//! parse must not be able to instruct that.
 
 use sprag_gate::north_star;
 use sprag_gate::north_star::Reds;
@@ -39,6 +86,9 @@ fn main() -> std::process::ExitCode {
     };
     if path == *"--admits" {
         return admits(args);
+    }
+    if path == *"--elsewhere" {
+        return elsewhere(args);
     }
     if args.next().is_some() {
         eprintln!("north-star: one ledger, not several");
@@ -313,6 +363,119 @@ impl north_star::Commits for Repository {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHETHER A CLAIMED RED IS RED *SOMEWHERE ELSE*, ASKED OF THAT PLACE'S OWN ANSWER** —
+/// register item 973, and [`RunTheSuite`]'s counterpart for the claims this host cannot put.
+///
+/// # ⛔⛔⛔⛔⛔ What could not be retired, and what it was costing
+///
+/// Item 949 made a macOS-only red WRITABLE; nothing could ever make one FALSE. `standing_reds`
+/// skips a claim about another platform, so `refuted` — the answer that says *delete the `@red:`
+/// line* — was unreachable for every one of them. A claim fixed on macOS would go on admitting its
+/// item past the severity gate for ever, on a fact that had stopped being true. That is item 902's
+/// shape with the sign flipped, and 973 is where it was written down.
+///
+/// # ⚠⚠⚠⚠⚠ THE REPORT IS EVIDENCE, AND AN UNREADABLE ONE SAYS NOTHING
+///
+/// A missing download and a job with nothing to report are the same empty file, and only one of
+/// them means *green*. Since *green* is the answer that instructs a deletion, this refuses to give
+/// it on a file it cannot recognise: a report with no `test … ok|FAILED|ignored` line in it at all
+/// is [`None`] from [`ReportedFailures::of`], and the run then refuses instead of judging a single
+/// claim. That is [`north_star::Suite::is_red`]'s own stated split one level up, and this
+/// workspace's rule 6: an unclassified thing is a RED and not a pass.
+///
+/// ⚠⚠ **SO A GREEN JOB MUST BE HANDED ITS WHOLE LOG.** The contract is stated because it cannot be
+/// inferred: `gh run view --log-failed` prints nothing for a job that passed, and nothing is
+/// exactly what a failed fetch prints. ⛔ And measured on this machine it prints nothing for some
+/// runs whose job FAILED either — the module doc carries that measurement and the road that
+/// answered every run it was asked about.
+struct ReportedFailures {
+    /// Every test the report says FAILED, in the harness's own spelling.
+    failed: Vec<String>,
+}
+
+impl ReportedFailures {
+    /// The lines a test harness prints per test, which is what makes a report RECOGNISABLE.
+    ///
+    /// ⚠ Read as a prefix and a marker rather than a full grammar: the report is a CI log with the
+    /// runner's own timestamps and job names glued to the front of every line, so an anchored match
+    /// would recognise nothing. What has to be true is that the file is a test log at all.
+    fn reads_as_a_test_log(text: &str) -> bool {
+        text.lines().any(|line| {
+            line.contains(" ... ok")
+                || line.contains(" ... FAILED")
+                || line.contains(" ... ignored")
+                || line.contains("test result:")
+        })
+    }
+
+    /// What the report says failed. ⚠ The NAME only — the harness prints `test <name> ... FAILED`
+    /// and a CI log puts its own prefix before the word `test`.
+    fn of(text: &str) -> Option<Self> {
+        if !Self::reads_as_a_test_log(text) {
+            return None;
+        }
+        let failed = text
+            .lines()
+            .filter_map(|line| line.split_once(" ... FAILED").map(|(head, _)| head))
+            .filter_map(|head| head.rsplit_once("test ").map(|(_, name)| name))
+            .map(|name| name.trim().to_owned())
+            .collect();
+        Some(Self { failed })
+    }
+
+    /// ⛔⛔⛔ **WHAT AN ARGV SELECTS**, as the harness would filter on it — register item 973.
+    ///
+    /// A `@red:` argv is `cargo test`'s, so the selection is the one bare word that is neither a
+    /// flag nor a flag's value nor past the `--`. `-p sprag-gate --lib launcher::tests -- --exact`
+    /// selects `launcher::tests`.
+    ///
+    /// ⚠⚠ [`None`] where the argv names NO filter (`-p sprag-host --lib` selects a whole target).
+    /// That is not *nothing failed*: it is a question this reader cannot put to a list of names,
+    /// and it is answered as *could not ask* rather than guessed at.
+    fn selected_by(argv: &str) -> Option<String> {
+        let mut takes_a_value = false;
+        for token in argv.split_whitespace() {
+            if token == "--" {
+                // ⚠ Everything past it is the HARNESS's arguments (`--exact`, `--nocapture`), never
+                // a selection. A reader that kept going would take `--exact` for a test name.
+                return None;
+            }
+            if takes_a_value {
+                takes_a_value = false;
+                continue;
+            }
+            if token.starts_with('-') {
+                // ⚠ The flags that eat the next word. A list rather than a guess: an unknown flag
+                // that took a value would otherwise make its value look like a selection.
+                takes_a_value =
+                    matches!(token, "-p" | "--package" | "--test" | "--bin" | "--example");
+                continue;
+            }
+            return Some(token.to_owned());
+        }
+        None
+    }
+}
+
+impl north_star::Suite for ReportedFailures {
+    fn is_red(&self, names: &str) -> Result<bool, String> {
+        let Some(selection) = Self::selected_by(names) else {
+            return Err(format!(
+                "the claim `{names}` names no test selection this reader can put to a list of \
+                 names, so what that platform reported cannot answer it"
+            ));
+        };
+        // ⚠⚠ A PREFIX, because `cargo test` filters by substring and a claim may name a MODULE
+        // (`launcher::tests`) whose failures are reported per test. ⚠ `--exact` is not honoured
+        // here and must not be: the report says which tests failed, and a module whose tests failed
+        // is a module that is red however the claim spells its filter.
+        Ok(self
+            .failed
+            .iter()
+            .any(|name| name == &selection || name.starts_with(&selection)))
+    }
+}
+
 /// ⛔⛔⛔⛔⛔ **AND WHETHER A CLAIMED RED IS RED** — register item 843, asked by RUNNING the thing.
 ///
 /// # ⚠⚠⚠ Why the suite and not the ledger, and why that is worth what it costs
@@ -337,6 +500,10 @@ impl north_star::Commits for Repository {
 /// cargo not being runnable at all*, and that was too narrow: cargo also refuses the ARGUMENTS,
 /// with exit 1, and this reader called that a standing red. See [`verdict_of`], where the three
 /// answers are and where the measurement is.
+///
+/// ⚠⚠ **AND [`ReportedFailures`] IS ITS COUNTERPART FOR THE CLAIMS THIS HOST CANNOT PUT** —
+/// register item 973. Same question, evidence from somewhere else's own report rather than from
+/// running the suite here.
 struct RunTheSuite;
 
 impl north_star::Suite for RunTheSuite {
@@ -491,6 +658,128 @@ const DRIVING_DOCUMENT: &str = include_str!("../../../sprag-plugin/src/debt_loop
 /// 6: not a `1`.
 fn cap() -> Result<north_star::Reaim, String> {
     north_star::declared_reaim(DRIVING_DOCUMENT)
+}
+
+/// ⛔⛔⛔⛔⛔ **JUDGE THE CLAIMS THIS HOST CANNOT** — register item 973, and the answer to the line
+/// the default run has been printing since item 949: *"N claim(s) are about another platform, so
+/// this linux run did not judge them"*.
+///
+/// It is the SAME judgement, with the platform and the suite swapped: [`north_star::Reading::standing_reds`]
+/// walks the same claims, `refuted` means the same thing, and the sentence a stale claim earns is
+/// the one the default run already prints. Nothing about what a claim MEANS is decided here.
+///
+/// ⚠⚠ **IT EXITS 1 ON A STALE CLAIM AND ON A REPORT IT COULD NOT READ ALIKE**, which is the
+/// conservative pairing: one says the ledger is wrong, the other says this could not tell, and
+/// neither is a run whose silence should read as *everything is still red*.
+///
+/// # Errors
+///
+/// Prints and exits 1: the arguments are wrong, the ledger or report will not read, the platform is
+/// not one this build knows, or the report is not a test log.
+fn elsewhere(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::ExitCode {
+    let (Some(ledger), Some(platform), Some(report)) = (args.next(), args.next(), args.next())
+    else {
+        eprintln!(
+            "north-star: --elsewhere needs the ledger's path, then the platform, then a file \
+             holding that platform's own test log.\n  \
+             gh run view <run-id> --json jobs\n  \
+             gh api /repos/<owner>/<repo>/actions/jobs/<job-id>/logs > /tmp/macos.log\n  \
+             north-star --elsewhere <debt-open.md> macos /tmp/macos.log\n\
+             Not `gh run view --log-failed`: measured on three runs of one workflow, it exits 0 \
+             printing nothing at all for some of them — and nothing is the one thing this mode \
+             refuses to read as green.",
+        );
+        return std::process::ExitCode::FAILURE;
+    };
+    if args.next().is_some() {
+        eprintln!("north-star: --elsewhere takes one ledger, one platform and one report");
+        return std::process::ExitCode::FAILURE;
+    }
+    let platform = platform.to_string_lossy().into_owned();
+    // ⛔ A PLATFORM THIS BUILD DOES NOT KNOW IS A REFUSAL THAT NAMES WHAT THERE IS — rule 6. A run
+    // asked about `darwin` would otherwise judge nothing and exit 0, which reads as *every claim
+    // is fine* about a question nobody answered.
+    // ⚠⚠ Asked of the reader that reads the mark, and answered with the list that vocabulary
+    // itself keeps: a second way of spelling the set here could disagree with the `@red:` lines.
+    if north_star::Platform::parse(&platform).is_none() {
+        eprintln!(
+            "north-star: nothing in this build spells a platform as {platform:?}. The ones it \
+             knows are {}.",
+            north_star::Platform::words(),
+        );
+        return std::process::ExitCode::FAILURE;
+    }
+    let text = match std::fs::read_to_string(&ledger) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!(
+                "north-star: cannot read {}: {error}",
+                ledger.to_string_lossy()
+            );
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let said = match std::fs::read_to_string(&report) {
+        Ok(said) => said,
+        Err(error) => {
+            eprintln!(
+                "north-star: cannot read {}: {error}",
+                report.to_string_lossy()
+            );
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let Some(suite) = ReportedFailures::of(&said) else {
+        eprintln!(
+            "north-star: {} is not a test log — nothing in it reads as a harness line, so this \
+             cannot tell a job that reported nothing from a fetch that brought nothing back. The \
+             answer to a green claim is *delete the `{}` line*, and a file this could not \
+             recognise must not be able to instruct that.",
+            report.to_string_lossy(),
+            north_star::RED,
+        );
+        return std::process::ExitCode::FAILURE;
+    };
+    let reading = north_star::read(&text);
+    let found = match reading.standing_reds(&suite, &platform) {
+        Ok(found) => found,
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let Reds {
+        standing,
+        refuted,
+        elsewhere,
+    } = found;
+    let confirmed: Vec<String> = standing.iter().map(ToString::to_string).collect();
+    let others: Vec<String> = elsewhere.iter().map(ToString::to_string).collect();
+    println!(
+        "reds on {platform}: {} standing: {}",
+        standing.len(),
+        confirmed.join(" "),
+    );
+    println!(
+        "  {} claim(s) are about somewhere else, so this pass did not judge them: {}",
+        elsewhere.len(),
+        others.join(" "),
+    );
+    // ⚠ THE SAME SENTENCE THE DEFAULT RUN PRINTS, because it is the same finding: a claim the
+    // evidence refutes is stale wherever the evidence came from.
+    for number in &refuted {
+        eprintln!(
+            "north-star: item {number} claims a red that {platform} reports green — the claim is \
+             stale, so remove the `{}` line rather than leaving it to admit the item on a fact \
+             that has stopped being true",
+            north_star::RED,
+        );
+    }
+    if refuted.is_empty() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::FAILURE
+    }
 }
 
 /// 🎯🎯🎯🎯🎯 **IS THIS PROPOSAL ONE A ROUND MAY TAKE NEXT?** — register item 839, and the half of
@@ -681,7 +970,128 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
 
 #[cfg(test)]
 mod tests {
-    use super::{tests_run, verdict_of};
+    use super::{ReportedFailures, tests_run, verdict_of};
+    use sprag_gate::north_star::Suite;
+
+    /// A macOS job log's shape, cut to what this reader has to recognise: the runner glues a job
+    /// name and a timestamp to the front of every line, which is why nothing here is anchored.
+    const A_MACOS_LOG: &str = "\
+headless (macos)\tTest\t2026-09-09T02:16:09Z test launcher::tests::a_build_that_fits ... FAILED
+headless (macos)\tTest\t2026-09-09T02:16:09Z test launcher::tests::a_daemon_moved_past ... FAILED
+headless (macos)\tTest\t2026-09-09T02:18:43Z test plugins::tests::a_loop_over_the_wire ... FAILED
+headless (macos)\tTest\t2026-09-09T02:18:52Z test north_star::tests::something_else ... ok
+headless (macos)\tTest\t2026-09-09T02:18:52Z test result: FAILED. 610 passed; 3 failed";
+
+    /// ⛔⛔⛔⛔⛔ **A CLAIM ABOUT ANOTHER PLATFORM CAN NOW BE REFUTED, AND ONLY BY THAT PLATFORM'S
+    /// OWN ANSWER** — register item 973.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What could not be retired
+    ///
+    /// Item 949 made a macOS-only red WRITABLE and nothing could make one FALSE: `standing_reds`
+    /// skips a claim about another platform, so `refuted` — the answer that says *delete the
+    /// `@red:` line* — was unreachable for every one of them. A claim fixed on macOS would go on
+    /// admitting its item past the severity gate for ever.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Both answers, or this is a constant
+    ///
+    /// A reader that answered `true` to everything confirms every claim and retires none — which is
+    /// today's behaviour with more code. A reader that answered `false` to everything instructs the
+    /// deletion of every macOS claim there is. So the arms below assert a name the report carries
+    /// AND a name it does not, off ONE report.
+    #[test]
+    fn a_platforms_own_report_confirms_what_it_failed_and_refutes_what_it_did_not() {
+        let suite = ReportedFailures::of(A_MACOS_LOG).expect("that is a test log");
+        assert_eq!(
+            suite.is_red("-p sprag-gate --lib launcher::tests -- --exact"),
+            Ok(true),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 973: a claim whose tests this platform REPORTS FAILING reads \
+             as green, so the round would be told to delete a mark that is still true",
+        );
+        assert_eq!(
+            suite.is_red("-p sprag-gate --lib north_star::tests::something_else -- --exact"),
+            Ok(false),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 973: a claim this platform reports PASSING still reads as \
+             red, so nothing could ever retire a macOS claim — which is the whole of the item",
+        );
+        // ⚠⚠ THE PREFIX IS THE POINT AND NOT A CONVENIENCE: 970's claim names a MODULE
+        // (`launcher::tests`) and the report names the tests inside it. A reader matching only
+        // whole names would answer `false` for every module-shaped claim — the refutation
+        // manufactured, which is item 949's defect from the other side.
+        assert_eq!(
+            suite.is_red("-p sprag-gate --lib launcher::tests::a_daemon_moved_past -- --exact"),
+            Ok(true),
+            "⚠ and a claim naming one test of that module is answered by that test's own line",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REPORT THIS COULD NOT READ SAYS NOTHING, AND NEVER *GREEN*** — register item
+    /// 973, and this workspace's rule 6 at the one place it decides a DELETION.
+    ///
+    /// A failed fetch and a job with nothing to report are the same empty file, and only one of
+    /// them means every claim is stale. Since *green* is the answer that instructs removing a
+    /// `@red:` line, an unrecognisable report must not be able to give it.
+    #[test]
+    fn a_report_that_is_not_a_test_log_is_refused_rather_than_read_as_green() {
+        assert!(
+            ReportedFailures::of("").is_none(),
+            "⛔⛔⛔⛔⛔ RULE 6: an EMPTY report — which is exactly what a failed download leaves — \
+             reads as a platform that failed nothing, and the register's answer to that is *delete \
+             every macOS claim*",
+        );
+        assert!(
+            ReportedFailures::of("gh: could not find run 1234\nnot found\n").is_none(),
+            "⛔⛔⛔ and so does an error page: nothing in it is a harness line, so it cannot \
+             answer a question about tests",
+        );
+        assert!(
+            ReportedFailures::of("some prefix test result: ok. 3 passed; 0 failed").is_some(),
+            "⚠⚠ THE CONTROL: a job that reported and failed NOTHING must still be readable, or a \
+             green platform could never retire a stale claim — which is the case this item most \
+             wants to catch",
+        );
+        let green = ReportedFailures::of("test result: ok. 3 passed; 0 failed")
+            .expect("a tally alone is a test log");
+        assert_eq!(
+            green.is_red("-p sprag-gate --lib launcher::tests -- --exact"),
+            Ok(false),
+            "⚠ and every claim against it is refuted, which is the answer a green platform owes",
+        );
+    }
+
+    /// ⛔⛔⛔ **AN ARGV THAT NAMES NO TEST IS *COULD NOT ASK*** — register item 973.
+    ///
+    /// `-p sprag-host --lib` selects a whole target, and a list of failed NAMES cannot answer it.
+    /// Guessed either way it would be wrong in the direction that matters: `false` instructs a
+    /// deletion, `true` confirms a claim nobody put.
+    #[test]
+    fn an_argv_naming_no_selection_is_a_question_this_reader_refuses() {
+        assert_eq!(
+            ReportedFailures::selected_by("-p sprag-gate --lib launcher::tests -- --exact"),
+            Some("launcher::tests".to_owned()),
+            "⚠ THE PREMISE: the selection is the one bare word before the `--`",
+        );
+        // ⚠⚠ PAST THE `--` IS THE HARNESS'S, and a reader that kept walking would take `--exact`
+        // — or worse, a bare `--nocapture`'s neighbour — for a test name.
+        assert_eq!(
+            ReportedFailures::selected_by("-p sprag-host --lib -- --exact"),
+            None,
+            "⛔ a whole-target selection names no test, and past the `--` there are no names",
+        );
+        assert_eq!(
+            ReportedFailures::selected_by("-p sprag-host --lib"),
+            None,
+            "⛔ and neither does one with no `--` at all",
+        );
+        let suite = ReportedFailures::of(A_MACOS_LOG).expect("that is a test log");
+        assert!(
+            suite
+                .is_red("-p sprag-host --lib -- --exact")
+                .is_err_and(|why| why.contains("no test selection")),
+            "⛔⛔⛔ REGISTER ITEM 973: a question this reader cannot put is answered rather than \
+             refused, and both answers are wrong — one deletes a live mark, the other confirms a \
+             claim nobody asked about",
+        );
+    }
 
     /// How many tests a selection ran, in a run that ran SOME — the number every arm below that is
     /// not about emptiness needs, named once so no assertion carries a bare literal.
