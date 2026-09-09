@@ -20171,6 +20171,77 @@ fn the_push_time_reader_says_what_happens_next_in_the_products_own_words() {
          the same permission, so nothing an executor reads separates them",
     );
 
+    // ⛔⛔⛔⛔⛔ AND WHETHER ANYBODY WAS EVER GOING TO SCORE THE VERDICT IN THAT SENTENCE — register
+    // item 982, the third mouth of the fact item 968 repaired at the other two.
+    //
+    // # ⛔⛔⛔⛔⛔ What this arm holds that the hook's own selftest cannot
+    //
+    // That selftest reaches the relay through a DOUBLE, deliberately — its subject is the lookup
+    // and the grouping. This one runs the real hook against the binary cargo just built, over a
+    // real run log, so it is the only place the whole seam is under test at once: the `checks`
+    // column in the log, the argument the hook composes from it, this build's parsing of that
+    // argument, and `Disposition::said_of_run`'s sentence coming back out at a push.
+    //
+    // ⚠⚠ TWO RUNS THAT DIFFER ONLY IN THAT COLUMN, which is item 982(2)'s requirement stated as a
+    // fixture: *대조 팔이 없으면 상수로 초록이다*. A build that hedged everything and a build that
+    // hedged nothing each satisfy one of the two assertions below and neither satisfies both.
+    std::fs::write(
+        &log,
+        b"{\"version\":1,\"runs\":[{\"id\":9,\"finished\":true,\"outcome\":\"cancelled\"},\
+{\"id\":1,\"finished\":true,\"outcome\":\"failed\"},\
+{\"id\":2,\"finished\":true,\"outcome\":\"converged\"},\
+{\"id\":3,\"finished\":true,\"outcome\":\"exhausted\",\
+\"checks\":{\"milestone_scoring\":\"unauthored\"}},\
+{\"id\":4,\"finished\":true,\"outcome\":\"exhausted\",\
+\"checks\":{\"milestone_scoring\":\"authored\"}}]}\n"
+            .as_slice(),
+    )
+    .expect("two more endings that differ only in what was going to score them");
+    let scored = ask("--gap");
+    // ⚠ The NEXT-STEP lines only. The clause above them names every unread ending on one line by
+    // design (item 798's), so a test let loose on the whole report reads that line instead.
+    let steps: Vec<&str> = scored
+        .lines()
+        .filter(|line| line.contains(" ended '"))
+        .collect();
+    let unauthored = steps
+        .iter()
+        .find(|line| line.contains("probe#3"))
+        .unwrap_or_else(|| {
+            panic!(
+                "⛔⛔⛔ REGISTER ITEM 982: a run that ENDED is named on no next-step line at all, \
+                 so splitting by what was going to score it LOST it — which is item 798's whole \
+                 subject re-created by this repair.\n  it said: {scored}"
+            )
+        });
+    assert!(
+        unauthored.contains(sprag_plugin::Scoring::Unauthored.said()),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 982: the push-time reader states *the work is unfinished* about a \
+         run whose kind authors no `milestone_check`, with nothing beside it. That is the sentence \
+         item 968 measured false at the other two mouths — run 260's milestone had been committed \
+         and pushed — reaching a person here instead.\n  wanted: {}\n  it said: {unauthored}",
+        sprag_plugin::Scoring::Unauthored.said(),
+    );
+    let authored = steps
+        .iter()
+        .find(|line| line.contains("probe#4"))
+        .expect("the control run is named on a next-step line");
+    assert!(
+        !authored.contains(sprag_plugin::Scoring::Unauthored.said())
+            && !authored.contains(sprag_plugin::Scoring::Unrecorded.said()),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 982(2): a run whose kind DOES author a `milestone_check` is hedged \
+         anyway. Either the hedge is unconditional — in which case it appears on every line and \
+         nobody reads it — or the log's column never reached this build's argument.\n  it said: \
+         {authored}",
+    );
+    assert_ne!(
+        unauthored, authored,
+        "⛔⛔⛔⛔ REGISTER ITEM 982: the two runs are named on ONE line, so one of them is carrying \
+         the other's sentence. The relay must split a shared ending word by what was going to \
+         score it — and only by that, so a tree running one kind still gets one line.\n  it said: \
+         {scored}",
+    );
+
     // ⛔⛔⛔⛔⛔ AND THE OTHER AUTHORITY OVER THE SAME INSTANT REACHES THE PUSH — register item
     // 868(3), and the half the three columns above cannot supply.
     //

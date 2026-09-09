@@ -756,6 +756,45 @@ impl Scoring {
             .find(|arm| arm.wire_str().is_some() && arm.wire_str() == word)
             .unwrap_or(Self::Unrecorded)
     }
+
+    /// ⛔⛔⛔ **THE SPELLING A CALLER NAMES THIS ARM BY** — register item 982, and the reason it is
+    /// not [`wire_str`](Self::wire_str).
+    ///
+    /// # ⚠⚠⚠⚠⚠ Two vocabularies for one type, and why that is not *one word, two meanings*
+    ///
+    /// On the WIRE, [`Unrecorded`](Self::Unrecorded) is the ABSENCE of a key — that is what makes
+    /// the round trip total, and a word there would claim some daemon had said *I do not know*. A
+    /// CALLER has no such option: a shell reading a run log finds no word and still has to name
+    /// what it found, or it cannot ask the question at all. So the arm keeps its absence on the
+    /// wire and gets the EMPTY SPELLING at the mouth, which is the same thing said the only way an
+    /// argument vector can say it.
+    ///
+    /// ⚠⚠ It is the empty string and NOT a word like `"unrecorded"` deliberately: the caller item
+    /// 982 is for is `.githooks/loop-read.sh`, which reads the word out of the log and passes it
+    /// on. Given a spelling of its own to substitute when the log is silent, that script would be
+    /// spelling an arm of a set this crate owns — the *"one value, two homes"* defect item 867
+    /// refuses by name, and the fourth spelling item 968(3) was paid to prevent.
+    #[must_use]
+    pub const fn asked_as(self) -> &'static str {
+        match self.wire_str() {
+            Some(word) => word,
+            // ⚠ The absence, said the one way an argument can say it. See this method's doc.
+            None => "",
+        }
+    }
+
+    /// Which arm a caller named, or [`None`] where nothing here spells that.
+    ///
+    /// ⚠⚠ STRICT, where [`of_wire`](Self::of_wire) is forgiving, and the two are answering
+    /// different questions. A RECORD carrying a word this build does not know is an old or new
+    /// daemon's, and reading it as *nothing classified it* keeps the row honest. An ARGUMENT
+    /// carrying one is a caller who has misspelled something or is asking a question this build
+    /// cannot answer, and this workspace's rule 6 says that is a refusal that names what there is
+    /// — never a silent fall back onto the arm that hedges.
+    #[must_use]
+    pub fn of_asked(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|arm| arm.asked_as() == word)
+    }
 }
 
 /// **WHAT BECAME OF THIS RUN'S INDEPENDENT CHECKS** — register item 601, and the answer to

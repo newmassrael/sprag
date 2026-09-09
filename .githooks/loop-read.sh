@@ -203,6 +203,74 @@ loop_read_endings() {
     printf '%s' "$found" | command sed '/^$/d'
 }
 
+# ── WHAT WAS EVER GOING TO SCORE AN ENDING'S VERDICT -- register item 982 ─────
+#
+# The word each ended run recorded for `Scoring`, as `key scoring` lines.
+#
+# ⚠⚠ A RUN WHOSE RECORD DOES NOT CARRY ONE IS LISTED WITH AN EMPTY SECOND FIELD
+# and is never dropped. Absent is that type's own third arm — *nothing in this
+# record says* — and it HEDGES; a run left out of this list would be handed the
+# CLASS's unhedged sentence instead, which is the exact reading item 968 was
+# filed on, rebuilt one reader over.
+#
+# ⛔ THE SPELLING IS THE PRODUCT'S, carried verbatim from the log into the
+# argument vector. This file names no arm of that set: item 867's rule about the
+# disposition table applies here word for word, and a spelling of its own would
+# be the fourth one item 968(3) was paid to prevent.
+loop_read_scorings() {
+    local dir log stem
+    command -v jq >/dev/null 2>&1 || return 0
+    dir="$(loop_read_state_dir)"
+    [ -d "$dir" ] || return 0
+    for log in "$dir"/*.runs.json; do
+        [ -r "$log" ] || continue
+        stem="$(basename "$log" .runs.json)"
+        jq -r --arg stem "$stem" \
+            '.runs[]? | select(.finished == true)
+                      | "\($stem)#\(.id) \(.checks.milestone_scoring // "")"' \
+            "$log" 2>/dev/null
+    done
+    return 0
+}
+
+# What a `key scoring` list `$2` says about the run `$1`.
+#
+# ⚠ AN EMPTY ANSWER IS AN ANSWER and not a failure — it is the spelling the
+# product gives the arm that means *nothing in this record says*, and it is what
+# a run this hook has no scoring for must be asked about under.
+loop_read_scoring_of() {
+    local key list skey sword
+    key="$1"
+    list="$2"
+    while read -r skey sword; do
+        [ "$skey" = "$key" ] || continue
+        printf '%s' "$sword"
+        return 0
+    done <<SCORINGS
+$list
+SCORINGS
+    return 0
+}
+
+# THE PRODUCT'S ROW for one ending and one scoring — register item 982, and the
+# same relay `loop_read_disposition_table` is, narrowed to one question.
+#
+# ⛔ IT SPELLS NOTHING. The ending is matched in the first field and everything
+# after it is printed verbatim, exactly as the table form is read, so the
+# sentence a reader gets is the product's whether it was asked about a class or
+# about one run's. ⚠ Empty where this build cannot answer — the caller says so
+# once, in item 824's words, rather than each line guessing.
+loop_read_disposition_row() {
+    local sprag word scoring said
+    sprag="$1"
+    word="$2"
+    scoring="$3"
+    said="$("$sprag" disposition "$word" "$scoring" 2>/dev/null)" || return 0
+    printf '%s\n' "$said" \
+        | command sed -n "/^  ${word}[[:space:]]/{s/^  ${word}[[:space:]][[:space:]]*//p;q;}"
+    return 0
+}
+
 # The events that are ENDINGS, and the ones that are STRANDED runs -- split by the
 # key's own suffix so neither clause has to know how the other is spelt.
 #
@@ -410,6 +478,7 @@ loop_read_promotion_moment() {
 # endings -- so this file decides nothing about which answer comes first either.
 loop_read_next_steps() {
     local ended sprag table rows word rest keys ekey eword classified unclassified
+    local scorings scoped probe seen escoring scoring said
     ended="$1"
     [ -n "$ended" ] || return 0
     sprag="$(loop_read_sprag)"
@@ -429,17 +498,74 @@ loop_read_next_steps() {
     fi
     # The rows and not the header: a row is indented, the header is not.
     rows="$(printf '%s\n' "$table" | command grep '^  ' || true)"
+    # ⛔⛔⛔⛔⛔ AND WHETHER ANYTHING WAS EVER GOING TO SCORE THOSE VERDICTS --
+    # register item 982, and this file's own share of item 968.
+    #
+    # Two of the sentences in that table answer *is the work done* -- the one
+    # question a kind's `milestone_check` settles -- and this relay attached them
+    # to NAMED RUNS with nothing beside them. Item 968 measured what that costs
+    # (run 260's row said *the work is unfinished* about a milestone that had
+    # been committed and pushed) and repaired `sprag runs` and the step. This was
+    # the third mouth saying the same sentence, and it was the one left flat.
+    #
+    # ⚠⚠ THE GROUPING SURVIVES, deliberately. This function's own note measured
+    # 48 endings speaking FOUR words and refused forty-eight lines as a wall. So
+    # the split is by (ending, SCORING) and never by run: a tree running one kind
+    # still gets one line per ending, and only a tree that genuinely mixes kinds
+    # pays a second line -- which is a difference a reader acts on.
+    #
+    # ⚠ ONE PROBE, not a guess per line: a build older than this question refuses
+    # the scoring argument, and that is said ONCE in item 824's words. A silent
+    # fallback would leave every line looking scored.
+    scorings=""
+    scoped=0
+    probe="$(printf '%s\n' "$rows" | command sed -n '1s/^  \([^ ][^ ]*\).*/\1/p')"
+    if [ -n "$probe" ] && [ -n "$(loop_read_disposition_row "$sprag" "$probe" "")" ]; then
+        scoped=1
+        scorings="$(loop_read_scorings)"
+    else
+        echo "loop-read: and WHETHER ANYTHING WAS EVER GOING TO SCORE THOSE" \
+             "VERDICTS COULD NOT BE ASKED -- ${sprag} does not take a scoring" \
+             "beside an ending, so the build that replied is older than the" \
+             "question (register item 824). The lines below say what happens" \
+             "next without saying whether anybody was ever going to check it."
+    fi
     while read -r word rest; do
         [ -n "$word" ] || continue
-        keys=""
+        # ── WHICH SCORINGS THE RUNS UNDER THIS WORD RECORDED, in the log's order
+        seen=""
         while read -r ekey eword; do
             [ "$eword" = "$word" ] || continue
-            keys="$keys $ekey"
+            escoring="$(loop_read_scoring_of "$ekey" "$scorings")"
+            case "$seen" in *"[$escoring]"*) continue ;; esac
+            seen="${seen}[$escoring]"
         done <<ENDINGS
 $ended
 ENDINGS
-        [ -n "$keys" ] || continue
-        echo "loop-read: ${keys# } ended '${word}' -- ${rest}"
+        [ -n "$seen" ] || continue
+        while [ -n "$seen" ]; do
+            scoring="${seen#\[}"
+            scoring="${scoring%%\]*}"
+            seen="${seen#*\]}"
+            keys=""
+            while read -r ekey eword; do
+                [ "$eword" = "$word" ] || continue
+                [ "$(loop_read_scoring_of "$ekey" "$scorings")" = "$scoring" ] || continue
+                keys="$keys $ekey"
+            done <<ENDINGS
+$ended
+ENDINGS
+            [ -n "$keys" ] || continue
+            if [ "$scoped" -eq 1 ]; then
+                said="$(loop_read_disposition_row "$sprag" "$word" "$scoring")"
+            else
+                said=""
+            fi
+            # ⚠ The table row is what a build that answered the class and not the
+            # run leaves, and the sentence above has already said why.
+            [ -n "$said" ] || said="$rest"
+            echo "loop-read: ${keys# } ended '${word}' -- ${said}"
+        done
     done <<ROWS
 $rows
 ROWS
@@ -691,7 +817,7 @@ loop_read_gap() {
 # written into this one before it has had the chance.
 loop_read_selftest() {
     local here tmp pass fail said saved_state saved_home rc
-    local scratch_refusal
+    local scratch_refusal probe_key steps
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # ⛔⛔⛔⛔⛔ CHECKED IN THE SAME STATEMENT IT IS TAKEN -- register item 792, and
     # this file did NOT do it in its first draft: the check was one line below, and
@@ -1191,6 +1317,141 @@ NEXTSTEPS
              "which is a REFUSED PUSH rather than a sentence"
         fail=$((fail + 1))
     fi
+
+    # ══ (12x) ⛔⛔⛔⛔⛔ AND WHETHER ANYBODY WAS EVER GOING TO SCORE IT ══════════
+    #
+    # Register item 982. The arms above hold the GROUPING; these hold the thing
+    # that grouping was hiding -- two runs can end on the same word and be owed
+    # opposite amounts of trust, and this relay pooled them into one unhedged
+    # line. ⚠ The double SAYS WHICH SCORING IT WAS ASKED ABOUT, which is the only
+    # way an arm here can tell one sub-group's line from another's; that the real
+    # binary composes a real sentence from it is held in `cli.rs` and by
+    # `Disposition::said_of_run`'s own gate.
+    cat > "$tmp/bin/sprag-scoped" <<'SCOPED'
+#!/usr/bin/env bash
+# ⚠ argv is `disposition [OUTCOME [SCORED_BY]]`, so the scoring is $3 and not $2.
+echo "disposition  — what happens next to a run that ended this way"
+if [ $# -ge 3 ]; then
+  echo "  converged   next_work  DOUBLE SAYS: a next run [scored-by:${3}]"
+  echo "  exhausted   same_work  DOUBLE SAYS: the same work [scored-by:${3}]"
+else
+  echo "  converged   next_work  DOUBLE SAYS: a next run, carrying different work"
+  echo "  exhausted   same_work  DOUBLE SAYS: the same work"
+fi
+SCOPED
+    # ⚠ A build older than the question REFUSES the scoring rather than ignoring
+    # it, which is what the real pre-982 binary does ("one at a time").
+    cat > "$tmp/bin/sprag-scopeless" <<'SCOPELESS'
+#!/usr/bin/env bash
+# ⚠ argv is `disposition [OUTCOME]` for a build older than item 982, so a THIRD
+# argument is the one it refuses.
+if [ $# -ge 3 ]; then
+  echo "disposition: unexpected argument (it takes [OUTCOME], one at a time)" >&2
+  exit 2
+fi
+echo "disposition  — what happens next to a run that ended this way"
+echo "  exhausted   same_work  DOUBLE SAYS: the same work"
+SCOPELESS
+    chmod +x "$tmp/bin/sprag-scoped" "$tmp/bin/sprag-scopeless"
+    # THREE runs, ONE ending word, THREE scorings -- including the run whose
+    # record says nothing, which is the arm a log written before item 968 is
+    # entirely made of.
+    cat > "$tmp/state/sprag/probe.runs.json" <<'SCORINGS'
+{"version":1,"runs":[
+  {"id":70,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"unauthored"}},
+  {"id":71,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"authored"}},
+  {"id":72,"finished":true,"outcome":"exhausted"}]}
+SCORINGS
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag-scoped" loop_read_gap)"
+    # (12x-a) ⭐ EACH SUB-GROUP GETS THE SENTENCE ITS OWN RUNS ARE OWED.
+    if printf '%s' "$said" | command grep -q "probe#70 ended 'exhausted' -- .*scored-by:unauthored" \
+       && printf '%s' "$said" | command grep -q "probe#71 ended 'exhausted' -- .*scored-by:authored"
+    then
+        echo "  ok    runs owed different trust get different sentences"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  REGISTER ITEM 982: one ending word, opposite scorings, and the" \
+             "relay did not ask per scoring: $said"
+        fail=$((fail + 1))
+    fi
+    # (12x-b) ⛔ THE CONTROL THE ARM ABOVE CANNOT BE WITHOUT: the two must not be
+    # named on ONE line. A relay that pooled every key onto every line satisfies
+    # (12x-a) whole, and that pooling is exactly what item 982 was filed on.
+    #
+    # ⚠ Asked as *no single line names both*, not as an adjacency: the keys under
+    # one word arrive in the log's order and a third run between them would make
+    # a substring test pass on a pooled line. Measured — the first spelling of
+    # this arm did exactly that.
+    # ⚠⚠ AND IT READS THE NEXT-STEP LINES ONLY. The clause above them names every
+    # unread ending on ONE line by design (item 798's), so an arm let loose on the
+    # whole report matches that line and fails on a correct build — measured, on
+    # this arm's second spelling.
+    steps="$(printf '%s\n' "$said" | command grep " ended '" || true)"
+    if printf '%s\n' "$steps" | command grep 'probe#70' | command grep -q 'probe#71'; then
+        echo "  FAIL  REGISTER ITEM 982: two runs owed opposite trust are still named" \
+             "on one line, so the sentence is wrong for one of them: $said"
+        fail=$((fail + 1))
+    else
+        echo "  ok    and runs owed different trust are not named on one line"
+        pass=$((pass + 1))
+    fi
+    # (12x-b2) ⛔⛔⛔⛔⛔ AND NO ENDING IS LOST IN THE SPLIT -- rule 6, and the
+    # failure the arms above CANNOT SEE. A sub-grouping that filters runs into
+    # buckets can drop one instead of pooling it, and a dropped ending is a run
+    # that ended with nobody told -- item 798's whole subject, re-created by the
+    # repair for item 982. Measured while writing this: a mutation that pooled
+    # the keys actually DROPPED two of the three, and every arm above stayed
+    # green.
+    for probe_key in 'probe#70' 'probe#71' 'probe#72'; do
+        if printf '%s\n' "$steps" | command grep -q "$probe_key"; then
+            continue
+        fi
+        echo "  FAIL  REGISTER ITEM 982: ${probe_key} ended and no next-step line names" \
+             "it, so splitting by scoring LOST a run: $said"
+        fail=$((fail + 1))
+        probe_key=""
+        break
+    done
+    if [ -n "${probe_key:-}" ]; then
+        echo "  ok    and every ending is still named on some line"
+        pass=$((pass + 1))
+    fi
+    # (12x-c) ⚠ AND *NOBODY WROTE IT DOWN* IS ITS OWN SUB-GROUP -- rule 6. A run
+    # with no scoring recorded must not be folded in with either answer.
+    if printf '%s' "$said" | command grep -q "probe#72 ended 'exhausted' -- .*scored-by:\]"; then
+        echo "  ok    and a run whose record says nothing is asked about as such"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  REGISTER ITEM 982: a run with no scoring recorded was not asked" \
+             "about under the empty spelling: $said"
+        fail=$((fail + 1))
+    fi
+    # (12x-d) ⛔⛔⛔ A BUILD OLDER THAN THE QUESTION SAYS SO, ONCE, AND STILL
+    # REPORTS -- item 824's shape. A silent fallback would leave every line
+    # looking scored, which is worse than the state item 982 repaired.
+    said="$(LOOP_READ_SPRAG="$tmp/bin/sprag-scopeless" loop_read_gap)"
+    case "$said" in
+        *"COULD NOT BE ASKED"*"register item 824"*"probe#70"*)
+            echo "  ok    a build that cannot be asked says so and still reports"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  REGISTER ITEM 982: an older build's report said: $said"
+            fail=$((fail + 1)) ;;
+    esac
+    # (12x-e) ⛔⛔⛔⛔⛔ AND ALL OF IT UNDER `set -euo pipefail` -- arm (12e)'s
+    # lesson, which this file paid a REFUSED PUSH for once. The scoring clause
+    # adds a `grep`, a `sed` and a command substitution to that path.
+    bash -c 'set -euo pipefail; . "$1"; LOOP_READ_SPRAG="$2" loop_read_gap >/dev/null' \
+        _ "$here/loop-read.sh" "$tmp/bin/sprag-scoped"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  ok    the scoring clause exits 0 under set -euo pipefail"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  the scoring clause exits ${rc} under set -euo pipefail," \
+             "which is a REFUSED PUSH rather than a sentence"
+        fail=$((fail + 1))
+    fi
+
     # (12f) ⛔⛔⛔⛔⛔ AND WHETHER NOW -- register item 868(3), the second
     # authority over the instant (12a) names the party for.
     #

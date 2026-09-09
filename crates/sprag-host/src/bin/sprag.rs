@@ -581,7 +581,18 @@ fn words(args: Vec<String>) -> io::Result<()> {
 /// ⚠ The pairing is asked of [`Disposition::table`](sprag_plugin::driver::Disposition::table) and
 /// never spelled here — the rule `outcome_word` states and the defect items 855 and 864 each
 /// paid for: a renderer with its own opinion is a second authority on a set `sprag_plugin` owns.
-fn disposition_rows() -> Vec<String> {
+///
+/// ⛔⛔⛔⛔⛔ **AND `scoring` IS WHOSE SENTENCE THIS IS** — register item 982. [`None`] asks for the
+/// CLASS's sentence, which is what this table has always published and what every existing reader
+/// of it holds: *runs that end this way are followed by X*, with no run in view and so nothing to
+/// hedge. [`Some`] asks for ONE RUN's, and a run knows something the class cannot — whether
+/// anything was ever going to score the verdict inside that sentence.
+///
+/// ⚠⚠ The two are the SAME ROW in every other field, which is `words`' rule as this verb already
+/// applies it: printing the class's answer and one run's are the same act over a different
+/// question, so a caller who names a scoring cannot come to be formatted differently from one who
+/// does not. `.githooks/loop-read.sh` parses both forms with one reader.
+fn disposition_rows(scoring: Option<sprag_plugin::Scoring>) -> Vec<String> {
     sprag_plugin::driver::Disposition::table()
         .map(|(word, next)| {
             // ⛔⛔⛔⛔⛔ THE THIRD COLUMN IS WHAT A MACHINE MAY DO ALONE — register item 872(2), and
@@ -604,7 +615,15 @@ fn disposition_rows() -> Vec<String> {
                 next.wire_str(),
                 next.unattended().wire_str(),
                 next.opens_next().wire_str(),
-                next.describe(),
+                // ⛔⛔⛔⛔⛔ AND THE HEDGE RIDES INSIDE THIS SENTENCE, not in a column of its own —
+                // register item 982. It qualifies a CLAUSE of this sentence (*the work is
+                // unfinished*), and a hedge parked in its own field would be a reader's job to
+                // join back up. ⚠ Asked of the type: `said_of_run` composes it from
+                // `Scoring::said`, which is the one place item 968(3) put that clause.
+                scoring.map_or_else(
+                    || next.describe().to_owned(),
+                    |whose| next.said_of_run(whose),
+                ),
                 next.unattended().describe(),
                 next.opens_next().describe(),
             )
@@ -660,15 +679,45 @@ fn disposition_rows() -> Vec<String> {
 /// [`io::ErrorKind::InvalidInput`] for an outcome word nothing classifies, and for a second
 /// argument.
 fn disposition(args: Vec<String>) -> io::Result<()> {
-    if let Some(extra) = args.get(1) {
+    if let Some(extra) = args.get(2) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "disposition: unexpected argument {extra:?} (it takes [OUTCOME], one at a time)"
+                "disposition: unexpected argument {extra:?} (it takes [OUTCOME [SCORED_BY]], one \
+                 ending at a time)"
             ),
         ));
     }
-    let rows = disposition_rows();
+    // ⛔⛔⛔⛔⛔ AND WHOSE SENTENCE IS BEING ASKED FOR — register item 982.
+    //
+    // ⚠⚠ AN UNKNOWN SPELLING IS A REFUSAL THAT NAMES WHAT THERE IS, this file's rule for the
+    // ending word one line up and rule 6's answer generally. `Scoring::of_wire` is deliberately
+    // forgiving because a RECORD's unknown word must read as *nothing classified it*; an ARGUMENT's
+    // must not, or a caller who misspelled `unauthored` would silently be handed the hedged
+    // sentence and believe they had asked about a run that authors a checker.
+    //
+    // ⚠ THE EMPTY SPELLING IS ONE OF THE THREE and is not the same as omitting the argument.
+    // Omitting it asks what happens next to runs that end this way — a question about the CLASS,
+    // with no run to hedge for. Passing the empty string asks about a run whose record does not say
+    // whether anything was going to score it, which hedges. `Scoring::asked_as` owns both.
+    let scoring = match args.get(1) {
+        None => None,
+        Some(word) => Some(sprag_plugin::Scoring::of_asked(word).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "disposition: nothing in this build spells what was going to score a run's \
+                     milestone verdicts as {word:?}. The spellings it knows are {}.",
+                    sprag_plugin::Scoring::ALL
+                        .iter()
+                        .map(|arm| format!("{:?}", arm.asked_as()))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+            )
+        })?),
+    };
+    let rows = disposition_rows(scoring);
     // ⚠ THE FILTER IS THE ONLY BRANCH — `words`' rule, for `words`' reason: printing every row and
     // printing one are the same act over a different set, so a named OUTCOME cannot come to be
     // formatted differently from the whole. The hook that parses these rows reads both forms.
@@ -14147,7 +14196,7 @@ mod tests {
              `.githooks/loop-read.sh` — runs at push time with no daemon at all.",
         );
 
-        let rows = disposition_rows();
+        let rows = disposition_rows(None);
         assert_eq!(
             rows.len(),
             Disposition::table().count(),
@@ -14226,11 +14275,31 @@ mod tests {
             );
         }
 
+        // ⚠⚠ TWO ENDINGS AT ONCE IS STILL REFUSED, and since register item 982 the second slot is
+        // a SCORING rather than a second ending — so the refusal a caller meets names the
+        // spellings that slot has, which is rule 6's shape and better than the one it replaced.
         let extra = disposition(vec!["failed".to_owned(), "converged".to_owned()])
             .expect_err("⚠⚠ two endings at once is refused rather than half-honoured");
+        let said = extra.to_string();
         assert!(
-            extra.to_string().contains("one at a time"),
-            "⚠ and the refusal says what the shape is: {extra}",
+            said.contains("converged"),
+            "⚠⚠⚠ the refusal must quote what was ASKED, or a caller cannot see which word it \
+             objected to: {said}",
+        );
+        for arm in sprag_plugin::Scoring::ALL {
+            assert!(
+                said.contains(&format!("{:?}", arm.asked_as())),
+                "⛔⛔⛔ REGISTER ITEM 982: this refusal does not name the spelling {:?}, so a \
+                 caller is told their word is wrong and left to go and find the list — the thing \
+                 this verb exists to stop them needing. Said: {said}",
+                arm.asked_as(),
+            );
+        }
+        let third = disposition(vec!["failed".to_owned(), String::new(), "extra".to_owned()])
+            .expect_err("⚠⚠ a third argument is refused rather than half-honoured");
+        assert!(
+            third.to_string().contains("one ending at a time"),
+            "⚠ and the refusal says what the shape is: {third}",
         );
     }
 
