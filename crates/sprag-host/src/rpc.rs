@@ -5787,49 +5787,79 @@ mod tests {
     /// waiter that can never wake at all — a park against a token nothing bumps looks identical —
     /// so the second half is what makes the first mean anything.
     ///
-    /// REVERT-PROOF: park against `state.waiters(BOOT)` / `state.revision(BOOT)` in `dispatch_one`
-    /// (the one-token behaviour) and the first assertion fails on `work`'s wait being answered by
-    /// the default session's bump.
+    /// REVERT-PROOF, and each half has its OWN mutation because they fail in different places —
+    /// both run 2026-09-10 rather than reasoned about, which is how the sentence this replaces was
+    /// found to name the wrong assertion:
+    ///
+    /// * park against `state.waiters("0")` / `state.revision("0")` in `dispatch_one` (the one-token
+    ///   behaviour) and the wait is not in `work`'s registry at all, so **`the wait parked on its
+    ///   own session` fails `left: 0, right: 1`** — BEFORE any wake is even possible. The old note
+    ///   here promised the wake assertion instead, which this mutation never reaches.
+    /// * leave the park correct and widen the BUMP (`announce` over every live session) and
+    ///   **INTERVAL TWO fails `left: 3, right: 2`**: that is the leak this test is named for, and
+    ///   the interval is what states it.
     #[test]
     fn a_wait_sleeps_through_another_sessions_changes() {
         let state = host_with("cat", 20, 4);
         // A second session, born with its own pane — the state where two sessions can move
         // independently, which is the only state in which this claim is stateable.
+        //
+        // ⛔⛔⛔⛔⛔ **AND BORN ON A CHILD THAT CANNOT SPEAK** — register item 975, and the `cmd`
+        // below is the whole of the repair.
+        //
+        // `new_session` with no `cmd` births that pane on `default-command`, falling through to
+        // the machine's `$SHELL`: a real interactive shell, which prints a prompt on ITS OWN
+        // schedule. That output is a genuine change in `work`; `bump_on_dirty` moves `work`'s
+        // revision for it, exactly as it should; and the wait parked below is then answered BY THE
+        // SESSION IT IS SCOPED TO — which the assertions cannot tell apart from the leak this test
+        // is named for. So what made the claim unstateable was this FIXTURE and not the product,
+        // and it is the fixture that is repaired. [`host_with`] had always birthed the BOOT pane on
+        // a silent `cat` for exactly this reason; the birth pane is the one place the discipline
+        // was escaped, because its command comes from the MACHINE rather than from this test.
+        //
+        // ⇒ **The repair this replaces waited for the shell to go quiet instead** (`settle`, on two
+        // 20 ms samples that agree), and item 975 was opened when CI stayed red anyway.
+        // **Measured 2026-09-10 with a probe that ran no request at all**: after that settle had
+        // answered, a plain two-second sleep moved `work` `1 -> 2` under `--test-threads 128`.
+        // ⛔ A quiet interval is not a promise about a child the scheduler has not run yet, so no
+        // length of it could have been enough — the negative fact this test needs is not something
+        // that can be waited for. The same probe under the same load read `1 -> 1` once the birth
+        // pane was `cat`, whose stdin nothing writes to and which therefore writes nothing back,
+        // on every platform.
         let created = serve_one(
             &state,
-            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_mux/external/new_session","args":{"name":"work"}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/invoke","params":{"path":"/sprag_mux/external/new_session","args":{"name":"work","cmd":["cat"]}}}"#,
         );
         assert_eq!(
             created["result"], "work",
             "the second session exists: {created}"
         );
 
-        // ⛔⛔⛔⛔⛔ **AND WAIT FOR IT TO STOP MOVING FIRST** — register item 974, and this is the
-        // repair rather than the tidying.
+        // ⛔⛔ **AND THE PREMISE IS ASKED OF THE PRODUCT RATHER THAN LEFT TO THE REQUEST ABOVE** —
+        // register item 975.
         //
-        // `new_session` answers as soon as the session exists; the pane it was born with then
-        // writes its first output, and `bump_on_dirty` advances that session's revision
-        // ASYNCHRONOUSLY. A baseline read before that lands is STALE, so the wait below parks
-        // against a number the session has already passed and its own late bump answers it —
-        // which looks exactly like another session's change leaking in, and the assertion further
-        // down used to say so.
-        //
-        // ⇒ **Measured on this machine 2026-09-08 by oversubscribing the test threads**, which is
-        // what a small CI runner does to a big suite: at `RUST_TEST_THREADS` 64, 128 and 256 this
-        // gate failed **5 runs out of 6** (at the machine's own 32-thread default it had passed 12
-        // times running). Every failure was INTERVAL TWO, `work` moving from 1 to 2 on its own.
-        // That is the condition item 974 asked to be named, and CI's `headless (linux)` had it
-        // twice in five runs.
-        //
-        // ⚠⚠ **Waiting here is not the flaky shape this register warns about.** The wall clock is
-        // in the FIXTURE, not in a predicate: nothing below asserts a duration, and the two
-        // INTERVAL assertions state exactly what this wait has to have achieved — so if it ever
-        // stops achieving it, they say which half moved rather than blaming the wrong session.
-        settle("`work` to stop bumping its own revision", || {
-            let before = state.revision("work").current();
-            sleep(Duration::from_millis(20));
-            state.revision("work").current() == before
-        });
+        // Dropping that `cmd` restores a red that is green on any unloaded machine and needs a
+        // loaded one to show itself, which is what cost two rounds to attribute. Asking the panes
+        // slot what `work` is ACTUALLY running turns that same edit into an immediate failure that
+        // no amount of load or luck can hide, so the fixture's premise is a checked predicate here
+        // rather than a convention someone has to remember.
+        let birth_command = {
+            let panes = serve_one(
+                &state,
+                r#"{"jsonrpc":"2.0","id":9,"method":"scene/query","params":{"session":"work","path":"/sprag_mux/external/panes"}}"#,
+            );
+            panes["result"][0]["command"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert_eq!(
+            birth_command, "cat",
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 975: `work`'s birth pane must run a child that writes \
+             NOTHING. A shell's prompt is a real change in `work`, so it would answer the wait \
+             parked below from INSIDE the session that wait is scoped to — and the assertions \
+             would blame a scope leak for this test's own fixture.",
+        );
 
         // Park a wait scoped to `work`, against `work`'s OWN baseline. The baseline is read under
         // that name for the same reason a client re-reads `scene/revision` after re-scoping: two
@@ -5853,12 +5883,13 @@ mod tests {
         // and then `parked_count` is 0 and its sentence, *the wait parked on its own session*,
         // blames the scope for what a stale baseline did.
         //
-        // ⚠ Measured 2026-09-08 at `--test-threads 128`, which reddens this gate in **6 runs out of
-        // 6** on the owner's 32-core machine: with the count asserted first, one captured failure
-        // came back as `parked_count` `left: 0, right: 1` — a sentence about scopes for a stale
-        // baseline. With the interval first, six consecutive runs named INTERVAL TWO instead, which
-        // is the reading item 975 is open on. Same defect, and only one of the two orderings says
-        // so.
+        // ⚠ Measured 2026-09-08 at `--test-threads 128`, back when the birth pane was a shell and
+        // that reddened this gate in **6 runs out of 6** on the owner's 32-core machine: with the
+        // count asserted first, one captured failure came back as `parked_count` `left: 0,
+        // right: 1` — a sentence about scopes for a stale baseline. With the interval first, six
+        // consecutive runs named INTERVAL TWO instead, which is the reading that led to the birth
+        // pane above. Same defect, and only one of the two orderings said so — which is why the
+        // order is kept now that the fixture no longer produces the defect.
         let at_park = state.revision("work").current();
         assert_eq!(
             at_park, since,
@@ -5901,15 +5932,20 @@ mod tests {
         // ⇒ So the premise is now a separate assertion with its own sentence. A future failure
         // names its own cause instead of leaving the next round to guess, which is what register
         // item 974's ⑴ asks for on a red nobody can reproduce.
+        //
+        // ⇒ ⭐ **And it answered: the second one, every time** — register item 975. Under load
+        // `work` moved on its own, its birth SHELL was what moved it, and no request had to run at
+        // all for that to happen. The fixture above is where that was fixed, so this assertion now
+        // stands over a session nothing but a deliberate request can move.
         let work_now = state.revision("work").current();
         assert_eq!(
             work_now, since,
             "⛔⛔⛔⛔⛔ REGISTER ITEM 975, INTERVAL TWO: `work` was at {since} when the wait parked \
-             — AFTER settling, which INTERVAL ONE asserts — and is at {work_now} now, having been \
-             asked to do NOTHING in between; the only request that ran was a spawn into the \
-             DEFAULT session. That is the measurement. WHY this session's counter moved is not, \
-             and item 975 is open on it: the settle above rules out its own late bump, which is \
-             the half item 974's intervals were built to separate.",
+             and is at {work_now} now, having been asked to do NOTHING in between; the only \
+             request that ran was a spawn into the DEFAULT session. Its birth pane runs a child \
+             that writes nothing (asserted above), so this session has no output of its own to \
+             arrive late — which is the half item 974's intervals were built to separate, and it \
+             is ruled out by construction here rather than by waiting.",
         );
         let answered = sink.lock().unwrap();
         assert!(
