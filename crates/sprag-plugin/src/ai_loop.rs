@@ -216,6 +216,9 @@ struct Learned<'a> {
     /// Whether the turn this pass ENDED produced anything — register item 719, and [`None`] on
     /// every pass that ended no turn.
     made: Option<crate::outer::Made>,
+    /// What the SERVICE said when it refused the turn this pass ended — register item 988, and
+    /// [`None`] wherever it refused nothing. The verdict is in `made`; this is what arrived.
+    service_said: Option<&'a str>,
     /// What that check said BESIDE its verdict — register item 461.
     ///
     /// ⚠ Borrowed, like [`found`](Self::found) and [`unreadable`](Self::unreadable) beside it: this
@@ -569,6 +572,7 @@ impl AiLoop {
             unreadable,
             checked,
             made,
+            service_said,
             explained,
             shown,
             admits,
@@ -598,6 +602,24 @@ impl AiLoop {
         // say so too. ⚠ The unmeasured answer says nothing, and [`Made::describe`] holds why.
         if let Some(outcome) = made.and_then(crate::outer::Made::describe) {
             note = format!("{note} — {outcome}");
+        }
+        // ⛔⛔⛔⛔⛔ **AND WHAT THE SERVICE SAID WHEN IT REFUSED** — register item 988, appended to the
+        // verdict above rather than replacing it, which is `explained`'s arrangement four clauses
+        // down and for its measured reason: *the service refused this turn* is one fact and *"you
+        // have hit your weekly limit"* is another, and a person deciding what to DO needs both.
+        //
+        // ⚠⚠ QUOTED AND ATTRIBUTED, exactly as a checker's words are: every other clause on this
+        // line is this product speaking, and this one is a service's own sentence arriving in front
+        // of somebody who will act on it.
+        //
+        // ⚠ A refusal that carried no words says so rather than quoting an empty string — the
+        // reader of `Spend::refused` keeps `Some("")` for exactly that case, because dropping it
+        // would have reported the row as answered.
+        if let Some(said) = service_said {
+            note = match said.trim() {
+                "" => format!("{note}, and it said nothing this run could quote"),
+                words => format!("{note}, and what it said was: \"{words}\""),
+            };
         }
         // ⚠⚠⚠⚠ THE CLAIM'S VERDICT COMES STRAIGHT AFTER THE CAUSE, and it is APPENDED rather than
         // substituted — register item 428, learned from three neighbouring gates in one run. The
@@ -1699,6 +1721,7 @@ impl Plugin for AiLoop {
                 unreadable,
                 checked,
                 made,
+                service_said,
                 explained,
                 shown,
                 admits,
@@ -1763,6 +1786,7 @@ impl Plugin for AiLoop {
                         unreadable: unreadable.as_deref(),
                         checked,
                         made,
+                        service_said: service_said.as_deref(),
                         explained: explained.as_deref(),
                         shown,
                         admits,

@@ -4287,6 +4287,17 @@ pub enum Pumped {
         /// ⚠ It is [`Made`] rather than a count for the reason that type holds — the count is in
         /// the sentence and the WORD is what could ever be routed on.
         made: Option<Made>,
+        /// ⛔⛔⛔⛔⛔ **WHAT THE SERVICE SAID WHEN IT REFUSED THIS TURN**, and [`None`] on every pass
+        /// where it refused nothing — register item 988, and [`Made::Refused`]'s other half.
+        ///
+        /// It is beside `made` for `explained`'s reason exactly: the verdict says WHAT happened and
+        /// this says what arrived. A weekly limit and a five-hundred are one verdict and two acts
+        /// for a person, and a run that said only *refused* would leave them indistinguishable —
+        /// which is what item 988's own run could not tell anybody.
+        ///
+        /// ⚠ Named for the SERVICE and not `refused`, which in this file already means the prompt
+        /// texts a peer would not submit (register item 719).
+        service_said: Option<String>,
         /// **WHAT PROVED THIS PASS'S DELIVERY ARRIVED** — and [`None`] both for a pass that
         /// delivered nothing and for one whose evidence is what this run was already told. See
         /// [`Witnessed`](crate::deliver::Witnessed) for why a success still owes a word (register
@@ -5391,6 +5402,30 @@ pub enum Made {
     /// ⚠ The count is carried for the walk and never for a guard — see the type, and [`Checked`]'s
     /// `explained` for the same division between what routes and what is merely said.
     Something(u64),
+    /// ⛔⛔⛔⛔⛔ **THE SERVICE REFUSED THIS SESSION'S NEWEST REQUEST**, in the words it used —
+    /// register item 988, and the arm that tells *nothing was written* from *nothing was allowed*.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the missing arm cost, measured
+    ///
+    /// A refusal bills nothing, so [`Nothing`](Self::Nothing) was the honest reading of the numbers
+    /// and the WRONG reading of the session: register item 878 replaces a peer that writes nothing
+    /// and then fails the run. Run 270 (2026-09-09) was told *"You've hit your weekly limit"* once
+    /// per prompt, three prompts running, and died at `empty_max` — 45 minutes before the same
+    /// session was answered and went on to commit 1,648 lines.
+    ///
+    /// ⚠⚠ **IT PUBLISHES ITS OWN WORD, so the document's streak neither counts it nor clears it.**
+    /// That is not a new mechanism: `judging` already writes `'nothing'` counts, `'something'`
+    /// clears, and anything else does neither — the split register item 878 built and
+    /// `a_turn_that_could_not_be_measured_does_not_wipe_the_streak` holds. A refused turn joins the
+    /// third case, which is exactly true of it: nothing about the agent was learned.
+    ///
+    /// ⚠⚠ **AND IT CARRIES NO WORDS, WHICH IS [`Checked`]'S DIVISION AND NOT A SHORTAGE.** A
+    /// weekly limit and a five-hundred want different acts from a person, so the words matter — and
+    /// they travel beside this on their own channel exactly as a checker's do
+    /// ([`Pumped::Moved`]'s `refused`, [`Checked`]'s `explained` one fact over). Kept HERE they
+    /// would cost this type its [`Copy`], which `Learned`'s own doc leans on so that a caller
+    /// cannot half-fill a walk's facts.
+    Refused,
 }
 
 impl Made {
@@ -5405,6 +5440,12 @@ impl Made {
             Self::Unmeasured => None,
             Self::Nothing => Some("nothing"),
             Self::Something(_) => Some("something"),
+            // ⛔⛔⛔⛔⛔ ITS OWN WORD — register item 988. `judging` counts `'nothing'` and clears on
+            // `'something'`, so a word that is neither lands in the third case by construction:
+            // a refused turn neither confirms a silent session nor absolves one, which is exactly
+            // what it is. A document that wants to ACT on an outage reads this name; one that does
+            // not behaves as it always did.
+            Self::Refused => Some("refused"),
         }
     }
 
@@ -5427,6 +5468,14 @@ impl Made {
             Self::Something(tokens) => {
                 Some(format!("and this turn produced {tokens} tokens of output"))
             }
+            // ⚠⚠ THE WORDS ARE NOT HERE — see the arm. The walk appends them from its own channel,
+            // so this says the FACT and the service says what it said.
+            Self::Refused => Some(
+                "AND THE SERVICE REFUSED THIS TURN — its session's record holds a synthetic error \
+                 rather than an answer, so nothing was learned about the agent: it was never \
+                 allowed to reply"
+                    .to_owned(),
+            ),
         }
     }
 
@@ -6970,6 +7019,19 @@ pub struct OuterLoop {
     /// would be R396's thirteen identical lines — a verdict about a turn that had already been
     /// judged, printed onto every step that followed it.
     made: Option<Made>,
+    /// ⛔⛔⛔⛔⛔ **WHAT THE SERVICE SAID WHEN IT REFUSED THE TURN THAT JUST ENDED** — register item
+    /// 988, written by [`costs_now`](Self::costs_now) in the same breath as
+    /// [`made`](Self#structfield.made) and read at the funnel on the same pass.
+    ///
+    /// ⚠⚠ **IT BELONGS TO ONE TURN, exactly as `made` does**, and never to the run: a session
+    /// refused at 12:23 and answered at 13:07 is not a session in an outage at 13:07. So this is
+    /// overwritten by every judged turn's read, including with [`None`], which is the difference
+    /// between it and the two LEVELS one field up.
+    ///
+    /// ⚠⚠ **NOT `refused`, WHICH IS ALREADY TAKEN AND MEANS SOMETHING ELSE** — that one holds the
+    /// prompt TEXTS a peer would not submit (register item 719's retyping bound). One word for two
+    /// facts in one type is how a later reader comes to believe the wrong one.
+    service_said: Option<String>,
     /// ⚠⚠⚠⚠ **WHAT PROVED THIS PASS'S DELIVERY ARRIVED** — register item 434. Written by
     /// [`say`](Self::say) on every delivery it makes, whichever caller asked for one, and read at
     /// the funnel so it belongs to the pass that earned it. See
@@ -7348,6 +7410,8 @@ impl OuterLoop {
             dearest: None,
             // ⚠ No turn has ended, so there is no turn for this to be an answer about.
             made: None,
+            // ⚠ And no service has refused a turn, for the same reason — register item 988.
+            service_said: None,
             witnessed: None,
             walked: Vec::new(),
             // ⚠ Nothing has been typed at yet, which is not the same as a peer that could not be
@@ -10088,6 +10152,8 @@ impl OuterLoop {
                     // 719 was measured inside, and the honest answer is still that this pass took
                     // no turn rather than that a turn came to nothing.
                     made: None,
+                    // ⚠ AND NO TURN ENDED, so no service refused one — register item 988.
+                    service_said: None,
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
                     // said beside, and no artifact for anything to have been shown — see
                     // `Pumped::Moved`'s `explained` and `shown`.
@@ -10135,6 +10201,8 @@ impl OuterLoop {
                     // ⚠ NOR DID A TURN END. The peer left mid-turn, and *this turn produced
                     // nothing* is a verdict about an agent that answered — which this one did not.
                     made: None,
+                    // ⚠ AND NO TURN ENDED, so no service refused one — register item 988.
+                    service_said: None,
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
                     // said beside, and no artifact for anything to have been shown — see
                     // `Pumped::Moved`'s `explained` and `shown`.
@@ -10235,6 +10303,8 @@ impl OuterLoop {
                     // ⚠ NOR DID A TURN END. Nothing was asked, so there is no turn for anything to
                     // have produced.
                     made: None,
+                    // ⚠ AND NO TURN ENDED, so no service refused one — register item 988.
+                    service_said: None,
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
                     // said beside, and no artifact for anything to have been shown.
                     explained: None,
@@ -10754,6 +10824,14 @@ impl OuterLoop {
             // what it did, and the topology is the document's business.
             made: (event == AiLoopEvent::TurnDone)
                 .then_some(self.made)
+                .flatten(),
+            // ⚠⚠ THE WORDS BESIDE THAT VERDICT, on the same pass and by the same rule — register
+            // item 988, and `explained`'s arrangement one fact over: `made` says the service
+            // refused and this says what it said. Carried here rather than kept on the loop as a
+            // level, because it belongs to the TURN — a later pass reading the slot would quote an
+            // outage at a step that took no turn.
+            service_said: (event == AiLoopEvent::TurnDone)
+                .then(|| self.service_said.clone())
                 .flatten(),
             // ⚠ ON THE PASSES THAT JUDGED AND NO OTHER. The verdict belongs to the claim this
             // judgement made, and `verdict` is written fresh by every judgement — so a later pass
@@ -14346,7 +14424,25 @@ impl OuterLoop {
         // that raise `turn.done` come through here, so there is no edge where the baseline moves
         // without the verdict being taken, and none where it is taken twice for one turn.
         let now = spend.map(|spend| spend.produced);
-        self.made = Some(Made::between(self.driving.produced, now));
+        // ⛔⛔⛔⛔⛔ **AND A REFUSAL IS DECIDED HERE, AHEAD OF THE DIFFERENCE** — register item 988.
+        // The comparison below is honest about the NUMBERS and cannot be honest about their
+        // MEANING: a refused request bills nothing, so `now == before` and the answer would be
+        // `Nothing` — *the agent answered and wrote not one token of work* — about a session that
+        // was never allowed to answer. Run 270 died of exactly that sentence, three prompts running.
+        //
+        // ⚠⚠ AHEAD rather than folded INTO `Made::between`: that function's whole subject is two
+        // readings of one number, and a third input would make it answer a question it cannot see
+        // the evidence for. Here the evidence is in hand.
+        //
+        // ⚠ THE BASELINE STILL MOVES BELOW on a reading that happened, refused or not — the total
+        // is real (it did not change, and that IS the reading), so a later answered turn compares
+        // against the truth rather than against a gap.
+        let service_said = spend.and_then(|spend| spend.refused.clone());
+        self.made = Some(match service_said {
+            Some(_) => Made::Refused,
+            None => Made::between(self.driving.produced, now),
+        });
+        self.service_said = service_said;
         // ⚠⚠ THE BASELINE MOVES ONLY ON A READING THAT HAPPENED. A turn whose record could not be
         // read must not overwrite the last real reading with `None`: the NEXT turn would then be
         // `Unmeasured` as well, so one unreadable moment would cost two turns their answer instead
@@ -21530,6 +21626,8 @@ mod tests {
                 checked: None,
                 // ⚠ AND NO TURN ENDED, so there is nothing this pass could have produced either.
                 made: None,
+                // ⚠ Nor anything for a service to have refused — register item 988.
+                service_said: None,
                 explained: None,
                 shown: None,
                 // ⚠ AND NOTHING REFLECTED, so no successor was proposed for a classifier to be
@@ -24586,6 +24684,11 @@ mod tests {
         /// confused with the fixture's own per-request output would let a reader answering with the
         /// wrong number look right.
         const WROTE: u64 = 37;
+        /// ⛔⛔⛔⛔⛔ **THE SERVICE REFUSING, IN RUN 270's OWN SHAPE** — register item 988: the flag
+        /// at the top level, `<synthetic>` for a model, a usage block of zeros that still carries a
+        /// cache read (which is what makes the row reach the billed-request path), and the sentence
+        /// a person has to see.
+        const REFUSAL: &str = r#"{"type":"assistant","isApiErrorMessage":true,"message":{"id":"msg_refused","model":"<synthetic>","content":[{"type":"text","text":"You've hit your weekly limit · resets Sep 11, 6am (Asia/Seoul)"}],"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}"#;
 
         let sample = crate::testing::MEASURED_HERE;
         let still = sample.transcript();
@@ -24616,6 +24719,12 @@ mod tests {
             made: Option<Made>,
             /// `_event.data.produced` as the datamodel holds it — [`None`] where it holds `false`.
             held: Option<String>,
+            /// ⛔⛔⛔⛔⛔ **THE STREAK THAT WORD MOVED** — register item 988, and the only direct
+            /// evidence for the claim the repair is actually about: a run dies at
+            /// `empty_turns >= empty_max`, so *the loop no longer kills a refused session* is a
+            /// statement about THIS number and about nothing else. Read from the machine rather
+            /// than from the driver, for `held`'s reason one field up.
+            streak: Option<i64>,
         }
 
         /// Drive one arm two turns deep and say what the loop made of each.
@@ -24695,7 +24804,14 @@ mod tests {
                             Ok(ScriptValue::String(word)) => Some(word),
                             _ => None,
                         };
-                        seen.push(Turn { made, held });
+                        // ⚠ AND THE STREAK IT MOVED, read in the same breath and from the same
+                        // place — register item 988. `judging`'s `onentry` assigns both.
+                        let streak = match loops.script.get_variable(&loops.session, "empty_turns")
+                        {
+                            Ok(ScriptValue::Int(count)) => Some(count),
+                            _ => None,
+                        };
+                        seen.push(Turn { made, held, streak });
                         // ⚠ THE ONE THING THE ARMS DIFFER BY, applied AFTER the first turn's
                         // reading has been taken and before the second's: an agent's record grows
                         // while it works, and this is that growth arriving between two turns.
@@ -24718,11 +24834,18 @@ mod tests {
         std::fs::create_dir_all(&home).expect("a directory to file the record in");
         let stuck_at = home.join("what-the-stuck-session-said.jsonl");
         let moving_at = home.join("what-the-working-session-said.jsonl");
+        let refused_at = home.join("what-the-refused-session-said.jsonl");
         std::fs::write(&stuck_at, &still).expect("the agent's own record");
         std::fs::write(&moving_at, &still).expect("the agent's own record");
+        std::fs::write(&refused_at, &still).expect("the agent's own record");
 
         let (stuck, stuck_context, stuck_walk) = turns(&stuck_at, None);
         let (moving, moving_context, moving_walk) = turns(&moving_at, Some(&grown));
+        // ⛔⛔⛔⛔⛔ THE THIRD ARM — register item 988: between the two turns the SERVICE refuses,
+        // which is a row appended to the same record. Everything else about this arm is the stuck
+        // one, so the only thing that can make its answer differ is the refusal.
+        let (refused, refused_context, refused_walk) =
+            turns(&refused_at, Some(&format!("{still}\n{REFUSAL}")));
         let _ = std::fs::remove_dir_all(&home);
 
         // ⚠⚠⚠⚠ THE FIRST PREMISE. Everything below is a claim about a TURN, and an arm that never
@@ -24783,6 +24906,63 @@ mod tests {
             "⚠⚠⚠⚠ AND THE LOOP MUST HOLD IT, not merely have worked it out. The verdict above is \
              the driver's; this is what the document was told, and item 719 is owed the second — \
              the reader that was missing is the LOOP, not a person reading a run's journal",
+        );
+
+        // ⛔⛔⛔⛔⛔ **AND THE THIRD ANSWER — register item 988.** The refused arm's record did NOT
+        // grow in output, exactly like the stuck arm's, so a loop reading only the number answers
+        // `nothing` for both. That is what killed run 270: three prompts, three refusals, and the
+        // silence rule counting them as an agent that would not work.
+        assert_eq!(
+            (refused.len(), refused_context),
+            (2, read),
+            "⚠⚠⚠ THE PREMISES FOR THIS ARM TOO: two turns really completed, and the record really \
+             was read — a refusal must not be staged by making the reading fail, which would answer \
+             `false` for a completely different reason. Refused walked {refused_walk:?}",
+        );
+        assert_eq!(
+            refused[1].made,
+            Some(Made::Refused),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 988: the second turn of the refused arm must be REFUSED and not \
+             `Nothing`. Both records held the same output total across the two turns; the only \
+             difference is that this one's newest row says the service would not answer. Read as \
+             `Nothing` it accuses a session that was never allowed to speak, which is the sentence \
+             run 270 died of.\n  refused walked {refused_walk:?}",
+        );
+        assert_eq!(
+            refused[1].held.as_deref(),
+            Some("refused"),
+            "⚠⚠⚠⚠ AND THE DOCUMENT MUST HOLD ITS OWN WORD FOR IT — `nothing` counts toward \
+             `empty_max` and `something` clears it, so a third word is how a refused turn does \
+             NEITHER. Held as `nothing` the document would replace the session and then fail the \
+             run; held as `something` it would absolve a peer nobody has heard from",
+        );
+        assert_ne!(
+            refused[1].held.as_deref(),
+            stuck[1].held.as_deref(),
+            "⚠⚠ AND THE CONTROL FOR THAT WORD: the stuck arm still says `nothing`, so this gate is \
+             about the refusal and not about a build that renamed every empty turn",
+        );
+
+        // ⛔⛔⛔⛔⛔ **AND THE CONSEQUENCE, WHICH IS THE WHOLE CLAIM** — register item 988. A run dies
+        // at `empty_turns >= empty_max`, so *a refused session is no longer killed* is a statement
+        // about this number. The trajectory is asserted rather than the endpoint: the stuck arm
+        // must CLIMB (or the fixture is not staging silence at all) and the refused arm must stay
+        // at zero (or the word is decoration).
+        assert_eq!(
+            (
+                stuck[0].streak,
+                stuck[1].streak,
+                refused[0].streak,
+                refused[1].streak
+            ),
+            (Some(0), Some(1), Some(0), Some(0)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 988: the stuck arm's streak must CLIMB while the refused arm's \
+             stays where it was. Both first turns are `Unmeasured` — a session's first turn has no \
+             earlier reading of its own — so both start at 0; the stuck arm's second turn is \
+             `Nothing` and takes it to 1, and the refused arm's second turn must take it nowhere. \
+             ⚠ Two turns is one short of `empty_max`, which is why this reads the CLIMB rather than \
+             the death: a third silent turn is what ends a run, and held as `nothing` a refusal \
+             would carry it there exactly as run 270 was carried",
         );
     }
 
@@ -30384,6 +30564,9 @@ mod tests {
                     unreadable,
                     checked,
                     made: _,
+                    // ⚠ Named rather than `..` for this destructure's own reason — a pattern that
+                    // mentions every field is what makes a NEW fact meet a reader here.
+                    service_said: _,
                     explained: _,
                     shown: _,
                     admits: _,

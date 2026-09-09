@@ -751,6 +751,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 unreadable,
                 checked,
                 made,
+                service_said,
                 explained,
                 shown,
                 admits,
@@ -789,6 +790,17 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 let outcome = made
                     .and_then(sprag_plugin::Made::describe)
                     .map(|said| format!(" — {said}"))
+                    .unwrap_or_default();
+                // ⛔⛔⛔⛔⛔ AND WHAT THE SERVICE SAID WHEN IT REFUSED THE TURN — register item 988,
+                // and THIS reader is again the one it matters most to: a person watching a live
+                // agent produce nothing needs to know whether it declined to work or was not
+                // allowed to. Run 270 was told *"You've hit your weekly limit"* once per prompt and
+                // the watcher was shown *AND THIS TURN PRODUCED NOTHING* three times.
+                let refusal = service_said
+                    .map(|said| match said.trim() {
+                        "" => ", and it said nothing this run could quote".to_owned(),
+                        words => format!(", and what it said was: \"{words}\""),
+                    })
                     .unwrap_or_default();
                 // ⚠⚠⚠ AND A RECORD THIS RUN COULD NOT READ — register item 431(a), and THIS reader is
                 // the one it was written for: a person watching a live agent is who would otherwise
@@ -872,7 +884,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 step(
                     began,
                     &format!(
-                        "{from:?} --{raised:?}--> {to:?}{cause}{outcome}{verdict}{admission}{evidence}{arrived}{unread}"
+                        "{from:?} --{raised:?}--> {to:?}{cause}{outcome}{refusal}{verdict}{admission}{evidence}{arrived}{unread}"
                     ),
                 );
                 walked.push((from, raised, to));

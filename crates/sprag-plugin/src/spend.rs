@@ -139,7 +139,10 @@ pub fn spend_at(record: &std::path::Path) -> Option<Spend> {
 }
 
 /// What one agent session has been charged to read, as of its most recent billed request.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// ⚠ NOT [`Copy`] since register item 988: [`refused`](Self::refused) carries the words the service
+/// said, and a refusal that arrives as a `bool` cannot tell a weekly limit from a five-hundred.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Spend {
     /// Distinct billed requests seen in the record.
     ///
@@ -189,6 +192,43 @@ pub struct Spend {
     /// turn, which is why a restart is so hard to pay for: writing a cache costs twenty times
     /// reading one, so a restart must save twenty times what [`cold`](Self::cold) rewrites.
     pub floor: u64,
+    /// ⛔⛔⛔⛔⛔ **WHAT THE SERVICE SAID WHEN IT REFUSED THE NEWEST REQUEST**, or [`None`] where the
+    /// newest one was answered — register item 988.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A zero with two meanings, and it cost a run
+    ///
+    /// [`produced`](Self::produced) does not move when a session is refused, because a refusal is
+    /// not billed: the row carries `input 0 · output 0 · cache_read 0`. It also does not move when a
+    /// session sits there doing nothing. **Those are opposite facts and the loop read them as one**
+    /// — register item 878 replaces a session that writes nothing and then fails the run, which is
+    /// right for a dead peer and wrong for a refused one.
+    ///
+    /// ⇒ Measured 2026-09-09, run 270's replacement session
+    /// (`~/.claude/projects/-home-coin-watching-zenoh/6844d6a1-…jsonl`): three rows at 03:22:23,
+    /// 03:23:23 and 03:24:24 — one per prompt the loop sent, 60 seconds apart — each
+    /// `isApiErrorMessage: true` and each saying *"You've hit your weekly limit · resets Sep 11, 6am
+    /// (Asia/Seoul)"*. The run declared the session silent twice and died. Its FIRST answered
+    /// request came 45 minutes later, and that session went on to commit 1,648 lines.
+    ///
+    /// # ⚠⚠⚠ Why the flag and not the model spelling, and why the newest row rather than a count
+    ///
+    /// The row is also `model: "<synthetic>"`, and that is corroborating rather than load-bearing:
+    /// `isApiErrorMessage` is the field whose whole job is to say *this is not the model speaking*,
+    /// while a model NAME is a spelling that can change under this reader without notice.
+    ///
+    /// ⚠⚠ It is a LEVEL about the newest billed row and never a total: an answered row CLEARS it. A
+    /// count would say *this session was refused at some point*, which is true of a session that has
+    /// been working happily for an hour — and the question a turn asks is whether the service is
+    /// refusing NOW.
+    ///
+    /// ⚠ The words are carried rather than a `bool`, on this workspace's own rule about refusals: a
+    /// run that says *the service refused* without saying what arrived leaves the next reader unable
+    /// to tell a weekly limit from a five-hundred, and those want different acts from a person.
+    ///
+    /// ⛔ **THE [`Option`] ANSWERS *WAS IT REFUSED* AND THE [`String`] ANSWERS *WHAT IT SAID*.** A
+    /// refusal that carried no text is `Some("")`: dropping it to [`None`] for want of words would
+    /// report the row as ANSWERED, which is the one thing this field exists to deny.
+    pub refused: Option<String>,
 }
 
 /// **THE WARM-UP: what a session spent getting to the point where it could act.**
@@ -294,6 +334,49 @@ pub fn spend_in(text: &str) -> Spend {
         if !id.is_empty() {
             seen.push(id.to_owned());
         }
+        // ⛔⛔⛔⛔⛔ **A ROW THE SERVICE REFUSED IS NOT A MEASUREMENT OF ANYTHING** — register item
+        // 988, and it is decided here, before a single number moves.
+        //
+        // A refusal looks like a billed request and was never billed: `input 0 · output 0 ·
+        // cache_read 0`, which is how it reaches this line at all. Counted, it would say the
+        // session's accumulated context had dropped to ZERO — and `context` is a LEVEL taken from
+        // the newest row, so one refusal would wipe the number every restart decision is priced on.
+        // The session's context did not change; the session was not asked.
+        //
+        // ⚠⚠ SO IT MOVES NOTHING AND IS RECORDED AS ITSELF. `requests` is *distinct BILLED
+        // requests* by its own doc, and this was not one; `cold` and `floor` are keyed on the first
+        // and second of them, so a refused row counted there would take a toll off a row that was
+        // never charged.
+        //
+        // ⚠ The flag and not the `model` spelling — see the field.
+        //
+        // ⛔⛔⛔ AND THE [`Option`] ANSWERS *WAS IT REFUSED*, THE [`String`] ANSWERS *WHAT IT SAID* —
+        // so a refusal that carried no text at all is `Some("")` and never `None`. Dropping it to
+        // `None` for want of words would report *the service answered this row*, which is the one
+        // thing this field exists to deny; the reader of the words says so instead.
+        if row
+            .get("isApiErrorMessage")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            spend.refused = Some(
+                row.pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|said| !said.is_empty())
+                    .collect::<Vec<&str>>()
+                    .join(" "),
+            );
+            continue;
+        }
+        // ⚠⚠ AND AN ANSWERED ROW CLEARS IT, which is what makes the field *the newest row was a
+        // refusal* rather than *this session was refused at some point* — true for ever of a
+        // session that has since been working happily for an hour.
+        spend.refused = None;
         let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
         spend.requests += 1;
         spend.produced += field("output_tokens");
@@ -489,7 +572,172 @@ mod tests {
                 // total. The duplicated `msg_1` rows must not move either.
                 cold: 10,
                 floor: 200,
+                // ⚠ NOTHING REFUSED THESE ROWS — register item 988, and this is the CONTROL for
+                // that field: a record of ordinary answered requests must read as *the service is
+                // answering*, or a run would treat every turn as an outage.
+                refused: None,
             },
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A SESSION THE SERVICE REFUSED IS NOT A SESSION THAT WROTE NOTHING** — register
+    /// item 988, and the zero that cost a run.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Both arms off ONE record, because the fact is a LEVEL
+    ///
+    /// A refusal is billed for nothing (`input 0 · output 0 · cache_read 0`), so it looks exactly
+    /// like an idle session to [`Spend::produced`] — and register item 878 replaces a session that
+    /// produced nothing and then fails the run. Run 270 died that way while its peer was being told
+    /// *"You've hit your weekly limit"* once per prompt.
+    ///
+    /// So the arms below assert, off one walk: the refusal is CARRIED with its words, and an
+    /// answered row after it **clears** the level. A reader that only ever set it would report a
+    /// session that has been working for an hour as refused; one that never set it is today's
+    /// defect.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE SAME ROWS WITHOUT THE FLAG** — `a_streamed_reply_counts_once` reads
+    /// `refused: None` off ordinary answered rows, which is what says this arm is about the flag and
+    /// not about zeros.
+    #[test]
+    fn a_row_the_service_refused_is_carried_with_its_words_and_cleared_by_the_next_answer() {
+        // ⚠ THE REAL SHAPE, cut from run 270's own record: `isApiErrorMessage` at the TOP level,
+        // `<synthetic>` as the model, and a usage block of zeros that still carries a cache read —
+        // which is what makes the row reach the billed-request path at all.
+        let refused = r#"
+{"type":"assistant","isApiErrorMessage":true,"message":{"id":"msg_1","model":"<synthetic>","content":[{"type":"text","text":"You've hit your weekly limit · resets Sep 11, 6am (Asia/Seoul)"}],"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}
+"#;
+        let said = spend_in(refused);
+        assert_eq!(
+            said.refused.as_deref(),
+            Some("You've hit your weekly limit · resets Sep 11, 6am (Asia/Seoul)"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 988: the row says the service refused it and says what it \
+             said, and a run that reads only the zero kills a session that was never allowed to \
+             answer. Run 270 did exactly that, three prompts in a row",
+        );
+        assert_eq!(
+            (said.requests, said.produced),
+            (0, 0),
+            "⛔⛔⛔ AND IT IS NOT A BILLED REQUEST — this field's own word. Nothing was charged, so \
+             counting it would take `cold` or `floor` off a row that was never paid for",
+        );
+
+        // ⛔⛔⛔⛔⛔ THE SHARP ARM: a refusal must not DISTURB a reading that already happened. The
+        // levels (`context`, `cached`) are taken from the newest row, and a refusal's zeros
+        // arriving there would report a session whose accumulated context had dropped to nothing —
+        // wiping the number every restart decision is priced on, one row after it was measured.
+        let measured = crate::testing::MEASURED_HERE.transcript();
+        let then_refused = format!("{measured}\n{}", refused.trim());
+        let (before, after) = (spend_in(&measured), spend_in(&then_refused));
+        assert_eq!(
+            (
+                after.requests,
+                after.context,
+                after.cached,
+                after.produced,
+                after.cold,
+                after.floor
+            ),
+            (
+                before.requests,
+                before.context,
+                before.cached,
+                before.produced,
+                before.cold,
+                before.floor
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 988: a refused row must leave every number exactly as the last \
+             ANSWERED row left it. {before:?} then {after:?}",
+        );
+        assert!(
+            after.refused.is_some() && before.refused.is_none(),
+            "⚠⚠ and the only difference the refusal makes is that it is REPORTED — otherwise this \
+             arm would be green for a reader that ignored the row entirely",
+        );
+
+        // ⚠⚠ AND AN ANSWER CLEARS IT: run 270's session was answered 45 minutes later, and a run
+        // reading the refusal for ever after would be as wrong in the other direction.
+        let recovered = format!(
+            "{then_refused}\n{}",
+            r#"{"type":"assistant","message":{"id":"msg_9","usage":{"input_tokens":2,"cache_read_input_tokens":27536,"cache_creation_input_tokens":0,"output_tokens":146}}}"#
+        );
+        let back = spend_in(&recovered);
+        assert_eq!(
+            back.refused, None,
+            "⛔⛔⛔ AN ANSWERED ROW CLEARS IT. Held instead of overwritten, this would say *refused* \
+             about every later turn of a session that recovered — the same fossil defect one field \
+             over",
+        );
+        assert_eq!(
+            (back.requests, back.produced - before.produced),
+            (before.requests + 1, 146),
+            "⚠ and the answered row is counted, so nothing about the counting was lost on the way",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REFUSAL THAT CARRIED NO WORDS IS STILL A REFUSAL** — register item 988, and the
+    /// one thing [`Spend::refused`]'s doc insists on that nothing was measuring.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The hatch was measured OPEN, which is why this exists
+    ///
+    /// The field's doc says it outright — *the [`Option`] answers `was it refused` and the
+    /// [`String`] answers `what it said`*, so a wordless refusal is `Some("")` and never [`None`].
+    /// Measured 2026-09-09 by making exactly that substitution (an `Option::filter` dropping the
+    /// empty text): **all 611 tests of this crate's lib stayed green.** The sentence was prose, and
+    /// prose does not hold a hatch shut.
+    ///
+    /// ⇒ What the open hatch cost, in this field's own terms: [`None`] means *the newest row was
+    /// ANSWERED*. A service refusing without a quotable sentence would have read as a service
+    /// answering, the turn would have gone back to being [`Made::Nothing`](crate::outer::Made),
+    /// and register item 878 would replace the session and fail the run — which is the entire
+    /// defect this field was added to close, surviving inside its own repair.
+    ///
+    /// ⚠⚠ **THE ASSERTION IS ON THE [`Option`] AND NOT ON THE TEXT**, because those are the two
+    /// different questions: `Some("")` and `Some("You've hit your weekly limit")` are ONE answer to
+    /// *was it refused* and two answers to *what did it say*. A run with no sentence to quote says
+    /// so; it does not fall silent about the refusal.
+    ///
+    /// ⚠ Three shapes rather than one, because the words go missing three ways and a reader that
+    /// handled only the shape it was written against would leave the other two answering `None`.
+    #[test]
+    fn a_refusal_that_carried_no_words_is_still_a_refusal_and_not_an_answer() {
+        // ⚠ EVERY ARM IS RUN 270's ROW with only its `content` changed — the flag, the synthetic
+        // model and the all-zero usage are held fixed, so the one thing that can move the answer is
+        // the absence of a sentence.
+        for (shape, row) in [
+            (
+                "no content key at all",
+                r#"{"type":"assistant","isApiErrorMessage":true,"message":{"id":"msg_1","model":"<synthetic>","usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}"#,
+            ),
+            (
+                "content holding no text block",
+                r#"{"type":"assistant","isApiErrorMessage":true,"message":{"id":"msg_1","model":"<synthetic>","content":[{"type":"thinking"}],"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}"#,
+            ),
+            (
+                "a text block that is only whitespace",
+                r#"{"type":"assistant","isApiErrorMessage":true,"message":{"id":"msg_1","model":"<synthetic>","content":[{"type":"text","text":"   "}],"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}"#,
+            ),
+        ] {
+            let said = spend_in(row);
+            assert_eq!(
+                said.refused.as_deref(),
+                Some(""),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 988: a refusal with {shape} must still READ as a refusal, \
+                 with no words to quote. `None` here says the service ANSWERED this row — the one \
+                 thing this field exists to deny — and hands the turn straight back to the silence \
+                 rule that killed run 270",
+            );
+        }
+
+        // ⚠⚠ AND THE CONTROL, or the arms above would be green for a reader that called every row
+        // refused: the same row WITHOUT the flag is an ordinary answered request, and it is the
+        // flag that separates them rather than the empty content.
+        let unflagged = r#"{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":1,"cache_read_input_tokens":50,"output_tokens":7}}}"#;
+        let answered = spend_in(unflagged);
+        assert_eq!(
+            (answered.refused, answered.requests, answered.produced),
+            (None, 1, 7),
+            "⚠⚠ THE CONTROL: an answered row reads as answered and is BILLED, so this gate is \
+             about `isApiErrorMessage` and not about a build that called every row a refusal",
         );
     }
 
@@ -516,6 +764,7 @@ mod tests {
                 // a negative number.
                 cold: 0,
                 floor: 0,
+                refused: None,
             },
             "a usage with no cache read is not a billed request, and a half-written last line is \
              the ordinary state of a file another process is appending to",
