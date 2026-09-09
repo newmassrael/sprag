@@ -826,8 +826,10 @@ pub struct Checks {
     pub asked: u32,
     /// How many of [`asked`](Self::asked) answered nothing this run could read.
     ///
-    /// ⚠⚠ **THE SUM OF [`silent_by`](Self::silent_by), and a gate holds them equal** — see that
-    /// field for why the split had to exist and why this one stays.
+    /// ⚠⚠ **THE SUM OF [`silent_by`](Self::silent_by) on a live run**, held equal by both being
+    /// raised in one arm rather than by a gate — see that field, and register item 997 for the
+    /// measurement that is missing. ⚠ A run RESTORED from a log older than the split carries this
+    /// count with no rows beneath it, deliberately.
     pub silent: u32,
     /// ⛔⛔⛔⛔⛔ **AND WHICH KIND OF SILENCE EACH OF THEM WAS** — register item 996, and the split
     /// [`silent`](Self::silent) could not make.

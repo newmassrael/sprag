@@ -588,7 +588,20 @@ impl SilentByKind {
     /// **HOW MANY WENT SILENT AT ALL** — the sum, which is what `Checks::silent` counts.
     ///
     /// ⚠⚠ It is DERIVED and never maintained beside that field: two counters over one population
-    /// are free to drift, and a gate holds these equal rather than a comment asking for it.
+    /// are free to drift, and what stops these two is that they are raised BY ONE ARM — the site in
+    /// `crate::outer` that classifies a silence adds to `Checks::silent` and calls
+    /// [`record`](Self::record) two lines apart, so there is no path that moves one without the
+    /// other.
+    ///
+    /// ⛔⛔⛔ **AND NO GATE HOLDS THEM EQUAL, WHICH THIS DOC CLAIMED FOR ONE COMMIT AND DID NOT
+    /// HAVE** — register item 997. A gate would need a run whose checker really goes silent, and
+    /// every fixture in this workspace asserts the opposite (`checks.silent == 0`, the premise that
+    /// a checker answered). So the honest statement is the one above — a structural argument — and
+    /// item 997 is open on the measurement it is standing in for.
+    ///
+    /// ⚠ A restored value can hold `Checks::silent` above this total on purpose: a log written
+    /// before the split existed carries the sum and no rows. That is `crate::runs`' stated
+    /// asymmetry and not a drift, which is a second reason the equality is not a gate.
     #[must_use]
     pub fn total(&self) -> u32 {
         self.of.iter().fold(0, |sum, row| sum.saturating_add(*row))
