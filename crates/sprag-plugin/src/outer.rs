@@ -642,7 +642,14 @@ const HOW_TO_ANSWER: &str = "Now answer. YOUR REPLY MUST BEGIN WITH THE WORD YES
      reported\" — is thrown away exactly as a missing verdict is, however good the result was. Put \
      the landing in your sentence, behind a YES or a NO that is this reply's first word. Then \
      give ONE short sentence saying why. If what you were shown is empty or does not let you \
-     judge, say that in the sentence rather than guessing.\n";
+     judge, say that in the sentence rather than guessing. WRITE THE SENTENCE IN WHATEVER \
+     LANGUAGE YOUR WORK IS IN, BUT THE FIRST WORD IS ENGLISH AND UPPERCASE: this run matches the \
+     letters YES and NO and nothing else — a translation such as \"예\" or \"아니오\" is thrown \
+     away exactly as silence is, because it holds none of those letters. AND EVERY RULE ABOVE IS \
+     A MEANING AND NOT AN ENGLISH PHRASE: carrying a \
+     verdict over from an exchange you believe you had, or reporting what a command of yours has \
+     just finished, is thrown away in EVERY language — the examples are spelled in English \
+     because this instruction is, not because the shapes they name are English ones.\n";
 
 /// **THE RULES EVERY SESSION OF A RUN WORKS UNDER**, as the template spells the id — register item
 /// 738.
@@ -23437,6 +23444,35 @@ mod tests {
              LESSON REPEATED. A checker whose answer has not moved, told only that referring back \
              is discarded, is left to work out that it must re-spell it; told to spell the word \
              again even when nothing changed, it is not: {HOW_TO_ANSWER:?}",
+        );
+        // ── ⛔⛔⛔⛔⛔ AND THE SIXTH, WHICH IS A LANGUAGE AND NOT A SHAPE ────────────────────
+        // Measured 2026-09-09 on a live independent check of this repository's own milestone. The
+        // whole reply was *"재빌드가 rc=0으로 끝났다 — … 판정과 위에 적은 결함 둘은 그대로다."*
+        //
+        // ⛔⛔⛔⛔⛔ **EVERY CLAUSE ABOVE ALREADY FORBADE IT, AND THAT IS THE FINDING.** *판정과 …
+        // 그대로다* is `FIRST TURN`'s *the verdict stands*, and *재빌드가 rc=0으로 끝났다* is the
+        // landing-report the closing clause names — so this was not a shape nobody had thought of.
+        // What was new is that it was the first reply in this population written in ANOTHER
+        // LANGUAGE: the five samples quoted above are all English. A checker whose own work is in
+        // Korean cannot match its sentence against a list of English phrases, and the rules read
+        // as being about those phrases rather than about what they mean.
+        //
+        // ⚠⚠ So the repair is not a sixth forbidden form — that class is open and the fourth
+        // clause already learned it cannot be closed by naming members. It is to say that the
+        // FIRST WORD is English whatever the rest is, and that the rules above are meanings.
+        assert!(
+            HOW_TO_ANSWER.contains("ENGLISH AND UPPERCASE"),
+            "⚠⚠⚠⚠⚠ THE PROMPT NAMES THE WORDS `YES` AND `NO` AND NEVER SAYS THEY ARE ENGLISH. A \
+             checker working in another language reads *begin with the word yes* as a rule about \
+             its own vocabulary, and `judge::verdict_in` matches those two letter sequences and \
+             nothing else — so `예` is thrown away exactly as silence is: {HOW_TO_ANSWER:?}",
+        );
+        assert!(
+            HOW_TO_ANSWER.contains("MEANING AND NOT AN ENGLISH PHRASE"),
+            "⚠⚠⚠⚠⚠ AND THE FIVE CLAUSES ABOVE ARE QUOTED IN ENGLISH, so a checker can obey every \
+             one of them literally and still write the Korean for *the verdict stands*. Saying the \
+             first word's alphabet without saying that the rules are meanings leaves the whole \
+             list reachable in translation: {HOW_TO_ANSWER:?}",
         );
         // ── ⛔⛔⛔⛔⛔ AND THE SIXTH: THE THIRD CLAUSE OPENS A LOOP AND NEVER CLOSES IT ───────
         // Measured 2026-09-04 on a live independent check of this repository's own milestone. The

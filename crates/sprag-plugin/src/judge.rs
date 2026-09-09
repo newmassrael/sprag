@@ -1194,6 +1194,81 @@ mod tests {
     /// yes-or-no menus is what separates them. A change that dropped it would pass every other
     /// test in this module and quietly return the judge to a 2-in-3 false YES rate — see
     /// [`render`].
+    /// ⛔⛔⛔⛔⛔ **A VERDICT IN ANOTHER LANGUAGE IS NOT A VERDICT HERE, AND THAT IS WHY THE PROMPT
+    /// HAS TO SAY SO** — measured 2026-09-09 on a live independent check of this repository's own
+    /// milestone.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The reply, and why five clauses of the prompt did not reach it
+    ///
+    /// The whole answer was *"재빌드가 rc=0으로 끝났다 — … 판정과 위에 적은 결함 둘은 그대로다."*
+    /// Every clause in `HOW_TO_ANSWER` already forbade its two moves: *판정과 … 그대로다* is the
+    /// `FIRST TURN` clause's *the verdict stands*, and *재빌드가 rc=0으로 끝났다* is the landing
+    /// report the closing clause names. What was new is that it was the first reply in that
+    /// population written in a language other than English — and a checker cannot match its own
+    /// sentence against a list of English phrases.
+    ///
+    /// ⚠⚠⚠ **THIS GATE HOLDS THE READER'S HALF, WHICH IS THE HALF THAT CAN BE MEASURED.** A prompt
+    /// is not a gate ([`crate::outer`]'s own note says so), so what is asserted here is the fact
+    /// the prompt now states: `예` and `아니오` carry none of the letters [`verdict_word`] matches,
+    /// so a checker that answers in Korean is thrown away exactly as silence is. If that ever
+    /// stopped being true the prompt would be telling checkers something false, which is worse
+    /// than telling them nothing.
+    ///
+    /// ⚠⚠ **AND THE ONE PLACE THE READER IS WIDER THAN THE PROMPT IS PINNED HERE TOO.** The prompt
+    /// asks for an uppercase word; [`marked_words`] marks the reply's OPENING word whatever its
+    /// case, so a leading `yes` is read. That gap is deliberate — see this module's note that
+    /// `Yes,` is *a prompt that wants tightening* rather than a reply to discard — and pinning it
+    /// stops a later reader from "fixing" the asymmetry and turning a working answer into silence.
+    #[test]
+    fn a_verdict_spelled_in_another_language_is_read_as_no_verdict_at_all() {
+        let took = Duration::from_secs(1);
+        let asked = "irrelevant to the reading";
+        let read = |reply: &str| verdict_in(reply, asked, took);
+
+        // ── THE LIVE SAMPLE, verbatim ──
+        let korean = "재빌드가 rc=0으로 끝났다 — 뮤테이션 되돌린 소스로 `cargo build -p \
+                      sprag-plugin --lib`이 초록이고, 워크트리는 깨끗한 상태로 남았다. 판정과 \
+                      위에 적은 결함 둘은 그대로다.";
+        assert!(
+            matches!(read(korean), Err(Unheard::NotAVerdict(_))),
+            "⛔⛔⛔⛔⛔ THE REPLY THAT COST A ROUND ITS VERIFICATION must read as NO VERDICT, which \
+             is what lets the run say so instead of inventing one. Got {:?}",
+            read(korean),
+        );
+        for spelled in ["예 — 다 됐다", "아니오, 아직 아니다", "네, 통과했다"] {
+            assert!(
+                matches!(read(spelled), Err(Unheard::NotAVerdict(_))),
+                "⛔⛔⛔⛔ AND A TRANSLATED VERDICT IS NOT ONE EITHER — this is the fact \
+                 `HOW_TO_ANSWER` now states to checkers (*a translation such as 예 or 아니오 is \
+                 thrown away exactly as silence is*), and a prompt that stated it falsely would be \
+                 worse than one that said nothing. Reply {spelled:?} read as {:?}",
+                read(spelled),
+            );
+        }
+
+        // ── THE CONTROL: the shape the prompt asks for is read ──
+        assert!(
+            matches!(read("YES — 두 게이트가 초록이다"), Ok(judged) if judged.holds),
+            "⚠⚠⚠ AND THE CONTROL, WHICH IS WHAT THE WHOLE INSTRUCTION IS FOR: an English verdict \
+             in front of a Korean sentence must be READ. Without this arm a build that rejected \
+             every reply carrying a non-ASCII byte would pass every assertion above, and the \
+             remedy the prompt prescribes would itself be unusable.",
+        );
+        assert!(
+            matches!(read("NO — 아직 레인이 안 돌았다"), Ok(judged) if !judged.holds),
+            "⚠⚠ AND THE REFUSAL SIDE OF IT, because a reader that could only see agreement would \
+             turn every honest NO into silence — the one direction this must never fail in.",
+        );
+        assert!(
+            matches!(read("yes — 두 게이트가 초록이다"), Ok(judged) if judged.holds),
+            "⚠⚠ AND THE DELIBERATE GAP: the prompt asks for UPPERCASE, `marked_words` marks the \
+             opening word whatever its case, so a leading lowercase verdict is still read. Pinned \
+             rather than left implicit — a reader who tightened this to match the prompt would \
+             turn working answers into silence, and this module's own note says a lowercase reply \
+             is a prompt that wants tightening, not a reply to discard.",
+        );
+    }
+
     #[test]
     fn the_question_carries_the_criterion_the_dialog_its_options_and_the_distinction() {
         let put = render("going ahead would commit a design decision", &question());
