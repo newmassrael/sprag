@@ -14281,6 +14281,14 @@ impl OuterLoop {
                 // deliveries, applied to the other fact register item 601 is about.
                 let why = unheard.describe();
                 self.checks.silent = self.checks.silent.saturating_add(1);
+                // ⛔⛔⛔⛔⛔ AND WHICH KIND IT WAS, AS A NUMBER — register item 996, raised in this
+                // arm beside the total for the reason the line above is here: three facts about one
+                // silence taken in one place cannot come to disagree, and the split is worthless if
+                // it can. The three remedies are an infrastructure fault, THE PROMPT, and somebody's
+                // account, and until this row existed the only figure a reader could consult moved
+                // for all three alike — which is why five repairs to `HOW_TO_ANSWER` could not be
+                // told apart from no repair at all.
+                self.checks.silent_by.record(unheard.silence());
                 // ⚠ THE LAST ONE WINS, deliberately: a run's answer is read to decide what to do
                 // next, and the remedy still standing is the most recent failure's. See
                 // `Checks::why_silent`.

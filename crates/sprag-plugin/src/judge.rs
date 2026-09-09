@@ -485,6 +485,120 @@ impl Silence {
             Self::Unwell => "unwell",
         }
     }
+
+    /// **THE ARM THAT WORD NAMES**, or [`None`] where nothing here is called that — the READER
+    /// half of [`wire_str`](Self::wire_str), added with register item 996 so a tally can cross a
+    /// wire keyed by these words and come back as arms rather than as strings.
+    ///
+    /// ⚠⚠ Derived from [`ALL`](Self::ALL) rather than written as a second `match`, which is
+    /// `Scoring::of_wire`'s rule: a fourth arm added to that array is readable the moment it is
+    /// writable, where a hand-written match is a place that can silently know one fewer.
+    ///
+    /// ⚠ An unknown word is [`None`] and never a default arm — this workspace's rule 6: a reader
+    /// that mapped an unrecognised silence onto whichever arm is listed last would report a
+    /// remedy nobody measured.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|arm| arm.wire_str() == word)
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **HOW MANY CHECKS EACH KIND OF SILENCE COST THIS RUN** — register item 996, and the
+/// number that decides whether the last five repairs to [`crate::outer`]'s closing instruction did
+/// anything at all.
+///
+/// # ⛔⛔⛔⛔⛔ One tally over three remedies is a tally nobody can act on
+///
+/// [`Silence`] splits *nothing answered* from *it answered and that was not a verdict* from *the
+/// checker was unwell*, and the three have nothing in common as repairs: the first is an
+/// infrastructure fault, the second is the PROMPT, the third is somebody's account. Register item
+/// 741 carried that split into the DOCUMENT — the machine disposes of the three by different edges
+/// — and register item 601 carried a COUNT into the run's answer. What nothing carried is the
+/// split into the count: `Checks::silent` adds all three together, and `Checks::why_silent` keeps
+/// the newest sentence.
+///
+/// ⇒ so *did the prompt get better* has no answer. `HOW_TO_ANSWER` was repaired five times between
+/// 2026-08-29 and 2026-09-09, each time on one live sample, and after each repair the only number a
+/// reader could consult moved for infrastructure faults and usage limits too. **A run that cannot
+/// separate its checker's failures cannot tell a prompt that is working from one that is not**,
+/// which is why item 996 forbids a seventh forbidden-form clause and asks for this instead.
+///
+/// ⚠⚠⚠ **THE FOURTH TIME THIS EXACT SHAPE HAS BEEN PAID**, and [`crate::plugin::Checks`]'s own doc
+/// predicted it: *a fact the driver knows flows into the WALK … the run's ANSWER only carries it if
+/// somebody deliberately carries it*, filed there as items 591, 594 and 601. `Silence` has flowed
+/// into the walk and into the datamodel since item 741 and into no number until now.
+///
+/// ⚠⚠ **THE ROWS ARE PRIVATE AND THE WAY IN IS BY KIND**, which is [`crate::outer::FoldsByReason`]'s
+/// rule: an index is a second spelling of the order [`Silence::ALL`] happens to be in, and a caller
+/// that wrote one would be free to disagree with that array about which row is which.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SilentByKind {
+    /// One row per [`Silence::ALL`], in that array's order.
+    of: [u32; Silence::ALL.len()],
+}
+
+impl SilentByKind {
+    /// **NO CHECK HAS BEEN SILENT** — every row zero, which is what a run whose checker has
+    /// answered every time has honestly counted.
+    pub const NONE: Self = Self {
+        of: [0; Silence::ALL.len()],
+    };
+
+    /// Where `kind`'s row lives — the one place an index is derived, so [`Silence::ALL`] is the
+    /// only authority on the order.
+    fn at(kind: Silence) -> usize {
+        Silence::ALL
+            .iter()
+            .position(|it| *it == kind)
+            .expect("Silence::ALL is every kind")
+    }
+
+    /// **ONE MORE CHECK WENT SILENT THIS WAY.**
+    ///
+    /// ⚠ Saturating for [`crate::plugin::Checks`]'s reason: a tally that wrapped would report a
+    /// run's worst checker as its best.
+    pub fn record(&mut self, kind: Silence) {
+        let row = &mut self.of[Self::at(kind)];
+        *row = row.saturating_add(1);
+    }
+
+    /// **HOW MANY WENT SILENT THIS WAY** — the number a remedy is chosen on.
+    #[must_use]
+    pub fn of(&self, kind: Silence) -> u32 {
+        self.of[Self::at(kind)]
+    }
+
+    /// **PUT A ROW BACK AS IT WAS COUNTED ELSEWHERE** — for a reader rebuilding this table off a
+    /// wire or a log, where [`record`](Self::record) is for the run that is doing the counting.
+    ///
+    /// ⚠ Two doors rather than one because they mean different things: `record` says *one more
+    /// happened here*, and this says *another build counted this many*. A reader that incremented
+    /// in a loop would be re-deriving somebody else's total from its own arithmetic.
+    pub fn restore(&mut self, kind: Silence, count: u32) {
+        self.of[Self::at(kind)] = count;
+    }
+
+    /// Every row with its kind, in [`Silence::ALL`]'s order — **including the zeroes**, because a
+    /// kind that never happened and a kind nothing counted are different facts and a reader has to
+    /// be able to tell them apart.
+    pub fn rows(&self) -> impl Iterator<Item = (Silence, u32)> + '_ {
+        Silence::ALL.into_iter().map(|kind| (kind, self.of(kind)))
+    }
+
+    /// **HOW MANY WENT SILENT AT ALL** — the sum, which is what `Checks::silent` counts.
+    ///
+    /// ⚠⚠ It is DERIVED and never maintained beside that field: two counters over one population
+    /// are free to drift, and a gate holds these equal rather than a comment asking for it.
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        self.of.iter().fold(0, |sum, row| sum.saturating_add(*row))
+    }
+
+    /// Whether nothing has been counted here at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
 }
 
 impl Unheard {
@@ -1194,6 +1308,93 @@ mod tests {
     /// yes-or-no menus is what separates them. A change that dropped it would pass every other
     /// test in this module and quietly return the judge to a 2-in-3 false YES rate — see
     /// [`render`].
+    /// ⛔⛔⛔⛔⛔ **THE THREE SILENCES ARE COUNTED APART, BECAUSE THEY ARE THREE DIFFERENT
+    /// REPAIRS** — register item 996.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What one number over three remedies cost
+    ///
+    /// [`Silence`] separates *nothing answered* (infrastructure), *it answered and that was not a
+    /// verdict* (the PROMPT) and *the checker was unwell* (an account). `Checks::silent` adds all
+    /// three, and `Checks::why_silent` keeps the newest sentence — so *did the prompt get better*
+    /// had no answer at all. `crate::outer`'s closing instruction was repaired five times between
+    /// 2026-08-29 and 2026-09-09, each on one live sample, and the figure a reader could consult
+    /// moved for outages and usage limits alike. Item 996 forbids a seventh forbidden-form clause
+    /// and asks for this, because **a repair nobody can measure is the repair that gets made
+    /// again**.
+    ///
+    /// ⚠⚠⚠ **THE POPULATION IS [`Silence::ALL`] AND THE WALK IS EXHAUSTIVE**, which is this
+    /// workspace's rule for a *every X has a Y* gate: a fourth kind of silence cannot be added and
+    /// quietly share a row with whichever arm is listed last — it arrives here as a row that has
+    /// never been recorded and the sum stops matching.
+    ///
+    /// ⚠⚠ **AND THE SUM IS ASSERTED AGAINST THE TOTAL RATHER THAN RESTATED**, which is
+    /// `SaidBySentence::sent`'s rule against `Deliveries::attempted`: two counters over one
+    /// population are free to drift, and the only thing that stops them is a gate that holds them
+    /// equal.
+    #[test]
+    fn every_kind_of_silence_is_counted_on_its_own_row_and_the_rows_sum_to_the_total() {
+        let mut silent = SilentByKind::NONE;
+        assert!(
+            silent.is_empty() && silent.total() == 0,
+            "⚠ a run whose checker has answered every time has counted nothing, and that is a \
+             positive claim rather than an unfilled value",
+        );
+
+        // ── EVERY ARM, one more each time, so a row that took somebody else's is visible ──
+        for (turn, kind) in Silence::ALL.into_iter().enumerate() {
+            let before = silent.of(kind);
+            silent.record(kind);
+            assert_eq!(
+                silent.of(kind),
+                before + 1,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 996: recording {kind:?} must move {kind:?}'s OWN row. A \
+                 tally that landed on a neighbour would report the prompt's failures as the \
+                 infrastructure's, which is the confusion this split exists to end.",
+            );
+            assert_eq!(
+                silent.total(),
+                u32::try_from(turn).expect("three arms fit") + 1,
+                "⛔⛔⛔⛔ AND THE TOTAL MOVES BY EXACTLY ONE. `Checks::silent` counts the same \
+                 population, so a split whose sum drifted from it would make the run's answer \
+                 disagree with itself about how much went unverified.",
+            );
+        }
+
+        // ── THE ROWS STAY APART, which is the whole of what the split buys ──
+        silent.record(Silence::Unreadable);
+        let rows: Vec<(Silence, u32)> = silent.rows().collect();
+        assert_eq!(
+            rows,
+            vec![
+                (Silence::Unanswered, 1),
+                (Silence::Unreadable, 2),
+                (Silence::Unwell, 1),
+            ],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 996: four silences of which TWO were the prompt's must read \
+             as two, not as four-of-something. This is the reading that decides whether five \
+             repairs to `HOW_TO_ANSWER` did anything, and a table that lost the distinction \
+             answers the question item 996 is open on with a shrug.",
+        );
+        assert_eq!(
+            rows.len(),
+            Silence::ALL.len(),
+            "⚠⚠⚠ AND EVERY KIND HAS A ROW, INCLUDING THE ZEROES — a kind that never happened and \
+             a kind nobody counted are different facts, and a table that omitted its empty rows \
+             would make them the same for every reader downstream.",
+        );
+
+        // ── ⚠ AND A ROW PUT BACK IS NOT A ROW COUNTED, which is why there are two doors ──
+        let mut restored = SilentByKind::NONE;
+        restored.restore(Silence::Unreadable, 9);
+        assert_eq!(
+            (restored.of(Silence::Unreadable), restored.total()),
+            (9, 9),
+            "⚠⚠ `restore` carries another build's count across a wire or a log whole; a reader \
+             that reached for `record` in a loop would be re-deriving somebody else's total from \
+             its own arithmetic, and would silently add to whatever was already there.",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **A VERDICT IN ANOTHER LANGUAGE IS NOT A VERDICT HERE, AND THAT IS WHY THE PROMPT
     /// HAS TO SAY SO** — measured 2026-09-09 on a live independent check of this repository's own
     /// milestone.

@@ -3588,6 +3588,16 @@ pub struct PersistedChecks {
     pub asked: u32,
     /// [`sprag_plugin::Checks::silent`] — of [`asked`](Self::asked), how many answered nothing.
     pub silent: u32,
+    /// [`sprag_plugin::Checks::silent_by`] — register item 996's split, keyed by
+    /// `sprag_plugin::Silence::wire_str`.
+    ///
+    /// ⚠⚠ **`default` HERE WHERE THE WIRE REFUSES**, and the asymmetry is deliberate — see
+    /// `crate::plugins::silent_by_kind_in`. A LIVE report that omits this comes from a daemon that
+    /// cannot say what its silences were, and a zero would answer on its behalf; a STORED row
+    /// written before this column existed is a fact from another build, and there is no skew a
+    /// reader could act on. That is the rule `PersistedFoldsUnder` already states.
+    #[serde(default)]
+    pub silent_by: std::collections::BTreeMap<String, u32>,
     /// [`sprag_plugin::Checks::why_silent`] — the LAST silence's sentence, or [`None`].
     ///
     /// ⚠ The sentence and not a parsed cause, [`PersistedRun::failure`]'s rule: what crosses is
@@ -3632,6 +3642,13 @@ impl From<sprag_plugin::Checks> for PersistedChecks {
         Self {
             asked: live.asked,
             silent: live.silent,
+            // ⚠ The arm's own word, never a spelling of the kinds here — `milestone_scoring`'s rule
+            // four lines down, and the reason a fourth kind travels without this file being edited.
+            silent_by: live
+                .silent_by
+                .rows()
+                .map(|(kind, count)| (kind.wire_str().to_owned(), count))
+                .collect(),
             why_silent: live.why_silent,
             unasked: live.unasked,
             refused: live.refused,
@@ -3649,6 +3666,18 @@ impl From<PersistedChecks> for sprag_plugin::Checks {
         Self {
             asked: stored.asked,
             silent: stored.silent,
+            // ⚠⚠ An unknown word is DROPPED here where the wire refuses the table — the column's
+            // own rule: a log written by a newer build is not a skew this reader can act on, and
+            // refusing it would throw away every count that build DID share a vocabulary for.
+            silent_by: stored.silent_by.iter().fold(
+                sprag_plugin::judge::SilentByKind::NONE,
+                |mut silent, (word, count)| {
+                    if let Some(kind) = sprag_plugin::judge::Silence::named(word) {
+                        silent.restore(kind, *count);
+                    }
+                    silent
+                },
+            ),
             why_silent: stored.why_silent,
             unasked: stored.unasked,
             refused: stored.refused,
@@ -12049,6 +12078,12 @@ mod tests {
             checks: Some(PersistedChecks {
                 asked: 13,
                 silent: 2,
+                // ⚠⚠ TWO KINDS AND NOT ONE — register item 996. A round trip that kept only the
+                // first key, or that summed the table into one row, passes a single-kind fixture;
+                // the whole point of this column is that the kinds stay apart.
+                silent_by: [("unanswered".to_owned(), 1), ("unwell".to_owned(), 1)]
+                    .into_iter()
+                    .collect(),
                 why_silent: Some("the checker said nothing".to_owned()),
                 unasked: 1,
                 refused: 4,
@@ -12449,6 +12484,15 @@ mod tests {
                         crate::plugins::RUN_CHECKS_KEY: {
                             "asked": 13,
                             "silent": 2,
+                            // ⛔⛔⛔⛔⛔ AND THE SPLIT, WHOLE — register item 996, on this
+                            // fixture's own stated rule. Measured while adding it: a block
+                            // written WITHOUT this key (an older daemon's shape) makes
+                            // `progress_from_report` refuse the tally entire and this row arrive
+                            // `None`, which is the whole-or-nothing rule doing exactly what items
+                            // 499 and 674 built it to do rather than a fault. The two rows sum to
+                            // `silent` above, because a split that did not would assert a state
+                            // the product cannot produce.
+                            "silent_by": { "unanswered": 1, "unreadable": 1, "unwell": 0 },
                             "why_silent": "the checker said nothing",
                             "refused": 4,
                             "refused_in_a_row": 2,
@@ -12500,6 +12544,9 @@ mod tests {
                 row(PersistedChecks {
                     asked: 0,
                     silent: 0,
+                    // ⚠ EMPTY, because nothing was silent: this pair contrasts `unasked`, and a
+                    // split carrying rows here would assert silences the fixture does not have.
+                    silent_by: std::collections::BTreeMap::new(),
                     why_silent: None,
                     unasked: 1,
                     refused: 0,
@@ -12513,6 +12560,8 @@ mod tests {
                 row(PersistedChecks {
                     asked: 0,
                     silent: 0,
+                    // ⚠ The other half of the pair above, and empty for the same reason.
+                    silent_by: std::collections::BTreeMap::new(),
                     why_silent: None,
                     unasked: 0,
                     refused: 0,

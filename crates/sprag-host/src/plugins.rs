@@ -6491,6 +6491,13 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         RUN_CHECKS_KEY: {
             "asked": progress.checks.asked,
             "silent": progress.checks.silent,
+            // ⛔⛔⛔⛔⛔ AND WHICH KIND EACH SILENCE WAS — register item 996. `silent` above adds
+            // three failures with three different remedies (infrastructure, THE PROMPT, an
+            // account), and a reader holding only the sum cannot say whether a repair to the
+            // prompt did anything. Keyed by `Silence::wire_str` for `RUN_FOLDS_BY_REASON_KEY`'s
+            // reason: the arm's own word, so a fourth arm arrives as a key rather than as a
+            // column this file forgot to widen.
+            "silent_by": silent_by_kind_json(progress.checks.silent_by),
             // ⚠ The checker's own words, carried rather than re-composed: `judge` is the one
             // authority on what a silence means, and it lives on the other side of this wire.
             "why_silent": progress.checks.why_silent,
@@ -6683,6 +6690,42 @@ pub struct ReportedProgress {
 /// ⚠ Composed from `rows()` rather than from a list here, so [`sprag_plugin::ReflectReason::ALL`]
 /// stays the only authority on which reasons there are — register item 856(1) and this workspace's
 /// rule 6: a reason nobody classified must not quietly leave the table.
+/// **EVERY KIND OF CHECKER SILENCE WITH ITS COUNT**, keyed by the arm's own word — register item
+/// 996, on [`folds_by_reason_json`]'s rule one function down.
+///
+/// ⚠ Every row travels, including the zeroes, for that function's reason: a kind that never
+/// happened and a kind nobody counted are different facts, and a table that omitted its zeroes
+/// would make them the same on the far side.
+fn silent_by_kind_json(silent: sprag_plugin::judge::SilentByKind) -> Value {
+    let mut out = serde_json::Map::new();
+    for (kind, count) in silent.rows() {
+        out.insert(kind.wire_str().to_owned(), json!(count));
+    }
+    Value::Object(out)
+}
+
+/// **THE SILENCES A REPORT COUNTED, BY KIND** — [`silent_by_kind_json`]'s reader, whole or nothing.
+///
+/// ⚠⚠ [`None`] when the key is absent or any row is unreadable, which is this block's rule and not
+/// a local choice: a daemon too old to publish this cannot say what its silences WERE, and filling
+/// in zeros would answer *none of them was the prompt's fault* on its behalf — the reassuring
+/// reading of a number nobody measured. The caller refuses the whole tally, exactly as it does for
+/// register item 499's and 674's keys.
+fn silent_by_kind_in(tally: &Value) -> Option<sprag_plugin::judge::SilentByKind> {
+    let table = tally.get("silent_by")?.as_object()?;
+    let mut silent = sprag_plugin::judge::SilentByKind::NONE;
+    for (word, count) in table {
+        // ⚠ An unknown word refuses the table rather than being skipped: a newer daemon reporting a
+        // fourth kind is one this build cannot total honestly, and a silent skip would publish a
+        // sum smaller than the one that was counted.
+        silent.restore(
+            sprag_plugin::judge::Silence::named(word)?,
+            small(Some(count))?,
+        );
+    }
+    Some(silent)
+}
+
 fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
     let mut out = serde_json::Map::new();
     for (reason, row) in folds.rows() {
@@ -6943,6 +6986,11 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
         Some(sprag_plugin::Checks {
             asked: small(tally.get("asked"))?,
             silent: small(tally.get("silent"))?,
+            // ⛔⛔⛔⛔⛔ WHOLE OR NOTHING REACHES THE SPLIT TOO — register item 996, on this block's
+            // own rule and for the sharpest instance of it yet. Zeros filled in here would answer
+            // *not one of this run's silences was the prompt's fault*, which is the exact
+            // reassurance item 996 exists because nobody could measure.
+            silent_by: silent_by_kind_in(tally)?,
             why_silent: tally
                 .get("why_silent")
                 .and_then(Value::as_str)
@@ -9326,10 +9374,45 @@ pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
         ));
     }
     Some(format!(
-        "{unasked}⚠ {} of {} milestone claims went unverified — the checker answered for the \
+        "{unasked}⚠ {} of {} milestone claims went unverified{} — the checker answered for the \
          rest{why}{refused}",
-        checks.silent, checks.asked,
+        checks.silent,
+        checks.asked,
+        which_silences(checks),
     ))
+}
+
+/// ⛔⛔⛔⛔⛔ **WHICH KIND OF SILENCE THOSE WERE, WHERE THE KINDS DISAGREE ABOUT THE REMEDY** —
+/// register item 996, as a clause [`checks_sentence`] appends.
+///
+/// # ⛔⛔⛔⛔⛔ Why a count nobody can split is a count nobody can act on
+///
+/// `sprag_plugin::Silence` separates *nothing answered* — an infrastructure fault — from *it
+/// answered and that was not a verdict*, which is the PROMPT, from *the checker was unwell*, which
+/// is somebody's account. The sentence above reported the sum, so a reader was told how much went
+/// unverified and never which of three files to open.
+///
+/// ⚠⚠ **AND IT IS WHY FIVE REPAIRS TO ONE PROMPT COULD NOT BE TOLD APART FROM NONE.**
+/// `crate::plugins`' own closing instruction to checkers was rewritten five times between
+/// 2026-08-29 and 2026-09-09, each time on a single live sample, and the only figure a reader could
+/// consult moved for outages and usage limits too. Item 996 is open on that, and this clause is
+/// the half of it a person sees.
+///
+/// ⚠ **SILENT WHEN ONE KIND HOLDS EVERYTHING**, which is not brevity: the sentence already carries
+/// the total and `why_silent` already names the newest one, so a split that only ever restated
+/// them would be noise a reader learns to skip — taking the case that matters with it. The clause
+/// appears exactly when the kinds actually disagree, which is when it changes what somebody does.
+fn which_silences(checks: &sprag_plugin::Checks) -> String {
+    let spoken: Vec<String> = checks
+        .silent_by
+        .rows()
+        .filter(|(_, count)| *count > 0)
+        .map(|(kind, count)| format!("{count} {}", kind.wire_str()))
+        .collect();
+    if spoken.len() < 2 {
+        return String::new();
+    }
+    format!(" ({})", spoken.join(", "))
 }
 
 /// **WHAT THE VERDICTS CAME TO**, as a clause [`checks_sentence`] appends — empty for a run nothing
@@ -10084,6 +10167,69 @@ mod tests {
     /// ⚠⚠ **THE THIRD ARM IS THE ONE THAT MATTERS MOST.** *Every one of them answered* is the
     /// reassuring reading and it is true only of the claims that were PUT — so a run that could
     /// not put some must not print it unqualified.
+    /// ⛔⛔⛔⛔⛔ **THE ROW SAYS WHICH KIND OF SILENCE, WHERE THE KINDS DISAGREE ABOUT THE
+    /// REMEDY** — register item 996, and the half of it a person actually sees.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A total over three remedies sends a reader to the wrong file
+    ///
+    /// `sprag_plugin::judge::Silence` separates *nothing answered* — an infrastructure fault —
+    /// from *it answered and that was not a verdict*, which is the PROMPT, from *the checker was
+    /// unwell*, which is somebody's account. This row printed the sum, so a person was told how
+    /// much went unverified and never which of three things to go and fix.
+    ///
+    /// ⚠⚠⚠ **AND IT IS WHY FIVE REPAIRS TO ONE PROMPT COULD NOT BE TOLD APART FROM NONE.** The
+    /// closing instruction checkers are given was rewritten five times between 2026-08-29 and
+    /// 2026-09-09, each on a single live sample, and the only figure a reader could consult moved
+    /// for outages and usage limits too.
+    ///
+    /// ⚠⚠ **THE CONTROL IS A RUN WHOSE SILENCES AGREE**, and without it *always print the split*
+    /// is green. One kind holding everything is already said by the total and by `why_silent`, so
+    /// a clause that restated it would be noise a reader learns to skip — taking the case that
+    /// matters with it.
+    #[test]
+    fn a_row_says_which_kind_of_silence_when_the_kinds_disagree_about_the_remedy() {
+        let of = |rows: &[(sprag_plugin::judge::Silence, u32)]| {
+            let mut silent_by = sprag_plugin::judge::SilentByKind::NONE;
+            for (kind, count) in rows {
+                silent_by.restore(*kind, *count);
+            }
+            checks_sentence(&sprag_plugin::Checks {
+                asked: 9,
+                silent: silent_by.total(),
+                silent_by,
+                ..sprag_plugin::Checks::NONE
+            })
+            .expect("a run with unverified claims prints a row")
+        };
+
+        let split = of(&[
+            (sprag_plugin::judge::Silence::Unreadable, 2),
+            (sprag_plugin::judge::Silence::Unwell, 1),
+        ]);
+        assert!(
+            split.contains("2 unreadable") && split.contains("1 unwell"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 996: a run whose checker ignored the prompt twice and hit a \
+             usage limit once must say so. Told only *3 went unverified*, a person has three \
+             candidate repairs and no way to choose — and the one that is measurable, the prompt, \
+             is the one nobody could confirm was working.\n  got {split}",
+        );
+
+        // ── ⚠⚠ THE CONTROL: one kind holding everything adds nothing the row did not say ──
+        let alone = of(&[(sprag_plugin::judge::Silence::Unreadable, 3)]);
+        assert!(
+            !alone.contains("3 unreadable"),
+            "⚠⚠⚠ AND A SPLIT THAT ONLY EVER RESTATED THE TOTAL IS NOISE. Without this arm a build \
+             that appended the breakdown unconditionally passes the assertion above, and the \
+             clause stops being read on the runs where it carries something.\n  got {alone}",
+        );
+        assert!(
+            alone.contains("3 of 9"),
+            "⚠ AND THE TOTAL IS STILL THERE, which is what makes the arm above a control rather \
+             than a build that stopped reporting: the row must still say how much went \
+             unverified.\n  got {alone}",
+        );
+    }
+
     #[test]
     fn a_row_says_how_many_milestone_claims_never_reached_a_checker() {
         let of = |asked, silent, unasked| {
@@ -22674,6 +22820,16 @@ mod tests {
                         checks: sprag_plugin::Checks {
                             asked: 3,
                             silent: 2,
+                            // ⚠⚠ THE SPLIT SUMS TO `silent` AND ITS ROWS DIFFER — register item
+                            // 996, on this gate's own rule two fields down: rows that were equal
+                            // would let a transport that swapped two kinds still pass, and a split
+                            // that did not sum to the total would be a fixture asserting a state
+                            // the product cannot produce.
+                            silent_by: {
+                                let mut split = sprag_plugin::judge::SilentByKind::NONE;
+                                split.restore(sprag_plugin::judge::Silence::Unreadable, 2);
+                                split
+                            },
                             why_silent: Some("THE-CHECKER-NEVER-ANSWERED".to_owned()),
                             // ⚠ DISTINCT FROM EVERY NUMBER BESIDE THEM — register item 499, on
                             // this gate's own terms: a value equal to a neighbour's would let a

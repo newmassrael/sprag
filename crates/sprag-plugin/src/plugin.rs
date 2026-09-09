@@ -825,7 +825,29 @@ pub struct Checks {
     /// How many milestone claims this run put to an independent checker.
     pub asked: u32,
     /// How many of [`asked`](Self::asked) answered nothing this run could read.
+    ///
+    /// ⚠⚠ **THE SUM OF [`silent_by`](Self::silent_by), and a gate holds them equal** — see that
+    /// field for why the split had to exist and why this one stays.
     pub silent: u32,
+    /// ⛔⛔⛔⛔⛔ **AND WHICH KIND OF SILENCE EACH OF THEM WAS** — register item 996, and the split
+    /// [`silent`](Self::silent) could not make.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Three failures with three different remedies, added together
+    ///
+    /// `crate::judge::Silence` separates *nothing answered* (infrastructure), *it answered and that
+    /// was not a verdict* (the PROMPT) and *the checker was unwell* (an account). Register item 741
+    /// carried that split into the document; nothing carried it into a number, so the one figure a
+    /// reader could consult moved for all three alike.
+    ///
+    /// ⇒ that is why `crate::outer`'s closing instruction could be repaired five times without
+    /// anybody being able to say whether it was working: the count that would have answered
+    /// *fewer checkers are ignoring the prompt now* does not exist until this field does. Item 996
+    /// forbids a seventh forbidden-form clause for exactly this reason — the repair nobody can
+    /// measure is the repair that gets made again.
+    ///
+    /// ⚠ [`why_silent`](Self::why_silent) stays and is not replaced by this: a sentence naming the
+    /// newest failure is what a person acts on, and a tally is what says whether acting worked.
+    pub silent_by: crate::judge::SilentByKind,
     /// **WHY THE LAST SILENT ONE SAID NOTHING** — `crate::judge::Unheard::describe`, or [`None`]
     /// when no check has been silent.
     ///
@@ -912,6 +934,7 @@ impl Checks {
     pub const NONE: Self = Self {
         asked: 0,
         silent: 0,
+        silent_by: crate::judge::SilentByKind::NONE,
         why_silent: None,
         refused: 0,
         refused_in_a_row: 0,
@@ -949,10 +972,15 @@ impl Checks {
     /// nobody could put to a checker is evidence about this run, so a row carrying only those is
     /// COUNTED rather than empty — dropping it from the population is exactly the way the numbers
     /// come to flatter the checker.
+    ///
+    /// ⚠ NOT `const` since register item 996: the split tally answers through its own `is_empty`
+    /// rather than through a sum re-spelled here, which is `Carried::is_empty`'s rule and item
+    /// 895's finding about predicates written twice.
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.asked == 0
             && self.silent == 0
+            && self.silent_by.is_empty()
             && self.unasked == 0
             && self.refused == 0
             && self.refused_in_a_row == 0
