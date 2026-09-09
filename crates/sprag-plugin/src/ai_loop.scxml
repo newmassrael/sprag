@@ -16,6 +16,36 @@
   opens a fresh one, which is briefed with it on the way up. That is the whole
   reason this machine has a restart state instead of a "reconfigure" event.
 
+  ⛔⛔⛔⛔⛔ SO THIS DOCUMENT AUTHORS NO `<history>`, AND THAT IS A DECISION RATHER
+  THAN A GAP — register item 80, settled here because the item asked for the
+  decision to be RECORDED and there was nowhere it was.
+
+  SCXML's history state exists to re-enter a compound state WHERE IT WAS LEFT.
+  Register item 80 was opened saying an upstream `ai_loop` example was ahead of
+  this one in three named ways, and a re-measurement on 2026-08-28 refuted two of
+  them: this machine is no longer flat (`<parallel id="running">` is two regions
+  down), and *the host owns no counters* is a difference in which layer counts
+  rather than a lag. **History-based resume was the one clause that survived**,
+  and the question it leaves is not *when do we catch up* — it is whether this
+  loop WANTS it.
+
+  ⇒ IT DOES NOT, and the paragraph above is the reason: `restarting` exists to
+  THROW THE SESSION'S CONTEXT AWAY. What a replacement is for is re-reading the
+  things a live session cannot be asked to re-read, so resuming a session where
+  it was left is the precise opposite of the act — a history state here would
+  re-enter the run holding what the restart was bought to discard. The two
+  designs answer different questions, and this one has picked.
+
+  ⚠⚠ WHAT WOULD REOPEN IT, stated so this is a decision and not a closed door:
+  a loop that wanted to resume a run's OWN progress across a driver restart —
+  not the agent session's — is asking something this argument does not cover.
+  That is a different item, and it starts by saying which state it wants to
+  re-enter and what the driver would hold meanwhile.
+
+  ⚠ `a_replaced_session_is_not_resumed_and_this_document_authors_no_history` is
+  what holds it: a `<history>` added here goes red naming this paragraph, so the
+  decision is re-argued rather than drifted into.
+
   ⚠⚠⚠ AND `reflecting` ASKS THE AGENT. The one thing a driver cannot decide is
   where somebody else's work should go next, so the reflection is a TURN: the
   agent that has been doing the work says what the next milestone is and what

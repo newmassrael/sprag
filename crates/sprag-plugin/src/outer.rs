@@ -32168,6 +32168,116 @@ mod tests {
     /// ⚠⚠ **AND THE CONTROL ARM IS THE SAME RUN ANSWERED**, not a different fixture: a build that
     /// routed EVERY judged turn to `service_down` would pass the first arm alone, and a run that
     /// waits out its agent's ordinary work is worse than one that re-prompts.
+    /// ⛔⛔⛔⛔⛔ **A REPLACED SESSION IS NOT RESUMED, AND THIS DOCUMENT AUTHORS NO `<history>`** —
+    /// register item 80, whose done-when asks for a DECISION to be recorded rather than for a
+    /// feature to be built.
+    ///
+    /// # ⛔⛔⛔⛔⛔ An item that could not be closed by catching up
+    ///
+    /// Item 80 was opened saying an upstream `ai_loop` example was ahead of this one in three named
+    /// ways. A re-measurement on 2026-08-28 refuted two: this machine is not flat (`<parallel
+    /// id="running">` holds two regions), and *the host owns no counters* is a difference in which
+    /// layer counts rather than a lag. Upstream then closed its own half deliberately — its example
+    /// keeps both arrangements because showing two is what an example is for — so **there is no
+    /// synchronisation, and the item could never close by catching up.**
+    ///
+    /// ⇒ what survived is one question: does this loop WANT history-based resume? `restarting`
+    /// exists to throw the session's context away, and a history state re-enters holding what the
+    /// restart was bought to discard, so the answer is no. The document now argues that where the
+    /// replace-argument lives, and this gate is what makes the argument load-bearing.
+    ///
+    /// ⚠⚠⚠ **THE ABSENCE AND THE REASON ARE ASSERTED TOGETHER, and neither alone is the claim.**
+    /// Zero history states is a fact a document could hold by accident — nobody needed one yet —
+    /// and it would read exactly like a decision. Zero PLUS the paragraph is what says somebody
+    /// asked and answered. A build that added a `<history>` goes red here and has to re-argue the
+    /// paragraph; a build that deleted the paragraph goes red with a document whose silence has
+    /// stopped meaning anything.
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND A MENTION IS NOT A DECLARATION, WHICH THIS GATE LEARNED BY GOING RED ON ITS
+    /// OWN AUTHOR.** The first draft counted `<history` over the whole file and found TWO — both
+    /// inside the paragraph written one commit earlier to argue that there are none. A gate that
+    /// cannot tell a document's prose from its markup fails exactly when somebody documents the
+    /// thing it guards, which is the moment it is most needed.
+    ///
+    /// ⇒ so the count is taken over the document with its COMMENTS REMOVED, and the removal is
+    /// asserted to have removed something. That second arm is what stops the whole gate going
+    /// vacuous the day the stripper stops working: a function that returned the empty string would
+    /// find no history states for ever and report a decision nobody was keeping.
+    #[test]
+    fn a_replaced_session_is_not_resumed_and_this_document_authors_no_history() {
+        /// The document's MARKUP — its text with every `<!-- … -->` taken out, so a state this
+        /// file merely talks about is not read as one it declares.
+        fn markup_of(document: &str) -> String {
+            let mut out = String::with_capacity(document.len());
+            let mut rest = document;
+            while let Some(opened) = rest.find("<!--") {
+                out.push_str(&rest[..opened]);
+                let after = &rest[opened + 4..];
+                // ⚠ An unterminated comment takes the rest of the file with it, which is what an
+                // XML parser does too — and a document that had one would not load at all, so the
+                // arm cannot silently smuggle markup past this gate.
+                match after.find("-->") {
+                    Some(closed) => rest = &after[closed + 3..],
+                    None => return out,
+                }
+            }
+            out.push_str(rest);
+            out
+        }
+
+        let markup = markup_of(DOCUMENT);
+        // ⚠⚠⚠ THE PREMISE, ASSERTED: the stripper must actually strip. Measured while writing this
+        // — the paragraph that argues the decision mentions `<history>` twice, so a whole-file
+        // count says 2 and the markup count must say 0. If these were ever equal the gate below
+        // would be asking the same question the first draft asked and failing the same way.
+        let mentioned = DOCUMENT.matches("<history").count();
+        assert!(
+            mentioned > 0 && markup.len() < DOCUMENT.len(),
+            "⚠⚠⚠⚠⚠ THIS GATE'S OWN PREMISE: the document must MENTION history states in prose \
+             (item 80's decision is argued there, and {mentioned} mention(s) were found) and the \
+             comment stripper must have removed something ({} bytes of {}). If the prose stopped \
+             mentioning it, the assertion below would be trivially green and the decision would \
+             have quietly stopped being recorded.",
+            markup.len(),
+            DOCUMENT.len(),
+        );
+        assert_eq!(
+            markup.matches("<history").count(),
+            0,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 80: this document DECLARES no history state, and that is the \
+             decision it now records — `restarting` exists to throw a session's context away, so \
+             re-entering where it was left is the opposite of the act the state is for. If this \
+             is deliberate, the paragraph in `ai_loop.scxml` that argues the decision has to be \
+             rewritten first: item 80 asked for the decision to be RECORDED, and a build that \
+             quietly reverses it leaves the record lying.",
+        );
+
+        // ── AND THE REASON, because zero alone reads the same as nobody having needed one ──
+        for phrase in [
+            "AUTHORS NO `<history>`",
+            "THROW THE SESSION'S CONTEXT AWAY",
+            "register item 80",
+        ] {
+            assert!(
+                DOCUMENT.contains(phrase),
+                "⛔⛔⛔⛔ AND THE DOCUMENT MUST STILL SAY WHY. Item 80's done-when is a RECORDED \
+                 decision, so the paragraph is the deliverable and the empty count above is only \
+                 its evidence. Missing {phrase:?} leaves a document whose silence about history \
+                 means nothing again, and the next reader re-opens the item to ask a question that \
+                 was already answered.",
+            );
+        }
+
+        // ── ⚠⚠ AND WHAT WOULD REOPEN IT IS NAMED, so this is a decision and not a closed door ──
+        assert!(
+            DOCUMENT.contains("WHAT WOULD REOPEN IT"),
+            "⚠⚠⚠ A DECISION THAT NAMES NO WAY BACK IS A WALL. The argument covers the AGENT \
+             SESSION's context; a loop wanting to resume the RUN's own progress across a driver \
+             restart is asking something else, and the paragraph has to say so or the next person \
+             with that question reads this as already refused.",
+        );
+    }
+
     #[test]
     fn a_refused_turn_waits_the_service_out_and_an_answered_one_goes_back_to_work() {
         /// Drive a fresh loop to the end of one turn whose record said `produced`, and say where
