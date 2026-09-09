@@ -32103,10 +32103,11 @@ mod tests {
             refused,
             AiLoopState::ServiceDown,
             "⛔⛔⛔⛔⛔ REGISTER ITEM 991: a turn the SERVICE refused must reach the state this \
-             document already has for waiting one out. Everything the wait needs is downstream of \
-             here and was already built — the retry clock is keyed on `In('service_down')`, the \
-             ceiling is `service_retry_max`, and the retries reach `working` without a `turn.done` \
-             so they spend no turns. The one thing missing was this door.\n  walked {refused_walk:?}",
+             document already has for waiting one out. The retry clock is keyed on \
+             `In('service_down')` and the ceiling is `service_retry_max`; what the wait COSTS is \
+             one turn per retry, counted by \
+             `waiting_out_a_refusal_costs_one_turn_per_retry_and_ends_when_the_service_answers` \
+             rather than claimed here. The one thing missing was this door.\n  walked {refused_walk:?}",
         );
         assert_eq!(
             refused_budget,
@@ -32128,6 +32129,261 @@ mod tests {
              Without this arm a build that sent every judged turn to `service_down` would be green \
              above, and a run that waits ten minutes between its agent's working turns is a worse \
              failure than the one item 991 is about.\n  walked {answered_walk:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT WAITING OUT A REFUSAL COSTS THE RUN, COUNTED RATHER THAN ASSERTED IN
+    /// PROSE** — register item 991's fourth clause, and the number its own repair got wrong.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The claim this gate exists to hold, and how it was false
+    ///
+    /// The door above was written saying *the retries it leads to reach `working` without a
+    /// `turn.done`, so they spend no turns at all*. That sentence is TRUE of the other door and was
+    /// copied onto this one. `service_resumes_max`'s block earns it honestly: that budget TYPES
+    /// NOTHING, so a retry re-enters `working` and either the peer finally speaks or it is silent
+    /// again, and silence raises `peer.silent`, never `turn.done`. THIS budget's retry carries a
+    /// `<send event="prompt.say">`. A prompt that is sent is answered — by a refusal, while the
+    /// outage lasts — and an answer is a `turn.done`, which `working` charges one `turns` for.
+    ///
+    /// ⇒ **The wait costs one turn per retry**, and the run pays for the refusal that opened it,
+    /// so the shipped ceiling of six is seven turns of forty. That is the measurement item 991's
+    /// third clause asks for before the door is built: not zero, and not the forty the missing
+    /// door cost. Both of the smaller numbers argue for the same ordering above `max_turns`; only
+    /// the counted one can be checked, which is this workspace's rule 10.
+    ///
+    /// ⚠⚠⚠ **THE ASSERTION IS DERIVED FROM THE DOCUMENT'S OWN COUNTER, NOT WRITTEN AS SEVEN.**
+    /// A literal would be green for a build that had stopped typing AND lowered the ceiling
+    /// together, and it would go red for an author who edited `service_retry_max` for a reason
+    /// this gate is not about. `turns == service_retried + 1` says the thing that is actually
+    /// true: every retry buys exactly one turn, and one turn preceded them.
+    ///
+    /// ⛔⛔⛔ **AND WHAT THIS NUMBER DOES NOT SEE, NAMED RATHER THAN CLAIMED AWAY: THE TYPING.**
+    /// The charge is levied by `working` on a `turn.done`, and every `turn.done` here is RAISED BY
+    /// HAND — so a build that took the retry's `<send event="prompt.say">` away would be answered
+    /// by this fixture anyway and the count would not move by one. Measured 2026-09-09 by removing
+    /// that send: this gate stayed green on the count and went red only where the walk changed.
+    /// The typing has its own instrument and it is
+    /// [`a_retry_the_ceiling_turned_away_types_nothing_where_an_ordinary_one_speaks`], which counts
+    /// the BYTES `advance` put in and contrasts the speaking edge against the ceiling's silent one
+    /// — register item 447. The same removal takes that gate and three more down with it, so the
+    /// division of labour is measured and not a hope: this one owns the COST, that one owns the
+    /// CAUSE, and neither restates the other.
+    ///
+    /// ⚠⚠ **AND THE CONTROL ARM ANSWERS FROM INSIDE THE OUTAGE**, which the door's own gate cannot
+    /// reach: it contrasts a first turn that was refused with one that was not, so a build that
+    /// entered `service_down` and never came out is green there. Here the service comes back
+    /// mid-wait and the run must return to work below its ceiling — item 991's *서비스가 돌아오면
+    /// 다시 일한다*.
+    #[test]
+    fn waiting_out_a_refusal_costs_one_turn_per_retry_and_ends_when_the_service_answers() {
+        /// ⚠ The authored window, shrunk through the document's own `<data>` the way the crossing
+        /// gate below does it — `wait_out_service` reads it there, and a gate reaching past it
+        /// would park on a number the product never consults. Small because this arm crosses the
+        /// window `service_retry_max` times over, not once.
+        const WINDOW: Duration = Duration::from_millis(20);
+        /// ⚠ A spinning driver trips this in milliseconds instead of hanging the suite. Far above
+        /// the passes a parked outage takes, per the crossing gate's own measurement.
+        const GIVE_UP_AFTER: u32 = 400;
+
+        /// What one whole outage cost: where it left the run, its `turns`, its `service_retried`,
+        /// the two ceilings it was measured against, and the walk that got there.
+        ///
+        /// ⚠⚠⚠ **THE CEILINGS TRAVEL WITH THE MEASUREMENT INSTEAD OF BEING WRITTEN HERE.** Six and
+        /// forty are the document's, and a `const` in this file repeating them would be a second
+        /// authority on a policy number — the defect `service_retry_max`'s own block names one
+        /// screen over, and the one this workspace calls a measurement constant: an author who
+        /// halved the ceiling would leave a gate that still passes about the old one.
+        struct Outage {
+            landed: AiLoopState,
+            turns: i64,
+            retried: i64,
+            ceiling: Option<Counted>,
+            budget: Option<Counted>,
+            walk: Vec<String>,
+        }
+
+        /// Drive a run into the refusal door and keep refusing it, letting the clock carry each
+        /// retry — until `answers_on` says the service came back for that retry's prompt, or the
+        /// ceiling hands the run to a person.
+        ///
+        /// ⚠⚠ `pump` for the WAIT and `advance` for the TURNS, because they are different facts:
+        /// the wait is the driver's clock (`poll_until` on `service_retry_ms`) and only a pump
+        /// reaches it, while a turn's word is the record's and arrives on an event.
+        fn refused_until(answers_on: Option<i64>) -> Outage {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let access = crate::access::WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let run = RunContext::uncancellable();
+            let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_millis(200))
+                .expect("the document's datamodel must carry its four authored strings");
+            loops.author_number(SERVICE_RETRY_MS, WINDOW.as_millis() as i64);
+            let mut walk: Vec<String> = Vec::new();
+
+            // ⚠⚠⚠ ALL FOUR KEYS ON `turn.done` AND THREE ON `judge`, for the door gate's measured
+            // reason: `judging`'s `onentry` and the edges above this door index `_event.data`, and
+            // in Lua an ABSENT key compared against a number is an error, not a false. A thin
+            // payload reaches `failed` through `error.execution`, which reads exactly like the
+            // wait never happening.
+            let turn = |loops: &mut OuterLoop, walk: &mut Vec<String>, produced: &str| {
+                for raise in [
+                    Raise::carrying(
+                        AiLoopEvent::TurnDone,
+                        serde_json::json!({
+                            "produced": produced,
+                            "context": 0,
+                            "cold": 0,
+                            "floor": 0,
+                        }),
+                    ),
+                    Raise::carrying(
+                        AiLoopEvent::Judge,
+                        serde_json::json!({
+                            "done": false,
+                            "checked": false,
+                            "stop_short": false,
+                        }),
+                    ),
+                ] {
+                    let named = format!("{:?}", raise.event);
+                    loops
+                        .advance(&access, &run, raise)
+                        .expect("the pane stays readable");
+                    walk.push(format!("{named}({produced}) -> {:?}", loops.state()));
+                }
+            };
+
+            let opening: [Raise; 2] = [AiLoopEvent::Start.into(), AiLoopEvent::PromptSent.into()];
+            for raise in opening {
+                let named = format!("{:?}", raise.event);
+                loops
+                    .advance(&access, &run, raise)
+                    .expect("the pane stays readable");
+                walk.push(format!("{named} -> {:?}", loops.state()));
+            }
+            turn(&mut loops, &mut walk, "refused");
+
+            let mut spent = 0_u32;
+            while loops.state() == AiLoopState::ServiceDown && spent < GIVE_UP_AFTER {
+                loops
+                    .pump(&access, &run)
+                    .expect("a run waiting out an outage is still drivable");
+                spent += 1;
+                if loops.state() == AiLoopState::ServiceDown {
+                    continue;
+                }
+                // The wait ended. Either the ceiling took the run to a person — and then there is
+                // no prompt out and no turn to answer — or a retry typed one.
+                if loops.state() != AiLoopState::Working {
+                    break;
+                }
+                walk.push(format!("retry -> {:?}", loops.state()));
+                let retried = loops.authored_number(SERVICE_RETRIED).unwrap_or_default();
+                let answered = answers_on == Some(retried);
+                turn(
+                    &mut loops,
+                    &mut walk,
+                    if answered { "something" } else { "refused" },
+                );
+                if answered {
+                    break;
+                }
+            }
+
+            let landed = loops.state();
+            let turns = loops.turns().unwrap_or_default();
+            let retried = loops.authored_number(SERVICE_RETRIED).unwrap_or_default();
+            let ceiling = loops.authored_count("service_retry_max");
+            let budget = loops.turn_budget();
+            access.lifecycle().expect("lifecycle").close(pane);
+            Outage {
+                landed,
+                turns,
+                retried,
+                ceiling,
+                budget,
+                walk,
+            }
+        }
+
+        // ── THE HEADLINE: the outage is waited out, and what that cost is counted ──
+        let held = refused_until(None);
+        assert_eq!(
+            held.landed,
+            AiLoopState::AwaitingHuman,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 991: a refusal that never lifts must be WAITED OUT to the \
+             ceiling and then handed to a person — not ended by `max_turns`, which is the whole \
+             reason the door sits above that edge. `service_down`'s two ceiling edges are the only \
+             ones that reach `awaiting_human` from here, so this state is what says the wait ran \
+             its course.\n  walked {:?}",
+            held.walk,
+        );
+        assert_eq!(
+            Some(Counted::Of(held.retried)),
+            held.ceiling,
+            "⛔⛔⛔⛔ AND THE WAIT MUST HAVE SPENT THE TYPING BUDGET, not the six hour one. \
+             `service_retry_max` is the ceiling a door that has to TYPE draws on (register item \
+             724), and a run that arrived at a person on {} retries against a ceiling of {:?} \
+             crossed a different budget from the one its door chose.\n  walked {:?}",
+            held.retried,
+            held.ceiling,
+            held.walk,
+        );
+        assert_eq!(
+            held.turns,
+            held.retried + 1,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 991: THE WAIT COSTS ONE TURN PER RETRY, and the door above was \
+             written claiming it costs none. That sentence belongs to `service_resumes_max`, whose \
+             retries TYPE NOTHING and so raise `peer.silent` rather than `turn.done`. This budget's \
+             retry carries a `prompt.say`; a prompt that is sent is answered, and `working` charges \
+             one `turns` for the answer. Measured here: {} turns across {} retries. What moves \
+             this number is the retry's DESTINATION and the charge `working` levies there; the \
+             typing that earns the charge is counted in bytes by \
+             `a_retry_the_ceiling_turned_away_types_nothing_where_an_ordinary_one_speaks`, because \
+             this fixture raises every `turn.done` by hand and so cannot see a send go \
+             missing.\n  walked {:?}",
+            held.turns,
+            held.retried,
+            held.walk,
+        );
+        assert!(
+            matches!(held.budget, Some(Counted::Of(most)) if held.turns < most)
+                || held.budget == Some(Counted::Never),
+            "⚠⚠⚠ AND THE POINT OF THE ORDERING: the wait must fit INSIDE the run's own budget. \
+             The defect item 991 opened was forty judged refusals reported as a run that used up \
+             its turns; {} against a `max_turns` of {:?} is what the door buys back. If these ever \
+             meet, the run reaches its ceiling while waiting and reports `turns` about an outage \
+             again — and a document that declined the bound cannot.",
+            held.turns,
+            held.budget,
+        );
+
+        // ── ⚠⚠ THE CONTROL: the service comes back mid-wait and the run goes back to work ──
+        let lifted = refused_until(Some(2));
+        assert_ne!(
+            lifted.landed,
+            AiLoopState::AwaitingHuman,
+            "⚠⚠ A SERVICE THAT CAME BACK MUST NOT STILL REACH A PERSON. Without this arm a build \
+             that treated the first refusal as permanent — never re-reading what the retry's prompt \
+             got back — passes every assertion above, and an unattended loop stops at the first bad \
+             minute of its peer's day.\n  walked {:?}",
+            lifted.walk,
+        );
+        assert_ne!(
+            lifted.landed,
+            AiLoopState::ServiceDown,
+            "⚠⚠⚠ AND IT MUST HAVE LEFT THE OUTAGE, not merely stopped counting: an answered turn \
+             is the only evidence this document accepts that a refusing service is healthy \
+             again — `service_down`'s way back is *something being SAID*.\n  walked {:?}",
+            lifted.walk,
+        );
+        assert!(
+            lifted.retried < held.retried,
+            "⚠ AND BELOW THE CEILING, which is what makes the arm above a control rather than a \
+             second spelling of it: recovering on retry {} of {} is the run getting its work back \
+             with budget to spare, and a build that only ever left at the ceiling would read the \
+             same as this one from the state alone.",
+            lifted.retried,
+            held.retried,
         );
     }
 

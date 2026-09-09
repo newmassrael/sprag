@@ -4616,12 +4616,35 @@
         this runs exactly once per judged turn, where the two `turn.done` edges
         would be two copies of one line waiting to drift.
 
-        ⚠ IT IS UNCONDITIONAL, and that is cheaper than being clever: a turn that
-        followed no outage carries `service_retried` unchanged, so assigning it
-        is a no-op. A guard here would be a second place that has to agree about
-        whether an outage happened, for no gain.
+        ⛔⛔⛔⛔⛔ AND IT STOPPED BEING UNCONDITIONAL WHEN A REFUSAL BECAME A JUDGED
+        TURN — register item 991, measured rather than reasoned. This line read
+        *unconditional is cheaper than being clever*, and it was: while the only
+        turns reaching here were the agent's own, EVERY one of them was proof the
+        service had answered. The door above that sends `produced == 'refused'`
+        to `service_down` broke that premise, because a refused turn is the one
+        judged turn that proves the OPPOSITE.
+
+        Unguarded, the outage's own budget was rewritten to *nothing spent* by
+        each refusal on its way past, so `service_retried - service_retried_carried`
+        never left zero and the ceiling below `service_down` was unreachable.
+        Measured 2026-09-09 with the gate named for this fixture: a refusal that
+        never lifts took **400 retries** and was still going when the harness cut
+        it off, where the author's argument two blocks up says six. On the shipped
+        `service_retry_ms` that is a run typing at a refusing service every ten
+        minutes for ever, spending a turn each time, and never reaching the person
+        the ceiling exists to fetch.
+
+        ⚠⚠ SO THE GUARD IS NOT A SECOND AUTHORITY, which is what the old sentence
+        rightly warned against: it does not ask *whether an outage happened* — it
+        reads the very word the door one screen down reads, in the variable
+        assigned six lines above this one. `'nothing'` and `false` are deliberately
+        NOT excluded: a record that came back saying zero, or came back unreadable,
+        still came BACK, and item 988's whole finding is that reading those two as
+        an outage is what kills a working run.
       -->
-      <assign location="service_retried_carried" expr="service_retried"/>
+      <if cond="produced != 'refused'">
+        <assign location="service_retried_carried" expr="service_retried"/>
+      </if>
     </onentry>
     <!--
       ⚠⚠⚠ THE RUN'S BUDGET IS SPENT ON A CEILING THIS DOCUMENT CANNOT SEE, so ask
@@ -4939,13 +4962,25 @@
       ⚠⚠⚠⚠⚠ ABOVE `max_turns` AND NOT UNDER IT, which inverts the `empty_max`
       edge two blocks down, and the reason inverts with it. That one declines to
       buy a cold start for a run already out of turns, because a replacement
-      nothing can use is wasted. THIS one buys nothing: the retries it leads to
-      reach `working` without a `turn.done`, so they spend no turns at all.
-      Ordered under `max_turns` it would be unreachable exactly when it is needed,
-      and the run would end `stopping` with `stop_reason` `'turns'` about an
-      outage it never waited out. Measured on run 270: forty judged turns at the
-      observed sixty second cadence is forty minutes of being refused, reported
-      as a run that used up its budget.
+      nothing can use is wasted. THIS one buys the wait for a price the run can
+      afford: ordered under `max_turns` the door would be unreachable exactly when
+      it is needed, and the run would end `stopping` with `stop_reason` `'turns'`
+      about an outage it never waited out. Measured on run 270: forty judged turns
+      at the observed sixty second cadence is forty minutes of being refused,
+      reported as a run that used up its budget.
+
+      ⚠⚠⚠⚠ AND THE PRICE IS ONE TURN PER RETRY, COUNTED — not none, which is what
+      this block claimed when it was written. That sentence is `service_resumes_max`'s
+      and true only there: THAT budget's retries TYPE NOTHING, so a peer still
+      quiet raises `peer.silent` and never `turn.done`. THIS budget's retry
+      carries a `prompt.say`, a prompt that is sent is answered — by a refusal,
+      while the outage lasts — and `working` charges one `turns` for the answer.
+      So the shipped ceiling of six is SEVEN turns of forty, counting the refusal
+      that opened the outage. Both numbers argue for this ordering; only the
+      counted one can be checked, and
+      `waiting_out_a_refusal_costs_one_turn_per_retry_and_ends_when_the_service_answers`
+      is what checks it, against the document's own two ceilings rather than a
+      constant of its own.
 
       ⚠⚠⚠⚠ AND THE BUDGET IS CHOSEN HERE, EXPLICITLY, because
       `service_resumes_itself` is a LEVEL that each of the other two doors writes
